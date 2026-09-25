@@ -610,6 +610,87 @@ def test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics():
           f"and the grade there charges the new error")
 
 
+def test_a_swap_that_strands_a_cap_is_refused_on_the_tether():
+    """Swaps skip `candidate_valid`, so `swap_intent_ok`'s tether conjunct is
+    the ONLY tether check a swap gets. Two same-footprint glasgow caps, one
+    within its limit of its IC and one far from it: exchanging them strands
+    the first. The zone/keep-out halves admit the swap (the run-32 intent
+    has no keep-out), so the refusal is the tether's."""
+    from collections import defaultdict
+    board = _glasgow_unlocked()
+    pcb = parse_kicad_pcb(board)
+    _p, _i, _g, st = _glasgow_state(fp.load_intent(RUN32_INTENT), pcb, board)
+    by_fp = defaultdict(list)
+    for t in st._tether_terms:
+        if t.rule == 'decap_distance' and t.data['graded']:
+            by_fp[st.parts[t.data['cap']].footprint_name].append(t)
+    # A pair whose exchange strands one of them: on DIFFERENT rails, since
+    # two caps on one rail trade ICs legitimately (the grade re-elects).
+    found = None
+    for fp_name, ts in sorted(by_fp.items()):
+        caps = sorted({t.data['cap'] for t in ts})
+        for i, ra in enumerate(caps):
+            for rb in caps[i + 1:]:
+                pa, pb = st.parts[ra], st.parts[rb]
+                if st.tether_failures({ra: (pb.x, pb.y, pb.rot),
+                                       rb: (pa.x, pa.y, pa.rot)}):
+                    found = (ra, rb)
+                    break
+            if found:
+                break
+        if found:
+            break
+    assert found, "no same-footprint cap pair whose swap strands one"
+    ra, rb = found
+    pa, pb = st.parts[ra], st.parts[rb]
+    assert st.intent_ok(ra, pb.x, pb.y, pb.rot) and         st.intent_ok(rb, pa.x, pa.y, pa.rot), "a zone term refused first"
+    assert st.swap_intent_ok(ra, rb) is False
+    fails = st.tether_failures({ra: (pb.x, pb.y, pb.rot),
+                                rb: (pa.x, pa.y, pa.rot)})
+    assert any(f[0] == 'decap_distance' for f in fails), fails
+    print(f"  PASS: swapping {ra} <-> {rb} is refused on "
+          f"{fails[0][1]} ({fails[0][2]}mm > limit)")
+
+
+def test_rigid_swap_rule_stays_inside_one_group():
+    """`_rigid_swap_ok` is the only thing between a held member and a swap
+    with a part outside its group (the swap phase never calls the nudge's
+    `held` check)."""
+    held = {'A': 'array:r', 'B': 'array:r', 'C': 'array:s',
+            'P': 'block:b', 'Q': 'block:b'}
+    order = {'array:r': {'A'}, 'array:s': set()}
+    ok = q._rigid_swap_ok
+    assert ok(held, order, 'C', 'A') is False      # across two arrays
+    assert ok(held, order, 'A', 'X') is False      # member with non-member
+    assert ok(held, order, 'X', 'P') is False
+    assert ok(held, order, 'P', 'C') is False      # block with array
+    assert ok(held, order, 'P', 'Q') is True       # inside a rigid block
+    assert ok(held, order, 'A', 'B') is False      # A has a row position
+    held2 = dict(held, D='array:s')
+    assert ok(held2, order, 'C', 'D') is True      # order unknown: may trade
+    # And in the quench: two arrays of ONE footprint (splitflap's U9:220R and
+    # U5:220R), side by side, never exchange members.
+    doc, ipath = _splitflap_intent()
+    seed, _formed = _seeded_no_polish()
+    rows = {a['name']: set(a['members']) for a in doc['arrays']}
+    assert {'U9:220R', 'U5:220R'} <= set(rows)
+    intent = fp.load_intent(ipath)
+    pcb = parse_kicad_pcb(seed)
+    before = {r: (pcb.footprints[r].x, pcb.footprints[r].y)
+              for r in rows['U9:220R'] | rows['U5:220R']}
+    out = os.path.join(_workdir(), 'sf_cross.kicad_pcb')
+    m, got = _quench_to(seed, _gate(intent, pcb), out)
+    for name in ('U9:220R', 'U5:220R'):
+        spots = {before[r] for r in rows[name]}
+        dx = got.footprints[sorted(rows[name])[0]].x -             before[sorted(rows[name])[0]][0]
+        dy = got.footprints[sorted(rows[name])[0]].y -             before[sorted(rows[name])[0]][1]
+        now = {(round(got.footprints[r].x - dx, 6),
+                round(got.footprints[r].y - dy, 6)) for r in rows[name]}
+        assert now == {(round(x, 6), round(y, 6)) for x, y in spots}, name
+    print(f"  PASS: cross-group swaps refused (unit); {m['rigid']['swaps_refused']}"
+          f" rigid swap(s) refused in the polish, both 220R rows intact")
+
+
 def _run(script, args):
     r = subprocess.run([sys.executable, '-X', 'utf8',
                         os.path.join(ROOT, 'py_placer', script)] + args,
@@ -701,6 +782,8 @@ TESTS = [
     test_an_ic_that_would_strand_its_caps_is_refused_the_cluster_moves,
     test_tether_terms_equal_the_grader_on_every_pair,
     test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics,
+    test_a_swap_that_strands_a_cap_is_refused_on_the_tether,
+    test_rigid_swap_rule_stays_inside_one_group,
     test_every_caller_hands_the_quench_the_resolved_rows_and_tethers,
     test_unarmed_quench_is_bit_identical_to_the_pre_phase4_quench,
 ]
