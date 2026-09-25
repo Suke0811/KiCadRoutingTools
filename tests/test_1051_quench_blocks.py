@@ -305,14 +305,58 @@ def test_a_released_member_rejoins_when_clean_and_in_its_slot():
     released, rejoined = list(recs), []
     p = st.parts[other]
     st.apply_move(other, p.x, p.y + 2.0, p.rot)     # it moved alone
+    # Hysteresis: not in the pass after the release (2), from pass 3 on.
+    assert not _quiet(q._update_releases, st, held, blocks, info, released,
+                      rejoined, 2, 3.0, 1.0, 0.1) and not rejoined
     changed = _quiet(q._update_releases, st, held, blocks, info, released,
-                     rejoined, 2, 3.0, 1.0, 0.1)
+                     rejoined, 3, 3.0, 1.0, 0.1)
     assert changed and [r['ref'] for r in rejoined] == [victim], rejoined
     assert [r['ref'] for r in released] == [other], released
     assert held[victim] == name and victim in blocks[name]
     assert blocks[name] == [r for r in row if r != other], blocks
     print(f"  PASS: {victim} (clean, in its slot) rejoins {name}; {other} "
           f"(moved 2mm alone) stays released")
+
+
+def test_release_and_rejoin_do_not_oscillate():
+    """The re-verifier's osc.py: a released sibling that moved alone ONTO a
+    member. Release and rejoin must judge that member with ONE exclusion set
+    (the formation minus its released members): with the release counting the
+    sibling and the rejoin ignoring it, the member flipped released ->
+    rejoined -> released every pass, `changed` never went False (so the
+    `moves == 0` stop never fired) and `rejoined` filled with duplicates.
+    Here, with nothing moving between passes, only the first call changes
+    anything and nobody rejoins."""
+    doc, _ip = _splitflap_intent()
+    seed, _formed = _seeded_no_polish()
+    pcb = parse_kicad_pcb(seed)
+    row = next(a['members'] for a in doc['arrays'] if a['name'] == 'U4:47k')
+    name = 'array:U4:47k'
+    for md in (0.3, 3.0):
+        st = _quiet(q.QuenchState, pcb, seed, CLEARANCE, EDGE, 30.0, 0.5,
+                    0.15, 2.0, 2.0, 2.0, 0.1, 0.3)
+        st.build_neighbor_lists(3.1)
+        info = {'groups': {name: list(row)}, 'anchored': {}}
+        victim, anchor, other = row[3], row[0], row[5]
+        held = {r: name for r in row if r != other}
+        blocks = {name: [r for r in row if r != other]}
+        released = [{'ref': other, 'group': name, 'clause': 'legality',
+                     'pass': 1, '_anchor': anchor,
+                     '_slot': q._slot_of(st, other, anchor)}]
+        rejoined = []
+        pv = st.parts[victim]
+        st.apply_move(other, pv.x + 0.2, pv.y, pv.rot)  # onto the victim
+        seen = []
+        for pn in range(2, 8):
+            ch = _quiet(q._update_releases, st, held, blocks, info, released,
+                        rejoined, pn, md, 1.0, 0.1)
+            seen.append((ch, tuple(sorted(r['ref'] for r in released))))
+        assert seen[0][0] is True and victim in seen[0][1], seen[0]
+        assert all(ch is False for ch, _r in seen[1:]), seen
+        assert len({r for _c, r in seen}) == 1, seen
+        assert rejoined == [], [r['ref'] for r in rejoined]
+    print(f"  PASS: {other} moved onto {victim}: released once after pass 2, "
+          f"then stable for 5 passes at both caps, nobody rejoins")
 
 
 def _rigid_block_intent(doc, refs, rigid):
@@ -572,6 +616,11 @@ def test_tether_terms_equal_the_grader_on_every_pair():
         p = st.parts[ref]
         st.apply_move(ref, p.x + rng.uniform(-3, 3), p.y + rng.uniform(-3, 3),
                       p.rot)
+    # ...and one cap elected beyond the radius put INSIDE another chip's
+    # radius (random moves of 3mm never did): the case where a frozen pair
+    # and the live election disagree.
+    placed_in = _walk_into_another_radius(st)
+    assert placed_in, "no beyond-radius cap could be put in another radius"
     view = fp._PosedState(st).board()
     wdd, wdp, wpx = _grader_readings(intent, view, board)
     gdd, gdp, gpx = _term_readings(st, limit)
@@ -587,11 +636,42 @@ def test_tether_terms_equal_the_grader_on_every_pair():
         want_v = d if (t.data['graded'] or d <= radius + 1e-9) else 0.0
         n_in += (not t.data['graded']) and d <= radius
         assert abs(st._tether_value(i) - want_v) < 1e-9, (t.name, d, want_v)
+    assert n_in >= 1, "no beyond-radius cap ended inside a radius"
     print(f"  PASS: {len(want[0])} cap->IC distances, {len(want[1])} supply "
           f"pins and {len(want[2])} proximity reaches equal the grade; after "
           f"{len(moved)}-part perturbation every decap "
           f"term ({len(dterms)}, {len(ungraded)} elected beyond the radius, "
           f"{n_in} of them now inside it) equals the grader's live election")
+
+
+def _walk_into_another_radius(st):
+    """Move the first cap elected beyond the radius to a pose inside the
+    radius of a DIFFERENT chip on its rail (and beyond its elected IC's).
+    Returns (cap, chip, live distance) or None."""
+    from placement import groups as _groups
+    for t in st._tether_terms:
+        if t.rule != 'decap_distance' or t.data['graded']:
+            continue
+        cap, ic, rad = t.data['cap'], t.data['ic'], t.data['radius']
+        cx, cy = _groups._centroid(st._posed_fp(cap))
+        p = st.parts[cap]
+        ib = st._chip_bounds(ic)
+        rail = [(r, st._chip_bounds(r)) for r in t.data['rail']]
+        for other in t.data['rail']:
+            if other == ic:
+                continue
+            b = st._chip_bounds(other)
+            mx, my = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+            for off in (1.0, 2.0, 3.0, 4.0):
+                for tx, ty in ((b[2] + off, my), (b[0] - off, my),
+                               (mx, b[3] + off), (mx, b[1] - off)):
+                    w, d = _groups.nearest_chip((tx, ty), rail)
+                    if (w != ic and d <= rad - 0.2 and
+                            _groups._point_to_bounds((tx, ty), ib) > rad):
+                        st.apply_move(cap, p.x + tx - cx, p.y + ty - cy,
+                                      p.rot)
+                        return cap, w, d
+    return None
 
 
 def test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics():
@@ -864,6 +944,7 @@ TESTS = [
     test_seeded_row_keeps_formation_through_the_polish,
     test_member_leaves_only_through_a_disclosed_release,
     test_a_released_member_rejoins_when_clean_and_in_its_slot,
+    test_release_and_rejoin_do_not_oscillate,
     test_rigid_true_block_moves_as_one,
     test_a_ref_in_two_groups_is_deduped_and_disclosed,
     test_an_ic_that_would_strand_its_caps_is_refused_the_cluster_moves,

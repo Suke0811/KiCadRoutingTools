@@ -3073,11 +3073,15 @@ def _release_clause(state, ref, members, block_refs, max_disp, step, lattice
     AND no admissible block offset clears it: an offset the group phase could
     take (`group_move_valid`) at which the member's clause no longer fails.
     An anchored group (a member cannot move) has no offsets, so a failing
-    member of one is released directly. `members` is the whole group (its
-    pairs are excluded from the legality clause), `block_refs` the members
-    the translate moves, or None for an anchored group.
+    member of one is released directly. `members` is the FORMATION -- the
+    group minus its released members, `_formation` -- whose pairs are
+    excluded from the legality clause; the rejoin test excludes exactly the
+    same set, or a released sibling sitting on a member would count against
+    it here and be ignored there, and the member would flip every pass.
+    `block_refs` are the members the translate moves, or None for an
+    anchored group.
     """
-    members = set(block_refs) if block_refs else set(members)
+    members = set(members)
     clause = _clause_failing(state, ref, exclude=members)
     if clause is None:
         return None
@@ -3094,7 +3098,7 @@ def _release_clause(state, ref, members, block_refs, max_disp, step, lattice
                     continue
                 shifted = {r: (state.parts[r].x + dx,
                                state.parts[r].y + dy,
-                               state.parts[r].rot) for r in members}
+                               state.parts[r].rot) for r in block_refs}
                 if _clause_failing(state, ref, shifted,
                                    exclude=members) is None:
                     return None
@@ -3114,6 +3118,14 @@ def _slot_of(state, ref, anchor):
     return (round(p.x - a.x, 6), round(p.y - a.y, 6), round(p.rot % 360, 6))
 
 
+def _formation(rigid_info, name, released) -> Set[str]:
+    """Group `name` minus its currently released members: the parts whose
+    mutual spacing is the formation's own, excluded from a member's legality
+    clause by BOTH the release and the rejoin test."""
+    out = {r['ref'] for r in released if r['group'] == name}
+    return set(rigid_info['groups'][name]) - out
+
+
 def _update_releases(state, held, blocks, rigid_info, released, rejoined,
                      pass_num, max_disp, step, lattice) -> bool:
     """End-of-pass release and rejoin (see the call site). Mutates `held`,
@@ -3122,7 +3134,8 @@ def _update_releases(state, held, blocks, rigid_info, released, rejoined,
     changed = False
     for ref in sorted(held):
         name = held[ref]
-        clause = _release_clause(state, ref, rigid_info['groups'][name],
+        clause = _release_clause(state, ref,
+                                 _formation(rigid_info, name, released),
                                  blocks.get(name), max_disp, step, lattice)
         if clause is None:
             continue
@@ -3144,13 +3157,20 @@ def _update_releases(state, held, blocks, rigid_info, released, rejoined,
               f"other part had the pass to clear it, and no block move "
               f"clears it, so it may move alone")
     for rec in list(released):
-        if rec.get('pass') == pass_num or rec['_anchor'] is None:
+        # Hysteresis: never in the pass of the release nor the next one. A
+        # member released after pass N moves alone in pass N+1; judging its
+        # rejoin before it has had that pass would decide on the very state
+        # that released it.
+        if pass_num < rec['pass'] + 2 or rec['_anchor'] is None:
             continue
         ref, name = rec['ref'], rec['group']
         if _slot_of(state, ref, rec['_anchor']) != rec['_slot']:
             continue                    # it moved alone: stays released
-        members = set(rigid_info['groups'][name])
-        if _clause_failing(state, ref, exclude=members) is not None:
+        # The SAME exclusion as the release test: the formation it would
+        # rejoin, plus itself. Its released siblings are ordinary parts to
+        # both decisions.
+        if _clause_failing(state, ref, exclude=_formation(
+                rigid_info, name, released) | {ref}) is not None:
             continue
         released.remove(rec)
         rejoined.append(dict(rec, rejoined_after_pass=pass_num))
