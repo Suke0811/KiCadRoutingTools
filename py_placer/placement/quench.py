@@ -72,22 +72,30 @@ EPS_IMPROVE = 1e-6
 #: re-typing it: a rule added here enters the A/B signal automatically, and a
 #: rule removed to flatter a row trips a test rather than passing quietly.
 #:
-#: The other NINE floorplan rules are deliberately absent, each for its own
-#: reason -- `must_lock` and `edge_connector` are enforced by FREEZING the ref
-#: (no pose satisfies or violates them), `zone_side` is invariant under every
-#: move this engine can make and `assembly_side` (#837) is invariant for the
-#: same reason one level up, `envelope` is a claim about the intent file,
-#: `decap_distance` is graded in a currency this engine does not carry (pad
-#: centroid to an inflated pad bbox, not courtyard to courtyard),
-#: `decap_ungraded` and `decap_pin_distance` are claims about what the GRADE
-#: covers rather than about any pose, and `legality` is a whole-board budget
-#: rather than a per-pose predicate.
+#: The three TETHER rules (#1043) are enforced through a separate channel,
+#: `QuenchState._tether_terms`, because they are part-vs-PART: each is
+#: measured by CALLING the grader's own function (`groups.tether_distance`,
+#: `floorplan.nearest_rail_cap`, `floorplan.proximity_reaches`) on footprints
+#: posed at the live poses, over pairings `floorplan.tether_pairings` elects
+#: once. Each is armed only by its own declared limit at error severity.
 #:
-#: The count said "six" and named six while nine were absent: `decap_ungraded`
-#: (#794) and `decap_pin_distance` (#705) arrived without being added here, and
-#: #837 made it three. Stated as a number AND an enumeration so the next
-#: addition is visibly missing from both.
-INTENT_ENFORCED_RULES = ('zone_containment', 'zone_exclusive', 'keepout')
+#: The other NINE of the fifteen floorplan rules are deliberately absent, each
+#: for its own reason -- `must_lock` and `edge_connector` are enforced by
+#: FREEZING the ref (no pose satisfies or violates them), `zone_side` is
+#: invariant under every move this engine can make and `assembly_side` (#837)
+#: is invariant for the same reason one level up, `envelope` is a claim about
+#: the intent file, `decap_ungraded` is a claim about what the GRADE covers
+#: rather than about any pose, `legality` is a whole-board budget rather than
+#: a per-pose predicate, `pins_to_edge` is always-warn advice for a reviewer,
+#: and `array_formation` (#1051) is held by construction -- a declared array
+#: is a rigid group that only translates -- rather than priced per pose.
+#:
+#: The count said "six" and named six while nine were absent, and then said
+#: "NINE" while eleven were (`proximity` and `pins_to_edge` arrived without
+#: being added here). Stated as a number AND an enumeration
+#: so the next addition is visibly missing from both.
+INTENT_ENFORCED_RULES = ('zone_containment', 'zone_exclusive', 'keepout',
+                         'decap_distance', 'decap_pin_distance', 'proximity')
 
 
 class _IntentTerm(NamedTuple):
@@ -111,6 +119,24 @@ class _IntentTerm(NamedTuple):
     threshold: float
     anchor: bool              # zone_containment: grade the courtyard CENTRE
     entry: Optional[Dict]     # keepout: the raw entry `keepout_hit` reads
+
+
+class _TetherTerm(NamedTuple):
+    """One declared part-vs-part claim, frozen at state construction (#1043).
+
+    `refs` is every ref whose pose the measurement reads, so a move of ANY of
+    them is checked against it: a cap's move and its IC's move, both halves
+    of a swap, a proximity subject and its partner. One term per claim the
+    grade can report ONCE -- a (cap, IC) pair, an (IC, supply pin), a
+    proximity subject pad (or the pair, when no pads are declared) -- so the
+    monotone rule counts in `grade_delta`'s currency.
+    """
+    rule: str                 # one of floorplan.TETHER_RULES
+    name: str
+    refs: Tuple[str, ...]
+    threshold: float
+    kind: str                 # 'decap' | 'pin' | 'prox_pad' | 'prox_body'
+    data: Dict
 
 
 # --------------------------------------------------------------------------
@@ -781,7 +807,12 @@ class QuenchState:
                  # for the same positional-binding reason as the #548 block
                  # above, and empty by default so an undeclared board keeps the
                  # full lattice and is bit-identical.
-                 declared_rotations: Optional[Dict] = None):
+                 declared_rotations: Optional[Dict] = None,
+                 # --- #1043 declared tethers, from the intent gate's
+                 # `tethers` key. APPENDED for the same positional-binding
+                 # reason, and empty by default: no term is built, the gate
+                 # is one bool load, and the quench is bit-identical.
+                 tethers: Optional[Dict] = None):
         bounds = pcb_data.board_info.board_bounds
         if bounds is None:
             raise ValueError("No board boundary (Edge.Cuts) found")
@@ -967,6 +998,36 @@ class QuenchState:
         # observation -- which is the whole anti-vacuity device for #702.
         self.intent_rejected: Dict[str, int] = {}
         self.intent_rejected_by_site: Dict[str, int] = {}
+
+        # --- #1043 declared TETHERS -----------------------------------------
+        # The part-vs-PART claims (`decap_distance`, `decap_pin_distance`,
+        # `proximity`), which is why they are not folded into `_intent_spec`:
+        # that channel's terms are part-vs-declared-geometry, and its
+        # incumbent cache (`_incumbent_intent`) is keyed by the moving ref on
+        # exactly that assumption. A tether term reads the poses of every ref
+        # it names, so its incumbent is cached PER TERM and a move of any of
+        # them invalidates it (both caches are cleared on every move).
+        #
+        # The pairings are elected ONCE, here, by `floorplan.tether_pairings`
+        # -- the grader's own election on the board as it stands -- and every
+        # value is measured by CALLING the grader's functions on footprints
+        # posed at the live (or candidate) poses: `groups.tether_distance`,
+        # `floorplan.nearest_rail_cap`, `floorplan.proximity_reaches`.
+        #
+        # Empty unless the intent declares a tether limit at error severity,
+        # and then `_tether_active` is False and no path below reads anything.
+        self._tether_terms: List[_TetherTerm] = []
+        self._tethers_of: Dict[str, Tuple[int, ...]] = {}
+        self._inc_tval: Dict[int, float] = {}
+        self._tgap: Dict[Tuple, object] = {}
+        self._posed: Dict[Tuple, object] = {}
+        self._tether_override: Optional[Dict[str, Tuple[float, float,
+                                                        float]]] = None
+        self._tether_bodies = None
+        self.tethers = dict(tethers or {})
+        if self.tethers:
+            self._build_tethers()
+        self._tether_active = bool(self._tether_terms)
 
         # Run-6 CONTAINER exemption: a courtyard covering most of the board
         # is a FRAME (a module-outline footprint hosting the whole design),
@@ -1816,6 +1877,12 @@ class QuenchState:
                                  (rb, (pa.x, pa.y, pa.rot))):
             for rule, _n, _c, _u in self.intent_blockers(who, x, y, rot):
                 self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
+        if self._tether_active:
+            # #1043: both halves at once, since a tether between the two (two
+            # caps on one pin's rail) reads both poses.
+            for rule, _n, _c, _u in self.tether_failures(
+                    {ra: (pb.x, pb.y, pb.rot), rb: (pa.x, pa.y, pa.rot)}):
+                self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
 
     def candidate_valid(self, ref, x, y, rot, exclude: Optional[Set[str]] = None):
         """True when the pose is legal, or -- when the part sits OFF THE BOARD --
@@ -1940,7 +2007,13 @@ class QuenchState:
             legal = self.legality_ctx.pads_ok(
                 ref, x, y, rot, self._pad_neighbors(ref), exclude=exclude)
         if legal:
-            return True
+            # #1043: the tether conjunct LAST, at every `return True`, not
+            # beside the #702 check above. It is the one conjunct that poses
+            # footprints and walks pad pairs, so it runs only on a pose every
+            # cheaper test already admitted. It is still a conjunct on the
+            # escape branch below: a part coming home from off the board may
+            # not strand its caps on the way.
+            return self._tether_gate(ref, x, y, rot)
         # Only now, on a rejected candidate, is the incumbent's legality worth
         # computing -- and it is cached, because it is the same answer for every
         # candidate of this part until something moves. Without the cache this
@@ -1958,10 +2031,10 @@ class QuenchState:
             return False
         # The unfreeze branch gets the SAME pad/hole conjunct: a part may move
         # back toward the board only without worsening any pad pair.
-        if self.legality_ctx is not None:
-            return self.legality_ctx.pads_ok(
-                ref, x, y, rot, self._pad_neighbors(ref), exclude=exclude)
-        return True
+        if self.legality_ctx is not None and not self.legality_ctx.pads_ok(
+                ref, x, y, rot, self._pad_neighbors(ref), exclude=exclude):
+            return False
+        return self._tether_gate(ref, x, y, rot)
 
     def swap_intent_ok(self, ra, rb) -> bool:
         """May these two parts exchange poses, declared-intent-wise? (#702)
@@ -1980,7 +2053,200 @@ class QuenchState:
         """
         pa, pb = self.parts[ra], self.parts[rb]
         return (self.intent_ok(ra, pb.x, pb.y, pb.rot)
-                and self.intent_ok(rb, pa.x, pa.y, pa.rot))
+                and self.intent_ok(rb, pa.x, pa.y, pa.rot)
+                and (not self._tether_active
+                     or self.tether_ok({ra: (pb.x, pb.y, pb.rot),
+                                        rb: (pa.x, pa.y, pa.rot)})))
+
+    # ----- #1043 tethers ----------------------------------------------------
+
+    def _build_tethers(self) -> None:
+        """Elect the pairings once and freeze them as `_TetherTerm`s.
+
+        A term none of whose refs can move is dropped: no move of this
+        engine changes it, so it cannot refuse anything. A proximity term
+        is expanded to one per REACH the rule reports (per declared subject
+        pad, or one for the pair), counted on the board as it stands.
+        """
+        from . import floorplan as _fp
+        rows = _fp.tether_pairings(self.tethers, self.pcb_data)
+        nets = {n.name: nid for nid, n in (self.pcb_data.nets or {}).items()}
+        terms: List[_TetherTerm] = []
+        for row in rows:
+            refs = tuple(row['refs'])
+            if not any(r in self.parts and not self.parts[r].locked
+                       for r in refs):
+                continue
+            rule, name, lim = row['rule'], row['name'], float(row['limit'])
+            if rule == 'decap_distance':
+                terms.append(_TetherTerm(rule, name, refs, lim, 'decap', {
+                    'cap': row['cap'], 'ic': row['ic'],
+                    'graded': row['graded'], 'radius': row['radius']}))
+            elif rule == 'decap_pin_distance':
+                terms.append(_TetherTerm(rule, name, refs, lim, 'pin', {
+                    'ic': row['ic'], 'pad_index': row['pad_index'],
+                    'net_id': nets.get(row['net']),
+                    'caps': tuple(row['caps'])}))
+            elif row['basis'] == 'body':
+                terms.append(_TetherTerm(rule, name, refs, lim, 'prox_body',
+                                         {'claim': row['claim']}))
+            else:
+                a, b = refs
+                n = len(_fp.proximity_reaches(*_fp.proximity_pads(
+                    row['claim'], self._posed_fp(a), self._posed_fp(b))))
+                for k in range(n):
+                    terms.append(_TetherTerm(
+                        rule, f"{name}#{k}" if n > 1 else name, refs, lim,
+                        'prox_pad', {'claim': row['claim'], 'slot': k}))
+        by_ref: Dict[str, List[int]] = {}
+        for i, t in enumerate(terms):
+            for r in set(t.refs):
+                by_ref.setdefault(r, []).append(i)
+        self._tether_terms = terms
+        self._tethers_of = {r: tuple(v) for r, v in by_ref.items()}
+
+    def _pose_of(self, ref, override=None):
+        if override and ref in override:
+            return override[ref]
+        p = self.parts.get(ref)
+        if p is not None:
+            return (p.x, p.y, p.rot)
+        fp = self.pcb_data.footprints[ref]
+        return (fp.x, fp.y, (fp.rotation or 0.0) % 360)
+
+    def _posed_fp(self, ref, override=None):
+        """`ref`'s footprint at its live (or overridden) pose, through
+        `legality.footprint_at_pose` -- the posing `floorplan.PoseGrader`
+        grades with. Cached by pose, so an incumbent is posed once."""
+        pose = self._pose_of(ref, override)
+        key = (ref,) + tuple(pose)
+        fp = self._posed.get(key)
+        if fp is None:
+            if len(self._posed) > 4096:
+                self._posed.clear()
+            fp = legality.footprint_at_pose(self.pcb_data.footprints[ref],
+                                            pose)
+            self._posed[key] = fp
+        return fp
+
+    def _tether_value(self, i: int, override=None) -> float:
+        """Term `i` measured with `override` poses over the live board.
+
+        Every number comes from a grader function, never a copy of one. The
+        only thing added here is the CACHE of a pin term's static caps: when
+        the IC does not move, `nearest_rail_cap` over the caps that do not
+        move either is the same answer for every candidate of the one that
+        does, and the minimum of two minima is the minimum.
+        """
+        from . import floorplan as _fp
+        from . import groups as _groups
+        t = self._tether_terms[i]
+        moving = set(override or ())
+        if t.kind == 'decap':
+            d = _groups.tether_distance(
+                self._posed_fp(t.data['cap'], override),
+                self._posed_fp(t.data['ic'], override))
+            if d is None:
+                return 0.0
+            if not t.data['graded'] and d > t.data['radius'] + legality.EPS:
+                # Outside the radius the grade calls it `decap_ungraded`
+                # (warn): not a finding this term counts. INSIDE it is graded,
+                # so a pair elected beyond the radius may not walk in past
+                # the limit -- that would be a new error the grade sees.
+                return 0.0
+            return d
+        if t.kind == 'pin':
+            ic, caps = t.data['ic'], t.data['caps']
+            pin = self._posed_fp(ic, override).pads[t.data['pad_index']]
+            if ic in moving:
+                got = _fp.nearest_rail_cap(
+                    pin, [self._posed_fp(c, override) for c in caps])
+                return got[0] if got is not None else 0.0
+            live = tuple(c for c in caps if c in moving)
+            key = (i, live)
+            static = self._tgap.get(key)
+            if static is None:
+                static = _fp.nearest_rail_cap(
+                    pin, [self._posed_fp(c) for c in caps if c not in moving])
+                self._tgap[key] = static
+            best = static[0] if static is not None else None
+            if live:
+                got = _fp.nearest_rail_cap(
+                    pin, [self._posed_fp(c, override) for c in live])
+                if got is not None and (best is None or got[0] < best):
+                    best = got[0]
+            return best if best is not None else 0.0
+        a, b = t.refs
+        fa, fb = self._posed_fp(a, override), self._posed_fp(b, override)
+        if t.kind == 'prox_pad':
+            reaches = _fp.proximity_reaches(
+                *_fp.proximity_pads(t.data['claim'], fa, fb))
+            k = t.data['slot']
+            return reaches[k][0] if k < len(reaches) else 0.0
+        if self._tether_bodies is None:
+            from .body import board_bodies
+            self._tether_bodies = board_bodies(self.pcb_data, self.pcb_file)
+        ra, _sa = _fp.drawn_body_rect(self._tether_bodies.get(a), fa)
+        rb, _sb = _fp.drawn_body_rect(self._tether_bodies.get(b), fb)
+        if ra is None or rb is None:
+            return 0.0
+        return rect_gap(ra, rb)
+
+    def _incumbent_tether(self, i: int) -> float:
+        v = self._inc_tval.get(i)
+        if v is None:
+            v = self._tether_value(i)
+            self._inc_tval[i] = v
+        return v
+
+    def tether_failures(self, override) -> List[Tuple]:
+        """[(rule, name, measured, incumbent)] for every term touching a ref
+        in `override` that the candidate breaks: past its limit AND worse
+        than the live board. Termwise, per claim -- see `tether_ok`."""
+        idx = sorted({i for r in override
+                      for i in self._tethers_of.get(r, ())})
+        if self._tether_override:
+            # A group move: the OTHER members move too, so they are posed at
+            # their shifted poses -- but only this call's refs' terms are
+            # checked; the other members are checked by their own calls.
+            override = dict(self._tether_override, **override)
+        out = []
+        for i in idx:
+            t = self._tether_terms[i]
+            c = self._tether_value(i, override)
+            if c <= t.threshold + legality.EPS:
+                continue
+            u = self._incumbent_tether(i)
+            if c > u + legality.EPS:
+                out.append((t.rule, t.name, round(c, 4), round(u, 4)))
+        return out
+
+    def tether_ok(self, override) -> bool:
+        """MONOTONE per CLAIM: every tether term touching a moving ref is
+        within its limit or no worse than on the live board.
+
+        Per term, not all-or-nothing like `intent_ok`'s vector: a term here is
+        one finding `grade_delta` counts (a cap, an IC's pin, a proximity
+        pad), and an IC with one pin already past its limit must still be
+        allowed to move in ways that keep every OTHER pin within limit.
+        `override` maps each moving ref to its candidate pose; a group
+        move's shifted members ride in `_tether_override`."""
+        if not self._tether_active:
+            return True
+        return not self.tether_failures(override)
+
+    def _tether_gate(self, ref, x, y, rot, site='candidate_valid') -> bool:
+        """`candidate_valid`'s tether conjunct, tallied like `intent_ok`'s."""
+        if not self._tether_active or ref not in self._tethers_of:
+            return True
+        fails = self.tether_failures({ref: (x, y, rot)})
+        if not fails:
+            return True
+        tally = self.intent_rejected_by_site
+        tally[site] = tally.get(site, 0) + 1
+        for rule, _n, _c, _u in fails:
+            self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
+        return False
 
     def _pad_neighbors(self, ref):
         """Neighbor refs for the pad gate: the pruned list when built, else
@@ -2424,6 +2690,8 @@ class QuenchState:
         part.x, part.y, part.rot = x, y, rot
         self._inc_violation.clear()
         self._inc_intent.clear()
+        self._inc_tval.clear()
+        self._tgap.clear()
         # #548: a move changes which pads other parts see, so every
         # net anchor computed against this part is now stale.
         self._anchors.clear()
@@ -2446,6 +2714,8 @@ class QuenchState:
             nets.update(part.nets)
         self._inc_violation.clear()
         self._inc_intent.clear()
+        self._inc_tval.clear()
+        self._tgap.clear()
         # #548: a move changes which pads other parts see, so every
         # net anchor computed against this part is now stale.
         self._anchors.clear()
@@ -2468,12 +2738,23 @@ class QuenchState:
         valid -- see the group phase in quench().
         """
         others = set(refs)
-        for ref in refs:
-            part = self.parts[ref]
-            if not self.candidate_valid(ref, part.x + dx, part.y + dy, part.rot,
-                                        exclude=others):
-                return False
-        return True
+        if self._tether_active:
+            # #1043: a tether between two members is invariant under the
+            # shift, so each member's terms are read with the WHOLE block at
+            # its shifted pose -- otherwise an IC translating with its caps
+            # would be refused for "leaving" caps that travel with it.
+            self._tether_override = {
+                r: (self.parts[r].x + dx, self.parts[r].y + dy,
+                    self.parts[r].rot) for r in refs}
+        try:
+            for ref in refs:
+                part = self.parts[ref]
+                if not self.candidate_valid(ref, part.x + dx, part.y + dy,
+                                            part.rot, exclude=others):
+                    return False
+            return True
+        finally:
+            self._tether_override = None
 
     def build_neighbor_lists(self, travel_budget):
         """Per-movable-part pruned neighbour lists (perf, mirrors the
@@ -2690,6 +2971,11 @@ def _clause_failing(state, ref, override=None, exclude=None) -> Optional[str]:
         for v, t in zip(state.intent_terms(ref, rects), spec):
             if v > t.threshold:
                 return f"intent:{t.rule}"
+    if state._tether_active:
+        for i in state._tethers_of.get(ref, ()):
+            t = state._tether_terms[i]
+            if state._tether_value(i, override) > t.threshold + legality.EPS:
+                return f"intent:{t.rule}"
     board, overlap = state.violation_parts(ref, x, y, rot, exclude=exclude)
     if board > EPS_IMPROVE or overlap > EPS_IMPROVE:
         return 'legality'
@@ -2737,12 +3023,21 @@ def _release_clause(state, ref, members, block_refs, max_disp, step, lattice
 #: The `metrics_out` keys a caller's JSON_SUMMARY carries verbatim (#1043,
 #: #1051, #1052). Each is present only when its channel was declared, so an
 #: undeclared run's summary is unchanged.
-DISCLOSURE_KEYS = ('rigid', 'rigid_released', 'groups_deduped')
+DISCLOSURE_KEYS = ('rigid', 'rigid_released', 'groups_deduped', 'tethers')
 
 
 def disclosure(metrics_out: Dict) -> Dict[str, object]:
     """The `DISCLOSURE_KEYS` present in `metrics_out`, for a JSON_SUMMARY."""
     return {k: metrics_out[k] for k in DISCLOSURE_KEYS if k in metrics_out}
+
+
+def _tether_over_limit(state) -> Dict[str, int]:
+    """{rule: terms past their limit} on the live poses (#1043)."""
+    out: Dict[str, int] = {}
+    for i, t in enumerate(state._tether_terms):
+        if state._incumbent_tether(i) > t.threshold + legality.EPS:
+            out[t.rule] = out.get(t.rule, 0) + 1
+    return out
 
 
 def _group_offsets(state, refs, max_disp: float, step: float, lattice: float):
@@ -3047,7 +3342,8 @@ def quench(pcb_data: PCBData, pcb_file: str,
                         intent_zones=(intent_gate or {}).get('zones'),
                         declared_rotations=(intent_gate or {}).get('rotations'),
                         body_model=body_model,
-                        facing_weight=facing_weight)
+                        facing_weight=facing_weight,
+                        tethers=(intent_gate or {}).get('tethers'))
     # #708: the lattice candidate OFFSETS are multiples of. The board's own
     # pitch when one can be read off it, the `grid_step` raster otherwise.
     # There is deliberately no flag: the fallback IS the off state and the
@@ -3094,12 +3390,23 @@ def quench(pcb_data: PCBData, pcb_file: str,
     blocks: Dict[str, List[str]] = {}
     movable_set = set(movable)
     # #1051/#1052: the intent's RIGID groups (declared arrays, and blocks that
-    # declare `rigid: true`) join the group phase whatever --group-by says.
-    # `clusters` is the slot for a further group source (#1043's IC+caps
-    # clusters). All are empty on an intent that declares none of them, and
-    # the plain filter below then runs exactly as it always did.
+    # declare `rigid: true`) join the group phase whatever --group-by says,
+    # and #1043's IC+caps clusters join it when a decap tether is armed, so an
+    # IC can still travel WITH its caps now that the gate holds each cap near
+    # it. All three are empty on an intent that declares none of them, and
+    # `merge_groups` then returns the caller's groups exactly as the plain
+    # filter below always did.
     rigid_in = dict((intent_gate or {}).get('rigid_blocks') or {})
     clusters: Dict[str, List[str]] = {}
+    if state._tether_active and any(
+            t.rule in ('decap_distance', 'decap_pin_distance')
+            for t in state._tether_terms):
+        from placement.groups import derive_groups as _derive
+        for name, refs in _derive(pcb_data, ('decap',),
+                                  movable=movable_set).items():
+            ic = name.split(':', 1)[1]
+            if ic in refs:              # a cluster without its IC moves caps
+                clusters[f"tether:{ic}"] = list(refs)   # off it, not with it
     rigid_info = None
     if rigid_in or clusters:
         blocks, rigid_info = merge_groups(groups or {}, rigid_in, clusters,
@@ -3115,6 +3422,9 @@ def quench(pcb_data: PCBData, pcb_file: str,
             print("Rigid groups (#1051/#1052): "
                   + ', '.join(f"{n} ({len(r)})" for n, r in
                               sorted(rigid_info['groups'].items())))
+        if clusters:
+            print(f"Tether clusters (#1043): {len(clusters)} IC+caps "
+                  f"group(s) join the rigid translate")
     elif groups:
         blocks = {name: [r for r in refs if r in movable_set]
                   for name, refs in groups.items()}
@@ -3129,6 +3439,10 @@ def quench(pcb_data: PCBData, pcb_file: str,
     array_order = {f"array:{a.get('name')}": set(a.get('order_refs') or ())
                    for a in (intent_gate or {}).get('arrays') or ()}
     swaps_skipped_rigid_total = 0
+    if state._tether_active:
+        _rules = sorted({t.rule for t in state._tether_terms})
+        print(f"Tethers (#1043): {len(state._tether_terms)} term(s) held "
+              f"per move ({', '.join(_rules)})")
 
     stopped = False
     for pass_num in range(1, max_passes + 1):
@@ -3416,7 +3730,7 @@ def quench(pcb_data: PCBData, pcb_file: str,
                         # silent swap rejection -- "two instances of one
                         # footprint that never swap look exactly like a pair
                         # with nothing to gain".
-                        if (state._intent_active
+                        if ((state._intent_active or state._tether_active)
                                 and not state.swap_intent_ok(ra, rb)):
                             state._note_swap_refusal(ra, rb)
                             swaps_skipped_intent += 1
@@ -3507,12 +3821,30 @@ def quench(pcb_data: PCBData, pcb_file: str,
                 # self-contradictory line "enforced  over 0 bound part(s);
                 # refused 360 candidate pose(s)", and shipped the same
                 # nonsense in JSON_SUMMARY.
+                # #1043: the tether terms' refs and rules count too -- a
+                # decaps-only intent must not report `rules_enforced: []`
+                # while refusing poses on `decap_distance`.
                 'refs_bound': len(set(state._intent_spec)
-                                  | set(state.keepouts_for)),
+                                  | set(state.keepouts_for)
+                                  | set(state._tethers_of)),
                 'rules_enforced': sorted(
                     {t.rule for ref in (set(state._intent_spec)
                                         | set(state.keepouts_for))
-                     for t in state.intent_spec_for(ref)}),
+                     for t in state.intent_spec_for(ref)}
+                    | {t.rule for t in state._tether_terms}),
+            }
+        if state._tether_active:
+            by_rule: Dict[str, int] = {}
+            for t in state._tether_terms:
+                by_rule[t.rule] = by_rule.get(t.rule, 0) + 1
+            metrics_out['tethers'] = {
+                'armed': sorted((intent_gate or {}).get('tethers') or ()),
+                'terms': by_rule,
+                'refs_bound': len(state._tethers_of),
+                'clusters': {n: list(r) for n, r in sorted(clusters.items())},
+                # Past its limit on the WRITTEN poses, per rule: what the
+                # gate held (never worse than the input) made visible.
+                'over_limit_after': _tether_over_limit(state),
             }
         if rigid_info is not None:
             metrics_out['rigid'] = {

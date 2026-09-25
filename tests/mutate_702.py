@@ -120,15 +120,15 @@ ROWS = [
      (T702,), 'KILLED'),
 
     ('delete-the-conjunct-from-the-SWAP-phase', 'q',
-     "                        if (state._intent_active\n"
+     "                        if ((state._intent_active or state._tether_active)\n"
      "                                and not state.swap_intent_ok(ra, rb)):\n",
      "                        if False:\n",
      (T702,), 'KILLED'),
 
     ('the-swap-conjunct-tests-only-one-half', 'q',
      "        return (self.intent_ok(ra, pb.x, pb.y, pb.rot)\n"
-     "                and self.intent_ok(rb, pa.x, pa.y, pa.rot))\n",
-     "        return self.intent_ok(rb, pa.x, pa.y, pa.rot)\n",
+     "                and self.intent_ok(rb, pa.x, pa.y, pa.rot)\n",
+     "        return (self.intent_ok(rb, pa.x, pa.y, pa.rot)\n",
      (T702,), 'KILLED'),
 
     # ---- the monotone rule --------------------------------------------------
@@ -275,7 +275,8 @@ ROWS = [
     # ---- the metrics, which a keep-out-only intent made self-contradictory --
     ('the-metrics-read-zone-terms-only', 'q',
      "                'refs_bound': len(set(state._intent_spec)\n"
-     "                                  | set(state.keepouts_for)),\n",
+     "                                  | set(state.keepouts_for)\n"
+     "                                  | set(state._tethers_of)),\n",
      "                'refs_bound': len(state._intent_spec),\n",
      (T702,), 'KILLED'),
 

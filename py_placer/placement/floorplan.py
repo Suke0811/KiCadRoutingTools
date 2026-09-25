@@ -2364,17 +2364,145 @@ def resolve_intent_gate(intent: Intent, pcb_data,
     # straight back -- against the very U3 case the seeder docstring cites.
     #
     # #1051/#1052/#1054: the declared rows, the fixed poses and the rigid
-    # groups ride in the same bundle as DATA. No engine reads them yet --
-    # `quench` and the seeder `.get` only the keys above, so an intent that
-    # declares these is gated exactly as before until their consumers land.
+    # groups ride in the same bundle as DATA. The quench merges
+    # `rigid_blocks` into its group phase and holds their members out of the
+    # single-part nudge; `arrays` and `fixed_poses` are the seeder's.
+    #
+    # #1043: `tethers` -- the declared limits of the three tether rules the
+    # quench now gates (`decap_distance`, `decap_pin_distance`, `proximity`),
+    # each present only when the intent DECLARES it at error severity. `{}` on
+    # every other intent, and the quench is then bit-identical.
     return ({'rotations': rotations_for_ref(intent, blocks),
              'zones': zones,
              'keepouts': tuple(intent.keepouts),
              'lock_refs': tuple(sorted(lock)),
              'arrays': resolved_arrays(intent, pcb_data),
              'fixed_poses': tuple(dict(f) for f in intent.fixed_poses),
-             'rigid_blocks': rigid_groups(intent, blocks, pcb_data)},
+             'rigid_blocks': rigid_groups(intent, blocks, pcb_data),
+             'tethers': tether_gate_spec(intent)},
             problems)
+
+
+#: The tether rules the quench can gate (#1043), in `INTENT_ENFORCED_RULES`
+#: order. Each is armed by its OWN declared limit.
+TETHER_RULES = ('decap_distance', 'decap_pin_distance', 'proximity')
+
+
+def tether_gate_spec(intent: Intent) -> Dict[str, object]:
+    """The declared tether limits a per-move gate may hold (#1043). Plain data.
+
+    A rule is armed only when the intent declares its limit AND grades it at
+    ERROR -- the currency `grade_delta` and the portfolio's exit gate count.
+    A rule the author demoted to warn is advice; gating the search on it would
+    enforce something the author chose not to. Keys:
+
+      decap_distance      `decaps.max_distance_mm`
+      decap_pin_distance  `decaps.max_pin_distance_mm`
+      proximity           a non-empty `proximity[]`
+    """
+    out: Dict[str, object] = {}
+    d = dict(intent.decaps or {})
+    if (d.get('max_distance_mm') is not None
+            and intent.severity_of('decap_distance') == ERROR):
+        out['decap_distance'] = {
+            'limit': float(d['max_distance_mm']),
+            'radius': float(d.get('search_radius_mm',
+                                  groups_mod.DECAP_RADIUS_MM)),
+            'exempt': tuple(d.get('exempt') or ())}
+    if (d.get('max_pin_distance_mm') is not None
+            and intent.severity_of('decap_pin_distance') == ERROR):
+        out['decap_pin_distance'] = {
+            'limit': float(d['max_pin_distance_mm']), 'decaps': d}
+    if intent.proximity and intent.severity_of('proximity') == ERROR:
+        out['proximity'] = tuple(dict(c) for c in intent.proximity)
+    return out
+
+
+def tether_pairings(tethers: Dict[str, object], pcb_data
+                    ) -> List[Dict[str, object]]:
+    """Every tether the gate holds, ELECTED ONCE on `pcb_data` as it stands.
+
+    Each pairing is the grader's own: `decap_distance` from
+    `groups.decap_populations` at the rule's radius (the election
+    `rule_decap_distance` reads through `_Ctx.decap_populations`), the pins
+    and caps of `decap_pin_distance` from `supply_pins` and `decap_pin_caps`,
+    and a proximity claim's refs as `rule_proximity` resolves them. Frozen
+    here because the grade re-elects on the board it is handed: a quench that
+    re-elected per pose could walk a cap to a DIFFERENT IC and call the move
+    clean. A frozen pairing is conservative -- re-election can only choose a
+    nearer chip carrying the rail.
+
+    What is left out, each graded elsewhere or not pose-dependent:
+      * exempt caps (`decaps.exempt`), as the rules skip them;
+      * orphan caps (no chip carries the rail), which the rule never grades;
+      * INFERRED supply pins (`channel == 'rail_net'`), graded at WARN under
+        their own name `decap_pin_distance_inferred`;
+      * a proximity claim with a missing ref or an unresolved pad name, which
+        is `proximity_unresolved` whatever the poses.
+      * caps a brief's proximity relation SUPERSEDES: the gate has no brief,
+        so it holds them to `decap_distance` as well -- stricter, never looser.
+
+    `decap_distance` pairs outside the radius at election (`graded: False`)
+    are carried too: the grade calls them `decap_ungraded` (warn), and one
+    that walks INTO the radius past the limit becomes an error, which the gate
+    must see.
+    """
+    out: List[Dict[str, object]] = []
+    fps = pcb_data.footprints or {}
+    dd = tethers.get('decap_distance')
+    if dd:
+        near, beyond, _orph = groups_mod.decap_populations(
+            pcb_data, radius=dd['radius'])
+        rows = [(cap, ic, True) for ic in sorted(near)
+                for cap, _d in near[ic]]
+        rows += [(cap, ic, False) for cap, ic, _d in beyond]
+        for cap, ic, graded in sorted(rows):
+            if any(fnmatch.fnmatch(cap, p) for p in dd['exempt']):
+                continue
+            out.append({'rule': 'decap_distance', 'name': f"{cap}->{ic}",
+                        'refs': (cap, ic), 'cap': cap, 'ic': ic,
+                        'graded': graded, 'limit': dd['limit'],
+                        'radius': dd['radius']})
+    dp = tethers.get('decap_pin_distance')
+    if dp:
+        spec = dp['decaps']
+        by_net = _decap_caps_by_net(pcb_data)
+        recs = supply_pins(pcb_data, pin_functions=spec.get('pin_functions'))
+        for ref, rec in sorted(recs.items()):
+            if not rec['pins'] or rec['channel'] == 'rail_net':
+                continue
+            ic_fp = fps.get(ref)
+            if ic_fp is None:
+                continue
+            ic_side = legality.footprint_side(ic_fp)
+            index = {id(p): i for i, p in enumerate(ic_fp.pads)}
+            for pad, net in rec['pins']:
+                _on, caps = decap_pin_caps(spec, ref, ic_side, pad, by_net)
+                if not caps or id(pad) not in index:
+                    continue        # uncovered: a design fact, not a pose
+                cap_refs = tuple(c.reference for c in caps)
+                out.append({'rule': 'decap_pin_distance',
+                            'name': f"{ref}.{pad.pad_number}",
+                            'refs': (ref,) + cap_refs, 'ic': ref,
+                            'pad_index': index[id(pad)], 'net': net,
+                            'caps': cap_refs, 'limit': dp['limit']})
+    for i, claim in enumerate(tethers.get('proximity') or ()):
+        ref, near = str(claim['ref']), str(claim['near'])
+        a_fp, b_fp = fps.get(ref), fps.get(near)
+        if a_fp is None or b_fp is None:
+            continue
+        basis = claim.get('basis', _PROXIMITY_DEFAULT_BASIS)
+        if basis != 'body':
+            subject, partners, _dec = proximity_pads(claim, a_fp, b_fp)
+            spec = claim.get('pads') or {}
+            if not subject or not partners or any(
+                    set(spec.get(w) or ()) - {p.pad_number for p in got}
+                    for w, got in ((ref, subject), (near, partners))):
+                continue
+        out.append({'rule': 'proximity', 'name': f"proximity[{i}]",
+                    'refs': (ref, near), 'claim': dict(claim),
+                    'basis': basis, 'limit': float(claim['max_mm'])})
+    return out
 
 
 def resolved_arrays(intent: Intent, pcb_data) -> Tuple[Dict[str, object], ...]:
@@ -4294,6 +4422,40 @@ def _pin_gap(pin_pad, cap_fp, net_id: int) -> Optional[float]:
     return best
 
 
+def decap_pin_caps(spec: Dict, ref: str, ic_side, pad, by_net
+                   ) -> Tuple[List, List]:
+    """`(on_rail, caps)` for one supply pin of `ref`: every decoupling cap on
+    the pin's net, and the ones the intent's `exempt` / `same_side` leave
+    usable. Lifted out of `rule_decap_pin_distance` (#1043) so the quench's
+    tether gate elects the SAME cap set the rule grades; `by_net` is
+    `_decap_caps_by_net(pcb)`."""
+    exempt = tuple(spec.get('exempt') or ())
+    on_rail = [c for c in by_net.get(pad.net_id, ())
+               if c.reference != ref]
+    caps = [c for c in on_rail
+            if not any(fnmatch.fnmatch(c.reference, pat) for pat in exempt)]
+    if spec.get('same_side'):
+        # A MANUFACTURING claim, never an electrical one: the author is
+        # asserting the back side is not available -- single-sided assembly, a
+        # can or heatsink over it, an enclosure wall. See the docs for what it
+        # costs.
+        caps = [c for c in caps
+                if legality.footprint_side(c) == ic_side
+                or legality.footprint_has_through_pads(c)]
+    return on_rail, caps
+
+
+def nearest_rail_cap(pin_pad, caps) -> Optional[Tuple[float, str]]:
+    """`(gap, cap ref)` -- the minimum `_pin_gap` from a supply pin over
+    `caps`, or None when none carries its net. The number
+    `rule_decap_pin_distance` grades, and the one the quench gate reads
+    (#1043), with the caps at whatever poses their footprints hold."""
+    gaps = [(g, c.reference) for g, c in
+            ((_pin_gap(pin_pad, c, pin_pad.net_id), c) for c in caps)
+            if g is not None]
+    return min(gaps) if gaps else None
+
+
 def drawn_body_rect(geom, fp_obj):
     """`(rect_in_board_coords, source)` for one part's DRAWN body.
 
@@ -4362,6 +4524,35 @@ def _proximity_reach(pad, partners, net_match: bool):
         if best is None or g < best[0]:
             best = (g, q, how)
     return best
+
+
+def proximity_pads(claim: Dict, a_fp, b_fp) -> Tuple[List, List, bool]:
+    """`(subject pads, partner pads, declared)` for one `proximity[]` claim
+    over the two footprints at whatever poses they hold. Lifted out of
+    `rule_proximity` (#1043) so the quench's tether gate measures the pad
+    sets the rule grades."""
+    spec = claim.get('pads') or {}
+    ref, near = str(claim['ref']), str(claim['near'])
+    declared = bool(spec.get(ref))
+    subject = (_pads_named(a_fp, spec[ref]) if declared
+               else list(a_fp.pads or ()))
+    partners = (_pads_named(b_fp, spec[near]) if spec.get(near)
+                else list(b_fp.pads or ()))
+    return subject, partners, declared
+
+
+def proximity_reaches(subject, partners, declared: bool) -> List[Tuple]:
+    """`[(gap, subject pad, partner pad, how)]` -- one per declared subject
+    pad, or ONE for the pair (the minimum) when no pads were declared: the
+    two arities `rule_proximity` grades. Shared with the quench gate (#1043)."""
+    reaches = []
+    for pad in subject:
+        got = _proximity_reach(pad, partners, net_match=declared)
+        if got is not None:
+            reaches.append((got[0], pad, got[1], got[2]))
+    if not declared and reaches:
+        reaches = [min(reaches, key=lambda t: t[0])]
+    return reaches
 
 
 def _arm_decap_pins(ctx) -> Optional[str]:
@@ -4434,12 +4625,10 @@ def rule_decap_pin_distance(ctx) -> Iterator[Violation]:
     if limit is None:
         return
     limit = float(limit)
-    exempt = tuple(spec.get('exempt') or ())
-    same_side = bool(spec.get('same_side'))
-    by_net = _decap_caps_by_net(ctx.pcb)
     sev_inf = ctx.intent.severity_of('decap_pin_distance_inferred',
                                      default=WARN)
     sev_unc = ctx.intent.severity_of('decap_pin_uncovered', default=WARN)
+    by_net = _decap_caps_by_net(ctx.pcb)
     for ref, rec in sorted(ctx.supply_pins().items()):
         if not rec['pins']:
             continue
@@ -4451,19 +4640,7 @@ def rule_decap_pin_distance(ctx) -> Iterator[Violation]:
             # THREE states, not two, and conflating them made the rule LIE.
             # `on_rail` is the ground truth: every decoupling cap carrying this
             # net. `caps` is what the author's constraints leave usable.
-            on_rail = [c for c in by_net.get(pad.net_id, ())
-                       if c.reference != ref]
-            caps = [c for c in on_rail
-                    if not any(fnmatch.fnmatch(c.reference, pat)
-                               for pat in exempt)]
-            if same_side:
-                # A MANUFACTURING claim, never an electrical one: the author is
-                # asserting the back side is not available -- single-sided
-                # assembly, a can or heatsink over it, an enclosure wall. See
-                # the docs for what it costs.
-                caps = [c for c in caps
-                        if legality.footprint_side(c) == ic_side
-                        or legality.footprint_has_through_pads(c)]
+            on_rail, caps = decap_pin_caps(spec, ref, ic_side, pad, by_net)
             if not caps:
                 if not on_rail:
                     # Genuinely uncovered: no decoupling cap on this net
@@ -4493,12 +4670,10 @@ def rule_decap_pin_distance(ctx) -> Iterator[Violation]:
                 uncovered_rails.setdefault(
                     net, (pad.pad_number, len(on_rail), excluded))
                 continue
-            gaps = [(g, c.reference) for g, c in
-                    ((_pin_gap(pad, c, pad.net_id), c) for c in caps)
-                    if g is not None]
-            if not gaps:
+            got = nearest_rail_cap(pad, caps)
+            if got is None:
                 continue
-            gap, who = min(gaps)
+            gap, who = got
             if gap <= limit + legality.EPS:
                 continue
             cap_fp = ctx.pcb.footprints.get(who)
@@ -4767,11 +4942,7 @@ def rule_proximity(ctx) -> Iterator[Violation]:
                 expected={'max_mm': limit})
             continue
 
-        declared = bool(spec.get(ref))
-        subject = (_pads_named(a_fp, spec[ref]) if declared
-                   else list(a_fp.pads or ()))
-        partners = (_pads_named(b_fp, spec[near]) if spec.get(near)
-                    else list(b_fp.pads or ()))
+        subject, partners, declared = proximity_pads(claim, a_fp, b_fp)
         # A NAME that matches nothing is unresolved, not clean -- and it is
         # reported PER NAME, not only when every name misses. The first
         # version fired on `not got`, so `pads: {'Y1': ['2', '7']}` graded
@@ -4831,19 +5002,13 @@ def rule_proximity(ctx) -> Iterator[Violation]:
         # board: reporting only the worst turned three failing pads into two
         # findings. With no declared pads there is no pin to name, so the
         # part-adjacency arity reports once.
-        reaches = []
-        for pad in subject:
-            got = _proximity_reach(pad, partners, net_match=declared)
-            if got is not None:
-                reaches.append((got[0], pad, got[1], got[2]))
         # No `if not reaches` arm: `partners` is proven non-empty by the guard
         # above and `_proximity_reach` falls back to it, so it never returns
         # None here. An arm that cannot run is not a safety net -- it is a
         # claim about the code that no test can check, and this one survived
         # being replaced by `raise AssertionError`.
-        if not declared:
-            reaches = [min(reaches, key=lambda t: t[0])]
-        for gap, pad, partner, how in reaches:
+        for gap, pad, partner, how in proximity_reaches(subject, partners,
+                                                         declared):
             net = pad.net_name or ''
             # RECORDED BEFORE the pass/fail branch, so a clause that HOLDS
             # publishes its number too (#894). The `continue` below is what

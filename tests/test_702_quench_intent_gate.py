@@ -838,15 +838,23 @@ def arm_R_metrics_see_keepouts(wd):
 def arm_M_enforced_tuple(wd):
     """The enforced set is pinned in BOTH directions."""
     print("--- M: INTENT_ENFORCED_RULES, pinned both ways")
-    expect = {'zone_containment', 'zone_exclusive', 'keepout'}
-    check("the engine enforces exactly the three declared rules",
+    # #1043 added the three TETHER rules, gated through their own channel
+    # (`QuenchState._tether_terms`), each armed by its own declared limit.
+    expect = {'zone_containment', 'zone_exclusive', 'keepout',
+              'decap_distance', 'decap_pin_distance', 'proximity'}
+    check("the engine enforces exactly the six declared rules",
           set(INTENT_ENFORCED_RULES) == expect,
           f"{sorted(INTENT_ENFORCED_RULES)}")
-    # Every enforced rule must be reachable by an arm above, or the tuple is
-    # advertising something no test exercises.
+    # Every enforced rule must be reachable by an arm, or the tuple is
+    # advertising something no test exercises. The tether rules' arms live
+    # beside the tether channel, in tests/test_1051_quench_blocks.py.
+    tethers = 'test_1051_quench_blocks.py'
     covered = {'zone_containment': 'A/E', 'zone_exclusive': 'K',
-               'keepout': 'B/D/J/P'}
-    check("every enforced rule has an arm in this file",
+               'keepout': 'B/D/J/P',
+               'decap_distance': f'{tethers} strand + equal_the_grader',
+               'decap_pin_distance': f'{tethers} equal_the_grader',
+               'proximity': f'{tethers} equal_the_grader'}
+    check("every enforced rule has an arm",
           set(covered) == set(INTENT_ENFORCED_RULES),
           ", ".join(f"{r}:{a}" for r, a in sorted(covered.items())))
     # And they are all real floorplan rules, not invented names.

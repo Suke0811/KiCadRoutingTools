@@ -341,8 +341,7 @@ def _elect_tethers(pcb_data, movable=None):
             # went ungraded instead of flagged.
             if not (power & ic_nets.get(c.reference, set())):
                 continue
-            x0, y0, x1, y1 = c.bounds
-            d = math.hypot(max(x0 - cx, cx - x1, 0.0), max(y0 - cy, cy - y1, 0.0))
+            d = _point_to_bounds((cx, cy), c.bounds)
             if best_d is None or d < best_d:
                 best, best_d = c.reference, d
         # A second `nets & ic_nets[best]` recheck used to stand here, commented
@@ -355,6 +354,35 @@ def _elect_tethers(pcb_data, movable=None):
         # what the loop above does.
         out.append((ref, best, best_d))
     return out
+
+
+def _point_to_bounds(pt, bounds) -> float:
+    """The election's distance: a point to a chip's pad bbox (0 inside)."""
+    cx, cy = pt
+    x0, y0, x1, y1 = bounds
+    return math.hypot(max(x0 - cx, cx - x1, 0.0), max(y0 - cy, cy - y1, 0.0))
+
+
+def chip_bounds_of(fp):
+    """The bounds `_chip_list` gives this ONE footprint at the pose it holds,
+    or None when it has no pads. Through `build_chip_list` itself, so a
+    caller measuring a footprint the election has not seen (#1043: the
+    quench, at a pose it is only considering) reads the election's margin."""
+    from types import SimpleNamespace
+    from chip_boundary import build_chip_list
+    got = build_chip_list(SimpleNamespace(footprints={'_': fp}), min_pads=1)
+    return got[0].bounds if got else None
+
+
+def tether_distance(cap_fp, ic_fp) -> Optional[float]:
+    """The distance `_elect_tethers` measures from a cap to an IC, for the two
+    footprints at whatever poses they hold -- the cap's pad centroid to the
+    IC's inflated pad bbox, 0 inside. `rule_decap_distance` grades this
+    number; the #1043 quench gate calls this rather than re-deriving it."""
+    bounds = chip_bounds_of(ic_fp)
+    if bounds is None:
+        return None
+    return _point_to_bounds(_centroid(cap_fp), bounds)
 
 
 def decap_tethers(pcb_data, movable=None,

@@ -367,9 +367,11 @@ def test_the_gate_bundle_carries_the_new_data():
     plain, _ = fp.resolve_intent_gate(fp.intent_from_dict(_base()), _pcb(),
                                       ())
     assert plain['arrays'] == () and plain['fixed_poses'] == () \
-        and plain['rigid_blocks'] == {}
+        and plain['rigid_blocks'] == {} and plain['tethers'] == {}
+    # #1043 (phase 4) added `tethers`: the declared tether limits, `{}` when
+    # none is declared.
     assert set(plain) == {'rotations', 'zones', 'keepouts', 'lock_refs',
-                          'arrays', 'fixed_poses', 'rigid_blocks'}
+                          'arrays', 'fixed_poses', 'rigid_blocks', 'tethers'}
     print("  PASS: resolve_intent_gate carries arrays, fixed_poses and "
           "rigid_blocks as data")
 

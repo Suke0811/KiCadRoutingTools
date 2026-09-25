@@ -745,9 +745,14 @@ def arm_N_enforced_rules_covered(wd):
     """Every rule the engine claims to enforce is exercised here, and the
     vocabulary is read FROM the engine so a new rule cannot be forgotten."""
     print("--- N: the enforced-rule vocabulary is pinned both ways")
-    check("INTENT_ENFORCED_RULES is the expected three",
+    # #1043 made it six: the three tether rules joined the quench's gate.
+    # The re-seat's IntentProbe still measures the three zone/keep-out rules
+    # only, so arm L's probe-vs-grade comparison runs on a fixture that
+    # declares no tether (its intent has no decaps and no proximity).
+    check("INTENT_ENFORCED_RULES is the expected six",
           set(INTENT_ENFORCED_RULES) == {'zone_containment', 'zone_exclusive',
-                                         'keepout'},
+                                         'keepout', 'decap_distance',
+                                         'decap_pin_distance', 'proximity'},
           str(INTENT_ENFORCED_RULES))
     check("every enforced rule is a real floorplan rule",
           all(r in dict(floorplan.RULES) for r in INTENT_ENFORCED_RULES),
