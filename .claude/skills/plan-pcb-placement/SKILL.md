@@ -762,29 +762,32 @@ order:
        --intent floorplan.json [--seed N]
    ```
 
-   **The seeder places the RESIDUE, not the decisions.** It is a greedy
-   first-fit: it packs declared zones, drops everything else at its
-   connectivity centroid, and keeps the first rotation that fits. That is a
-   good way to arrange the many small parts and it has no representation at
-   all for a decision — which edge a connector belongs on is declarable, but
-   *where along it* and *which way the mating face points* are not, so the
-   seeder takes the band's midpoint at the part's incoming angle, which on a
-   pile is a generator default. Measured on a 21-part 2-layer board: both
-   free connectors came out at rotation 0, and one of them put its declared
-   band's midpoint through a fixed socket's ground tab on every one of ten
-   seeds.
-
-   So **place and lock the decisions first** — the connectors, the
-   mechanically-fixed parts, anything a spec pins (Step 0a-0 and the driver's
-   P2 enumerate them; `place_pose set/rotate/lock` is the verb) — and seed
-   what is left. The driver's P1 enforces both halves: it refuses without a
-   ZONE PLAN (`--zone-plan`, an intent with a `zone` rectangle and a `note`
-   on a block for every movable part), and it refuses to let the seeder
-   choose a declared edge connector's pose unless that hand-over is on the
-   record (`--waive seed-connectors:<why>`). Run 26 seeded from one zone and
-   then hand-placed most of its parts; the plan is where the arrangement is
-   decided, and the seed only fills it — and P1 ranks SEVERAL seeds from it
-   with `compare_seeds.py` (next) rather than taking the first.
+   **The seeder places the RESIDUE, not the decisions.** A greedy first-fit:
+   it packs declared zones, drops everything else at its connectivity
+   centroid, keeps the first rotation that fits, and seats only what the plan
+   DECLARES — a connector's edge, not *where along it* or *which way it faces*
+   (measured: both free connectors at rotation 0, one through a fixed
+   socket's ground tab on ten of ten seeds). So **place and lock the
+   decisions first** (Step 0a-0 and the driver's P2 enumerate them;
+   `place_pose set/rotate/lock` is the verb). A mechanically-fixed part may
+   instead carry a `fixed_poses` entry (a `pose` on the brief's `fixed` row,
+   or `mechanical.json` via `--emit-intent`): stage 0 seats it at exactly that
+   pose, refuses rather than nudges an illegal one, and locks it. Then
+   **declare the arrays**: `check_floorplan.py BOARD --suggest-arrays` lists
+   rows of identical parts on one part's pins or rail, pose-blind, with
+   evidence. Accept or decline EACH with a written reason, into the brief's
+   `arrays` or the plan's (`"unknown"` is a legal order or rotation). A
+   bank BRIDGING two big parts (level shifters between an FPGA and its
+   connectors) comes back under `declined`: declare it by hand if it
+   is one row; multi-row blocks are not supported. Stage 2.45 seats each as
+   one row and the quench moves it as a rigid group (a member leaves only by
+   a disclosed release, `rigid_released`); `blocks[].rigid: true` opts a
+   block in. Then seed the rest. P1 refuses without a ZONE PLAN (`--zone-plan`,
+   a `zone` and a `note` on a block for every movable part), and refuses to
+   let the seeder choose a declared edge connector's pose unless that is on
+   the record (`--waive seed-connectors:<why>`): run 26 seeded from one zone
+   and then hand-placed most of its parts. P1 ranks SEVERAL seeds from the
+   plan with `compare_seeds.py` (next) rather than taking the first.
 
    **Check the plan before the first seed** (#959): `check_floorplan.py
    BOARD --intent PLAN --plan-only` needs no placed board. It prints the
@@ -792,36 +795,37 @@ order:
    can satisfy the plan (members that cannot fit their zone within the
    overlap budget the plan DECLARES, a part longer than its edge, an
    exclusive zone a member cannot avoid, a real reference used as a glob
-   that lands a part in two disjoint zones), and WARNs for the same quantities with a
-   margin. P1 refuses every ERROR. `place_seed` refuses only the area,
-   edge and glob ones, at exit 5 with nothing written; for the rest it seeds
-   and names the member it could not seat. P1 also counts every footprint
-   BLOCK, pad-less logos included. Lock a pad-less block in the board, or
-   name it under `refs` in the plan's `dispositions` with a reason; one that
-   sits in a zoned block must be locked, or taken out of that block's
-   `refs` if it draws no courtyard. A rule the plan leaves dark, where the
-   board says it applies, is armed or answered under `rules` there. A plan
-   that drops or contradicts a design-brief clause is refused by clause id,
-   and `--waive brief-clause:<id>:<why>` answers it. A `mechanical.json`
-   beside the board is read: each of its refs that carries pads must be
-   locked at its recorded pose, unless its value lost a contradiction; a
-   pad-less one is refused only if it has drifted from that pose; and a
-   contradiction between two recorded channels is answered under
+   that lands a part in two disjoint zones), and WARNs for the same
+   quantities with a margin. P1 refuses every ERROR; `place_seed` refuses
+   the area, edge and glob ones at exit 5, writing nothing, and seeds the
+   rest, naming the member it could not seat. P1 counts every footprint
+   BLOCK: lock a pad-less one, or name it under the plan's `dispositions`
+   `refs` with a reason (in a zoned block it must be locked, or leave the
+   block's `refs` if it draws no courtyard). A rule left dark where the board
+   says it applies is armed or answered under `rules`. A dropped or
+   contradicted brief clause is refused by id (`--waive
+   brief-clause:<id>:<why>` answers it). Each pad-carrying ref of a
+   `mechanical.json` beside the board must be locked at its recorded pose,
+   unless its value lost a contradiction or the plan's `fixed_poses[]` names
+   it, unlocked, at that pose; a pad-less one is refused only if it drifted;
+   a contradiction between two recorded channels is answered under
    `contradictions`. Every refusal names its measured values and the key
    that answers it. Answer with a fact, never an invented limit.
 
-   The seeder turns the intent's constructs into placement (edge bands →
-   edge poses, single-ref zones → the spec coordinate, multi-ref zones →
-   a packed block, everything else → its connectivity centroid), stamps
-   `must_lock` refs `(locked yes)`, polishes, and **grades its own output
-   against the same intent** — exit 4 means the seed does not satisfy the
-   intent it was built from, and says which rule broke; exit 5 means the
-   PLAN was refused before anything was written, so fix the plan, not the
-   seed. Rotations: the input
-   rotation is kept when it fits, with a noted 90° lattice fallback when it
-   does not; a part whose rotation is a DECISION (pin order) must be locked —
-   the intent schema cannot express one, and an unlocked load-bearing
-   rotation was never protected from the quench either. Explore a LOCKED
+   The seeder turns the intent's constructs into placement (fixed poses →
+   exact seats, edge bands → edge poses, single-ref zones → the spec
+   coordinate, multi-ref zones → a packed block, arrays → rows, everything
+   else → its connectivity centroid), stamps `must_lock` and fixed-pose refs
+   `(locked yes)`, polishes, and **grades its own output against the same
+   intent** — exit 4 means the seed does not satisfy the intent it was built
+   from, and says which rule broke; exit 5 means the PLAN was refused before
+   anything was written, so fix the plan, not the seed. Its `JSON_SUMMARY`
+   says what it did: `fixed_seated` / `fixed_refused`, `arrays_formed`
+   (graded at the written poses) / `array_unseated`, `decap_stage`.
+   Rotations: the input rotation is kept when it fits, with a noted 90°
+   lattice fallback; a rotation that is a DECISION (pin order) is DECLARED —
+   a block's `rotation` (the quench's gate holds it), an array's (its rigid
+   group only translates), a fixed pose's `rot` (its lock). Explore a LOCKED
    part's rotation with Step 0a-bis arithmetic (below) — **the portfolio's
    `poses` strategy never perturbs locked refs, so it cannot explore exactly
    the rotations the lock protects** (measured, run 7: five poses iterations
@@ -1094,24 +1098,20 @@ wide around the spec coordinate. Then `check_floorplan --intent` **fails** the
 moment an iteration walks one, which is the mechanism a spec-conformant board
 needs and prose does not provide.
 
-**4. Scope `decaps` to the caps the requirement names, and lock those too.**
-The quench has no decap-proximity term, so it walks a *different* cap past the
-limit every run — lock one and the next moves. Locking them one at a time is
-whack-a-mole; lock the named set at once. Measured, that cost `crossings`
-52 → 60, and **that is the correct trade, not a regression**: a spec-conformant
-placement that routes slightly worse beats a spec-violating one that routes well.
+**4. Scope `decaps` to the caps the requirement names.** At error severity
+the quench holds the limit on every run handed the intent (#1043, Step 0e);
+without it, lock the named set at once. A spec-conformant placement that
+routes slightly worse beats a spec-violating one that routes well.
 
 **Do not** lock a part the spec does not fix, "to be safe". A wrong lock freezes
 a part that needed to move and the failure is invisible — which is the same
 reason nothing is auto-locked.
 
-**Then RE-SEAT the locked cluster instead of leaving it frozen.** Locking is the
-right answer to "the quench walks a different cap out every run"; it is the
-wrong answer to "these parts are in the wrong places". `py_placer/placement/reseat.py`
-gives the second one without giving up the first: it re-assigns a cluster's
-members among slots generated *around the anchor's own pins*, so every candidate
-satisfies the proximity rule by construction, and it accepts only when the
-cluster's exact objective improves.
+**Then RE-SEAT a misplaced cluster instead of freezing it.** Holding caps near
+their IC does not put them in the right places; `py_placer/placement/reseat.py`
+re-assigns a cluster's members among slots generated *around the anchor's own
+pins*, so every candidate satisfies the proximity rule by construction, and it
+accepts only when the cluster's exact objective improves.
 
 ```python
 import sys; sys.path.insert(0, 'py_placer')
@@ -1553,20 +1553,20 @@ the substring `SUSPECT`.
 it connects to, and what crosses each declared bus corridor. Advisory — they say
 the floorplan will fight the router, not that it breaks your intent.
 
-### Scope `decaps` to the caps the requirement names, then LOCK them
+### Scope `decaps` to the caps the requirement names, and pass the intent
 
 A spec clause like *"100nF within 3mm of every VDD pin"* names **one BOM line**,
 not every capacitor. Read the MPNs off the board and exempt the rest —
 bulk electrolytics, crystal loads, a regulator network — in `decaps.exempt`,
 citing the line item. That is scoping the rule to what it says, not relaxing it.
 
-Then **lock the caps it does govern**. The quench has **no decap-proximity
-term**, so any decap it may move can drift past the limit for a fraction of a
-millimetre of wirelength, and it is a different cap every run — measured, one
-cap on the first run and two different ones on the next. Locking them one at a time is
-whack-a-mole. Their proximity *is* the requirement; their exact position is not
-the optimizer's to trade. Expect to pay for it: locking ten decaps there took
-crossings from 52 to 60. That is the correct trade, not a regression.
+The quench HOLDS what the intent declares (#1043): `decaps.max_distance_mm`,
+`decaps.max_pin_distance_mm` and `proximity[]`, each at error severity, are
+gated per move by the grader's own measurement — a tether within its limit
+stays within, one past it gets no worse — and with a decap limit armed an IC
+moves with its caps as one group. Only a run handed that `--intent` sees it: without one, a cap drifts
+past the limit for a fraction of a millimetre of wirelength, a different cap
+every run (measured), and locking them was the old answer.
 
 ### Board features that live ON the outline
 
