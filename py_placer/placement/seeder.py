@@ -1161,20 +1161,44 @@ def seat_candidates(state, tx: float, ty: float, *,
     `sweep` is False for a zone-constrained search (a part stays in its
     zone); `max_disp` (a capped repair) never sweeps the whole board either.
     """
+    for _name, band in seat_candidate_bands(state, tx, ty, max_disp=max_disp,
+                                            sweep=sweep):
+        yield from band()
+
+
+def seat_candidate_bands(state, tx: float, ty: float, *,
+                         max_disp: Optional[float] = None,
+                         sweep: bool = True):
+    """`[(name, band)]`: `seat_candidates`' bands, each a zero-argument
+    callable yielding its positions lazily -- 'ring' (1.0mm), 'fine',
+    'xfine', then 'sweep' when it applies. `seat_candidates` chains them in
+    that order; the row seat (`_seat_block`) walks the SAME bands in its own
+    order, so the offsets are shared and only the order differs."""
+    out = []
     xfine = max(0.05, getattr(state, 'grid_step', 0.1) or 0.1)
-    for radius, step in ((SEARCH_RADIUS_MM, SEARCH_STEP_MM),
-                         (SEARCH_FINE_RADIUS_MM, SEARCH_FINE_STEP_MM),
-                         (SEARCH_XFINE_RADIUS_MM, xfine)):
+    for name, radius, step in (('ring', SEARCH_RADIUS_MM, SEARCH_STEP_MM),
+                               ('fine', SEARCH_FINE_RADIUS_MM,
+                                SEARCH_FINE_STEP_MM),
+                               ('xfine', SEARCH_XFINE_RADIUS_MM, xfine)):
         if max_disp is not None and max_disp < step - 1e-9:
             # run-7 A3: a ring whose step exceeds the cap can contribute
             # nothing but used to burn a full sweep
             continue
-        for dx, dy in _ring_offsets(radius, step):
-            if max_disp is not None and math.hypot(dx, dy) > max_disp + 1e-9:
-                continue
-            yield round(tx + dx, 3), round(ty + dy, 3)
-    if not sweep or max_disp is not None:
-        return
+
+        def _ring(radius=radius, step=step):
+            for dx, dy in _ring_offsets(radius, step):
+                if (max_disp is not None
+                        and math.hypot(dx, dy) > max_disp + 1e-9):
+                    continue
+                yield round(tx + dx, 3), round(ty + dy, 3)
+        out.append((name, _ring))
+    if sweep and max_disp is None:
+        out.append(('sweep', lambda: _sweep_positions(state, tx, ty)))
+    return out
+
+
+def _sweep_positions(state, tx: float, ty: float):
+    """The whole-board sweep at FALLBACK_STEP_MM, nearest the target first."""
     u = state.usable
     grid = []
     nx = max(1, int((u[2] - u[0]) / FALLBACK_STEP_MM))
@@ -3053,11 +3077,12 @@ def _seat_block(state, members: Sequence[str], rot_options: Sequence[float],
     """Seat `members` as ONE row (#1051): a common axis, `members` order, one
     rotation, one pitch. Applies the moves on success.
 
-    Rotation-MAJOR, like `_try_place`'s ladder: for each rung of
-    `seat_clearances`, each rotation in `rot_options` (the first that fits
-    anywhere wins, as a single part's does), each axis in `axes`, the row's
-    centre walks `seat_candidates` around `target` -- the SAME offsets a
-    single part walks. At each anchor the members are checked in order with
+    For each rung of `seat_clearances`, BAND-major over the SAME offsets a
+    single part walks (`seat_candidate_bands`: the 1mm ring, then the
+    whole-board sweep, then the fine and grid-step rings), and within each
+    band rotation-major: each rotation in `rot_options`, each axis in
+    `axes`, the row's centre walks the band around `target`. (Why band-
+    major rather than a single part's per-angle order: see the loop.) At each anchor the members are checked in order with
     `pose_ok` and the pose is abandoned at the first that fails (EARLY EXIT).
     Every member's check EXCLUDES its unplaced siblings (they are in
     `exclude`, as the pile always is), so no member vetoes another at its
@@ -3089,29 +3114,49 @@ def _seat_block(state, members: Sequence[str], rot_options: Sequence[float],
     for rot in rot_options:
         for m in members:
             _materialise_rotation(state.parts[m], rot)
+    # The (rotation, axis) combos, rotation-major, each with its order,
+    # offsets and pitch -- or skipped once by the pitch pre-check.
+    def _combos(clr):
+        got = []
+        for rot in rot_options:
+            for axis in axes:
+                ext = _row_extent(state, members, rot, axis)
+                pitch = (math.ceil((ext + full + ROW_PITCH_MARGIN_MM)
+                                   * 100.0 - 1e-6) / 100.0
+                         if pitch_spec == 'auto' else float(pitch_spec))
+                if pitch - ext < clr + 1e-6:
+                    why = (f"pitch {pitch:g}mm is below the courtyard "
+                           f"extent {ext:.3f}mm + clearance {clr:g} along "
+                           f"{axis} at {rot:g}deg")
+                    if why not in reasons:
+                        reasons.append(why)
+                    continue
+                order = list(members)
+                if reverse_for is not None and reverse_for(axis, order):
+                    order.reverse()
+                got.append((rot, axis, pitch, order,
+                            _row_offsets(state, order, rot, axis, pitch)))
+        return got
+
+    bands = dict(seat_candidate_bands(state, target[0], target[1],
+                                      sweep=constraint is None))
     try:
         for clr in seat_clearances(full):
             _set_seat_clearance(state, clr)
-            for rot in rot_options:
-                for axis in axes:
-                    ext = _row_extent(state, members, rot, axis)
-                    pitch = (math.ceil((ext + full + ROW_PITCH_MARGIN_MM)
-                                       * 100.0 - 1e-6) / 100.0
-                             if pitch_spec == 'auto' else float(pitch_spec))
-                    if pitch - ext < clr + 1e-6:
-                        why = (f"pitch {pitch:g}mm is below the courtyard "
-                               f"extent {ext:.3f}mm + clearance {clr:g} along "
-                               f"{axis} at {rot:g}deg")
-                        if why not in reasons:
-                            reasons.append(why)
-                        continue
-                    order = list(members)
-                    if reverse_for is not None and reverse_for(axis, order):
-                        order.reverse()
-                    offs = _row_offsets(state, order, rot, axis, pitch)
-                    for ax, ay in seat_candidates(
-                            state, target[0], target[1],
-                            sweep=constraint is None):
+            combos = _combos(clr)
+            # BAND-major: the coarse ring at every angle and axis, then the
+            # whole-board sweep, then the fine rings. A single part walks
+            # ring -> fine -> xfine -> sweep at ONE angle before the next;
+            # a row that did the same spent the whole pose cap on its first
+            # angle's 16k-position fine ring (splitflap U4:47k, 7 members,
+            # capped at 20000 once 2.4 seated the bigger parts first). The
+            # fine rings exist for sub-mm windows a single part can use; a
+            # row needs a strip, which the coarse bands find.
+            for bname in ('ring', 'sweep', 'fine', 'xfine'):
+                if bname not in bands:
+                    continue
+                for rot, axis, pitch, order, offs in combos:
+                    for ax, ay in bands[bname]():
                         if tried >= cap:
                             out['capped'] = True
                             out['poses_tried'] = tried
@@ -3131,9 +3176,8 @@ def _seat_block(state, members: Sequence[str], rot_options: Sequence[float],
                                       state.parts[m].rot) for m in order}
                         for m, x, y in poses:
                             state.apply_move(m, x, y, rot)
-                        seated_excl = exclude - set(order)
-                        if all(pose_ok(state, m, x, y, rot, seated_excl)
-                               for m, x, y in poses):
+                        if _siblings_ok(state, poses, rot,
+                                        exclude - set(order)):
                             out.update(ok=True, poses_tried=tried, rot=rot,
                                        axis=axis, pitch_mm=pitch,
                                        anchor=[ax, ay], order=order,
@@ -3147,6 +3191,15 @@ def _seat_block(state, members: Sequence[str], rot_options: Sequence[float],
     if not reasons:
         reasons.append('no anchor seats every member')
     return out
+
+
+def _siblings_ok(state, poses, rot: float, exclude: Set[str]) -> bool:
+    """The row's re-check with its siblings SEATED: every member `pose_ok`
+    at its applied pose against the rest of the row. The per-member check
+    during the walk excludes the unplaced siblings, so this is the only
+    place sibling pads and courtyards meet; `_seat_block` reverts the row
+    and walks on when it fails."""
+    return all(pose_ok(state, m, x, y, rot, exclude) for m, x, y in poses)
 
 
 def _formation_at(state, pcb_data, spec: Dict, members: Sequence[str]
