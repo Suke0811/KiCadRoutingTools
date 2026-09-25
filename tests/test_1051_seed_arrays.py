@@ -88,10 +88,10 @@ def _intent(doc, td, name='intent.json'):
     return fp.load_intent(path), path
 
 
-def _seed(board, intent, seed='0', **kw):
+def _seed(board, intent, seed='0', clearance=CLEARANCE, **kw):
     pcb = parse_kicad_pcb(board)
     res = seeder.seed_from_intent(pcb, board, intent, random.Random(seed),
-                                  group_sources=SOURCES, clearance=CLEARANCE,
+                                  group_sources=SOURCES, clearance=clearance,
                                   **kw)
     return pcb, res
 
@@ -391,10 +391,13 @@ def test_early_seat_scope_keeps_the_parts_the_control_seats():
     unarmed control on the same seeds; `tier_first` counts them."""
     with tempfile.TemporaryDirectory() as td:
         got = {}
-        # tigard 0 and 10: the seeds where the pin tier ALONE strands holes
-        # the control seats (3 against 0), so only the size rule passes.
-        for board, seeds in ((ESP, range(4)), (os.path.join(
-                BOARDS, 'tigard.kicad_pcb'), (0, 10))):
+        # tigard 0 and 10 at the seeder's default clearance (0.25) and
+        # integer rng seeds -- the verifier's measurement (verify3/
+        # strand.py; `Random(0)` and `Random('0')` are different streams): the seeds where the pin tier ALONE strands
+        # holes the control seats (3 against 0), so only the size rule
+        # passes.
+        for board, seeds, clr in ((ESP, range(4), CLEARANCE), (os.path.join(
+                BOARDS, 'tigard.kicad_pcb'), (0, 10), 0.25)):
             doc = fp.emit_intent(parse_kicad_pcb(board), board,
                                  derive_decaps=True)
             off = dict(doc, decaps={})
@@ -402,8 +405,8 @@ def test_early_seat_scope_keeps_the_parts_the_control_seats():
             off_i, _p = _intent(off, td, 'off.json')
             tot_on = tot_off = 0
             for s in seeds:
-                _p1, on = _seed(board, on_i, seed=str(s))
-                _p2, ctl = _seed(board, off_i, seed=str(s))
+                _p1, on = _seed(board, on_i, seed=s, clearance=clr)
+                _p2, ctl = _seed(board, off_i, seed=s, clearance=clr)
                 assert on['decap_stage']['tier_first'] > 0, on['decap_stage']
                 assert on['decap_stage']['claimed'] > 0, on['decap_stage']
                 tot_on += len(on['unseated'])
