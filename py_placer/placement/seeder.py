@@ -4324,6 +4324,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # reports it. ARMED ONLY when the intent declares `decaps.max_distance_mm`
     # or `arrays`; otherwise this is skipped and the seed is bit-identical.
     served_first: List[str] = []
+    tier_first: List[str] = []
     if decap_spec.get('max_distance_mm') is not None or arrays_resolved:
         from placement import groups as _g24
         _chips24 = _g24.chip_refs(pcb_data) if decap_owner_chips else None
@@ -4334,17 +4335,36 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         # an ordinary part and keeps its stage-3 turn.
         want24.update(str(a['serves']) for a in array_try
                       if a.get('serves') not in (None, 'unknown'))
+        served = set(want24)
+        # ...and, when the pin stage will run, every part that OUTRANKS the
+        # caps' own tier in stage 3's order (more pins than any scoped cap).
+        # Stage 3 would have seated all of them before any cap anyway; what
+        # 2.5 changes is only where a cap goes and its precedence among its
+        # PEERS. Seating the owners alone let the caps claim space ahead of
+        # larger parts, and measured (tests/measure_792_seeding.py) that
+        # stranded esp_prog's 7-pin CON2, which the control seats. Row
+        # members are left to their row (2.45).
+        if decap_scope:
+            tier = max(state.parts[c].pin_count for c in decap_scope)
+            want24.update(r for r in unplaced
+                          if r not in held and r not in array_members
+                          and state.parts[r].pin_count > tier)
         for ref in _order(sorted(r for r in want24 if r in state.parts)):
             clr, _t, _jx, _jy = _centroid_seat(ref)
             if clr is not None:
-                served_first.append(ref)
+                if ref in served:
+                    served_first.append(ref)
+                else:
+                    tier_first.append(ref)
             else:
                 notes.append(f"{ref}: stage 2.4 (served ICs first) found no "
                              f"seat -- left to the centroid stage")
-        if served_first:
+        if served_first or tier_first:
             notes.append(f"stage 2.4: seated {len(served_first)} served "
-                         f"IC(s) before the decap/array stages: "
-                         + ', '.join(served_first))
+                         f"IC(s) before the decap/array stages ("
+                         + ', '.join(served_first) + f"), and "
+                         f"{len(tier_first)} other part(s) that outrank the "
+                         f"caps' tier")
 
     # ---- 2.45 declared arrays: each seated as ONE row (#1051) ---------------
     # After 2.4, so a row's served IC is placed and the row can aim at the
@@ -4606,6 +4626,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                        'put_back': len(decap_put_back),
                        'pins': decap_pins, 'reason': _why,
                        'served_first': list(served_first),
+                       'tier_first': len(tier_first),
                        'array_members_skipped': list(decap_array_skipped)}
         if decap_scope and not decap_claimed:
             notes.append(f"decap stage 2.5: {len(decap_scope)} cap(s) in "
