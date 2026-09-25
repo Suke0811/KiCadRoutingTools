@@ -3194,11 +3194,12 @@ def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],
     * DIRECTION: along the chosen axis the order is flipped when the first
       member's served pins lie further along the axis than the last's, so
       the row runs the way the pins do.
-    * TARGET: the centroid of the served part's pads the members reach by
-      their OWN nets (a net every member shares is a rail, and lands on
-      every supply pin); with no placed host, the mean of the members'
-      `_partner_centroid`s; else the board centre. A zoned row's target is
-      clamped into its zone, and the whole row must sit in it.
+    * TARGET: the mean of the members' `_partner_centroid`s (every placed
+      partner, host and far side alike); with none, the centroid of the
+      served part's pads the members reach by their OWN nets (a net every
+      member shares is a rail, and lands on every supply pin); else the
+      board centre. A zoned row's target is clamped into its zone, and the
+      whole row must sit in it.
     """
     from . import arrays as arr
     name = spec['name']
@@ -3252,14 +3253,22 @@ def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],
             if pts:
                 host_pin[m] = (sum(p[0] for p in pts) / len(pts),
                                sum(p[1] for p in pts) / len(pts))
-    if host_pin:
+    # The target is the mean of the members' `_partner_centroid`s -- ALL
+    # their placed partners, the host pins AND each member's far side --
+    # which is what a member seated alone would aim at. The host pins alone
+    # (the first form) pulled the row off its far-side nets: on glasgow the
+    # airwire length on the members' nets rose 3264 -> 3718mm (phase-3
+    # verifier). The host pins still decide the AXIS and the DIRECTION.
+    cs = [c for c in (_partner_centroid(state, m, placed) for m in members)
+          if c is not None]
+    if cs:
+        tx = sum(c[0] for c in cs) / len(cs)
+        ty = sum(c[1] for c in cs) / len(cs)
+    elif host_pin:
         tx = sum(p[0] for p in host_pin.values()) / len(host_pin)
         ty = sum(p[1] for p in host_pin.values()) / len(host_pin)
     else:
-        cs = [c for c in (_partner_centroid(state, m, placed) for m in members)
-              if c is not None]
-        tx, ty = ((sum(c[0] for c in cs) / len(cs),
-                   sum(c[1] for c in cs) / len(cs)) if cs else center)
+        tx, ty = center
     constraint, tol = None, 0.5
     if zone is not None:
         constraint, tol = zone.rect, intent.zone_tolerance(zone)
