@@ -4799,10 +4799,13 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         # `held` (#1054): a REFUSED fixed pose stays in `unplaced` so its
         # pile coordinate never vetoes a seat, and must not become an anchor
         # -- this queue is built from `unplaced` directly, not `_order`.
+        # Ties broken by ref: `unplaced` is a SET, and equal-extent parts
+        # (identical footprints, the common case) otherwise came out in
+        # string-hash order -- a different seed per PYTHONHASHSEED.
         anchors = sorted((r for r in unplaced
                           if r not in held
                           and part_extent_mm(state, r) >= thr),
-                         key=lambda r: -part_extent_mm(state, r))
+                         key=lambda r: (-part_extent_mm(state, r), r))
         notes.append(f"anchors-first: {len(anchors)} anchor(s) (extent >= "
                      f"{thr:.2f}mm) seed before {len(unplaced) - len(anchors)}"
                      f" small(s): {', '.join(anchors)}")
@@ -5114,8 +5117,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             snapshot = {r: (state.parts[r].x, state.parts[r].y,
                             state.parts[r].rot) for r in placed}
             moved_n = 0
+            # Tie-broken by ref, for the reason given at the anchors queue.
             order2 = sorted(placed,
-                            key=lambda r: -part_extent_mm(state, r))
+                            key=lambda r: (-part_extent_mm(state, r), r))
             for ref in order2:
                 if (state.parts[ref].locked or ref in fixed_seated
                         or ref in row_members):

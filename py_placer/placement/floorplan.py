@@ -7938,7 +7938,8 @@ def _derived_arrays(pcb_data, pcb_file: str, conns, blocks
             zones.setdefault(zone_of.get(m), []).append(m)
         if len(zones) > 1:
             best = min(zones, key=lambda z: (-len(zones[z]),
-                                             arr.natural_key(zones[z][0])))
+                                             arr.natural_key(zones[z][0]),
+                                             zones[z][0]))
             for z, refs in zones.items():
                 if z != best:
                     for m in refs:

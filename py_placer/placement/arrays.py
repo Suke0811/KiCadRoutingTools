@@ -670,8 +670,10 @@ def _bridge_partner(fps, links, host: str, members: Sequence[str],
             return None
         for h in far:
             count[h] = count.get(h, 0) + 1
+    # `h` last: `_ref_key` ties 'U1' and 'U01', and `count` is filled from
+    # the SET `far`, so the key must be total or the winner is hash order.
     return min(count, key=lambda h: (-count[h], -_copper_pad_count(fps[h]),
-                                     _ref_key(h)))
+                                     _ref_key(h), h))
 
 
 def _pin_runs(pcb, refs: List[str], rails=frozenset(),
@@ -716,7 +718,7 @@ def _pin_runs(pcb, refs: List[str], rails=frozenset(),
         def elect(pool):
             return min(pool, key=lambda h: (-score[h][0], -score[h][1],
                                             -_copper_pad_count(fps[h]),
-                                            _ref_key(h))) if pool else None
+                                            _ref_key(h), h)) if pool else None
         host = elect([h for h in score
                       if _copper_pad_count(fps[h]) >= floor])
         best = elect(list(score))
