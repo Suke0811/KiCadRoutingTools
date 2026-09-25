@@ -3242,6 +3242,11 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # of anything better. The angle is held by handing `_try_place` a
     # one-element ladder instead.
     declared_rot = floorplan.rotations_for_ref(intent, blocks) if intent else {}
+    # #1051: the declared rows, resolved against the board by the gate's own
+    # resolver (members present, expected order). Empty unless declared.
+    arrays_resolved = (floorplan.resolved_arrays(intent, pcb_data)
+                       if intent is not None and getattr(intent, 'arrays', ())
+                       else ())
 
     # Opt-in (OFF by default until `tests/test_placement_ab.py` pins its
     # rows): `_try_place` reads `state.rotation_prefer` and, when set, ranks
@@ -3775,6 +3780,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # 3.5mm from the flash's VCC pin).
     decap_spec = getattr(intent, 'decaps', None) or {}
     decap_scope: Set[str] = set()
+    # #1053: {cap: the IC its tether elects}, over the scope below -- the
+    # owners stage 2.4 seats before the pin stage reads them.
+    decap_owner_of: Dict[str, str] = {}
     if decap_spec.get('max_distance_mm') is not None:
         exempt = tuple(decap_spec.get('exempt') or ())
         # NARROWED by #792 to the caps that ELECT A TETHER at any distance --
@@ -3808,6 +3816,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         decap_scope = {r for r in tethered
                        if r in state.parts
                        and not any(fnmatch.fnmatch(r, pat) for pat in exempt)}
+        decap_owner_of = {c: ic for ic, caps in near.items()
+                          for c, _d in caps if c in decap_scope}
+        decap_owner_of.update({c: ic for c, ic, _d in beyond
+                               if c in decap_scope})
 
     # ---- 2. zoned blocks: radial pack from the zone center -----------------
     # A single-member zone is the spec-coordinate pattern (a rect a few
@@ -3849,6 +3861,64 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 unseated_ctx[ref] = (cx + jx, cy + jy, z.rect, tol)
                 notes.append(f"{ref}: no legal pose inside zone {name!r}")
 
+    # ---- the connectivity-centroid seat, shared by 2.4 and 3 --------------
+    # ONE body, so stage 2.4 seats an IC exactly as stage 3 would have, only
+    # earlier (#1053: "the two paths cannot diverge"). The target, the jitter
+    # draw, the ladder and the notes are stage 3's, in stage 3's order.
+    center = ((bounds[0] + bounds[2]) / 2.0, (bounds[1] + bounds[3]) / 2.0)
+
+    def _centroid_seat(ref):
+        """`(clearance or None, target, jx, jy)`; seats on success."""
+        target = _partner_centroid(state, ref, placed) or center
+        jx, jy = _jitter()
+        rot_before = state.parts[ref].rot
+        clr = _try_place(state, ref, target[0] + jx, target[1] + jy,
+                         unplaced - {ref},
+                         rotations=_rot_ladder(ref))
+        if clr is not None:
+            placed.add(ref)
+            unplaced.discard(ref)
+            if state.parts[ref].rot != rot_before:
+                notes.append(f"{ref}: rotated {rot_before:g} -> "
+                             f"{state.parts[ref].rot:g} (no contained pose "
+                             f"at the input rotation)")
+            if clr < state.clearance:
+                notes.append(f"{ref}: placed at reduced courtyard clearance "
+                             f"{clr:g} (none at {state.clearance:g})")
+        return clr, target, jx, jy
+
+    # ---- 2.4 served ICs first (#1053, #1051) --------------------------------
+    # Stage 2.5 reads its pins off ICs ALREADY PLACED, and on an unzoned seed
+    # no IC is placed before stage 3 -- so the pin stage claimed 0 caps and
+    # said nothing (splitflap 12 in scope, watchy 26, both 0). The ICs a later
+    # stage needs as a TARGET are seated here, first: every IC owning an
+    # elected decap tether (through the same owner predicate 2.5 applies,
+    # `decap_owner_chips` included, so an IC 2.5 would ignore is not moved up
+    # for nothing), and every array's `serves`. Stage 3's own seat, in stage
+    # 3's order; a part that finds no seat here is left to stage 3, which
+    # reports it. ARMED ONLY when the intent declares `decaps.max_distance_mm`
+    # or `arrays`; otherwise this is skipped and the seed is bit-identical.
+    served_first: List[str] = []
+    if decap_spec.get('max_distance_mm') is not None or arrays_resolved:
+        from placement import groups as _g24
+        _chips24 = _g24.chip_refs(pcb_data) if decap_owner_chips else None
+        want24 = {ic for ic in set(decap_owner_of.values())
+                  if ((ic in _chips24) if _chips24 is not None
+                      else ic[0:1] == 'U')}
+        want24.update(str(a['serves']) for a in arrays_resolved
+                      if a.get('serves') not in (None, 'unknown'))
+        for ref in _order(sorted(r for r in want24 if r in state.parts)):
+            clr, _t, _jx, _jy = _centroid_seat(ref)
+            if clr is not None:
+                served_first.append(ref)
+            else:
+                notes.append(f"{ref}: stage 2.4 (served ICs first) found no "
+                             f"seat -- left to the centroid stage")
+        if served_first:
+            notes.append(f"stage 2.4: seated {len(served_first)} served "
+                         f"IC(s) before the decap/array stages: "
+                         + ', '.join(served_first))
+
     # ---- 2.5 decap-governed caps: one cap per supply PIN -------------------
     # A 100nF's two nets are a rail and GND -- both usually above the fanout
     # cap -- so the generic centroid stage would park every decap mid-board
@@ -3861,6 +3931,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # under 1mm share one cap by design), biggest owner first; each pin
     # takes a matching-rail cap, preferring one whose declared zone CONTAINS
     # the pin so a zone-member cap serves its own block.
+    # #1053: what the pin stage did, and WHY when it claimed nothing. A
+    # silent zero is the defect this record exists to end.
+    decap_claimed: List[str] = []
+    decap_put_back: List[str] = []
+    decap_pins = 0
+    decap_rails = 0
     if decap_scope:
         avail = [r for r in _order(sorted(unplaced)) if r in decap_scope]
         rail_of: Dict[str, int] = {}
@@ -3913,6 +3989,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     pins.append((-o.pin_count, owner, round(gx, 3),
                                  round(gy, 3), pn))
         pins.sort()
+        decap_pins = len(pins)
+        decap_rails = len(rails)
         zone_of_cap = {}
         for name in sorted(zones_by_name):
             for r in blocks.get(name, ()):
@@ -3931,6 +4009,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             avail.remove(ref)
             placed.add(ref)
             unplaced.discard(ref)
+            decap_claimed.append(ref)
             p2 = state.parts[ref]
             net = getattr(pcb_data.nets.get(pn), 'name', pn)
             notes.append(f"{ref}: decap for {owner} pad(s) near ({tx}, {ty})"
@@ -4059,8 +4138,38 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             unplaced.discard(ref)
             if ref in avail:
                 avail.remove(ref)
+            decap_put_back.append(ref)
             notes.append(f"{ref}: zone-packed into {z.name!r} after the pin "
                          f"stage declined it")
+
+    if decap_spec.get('max_distance_mm') is None:
+        decap_stage = {'armed': False, 'scope': 0, 'claimed': 0,
+                       'reason': 'decaps.max_distance_mm is not declared'}
+    else:
+        _why = None
+        if not decap_scope:
+            _why = 'no cap in scope elects a tether (or every one is exempt)'
+        elif not decap_claimed:
+            if not decap_rails:
+                _why = 'no cap in scope carries a rail net'
+            elif not decap_pins:
+                _why = ("no PLACED IC carries a scoped cap's rail (pins 0) "
+                        "-- the owners were not seated before this stage"
+                        + ('' if decap_owner_chips else
+                           '; owners must be U-prefixed unless '
+                           'decap_owner_chips'))
+            else:
+                _why = (f"{decap_pins} pin(s) found, and no cap found a "
+                        f"legal seat at any of them")
+        decap_stage = {'armed': True, 'scope': len(decap_scope),
+                       'claimed': len(decap_claimed),
+                       'put_back': len(decap_put_back),
+                       'pins': decap_pins, 'reason': _why,
+                       'served_first': list(served_first)}
+        if decap_scope and not decap_claimed:
+            notes.append(f"decap stage 2.5: {len(decap_scope)} cap(s) in "
+                         f"scope, 0 claimed at a supply pin -- {_why}. They "
+                         f"fall through to the centroid stage")
 
     # ---- 3. the rest: connectivity centroid --------------------------------
     # --anchors-first (run-4 C): the default queue is pin-count descending,
@@ -4071,7 +4180,6 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # same tiering reconstruct uses) by DESCENDING EXTENT first; the smalls
     # are already parked as non-obstacles by the existing `exclude` set, so
     # anchors place against anchors only. Everything else is unchanged.
-    center = ((bounds[0] + bounds[2]) / 2.0, (bounds[1] + bounds[3]) / 2.0)
     queue = _order(sorted(unplaced))
     if anchors_first and unplaced:
         from placement.reconstruct import part_extent_mm
@@ -4085,23 +4193,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      f" small(s): {', '.join(anchors)}")
         queue = anchors + [r for r in queue if r not in set(anchors)]
     for ref in queue:
-        target = _partner_centroid(state, ref, placed) or center
-        jx, jy = _jitter()
-        rot_before = state.parts[ref].rot
-        clr = _try_place(state, ref, target[0] + jx, target[1] + jy,
-                         unplaced - {ref},
-                         rotations=_rot_ladder(ref))
-        if clr is not None:
-            placed.add(ref)
-            unplaced.discard(ref)
-            if state.parts[ref].rot != rot_before:
-                notes.append(f"{ref}: rotated {rot_before:g} -> "
-                             f"{state.parts[ref].rot:g} (no contained pose "
-                             f"at the input rotation)")
-            if clr < state.clearance:
-                notes.append(f"{ref}: placed at reduced courtyard clearance "
-                             f"{clr:g} (none at {state.clearance:g})")
-        else:
+        clr, target, jx, jy = _centroid_seat(ref)
+        if clr is None:
             unseated.append(ref)
             # setdefault: a zone member that failed its zone stage keeps THAT
             # context, so the rung retries it inside its zone rather than at
@@ -4448,6 +4541,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # every one it refused. Both empty when nothing is declared.
             'fixed_seated': fixed_seated,
             'fixed_refused': fixed_refused,
+            # #1053: {armed, scope, claimed, put_back, pins, reason,
+            # served_first} -- the pin stage's own count and, whenever it
+            # claimed nothing with a non-empty scope, why.
+            'decap_stage': decap_stage,
             # #629: a no-pose verdict that NAMES its blockers, with the count
             # each one frees. Present at every evict_depth. An empty dict for
             # a ref means the census ran and found no movable neighbour; a
