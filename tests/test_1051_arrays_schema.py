@@ -617,12 +617,14 @@ def test_emit_intent_writes_none_of_it_by_default():
     for key in ('arrays', 'fixed_poses', 'min_reader'):
         assert key not in doc, key
     assert not any('rigid' in b for b in doc['blocks'])
+    # Phase 2 made 'auto' real (tests/test_1051_suggest_arrays.py grades
+    # it); a value that is neither still refuses, by name.
     try:
-        fp.emit_intent(_pcb(), SPLITFLAP, derive_arrays='auto')
-    except NotImplementedError as exc:
-        assert 'phase 2' in str(exc), exc
+        fp.emit_intent(_pcb(), SPLITFLAP, derive_arrays='yes')
+    except ValueError as exc:
+        assert "derive_arrays 'yes'" in str(exc), exc
     else:
-        raise AssertionError("derive_arrays='auto' was accepted")
+        raise AssertionError("derive_arrays='yes' was accepted")
     # splitflap emits no blocks; glasgow emits sheet blocks.
     gl = _pcb(GLASGOW)
     base = fp.emit_intent(gl, GLASGOW)

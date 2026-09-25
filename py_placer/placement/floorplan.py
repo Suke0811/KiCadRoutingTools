@@ -4102,7 +4102,8 @@ def _gradeable_supply_net(pcb_data, net_id: int) -> Optional[str]:
     return None if is_ground_net_name(net) else net
 
 
-def supply_pins(pcb_data, *, pin_functions=None) -> Dict[str, Dict]:
+def supply_pins(pcb_data, *, pin_functions=None,
+                chips=None) -> Dict[str, Dict]:
     """{chip ref: record} -- which pads are supply pins, and on what evidence.
 
     Three channels, tried in order, **per chip**, and keyed on YIELD rather
@@ -4135,10 +4136,16 @@ def supply_pins(pcb_data, *, pin_functions=None) -> Dict[str, Dict]:
     the tool cannot tell a mis-typed board from a correct one. That is why
     every channel's count is recorded for every chip, fired or not, and why
     channel 3's findings carry their own rule name at warn.
+
+    `chips` replaces `groups.chip_refs` as the set of parts asked about. The
+    array detector (#1051) passes a POSE-FREE chip set: `chip_refs`' row
+    test reads global pad coordinates, which a non-right-angle rotation
+    changes, and the detector must answer the same on any pose.
     """
     from net_queries import is_supply_pintype, is_supply_pinfunction, \
         is_power_net_name
-    chips = groups_mod.chip_refs(pcb_data)
+    if chips is None:
+        chips = groups_mod.chip_refs(pcb_data)
     by_net = _decap_caps_by_net(pcb_data)
     out: Dict[str, Dict] = {}
     for ref in sorted(chips):
@@ -7087,20 +7094,18 @@ def emit_intent(pcb_data, pcb_file: str, *,
     It writes no `arrays`, no `fixed_poses` and no `rigid` by default (#1051,
     #1052, #1054): which parts form a row, where a part must sit and which
     block moves as one piece are design decisions, not observations.
-    `derive_arrays` is the switch for the row detector; only `'off'` exists
-    in this build. `rigid_blocks` names emitted blocks to mark `rigid: true`
+    `derive_arrays='auto'` writes the row detector's suggestions
+    (`arrays.suggest_arrays`, pose-blind) as `arrays` -- SUGGESTIONS, so
+    unlike everything else here they need not grade clean. `rigid_blocks` names emitted blocks to mark `rigid: true`
     -- the opt-in path the placement A/B harness selects, since it forbids
     hand-written intents.
     """
     from .quench import QuenchState
     import routing_defaults as defaults
 
-    if derive_arrays != 'off':
-        if derive_arrays == 'auto':
-            raise NotImplementedError(
-                "derive_arrays='auto': the array detector is not in this "
-                "build (#1051 phase 2); only 'off' is accepted")
-        raise ValueError(f"derive_arrays {derive_arrays!r}: expected 'off'")
+    if derive_arrays not in ('off', 'auto'):
+        raise ValueError(f"derive_arrays {derive_arrays!r}: expected 'off' "
+                         f"or 'auto'")
 
     outline = outline_state(pcb_data, pcb_file)
     if not outline['trustworthy']:
@@ -7631,6 +7636,18 @@ def emit_intent(pcb_data, pcb_file: str, *,
                                     _assembly, band_default),
         },
     }
+    if derive_arrays == 'auto':
+        doc['arrays'], dropped = _derived_arrays(pcb_data, pcb_file, conns,
+                                                 blocks)
+        doc['context']['arrays_note'] = (
+            'SUGGESTED by the pose-blind array detector '
+            '(`check_floorplan --suggest-arrays` shows the evidence), not '
+            'read off the board: accept, edit or delete each. A suggested '
+            'row need not be one the board already forms, so unlike the '
+            'rest of this file it may not grade clean')
+        if dropped:
+            doc['context']['arrays_dropped'] = dropped
+        doc['min_reader'] = max(int(doc.get('min_reader') or 0), 7)
     # #1052: the A/B emitter path for `blocks[].rigid` -- the harness names
     # emitted blocks to opt in, because a hand-written intent is forbidden
     # there. Absent by default, so a default emission is unchanged.
@@ -7647,6 +7664,73 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 b['rigid'] = True
         doc['min_reader'] = max(int(doc.get('min_reader') or 0), 7)
     return doc
+
+
+def _derived_arrays(pcb_data, pcb_file: str, conns, blocks
+                    ) -> Tuple[List[Dict], List[Dict]]:
+    """`(arrays, dropped)`: the detector's suggestions as intent entries.
+
+    Only what the loader and `array_problems` would accept is written, so
+    `derive_arrays='auto'` never emits an intent that refuses itself. A
+    member is dropped -- and said so in `dropped`, never silently -- when it
+    is locked in the file, an emitted `edge_connectors` entry (seated at its
+    edge, frozen), or outside the zoned block most of its row sits in (a row
+    is seated as one piece and cannot straddle zones). A row left with fewer
+    than `arrays.MIN_MEMBERS` is dropped whole. `order: "pin"` is re-derived
+    over the survivors, because `pin_order` reads which nets are a member's
+    OWN among the members given.
+    """
+    from . import arrays as arr
+    fps = pcb_data.footprints or {}
+    locked = set(extract_locked_refs_safe(pcb_file)) | {
+        r for r, fp_ in fps.items() if getattr(fp_, 'locked', False)}
+    edge = {str(c.get('ref')) for c in conns or ()}
+    zone_of: Dict[str, str] = {}
+    for b in blocks:
+        if b.get('zone') is not None:
+            for r in b.get('refs') or ():
+                zone_of.setdefault(r, b['name'])
+    out: List[Dict] = []
+    dropped: List[Dict] = []
+    for c in arr.suggest_arrays(pcb_data):
+        members = list(c['members'])
+        why_out: Dict[str, str] = {}
+        for m in members:
+            if m in locked:
+                why_out[m] = 'locked in the board file'
+            elif m in edge:
+                why_out[m] = 'an edge_connectors entry'
+        keep = [m for m in members if m not in why_out]
+        zones: Dict[Optional[str], List[str]] = {}
+        for m in keep:
+            zones.setdefault(zone_of.get(m), []).append(m)
+        if len(zones) > 1:
+            best = min(zones, key=lambda z: (-len(zones[z]),
+                                             arr.natural_key(zones[z][0])))
+            for z, refs in zones.items():
+                if z != best:
+                    for m in refs:
+                        why_out[m] = (f"in zoned block {z!r}" if z else
+                                      "outside the row's zoned block")
+            keep = zones[best]
+        if c['order'] == 'pin' and why_out:
+            keep, unres = arr.pin_order(pcb_data, str(c['serves']), keep)
+            for m, w in unres.items():
+                why_out[m] = w
+        if why_out:
+            dropped.append({'name': c['name'],
+                            'members': dict(sorted(why_out.items())),
+                            'row_dropped': len(keep) < arr.MIN_MEMBERS})
+        if len(keep) < arr.MIN_MEMBERS:
+            continue
+        entry = {'name': c['name'], 'members': keep}
+        if c['serves']:
+            entry['serves'] = c['serves']
+        entry.update({'order': c['order'], 'rotation': c['rotation'],
+                      'pitch_mm': c['pitch_mm'], 'axis': c['axis'],
+                      'why': arr.suggestion_why(c)})
+        out.append(entry)
+    return out, dropped
 
 
 def extract_locked_refs_safe(pcb_file: str):

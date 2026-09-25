@@ -160,6 +160,18 @@ def build_parser():
                         'per-zone / per-edge / board area budgets, and the '
                         'rule roster. Needs no placed board; exits 4 on an '
                         'ERROR, which is a plan no arrangement can satisfy')
+    p.add_argument('--suggest-arrays', action='store_true',
+                   help='print the pose-blind array DETECTOR suggestions '
+                        '(#1051) as JSON and exit: rows of identical parts '
+                        'each on its own pin of one part (pin_run), caps on '
+                        'the rail pair of one chip (decap_row), or the '
+                        'repeated channel of one sheet (sheet_bank), each '
+                        'with its evidence. Suggestions only -- accept or '
+                        'decline each into the arrays[] of an intent. '
+                        'Stdout is the bare '
+                        'JSON document; with --json PATH the document goes '
+                        'there and stdout gets a short summary. Works on an '
+                        'unplaced board: it reads no pose')
     p.add_argument('--json', metavar='PATH',
                    help='write the full findings (every measurement) as JSON')
     p.add_argument('--group-by', default='auto', metavar='SOURCES',
@@ -314,12 +326,67 @@ def _plan_only(args, intent, pcb, sources, brief_fragment, brief_path,
     return 0
 
 
+def _suggest_arrays(args) -> int:
+    """`--suggest-arrays`: the detector's candidates, evidence included.
+
+    No placement gate: the detector reads no pose, so an unplaced board --
+    the from-scratch case it exists for -- is as good as a placed one. The
+    parser's and the libraries' own prints go to stderr while the document
+    is built, because a bare-JSON stdout is the contract of this mode.
+    """
+    import contextlib
+    from placement import arrays as arr
+    with contextlib.redirect_stdout(sys.stderr):
+        pcb = parse_kicad_pcb(args.board)
+        cands = arr.suggest_arrays(pcb)
+    doc = {'board': args.board, 'pose_blind': True,
+           'criteria': list(arr.CRITERIA), 'min_members': arr.MIN_MEMBERS,
+           'count': len(cands), 'suggestions': cands}
+    text = json.dumps(doc, indent=1, sort_keys=True)
+    if not args.json:
+        print(text)
+        return 0
+    with open(args.json, 'w', encoding='utf-8') as fh:
+        fh.write(text + '\n')
+    if not args.quiet:
+        print(f"{len(cands)} array suggestion(s) on {args.board} -- "
+              f"pose-blind, SUGGESTIONS: accept or decline each "
+              f"(evidence in {args.json})")
+        for c in cands:
+            print(f"  {c['criterion']:10s} {c['name']}: "
+                  f"{', '.join(c['members'])}"
+                  + (f" -> {c['serves']}" if c['serves'] else '')
+                  + f" (order {c['order']})")
+    return 0
+
+
+def _bare_json_stdout(argv) -> bool:
+    """True when this invocation writes a bare JSON document to stdout,
+    where a `CMD:` banner line would be a JSONDecodeError at char 0."""
+    import contextlib
+    try:
+        with open(os.devnull, 'w') as null, \
+                contextlib.redirect_stderr(null):
+            a = build_parser().parse_args(argv)
+    except SystemExit:
+        return False
+    return bool(a.suggest_arrays and not a.json)
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     parser_error = build_parser().error
 
+    if args.suggest_arrays:
+        if args.intent or args.emit_intent:
+            parser_error('--suggest-arrays runs alone: it suggests, and an '
+                         'intent is where a reader writes what it accepted')
+        if not os.path.exists(args.board):
+            parser_error(f"{args.board}: no such file")
+        return _suggest_arrays(args)
     if not args.intent and not args.emit_intent:
-        parser_error('one of --intent or --emit-intent is required')
+        parser_error('one of --intent, --emit-intent or --suggest-arrays is '
+                     'required')
     if not os.path.exists(args.board):
         parser_error(f"{args.board}: no such file")
 
@@ -790,5 +857,8 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    import cli_banner; cli_banner.install()  # CMD/EXIT self-echo (run-3 B1)
+    # No banner when stdout is a bare JSON document (`--suggest-arrays`
+    # without `--json`), the choice board_context / board_brief make too.
+    if not _bare_json_stdout(sys.argv[1:]):
+        import cli_banner; cli_banner.install()  # CMD/EXIT self-echo (run-3 B1)
     sys.exit(main())
