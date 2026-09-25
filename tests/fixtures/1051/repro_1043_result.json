@@ -1,0 +1,218 @@
+{
+ "after": {
+  "candidates": [
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 22,
+    "index": 1,
+    "new_by_rule": {
+     "decap_distance": 11,
+     "decap_pin_distance": 4
+    },
+    "new_errors": 15,
+    "passed": false,
+    "strategy": "jitter"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 14,
+    "index": 2,
+    "new_by_rule": {},
+    "new_errors": 0,
+    "passed": true,
+    "strategy": "poses"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 15,
+    "index": 3,
+    "new_by_rule": {},
+    "new_errors": 0,
+    "passed": true,
+    "strategy": "swap"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 22,
+    "index": 4,
+    "new_by_rule": {
+     "decap_distance": 9,
+     "decap_pin_distance": 3
+    },
+    "new_errors": 12,
+    "passed": false,
+    "strategy": "jitter"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 14,
+    "index": 5,
+    "new_by_rule": {},
+    "new_errors": 0,
+    "passed": true,
+    "strategy": "poses"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 14,
+    "index": 6,
+    "new_by_rule": {
+     "decap_pin_distance": 1
+    },
+    "new_errors": 1,
+    "passed": false,
+    "strategy": "swap"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 16,
+    "index": 7,
+    "new_by_rule": {
+     "decap_distance": 14,
+     "decap_pin_distance": 6,
+     "zone_containment": 2
+    },
+    "new_errors": 22,
+    "passed": false,
+    "strategy": "jitter"
+   },
+   {
+    "barren": true,
+    "ics_moved_ge_0_5mm": 0,
+    "index": 8,
+    "new_by_rule": {},
+    "new_errors": 0,
+    "passed": false,
+    "strategy": "poses"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 13,
+    "index": 9,
+    "new_by_rule": {},
+    "new_errors": 0,
+    "passed": true,
+    "strategy": "swap"
+   }
+  ],
+  "exit_code": 0,
+  "input_intent_errors": 11,
+  "kept": 4,
+  "viable": 4
+ },
+ "before": {
+  "candidates": [
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 23,
+    "index": 1,
+    "new_by_rule": {
+     "decap_distance": 21,
+     "decap_pin_distance": 24,
+     "zone_containment": 1
+    },
+    "new_errors": 46,
+    "passed": false,
+    "strategy": "jitter"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 22,
+    "index": 2,
+    "new_by_rule": {
+     "decap_distance": 15,
+     "decap_pin_distance": 16
+    },
+    "new_errors": 31,
+    "passed": false,
+    "strategy": "poses"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 22,
+    "index": 3,
+    "new_by_rule": {
+     "decap_distance": 17,
+     "decap_pin_distance": 16
+    },
+    "new_errors": 33,
+    "passed": false,
+    "strategy": "swap"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 23,
+    "index": 4,
+    "new_by_rule": {
+     "decap_distance": 19,
+     "decap_pin_distance": 16
+    },
+    "new_errors": 35,
+    "passed": false,
+    "strategy": "jitter"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 22,
+    "index": 5,
+    "new_by_rule": {
+     "decap_distance": 15,
+     "decap_pin_distance": 16
+    },
+    "new_errors": 31,
+    "passed": false,
+    "strategy": "poses"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 25,
+    "index": 6,
+    "new_by_rule": {
+     "decap_distance": 14,
+     "decap_pin_distance": 17
+    },
+    "new_errors": 31,
+    "passed": false,
+    "strategy": "swap"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 25,
+    "index": 7,
+    "new_by_rule": {
+     "decap_distance": 27,
+     "decap_pin_distance": 25,
+     "zone_containment": 2
+    },
+    "new_errors": 54,
+    "passed": false,
+    "strategy": "jitter"
+   },
+   {
+    "barren": true,
+    "ics_moved_ge_0_5mm": 0,
+    "index": 8,
+    "new_by_rule": {},
+    "new_errors": 0,
+    "passed": false,
+    "strategy": "poses"
+   },
+   {
+    "barren": false,
+    "ics_moved_ge_0_5mm": 21,
+    "index": 9,
+    "new_by_rule": {
+     "decap_distance": 16,
+     "decap_pin_distance": 15
+    },
+    "new_errors": 31,
+    "passed": false,
+    "strategy": "swap"
+   }
+  ],
+  "exit_code": 4,
+  "input_intent_errors": 11,
+  "kept": 0,
+  "viable": 0
+ }
+}
