@@ -3634,7 +3634,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      immovable_extra: Sequence[str] = (),
                      body_model: bool = False,
                      rotate_by_facing: bool = False,
-                     array_pose_cap: int = ARRAY_SEAT_POSE_CAP) -> Dict:
+                     array_pose_cap: int = ARRAY_SEAT_POSE_CAP,
+                     _served_first: bool = True) -> Dict:
     """Compute a full placement for an unplaced board from its intent.
 
     Returns {'placements': [...], 'lock_refs': [...], 'unseated': [...],
@@ -3664,6 +3665,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     laundered through `must_lock`, which also drives stage 1.5, the
     file-lock/zone contradiction note and the `lock_refs` this returns (which
     `place_seed` STAMPS into the board).
+
+    `_served_first` is PRIVATE to `tests/test_placement_ab.py`'s
+    `served-ics-first-*` rows (#1053): False drops stage 2.4's part seats
+    (served ICs and what outranks the early seats) and keeps its row seats,
+    so the OFF arm is the pre-#1053 seeder on an intent that arms the decap
+    stage. No CLI, driver or GUI passes it; it is not a knob.
     """
     if evict_depth not in (0, 1, 2):
         raise ValueError(
@@ -4501,7 +4508,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         # (key, kind, payload): parts in `_order`'s key, rows at their rank.
         items = [((-state.parts[r].pin_count, tiebreak[r]), 0, r)
                  for r in _order(sorted(r for r in want24
-                                        if r in state.parts))]
+                                        if r in state.parts))
+                 if _served_first]
         items += [((-max(state.parts[m].pin_count for m in sp['present']),
                     tiebreak[sp['present'][0]]), 1, k)
                   for k, sp in enumerate(rows_early)]
