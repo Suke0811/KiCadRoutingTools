@@ -743,6 +743,40 @@ def test_rigid_swap_rule_stays_inside_one_group():
           f" rigid swap(s) refused in the polish, both 220R rows intact")
 
 
+def test_the_tether_shortcuts_change_no_decision():
+    """`_tether_value`'s bound shortcuts (a static cap or chip already within
+    the limit ends the term) skip measurement, never a decision: a quench
+    with them and one measuring every term exactly (`_exact_tethers`) take
+    the same moves, refuse the same poses and end at the same cost. watchy,
+    both decap rules armed (37 terms), two passes."""
+    board = os.path.join(BOARDS, 'watchy.kicad_pcb')
+    pcb = parse_kicad_pcb(board)
+    d = fp.emit_intent(pcb, board)
+    d['decaps'] = dict(d.get('decaps') or {}, max_distance_mm=2.5,
+                       max_pin_distance_mm=2.5)
+    gate = _gate(fp.intent_from_dict(d), pcb)
+    got = {}
+    try:
+        for exact in (False, True):
+            q.QuenchState._exact_tethers = exact
+            m = {}
+            pl = _quiet(q.quench, parse_kicad_pcb(board), board,
+                        clearance=CLEARANCE, board_edge_clearance=EDGE,
+                        metrics_out=m, intent_gate=gate, max_passes=2)
+            got[exact] = (sorted((p['reference'], p['new_x'], p['new_y'],
+                                  p['new_rotation']) for p in pl),
+                          m['intent_gate'], m['after'], m['tethers'])
+    finally:
+        q.QuenchState._exact_tethers = False
+    assert set(got[False][3]['terms']) == {'decap_distance',
+                                           'decap_pin_distance'}, got[False][3]
+    assert got[False][1]['rejected'] > 0, "the gate refused nothing"
+    assert got[False] == got[True], "the shortcuts changed a decision"
+    print(f"  PASS: {len(got[False][0])} moves, "
+          f"{got[False][1]['rejected']} refusals, identical with and without "
+          f"the shortcuts")
+
+
 def _run(script, args):
     r = subprocess.run([sys.executable, '-X', 'utf8',
                         os.path.join(ROOT, 'py_placer', script)] + args,
@@ -836,6 +870,7 @@ TESTS = [
     test_tether_terms_equal_the_grader_on_every_pair,
     test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics,
     test_a_swap_that_strands_a_cap_is_refused_on_the_tether,
+    test_the_tether_shortcuts_change_no_decision,
     test_rigid_swap_rule_stays_inside_one_group,
     test_every_caller_hands_the_quench_the_resolved_rows_and_tethers,
     test_unarmed_quench_is_bit_identical_to_the_pre_phase4_quench,

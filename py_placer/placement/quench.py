@@ -722,6 +722,11 @@ class _Part:
 class QuenchState:
     """Current placement plus cached airwires and cost terms."""
 
+    #: #1043: measure every tether term exactly, skipping the bound shortcuts
+    #: in `_tether_value`. Off in production; the test that proves the
+    #: shortcuts change no decision runs a quench both ways.
+    _exact_tethers = False
+
     def __init__(self, pcb_data: PCBData, pcb_file: str,
                  clearance: float, board_edge_clearance: float,
                  crossing_penalty: float,
@@ -2086,12 +2091,14 @@ class QuenchState:
                 terms.append(_TetherTerm(rule, name, refs, lim, 'decap', {
                     'cap': row['cap'], 'ic': row['ic'],
                     'rail': tuple(row['rail']),
+                    'rail_set': frozenset(row['rail']),
                     'graded': row['graded'], 'radius': row['radius']}))
             elif rule == 'decap_pin_distance':
                 terms.append(_TetherTerm(rule, name, refs, lim, 'pin', {
                     'ic': row['ic'], 'pad_index': row['pad_index'],
                     'net_id': nets.get(row['net']),
-                    'caps': tuple(row['caps'])}))
+                    'caps': tuple(row['caps']),
+                    'caps_set': frozenset(row['caps'])}))
             elif row['basis'] == 'body':
                 terms.append(_TetherTerm(rule, name, refs, lim, 'prox_body',
                                          {'claim': row['claim']}))
@@ -2160,17 +2167,41 @@ class QuenchState:
         from . import floorplan as _fp
         from . import groups as _groups
         t = self._tether_terms[i]
-        moving = set(override or ())
+        # `override` is one or two refs on every path but a group move, so
+        # membership is asked of IT, never by walking a term's (long) rail.
+        moving = override or {}
         if t.kind == 'decap':
             # The grade's LIVE election: the nearest chip on the cap's rail at
             # these poses, not the IC elected at state build. A cap elected
             # beyond the radius of one IC can walk into the radius of another
             # (run 32: C26, 7.20mm from U15, walked to 3.07mm from U36), and
             # a frozen pair would read that move as clean.
-            _ic, d = _groups.elect_live(
-                self._posed_fp(t.data['cap'], override),
-                [(r, self._chip_bounds(r, override))
-                 for r in t.data['rail']])
+            cap, rail = t.data['cap'], t.data['rail']
+            if cap not in moving and moving and not self._exact_tethers:
+                # The cap stays: the chips that do not move are one fixed
+                # minimum. If it is within the limit already, no chip's move
+                # can take the election past it (same bound as the pin term).
+                key = (i, tuple(sorted(r for r in moving
+                                       if r in t.data['rail_set'])))
+                static = self._tgap.get(key)
+                if static is None:
+                    static = _groups.elect_live(
+                        self._posed_fp(cap),
+                        [(r, self._chip_bounds(r)) for r in rail
+                         if r not in moving])[1]
+                    self._tgap[key] = static
+                if static is not None and static <= t.threshold + legality.EPS:
+                    return static
+            if any(r in t.data['rail_set'] for r in moving):
+                cands = [(r, self._chip_bounds(r, override)) for r in rail]
+            else:
+                # No chip on the rail moves: their live bounds are the same
+                # for every candidate until the next applied move.
+                cands = self._tgap.get(('rail', i))
+                if cands is None:
+                    cands = [(r, self._chip_bounds(r)) for r in rail]
+                    self._tgap[('rail', i)] = cands
+            _ic, d = _groups.elect_live(self._posed_fp(cap, override), cands)
             if d is None:
                 return 0.0
             if not t.data['graded'] and d > t.data['radius'] + legality.EPS:
@@ -2184,20 +2215,31 @@ class QuenchState:
             return d
         if t.kind == 'pin':
             ic, caps = t.data['ic'], t.data['caps']
-            pin = self._posed_fp(ic, override).pads[t.data['pad_index']]
             if ic in moving:
+                pin = self._posed_fp(ic, override).pads[t.data['pad_index']]
                 got = _fp.nearest_rail_cap(
                     pin, [self._posed_fp(c, override) for c in caps])
                 return got[0] if got is not None else 0.0
-            live = tuple(c for c in caps if c in moving)
+            live = tuple(sorted(c for c in moving if c in t.data['caps_set']))
             key = (i, live)
             static = self._tgap.get(key)
             if static is None:
+                pin = self._posed_fp(ic).pads[t.data['pad_index']]
                 static = _fp.nearest_rail_cap(
                     pin, [self._posed_fp(c) for c in caps if c not in moving])
                 self._tgap[key] = static
             best = static[0] if static is not None else None
+            if (best is not None and best <= t.threshold + legality.EPS
+                    and not self._exact_tethers):
+                # A cap that does not move already satisfies the pin, and the
+                # term is a MINIMUM, so no pose of the moving cap can take it
+                # past the limit. Returned without measuring the moving cap:
+                # the value is then an upper bound, exact whenever it is past
+                # the limit -- the only case the gate compares. (The incumbent
+                # has no moving cap, so it is always exact.)
+                return best
             if live:
+                pin = self._posed_fp(ic).pads[t.data['pad_index']]
                 got = _fp.nearest_rail_cap(
                     pin, [self._posed_fp(c, override) for c in live])
                 if got is not None and (best is None or got[0] < best):
@@ -2230,14 +2272,20 @@ class QuenchState:
         """[(rule, name, measured, incumbent)] for every term touching a ref
         in `override` that the candidate breaks: past its limit AND worse
         than the live board. Termwise, per claim -- see `tether_ok`."""
-        idx = sorted({i for r in override
-                      for i in self._tethers_of.get(r, ())})
+        return list(self._iter_tether_failures(override))
+
+    def _iter_tether_failures(self, override):
+        """`tether_failures`, lazily, so a yes/no caller stops at the first."""
+        if len(override) == 1:
+            idx = self._tethers_of.get(next(iter(override)), ())
+        else:
+            idx = sorted({i for r in override
+                          for i in self._tethers_of.get(r, ())})
         if self._tether_override:
             # A group move: the OTHER members move too, so they are posed at
             # their shifted poses -- but only this call's refs' terms are
             # checked; the other members are checked by their own calls.
             override = dict(self._tether_override, **override)
-        out = []
         for i in idx:
             t = self._tether_terms[i]
             c = self._tether_value(i, override)
@@ -2245,8 +2293,7 @@ class QuenchState:
                 continue
             u = self._incumbent_tether(i)
             if c > u + legality.EPS:
-                out.append((t.rule, t.name, round(c, 4), round(u, 4)))
-        return out
+                yield (t.rule, t.name, round(c, 4), round(u, 4))
 
     def tether_ok(self, override) -> bool:
         """MONOTONE per CLAIM: every tether term touching a moving ref is
@@ -2260,12 +2307,15 @@ class QuenchState:
         move's shifted members ride in `_tether_override`."""
         if not self._tether_active:
             return True
-        return not self.tether_failures(override)
+        return next(self._iter_tether_failures(override), None) is None
 
     def _tether_gate(self, ref, x, y, rot, site='candidate_valid') -> bool:
         """`candidate_valid`'s tether conjunct, tallied like `intent_ok`'s."""
         if not self._tether_active or ref not in self._tethers_of:
             return True
+        # ONE full evaluation: an admitted pose needs every term anyway, and
+        # a refused one needs every blocking term for the by-rule tally, so
+        # stopping at the first failure would only buy a second pass.
         fails = self.tether_failures({ref: (x, y, rot)})
         if not fails:
             return True
