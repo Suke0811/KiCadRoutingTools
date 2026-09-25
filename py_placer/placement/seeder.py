@@ -4418,6 +4418,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # `arrays`; otherwise this is skipped and the seed is bit-identical.
     served_first: List[str] = []
     tier_first: List[str] = []
+    early_order: List[str] = []
     rows_early = [sp for sp in array_try if sp['name'] not in array_zone]
     if decap_spec.get('max_distance_mm') is not None or arrays_resolved:
         from placement import groups as _g24
@@ -4461,10 +4462,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         for _key, kind, what in items:
             if kind == 1:
                 sp = rows_early[what]
+                early_order.append(f"array:{sp['name']}")
                 _seat_array(state, pcb_data, intent, sp, None, placed,
                             unplaced, center, _rot_ladder, array_pose_cap,
                             arrays_formed, array_unseated, notes)
                 continue
+            early_order.append(what)
             clr, _t, _jx, _jy = _centroid_seat(what)
             if clr is not None:
                 (served_first if what in served else tier_first).append(what)
@@ -5127,6 +5130,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # every row not seated whole, whose members were seated one by one.
             'arrays_formed': arrays_formed,
             'array_unseated': array_unseated,
+            # Stage 2.4's seat order (refs, and `array:<name>` for a row):
+            # what went down ahead of the early seats, and where each row
+            # fell among it. Empty when 2.4 is not armed.
+            'early_order': early_order,
             # #629: a no-pose verdict that NAMES its blockers, with the count
             # each one frees. Present at every evict_depth. An empty dict for
             # a ref means the census ran and found no movable neighbour; a

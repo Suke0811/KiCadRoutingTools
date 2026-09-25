@@ -391,8 +391,10 @@ def test_early_seat_scope_keeps_the_parts_the_control_seats():
     unarmed control on the same seeds; `tier_first` counts them."""
     with tempfile.TemporaryDirectory() as td:
         got = {}
+        # tigard 0 and 10: the seeds where the pin tier ALONE strands holes
+        # the control seats (3 against 0), so only the size rule passes.
         for board, seeds in ((ESP, range(4)), (os.path.join(
-                BOARDS, 'tigard.kicad_pcb'), (1, 2))):
+                BOARDS, 'tigard.kicad_pcb'), (0, 10))):
             doc = fp.emit_intent(parse_kicad_pcb(board), board,
                                  derive_decaps=True)
             off = dict(doc, decaps={})
@@ -412,6 +414,38 @@ def test_early_seat_scope_keeps_the_parts_the_control_seats():
             got[os.path.basename(board)] = (tot_on, tot_off)
     print(f"  PASS: armed vs control stranded parts {got}; CON2 always "
           f"seated")
+
+
+def test_rows_are_seated_at_their_rank_after_what_outranks_them():
+    """The rows' half of the early-seat rule: on a rows-only intent (no
+    decaps), every part with more pins than a row's members goes down in
+    stage 2.4 BEFORE that row, and the row takes its members' rank in stage
+    3's order (`early_order`). On splitflap, a pin-tier-less 2.4 would seat
+    the rows among the ICs' hosts only."""
+    with tempfile.TemporaryDirectory() as td:
+        pcb = parse_kicad_pcb(SPLITFLAP)
+        doc = fp.emit_intent(pcb, SPLITFLAP, derive_arrays='auto')
+        assert (doc.get('decaps') or {}).get('max_distance_mm') is None
+        intent, _p = _intent(doc, td)
+        _pcb, res = _seed(SPLITFLAP, intent)
+        order = res['early_order']
+        rows = {a['name']: a for a in doc['arrays']}
+        import pose_score
+        st = pose_score.make_state(pcb, SPLITFLAP, clearance=CLEARANCE)
+        for name, a in rows.items():
+            key = f"array:{name}"
+            assert key in order, (key, order)
+            tier = min(st.parts[m].pin_count for m in a['members'])
+            above = {r for r, p in st.parts.items()
+                     if p.pin_count > tier and not p.locked
+                     and r not in {m for b in rows.values()
+                                   for m in b['members']}
+                     and r not in {c['ref'] for c in doc['edge_connectors']
+                                   if c.get('edge')}}
+            before = set(order[:order.index(key)])
+            assert above <= before, (name, sorted(above - before))
+    print(f"  PASS: {len(rows)} rows each seated after every part that "
+          f"outranks its members ({len(order)} early seats)")
 
 
 def test_unseatable_row_is_disclosed_and_falls_through():
@@ -705,6 +739,7 @@ TESTS = [
     test_formed_rows_are_immovable_to_the_eviction_rung,
     test_anchor_rounds_leave_a_formed_row_whole,
     test_early_seat_scope_keeps_the_parts_the_control_seats,
+    test_rows_are_seated_at_their_rank_after_what_outranks_them,
     test_unseatable_row_is_disclosed_and_falls_through,
     test_pose_cap_trips_and_says_so,
     test_decaps_armed_claims_caps_on_splitflap_and_watchy,
