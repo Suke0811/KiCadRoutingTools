@@ -304,10 +304,12 @@ def _grade_auto(pcb, path):
 def test_formation_on_the_human_glasgow():
     """The human rows, graded by the ONE predicate at DEFAULT_TOLERANCES.
 
-    Measured here (and why no tolerance moved): of the 27 rows the auto
-    intent declares, 16 are formed (15 before two-pad parts compared their
-    rotation modulo 180, #1051 phase-1 re-verification). Every failure is a
-    real non-row: the
+    Measured here (and why no tolerance moved): of the 24 rows the auto
+    intent declares, 14 are formed (16 of 27 before fix round 1 stopped
+    socket pairs J6+J7 / J8+J9 being members -- both were formed rows --
+    and dropped bank:100R, whose own nets are supply rails; 15 of 27
+    before two-pad parts compared their rotation modulo 180). Every
+    failure is a real non-row: the
     smallest failing axis offset is 0.65mm (J1:5k1, R52/R53), the rest
     fail on 90-degree rotation splits or multi-mm pitch gaps, and the
     buffer banks are 2x4 GRIDS (two columns 4.0mm apart) that a row
@@ -316,11 +318,11 @@ def test_formation_on_the_human_glasgow():
     pcb = _pcb(GLASGOW)
     doc, intent, res = _grade_auto(pcb, GLASGOW)
     meas = {m['name']: m for m in res.array_measured}
-    assert len(meas) == len(doc['arrays']) == 27, len(meas)
+    assert len(meas) == len(doc['arrays']) == 24, len(meas)
     formed = sorted(n for n, m in meas.items() if m.get('formed'))
     print(f"  human glasgow: {len(formed)} of {len(meas)} detected rows "
           f"formed")
-    assert len(formed) >= 16, formed
+    assert len(formed) >= 14, formed
     by = {tuple(sorted(a['members'])): a['name'] for a in doc['arrays']}
     for pair in (('RN1', 'RN2'), ('RN3', 'RN4'), ('RN5', 'RN6'),
                  ('RN7', 'RN8'), ('RN10', 'RN9'), ('RN11', 'RN12')):
@@ -364,12 +366,11 @@ def test_emit_intent_default_unchanged_and_auto_round_trips():
         assert 'evidence' not in a and 'criterion' not in a, a
         assert a['why'].startswith('detector ') and any(
             k in a['why'] for k in arr.CRITERIA), a['why']
-    # Edge connectors are dropped BY NAME, never silently.
+    # Connectors are never members now (`not_a_member`), so splitflap's
+    # motor/sensor headers no longer reach the emitter's drop step at all.
     dropped = {d['name']: d for d in doc['context'].get('arrays_dropped')
                or ()}
-    assert dropped and all(
-        set(d['members'].values()) <= {'an edge_connectors entry'}
-        for d in dropped.values()), dropped
+    assert not dropped, dropped
     edge = {c['ref'] for c in doc['edge_connectors']}
     assert not any(m in edge for a in doc['arrays'] for m in a['members'])
     assert len(intent.arrays) == len(doc['arrays'])
@@ -379,8 +380,199 @@ def test_emit_intent_default_unchanged_and_auto_round_trips():
     assert {m['name'] for m in res.array_measured} == \
         {a['name'] for a in doc['arrays']}
     print(f"  PASS: default emits no arrays; auto emits "
-          f"{len(doc['arrays'])}, drops {len(dropped)} edge-connector rows by "
-          f"name, loads and grades with no array_unresolved/conflict")
+          f"{len(doc['arrays'])}, loads and grades with no "
+          f"array_unresolved/conflict")
+
+
+WATCHY = os.path.join(ROOT, 'kicad_files', 'watchy.kicad_pcb')
+COLDFIRE = os.path.join(ROOT, 'kicad_files',
+                        'kit-dev-coldfire-xilinx_5213.kicad_pcb')
+BOARDS = (GLASGOW, SPLITFLAP, ULX3S, COLDFIRE, WATCHY)
+
+
+def test_watchy_edge_claims_on_passives_yield_to_the_row():
+    """Fix-round 1, item 6: R4/R8/R11 (100K) overhang watchy's curved edge,
+    so the emitter INFERS them edge connectors; they used to be dropped
+    from `U4:100K` for it. The row keeps them and the inferred edge claim
+    goes, disclosed with its basis keys."""
+    pcb = _pcb(WATCHY)
+    doc, intent, res = _grade_auto(pcb, WATCHY)
+    row = [a for a in doc['arrays'] if a['name'] == 'U4:100K']
+    assert row and {'R4', 'R8', 'R11'} <= set(row[0]['members']), row
+    rel = {r['ref']: r for r in doc['context']['arrays_edge_released']}
+    assert {'R4', 'R8', 'R11'} <= set(rel), rel
+    assert all(r['array'] and r['why'] for r in rel.values())
+    edge = {c['ref'] for c in doc['edge_connectors']}
+    assert not (set(rel) & edge), set(rel) & edge
+    assert not [k for k in doc['context']['basis']
+                if any(k.startswith(f"edge_connectors[{r}].") for r in rel)]
+    # The default emission still carries the inferred claims unchanged.
+    base = {c['ref'] for c in fp.emit_intent(pcb, WATCHY)['edge_connectors']}
+    assert {'R4', 'R8', 'R11'} <= base
+    bad = [(v.rule, v.ref) for v in res.violations
+           if v.rule in ('array_unresolved', 'array_conflict')]
+    assert not bad, bad
+    print(f"  PASS: watchy U4:100K keeps R4/R8/R11; {len(rel)} inferred "
+          f"edge claim(s) released and disclosed")
+
+
+def test_no_part_is_host_and_member_and_no_big_ic_member():
+    """Fix-round 1, item 1. Before: glasgow RN5 hosted J6+J7 AND was a
+    member of `J3:10k`; splitflap's TPL7407L/74HC595 (16 pads) were rows
+    of each other on one chain net."""
+    for path in BOARDS:
+        cands = _sug(path)
+        _no_part_twice(cands)
+        hosts = {c['serves'] for c in cands if c['serves']}
+        members = {m for c in cands for m in c['members']}
+        assert not hosts & members, (os.path.basename(path),
+                                     sorted(hosts & members))
+        fps = _pcb(path).footprints
+        for c in cands:
+            if c['serves']:
+                h = arr._copper_pad_count(fps[c['serves']])
+                m = arr._copper_pad_count(fps[c['members'][0]])
+                assert h >= arr.MIN_HOST_TO_MEMBER_PADS * m, (c['name'], h, m)
+    chips = {'U1', 'U2', 'U5', 'U6', 'U7', 'U8', 'U9', 'U10'}
+    assert not chips & {m for c in _sug(SPLITFLAP) for m in c['members']}
+    # The precedence rule itself, on a synthetic board where it binds.
+    # (1) equal precedence: M1 hosts K1+K2 and is a member of H's row ->
+    # the K row goes. (2) lower precedence: X1+X2 are a sheet_bank and X1
+    # hosts C1+C2 -> the bank goes.
+    dec = []
+    got = arr.suggest_arrays(_chain_board(), declined=dec)
+    rows = {c['name']: c['members'] for c in got}
+    assert rows.get('H:RA') == ['M1', 'M2'], rows
+    assert rows.get('X1:1n') == ['C1', 'C2'], rows
+    assert not any(c['serves'] == 'M1' for c in got), rows
+    assert not any('X1' in c['members'] for c in got), rows
+    why = {tuple(d['members']): d['why'] for d in dec}
+    assert 'host or a member' in why[('K1', 'K2')], why
+    assert 'higher-precedence pin_run' in why[('X1', 'X2')], why
+    print("  PASS: no host is a member on 5 boards; every host clears "
+          f"{arr.MIN_HOST_TO_MEMBER_PADS}x its members' pads; the refused "
+          "side is the lower-precedence one, else the one whose host is a "
+          "member")
+
+
+def _chain_board():
+    nets, fps = {}, {}
+    nid = [100]
+
+    def net(name):
+        nid[0] += 1
+        nets[nid[0]] = SimpleNamespace(name=name, pads=[])
+        return nid[0]
+
+    def part(ref, fpname, value, npads, sheet='s'):
+        pads = [SimpleNamespace(pad_number=str(n), net_id=0, component_ref=ref,
+                                layers=['F.Cu'], local_x=float(n % 2),
+                                local_y=float(n), global_x=0.0, global_y=0.0,
+                                pintype='', pinfunction='')
+                for n in range(1, npads + 1)]
+        fps[ref] = SimpleNamespace(reference=ref, footprint_name=fpname,
+                                   value=value, sheet_path=f'/{sheet}/{ref}',
+                                   pads=pads, locked=False, x=0.0, y=0.0,
+                                   rotation=0.0)
+
+    def wire(a, ap, b, bp, name):
+        n = net(name)
+        for ref, pn in ((a, ap), (b, bp)):
+            p = fps[ref].pads[pn - 1]
+            p.net_id = n
+            nets[n].pads.append(p)
+
+    part('H', 'QFP-20', 'MCU', 20)
+    for r in ('M1', 'M2'):
+        part(r, 'RA-8', 'RA', 8)
+    for r in ('K1', 'K2'):
+        part(r, 'R_0402', '1k', 2)
+    wire('M1', 1, 'H', 1, '/A1')
+    wire('M2', 1, 'H', 2, '/A2')
+    wire('K1', 1, 'M1', 2, '/K1')
+    wire('K2', 1, 'M1', 3, '/K2')
+    for r in ('X1', 'X2'):
+        part(r, 'SOIC-8', 'DRV', 8, sheet='t')
+    for r in ('D1', 'D2'):
+        part(r, 'LED', 'RED', 2, sheet='u')
+    for r in ('C1', 'C2'):
+        part(r, 'C_0402', '1n', 2, sheet='t')
+    # X2 gets the same shape through caps on ANOTHER sheet, so X1 and X2
+    # are one sheet_bank and C1+C2 (sheet t) serve X1 alone.
+    for r in ('C3', 'C4'):
+        part(r, 'C_0402', '1n', 2, sheet='v')
+    wire('X1', 1, 'D1', 1, '/L1')
+    wire('X2', 1, 'D2', 1, '/L2')
+    wire('C1', 1, 'X1', 2, '/C1')
+    wire('C2', 1, 'X1', 3, '/C2')
+    wire('C3', 1, 'X2', 2, '/C3')
+    wire('C4', 1, 'X2', 3, '/C4')
+    return SimpleNamespace(footprints=fps, nets=nets)
+
+
+def test_connectors_testpoints_jumpers_are_never_members():
+    """Fix-round 1, item 2. Before: ulx3s U1:CONN_02X20 and the PTS645
+    buttons, coldfire's CONN_1 test points, CONN_4X2 jumper fields and
+    DB9s were members."""
+    from placement.part_class import classify_part
+    for path in BOARDS:
+        fps = _pcb(path).footprints
+        dec = []
+        cands = arr.suggest_arrays(_pcb(path), declined=dec)
+        for c in cands:
+            for m in c['members']:
+                assert classify_part(fps[m], m).name is None, (c['name'], m)
+                assert 'jumper' not in fps[m].footprint_name.lower(), m
+        for d in dec:
+            assert d['why'], d
+    names = {c['name'] for c in _sug(ULX3S)}
+    assert 'U1:CONN_02X20' not in names and 'U1:PTS645' not in names
+    assert not any(c['evidence']['value'] == 'DB9' for c in _sug(COLDFIRE))
+    # A connector still HOSTS: glasgow's R-array rows on J2/J3.
+    assert any(c['serves'] == 'J3' for c in _sug(GLASGOW))
+    print("  PASS: no connector/switch/test point/mount/jumper member on 5 "
+          "boards; connectors still host")
+
+
+def _cap_trio(nets_named):
+    nets, fps = {}, {}
+
+    def pad(ref, num, net_id, name):
+        p = SimpleNamespace(pad_number=str(num), net_id=net_id,
+                            component_ref=ref, layers=['F.Cu'], local_x=0.0,
+                            local_y=float(num), global_x=0.0,
+                            global_y=float(num), pintype='', pinfunction='')
+        nets.setdefault(net_id, SimpleNamespace(name=name, pads=[])
+                        ).pads.append(p)
+        return p
+    for i, name in enumerate(nets_named):
+        ref = f'C{i + 1}'
+        fps[ref] = SimpleNamespace(
+            reference=ref, footprint_name='C_0603', value='10u',
+            sheet_path='/root/' + ref, locked=False, x=0.0, y=0.0,
+            rotation=0.0,
+            pads=[pad(ref, 1, 10 + i, name), pad(ref, 2, 1, 'GND')])
+    return SimpleNamespace(footprints=fps, nets=nets)
+
+
+def test_rails_are_not_own_nets_in_a_sheet_bank():
+    """Fix-round 1, item 3: three caps each on its own named rail plus GND
+    are three regulators' caps, not a repeated channel."""
+    assert arr.suggest_arrays(_cap_trio(['+1V8', '+3V3', '+5V'])) == []
+    pos = arr.suggest_arrays(_cap_trio(['/SIG_A', '/SIG_B', '/SIG_C']))
+    assert [c['criterion'] for c in pos] == ['sheet_bank'], pos
+    print("  PASS: rail-only caps form no bank; the same caps on signal nets "
+          "do (the control is not vacuous)")
+
+
+def test_decap_row_order_is_unknown():
+    """Fix-round 1, item 4: caps on one rail pair are interchangeable."""
+    rows = [c for c in _sug(GLASGOW) if c['criterion'] == 'decap_row']
+    assert rows, 'glasgow has decap rows on U30 +1V2'
+    for c in rows:
+        assert c['order'] == 'unknown', (c['name'], c['order'])
+        assert c['serves'] == 'U30' and c['evidence']['rail'] == '+1V2', c
+    print(f"  PASS: {len(rows)} glasgow decap_row(s), order 'unknown'")
 
 
 def test_cli_bare_json_and_refusal():
@@ -397,6 +589,20 @@ def test_cli_bare_json_and_refusal():
     check([sys.executable, '-X', 'utf8', CHECK_FLOORPLAN, SPLITFLAP,
            '--suggest-arrays', '--intent', 'x.json'],
           refuse='--suggest-arrays runs alone', code=2, allow=('usage:',))
+    # Fix-round 1, item 5: every flag the mode would silently ignore is
+    # refused BY NAME, a missing --brief file included.
+    for extra, name in ((['--brief', 'no_such_brief.json'], '--brief'),
+                        (['--plan-only'], '--plan-only'),
+                        (['--require-brief'], '--require-brief'),
+                        (['--group-by', 'sheet'], '--group-by')):
+        check([sys.executable, '-X', 'utf8', CHECK_FLOORPLAN, SPLITFLAP,
+               '--suggest-arrays'] + extra,
+              refuse=f"--suggest-arrays does not use {name}", code=2,
+              allow=('usage:',))
+    check([sys.executable, '-X', 'utf8', CHECK_FLOORPLAN, SPLITFLAP,
+           '--suggest-arrays', '--json',
+           os.path.join(ROOT, 'no_such_dir_1051', 'x', 's.json')],
+          refuse='its directory does not exist', code=2, allow=('usage:',))
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, 's.json')
         r = check([sys.executable, '-X', 'utf8', CHECK_FLOORPLAN, SPLITFLAP,
@@ -418,6 +624,11 @@ TESTS = [
     test_formation_on_the_human_glasgow,
     test_emit_intent_default_unchanged_and_auto_round_trips,
     test_cli_bare_json_and_refusal,
+    test_watchy_edge_claims_on_passives_yield_to_the_row,
+    test_no_part_is_host_and_member_and_no_big_ic_member,
+    test_connectors_testpoints_jumpers_are_never_members,
+    test_rails_are_not_own_nets_in_a_sheet_bank,
+    test_decap_row_order_is_unknown,
 ]
 
 

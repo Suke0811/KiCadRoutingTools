@@ -7124,7 +7124,12 @@ def emit_intent(pcb_data, pcb_file: str, *,
     block moves as one piece are design decisions, not observations.
     `derive_arrays='auto'` writes the row detector's suggestions
     (`arrays.suggest_arrays`, pose-blind) as `arrays` -- SUGGESTIONS, so
-    unlike everything else here they need not grade clean. `rigid_blocks` names emitted blocks to mark `rigid: true`
+    unlike everything else here they need not grade clean. Its DROP step is
+    not pose-blind (`_derived_arrays`): which members survive reads the
+    emitter's pose-inferred zones and edge entries, so the no-human-layout-
+    leak guarantee is the detector's, and the written rows carry a little
+    of the board's current arrangement -- disclosed member by member in
+    `context.arrays_dropped` / `arrays_edge_released`. `rigid_blocks` names emitted blocks to mark `rigid: true`
     -- the opt-in path the placement A/B harness selects, since it forbids
     hand-written intents.
     """
@@ -7665,8 +7670,21 @@ def emit_intent(pcb_data, pcb_file: str, *,
         },
     }
     if derive_arrays == 'auto':
-        doc['arrays'], dropped = _derived_arrays(pcb_data, pcb_file, conns,
-                                                 blocks)
+        doc['arrays'], dropped, released = _derived_arrays(
+            pcb_data, pcb_file, conns, blocks)
+        if released:
+            # The array wins over an emitter-INFERRED edge claim on a part
+            # the classifier calls no connector (see `_derived_arrays`); the
+            # claim is removed with its basis keys and disclosed, never
+            # silently.
+            gone = {r['ref'] for r in released}
+            conns[:] = [c for c in conns if str(c.get('ref')) not in gone]
+            basis = doc['context'].get('basis') or {}
+            for k in [k for k in basis
+                      if any(k.startswith(f"edge_connectors[{g}].")
+                             for g in gone)]:
+                del basis[k]
+            doc['context']['arrays_edge_released'] = released
         doc['context']['arrays_note'] = (
             'SUGGESTED by the pose-blind array detector '
             '(`check_floorplan --suggest-arrays` shows the evidence), not '
@@ -7695,24 +7713,41 @@ def emit_intent(pcb_data, pcb_file: str, *,
 
 
 def _derived_arrays(pcb_data, pcb_file: str, conns, blocks
-                    ) -> Tuple[List[Dict], List[Dict]]:
-    """`(arrays, dropped)`: the detector's suggestions as intent entries.
+                    ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+    """`(arrays, dropped, edge_released)`: the suggestions as intent entries.
 
     Only what the loader and `array_problems` would accept is written, so
     `derive_arrays='auto'` never emits an intent that refuses itself. A
     member is dropped -- and said so in `dropped`, never silently -- when it
-    is locked in the file, an emitted `edge_connectors` entry (seated at its
-    edge, frozen), or outside the zoned block most of its row sits in (a row
-    is seated as one piece and cannot straddle zones). A row left with fewer
-    than `arrays.MIN_MEMBERS` is dropped whole. `order: "pin"` is re-derived
-    over the survivors, because `pin_order` reads which nets are a member's
-    OWN among the members given.
+    is locked in the file or outside the zoned block most of its row sits
+    in (a row is seated as one piece and cannot straddle zones). A row left
+    with fewer than `arrays.MIN_MEMBERS` is dropped whole. `order: "pin"` is
+    re-derived over the survivors, because `pin_order` reads which nets are
+    a member's OWN among the members given.
+
+    A member the emitter ALSO wrote as an `edge_connectors` entry keeps its
+    row, and the edge entry goes (`edge_released`). Every such entry is
+    INFERRED from the part's current overhang -- the brief's declared edges
+    are merged later, in the CLI -- and every detector member is a part
+    `part_class` calls no connector, switch or test point
+    (`arrays.not_a_member`), so the edge claim is a resistor or a cap
+    overhanging the outline: watchy R4/R8/R11 (100K, 0.87-1.39mm over a
+    curved edge) were dropped from `U4:100K` for it. Seating a resistor at
+    the edge as a connector is the false claim; the overhang itself is then
+    graded as what it is.
+
+    THIS STEP READS POSES, where the detector does not: the locked set is a
+    file fact, but the edge entries are inferred from the current overhang
+    and the zones from the current bounding boxes. So the rows written can
+    differ between a board and a re-posed copy of it even though
+    `suggest_arrays` returns the same candidates; `context.arrays_dropped`
+    and `arrays_edge_released` say exactly where.
     """
     from . import arrays as arr
     fps = pcb_data.footprints or {}
     locked = set(extract_locked_refs_safe(pcb_file)) | {
         r for r, fp_ in fps.items() if getattr(fp_, 'locked', False)}
-    edge = {str(c.get('ref')) for c in conns or ()}
+    edge = {str(c.get('ref')): c for c in conns or ()}
     zone_of: Dict[str, str] = {}
     for b in blocks:
         if b.get('zone') is not None:
@@ -7720,14 +7755,13 @@ def _derived_arrays(pcb_data, pcb_file: str, conns, blocks
                 zone_of.setdefault(r, b['name'])
     out: List[Dict] = []
     dropped: List[Dict] = []
+    released: List[Dict] = []
     for c in arr.suggest_arrays(pcb_data):
         members = list(c['members'])
         why_out: Dict[str, str] = {}
         for m in members:
             if m in locked:
                 why_out[m] = 'locked in the board file'
-            elif m in edge:
-                why_out[m] = 'an edge_connectors entry'
         keep = [m for m in members if m not in why_out]
         zones: Dict[Optional[str], List[str]] = {}
         for m in keep:
@@ -7751,6 +7785,15 @@ def _derived_arrays(pcb_data, pcb_file: str, conns, blocks
                             'row_dropped': len(keep) < arr.MIN_MEMBERS})
         if len(keep) < arr.MIN_MEMBERS:
             continue
+        for m in keep:
+            if m in edge:
+                e = edge[m]
+                released.append({
+                    'ref': m, 'array': c['name'], 'edge': e.get('edge'),
+                    'overhang_mm': e.get('overhang_mm'),
+                    'why': ('an edge claim the emitter inferred from the '
+                            'overhang of a part no classifier calls a '
+                            'connector; the array keeps it')})
         entry = {'name': c['name'], 'members': keep}
         if c['serves']:
             entry['serves'] = c['serves']
@@ -7758,7 +7801,7 @@ def _derived_arrays(pcb_data, pcb_file: str, conns, blocks
                       'pitch_mm': c['pitch_mm'], 'axis': c['axis'],
                       'why': arr.suggestion_why(c)})
         out.append(entry)
-    return out, dropped
+    return out, dropped, released
 
 
 def extract_locked_refs_safe(pcb_file: str):

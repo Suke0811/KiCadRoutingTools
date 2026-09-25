@@ -326,6 +326,10 @@ def _plan_only(args, intent, pcb, sources, brief_fragment, brief_path,
     return 0
 
 
+#: The dests `--suggest-arrays` reads; any other flag set is refused by name.
+_SUGGEST_ARRAYS_OWN = ('help', 'board', 'suggest_arrays', 'json', 'quiet')
+
+
 def _suggest_arrays(args) -> int:
     """`--suggest-arrays`: the detector's candidates, evidence included.
 
@@ -338,16 +342,21 @@ def _suggest_arrays(args) -> int:
     from placement import arrays as arr
     with contextlib.redirect_stdout(sys.stderr):
         pcb = parse_kicad_pcb(args.board)
-        cands = arr.suggest_arrays(pcb)
+        declined = []
+        cands = arr.suggest_arrays(pcb, declined=declined)
     doc = {'board': args.board, 'pose_blind': True,
            'criteria': list(arr.CRITERIA), 'min_members': arr.MIN_MEMBERS,
-           'count': len(cands), 'suggestions': cands}
+           'count': len(cands), 'suggestions': cands, 'declined': declined}
     text = json.dumps(doc, indent=1, sort_keys=True)
     if not args.json:
         print(text)
         return 0
-    with open(args.json, 'w', encoding='utf-8') as fh:
-        fh.write(text + '\n')
+    try:
+        with open(args.json, 'w', encoding='utf-8') as fh:
+            fh.write(text + '\n')
+    except OSError as exc:
+        print(f"ERROR: --json {args.json}: {exc}", file=sys.stderr)
+        return 2
     if not args.quiet:
         print(f"{len(cands)} array suggestion(s) on {args.board} -- "
               f"pose-blind, SUGGESTIONS: accept or decline each "
@@ -381,8 +390,30 @@ def main(argv=None):
         if args.intent or args.emit_intent:
             parser_error('--suggest-arrays runs alone: it suggests, and an '
                          'intent is where a reader writes what it accepted')
+        # Every other flag the mode would silently IGNORE is refused by
+        # name: a `--brief` (even a missing file), `--plan-only` or
+        # `--group-by` that changed nothing reads as honoured otherwise.
+        ignored = []
+        _p = build_parser()
+        for act in _p._actions:
+            if act.dest in _SUGGEST_ARRAYS_OWN or not act.option_strings:
+                continue
+            # `get_default`, not `act.default`: the decap flags share one
+            # dest whose default is set once through `set_defaults`.
+            default = _p.get_default(act.dest)
+            if getattr(args, act.dest, default) != default:
+                ignored.append(act.option_strings[-1])
+        if ignored:
+            parser_error(f"--suggest-arrays does not use "
+                         f"{', '.join(sorted(set(ignored)))}: it reads only "
+                         f"the board's parts and nets (--json and --quiet "
+                         f"are its options)")
         if not os.path.exists(args.board):
             parser_error(f"{args.board}: no such file")
+        if args.json and not os.path.isdir(
+                os.path.dirname(os.path.abspath(args.json))):
+            parser_error(f"--json {args.json}: its directory does not "
+                         f"exist")
         return _suggest_arrays(args)
     if not args.intent and not args.emit_intent:
         parser_error('one of --intent, --emit-intent or --suggest-arrays is '

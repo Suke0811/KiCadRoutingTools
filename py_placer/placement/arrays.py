@@ -57,7 +57,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 #: 27 detected rows form (15 before; the remaining rotation failures, J1:5k1,
 #: U1:9p, U1:100k, U30:2k2, U30:47R, U30:+1V2:u1 and bank:100R, are all 90
 #: or 45 degree splits and every one also fails its axis), ulx3s 15 of 32,
-#: splitflap 5 of 10.
+#: splitflap 5 of 10. After phase-2 fix round 1 (connectors, jumpers and
+#: peer-IC chains are no longer members; supply rails are no own net): glasgow
+#: 14 of 24 (the two lost formed rows were socket pairs J6+J7 and J8+J9),
+#: ulx3s 14 of 30, splitflap 0 of 4 (all five formed rows were chip chains
+#: or headers), coldfire 9 of 14, watchy 1 of 5.
 DEFAULT_TOLERANCES = {'axis_mm': 0.25, 'rotation_deg': 0.5,
                       'pitch_spread_mm': 0.25, 'pitch_mm': 0.25}
 
@@ -375,6 +379,25 @@ MIN_MEMBERS = 2
 #: (R24 -> R48 <- R25 on glasgow) and reads as a two-member "run".
 HOST_MIN_PADS = 4
 
+#: A host must have at least this many times the copper pads of the row's
+#: members: a row is small parts gathered at a BIGGER one, not two peer ICs
+#: joined by one net. Measured on the phase-2 boards (host pads / member
+#: pads, members above two pads): every chip-to-chip "row" sits at exactly
+#: 1.0 -- splitflap's TPL7407L/74HC595 shift-register chain (16 on 16, four
+#: rows each resting on one chain net) and glasgow's 8-pad R-arrays hosting
+#: 8-pad sockets -- while the smallest real one is 1.43, glasgow's SP3012
+#: ESD arrays (14 pads) on connector J3/J2 (20), a row the human formed.
+#: 1.25 sits between them; the SN74LVC1T45 buffers (6 on U30's 121) and the
+#: R-arrays (8 on 20 or 121) clear it by far.
+MIN_HOST_TO_MEMBER_PADS = 1.25
+
+#: Footprints whose name says JUMPER are links, not parts to row up
+#: (ulx3s D51/D52 `D_SMA_Jumper_NC`). `part_class.classify_part` has no
+#: jumper class -- a 2x4 header used as a jumper field is a
+#: `connector_affinity` there already -- so this is the one name test the
+#: detector adds, on KiCad's own `Jumper` library naming.
+JUMPER_FP = ('jumper',)
+
 #: The criteria in PRECEDENCE order. A part is in at most one candidate; when
 #: two criteria would claim it, the earlier one wins, because its evidence is
 #: more specific: a named pin of a named part (`pin_run`), then a rail pair
@@ -392,10 +415,20 @@ def _net_label(pcb, net_id: int) -> str:
     return (getattr(n, 'name', '') or '') if n is not None else ''
 
 
-def _is_rail(name: str) -> bool:
+def _is_rail(name: str, net_id: int = 0, rails=frozenset()) -> bool:
+    """A ground or rail: by NAME (`net_queries`), or -- `rails`, the nets on
+    any chip's supply pins (`floorplan.supply_pins`, pose-free) -- by what
+    it FEEDS. The second is not optional: ulx3s's `/power/P1V1`, `P2V5`
+    and `P3V3` pass no name test, and they are U1's core and I/O rails."""
     from net_queries import is_ground_net_name, is_power_net_name
-    return bool(name) and (is_ground_net_name(name)
-                           or is_power_net_name(name))
+    return (bool(net_id) and net_id in rails) or (
+        bool(name) and (is_ground_net_name(name) or is_power_net_name(name)))
+
+
+def supply_rail_nets(supply) -> frozenset:
+    """Every net on a supply pin of any chip in `supply_pins`' answer."""
+    return frozenset(p.net_id for rec in supply.values()
+                     for p, _n in rec['pins'] if p.net_id)
 
 
 def _copper_pad_count(fp) -> int:
@@ -431,7 +464,30 @@ def pose_free_chip_refs(pcb) -> set:
     return out
 
 
-def _partitions(pcb) -> Dict[Tuple[str, str, str], List[str]]:
+def not_a_member(fp, ref: str) -> Optional[str]:
+    """Why a part can never be an array MEMBER, or None.
+
+    `part_class.classify_part` -- the repo's pose-independent classifier --
+    decides: a connector (`connector_affinity`, `edge_receptacle`), a
+    switch or button (`edge_actuator`), a test point, a mounting hole or a
+    fiducial is placed where a cable, a finger, a probe or a screw needs
+    it, not in a row by its electrical neighbours. Measured before this:
+    ulx3s U1:CONN_02X20 and the PTS645 buttons, coldfire's single-pad
+    CONN_1 test points, CONN_4X2 jumper fields and DB9s, splitflap's motor
+    and sensor headers. Such a part may still be a HOST (glasgow's J2/J3
+    serve their R-array rows). Plus `JUMPER_FP`.
+    """
+    from .part_class import classify_part
+    cls = classify_part(fp, ref).name
+    if cls is not None:
+        return f"a {cls} part"
+    name = str(getattr(fp, 'footprint_name', '') or '').lower()
+    if any(k in name for k in JUMPER_FP):
+        return 'a jumper footprint'
+    return None
+
+
+def _partitions(pcb, excluded=None) -> Dict[Tuple[str, str, str], List[str]]:
     """{(footprint, value, sheet): [refs]} -- the parts that could be ONE row.
 
     Same footprint AND same value (the issue's "identical parts"), and the
@@ -442,7 +498,8 @@ def _partitions(pcb) -> Dict[Tuple[str, str, str], List[str]]:
     human grids do (the 1 is U32, a different function on the top sheet),
     and ulx3s's 549R resistors split out the eight LED resistors of the
     `blinkey` sheet, the one row the human drew. Parts with no net-bearing
-    pad (fiducials, mounting holes) are not candidates.
+    pad are not candidates, nor is any part `not_a_member` names; those are
+    collected into `excluded` ({partition key: (why, [refs])}) when given.
     """
     from . import groups as groups_mod
     out: Dict[Tuple[str, str, str], List[str]] = {}
@@ -452,13 +509,21 @@ def _partitions(pcb) -> Dict[Tuple[str, str, str], List[str]]:
         key = (str(fp.footprint_name or ''), str(getattr(fp, 'value', '')
                                                   or ''),
                groups_mod._sheet_of(fp))
+        why = not_a_member(fp, ref)
+        if why is not None:
+            if excluded is not None:
+                excluded.setdefault(key, (why, []))[1].append(ref)
+            continue
         out.setdefault(key, []).append(ref)
     for refs in out.values():
         refs.sort(key=_ref_key)
+    if excluded is not None:
+        for _why, refs in excluded.values():
+            refs.sort(key=_ref_key)
     return out
 
 
-def _own_signal_links(pcb, members: Sequence[str]
+def _own_signal_links(pcb, members: Sequence[str], rails=frozenset()
                       ) -> Dict[str, Dict[str, List[Dict[str, str]]]]:
     """{member: {host: [link]}} over each member's OWN signal nets.
 
@@ -481,7 +546,7 @@ def _own_signal_links(pcb, members: Sequence[str]
             if not p.net_id or reach.get(p.net_id) != 1:
                 continue
             name = _net_label(pcb, p.net_id)
-            if _is_rail(name):
+            if _is_rail(name, p.net_id, rails):
                 continue
             net = (pcb.nets or {}).get(p.net_id)
             for q in (getattr(net, 'pads', None) or ()):
@@ -521,7 +586,7 @@ def _grid_named(fp) -> bool:
                                   for n in pads) > len(pads)
 
 
-def _pin_runs(pcb, refs: List[str]) -> Tuple[List[Dict], List[str]]:
+def _pin_runs(pcb, refs: List[str], rails=frozenset()) -> Tuple[List[Dict], List[str]]:
     """Criterion (a): members each on their own pin of ONE common part.
 
     Repeatedly elects the host that the most remaining members reach by an
@@ -534,12 +599,16 @@ def _pin_runs(pcb, refs: List[str]) -> Tuple[List[Dict], List[str]]:
     fps = pcb.footprints or {}
     remaining = list(refs)
     found: List[Dict] = []
+    # One partition is one footprint, so one member pad count.
+    floor = max(HOST_MIN_PADS,
+                MIN_HOST_TO_MEMBER_PADS * _copper_pad_count(fps[refs[0]])
+                if refs else 0)
     while len(remaining) >= MIN_MEMBERS:
-        links = _own_signal_links(pcb, remaining)
+        links = _own_signal_links(pcb, remaining, rails)
         score: Dict[str, List[int]] = {}
         for m in remaining:
             for h, ls in links[m].items():
-                if _copper_pad_count(fps[h]) < HOST_MIN_PADS:
+                if _copper_pad_count(fps[h]) < floor:
                     continue
                 s = score.setdefault(h, [0, 0])
                 s[0] += 1
@@ -630,7 +699,7 @@ def _decap_rows(pcb, refs: List[str], supply) -> Tuple[List[Dict], List[str]]:
     return found, [m for m in refs if m not in claimed]
 
 
-def _sheet_banks(pcb, refs: List[str]) -> List[Dict]:
+def _sheet_banks(pcb, refs: List[str], rails=frozenset()) -> List[Dict]:
     """Criterion (c): identical parts on one sheet with PARALLEL connectivity.
 
     Each member's SHAPE is, pad by pad: a net every member shares (by name),
@@ -639,17 +708,28 @@ def _sheet_banks(pcb, refs: List[str]) -> List[Dict]:
     its pad, so eight LEDs each on its own pin of one driver still match.
     Members with one shape and at least one own net are a bank: an LED+
     resistor channel repeated, not parallel caps on one rail (no own net).
+
+    A RAIL is never an own net, the way `pin_run` filters rails: three caps
+    each on their own regulator output plus GND (ulx3s C22/C23/C24 on
+    P1V1/P2V5/P3V3) share a shape only because each rail is "its own", and
+    that is three regulators' output caps, not a channel repeated. A rail is
+    recorded by its NAME, so such members differ and form nothing.
     """
     fps = pcb.footprints or {}
     reach: Dict[int, int] = {}
     for m in refs:
         for n in {p.net_id for p in fps[m].pads if p.net_id}:
             reach[n] = reach.get(n, 0) + 1
+
+    def _own(net_id) -> bool:
+        return (bool(net_id) and reach.get(net_id) == 1
+                and not _is_rail(_net_label(pcb, net_id), net_id, rails))
+
     neigh: Dict[str, set] = {}
     for m in refs:
         s = set()
         for p in fps[m].pads:
-            if p.net_id and reach.get(p.net_id) == 1:
+            if _own(p.net_id):
                 net = (pcb.nets or {}).get(p.net_id)
                 s.update(q.component_ref for q in
                          (getattr(net, 'pads', None) or ())
@@ -664,7 +744,7 @@ def _sheet_banks(pcb, refs: List[str]) -> List[Dict]:
             if not p.net_id:
                 shape.append((str(p.pad_number), 'none', ()))
                 continue
-            if reach.get(p.net_id) == 1:
+            if _own(p.net_id):
                 own += 1
                 net = (pcb.nets or {}).get(p.net_id)
                 sig = []
@@ -696,13 +776,15 @@ def _sheet_banks(pcb, refs: List[str]) -> List[Dict]:
                           for pd, kind, what in shape],
                 'own_nets': {m: sorted(_net_label(pcb, p.net_id)
                                        for p in fps[m].pads
-                                       if p.net_id and reach.get(p.net_id) == 1)
+                                       if _own(p.net_id))
                              for m in members},
             }})
     return found
 
 
-def suggest_arrays(pcb, *, pin_functions=None) -> List[Dict[str, object]]:
+def suggest_arrays(pcb, *, pin_functions=None,
+                   declined: Optional[List[Dict]] = None
+                   ) -> List[Dict[str, object]]:
     """Candidate `arrays[]` entries for a reader to ACCEPT or DECLINE (#1051).
 
     Each candidate is `{name, members (ordered), serves, order,
@@ -716,7 +798,12 @@ def suggest_arrays(pcb, *, pin_functions=None) -> List[Dict[str, object]]:
     chip set is asked in each part's own frame, `pose_free_chip_refs`). A
     detector that read poses would suggest whatever arrangement the board
     already has, and an intent emitted from the HUMAN board would then leak
-    the human's layout into the arm it is meant to be judged against.
+    the human's layout into the arm it is meant to be judged against. The
+    guarantee is THIS function's: `emit_intent(derive_arrays='auto')` then
+    drops members through the emitter's pose-inferred zones and releases
+    its pose-inferred edge claims (`floorplan._derived_arrays`), so the rows
+    it writes carry a little of the board's current arrangement, disclosed
+    by member.
 
     Criteria, in precedence order (`CRITERIA`), within each (footprint,
     value, sheet) partition (`_partitions`): `pin_run` (order `'pin'`, or
@@ -725,17 +812,37 @@ def suggest_arrays(pcb, *, pin_functions=None) -> List[Dict[str, object]]:
     interchangeable, so no order is theirs to follow) and `sheet_bank`
     (order `'unknown'`). Output order: criterion, then larger first, then
     name -- deterministic, independent of dict or hash order.
+
+    No part is both a HOST and a MEMBER (glasgow RN5 was the host of J6+J7
+    and a member of `J3:10k`; splitflap's four chip "rows" served each
+    other along one shift-register chain). Of two candidates in that
+    relation the one of LOWER precedence is refused -- coldfire's
+    `bank:MAX202` loses to the charge-pump cap rows the MAX202s host --
+    and on equal precedence the one whose host is the other's member. The
+    pairs are found on the full set in one pass, so the answer does not
+    depend on which is looked at first. `declined`, when a list is given, receives
+    one record per refused candidate and per partition of excluded parts
+    (`not_a_member`) that could otherwise have formed a row.
     """
     from .floorplan import supply_pins
     supply = supply_pins(pcb, pin_functions=pin_functions,
                          chips=pose_free_chip_refs(pcb))
+    rails = supply_rail_nets(supply)
     raw: List[Dict] = []
-    for (fpname, value, sheet), refs in sorted(_partitions(pcb).items()):
+    excluded: Dict[Tuple[str, str, str], Tuple[str, List[str]]] = {}
+    parts = _partitions(pcb, excluded)
+    if declined is not None:
+        for key, (why, refs) in sorted(excluded.items()):
+            if len(refs) >= MIN_MEMBERS:
+                declined.append({'members': list(refs), 'value': key[1],
+                                 'why': f"{why}: not an array member"})
+    for (fpname, value, sheet), refs in sorted(parts.items()):
         if len(refs) < MIN_MEMBERS:
             continue
-        runs, rest = _pin_runs(pcb, refs)
+        runs, rest = _pin_runs(pcb, refs, rails)
         rows, rest = _decap_rows(pcb, rest, supply)
-        banks = _sheet_banks(pcb, rest) if len(rest) >= MIN_MEMBERS else []
+        banks = (_sheet_banks(pcb, rest, rails)
+                 if len(rest) >= MIN_MEMBERS else [])
         for crit, cands in (('pin_run', runs), ('decap_row', rows),
                             ('sheet_bank', banks)):
             for c in cands:
@@ -743,6 +850,31 @@ def suggest_arrays(pcb, *, pin_functions=None) -> List[Dict[str, object]]:
                 c['evidence'].update({'footprint': fpname, 'value': value,
                                       'sheet': sheet or '/'})
                 raw.append(c)
+    member_of = {m: c for c in raw for m in c['members']}
+    refused: Dict[int, Tuple[Dict, str]] = {}
+    for c in raw:
+        other = member_of.get(c['serves']) if c['serves'] else None
+        if other is None or other is c:
+            continue
+        # The LOWER-precedence one goes (`CRITERIA`); on a tie the one whose
+        # host is the other's member -- a part is a member first.
+        if CRITERIA.index(other['criterion']) > CRITERIA.index(
+                c['criterion']):
+            refused[id(other)] = (other, (
+                f"member {c['serves']} is the host of a higher-precedence "
+                f"{c['criterion']} ({', '.join(c['members'])})"))
+        else:
+            refused[id(c)] = (c, (
+                f"its host {c['serves']} is a member of another candidate "
+                f"({', '.join(other['members'])})"))
+    for c, why in refused.values():
+        if declined is not None:
+            declined.append({'members': list(c['members']),
+                             'serves': c['serves'],
+                             'criterion': c['criterion'],
+                             'why': why + '; a part is a host or a member, '
+                                          'not both'})
+    raw = [c for c in raw if id(c) not in refused]
     out: List[Dict[str, object]] = []
     used: Dict[str, int] = {}
     raw.sort(key=lambda c: (CRITERIA.index(c['criterion']),
