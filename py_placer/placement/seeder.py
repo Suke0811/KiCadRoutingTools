@@ -2997,6 +2997,17 @@ def _partner_centroid(state, ref: str, placed: Set[str],
 #: Hitting it is disclosed (`array_unseated[name].capped`).
 ARRAY_SEAT_POSE_CAP = 20000
 
+#: #1053/#1051: stage 2.4 seats, ahead of the early seats (the decap pin
+#: stage, the declared rows), every part whose courtyard is larger than this
+#: many times the largest early-seated part's. Pin count, stage 3's order,
+#: does not rank SIZE: a 1-pin M3 mounting hole is the last part stage 3
+#: seats, and once the caps sit at their pins it no longer fits (tigard,
+#: seeds 0-11: 15-16 holes stranded, the unarmed control 10; 0 at this
+#: ratio). 10, not 4: at 4 orangecrab's M2 holes counted as big and the
+#: early seats then stranded its fiducials and L1/L2 instead (seeds 11/0/1:
+#: 5/6/7 parts at 4, 4/4/4 at 10, the control 5/4/4).
+EARLY_SEAT_AREA_RATIO = 10.0
+
 #: #1051: `pitch_mm: auto` is the widest member's courtyard extent along the
 #: row plus the board clearance plus THIS, rounded up to 0.01mm. Measured,
 #: not cosmetic: at exactly extent + clearance the siblings' courtyard gap is
@@ -4312,72 +4323,98 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                              f"{clr:g} (none at {state.clearance:g})")
         return clr, target, jx, jy
 
-    # ---- 2.4 served ICs first (#1053, #1051) --------------------------------
+    # ---- 2.4 served ICs first, and what outranks the early seats ------------
     # Stage 2.5 reads its pins off ICs ALREADY PLACED, and on an unzoned seed
     # no IC is placed before stage 3 -- so the pin stage claimed 0 caps and
-    # said nothing (splitflap 12 in scope, watchy 26, both 0). The ICs a later
-    # stage needs as a TARGET are seated here, first: every IC owning an
-    # elected decap tether (through the same owner predicate 2.5 applies,
-    # `decap_owner_chips` included, so an IC 2.5 would ignore is not moved up
-    # for nothing), and every array's `serves`. Stage 3's own seat, in stage
-    # 3's order; a part that finds no seat here is left to stage 3, which
-    # reports it. ARMED ONLY when the intent declares `decaps.max_distance_mm`
-    # or `arrays`; otherwise this is skipped and the seed is bit-identical.
+    # said nothing (#1053: splitflap 12 in scope, watchy 26, both 0).
+    #
+    # The decap pin stage and the declared rows are EARLY seats: each puts a
+    # set of parts (E: the scoped caps, the non-zoned rows' members) down
+    # ahead of the peers stage 3 would have interleaved them with. So 2.4
+    # first seats, in STAGE 3's order and with stage 3's own seat
+    # (`_centroid_seat`, #1053: "the two paths cannot diverge"):
+    #
+    #  * every IC owning an elected decap tether (the owner predicate 2.5
+    #    applies, `decap_owner_chips` included) and every row's `serves` --
+    #    the targets the early seats aim at;
+    #  * every part that OUTRANKS E by pin count (more pins than E's lowest
+    #    tier): stage 3 would have seated it before E anyway. Measured: with
+    #    the owners alone, esp_prog's 7-pin CON2 was stranded on 12 of 12
+    #    seeds (the caps took its room);
+    #  * every part LARGER than `EARLY_SEAT_AREA_RATIO` x E's largest
+    #    courtyard: pin count does not rank size, and a 1-pin M3 hole is the
+    #    last part stage 3 seats. Measured on tigard, seeds 0-11 (decaps
+    #    armed): 15-16 holes stranded without this, 0 with it; the unarmed
+    #    control strands 10;
+    #  * each non-zoned ROW, as one item at its members' rank (their most
+    #    pins), so a row is seated where stage 3 would have reached its
+    #    members rather than last into the space the others left (the
+    #    phase-3 verifier's prototype; zoned rows are seated in stage 2).
+    #
+    # A part that finds no seat here is left to stage 3, which reports it.
+    # ARMED ONLY when the intent declares `decaps.max_distance_mm` or
+    # `arrays`; otherwise this is skipped and the seed is bit-identical.
     served_first: List[str] = []
     tier_first: List[str] = []
+    rows_early = [sp for sp in array_try if sp['name'] not in array_zone]
     if decap_spec.get('max_distance_mm') is not None or arrays_resolved:
         from placement import groups as _g24
         _chips24 = _g24.chip_refs(pcb_data) if decap_owner_chips else None
         want24 = {ic for ic in set(decap_owner_of.values())
                   if ((ic in _chips24) if _chips24 is not None
                       else ic[0:1] == 'U')}
-        # Only rows stage 2.45 will actually seat: a refused row's host is
+        # Only rows this seed will actually seat: a refused row's host is
         # an ordinary part and keeps its stage-3 turn.
         want24.update(str(a['serves']) for a in array_try
                       if a.get('serves') not in (None, 'unknown'))
         served = set(want24)
-        # ...and, when the pin stage will run, every part that OUTRANKS the
-        # caps' own tier in stage 3's order (more pins than any scoped cap).
-        # Stage 3 would have seated all of them before any cap anyway; what
-        # 2.5 changes is only where a cap goes and its precedence among its
-        # PEERS. Seating the owners alone let the caps claim space ahead of
-        # larger parts, and measured (tests/measure_792_seeding.py) that
-        # stranded esp_prog's 7-pin CON2, which the control seats. Row
-        # members are left to their row (2.45).
-        if decap_scope:
-            tier = max(state.parts[c].pin_count for c in decap_scope)
+        early = set(decap_scope) | {m for sp in rows_early
+                                    for m in sp['present']}
+        if early:
+            # E's lowest tier: the caps' (their most pins -- a part with more
+            # is ranked above EVERY cap) and each row's (its fewest).
+            tiers = ([max(state.parts[c].pin_count for c in decap_scope)]
+                     if decap_scope else [])
+            tiers += [min(state.parts[m].pin_count for m in sp['present'])
+                      for sp in rows_early]
+            tier = min(tiers)
+
+            def _area(r):
+                b = state.parts[r].rect(0.0, 0.0, state.parts[r].rot)
+                return (b[2] - b[0]) * (b[3] - b[1])
+            big = EARLY_SEAT_AREA_RATIO * max(_area(r) for r in early)
             want24.update(r for r in unplaced
                           if r not in held and r not in array_members
-                          and state.parts[r].pin_count > tier)
-        for ref in _order(sorted(r for r in want24 if r in state.parts)):
-            clr, _t, _jx, _jy = _centroid_seat(ref)
+                          and r not in decap_scope
+                          and (state.parts[r].pin_count > tier
+                               or _area(r) > big))
+        # (key, kind, payload): parts in `_order`'s key, rows at their rank.
+        items = [((-state.parts[r].pin_count, tiebreak[r]), 0, r)
+                 for r in _order(sorted(r for r in want24
+                                        if r in state.parts))]
+        items += [((-max(state.parts[m].pin_count for m in sp['present']),
+                    tiebreak[sp['present'][0]]), 1, k)
+                  for k, sp in enumerate(rows_early)]
+        items.sort(key=lambda it: (it[0], it[1]))
+        for _key, kind, what in items:
+            if kind == 1:
+                sp = rows_early[what]
+                _seat_array(state, pcb_data, intent, sp, None, placed,
+                            unplaced, center, _rot_ladder, array_pose_cap,
+                            arrays_formed, array_unseated, notes)
+                continue
+            clr, _t, _jx, _jy = _centroid_seat(what)
             if clr is not None:
-                if ref in served:
-                    served_first.append(ref)
-                else:
-                    tier_first.append(ref)
+                (served_first if what in served else tier_first).append(what)
             else:
-                notes.append(f"{ref}: stage 2.4 (served ICs first) found no "
+                notes.append(f"{what}: stage 2.4 (served ICs first) found no "
                              f"seat -- left to the centroid stage")
         if served_first or tier_first:
             notes.append(f"stage 2.4: seated {len(served_first)} served "
                          f"IC(s) before the decap/array stages ("
                          + ', '.join(served_first) + f"), and "
                          f"{len(tier_first)} other part(s) that outrank the "
-                         f"caps' tier")
-
-    # ---- 2.45 declared arrays: each seated as ONE row (#1051) ---------------
-    # After 2.4, so a row's served IC is placed and the row can aim at the
-    # pins it serves; before 2.5, so a row claims its space before the caps
-    # scatter over it. See `_seat_block` for the search and its cap. A ZONED
-    # row was seated inside stage 2 already, before its zone filled.
-    for spec in array_try:
-        if spec['name'] in array_zone:
-            continue
-        _seat_array(state, pcb_data, intent, spec,
-                    array_zone.get(spec['name']), placed, unplaced, center,
-                    _rot_ladder, array_pose_cap, arrays_formed,
-                    array_unseated, notes)
+                         f"early seats")
 
     # ---- 2.5 decap-governed caps: one cap per supply PIN -------------------
     # A 100nF's two nets are a rail and GND -- both usually above the fanout
