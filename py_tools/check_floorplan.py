@@ -374,8 +374,12 @@ def _bare_json_stdout(argv) -> bool:
     where a `CMD:` banner line would be a JSONDecodeError at char 0."""
     import contextlib
     try:
+        # BOTH streams: `--help` prints its usage to STDOUT before the
+        # SystemExit, which put the usage ahead of the `CMD:` banner
+        # (test_run4_instruments' banner check).
         with open(os.devnull, 'w') as null, \
-                contextlib.redirect_stderr(null):
+                contextlib.redirect_stderr(null), \
+                contextlib.redirect_stdout(null):
             a = build_parser().parse_args(argv)
     except SystemExit:
         return False
