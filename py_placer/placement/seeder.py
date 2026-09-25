@@ -1112,6 +1112,68 @@ def _facing_rank(state, ref: str, tx: float, ty: float, rot: float,
         pitch=pitch_of((x, y) for x, y, _ in pads_all))['to_edge']
 
 
+def seat_clearances(full: float) -> Tuple[float, float, float]:
+    """The courtyard-clearance ladder every seat search walks: the full
+    clearance, then half, then a 0.02mm floor (`_try_place`'s docstring says
+    why a dense board needs the floor). One tuple, so a single-part seat and
+    a row seat (#1051) relax in the same steps."""
+    return (full, full / 2.0, min(0.02, full))
+
+
+def _set_seat_clearance(state, clr: float) -> None:
+    """Set the state's clearance for one rung of `seat_clearances`.
+    candidate_valid reads state.clearance; the incumbent-violation cache is
+    keyed on it implicitly, so clear it on every change."""
+    state.clearance = clr
+    state._inc_violation.clear()
+
+
+def seat_candidates(state, tx: float, ty: float, *,
+                    max_disp: Optional[float] = None, sweep: bool = True):
+    """Yield candidate (x, y) seats around (tx, ty), nearest-first, in the
+    order the seat search has always tried them: a 1.0mm ring out to
+    SEARCH_RADIUS_MM, a FINE ring near the target, an XFINE (grid-step) ring,
+    then -- when `sweep` and no `max_disp` cap -- a whole-board sweep at
+    FALLBACK_STEP_MM, nearest the target first.
+
+    Lifted out of `_try_place`'s `_first_fit` closure (#1051) so the row seat
+    (`_seat_block`) walks the SAME offsets for a row's anchor rather than a
+    second copy that drifts. Lazy: a caller that stops at the first fit pays
+    only for the candidates it looked at, as the closure did. Positions are
+    rounded to 3dp, the pose `apply_move` writes.
+
+    `sweep` is False for a zone-constrained search (a part stays in its
+    zone); `max_disp` (a capped repair) never sweeps the whole board either.
+    """
+    from pose_score import _offsets
+    xfine = max(0.05, getattr(state, 'grid_step', 0.1) or 0.1)
+    for radius, step in ((SEARCH_RADIUS_MM, SEARCH_STEP_MM),
+                         (SEARCH_FINE_RADIUS_MM, SEARCH_FINE_STEP_MM),
+                         (SEARCH_XFINE_RADIUS_MM, xfine)):
+        if max_disp is not None and max_disp < step - 1e-9:
+            # run-7 A3: a ring whose step exceeds the cap can contribute
+            # nothing but used to burn a full sweep
+            continue
+        for dx, dy in _offsets(radius, step):
+            if max_disp is not None and math.hypot(dx, dy) > max_disp + 1e-9:
+                continue
+            yield round(tx + dx, 3), round(ty + dy, 3)
+    if not sweep or max_disp is not None:
+        return
+    u = state.usable
+    grid = []
+    nx = max(1, int((u[2] - u[0]) / FALLBACK_STEP_MM))
+    ny = max(1, int((u[3] - u[1]) / FALLBACK_STEP_MM))
+    for i in range(nx + 1):
+        for j in range(ny + 1):
+            x = round(u[0] + i * FALLBACK_STEP_MM, 3)
+            y = round(u[1] + j * FALLBACK_STEP_MM, 3)
+            grid.append(((x - tx) ** 2 + (y - ty) ** 2, x, y))
+    grid.sort()
+    for _, x, y in grid:
+        yield x, y
+
+
 def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
                constraint=None, tol: float = 0.5,
                max_disp: Optional[float] = None,
@@ -1156,7 +1218,6 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
     deliberately packs would fail real boards. Courtyards carry their own
     margin, so a small courtyard-to-courtyard gap is not a copper hazard. A
     relaxed placement is a NOTE for the caller, never silent."""
-    from pose_score import _offsets
     part = state.parts[ref]
 
     def _ok(x, y, rot):
@@ -1168,11 +1229,8 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
 
     full = state.clearance
     try:
-        for clr in (full, full / 2.0, min(0.02, full)):
-            # candidate_valid reads state.clearance; the incumbent-violation
-            # cache is keyed on it implicitly, so clear it on every change.
-            state.clearance = clr
-            state._inc_violation.clear()
+        for clr in seat_clearances(full):
+            _set_seat_clearance(state, clr)
             # #893. `rotations` is the DECLARED ladder when an intent gave
             # this ref one -- a single angle for `blocks[].rotation`, the
             # author's set for `rotation_candidates` -- in the author's order,
@@ -1208,58 +1266,23 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
             # default and stays opt-in for a caller who has read that
             # trade. The numbers are in the baseline file.
             _pref = getattr(state, 'rotation_prefer', None)
-            xfine = max(0.05, getattr(state, 'grid_step', 0.1) or 0.1)
 
             def _first_fit(rot):
-                """The first legal (x, y) for `rot` in the ring order this
-                search has always used, or None. The search body, lifted
-                into a closure so the preferred-rotation path below can ask
-                it once per angle without a second copy of the rings."""
-                for radius, step in ((SEARCH_RADIUS_MM, SEARCH_STEP_MM),
-                                     (SEARCH_FINE_RADIUS_MM,
-                                      SEARCH_FINE_STEP_MM),
-                                     (SEARCH_XFINE_RADIUS_MM, xfine)):
-                    if max_disp is not None and max_disp < step - 1e-9:
-                        # run-7 A3: a ring whose step exceeds the cap can
-                        # contribute nothing but used to burn a full sweep
+                """The first legal (x, y) for `rot` in the order
+                `seat_candidates` yields, or None. A closure so the
+                preferred-rotation path below can ask it once per angle; the
+                ORDER lives in `seat_candidates`, which the row seat
+                (`_seat_block`, #1051) walks too."""
+                # The rings, then (unconstrained and uncapped only) the
+                # whole-board sweep -- PER ANGLE. The sweep is part of "first
+                # fit": the first lift of the rings into a closure left it
+                # outside the OFF path, and splitflap's default seed went from
+                # 0 to 6 unseated parts. `_in_zone` is trivially true on the
+                # sweep, which is only reached with no constraint.
+                for x, y in seat_candidates(state, tx, ty, max_disp=max_disp,
+                                            sweep=constraint is None):
+                    if not _in_zone(x, y, rot):
                         continue
-                    # Budget check at the RING head (36 per call: 3 clearance
-                    # levels x 4 rotations x 3 bands) -- negligible, and it
-                    # bounds one pathological part's overrun to a single ring
-                    # sweep instead of a whole cap ladder. Deliberately NOT in
-                    # the `for dx, dy in _offsets(...)` loop below: that is the
-                    # innermost loop and _offsets already materialises ~3700
-                    # tuples per call, so the band check bounds it adequately.
-                    for dx, dy in _offsets(radius, step):
-                        if (max_disp is not None
-                                and math.hypot(dx, dy) > max_disp + 1e-9):
-                            continue
-                        x, y = round(tx + dx, 3), round(ty + dy, 3)
-                        if not _in_zone(x, y, rot):
-                            continue
-                        if _ok(x, y, rot):
-                            return x, y
-                # The rings found nothing at this angle. A zone-constrained
-                # part stays in its zone and a capped repair never sweeps the
-                # whole board; everything else falls back to a whole-board
-                # sweep, nearest the target first -- PER ANGLE, exactly as the
-                # loop did before the rings were lifted into this closure.
-                # The first lift left this sweep outside the OFF path, and the
-                # review measured it: splitflap's default seed went from 0 to
-                # 6 unseated parts. The sweep is part of "first fit".
-                if constraint is not None or max_disp is not None:
-                    return None
-                u = state.usable
-                grid = []
-                nx = max(1, int((u[2] - u[0]) / FALLBACK_STEP_MM))
-                ny = max(1, int((u[3] - u[1]) / FALLBACK_STEP_MM))
-                for i in range(nx + 1):
-                    for j in range(ny + 1):
-                        x = round(u[0] + i * FALLBACK_STEP_MM, 3)
-                        y = round(u[1] + j * FALLBACK_STEP_MM, 3)
-                        grid.append(((x - tx) ** 2 + (y - ty) ** 2, x, y))
-                grid.sort()
-                for _, x, y in grid:
                     if _ok(x, y, rot):
                         return x, y
                 return None
@@ -1295,8 +1318,7 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
                     state.apply_move(ref, best[1], best[2], best[3])
                     return clr
     finally:
-        state.clearance = full
-        state._inc_violation.clear()
+        _set_seat_clearance(state, full)
     return None
 
 
