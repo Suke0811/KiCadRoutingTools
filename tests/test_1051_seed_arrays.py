@@ -386,6 +386,32 @@ def test_illegal_fixed_pose_is_refused_not_nudged():
           "locked")
 
 
+def test_refused_fixed_pose_stays_unwritten_under_anchors_first():
+    """`--anchors-first` builds its anchor queue from `unplaced` directly,
+    not through `_order`, so a REFUSED fixed pose (held in `unplaced`) was
+    seated there and written anyway (phase-3 verifier). CON2 is esp_prog's
+    largest free part, so it IS an anchor candidate -- the control arm
+    without the fixed pose shows it in the anchor list."""
+    with tempfile.TemporaryDirectory() as td:
+        doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
+        _i, _p = _intent(doc, td, 'ctl.json')
+        _pcb, ctl = _seed(ESP, _i, anchors_first=True)
+        anote = [n for n in ctl['notes'] if n.startswith('anchors-first:')]
+        assert anote and 'CON2' in anote[0], anote
+        doc['fixed_poses'] = [{'ref': 'CON2', 'x': 100.0, 'y': 100.0,
+                               'rot': 0, 'basis': 'declared',
+                               'why': 'off the board'}]
+        intent, _p = _intent(doc, td)
+        _pcb, res = _seed(ESP, intent, anchors_first=True)
+        assert 'CON2' in res['fixed_refused'], res['fixed_refused']
+        assert 'CON2' in res['unseated'], res['unseated']
+        assert 'CON2' not in {p['reference'] for p in res['placements']}
+        anote = [n for n in res['notes'] if n.startswith('anchors-first:')]
+        assert anote and 'CON2' not in anote[0], anote
+    print("  PASS: a refused fixed pose is no anchor and is not written "
+          "under anchors_first (the control lists CON2 as an anchor)")
+
+
 def test_stage1_treats_a_stage0_part_as_an_obstacle():
     import test_run27_edge_seat_clears_placed as t27
     with tempfile.TemporaryDirectory() as td:
@@ -460,6 +486,7 @@ TESTS = [
     test_zero_claim_reports_why,
     test_fixed_pose_exact_locked_and_survives_repair_and_force,
     test_illegal_fixed_pose_is_refused_not_nudged,
+    test_refused_fixed_pose_stays_unwritten_under_anchors_first,
     test_stage1_treats_a_stage0_part_as_an_obstacle,
     test_unarmed_seeds_are_identical_to_the_pre_phase3_seeder,
 ]

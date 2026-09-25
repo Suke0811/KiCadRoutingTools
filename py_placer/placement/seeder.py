@@ -4647,8 +4647,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         from placement.reconstruct import part_extent_mm
         exts = sorted(part_extent_mm(state, r) for r in unplaced)
         thr = max(3.5, exts[int(0.75 * (len(exts) - 1))]) if exts else 3.5
+        # `held` (#1054): a REFUSED fixed pose stays in `unplaced` so its
+        # pile coordinate never vetoes a seat, and must not become an anchor
+        # -- this queue is built from `unplaced` directly, not `_order`.
         anchors = sorted((r for r in unplaced
-                          if part_extent_mm(state, r) >= thr),
+                          if r not in held
+                          and part_extent_mm(state, r) >= thr),
                          key=lambda r: -part_extent_mm(state, r))
         notes.append(f"anchors-first: {len(anchors)} anchor(s) (extent >= "
                      f"{thr:.2f}mm) seed before {len(unplaced) - len(anchors)}"
