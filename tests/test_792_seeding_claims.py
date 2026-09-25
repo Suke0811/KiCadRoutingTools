@@ -195,8 +195,8 @@ def test_the_SHIPPING_arm_leaves_no_part_unseated_that_the_control_seated():
     to `unseated`, so it cannot strand a part. Re-derived per board.
 
     Scoped to the arm that SHIPS. The `chips` arm is excluded here and asserted
-    separately below, because it does strand one -- which is a finding, not a
-    reason to weaken this claim."""
+    separately below (it stranded parts until #1053's stage 2.4, which was
+    a finding, not a reason to weaken this claim)."""
     rows = _armed(_rows())
     for r in rows:
         extra = sorted(set(r['on']['unseated']) - set(r['off']['unseated']))
@@ -205,41 +205,55 @@ def test_the_SHIPPING_arm_leaves_no_part_unseated_that_the_control_seated():
           f"narrowing or the put-back")
 
 
-def test_the_owner_test_arm_STRANDS_a_part_and_that_is_why_it_ships_off():
-    """The measurement earning its keep.
+def test_the_owner_test_arm_strands_nothing_and_buys_no_pin_geometry():
+    """What `decap_owner_chips` (the grouper's chip set as the pin owners,
+    instead of `U*`) does, measured, and why it still ships OFF.
 
-    `decap_owner_chips` widens the pin-owner set from `U*` to the grouper's
-    chip set, which gains pin sources on seven boards and loses none -- so the
-    COVERAGE argument for it is clean. Seeding is not coverage. Measured, the
-    widened arm strands FOUR parts across THREE boards that the control seats:
-    `orangecrab_ext_pll` U4, `rp2350_fpga_eensy_prePlane` L1, and `tigard` H1
-    and H3. (My own first draft of this docstring said 'one part on one
-    board' -- understating the harm, which is the direction my errors lean.)
-    A stranded part is a worse outcome than every gain the flag buys, and
-    that is the whole reason it ships OFF rather than on.
+    THIS CLAIM WAS REWRITTEN in #1051 phase 3 (the commit after 4b7a0643f),
+    because the measurement changed under it. Until then it asserted that
+    the widened arm STRANDS four parts across three boards the control
+    seats -- orangecrab_ext_pll U4, rp2350_fpga_eensy_prePlane L1, tigard
+    H1 and H3 -- and that stranding was the whole reason the flag ships
+    off. Stage 2.4 (#1053, f32efda17) seats the served ICs, everything
+    that outranks the early seats by pins, and everything much larger than
+    them BEFORE the pin stage claims its caps; that stranding came from the
+    caps taking room those parts needed, and it is gone. Re-measured: the
+    chips arm strands exactly what the shipping arm strands, on every
+    armed board.
 
-    Asserted rather than noted, so the flag cannot be flipped on without this
-    arm being confronted -- and so that if a later change fixes the stranding,
-    this arm fails and the flag's justification is revisited deliberately.
+    So the old reason no longer holds, and the default was re-decided on
+    the evidence that remains -- the independent pin-gap grade: the chips
+    arm claims more caps and places them WORSE more often than better
+    (pin_gap_sum: better on 2 boards, worse on 6, equal on 2 at the time
+    of rewriting). The default stays False. Both halves are asserted, so a
+    change that makes the chips arm strand again, or makes it the better
+    arm, fails here and is revisited deliberately.
     """
     rows = _armed(_rows())
     stranded = {}
     for r in rows:
-        extra = sorted(set(r['chips']['unseated']) - set(r['off']['unseated']))
+        extra = sorted(set(r['chips']['unseated']) - set(r['on']['unseated']))
         if extra:
             stranded[r['board']] = extra
-    assert stranded, (
-        "the chips arm no longer strands anything. That is good news and it "
-        "invalidates this arm's premise: re-run measure_792_seeding.py, "
-        "re-read the flag's default, and update BOTH deliberately")
-    assert 'orangecrab_ext_pll' in stranded, sorted(stranded)
-    # The COUNT, not just the presence: a later change that strands three
-    # boards instead of one must not read as the same finding.
-    assert len(stranded) == 3, sorted(stranded)
-    assert sum(len(v) for v in stranded.values()) == 4, stranded
-    print(f"  PASS: the owner-test arm strands {stranded} -- measured, and the "
-          f"reason `decap_owner_chips` defaults to False")
-
+    assert not stranded, (
+        f"the chips arm strands parts the shipping arm seats again: "
+        f"{stranded}. Re-read the flag's default deliberately")
+    better, worse, same = [], [], []
+    for r in rows:
+        a, b = r['on']['pin_gap_sum'], r['chips']['pin_gap_sum']
+        if a is None or b is None:
+            continue
+        (worse if b > a + 1e-6 else better if b < a - 1e-6
+         else same).append(r['board'])
+    assert len(worse) + len(better) >= MIN_BOARDS, (better, worse)
+    assert len(worse) > len(better), (
+        f"the chips arm now improves pin geometry on {better} and worsens "
+        f"it on {worse}: the evidence for its default has turned -- "
+        f"revisit `decap_owner_chips` deliberately")
+    print(f"  PASS: the owner-test arm strands nothing the shipping arm "
+          f"seats; pin_gap_sum better on {len(better)} ({', '.join(better)}),"
+          f" worse on {len(worse)}, equal on {len(same)} -- so "
+          f"`decap_owner_chips` stays False")
 
 def test_what_DECLARING_the_key_costs_is_recorded_not_gated():
     """`off` carries no `decaps` key, so stage 2.5 does not run in it at all.
@@ -298,7 +312,7 @@ TESTS = [
     test_the_rows_cover_the_tracked_corpus_and_say_what_they_skipped,
     test_the_control_arm_is_never_what_changed,
     test_the_SHIPPING_arm_leaves_no_part_unseated_that_the_control_seated,
-    test_the_owner_test_arm_STRANDS_a_part_and_that_is_why_it_ships_off,
+    test_the_owner_test_arm_strands_nothing_and_buys_no_pin_geometry,
     test_what_DECLARING_the_key_costs_is_recorded_not_gated,
     test_the_put_back_actually_fires_somewhere,
 ]

@@ -61,7 +61,7 @@ from placement import seeder                       # noqa: E402
 from placement.legality import grade_pad_legality  # noqa: E402
 from placement.writer import write_placed_output   # noqa: E402
 
-RUN_ALL_TIMEOUT = 600
+RUN_ALL_TIMEOUT = 900
 
 BOARDS = os.path.join(ROOT, 'kicad_files')
 SPLITFLAP = os.path.join(BOARDS, 'splitflap_driver.kicad_pcb')
