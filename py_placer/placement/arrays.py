@@ -61,7 +61,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 #: peer-IC chains are no longer members; supply rails are no own net): glasgow
 #: 14 of 24 (the two lost formed rows were socket pairs J6+J7 and J8+J9),
 #: ulx3s 14 of 30, splitflap 0 of 4 (all five formed rows were chip chains
-#: or headers), coldfire 9 of 14, watchy 1 of 5.
+#: or headers), coldfire 9 of 14, watchy 1 of 5. After fix round 2 (a
+#: supply-pin net is a rail only at RAIL_MIN_PARTS; digit-led non-voltage
+#: names are no rail): coldfire 6 of 14 (the MAX202 cap rows grew from 2 to
+#: 4 caps and no longer form), watchy 2 of 6 (U4:18pF, the crystal pair).
 DEFAULT_TOLERANCES = {'axis_mm': 0.25, 'rotation_deg': 0.5,
                       'pitch_spread_mm': 0.25, 'pitch_mm': 0.25}
 
@@ -415,20 +418,68 @@ def _net_label(pcb, net_id: int) -> str:
     return (getattr(n, 'name', '') or '') if n is not None else ''
 
 
-def _is_rail(name: str, net_id: int = 0, rails=frozenset()) -> bool:
-    """A ground or rail: by NAME (`net_queries`), or -- `rails`, the nets on
-    any chip's supply pins (`floorplan.supply_pins`, pose-free) -- by what
-    it FEEDS. The second is not optional: ulx3s's `/power/P1V1`, `P2V5`
-    and `P3V3` pass no name test, and they are U1's core and I/O rails."""
+#: A leaf that starts with a digit is a rail to `net_queries.
+#: is_power_net_name` (its `\d` alternative, meant for `3V3`, `5V`, `1V8`).
+#: That also takes `32K_P`, `12MHZ`, `25M_XO`: watchy's 32.768 kHz crystal
+#: nets `/32K_P` / `/32K_N` read as rails, so its crystal load caps C17/C18
+#: had no own net and their `bank:18pF` vanished; read as signals, they are
+#: the pin_run `U4:18pF` on U4's two crystal pins. The shared predicate has
+#: five other callers and is NOT changed here; the detector alone reads a
+#: digit-led leaf as a rail only when it is VOLTAGE-shaped.
+_VOLTAGE_LEAF = re.compile(r'^\d+(?:[.,]\d+)?V\d*[A-Z]*(?:$|[_.\-])', re.I)
+
+
+def _rail_by_name(name: str) -> bool:
     from net_queries import is_ground_net_name, is_power_net_name
-    return (bool(net_id) and net_id in rails) or (
-        bool(name) and (is_ground_net_name(name) or is_power_net_name(name)))
+    if not name:
+        return False
+    if is_ground_net_name(name):
+        return True
+    if not is_power_net_name(name):
+        return False
+    leaf = name.split('/')[-1]
+    return not leaf[:1].isdigit() or bool(_VOLTAGE_LEAF.match(leaf))
 
 
-def supply_rail_nets(supply) -> frozenset:
-    """Every net on a supply pin of any chip in `supply_pins`' answer."""
-    return frozenset(p.net_id for rec in supply.values()
-                     for p, _n in rec['pins'] if p.net_id)
+def _is_rail(name: str, net_id: int = 0, rails=frozenset()) -> bool:
+    """A ground or rail: by NAME (`_rail_by_name`, over `net_queries`), or
+    -- `rails`, `supply_rail_nets` -- by what it FEEDS: a net on a chip's
+    supply pin that reaches at least `RAIL_MIN_PARTS` parts. The second
+    catches rails with no rail-shaped name.
+
+    NOT traced: a rail that reaches a chip only THROUGH a 0-ohm jumper.
+    ulx3s's `/power/P1V1`, `P2V5`, `P3V3` pass no name test and reach U1's
+    supply pins only via jumpers RP1-RP3, so neither path sees them, and
+    their output caps C22/C23/C24 still form `bank:2.2uF`."""
+    return (bool(net_id) and net_id in rails) or _rail_by_name(name)
+
+
+#: A supply-pin net is a RAIL only when it reaches at least this many parts.
+#: A net joining one chip pin to one cap is that chip's LOCAL node -- a
+#: charge-pump reservoir, an internal regulator's VCAP -- not a rail other
+#: parts share. Measured: coldfire's MAX202s type V+ and V- `power_out`, each
+#: net reaching the chip and one cap (C204/C207, C209/C212), so counting
+#: them as rails cut the `U202:100nF` / `U203:100nF` rows from 4 caps to
+#: the 2 flying caps. Every real rail on the phase-2 boards reaches more.
+RAIL_MIN_PARTS = 3
+
+
+def supply_rail_nets(supply, pcb=None) -> frozenset:
+    """Every net on a supply pin of any chip in `supply_pins`' answer that
+    reaches at least `RAIL_MIN_PARTS` parts (all of them without `pcb`)."""
+    out = set()
+    for rec in supply.values():
+        for p, _n in rec['pins']:
+            if not p.net_id:
+                continue
+            if pcb is not None:
+                net = (pcb.nets or {}).get(p.net_id)
+                parts = {q.component_ref
+                         for q in (getattr(net, 'pads', None) or ())}
+                if len(parts) < RAIL_MIN_PARTS:
+                    continue
+            out.add(p.net_id)
+    return frozenset(out)
 
 
 def _copper_pad_count(fp) -> int:
@@ -480,7 +531,7 @@ def not_a_member(fp, ref: str) -> Optional[str]:
     from .part_class import classify_part
     cls = classify_part(fp, ref).name
     if cls is not None:
-        return f"a {cls} part"
+        return f"part_class classifies it {cls}"
     name = str(getattr(fp, 'footprint_name', '') or '').lower()
     if any(k in name for k in JUMPER_FP):
         return 'a jumper footprint'
@@ -586,7 +637,9 @@ def _grid_named(fp) -> bool:
                                   for n in pads) > len(pads)
 
 
-def _pin_runs(pcb, refs: List[str], rails=frozenset()) -> Tuple[List[Dict], List[str]]:
+def _pin_runs(pcb, refs: List[str], rails=frozenset(),
+              declined: Optional[List[Dict]] = None
+              ) -> Tuple[List[Dict], List[str]]:
     """Criterion (a): members each on their own pin of ONE common part.
 
     Repeatedly elects the host that the most remaining members reach by an
@@ -595,9 +648,18 @@ def _pin_runs(pcb, refs: List[str], rails=frozenset()) -> Tuple[List[Dict], List
     suggestion and its grade cannot disagree about it -- and keeps what that
     order resolves. The rest try the next host (glasgow IO_Buffer_A: RN7+RN8
     serve U30, then RN9+RN10 serve connector J2).
+
+    A host under the pad-ratio floor (`MIN_HOST_TO_MEMBER_PADS`) that
+    WOULD HAVE WON an election -- two or more members, and ahead of the
+    host that was elected, or with none elected -- is recorded in
+    `declined`, not dropped silently (splitflap: U4 over the shift
+    registers, U1/U6/U7/U8 over each other). A floored host that would
+    have lost anyway is not a decision the floor made, and is not listed.
     """
     fps = pcb.footprints or {}
     remaining = list(refs)
+    floored: Dict[str, List[str]] = {}
+    mp = _copper_pad_count(fps[refs[0]]) if refs else 0
     found: List[Dict] = []
     # One partition is one footprint, so one member pad count.
     floor = max(HOST_MIN_PADS,
@@ -608,17 +670,23 @@ def _pin_runs(pcb, refs: List[str], rails=frozenset()) -> Tuple[List[Dict], List
         score: Dict[str, List[int]] = {}
         for m in remaining:
             for h, ls in links[m].items():
-                if _copper_pad_count(fps[h]) < floor:
+                if _copper_pad_count(fps[h]) < HOST_MIN_PADS:
                     continue
                 s = score.setdefault(h, [0, 0])
                 s[0] += 1
                 s[1] += len(ls)
-        if not score:
-            break
-        host = min(score, key=lambda h: (-score[h][0], -score[h][1],
-                                         -_copper_pad_count(fps[h]),
-                                         _ref_key(h)))
-        if score[host][0] < MIN_MEMBERS:
+
+        def elect(pool):
+            return min(pool, key=lambda h: (-score[h][0], -score[h][1],
+                                            -_copper_pad_count(fps[h]),
+                                            _ref_key(h))) if pool else None
+        host = elect([h for h in score
+                      if _copper_pad_count(fps[h]) >= floor])
+        best = elect(list(score))
+        if (best is not None and best != host
+                and score[best][0] >= MIN_MEMBERS and best not in floored):
+            floored[best] = [m for m in remaining if best in links[m]]
+        if host is None or score[host][0] < MIN_MEMBERS:
             break
         linked = [m for m in remaining if host in links[m]]
         ordered, _unres = pin_order(pcb, host, linked)
@@ -638,6 +706,17 @@ def _pin_runs(pcb, refs: List[str], rails=frozenset()) -> Tuple[List[Dict], List
             }})
         claimed = set(ordered)
         remaining = [m for m in remaining if m not in claimed]
+    if declined is not None:
+        for h in sorted(floored, key=_ref_key):
+            if len(floored[h]) >= MIN_MEMBERS:
+                hp = _copper_pad_count(fps[h])
+                declined.append({
+                    'members': list(floored[h]), 'serves': h,
+                    'criterion': 'pin_run',
+                    'why': (f"host {h} has {hp} copper pads, under "
+                            f"{MIN_HOST_TO_MEMBER_PADS}x the members' {mp}: "
+                            f"peer parts on one net, not small parts "
+                            f"gathered at a bigger one")})
     return found, remaining
 
 
@@ -709,11 +788,14 @@ def _sheet_banks(pcb, refs: List[str], rails=frozenset()) -> List[Dict]:
     Members with one shape and at least one own net are a bank: an LED+
     resistor channel repeated, not parallel caps on one rail (no own net).
 
-    A RAIL is never an own net, the way `pin_run` filters rails: three caps
-    each on their own regulator output plus GND (ulx3s C22/C23/C24 on
-    P1V1/P2V5/P3V3) share a shape only because each rail is "its own", and
-    that is three regulators' output caps, not a channel repeated. A rail is
-    recorded by its NAME, so such members differ and form nothing.
+    A RAIL (`_is_rail`) is never an own net, the way `pin_run` filters
+    rails: three caps each on their own rail plus GND (`+1V8`, `+3V3`,
+    `+5V`) share a shape only because each rail is "its own", and that is
+    three regulators' output caps, not a channel repeated. A rail is
+    recorded by its NAME, so such members differ and form nothing. A rail
+    `_is_rail` cannot see still counts as own: ulx3s C22/C23/C24 on
+    P1V1/P2V5/P3V3 (reaching U1 only through 0-ohm jumpers) DO form
+    `bank:2.2uF`.
     """
     fps = pcb.footprints or {}
     reach: Dict[int, int] = {}
@@ -782,6 +864,65 @@ def _sheet_banks(pcb, refs: List[str], rails=frozenset()) -> List[Dict]:
     return found
 
 
+def _one_role_per_part(pcb, cands: List[Dict],
+                       declined: Optional[List[Dict]]) -> List[Dict]:
+    """The candidates that survive "no part is both a host and a member".
+
+    GREEDY over a fixed priority, and only a SURVIVOR refuses: a candidate
+    is accepted unless its host is a member of an accepted one, or one of
+    its members hosts an accepted one. The earlier draft refused every
+    pair in one pass, so a candidate refused only by an already-refused
+    one stayed refused: at a pad ratio of 1.0 splitflap's real `U5:220R`
+    and `U9:220R` rows went, because U5/U9 were members of chip "rows"
+    that were themselves refused (fix-round-1 re-verification).
+
+    Priority: `CRITERIA` precedence (coldfire's `bank:MAX202` loses to the
+    cap rows its members host), then the BIGGER host first -- a row is
+    small parts gathered at a large one, so glasgow-style R-arrays on an
+    FPGA outrank anything the R-array itself might "host" -- then the
+    smaller members, then the larger row, then the first member's name.
+    """
+    fps = pcb.footprints or {}
+
+    def key(c):
+        host = (_copper_pad_count(fps[c['serves']])
+                if c['serves'] in fps else 0)
+        return (CRITERIA.index(c['criterion']), -host,
+                _copper_pad_count(fps[c['members'][0]]),
+                -len(c['members']), _ref_key(c['members'][0]))
+
+    accepted: List[Dict] = []
+    member_of: Dict[str, Dict] = {}
+    host_of: Dict[str, Dict] = {}
+    for c in sorted(cands, key=key):
+        why = None
+        if c['serves'] and c['serves'] in member_of:
+            o = member_of[c['serves']]
+            why = (f"its host {c['serves']} is a member of the kept "
+                   f"{o['criterion']} ({', '.join(o['members'])})")
+        else:
+            for m in c['members']:
+                if m in host_of:
+                    o = host_of[m]
+                    why = (f"member {m} is the host of the kept "
+                           f"{o['criterion']} ({', '.join(o['members'])})")
+                    break
+        if why is not None:
+            if declined is not None:
+                declined.append({'members': list(c['members']),
+                                 'serves': c['serves'],
+                                 'criterion': c['criterion'],
+                                 'why': why + '; a part is a host or a '
+                                              'member, not both'})
+            continue
+        accepted.append(c)
+        for m in c['members']:
+            member_of[m] = c
+        if c['serves']:
+            host_of[c['serves']] = c
+    return accepted
+
+
 def suggest_arrays(pcb, *, pin_functions=None,
                    declined: Optional[List[Dict]] = None
                    ) -> List[Dict[str, object]]:
@@ -813,21 +954,16 @@ def suggest_arrays(pcb, *, pin_functions=None,
     (order `'unknown'`). Output order: criterion, then larger first, then
     name -- deterministic, independent of dict or hash order.
 
-    No part is both a HOST and a MEMBER (glasgow RN5 was the host of J6+J7
-    and a member of `J3:10k`; splitflap's four chip "rows" served each
-    other along one shift-register chain). Of two candidates in that
-    relation the one of LOWER precedence is refused -- coldfire's
-    `bank:MAX202` loses to the charge-pump cap rows the MAX202s host --
-    and on equal precedence the one whose host is the other's member. The
-    pairs are found on the full set in one pass, so the answer does not
-    depend on which is looked at first. `declined`, when a list is given, receives
-    one record per refused candidate and per partition of excluded parts
-    (`not_a_member`) that could otherwise have formed a row.
+    No part is both a HOST and a MEMBER (`_one_role_per_part`). `declined`,
+    when a list is given, receives one record per refused candidate, per
+    host the pad-ratio floor rejected (`MIN_HOST_TO_MEMBER_PADS`), and per
+    partition of excluded parts (`not_a_member`) that could otherwise have
+    formed a row.
     """
     from .floorplan import supply_pins
     supply = supply_pins(pcb, pin_functions=pin_functions,
                          chips=pose_free_chip_refs(pcb))
-    rails = supply_rail_nets(supply)
+    rails = supply_rail_nets(supply, pcb)
     raw: List[Dict] = []
     excluded: Dict[Tuple[str, str, str], Tuple[str, List[str]]] = {}
     parts = _partitions(pcb, excluded)
@@ -839,7 +975,7 @@ def suggest_arrays(pcb, *, pin_functions=None,
     for (fpname, value, sheet), refs in sorted(parts.items()):
         if len(refs) < MIN_MEMBERS:
             continue
-        runs, rest = _pin_runs(pcb, refs, rails)
+        runs, rest = _pin_runs(pcb, refs, rails, declined)
         rows, rest = _decap_rows(pcb, rest, supply)
         banks = (_sheet_banks(pcb, rest, rails)
                  if len(rest) >= MIN_MEMBERS else [])
@@ -850,31 +986,7 @@ def suggest_arrays(pcb, *, pin_functions=None,
                 c['evidence'].update({'footprint': fpname, 'value': value,
                                       'sheet': sheet or '/'})
                 raw.append(c)
-    member_of = {m: c for c in raw for m in c['members']}
-    refused: Dict[int, Tuple[Dict, str]] = {}
-    for c in raw:
-        other = member_of.get(c['serves']) if c['serves'] else None
-        if other is None or other is c:
-            continue
-        # The LOWER-precedence one goes (`CRITERIA`); on a tie the one whose
-        # host is the other's member -- a part is a member first.
-        if CRITERIA.index(other['criterion']) > CRITERIA.index(
-                c['criterion']):
-            refused[id(other)] = (other, (
-                f"member {c['serves']} is the host of a higher-precedence "
-                f"{c['criterion']} ({', '.join(c['members'])})"))
-        else:
-            refused[id(c)] = (c, (
-                f"its host {c['serves']} is a member of another candidate "
-                f"({', '.join(other['members'])})"))
-    for c, why in refused.values():
-        if declined is not None:
-            declined.append({'members': list(c['members']),
-                             'serves': c['serves'],
-                             'criterion': c['criterion'],
-                             'why': why + '; a part is a host or a member, '
-                                          'not both'})
-    raw = [c for c in raw if id(c) not in refused]
+    raw = _one_role_per_part(pcb, raw, declined)
     out: List[Dict[str, object]] = []
     used: Dict[str, int] = {}
     raw.sort(key=lambda c: (CRITERIA.index(c['criterion']),

@@ -447,8 +447,9 @@ def test_no_part_is_host_and_member_and_no_big_ic_member():
     assert not any(c['serves'] == 'M1' for c in got), rows
     assert not any('X1' in c['members'] for c in got), rows
     why = {tuple(d['members']): d['why'] for d in dec}
-    assert 'host or a member' in why[('K1', 'K2')], why
-    assert 'higher-precedence pin_run' in why[('X1', 'X2')], why
+    assert 'its host M1 is a member of the kept pin_run' in \
+        why[('K1', 'K2')], why
+    assert 'is the host of the kept pin_run' in why[('X1', 'X2')], why
     print("  PASS: no host is a member on 5 boards; every host clears "
           f"{arr.MIN_HOST_TO_MEMBER_PADS}x its members' pads; the refused "
           "side is the lower-precedence one, else the one whose host is a "
@@ -534,25 +535,136 @@ def test_connectors_testpoints_jumpers_are_never_members():
           "boards; connectors still host")
 
 
-def _cap_trio(nets_named):
+def _cap_trio(nets_named, chip=False, loads=False):
+    """Three identical caps, each on its own net plus GND. `chip` puts each
+    net on a `power_in` pin of one 4-pad chip U1 (so the net is on a SUPPLY
+    PIN whatever its name); `loads` adds one more part per net, so the net
+    reaches three parts (`arrays.RAIL_MIN_PARTS`)."""
     nets, fps = {}, {}
 
-    def pad(ref, num, net_id, name):
+    def pad(ref, num, net_id, name, pintype='', x=0.0):
         p = SimpleNamespace(pad_number=str(num), net_id=net_id,
-                            component_ref=ref, layers=['F.Cu'], local_x=0.0,
+                            component_ref=ref, layers=['F.Cu'], local_x=x,
                             local_y=float(num), global_x=0.0,
-                            global_y=float(num), pintype='', pinfunction='')
-        nets.setdefault(net_id, SimpleNamespace(name=name, pads=[])
-                        ).pads.append(p)
+                            global_y=float(num), pintype=pintype,
+                            pinfunction='')
+        if net_id:
+            nets.setdefault(net_id, SimpleNamespace(name=name, pads=[])
+                            ).pads.append(p)
         return p
-    for i, name in enumerate(nets_named):
-        ref = f'C{i + 1}'
+
+    def part(ref, fpname, value, pads):
         fps[ref] = SimpleNamespace(
-            reference=ref, footprint_name='C_0603', value='10u',
+            reference=ref, footprint_name=fpname, value=value,
             sheet_path='/root/' + ref, locked=False, x=0.0, y=0.0,
-            rotation=0.0,
-            pads=[pad(ref, 1, 10 + i, name), pad(ref, 2, 1, 'GND')])
+            rotation=0.0, pads=pads)
+    for i, name in enumerate(nets_named):
+        part(f'C{i + 1}', 'C_0603', '10u',
+             [pad(f'C{i + 1}', 1, 10 + i, name), pad(f'C{i + 1}', 2, 1,
+                                                    'GND')])
+        if loads:
+            part(f'L{i + 1}', f'L_{i}', f'{i}uH',
+                 [pad(f'L{i + 1}', 1, 10 + i, name), pad(f'L{i + 1}', 2, 0,
+                                                        '')])
+    if chip:
+        part('U1', 'SOIC-8', 'CHIP',
+             [pad('U1', n, 10 + n - 1 if n <= 3 else 0,
+                  nets_named[n - 1] if n <= 3 else '', 'power_in',
+                  x=0.0 if n <= 2 else 5.0) for n in range(1, 5)])
     return SimpleNamespace(footprints=fps, nets=nets)
+
+
+def test_the_supply_pin_rail_path():
+    """Fix-round 2, item 4: a net no NAME test calls a rail is one when it
+    sits on a chip's supply pin and reaches `RAIL_MIN_PARTS` parts -- and a
+    supply-pin net joining ONE chip pin to ONE cap is a local node (a
+    charge-pump reservoir), not a rail."""
+    names = ['/NODE_A', '/NODE_B', '/NODE_C']
+    assert not any(arr._rail_by_name(n) for n in names)
+    shared = arr.suggest_arrays(_cap_trio(names, chip=True, loads=True))
+    assert shared == [], ("three parts on each supply-pin net: rails, so "
+                          "the caps have no own signal net", shared)
+    local = arr.suggest_arrays(_cap_trio(names, chip=True))
+    assert [(c['criterion'], c['serves']) for c in local] == [
+        ('pin_run', 'U1')], local
+    # The real case: coldfire's MAX202 charge-pump caps (V+ / V- are typed
+    # power_out, each net = chip pin + one cap) are four, not two.
+    rows = {c['name']: c['members'] for c in _sug(COLDFIRE)}
+    assert rows['U202:100nF'] == ['C205', 'C204', 'C206', 'C207'], rows
+    assert rows['U203:100nF'] == ['C210', 'C209', 'C211', 'C214'], rows
+    print("  PASS: supply-pin nets reaching 3 parts are rails; a chip-pin-"
+          "plus-one-cap node is not (coldfire U202/U203 rows keep 4 caps)")
+
+
+def test_rail_names_the_detector_reads_locally():
+    """Fix-round 2, items 5 and 6. The shared `is_power_net_name` calls a
+    digit-led leaf a rail, `/32K_P` included; the detector alone narrows
+    that to voltage-shaped leaves, so watchy's crystal load caps form a
+    row on U4's crystal pins. And the documented limitation: ulx3s's jumper-fed P1V1/P2V5/P3V3
+    are not traced, so `bank:2.2uF` still forms."""
+    from net_queries import is_power_net_name
+    assert is_power_net_name('/32K_P'), 'the shared predicate is unchanged'
+    assert not arr._rail_by_name('/32K_P')
+    for v in ('3V3', '/power/3.3V', '5V', '1V8_A', '+3V3', 'VCC', 'GND'):
+        assert arr._rail_by_name(v), v
+    for s_ in ('12MHZ', '25M_XO', '32K_N'):
+        assert not arr._rail_by_name(s_), s_
+    # Their crystal nets are now signal nets, so the load caps are a
+    # pin_run on U4's two crystal pins (the stronger criterion), where
+    # before this fix they were at best a sheet_bank.
+    rows = {c['name']: c for c in _sug(WATCHY)}
+    assert rows.get('U4:18pF', {}).get('members') == ['C17', 'C18'], rows
+    nets = {ln['net'] for m in ('C17', 'C18')
+            for ln in rows['U4:18pF']['evidence']['links'][m]}
+    assert nets == {'/32K_P', '/32K_N'}, nets
+    ulx = {c['name']: c['members'] for c in _sug(ULX3S)}
+    assert ulx.get('bank:2.2uF') == ['C22', 'C23', 'C24'], ulx
+    print("  PASS: /32K_P is no rail to the detector (watchy U4:18pF "
+          "forms), the shared predicate unchanged; ulx3s bank:2.2uF still "
+          "forms, as documented")
+
+
+def test_host_floor_and_cascade_on_splitflap():
+    """Fix-round 2, items 1-3. What the 1.25x floor protects is splitflap's
+    real `U5:220R` / `U9:220R` rows. At 1.0 the chip chain becomes
+    candidates; the survivor-only refusal must still keep both rows (the
+    one-pass refusal dropped them), while chips become members -- so the
+    floor is what keeps them out. A host the floor rejected is disclosed."""
+    rows = {c['name']: c['members'] for c in _sug(SPLITFLAP)}
+    assert rows.get('U5:220R') == ['R2', 'R3', 'R4'], rows
+    assert rows.get('U9:220R') == ['R1', 'R10', 'R5'], rows
+    dec = []
+    arr.suggest_arrays(_pcb(SPLITFLAP), declined=dec)
+    fl = [d for d in dec if 'copper pads, under' in d['why']]
+    assert any(d['serves'] == 'U6' and set(d['members']) == {'U1', 'U5'}
+               for d in fl), fl
+    saved = arr.MIN_HOST_TO_MEMBER_PADS
+    try:
+        arr.MIN_HOST_TO_MEMBER_PADS = 1.0
+        at1 = arr.suggest_arrays(_pcb(SPLITFLAP))
+    finally:
+        arr.MIN_HOST_TO_MEMBER_PADS = saved
+    r1 = {c['name']: c['members'] for c in at1}
+    assert r1.get('U5:220R') == ['R2', 'R3', 'R4'], r1
+    assert r1.get('U9:220R') == ['R1', 'R10', 'R5'], r1
+    chips = {'U1', 'U2', 'U5', 'U6', 'U7', 'U8', 'U9', 'U10'}
+    assert chips & {m for c in at1 for m in c['members']}, \
+        "at 1.0 the chip chain must reach the candidates (the floor binds)"
+    hosts = {c['serves'] for c in at1 if c['serves']}
+    assert not hosts & {m for c in at1 for m in c['members']}
+    print(f"  PASS: U5:220R and U9:220R kept at 1.25 AND at 1.0; the floor "
+          f"keeps chips out; {len(fl)} floor rejection(s) disclosed")
+
+
+def test_decline_wording():
+    """Fix-round 2, item 7: the reason names the classifier, not a noun
+    the part is not (coldfire's DB9s read 'a mount_hole part')."""
+    dec = []
+    arr.suggest_arrays(_pcb(COLDFIRE), declined=dec)
+    db9 = [d for d in dec if 'UARTCAN201' in d['members']]
+    assert db9 and db9[0]['why'].startswith(
+        'part_class classifies it mount_hole'), db9
+    print("  PASS: the DB9 decline names part_class's verdict")
 
 
 def test_rails_are_not_own_nets_in_a_sheet_bank():
@@ -629,6 +741,10 @@ TESTS = [
     test_connectors_testpoints_jumpers_are_never_members,
     test_rails_are_not_own_nets_in_a_sheet_bank,
     test_decap_row_order_is_unknown,
+    test_the_supply_pin_rail_path,
+    test_rail_names_the_detector_reads_locally,
+    test_host_floor_and_cascade_on_splitflap,
+    test_decline_wording,
 ]
 
 
