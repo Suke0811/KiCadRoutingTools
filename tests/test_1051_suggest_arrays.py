@@ -403,6 +403,60 @@ def test_emit_intent_default_unchanged_and_auto_round_trips():
           f"array_unresolved/conflict")
 
 
+def test_every_suggestion_row_loads_as_pasted():
+    """Phase-5 fact-check: the skill tells a reader to ACCEPT a suggestion
+    into `arrays[]`, and a whole suggestion pasted there exits 2 --
+    `unknown key(s) criterion, evidence`. Each suggestion now carries a
+    paste-ready `row`: exactly the intent's keys, `why` pre-filled. Every
+    row of every board here must load through the intent loader, as pasted,
+    all of a board's rows together -- and the whole suggestion must NOT, or
+    this test stops proving the row is what makes it load."""
+    loaded = 0
+    for path in (GLASGOW, SPLITFLAP, ULX3S):
+        cands = _sug(path)
+        assert cands, f"{path}: no suggestions -- the arm tests nothing"
+        rows = []
+        for c in cands:
+            row = c['row']
+            assert set(row) <= fp._ARRAY_KEYS, (c['name'], sorted(row))
+            assert 'criterion' not in row and 'evidence' not in row, row
+            assert row['why'] == arr.suggestion_why(c), row
+            assert row['members'] == c['members'], row
+            assert row.get('serves') == (c['serves'] or None), row
+            rows.append(row)
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, 'intent.json')
+
+            def _load(arrays):
+                with open(p, 'w', encoding='utf-8') as fh:
+                    json.dump({'schema': 1, 'kind': 'floorplan-intent',
+                               'units': 'mm', 'min_reader': 7,
+                               'arrays': arrays}, fh)
+                return fp.load_intent(p)
+            intent = _load(rows)
+            assert len(intent.arrays) == len(rows), path
+            loaded += len(rows)
+            whole = {k: v for k, v in cands[0].items() if k != 'row'}
+            try:
+                _load([whole])
+            except fp.IntentError as exc:
+                assert 'criterion' in str(exc) or 'evidence' in str(exc), exc
+            else:
+                raise AssertionError('a whole suggestion loaded as an '
+                                     'arrays[] entry; the row proves '
+                                     'nothing')
+    # The CLI's document carries the same rows.
+    r = subprocess.run([sys.executable, '-X', 'utf8', CHECK_FLOORPLAN,
+                        SPLITFLAP, '--suggest-arrays'], capture_output=True,
+                       text=True, encoding='utf-8', cwd=ROOT, timeout=600)
+    assert r.returncode == 0, r.stderr[-2000:]
+    doc = json.loads(r.stdout)
+    assert [s['row'] for s in doc['suggestions']] == \
+        [c['row'] for c in _sug(SPLITFLAP)]
+    print(f"  PASS: {loaded} suggestion rows on 3 boards load through the "
+          f"intent loader as pasted; the whole suggestion does not")
+
+
 WATCHY = os.path.join(ROOT, 'kicad_files', 'watchy.kicad_pcb')
 COLDFIRE = os.path.join(ROOT, 'kicad_files',
                         'kit-dev-coldfire-xilinx_5213.kicad_pcb')
@@ -782,6 +836,7 @@ TESTS = [
     test_rail_names_the_detector_reads_locally,
     test_host_floor_and_cascade_on_splitflap,
     test_decline_wording,
+    test_every_suggestion_row_loads_as_pasted,
 ]
 
 

@@ -985,8 +985,9 @@ def suggest_arrays(pcb, *, pin_functions=None,
     """Candidate `arrays[]` entries for a reader to ACCEPT or DECLINE (#1051).
 
     Each candidate is `{name, members (ordered), serves, order,
-    rotation: 'shared', pitch_mm: 'auto', axis: 'auto', criterion, evidence}`
-    -- the intent's own shape plus WHY. It suggests only: nothing reaches an
+    rotation: 'shared', pitch_mm: 'auto', axis: 'auto', criterion, evidence,
+    row}` -- the intent's own shape plus WHY; `row` is the paste-ready
+    `arrays[]` entry (`suggestion_row`), with no `criterion`/`evidence`. It suggests only: nothing reaches an
     intent except through `emit_intent(derive_arrays='auto')` or a reader
     copying it, and an absent row is not a claim that there is none.
 
@@ -1057,12 +1058,31 @@ def suggest_arrays(pcb, *, pin_functions=None,
             base = f"bank:{ev['value'] or ev['footprint']}"
         used[base] = used.get(base, 0) + 1
         name = base if used[base] == 1 else f"{base}~{used[base]}"
-        out.append({
+        sug = {
             'name': name, 'members': list(c['members']),
             'serves': c['serves'], 'order': c['order'],
             'rotation': 'shared', 'pitch_mm': 'auto', 'axis': 'auto',
-            'criterion': c['criterion'], 'evidence': ev})
+            'criterion': c['criterion'], 'evidence': ev}
+        sug['row'] = suggestion_row(sug)
+        out.append(sug)
     return out
+
+
+def suggestion_row(c: Dict[str, object]) -> Dict[str, object]:
+    """The paste-ready `arrays[]` entry for one suggestion: exactly the
+    intent's keys, with `why` pre-filled from the criterion. `criterion`
+    and `evidence` stay beside it on the suggestion -- the intent loader
+    refuses both as unknown keys, so a reader who copied the whole
+    suggestion got an exit 2 (Phase-5 fact-check). A reader accepting it
+    copies this and writes their own reason into `why`."""
+    row: Dict[str, object] = {'name': c['name'],
+                              'members': list(c['members'])}
+    if c.get('serves'):
+        row['serves'] = c['serves']
+    row.update({'order': c['order'], 'rotation': c['rotation'],
+                'pitch_mm': c['pitch_mm'], 'axis': c['axis'],
+                'why': suggestion_why(c)})
+    return row
 
 
 def suggestion_why(c: Dict[str, object]) -> str:

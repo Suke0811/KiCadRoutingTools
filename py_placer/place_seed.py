@@ -20,7 +20,8 @@ place_portfolio.py to diversify and rank what this emits.
 Exit codes: 0 seeded and graded clean; 2 bad arguments; 3 the board cannot be
 seeded (no Edge.Cuts outline -- the outline is spec-owned and will not be
 invented -- or the board is already placed / carries copper); 4 the seed was
-written but parts could not be seated or the intent grade has errors ON
+written but parts could not be seated, a declared fixed pose was not
+honoured (`fixed_refused`, #1054), or the intent grade has errors ON
 PARTS THE SEED PLACED. A grade error on a part the seed was told not to move
 -- `(locked yes)` in the file, or matched by the intent's `must_lock` -- is
 printed and counted in `grade_errors_pinned`, and does not fail the gate:
@@ -265,6 +266,26 @@ def seed_structure_summary(result, graded, written):
     return {'arrays_formed': formed, 'array_unseated': unseated_rows,
             'fixed_seated': fixed, 'fixed_refused': refused,
             'decap_stage': decap}
+
+
+def fixed_pose_reason(summary):
+    """The stderr line for a declared fixed pose this seed did NOT honour
+    (#1054), or None. Every `fixed_refused` entry, and every `fixed_seated`
+    one not at its written pose, fails the gate: a pose the intent declares
+    is a fact, and a seed that leaves it unmet is not the seed that intent
+    asked for. `gate_reason` already fires for a refusal the seeder counted
+    UNSEATED (an illegal pose); this is the rest -- a ref the board does not
+    have or that carries no pads, and a part locked in the FILE off its
+    declared pose, none of which is unseated (Phase-5 fact-check: those
+    exited 0)."""
+    bad = sorted(set(summary.get('fixed_refused') or ())
+                 | {r for r, rec in (summary.get('fixed_seated') or {}).items()
+                    if not rec.get('at_written_pose', True)})
+    if not bad:
+        return None
+    return (f"place_seed: {len(bad)} declared fixed pose(s) NOT honoured "
+            f"({', '.join(bad)}) -- see fixed_refused / fixed_seated in the "
+            f"JSON_SUMMARY. It was still written, for inspection.")
 
 
 def gate_reason(unseated, own, my_pads, hole_delta):
@@ -1316,6 +1337,8 @@ Examples:
         graded, own, pinned)
     print("JSON_SUMMARY: " + json.dumps(summary, sort_keys=True))
     _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta)
+    if _reason is None:
+        _reason = fixed_pose_reason(summary)
     if _reason is not None:
         print(_reason, file=sys.stderr)
         return 4

@@ -167,7 +167,9 @@ def build_parser():
                         'the rail pair of one chip (decap_row), or the '
                         'repeated channel of one sheet (sheet_bank), each '
                         'with its evidence. Suggestions only -- accept or '
-                        'decline each into the arrays[] of an intent. '
+                        'decline each: an accepted suggestion\'s `row` is the '
+                        'paste-ready arrays[] entry (write your reason into '
+                        'its `why`). '
                         'Stdout is the bare '
                         'JSON document; with --json PATH the document goes '
                         'there and stdout gets a short summary. Works on an '
@@ -359,7 +361,8 @@ def _suggest_arrays(args) -> int:
         return 2
     if not args.quiet:
         print(f"{len(cands)} array suggestion(s) on {args.board} -- "
-              f"pose-blind, SUGGESTIONS: accept or decline each "
+              f"pose-blind, SUGGESTIONS: accept or decline each; an "
+              f"accepted one's `row` is the arrays[] entry to paste "
               f"(evidence in {args.json})")
         for c in cands:
             print(f"  {c['criterion']:10s} {c['name']}: "

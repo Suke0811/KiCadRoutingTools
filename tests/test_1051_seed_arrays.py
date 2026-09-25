@@ -733,6 +733,52 @@ def test_fixed_pose_exact_locked_and_survives_repair_and_force():
           "control intent moves it")
 
 
+def test_every_unhonoured_fixed_pose_fails_the_gate():
+    """Phase-5 fact-check: a fixed pose refused because the part is locked
+    in the FILE off its pose was in `fixed_refused` but not in `unseated`,
+    and its grade error sits on a locked part (`grade_errors_pinned`), so
+    place_seed exited 0 with the declared pose unmet. Every `fixed_refused`
+    entry now fails the gate. CONTROL first: the same seeded board with the
+    pose it is locked AT exits 0, so the refusal is what moves the exit."""
+    import place_seed as _ps
+    assert _ps.fixed_pose_reason({'fixed_refused': {}, 'fixed_seated': {
+        'R1': {'at_written_pose': True}}}) is None
+    assert 'R1' in _ps.fixed_pose_reason({'fixed_refused': {'R1': {}}})
+    assert 'C1' in _ps.fixed_pose_reason({'fixed_seated': {
+        'C1': {'at_written_pose': False}}})
+    with tempfile.TemporaryDirectory() as td:
+        doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
+        at = {'ref': 'R1', 'x': 136.4, 'y': 98.8, 'rot': 270,
+              'basis': 'declared', 'why': 'test datum'}
+        _i, ip = _intent(dict(doc, fixed_poses=[at]), td, 'at.json')
+        seeded = os.path.join(td, 'seeded.kicad_pcb')
+        _run_seed([ESP, seeded, '--intent', ip, '--force', '--no-polish',
+                   '--clearance', str(CLEARANCE)])
+        assert _fp_pose(seeded, 'R1') == (136.4, 98.8, 270.0, True)
+        ctl = _run_seed([seeded, os.path.join(td, 'ctl.kicad_pcb'),
+                         '--intent', ip, '--force', '--no-polish',
+                         '--clearance', str(CLEARANCE)])
+        s = _summary(ctl)
+        assert s['fixed_seated']['R1']['how'] == 'already_there', s
+        assert ctl.returncode == 0, (
+            "control: the at-pose run must exit 0, or the arm below cannot "
+            "attribute its exit 4 to the refusal -- "
+            + (ctl.stdout + ctl.stderr)[-1500:])
+        off = dict(at, x=137.4)
+        _i, ip_off = _intent(dict(doc, fixed_poses=[off]), td, 'off.json')
+        r = _run_seed([seeded, os.path.join(td, 'off.kicad_pcb'),
+                       '--intent', ip_off, '--force', '--no-polish',
+                       '--clearance', str(CLEARANCE)])
+        s = _summary(r)
+        assert 'R1' in s['fixed_refused'], s['fixed_refused']
+        assert 'R1' not in s['unseated_refs'], s['unseated_refs']
+        assert r.returncode == 4, (r.returncode, r.stderr[-1500:])
+        assert 'declared fixed pose(s) NOT honoured (R1)' in r.stderr, \
+            r.stderr[-1500:]
+    print("  PASS: a fixed pose refused on a file-locked part exits 4 and "
+          "says so (the at-pose control exits 0)")
+
+
 def test_illegal_fixed_pose_is_refused_not_nudged():
     with tempfile.TemporaryDirectory() as td:
         doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
@@ -876,6 +922,7 @@ TESTS = [
     test_decaps_armed_claims_caps_on_splitflap_and_watchy,
     test_zero_claim_reports_why,
     test_fixed_pose_exact_locked_and_survives_repair_and_force,
+    test_every_unhonoured_fixed_pose_fails_the_gate,
     test_illegal_fixed_pose_is_refused_not_nudged,
     test_refused_fixed_pose_stays_unwritten_under_anchors_first,
     test_stage1_treats_a_stage0_part_as_an_obstacle,

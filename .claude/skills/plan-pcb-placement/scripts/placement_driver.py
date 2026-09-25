@@ -1629,17 +1629,25 @@ def _mechanical_owed(a, intent, plan, pcb, brief_fragment, brief_path,
     # locked part off its pose still does -- stage 0 refuses to move a file
     # lock -- and so does an entry at another pose, or one with no `rot` for
     # a declared rotation (stage 0 would keep the part's current angle).
+    # An entry that does NOT qualify is named in the refusal with its
+    # reason (`rejected`: ref -> (code, entry pose)), so a reader who wrote
+    # one is told why it did not count rather than only "not locked".
     _mposes = (mech or {}).get('poses', {})
     seated = set()
+    rejected = {}
     for _f in (getattr(intent, 'fixed_poses', ()) or ()):
         _r = str(_f.get('ref'))
         _m = _mposes.get(_r)
-        if (_r in anchored and _m is not None
-                and not getattr(pcb.footprints[_r], 'locked', False)
-                and (_m.get('rot') is None
-                     or _rc.fixed_pose_tuple(_f)[2] is not None)
-                and _rc.same_pose(_rc.fixed_pose_tuple(_f),
-                                  (_m['x'], _m['y'], _m.get('rot')))):
+        if _r not in anchored or _m is None:
+            continue
+        _t = _rc.fixed_pose_tuple(_f)
+        if getattr(pcb.footprints[_r], 'locked', False):
+            rejected[_r] = ('locked', _t)
+        elif _m.get('rot') is not None and _t[2] is None:
+            rejected[_r] = ('rot', _t)
+        elif not _rc.same_pose(_t, (_m['x'], _m['y'], _m.get('rot'))):
+            rejected[_r] = ('pose', _t)
+        else:
             seated.add(_r)
     unlocked = [r for r in anchored
                 if not getattr(pcb.footprints[r], 'locked', False)]
@@ -1655,6 +1663,14 @@ def _mechanical_owed(a, intent, plan, pcb, brief_fragment, brief_path,
             + '; '.join(
                 (drifted[r].message.split(' -- ')[0]
                  if r in drifted else f"{r} is not locked")
+                + (f" (its fixed_poses entry at {rejected[r][1]} does not "
+                   'count: ' + {
+                       'locked': 'the part is locked in the board file, and '
+                                 'stage 0 does not move a file-locked part',
+                       'rot': 'it has no `rot` and mechanical.json declares '
+                              'one, so stage 0 would keep the current angle',
+                       'pose': 'it is not the declared pose'}[rejected[r][0]]
+                   + ')' if r in rejected else '')
                 for r in owed_m)
             + '. A declared pose is a recorded fact: for a part with pads '
             'the grade compiles an anchor at exactly that pose from the file '
@@ -1666,7 +1682,7 @@ def _mechanical_owed(a, intent, plan, pcb, brief_fragment, brief_path,
             'to move. `check_floorplan --emit-intent` compiles such an entry '
             'for each anchored ref no edge connector or must_lock already '
             'claims. Name each in the plan\'s `fixed_poses[]` at that '
-            'pose, or put it where the declaration says and lock it there:\n'
+            'pose (with its `rot` where the file declares one), or put it where the declaration says and lock it there:\n'
             # A part locked where it should not be takes TWO calls: one
             # call may not both unlock and lock a ref (place_pose refuses
             # that as ambiguous), and moving a locked part needs `unlock`
@@ -3068,13 +3084,15 @@ def _refusal_scenarios(tmp):
         os.path.join(tmp, 'logo_lk.kicad_pcb'), ('U1', 'U2', 'LOGO1'),
         padless=('LOGO1',), locked=('LOGO1',))
 
-    def mech_board(name, brief_edge=None, mech=None, brief_raw=None):
+    def mech_board(name, brief_edge=None, mech=None, brief_raw=None,
+                   locked=()):
         """A tiny board in its OWN directory, optionally with a sibling
         design brief declaring U2's edge (or `brief_raw` verbatim) and a
         `mechanical.json` (#959)."""
         d = os.path.join(tmp, 'mech_' + name)
         os.makedirs(d, exist_ok=True)
-        b = _tiny_board(os.path.join(d, 'board.kicad_pcb'), ('U1', 'U2'))
+        b = _tiny_board(os.path.join(d, 'board.kicad_pcb'), ('U1', 'U2'),
+                        locked=locked)
         if brief_raw is not None:
             with open(os.path.join(d, 'board.design-brief.json'), 'w',
                       encoding='utf-8') as fh:
@@ -3253,6 +3271,31 @@ def _refusal_scenarios(tmp):
              'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
                         'reason': 'the mounting datum'}]}),
           '--zone-plan', zp_ok] + damaged),
+        # #1054: a plan `fixed_poses[]` entry that does not count, each
+        # reason named -- at another pose (U1), no `rot` for a declared one
+        # (U2), and a part locked in the file off its pose (the second row).
+        ('fixed_poses entries at another pose and with no rot',
+         ['--board', mech_board('fixed_off', mech={
+             'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
+                        'reason': 'the datum'},
+                       {'ref': 'U2', 'x': 5.0, 'y': 2.0, 'rot': 0,
+                        'reason': 'the second datum'}]}),
+          '--zone-plan', wrote('zp_fixed_off.json', _zone_plan_doc(
+              [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
+                'note': 'both parts, one zone'}], min_reader=7,
+              fixed_poses=[{'ref': 'U1', 'x': 3.0, 'y': 2.0, 'rot': 0,
+                            'basis': 'mechanical'},
+                           {'ref': 'U2', 'x': 5.0, 'y': 2.0,
+                            'basis': 'mechanical'}]))] + damaged),
+        ('a fixed_poses entry for a part locked off its pose',
+         ['--board', mech_board('fixed_locked', mech={
+             'fixed': [{'ref': 'U1', 'x': 3.0, 'y': 2.0, 'rot': 0,
+                        'reason': 'the datum'}]}, locked=('U1',)),
+          '--zone-plan', wrote('zp_fixed_locked.json', _zone_plan_doc(
+              [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
+                'note': 'both parts, one zone'}], min_reader=7,
+              fixed_poses=[{'ref': 'U1', 'x': 3.0, 'y': 2.0, 'rot': 0,
+                            'basis': 'mechanical'}]))] + damaged),
         ('a mechanical.json that does not read',
          ['--board', mech_board('garbled', mech={'nonsense': 1}),
           '--zone-plan', zp_ok] + damaged),

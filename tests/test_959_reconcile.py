@@ -476,14 +476,26 @@ def test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats():
         assert 'not held at their declared pose' not in r.stdout, r.stdout
         assert '1 at a fixed pose' in r.stdout, r.stdout
         # No `rot` for a declared rotation: stage 0 keeps the current angle.
-        run_utils.check(plan('norot.json', {'x': 2.0, 'y': 2.0}),
-                        refuse='U1 is not locked', code=4)
+        r = run_utils.check(plan('norot.json', {'x': 2.0, 'y': 2.0}),
+                            refuse='U1 is not locked', code=4)
+        assert 'has no `rot` and mechanical.json declares one' in r.stdout, \
+            r.stdout
+        # Unlocked, the entry at a DIFFERENT pose: refused, and named.
+        r = run_utils.check(plan('off.json', {'x': 3.0, 'y': 2.0, 'rot': 0}),
+                            refuse='U1 is not locked', code=4)
+        assert ('fixed_poses entry at (3.0, 2.0, 0.0) does not count: it '
+                'is not the declared pose') in r.stdout, r.stdout
+        # ...and a rotation off by 90 is a different pose too.
+        run_utils.check(plan('turned.json', {'x': 2.0, 'y': 2.0, 'rot': 90}),
+                        refuse='it is not the declared pose', code=4)
         # A FILE-locked part off its pose: stage 0 will not move it.
         run_utils.check([sys.executable, '-X', 'utf8',
                          run_utils.tool('place_pose.py'), board, board,
                          'set', 'U1', '3', '2', 'lock', 'U1'], accept=True)
-        run_utils.check(plan('locked.json', {'x': 2.0, 'y': 2.0, 'rot': 0}),
-                        refuse='U1 is 1.000mm from its declared', code=4)
+        r = run_utils.check(plan('locked.json',
+                                 {'x': 2.0, 'y': 2.0, 'rot': 0}),
+                            refuse='U1 is 1.000mm from its declared', code=4)
+        assert 'the part is locked in the board file' in r.stdout, r.stdout
     print("  PASS: P1 accepts an unlocked mechanical ref its fixed pose "
           "seats; not rot-less, never a file-locked drift")
 
