@@ -3047,6 +3047,67 @@ def _release_clause(state, ref, members, block_refs, max_disp, step, lattice
     return clause
 
 
+def _public(rec: Dict[str, object]) -> Dict[str, object]:
+    """A release record without its private rejoin bookkeeping."""
+    return {k: v for k, v in rec.items() if not k.startswith('_')}
+
+
+def _slot_of(state, ref, anchor):
+    """`ref`'s offset from `anchor` (pose), the row slot a rejoin checks."""
+    p, a = state.parts[ref], state.parts[anchor]
+    return (round(p.x - a.x, 6), round(p.y - a.y, 6), round(p.rot % 360, 6))
+
+
+def _update_releases(state, held, blocks, rigid_info, released, rejoined,
+                     pass_num, max_disp, step, lattice) -> bool:
+    """End-of-pass release and rejoin (see the call site). Mutates `held`,
+    `blocks`, `released` and `rejoined`; True when anything changed, so the
+    pass loop runs once more for the change to act."""
+    changed = False
+    for ref in sorted(held):
+        name = held[ref]
+        clause = _release_clause(state, ref, rigid_info['groups'][name],
+                                 blocks.get(name), max_disp, step, lattice)
+        if clause is None:
+            continue
+        rest = [r for r in rigid_info['groups'][name]
+                if r != ref and r in state.parts]
+        anchor = rest[0] if rest else None
+        released.append({'ref': ref, 'group': name, 'clause': clause,
+                         'pass': pass_num, '_anchor': anchor,
+                         '_slot': (_slot_of(state, ref, anchor)
+                                   if anchor else None)})
+        del held[ref]
+        if name in blocks:
+            blocks[name] = [r for r in blocks[name] if r != ref]
+            if len(blocks[name]) < 2:
+                del blocks[name]
+        changed = True
+        print(f"  NOTE: {ref} released from rigid group {name} ({clause}) "
+              f"after pass {pass_num}: its pose still fails it after every "
+              f"other part had the pass to clear it, and no block move "
+              f"clears it, so it may move alone")
+    for rec in list(released):
+        if rec.get('pass') == pass_num or rec['_anchor'] is None:
+            continue
+        ref, name = rec['ref'], rec['group']
+        if _slot_of(state, ref, rec['_anchor']) != rec['_slot']:
+            continue                    # it moved alone: stays released
+        members = set(rigid_info['groups'][name])
+        if _clause_failing(state, ref, exclude=members) is not None:
+            continue
+        released.remove(rec)
+        rejoined.append(dict(rec, rejoined_after_pass=pass_num))
+        held[ref] = name
+        if name not in rigid_info['anchored']:
+            blocks[name] = sorted(set(blocks.get(name, [])) | {ref},
+                                  key=rigid_info['groups'][name].index)
+        changed = True
+        print(f"  NOTE: {ref} rejoins rigid group {name} after pass "
+              f"{pass_num}: it is clean again and still in its slot")
+    return changed
+
+
 #: The `metrics_out` keys a caller's JSON_SUMMARY carries verbatim (#1043,
 #: #1051, #1052). Each is present only when its channel was declared, so an
 #: undeclared run's summary is unchanged.
@@ -3461,7 +3522,8 @@ def quench(pcb_data: PCBData, pcb_file: str,
         print(describe(blocks))
     #: ref -> the rigid group holding it out of the single-part nudge.
     held: Dict[str, str] = dict((rigid_info or {}).get('held') or {})
-    released: List[Dict[str, str]] = []
+    released: List[Dict[str, object]] = []
+    rejoined: List[Dict[str, object]] = []
     moved_as_block: Dict[str, int] = {}
     array_order = {f"array:{a.get('name')}": set(a.get('order_refs') or ())
                    for a in (intent_gate or {}).get('arrays') or ()}
@@ -3544,30 +3606,6 @@ def quench(pcb_data: PCBData, pcb_file: str,
                     print(f"  block {name}: {len(refs)} parts moved "
                           f"({best[1]:+.2f}, {best[2]:+.2f})mm "
                           f"gain={base_cost - best[0]:.1f}")
-
-        # --- rigid releases (#1051/#1052) ---
-        # AFTER the group phase, so a violation a block move just fixed is
-        # not released. A member leaves its group only when its INCUMBENT
-        # pose already fails a clause and no admissible block offset clears
-        # it; the release is permanent and disclosed.
-        if held:
-            for ref in sorted(held):
-                name = held[ref]
-                clause = _release_clause(
-                    state, ref, rigid_info['groups'][name], blocks.get(name),
-                    max_displacement, step, lattice)
-                if clause is None:
-                    continue
-                released.append({'ref': ref, 'group': name,
-                                 'clause': clause})
-                del held[ref]
-                if name in blocks:
-                    blocks[name] = [r for r in blocks[name] if r != ref]
-                    if len(blocks[name]) < 2:
-                        del blocks[name]
-                print(f"  NOTE: {ref} released from rigid group {name} "
-                      f"({clause}): its current pose already fails it and "
-                      f"no block move clears it, so it may move alone")
 
         # --- single-part moves (nudge + rotate) ---
         for _mi, ref in enumerate(movable):
@@ -3779,6 +3817,23 @@ def quench(pcb_data: PCBData, pcb_file: str,
                                 print(f"  swap {ra} <-> {rb} gain={gain:.1f}"
                                       f" (d[{ra}]={da:.1f}mm, d[{rb}]={db:.1f}mm)")
 
+        # --- rigid releases and rejoins (#1051/#1052) ---
+        # At the END of the pass, not at first sight: every movable part
+        # outside the group has had this pass's nudge and swap phases to
+        # clear the violation from its side, so a member is not broken out of
+        # its row for a clash its neighbour could have resolved (the
+        # verifier's case: an UNLOCKED part dropped on a row member). A
+        # member is released only when its current pose still fails a clause
+        # and no admissible block offset clears it; it moves alone from the
+        # NEXT pass. A released member that is clean again and still sits in
+        # its slot of the row (it never moved alone, or came back) REJOINS --
+        # release is not a verdict for the rest of the run. One that moved
+        # stays released: pulling it back into the row would be a move no
+        # objective chose.
+        changed = _update_releases(state, held, blocks, rigid_info, released,
+                                   rejoined, pass_num, max_displacement,
+                                   step, lattice) if (held or released)             else False
+
         stats = state.total_cost()
         group_note = f" blocks={group_moves}" if group_moves else ""
         swap_note = (f" swap-capped={swaps_skipped}"
@@ -3801,7 +3856,7 @@ def quench(pcb_data: PCBData, pcb_file: str,
               f"total={stats['total']:.1f}{group_note}{swap_note}")
         if stopped:
             break
-        if moves == 0:
+        if moves == 0 and not changed:
             break
 
     after = state.total_cost()
@@ -3881,10 +3936,11 @@ def quench(pcb_data: PCBData, pcb_file: str,
                                    for n in sorted(rigid_info['groups'])},
                 'anchored': {n: list(r) for n, r in
                              sorted(rigid_info['anchored'].items())},
-                'released': [dict(r) for r in released],
+                'released': [_public(r) for r in released],
+                'rejoined': [_public(r) for r in rejoined],
                 'swaps_refused': swaps_skipped_rigid_total,
             }
-            metrics_out['rigid_released'] = [dict(r) for r in released]
+            metrics_out['rigid_released'] = [_public(r) for r in released]
             metrics_out['groups_deduped'] = [dict(d) for d in
                                              rigid_info['deduped']]
 

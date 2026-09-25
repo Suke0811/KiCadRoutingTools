@@ -251,8 +251,10 @@ def test_member_leaves_only_through_a_disclosed_release():
     m, after_pcb = _quench_to(bad, gate, out, max_displacement=1.0,
                               lock_refs=[intruder])
     rel = m['rigid_released']
-    assert rel == [{'ref': victim, 'group': 'array:U4:47k',
-                    'clause': 'legality'}], rel
+    assert [{k: r[k] for k in ('ref', 'group', 'clause')} for r in rel] == [
+        {'ref': victim, 'group': 'array:U4:47k', 'clause': 'legality'}], rel
+    # Released at the END of pass 1, after every other part had its turn.
+    assert rel[0]['pass'] == 1, rel
     assert m['rigid']['released'] == rel
     after = _offsets(after_pcb, [r for r in members if r != victim])
     before_rest = _offsets(parse_kicad_pcb(bad),
@@ -265,9 +267,52 @@ def test_member_leaves_only_through_a_disclosed_release():
                              max_displacement=1.0)
     assert m2['rigid_released'] == [], m2['rigid_released']
     assert _offsets(ctl_pcb, members) == before, "control row sheared"
-    print(f"  PASS: {intruder} on {victim} releases {victim} alone "
-          f"(legality); the other {len(members) - 1} keep their offsets; the "
-          f"control releases nobody")
+    # The intruder UNLOCKED, at the polish's 3mm cap: it can clear the clash
+    # from its own side, so the row keeps its member (the verifier's case --
+    # a first-sight release broke R6 out for good here).
+    free = os.path.join(td, 'sf_release_free.kicad_pcb')
+    m3, free_pcb = _quench_to(bad, gate, free)
+    assert m3['rigid_released'] == [], m3['rigid_released']
+    assert _offsets(free_pcb, members) == before, "row sheared"
+    moved = math.hypot(free_pcb.footprints[intruder].x - v.x,
+                       free_pcb.footprints[intruder].y - v.y)
+    assert moved > 0.5, "the intruder did not move off, so nothing was tested"
+    print(f"  PASS: {intruder} locked on {victim} releases {victim} alone "
+          f"after pass 1 (legality); the other {len(members) - 1} keep their "
+          f"offsets; unlocked, {intruder} moves {moved:.2f}mm off and nobody "
+          f"is released; the control releases nobody")
+
+
+def test_a_released_member_rejoins_when_clean_and_in_its_slot():
+    """Release is not a verdict for the rest of the run: a released member
+    that is clean again and still in its row slot rejoins; one that moved
+    away stays released."""
+    doc, _ip = _splitflap_intent()
+    seed, _formed = _seeded_no_polish()
+    pcb = parse_kicad_pcb(seed)
+    row = next(a['members'] for a in doc['arrays'] if a['name'] == 'U4:47k')
+    st = _quiet(q.QuenchState, pcb, seed, CLEARANCE, EDGE, 30.0, 0.5, 0.15,
+                2.0, 2.0, 2.0, 0.1, 0.3)
+    st.build_neighbor_lists(3.1)
+    name = 'array:U4:47k'
+    info = {'groups': {name: list(row)}, 'anchored': {}}
+    victim, anchor, other = row[3], row[0], row[5]
+    held = {r: name for r in row if r not in (victim, other)}
+    blocks = {name: [r for r in row if r not in (victim, other)]}
+    recs = [{'ref': r, 'group': name, 'clause': 'legality', 'pass': 1,
+             '_anchor': anchor, '_slot': q._slot_of(st, r, anchor)}
+            for r in (victim, other)]
+    released, rejoined = list(recs), []
+    p = st.parts[other]
+    st.apply_move(other, p.x, p.y + 2.0, p.rot)     # it moved alone
+    changed = _quiet(q._update_releases, st, held, blocks, info, released,
+                     rejoined, 2, 3.0, 1.0, 0.1)
+    assert changed and [r['ref'] for r in rejoined] == [victim], rejoined
+    assert [r['ref'] for r in released] == [other], released
+    assert held[victim] == name and victim in blocks[name]
+    assert blocks[name] == [r for r in row if r != other], blocks
+    print(f"  PASS: {victim} (clean, in its slot) rejoins {name}; {other} "
+          f"(moved 2mm alone) stays released")
 
 
 def _rigid_block_intent(doc, refs, rigid):
@@ -777,6 +822,7 @@ def test_unarmed_quench_is_bit_identical_to_the_pre_phase4_quench():
 TESTS = [
     test_seeded_row_keeps_formation_through_the_polish,
     test_member_leaves_only_through_a_disclosed_release,
+    test_a_released_member_rejoins_when_clean_and_in_its_slot,
     test_rigid_true_block_moves_as_one,
     test_a_ref_in_two_groups_is_deduped_and_disclosed,
     test_an_ic_that_would_strand_its_caps_is_refused_the_cluster_moves,
