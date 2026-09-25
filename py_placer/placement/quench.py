@@ -2590,6 +2590,161 @@ class QuenchState:
             self._neighbors[ref] = lst
 
 
+def merge_groups(groups: Dict[str, List[str]], rigid: Dict[str, List[str]],
+                 clusters: Dict[str, List[str]], movable_set: Set[str],
+                 parts: Dict[str, '_Part']):
+    """The quench's group phase over three sources, deduped (#1051/#1052/#1043).
+
+    Claim order: the RIGID groups (declared arrays, then `rigid: true` blocks,
+    in the gate bundle's order), then the tether clusters, then the caller's
+    `--group-by` groups. A ref named by several keeps the FIRST group that
+    claims it and is removed from the rest, each removal disclosed. Without
+    this a ref in two groups is translated twice in one pass.
+
+    A rigid group translates only when EVERY member present on the board can
+    move: moving the movable part of a partly-locked row would shear it.
+    Such a group is `anchored` -- its movable members are held still (they
+    stay out of the single-part nudge) and it takes no translate.
+
+    Returns (blocks, info): `blocks` is what the translate loop moves, with
+    the plain filter every caller group always had (movable members, >= 2);
+    `info` carries `groups` (every rigid group, present refs), `held`
+    ({ref: rigid group}), `anchored` and `deduped`.
+    """
+    claimed: Dict[str, str] = {}
+    dropped: Dict[str, List[str]] = {}
+    kept: Dict[str, Tuple[str, List[str]]] = {}
+    sources = ([(n, r, 'rigid') for n, r in rigid.items()]
+               + [(n, r, 'tether') for n, r in clusters.items()]
+               + [(n, r, 'caller') for n, r in groups.items()])
+    for name, refs, kind in sources:
+        mine: List[str] = []
+        for ref in refs:
+            owner = claimed.get(ref)
+            if owner is None:
+                claimed[ref] = name
+                mine.append(ref)
+            elif owner != name:
+                dropped.setdefault(ref, []).append(name)
+        if name in kept:            # one name from two sources: one group
+            kept[name][1].extend(mine)
+        else:
+            kept[name] = (kind, mine)
+    blocks: Dict[str, List[str]] = {}
+    info: Dict[str, object] = {'groups': {}, 'held': {}, 'anchored': {},
+                               'deduped': [
+                                   {'ref': r, 'kept': claimed[r],
+                                    'dropped_from': sorted(n)}
+                                   for r, n in sorted(dropped.items())]}
+    for name, (kind, refs) in kept.items():
+        present = [r for r in refs if r in parts]
+        mov = [r for r in present if r in movable_set]
+        if kind == 'rigid':
+            if len(present) < 2:
+                continue            # one part is not a formation to hold
+            info['groups'][name] = present
+            fixed = [r for r in present if r not in movable_set]
+            if fixed:
+                info['anchored'][name] = fixed
+            elif len(mov) >= 2:
+                blocks[name] = mov
+            for r in mov:
+                info['held'][r] = name
+        elif len(mov) >= 2:
+            blocks[name] = mov
+    return blocks, info
+
+
+def _rigid_swap_ok(held: Dict[str, str], array_order: Dict[str, Set[str]],
+                   ra: str, rb: str) -> bool:
+    """May two parts exchange poses when at least one is a held rigid member?
+
+    Only inside ONE group. Inside a declared array, only when neither ref has
+    an expected position along the row (`order_refs`): an array whose order is
+    `pin` or `declared` is graded on that order by `arrays.formation`, and a
+    swap of two positioned members breaks it; `order: "unknown"` positions
+    nobody, so any two members may trade. Inside a `rigid: true` block, always:
+    the block declares WHICH parts travel together, not where each sits in
+    it, and a same-footprint swap preserves the occupied space exactly.
+    """
+    ga, gb = held.get(ra), held.get(rb)
+    if ga is None or ga != gb:
+        return False
+    order = array_order.get(ga)
+    if order is None:
+        return True                 # a rigid block
+    return ra not in order and rb not in order
+
+
+def _clause_failing(state, ref, override=None, exclude=None) -> Optional[str]:
+    """The first clause `ref` fails at its pose in `override` (else its live
+    pose), or None. Absolute, not monotone: a release is about a pose that is
+    WRONG, not one that is merely no better. Intra-group pairs are `exclude`d:
+    a formation's own spacing is invariant under every block move and is the
+    seeder's decision, not a reason to break the formation up."""
+    part = state.parts[ref]
+    x, y, rot = (override or {}).get(ref, (part.x, part.y, part.rot))
+    rects = part.rects(x, y, rot)
+    spec = state.intent_spec_for(ref)
+    if spec:
+        for v, t in zip(state.intent_terms(ref, rects), spec):
+            if v > t.threshold:
+                return f"intent:{t.rule}"
+    board, overlap = state.violation_parts(ref, x, y, rot, exclude=exclude)
+    if board > EPS_IMPROVE or overlap > EPS_IMPROVE:
+        return 'legality'
+    return None
+
+
+def _release_clause(state, ref, members, block_refs, max_disp, step, lattice
+                    ) -> Optional[str]:
+    """The clause that releases `ref` from its rigid group, or None.
+
+    Released only when its INCUMBENT pose fails a clause (`_clause_failing`)
+    AND no admissible block offset clears it: an offset the group phase could
+    take (`group_move_valid`) at which the member's clause no longer fails.
+    An anchored group (a member cannot move) has no offsets, so a failing
+    member of one is released directly. `members` is the whole group (its
+    pairs are excluded from the legality clause), `block_refs` the members
+    the translate moves, or None for an anchored group.
+    """
+    members = set(block_refs) if block_refs else set(members)
+    clause = _clause_failing(state, ref, exclude=members)
+    if clause is None:
+        return None
+    if block_refs:
+        # A PROBE, not a search step: the refusals `group_move_valid` tallies
+        # here are not refusals of a move the search considered, so the
+        # `intent_gate` tallies are restored afterwards.
+        saved = (dict(state.intent_rejected),
+                 dict(state.intent_rejected_by_site))
+        try:
+            for dx, dy in _group_offsets(state, block_refs, max_disp, step,
+                                         lattice):
+                if not state.group_move_valid(block_refs, dx, dy):
+                    continue
+                shifted = {r: (state.parts[r].x + dx,
+                               state.parts[r].y + dy,
+                               state.parts[r].rot) for r in members}
+                if _clause_failing(state, ref, shifted,
+                                   exclude=members) is None:
+                    return None
+        finally:
+            state.intent_rejected, state.intent_rejected_by_site = saved
+    return clause
+
+
+#: The `metrics_out` keys a caller's JSON_SUMMARY carries verbatim (#1043,
+#: #1051, #1052). Each is present only when its channel was declared, so an
+#: undeclared run's summary is unchanged.
+DISCLOSURE_KEYS = ('rigid', 'rigid_released', 'groups_deduped')
+
+
+def disclosure(metrics_out: Dict) -> Dict[str, object]:
+    """The `DISCLOSURE_KEYS` present in `metrics_out`, for a JSON_SUMMARY."""
+    return {k: metrics_out[k] for k in DISCLOSURE_KEYS if k in metrics_out}
+
+
 def _group_offsets(state, refs, max_disp: float, step: float, lattice: float):
     """Rigid (dx, dy) offsets a whole block may take (#459).
 
@@ -2937,14 +3092,43 @@ def quench(pcb_data: PCBData, pcb_file: str,
     # the pair. Empty unless the caller asked for grouping, and when it is empty
     # the group phase never runs and output is byte-identical to before.
     blocks: Dict[str, List[str]] = {}
-    if groups:
-        movable_set = set(movable)
+    movable_set = set(movable)
+    # #1051/#1052: the intent's RIGID groups (declared arrays, and blocks that
+    # declare `rigid: true`) join the group phase whatever --group-by says.
+    # `clusters` is the slot for a further group source (#1043's IC+caps
+    # clusters). All are empty on an intent that declares none of them, and
+    # the plain filter below then runs exactly as it always did.
+    rigid_in = dict((intent_gate or {}).get('rigid_blocks') or {})
+    clusters: Dict[str, List[str]] = {}
+    rigid_info = None
+    if rigid_in or clusters:
+        blocks, rigid_info = merge_groups(groups or {}, rigid_in, clusters,
+                                          movable_set, state.parts)
+        for d in rigid_info['deduped']:
+            print(f"  NOTE: {d['ref']} is in {', '.join(d['dropped_from'])} "
+                  f"and in {d['kept']}; it moves with {d['kept']} only")
+        for name, locked_refs in sorted(rigid_info['anchored'].items()):
+            print(f"  NOTE: rigid group {name} cannot translate -- "
+                  f"{', '.join(locked_refs)} cannot move; its movable "
+                  f"members are held where they are")
+        if rigid_info['groups']:
+            print("Rigid groups (#1051/#1052): "
+                  + ', '.join(f"{n} ({len(r)})" for n, r in
+                              sorted(rigid_info['groups'].items())))
+    elif groups:
         blocks = {name: [r for r in refs if r in movable_set]
                   for name, refs in groups.items()}
         blocks = {n: r for n, r in blocks.items() if len(r) >= 2}
-        if blocks and verbose:
-            from placement.groups import describe
-            print(describe(blocks))
+    if blocks and verbose:
+        from placement.groups import describe
+        print(describe(blocks))
+    #: ref -> the rigid group holding it out of the single-part nudge.
+    held: Dict[str, str] = dict((rigid_info or {}).get('held') or {})
+    released: List[Dict[str, str]] = []
+    moved_as_block: Dict[str, int] = {}
+    array_order = {f"array:{a.get('name')}": set(a.get('order_refs') or ())
+                   for a in (intent_gate or {}).get('arrays') or ()}
+    swaps_skipped_rigid_total = 0
 
     stopped = False
     for pass_num in range(1, max_passes + 1):
@@ -2967,6 +3151,7 @@ def quench(pcb_data: PCBData, pcb_file: str,
         swaps_skipped = 0
         swaps_skipped_shape = 0
         swaps_skipped_intent = 0
+        swaps_skipped_rigid = 0
 
         # --- rigid block translation (#459) ---
         # Coarse before fine: a block that wants to be 2mm left is cheaper to fix
@@ -3012,11 +3197,36 @@ def quench(pcb_data: PCBData, pcb_file: str,
                 improved += base_cost - best[0]
                 moves += 1
                 group_moves += 1
+                moved_as_block[name] = moved_as_block.get(name, 0) + 1
                 state.apply_group_move(refs, best[1], best[2])
                 if verbose:
                     print(f"  block {name}: {len(refs)} parts moved "
                           f"({best[1]:+.2f}, {best[2]:+.2f})mm "
                           f"gain={base_cost - best[0]:.1f}")
+
+        # --- rigid releases (#1051/#1052) ---
+        # AFTER the group phase, so a violation a block move just fixed is
+        # not released. A member leaves its group only when its INCUMBENT
+        # pose already fails a clause and no admissible block offset clears
+        # it; the release is permanent and disclosed.
+        if held:
+            for ref in sorted(held):
+                name = held[ref]
+                clause = _release_clause(
+                    state, ref, rigid_info['groups'][name], blocks.get(name),
+                    max_displacement, step, lattice)
+                if clause is None:
+                    continue
+                released.append({'ref': ref, 'group': name,
+                                 'clause': clause})
+                del held[ref]
+                if name in blocks:
+                    blocks[name] = [r for r in blocks[name] if r != ref]
+                    if len(blocks[name]) < 2:
+                        del blocks[name]
+                print(f"  NOTE: {ref} released from rigid group {name} "
+                      f"({clause}): its current pose already fails it and "
+                      f"no block move clears it, so it may move alone")
 
         # --- single-part moves (nudge + rotate) ---
         for _mi, ref in enumerate(movable):
@@ -3030,6 +3240,8 @@ def quench(pcb_data: PCBData, pcb_file: str,
                 break
             if progress_callback is not None:
                 progress_callback(_mi, len(movable), f'quench pass {pass_num}')
+            if ref in held:
+                continue            # #1052: a rigid member moves with its group
             part = state.parts[ref]
             involved = set(part.nets)
             other_aw = state.airwires_excluding(involved)
@@ -3101,6 +3313,10 @@ def quench(pcb_data: PCBData, pcb_file: str,
                 for i in range(len(refs)):
                     for j in range(i + 1, len(refs)):
                         ra, rb = refs[i], refs[j]
+                        if held and (ra in held or rb in held) and not \
+                                _rigid_swap_ok(held, array_order, ra, rb):
+                            swaps_skipped_rigid += 1
+                            continue
                         pa, pb = state.parts[ra], state.parts[rb]
                         # A swap exchanges FULL poses, rotation included, so a
                         # mixed-angle pair rotates both parts. --no-rotate
@@ -3235,6 +3451,9 @@ def quench(pcb_data: PCBData, pcb_file: str,
         # know is the one nobody ran with -v.
         if swaps_skipped_intent:
             swap_note += f" swap-intent={swaps_skipped_intent}"
+        if swaps_skipped_rigid:
+            swap_note += f" swap-rigid={swaps_skipped_rigid}"
+            swaps_skipped_rigid_total += swaps_skipped_rigid
         print(f"Pass {pass_num}: {moves} moves, gain {improved:.1f} -> "
               f"length={stats['length']:.1f}mm crossings={stats['crossings']} "
               f"halo={stats['halo']:.1f} edge={stats['edge']:.1f} "
@@ -3295,6 +3514,20 @@ def quench(pcb_data: PCBData, pcb_file: str,
                                         | set(state.keepouts_for))
                      for t in state.intent_spec_for(ref)}),
             }
+        if rigid_info is not None:
+            metrics_out['rigid'] = {
+                'groups': {n: list(r) for n, r in
+                           sorted(rigid_info['groups'].items())},
+                'moved_as_block': {n: moved_as_block.get(n, 0)
+                                   for n in sorted(rigid_info['groups'])},
+                'anchored': {n: list(r) for n, r in
+                             sorted(rigid_info['anchored'].items())},
+                'released': [dict(r) for r in released],
+                'swaps_refused': swaps_skipped_rigid_total,
+            }
+            metrics_out['rigid_released'] = [dict(r) for r in released]
+            metrics_out['groups_deduped'] = [dict(d) for d in
+                                             rigid_info['deduped']]
 
     return [{'reference': ref,
              'new_x': p.x, 'new_y': p.y, 'new_rotation': p.rot}

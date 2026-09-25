@@ -1307,6 +1307,10 @@ Examples:
         summary['edge_floor_fallback'],
         {r: (f.x, f.y, f.rotation) for r, f in _written.items()})
     summary.update(seed_structure_summary(result, graded, _written))
+    # #1043/#1051/#1052: what the polish's rigid groups and tethers did,
+    # each key only when the intent declared its channel.
+    from placement.quench import disclosure as _disclosure
+    summary.update(_disclosure(ratsnest))
     # #974: after the split above, from the lists gate_reason reads below.
     summary['connector_requirements'] = floorplan.connector_requirements(
         graded, own, pinned)

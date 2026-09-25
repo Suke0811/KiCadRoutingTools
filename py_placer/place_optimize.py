@@ -342,6 +342,10 @@ Examples:
     elif args.intent:
         summary['intent'] = args.intent
         summary['intent_moves_refused'] = None    # gate built nothing
+    # #1043/#1051/#1052: rigid groups, releases, dedupes and tethers, each
+    # only when the intent declared its channel.
+    from placement.quench import disclosure as _disclosure
+    summary.update(_disclosure(ratsnest))
     # After half of the exact report pair, graded on the WRITTEN file so it
     # covers exactly what the next step will read. WARN on any worsened
     # category -- the in-run gates should make this impossible; a warning here
