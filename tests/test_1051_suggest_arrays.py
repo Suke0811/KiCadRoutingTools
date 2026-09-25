@@ -305,7 +305,9 @@ def test_formation_on_the_human_glasgow():
     """The human rows, graded by the ONE predicate at DEFAULT_TOLERANCES.
 
     Measured here (and why no tolerance moved): of the 27 rows the auto
-    intent declares, 15 are formed. Every failure is a real non-row: the
+    intent declares, 16 are formed (15 before two-pad parts compared their
+    rotation modulo 180, #1051 phase-1 re-verification). Every failure is a
+    real non-row: the
     smallest failing axis offset is 0.65mm (J1:5k1, R52/R53), the rest
     fail on 90-degree rotation splits or multi-mm pitch gaps, and the
     buffer banks are 2x4 GRIDS (two columns 4.0mm apart) that a row
@@ -318,7 +320,7 @@ def test_formation_on_the_human_glasgow():
     formed = sorted(n for n, m in meas.items() if m.get('formed'))
     print(f"  human glasgow: {len(formed)} of {len(meas)} detected rows "
           f"formed")
-    assert len(formed) >= 15, formed
+    assert len(formed) >= 16, formed
     by = {tuple(sorted(a['members'])): a['name'] for a in doc['arrays']}
     for pair in (('RN1', 'RN2'), ('RN3', 'RN4'), ('RN5', 'RN6'),
                  ('RN7', 'RN8'), ('RN10', 'RN9'), ('RN11', 'RN12')):

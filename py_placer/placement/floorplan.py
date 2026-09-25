@@ -1582,7 +1582,10 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
         fp_ = file_poses.get(ref)
         if fp_ is not None and _rc.same_pose(
                 _rc.fixed_pose_tuple(f), (fp_['x'], fp_['y'], fp_.get('rot'))):
-            if ref in lost:
+            if ref not in lost:
+                # The file's own anchor grades this very pose.
+                continue
+            if f.get('basis') == 'mechanical':
                 out.append(Violation(
                     rule='fixed_pose_unresolved',
                     severity=intent.severity_of('fixed_pose_unresolved'),
@@ -1593,7 +1596,10 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
                              f"anchor grades it. Drop the entry, or answer "
                              f"the contradiction"),
                     measured={'found': True, 'lost_contradiction': True}))
-            continue
+                continue
+            # A DECLARED entry that happens to sit at the losing file pose
+            # is the plan's own claim: no file anchor grades it (the file
+            # value lost), so it is graded here like any other entry.
         rot = f.get('rot')
         poses[ref] = {'x': float(f['x']), 'y': float(f['y']),
                       'rot': (None if rot is None or rot == 'unknown'
@@ -1698,10 +1704,15 @@ def array_problems(intent: Intent, pcb_data, blocks: Dict[str, List[str]],
                        first=first)
         want = spec['rotation']
         declared = {m: rots[m] for m in present if m in rots}
+        # Rotation equivalence is the GRADER's (`arrays.formation`): a part
+        # with <= 2 copper pads is the same turned 180, so its allowed set is
+        # widened by `arrays.allowed_angles`, and the two checks agree.
+        pads = {m: arr._copper_pad_count(fps[m]) for m in present}
         if arr.is_number(want):
             for m, (r, cands) in sorted(declared.items()):
-                if (r is not None and r != want) or (
-                        cands is not None and want not in cands):
+                ok_set = arr.allowed_angles(
+                    [r] if r is not None else cands, pads[m])
+                if not any(arr._ang_diff(x, want) < 1e-9 for x in ok_set):
                     _v(a, m,
                        f"array {name!r}: member {m}'s block declares "
                        f"{'rotation ' + format(r, 'g') if r is not None else 'rotation_candidates ' + str(list(cands))}"
@@ -1716,7 +1727,14 @@ def array_problems(intent: Intent, pcb_data, blocks: Dict[str, List[str]],
             # member's allowed set (a decided `rotation` is a one-angle set,
             # `rotation_candidates` its list). Comparing only the decided
             # angles missed R6 {0, 90} against R7 {180} (Phase-1 verifier).
-            allowed = {m: ({r} if r is not None else set(cands))
+            #
+            # Modulo 180 only when EVERY member is symmetric: formation
+            # compares a pair at the stricter of its two periods, so one
+            # multi-pad member makes the whole row exact.
+            sym = all(arr.rotation_period(pads[m]) == 180.0 for m in present)
+            allowed = {m: (arr.allowed_angles([r] if r is not None
+                                              else cands,
+                                              pads[m] if sym else None))
                        for m, (r, cands) in declared.items()}
             common = set.intersection(*allowed.values())
             if not common:
@@ -4952,16 +4970,19 @@ def rule_array_formation(ctx) -> Iterator[Violation]:
             continue
         missing = [m for m in spec['members'] if m not in ctx.parts]
         if missing:
-            ctx.abstained[f"arrays[{name}]"] = (
-                f"no placement geometry for {', '.join(missing)}, so the "
-                f"row cannot be measured")
+            why = (f"no placement geometry for {', '.join(missing)}, so the "
+                   f"row cannot be measured")
+            ctx.abstained[f"arrays[{name}]"] = why
+            ctx.array_measured.append({'name': name, 'formed': None,
+                                       'skipped': why})
             continue
         poses = []
         for m in spec['members']:
             r = ctx.parts[m].rect
             poses.append({'ref': m, 'x': (r[0] + r[2]) / 2.0,
                           'y': (r[1] + r[3]) / 2.0,
-                          'rot': float(fps[m].rotation or 0.0) % 360.0})
+                          'rot': float(fps[m].rotation or 0.0) % 360.0,
+                          'pads': arr._copper_pad_count(fps[m])})
         order_refs, unresolved = arr.expected_order(ctx.pcb, spec)
         v = arr.formation(poses, order_key=order_refs,
                           rotation_spec=spec['rotation'],
@@ -5000,12 +5021,19 @@ def rule_array_formation(ctx) -> Iterator[Violation]:
                                  f"{c.get('declared'):g}"
                                  if c.get('off') else ''))
             elif check == 'pitch':
+                gaps = c.get('gaps_mm') or []
                 if c.get('stacked'):
+                    # Stacked members, AND the gaps between the rest: the
+                    # stack is one defect, uneven spacing may be another.
+                    rest = [g for g in gaps
+                            if g > arr.DEFAULT_TOLERANCES['pitch_spread_mm']]
                     detail.append(f"members stacked: "
                                   f"{', '.join(c['stacked'])} share one spot "
-                                  f"along the row")
+                                  f"along the row"
+                                  + (f"; gaps between the rest {rest}mm"
+                                     if rest else ''))
                 else:
-                    detail.append(f"gaps {c.get('gaps_mm')}mm")
+                    detail.append(f"gaps {gaps}mm")
         yield Violation(
             rule='array_formation', severity=ctx.sev('array_formation'),
             block=name,
@@ -8196,9 +8224,22 @@ def declaration_ledger(intent: Intent, rows, *, result=None,
             continue
         winner = r.get('winner')
         wv = (r.get('values') or {}).get(winner) or {}
+        # A loser is a channel whose value DIFFERS from the winner's: one
+        # that agrees with it lost nothing (a brief pose corroborating the
+        # mechanical one read `graded_fail` under --plan-only, Phase-1
+        # re-verifier). Poses compare by `reconcile.same_pose`.
+        from .reconcile import same_pose as _same_pose
+
+        def _differs(v, w=wv.get('value'), fld=r.get('field')):
+            if w is None:
+                return True
+            if fld == 'pose':
+                return not _same_pose(v, w)
+            return v != w
         losers = {v.get('authority') for ch, v in (r.get('values')
                                                    or {}).items()
-                  if ch != winner and v.get('value') is not None}
+                  if ch != winner and v.get('value') is not None
+                  and _differs(v.get('value'))}
         if kind == 'contradiction':
             status = ('dispositioned' if r['id'] in answered
                       else 'graded_fail')

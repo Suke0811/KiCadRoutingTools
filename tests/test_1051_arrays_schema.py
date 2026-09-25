@@ -725,11 +725,15 @@ def test_the_single_pad_net_decides_the_pin_order():
 
 
 def test_a_shared_rotation_no_member_can_take_is_a_conflict():
-    """Finding 5: `shared` compared only DECIDED angles, so R6 allowed
-    {0, 90} and R7 decided 180 passed although no angle suits both."""
+    """Finding 5: `shared` compared only DECIDED angles, so a member
+    allowed a candidate set passed against another's decided angle although
+    no angle suits both. (R6 {0, 90} against R7 {180}, the verifier's
+    example, is NOT a conflict since round 2: both are two-pad resistors,
+    the same turned 180 -- `test_two_pad_parts_are_the_same_turned_180`.)
+    R6 {0} against R7 {90} is one, modulo 180 too."""
     raw = _base(blocks=[{'name': 'a', 'refs': ['R6'],
-                         'rotation_candidates': [0, 90]},
-                        {'name': 'b', 'refs': ['R7'], 'rotation': 180}],
+                         'rotation_candidates': [0]},
+                        {'name': 'b', 'refs': ['R7'], 'rotation': 90}],
                 arrays=[_row()])
     it = fp.intent_from_dict(raw)
     blocks, _ = fp.resolve_blocks(it, _pcb())
@@ -738,7 +742,7 @@ def test_a_shared_rotation_no_member_can_take_is_a_conflict():
     assert {v.ref for v in probs} == {'R6', 'R7'} and \
         'no angle is allowed to every member' in probs[0].message, probs
     # A common angle clears it.
-    raw['blocks'][1]['rotation'] = 90
+    raw['blocks'][1]['rotation'] = 0
     it = fp.intent_from_dict(raw)
     blocks, _ = fp.resolve_blocks(it, _pcb())
     assert not fp.array_problems(it, _pcb(), blocks)
@@ -772,6 +776,148 @@ def test_a_missing_member_skips_the_formation_and_stacked_reads_so():
           "reports it); stacked members are named as stacked")
 
 
+# --------------------------------------------------------------------------
+# Phase-1 re-verifier (round 2)
+# --------------------------------------------------------------------------
+
+def _mech_for(pcb, ref, pose, tmp):
+    from placement import reconcile as rc
+    mpath = os.path.join(tmp, 'mechanical.json')
+    with open(mpath, 'w', encoding='utf-8') as fh:
+        json.dump({'kind': 'mechanical-declaration', 'schema': 1,
+                   'refs': {ref: list(pose)},
+                   'reasons': {ref: 'test'}}, fh)
+    return rc.load_mechanical(mpath)
+
+
+def test_an_agreeing_brief_pose_corroborates_the_mechanical_one():
+    """Round 2, findings 1 and 2: brief and mechanical.json agree on U1 at a
+    pose 3 mm off the board part. The row is drift the BOARD loses, so
+    before a grade it is `pending` -- not `graded_fail` because the agreeing
+    mechanical channel was counted as a loser. And the winner (the ledger's
+    basis) stays `mechanical`: the physical fact, which the brief
+    corroborates."""
+    from placement import reconcile as rc
+    pcb = _pcb(ESP)
+    u1 = pcb.footprints['U1']
+    pose = (u1.x + 3.0, u1.y, (u1.rotation or 0.0) % 360.0)
+    with tempfile.TemporaryDirectory() as tmp:
+        mech = _mech_for(pcb, 'U1', pose, tmp)
+        frag, _r = db.compile_brief(_brief(fixed=[{
+            'ref': 'U1', 'pose': {'x': pose[0], 'y': pose[1],
+                                  'rot': pose[2]}}]),
+            board_refs=sorted(pcb.footprints))
+        rows = rc.reconcile(pcb, ESP, brief_fragment=frag,
+                            brief_source='b.design-brief.json',
+                            mechanical=mech)
+    row = [r for r in rows if r['id'] == 'U1:pose'][0]
+    assert row['kind'] == 'drift' and row['winner'] == 'mechanical' \
+        and 'corroborating' in row['why'], row
+    assert not rc.lost_mechanical_refs(rows)
+    it = fp.intent_from_dict(_base(fixed_poses=frag['fixed_poses']))
+    led = fp.declaration_ledger(it, [], result=None, reconciliation=rows)
+    lrow = [x for x in led if x['id'] == 'reconcile:U1:pose'][0]
+    assert lrow['status'] == 'pending' and lrow['basis'] == 'mechanical', \
+        lrow
+    print("  PASS: an agreeing brief pose keeps the row pending before a "
+          "grade and mechanical as its winner and basis")
+
+
+def test_the_lost_error_is_for_a_mechanical_entry_only():
+    """Round 2, finding 3: the lost-contradiction error named "the
+    mechanical.json pose" for ANY entry at the file's pose. A DECLARED entry
+    there is the plan's own claim, and since the file value lost, no file
+    anchor grades it: it is graded like any other entry."""
+    pcb = _pcb(ESP)
+    u1 = pcb.footprints['U1']
+    pose = (u1.x + 13.0, u1.y, (u1.rotation or 0.0) % 360.0)
+    with tempfile.TemporaryDirectory() as tmp:
+        mech = _mech_for(pcb, 'U1', pose, tmp)
+    for basis, want in (('mechanical', 'fixed_pose_unresolved'),
+                        ('declared', 'zone_containment')):
+        it = fp.intent_from_dict(_base(fixed_poses=[{
+            'ref': 'U1', 'x': pose[0], 'y': pose[1], 'rot': pose[2],
+            'basis': basis}]))
+        out = fp.fixed_pose_violations(it, pcb, ESP, mechanical=mech,
+                                       mechanical_skip=['U1'])
+        assert [v.rule for v in out] == [want], (basis, out)
+    print("  PASS: only a basis:mechanical entry gets the lost error; a "
+          "declared one at the same pose is graded by its own anchor")
+
+
+def test_a_member_with_no_geometry_gets_a_measured_row():
+    """Round 2, finding 4."""
+    it = fp.intent_from_dict(_base(arrays=[_row()]))
+    ctx = fp._grade_ctx(it, _pcb(), SPLITFLAP)[0]
+    del ctx.parts['R8']
+    assert list(fp.rule_array_formation(ctx)) == []
+    assert ctx.array_measured == [{
+        'name': 'pullups', 'formed': None,
+        'skipped': ('no placement geometry for R8, so the row cannot be '
+                    'measured')}], ctx.array_measured
+    assert 'arrays[pullups]' in ctx.abstained
+    print("  PASS: a member with no geometry abstains AND is disclosed as a "
+          "measured row")
+
+
+def test_stacked_members_still_report_the_other_gaps():
+    """Round 2, finding 5: R7 stacked on R6, and R9 66 mm beyond R8."""
+    pcb = _fresh()
+    pcb.footprints['R7'].x = pcb.footprints['R6'].x
+    r = _grade(_base(arrays=[_row(members=['R6', 'R7', 'R8', 'R9'],
+                                  order='declared')]), pcb=pcb)
+    msg = [v.message for v in r.violations if v.rule == 'array_formation']
+    assert msg and 'members stacked: R6, R7' in msg[0] \
+        and 'gaps between the rest [66.04, 38.1]mm' in msg[0], msg
+    print("  PASS: a stacked row still names the uneven gaps of the rest")
+
+
+def test_two_pad_parts_are_the_same_turned_180():
+    """Round 2, finding 6 (a design correction from Phase 2's human-board
+    measurement): a part with <= 2 copper pads compares its rotation modulo
+    180, in the grader AND in the load-time conflict check, so the two
+    agree. A part with more pads keeps the exact comparison."""
+    two = _poses([('A', 0, 0, 0), ('B', 2, 0, 180), ('C', 4, 0, 0)])
+    for p in two:
+        p['pads'] = 2
+    assert arr.formation(two, rotation_spec='shared')['formed']
+    assert arr.formation(two, rotation_spec=0)['formed']
+    assert arr.formation(two, rotation_spec=180)['formed']
+    three = [dict(p, pads=3) for p in two]
+    assert arr.formation(three, rotation_spec='shared')['failed'] == \
+        ['rotation']
+    assert arr.formation(three, rotation_spec=0)['failed'] == ['rotation']
+    # Mixed: a pair is compared at the stricter period.
+    mixed = [dict(two[0], pads=2), dict(two[1], pads=3)]
+    assert arr.formation(mixed, rotation_spec='shared')['failed'] == \
+        ['rotation']
+    # Unknown pad count is strict.
+    assert not arr.formation(_poses([('A', 0, 0, 0), ('B', 2, 0, 180)]),
+                             rotation_spec='shared')['formed']
+    # The conflict check agrees: resistors R6 at 0 and R7 at 180 are one
+    # shared rotation, and R8's block at 180 does not contradict a row at 0.
+    raw = _base(blocks=[{'name': 'a', 'refs': ['R6'], 'rotation': 0},
+                        {'name': 'b', 'refs': ['R7'], 'rotation': 180},
+                        {'name': 'c', 'refs': ['R8'],
+                         'rotation_candidates': [180]}],
+                arrays=[_row()])
+    it = fp.intent_from_dict(raw)
+    blocks, _ = fp.resolve_blocks(it, _pcb())
+    assert not fp.array_problems(it, _pcb(), blocks)
+    raw['arrays'] = [_row(rotation=0)]
+    it = fp.intent_from_dict(raw)
+    blocks, _ = fp.resolve_blocks(it, _pcb())
+    assert not fp.array_problems(it, _pcb(), blocks)
+    # ...and so does the grade, on the board: R7 turned 180 in memory.
+    pcb = _fresh()
+    pcb.footprints['R7'].rotation = 180.0
+    r = _grade(_base(arrays=[_row()]), pcb=pcb)
+    assert not [v for v in r.violations if v.rule == 'array_formation'], \
+        r.violations
+    print("  PASS: two-pad members 180 apart share a rotation (grade and "
+          "conflict check); three-pad members do not")
+
+
 TESTS = [
     test_the_new_keys_load_and_land_on_the_intent,
     test_every_load_refusal_carries_its_reason,
@@ -791,6 +937,11 @@ TESTS = [
     test_the_single_pad_net_decides_the_pin_order,
     test_a_shared_rotation_no_member_can_take_is_a_conflict,
     test_a_missing_member_skips_the_formation_and_stacked_reads_so,
+    test_an_agreeing_brief_pose_corroborates_the_mechanical_one,
+    test_the_lost_error_is_for_a_mechanical_entry_only,
+    test_a_member_with_no_geometry_gets_a_measured_row,
+    test_stacked_members_still_report_the_other_gaps,
+    test_two_pad_parts_are_the_same_turned_180,
 ]
 
 

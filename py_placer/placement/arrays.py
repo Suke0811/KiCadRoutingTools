@@ -50,6 +50,14 @@ from typing import Dict, List, Optional, Sequence, Tuple
 #: 1.397mm row, not float noise. Rotation failures on those boards are 90
 #: or 180 degree splits, never a fraction of a degree
 #: (tests/test_1051_suggest_arrays.py).
+#:
+#: Since the phase-1 re-verification a <= 2 pad part compares its rotation
+#: modulo 180 (`SYMMETRIC_MAX_PADS`): the 180 degree splits were human rows
+#: that route. Re-measured with it on the same instrument: glasgow 16 of its
+#: 27 detected rows form (15 before; the remaining rotation failures, J1:5k1,
+#: U1:9p, U1:100k, U30:2k2, U30:47R, U30:+1V2:u1 and bank:100R, are all 90
+#: or 45 degree splits and every one also fails its axis), ulx3s 15 of 32,
+#: splitflap 5 of 10.
 DEFAULT_TOLERANCES = {'axis_mm': 0.25, 'rotation_deg': 0.5,
                       'pitch_spread_mm': 0.25, 'pitch_mm': 0.25}
 
@@ -128,9 +136,38 @@ def pin_order(pcb, serves: str, members: Sequence[str]
     return [m for _k, m in keyed], unresolved
 
 
-def _ang_diff(a: float, b: float) -> float:
-    d = abs(float(a) - float(b)) % 360.0
-    return min(d, 360.0 - d)
+def _ang_diff(a: float, b: float, period: float = 360.0) -> float:
+    d = abs(float(a) - float(b)) % period
+    return min(d, period - d)
+
+
+#: A part with at most this many copper pads looks the same turned 180
+#: degrees as far as routing is concerned -- a resistor, a capacitor, a
+#: two-pin diode -- so its row rotation is compared MODULO 180. Humans do
+#: this routinely and it routes: glasgow R18/R19, ulx3s C59/C62, D20/D21,
+#: D51/D52, C63-C72 (Phase 2 measurement). A part with more pads keeps the
+#: exact modulo-360 comparison, because its pin order matters.
+SYMMETRIC_MAX_PADS = 2
+
+
+def rotation_period(pads) -> float:
+    """180 for a part with <= `SYMMETRIC_MAX_PADS` copper pads, else 360.
+    `pads` None (the caller does not know) is the strict 360."""
+    return (180.0 if pads is not None and int(pads) <= SYMMETRIC_MAX_PADS
+            else 360.0)
+
+
+def allowed_angles(angles, pads) -> set:
+    """An allowed angle set widened by the part's own symmetry: a two-pad
+    part allowed 0 is also allowed 180. The load-time conflict check and
+    the grade compare through this and `rotation_period`, so they agree."""
+    out = set()
+    for a in angles:
+        a = float(a) % 360.0
+        out.add(a)
+        if rotation_period(pads) == 180.0:
+            out.add((a + 180.0) % 360.0)
+    return out
 
 
 def formation(members_poses: Sequence[Dict[str, object]], *,
@@ -140,9 +177,11 @@ def formation(members_poses: Sequence[Dict[str, object]], *,
               ) -> Dict[str, object]:
     """Is this set of member poses ONE formed row? The shared predicate.
 
-    `members_poses`: `[{'ref', 'x', 'y', 'rot'}]`, `x`/`y` the member's
-    centre in whatever frame the caller measures (the grade uses the
-    courtyard centre, so identical parts compare like for like).
+    `members_poses`: `[{'ref', 'x', 'y', 'rot', 'pads'?}]`, `x`/`y` the
+    member's centre in whatever frame the caller measures (the grade uses
+    the courtyard centre, so identical parts compare like for like).
+    `pads` is the member's copper pad count: a part with at most
+    `SYMMETRIC_MAX_PADS` compares its rotation modulo 180, not 360.
 
     `order_key`: the expected order of refs along the row, or None when the
     order is not declared (`order: "unknown"`). A row may run either way, so
@@ -213,11 +252,14 @@ def formation(members_poses: Sequence[Dict[str, object]], *,
             failed.append('order')
 
     rots = [float(p.get('rot') or 0.0) % 360.0 for p in poses]
+    # Per member: 180 for a symmetric (<= 2 copper pad) part, else 360. A
+    # pose that does not say how many pads it has is compared strictly.
+    per = [rotation_period(p.get('pads')) for p in poses]
     if isinstance(rotation_spec, (int, float)) and not isinstance(
             rotation_spec, bool):
         want_rot = float(rotation_spec) % 360.0
-        off = sorted(p['ref'] for p, r in zip(poses, rots)
-                     if _ang_diff(r, want_rot) > tol['rotation_deg'])
+        off = sorted(p['ref'] for p, r, t in zip(poses, rots, per)
+                     if _ang_diff(r, want_rot, t) > tol['rotation_deg'])
         checks['rotation'] = {'ok': not off, 'declared': want_rot,
                               'off': off,
                               'rotations': sorted({round(r, 3)
@@ -225,8 +267,12 @@ def formation(members_poses: Sequence[Dict[str, object]], *,
         if off:
             failed.append('rotation')
     elif rotation_spec == 'shared':
-        base = rots[0]
-        spread = max(_ang_diff(r, base) for r in rots)
+        # Every PAIR, each compared at the stricter of its two periods: two
+        # resistors 180 apart share a rotation, a resistor and a 3-pad part
+        # 180 apart do not.
+        spread = max(_ang_diff(rots[i], rots[j], max(per[i], per[j]))
+                     for i in range(len(rots)) for j in range(i + 1,
+                                                               len(rots)))
         ok = spread <= tol['rotation_deg']
         checks['rotation'] = {'ok': ok, 'declared': 'shared',
                               'rotations': sorted({round(r, 3)

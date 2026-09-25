@@ -584,6 +584,20 @@ def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
                                'source': brief_source}
         _row(ref, 'pose', values, _same_pose,
              p.get('reason') or 'a declared mechanical pose')
+        # A brief pose that AGREES with mechanical.json corroborates it; it
+        # does not replace it. The pose is a physical fact recorded in the
+        # file, so the row keeps `mechanical` as its winner (and the ledger
+        # its basis) and names the brief as corroborating -- rather than
+        # letting the brief's higher authority rank relabel a recorded fact
+        # as a declaration (Phase-1 re-verifier). Only a DISAGREEING brief
+        # wins, as a contradiction.
+        if ('brief' in values and rows and rows[-1]['id'] == f'{ref}:pose'
+                and _same_pose(values['brief']['value'],
+                               values['mechanical']['value'])
+                and rows[-1]['winner'] == 'brief'):
+            rows[-1]['winner'] = 'mechanical'
+            rows[-1]['why'] = (f"{rows[-1]['why']} -- the design brief "
+                               f"declares the same pose, corroborating it")
         rect = geo.body_rect(ref, p['x'], p['y'], p['rot'])
         if rect is not None and bounds is not None and (
                 rect[2] < bounds[0] or rect[0] > bounds[2]
