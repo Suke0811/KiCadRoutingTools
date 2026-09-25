@@ -4330,7 +4330,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         want24 = {ic for ic in set(decap_owner_of.values())
                   if ((ic in _chips24) if _chips24 is not None
                       else ic[0:1] == 'U')}
-        want24.update(str(a['serves']) for a in arrays_resolved
+        # Only rows stage 2.45 will actually seat: a refused row's host is
+        # an ordinary part and keeps its stage-3 turn.
+        want24.update(str(a['serves']) for a in array_try
                       if a.get('serves') not in (None, 'unknown'))
         for ref in _order(sorted(r for r in want24 if r in state.parts)):
             clr, _t, _jx, _jy = _centroid_seat(ref)
@@ -4691,6 +4693,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         # #1054: a seated fixed pose is a fact, not a neighbour to trade.
         immovable.update({r: 'fixed_pose' for r in fixed_seated
                           if r not in immovable})
+        # #1051: a formed row's member moves only with its row; evicting one
+        # alone would break the row the seed just formed, silently.
+        immovable.update({m: f"array:{n}" for n, rec in arrays_formed.items()
+                          for m in rec['members'] if m not in immovable})
         still: List[str] = []
         # DEDUPED, and placed-aware. A zone member that fails its zone stage
         # stays in `unplaced`, so stage 3 tries it again and appends it a
@@ -4924,6 +4930,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # centroids over the FULL placement, and is kept only if the
     # reconstruct gate tuple does not worsen -- otherwise the whole round
     # reverts. Stops early when a round moves nothing.
+    # #1051: the anchor rounds re-seat ONE part at a time, which would pull a
+    # formed row apart; its members sit the rounds out.
+    row_members = {m for rec in arrays_formed.values() for m in rec['members']}
     if anchors_first and anchor_rounds > 1 and placed:
         from placement.reconstruct import measure, part_extent_mm
         for rnd in range(2, max(2, anchor_rounds) + 1):
@@ -4934,7 +4943,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             order2 = sorted(placed,
                             key=lambda r: -part_extent_mm(state, r))
             for ref in order2:
-                if state.parts[ref].locked or ref in fixed_seated:
+                if (state.parts[ref].locked or ref in fixed_seated
+                        or ref in row_members):
                     continue
                 target = _partner_centroid(state, ref, placed - {ref})
                 if target is None:
