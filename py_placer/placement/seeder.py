@@ -2971,6 +2971,182 @@ def _partner_centroid(state, ref: str, placed: Set[str],
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
+#: #1054: how close a part already standing where a fixed pose puts it must
+#: be to count as AT that pose -- the writer's 3dp rounding, not a tolerance.
+FIXED_POSE_EPS_MM = 1e-3
+
+
+def _fixed_pose_check(state, ref: str, x: float, y: float, rot: float,
+                      placed: Set[str], exclude: Set[str]
+                      ) -> Tuple[Optional[str], Optional[float], List[str]]:
+    """`(how, clearance, reasons)` for seating `ref` EXACTLY at (x, y, rot).
+
+    A CHECK, never a search (#1054): the pose is a mechanical fact, so a
+    pose that fails is refused with its reasons and never nudged.
+
+    * `'contained'`: `pose_ok`, walked down `seat_clearances` exactly as a
+      searched seat is -- a courtyard graze below the board clearance is
+      accepted at a reduced clearance and disclosed, as `_try_place` does.
+    * `'overhang'`: the courtyard leaves the outline -- a connector or a
+      mounting part may overhang by design, which is stage 1's exemption --
+      and is accepted only on `edge_seat_ok`'s own conjuncts other than its
+      band (a fixed pose declares no band): EVERY pad's copper on the board
+      at zero margin, no declared keep-out, no stranger's exclusive zone,
+      and no pad or hole shortfall against a placed part (stage 1's
+      `_shorted_by` predicate).
+
+    `how` None means refused; `reasons` then says why, by name.
+    """
+    part = state.parts[ref]
+    full = state.clearance
+    try:
+        for clr in seat_clearances(full):
+            _set_seat_clearance(state, clr)
+            if pose_ok(state, ref, x, y, rot, exclude):
+                return 'contained', clr, []
+    finally:
+        _set_seat_clearance(state, full)
+    reasons: List[str] = []
+    r, tht = part.rects(x, y, rot)
+    outside = state.edge_gate.rect_outside_amount(r) > 1e-9
+    reasons.extend(f"keep-out {n!r}"
+                   for n in state.keepout_blockers(ref, (r, tht)))
+    reasons.extend(f"exclusive zone {n!r}"
+                   for n in state.exclusive_blockers(ref, (r, tht)))
+    shorted = []
+    ctx = state.legality_ctx
+    if ctx is not None:
+        for other in sorted(placed):
+            if other == ref or other not in state.parts:
+                continue
+            sf = ctx.pair_shortfall(ref, other, pose_a=(x, y, rot))
+            if sf.pad > 1e-6 or sf.hole > 1e-6:
+                shorted.append(other)
+    reasons.extend(f"pad/hole clearance to placed {o}" for o in shorted)
+    if outside:
+        from .connector_geometry import geometry_for, pad_copper_outside
+        from .legality import BoardOutlineGate
+        zero = getattr(state, '_zero_edge_gate', None)
+        if zero is None:
+            zero = BoardOutlineGate(state.pcb_data.board_info, 0.0)
+            state._zero_edge_gate = zero
+        off = pad_copper_outside(
+            geometry_for(state, state.pcb_data, state.pcb_file), zero, ref,
+            (x, y, rot))
+        if off > 1e-9:
+            reasons.append(f"pad copper {off:.3f}mm past the outline")
+        if not reasons:
+            return 'overhang', None, []
+    elif not reasons:
+        floor = seat_clearances(full)[-1]
+        near = []
+        for other in sorted(placed):
+            if other == ref or other not in state.parts:
+                continue
+            o = state.parts[other].rect()
+            if (o[0] - floor < r[2] and r[0] < o[2] + floor
+                    and o[1] - floor < r[3] and r[1] < o[3] + floor):
+                near.append(other)
+        reasons.append("courtyard within " + format(floor, 'g')
+                       + "mm (the ladder's floor) of placed "
+                       + (', '.join(near) if near else 'a part'))
+    return None, None, reasons
+
+
+def _seat_fixed_pose(state, pcb_data, f: Dict, placed: Set[str],
+                     unplaced: Set[str], held: Set[str],
+                     seated: Dict[str, Dict], refused: Dict[str, Dict],
+                     lock: Set[str], notes: List[str]) -> None:
+    """Stage 0 for one `fixed_poses[]` entry (#1054). See the stage comment.
+
+    `rot` / `side` absent or `"unknown"` keep the part's CURRENT rotation /
+    side, and the record says so (`rot_kept`, `side_kept`) -- the author
+    declared that they do not know, so nothing is guessed. A declared side
+    the part is not on is REFUSED: this search has no flip move, and seating
+    the front-side geometry at a back-side pose would grade a part that is
+    not the one written.
+    """
+    from .legality import footprint_side
+    ref = str(f['ref'])
+    x, y = round(float(f['x']), 3), round(float(f['y']), 3)
+    if ref not in state.parts:
+        why = ('not on this board' if ref not in (pcb_data.footprints or {})
+               else 'the placement state carries no geometry for it '
+                    '(pad-less)')
+        refused[ref] = {'reason': why, 'pose': [x, y, f.get('rot')]}
+        notes.append(f"fixed pose {ref}: REFUSED -- {why}")
+        return
+    part = state.parts[ref]
+    rot_decl = f.get('rot')
+    rot_kept = rot_decl is None or rot_decl == 'unknown'
+    rot = (part.rot % 360.0) if rot_kept else float(rot_decl) % 360.0
+    side_decl = f.get('side')
+    side_kept = side_decl is None or side_decl == 'unknown'
+    side_now = footprint_side(pcb_data.footprints[ref])
+    rec = {'x': x, 'y': y, 'rot': rot, 'side': side_now,
+           'basis': f.get('basis'), 'rot_kept': rot_kept,
+           'side_kept': side_kept}
+    if not side_kept and side_decl != side_now:
+        held.add(ref)
+        refused[ref] = dict(rec, reason=(
+            f"declared side {side_decl}, and the part is on {side_now}: the "
+            f"seeder has no flip move, so it cannot seat it there"))
+        notes.append(f"fixed pose {ref}: REFUSED -- {refused[ref]['reason']}"
+                     f"; flip the part on the board first")
+        return
+    if ref in placed:
+        # Authoritative already: locked in the FILE, or outside an explicit
+        # `seed_refs` scope. Not this stage's to move -- the file lock is the
+        # user's. At the pose it is simply recorded; anywhere else is a
+        # contradiction to name, never to resolve by force.
+        at = (math.hypot(part.x - x, part.y - y) <= FIXED_POSE_EPS_MM
+              and _ang_close(part.rot, rot))
+        if at:
+            seated[ref] = dict(rec, how='already_there')
+            if not part.locked:
+                lock.add(ref)
+            return
+        refused[ref] = dict(rec, reason=(
+            f"already placed at ({part.x:g}, {part.y:g}, {part.rot:g}deg) -- "
+            + ("locked in the board file" if part.locked
+               else "outside the seed scope")
+            + ", and not this stage's to move"))
+        notes.append(f"fixed pose {ref}: REFUSED -- {refused[ref]['reason']}"
+                     f" (declared ({x:g}, {y:g}, {rot:g}deg))")
+        return
+    rot = _materialise_rotation(part, rot)
+    how, clr, reasons = _fixed_pose_check(state, ref, x, y, rot, placed,
+                                          unplaced - {ref})
+    if how is None:
+        held.add(ref)
+        refused[ref] = dict(rec, reason='; '.join(reasons))
+        notes.append(f"fixed pose {ref}: REFUSED at ({x:g}, {y:g}, "
+                     f"{rot:g}deg) -- {refused[ref]['reason']}. The pose is "
+                     f"a fact, so it is never nudged: fix the pose or what "
+                     f"it collides with")
+        return
+    state.apply_move(ref, x, y, rot)
+    placed.add(ref)
+    unplaced.discard(ref)
+    lock.add(ref)
+    seated[ref] = dict(rec, how=how,
+                       clearance=(None if clr is None else round(clr, 4)))
+    notes.append(f"fixed pose {ref}: seated exactly at ({x:g}, {y:g}, "
+                 f"{rot:g}deg)"
+                 + (" overhanging the outline (pads on the board)"
+                    if how == 'overhang' else '')
+                 + (f" at reduced courtyard clearance {clr:g}"
+                    if clr is not None and clr < state.clearance else '')
+                 + (" at its current rotation (declared unknown)"
+                    if rot_kept else '')
+                 + " -- locked")
+
+
+def _ang_close(a: float, b: float, eps: float = 1e-6) -> bool:
+    d = abs(float(a) - float(b)) % 360.0
+    return min(d, 360.0 - d) <= eps
+
+
 def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      group_sources: Sequence[str] = (),
                      clearance: float = 0.25,
@@ -3120,13 +3296,37 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # stream never depends on set iteration.
     tiebreak = {r: rng.random() for r in sorted(state.parts)}
 
+    # #1054: a fixed pose the seeder REFUSED. The part stays in `unplaced`
+    # (so its pile coordinate never vetoes anyone's seat) but no later stage
+    # may seat it: a refused mechanical fact placed "somewhere near" is the
+    # nudge the refusal exists to prevent. Empty unless `fixed_poses` is.
+    held: Set[str] = set()
+
     def _order(refs):
-        return sorted((r for r in refs if r in unplaced),
+        return sorted((r for r in refs if r in unplaced and r not in held),
                       key=lambda r: (-state.parts[r].pin_count, tiebreak[r]))
 
     def _jitter():
         return (rng.uniform(-TARGET_JITTER_MM, TARGET_JITTER_MM),
                 rng.uniform(-TARGET_JITTER_MM, TARGET_JITTER_MM))
+
+    # ---- 0. fixed poses (#1054): the EXACT pose, checked, never searched ---
+    # Before every other stage, so stage 1's edge ladder (`_shorted_by`, its
+    # slide arming) and every later seat see these parts as placed obstacles.
+    # Refs go to `fixed_lock` -> the returned `lock_refs` -> `stamp_locked`,
+    # NOT into `lock_refs` here: that list drives stage 1.5's must_lock
+    # re-seat and the eviction rung's 'must_lock' label, and a fixed pose is
+    # deliberately not must_lock (docs/design-brief.md: filling must_lock
+    # made `--repair` lift the user's locks). A file-locked part is outside
+    # `--repair`'s reach and `--force`'s re-derivation alike, which is what
+    # keeps a seated fixed pose where it was put.
+    fixed_seated: Dict[str, Dict] = {}
+    fixed_refused: Dict[str, Dict] = {}
+    fixed_lock: Set[str] = set()
+    for _f in sorted((getattr(intent, 'fixed_poses', ()) or ()),
+                     key=lambda f: str(f['ref'])):
+        _seat_fixed_pose(state, pcb_data, _f, placed, unplaced, held,
+                         fixed_seated, fixed_refused, fixed_lock, notes)
 
     # ---- 1. edge connectors: spec geometry, no legality gate ---------------
     # edge_claims(), not the raw key: a connector_affinity entry declares a
@@ -3956,6 +4156,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                           for c in intent.edge_claims() if c.get('edge')})
         immovable.update({r: 'lock-glob' for r in immovable_extra
                           if r not in immovable})
+        # #1054: a seated fixed pose is a fact, not a neighbour to trade.
+        immovable.update({r: 'fixed_pose' for r in fixed_seated
+                          if r not in immovable})
         still: List[str] = []
         # DEDUPED, and placed-aware. A zone member that fails its zone stage
         # stays in `unplaced`, so stage 3 tries it again and appends it a
@@ -4199,7 +4402,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             order2 = sorted(placed,
                             key=lambda r: -part_extent_mm(state, r))
             for ref in order2:
-                if state.parts[ref].locked:
+                if state.parts[ref].locked or ref in fixed_seated:
                     continue
                 target = _partner_centroid(state, ref, placed - {ref})
                 if target is None:
@@ -4232,8 +4435,19 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # Deduped: a zone member that also fails stage 3 is appended twice, and
     # `unseated: 2` for one part is a miscount every consumer inherits --
     # place_seed's summary, its exit code, and any gate reading the number.
-    return {'placements': placements, 'lock_refs': lock_refs,
+    # #1054: a refused fixed pose is UNSEATED -- added here, after the
+    # eviction rung, which has no target for it and must not trade for it.
+    unseated = list(unseated) + sorted(held)
+    return {'placements': placements,
+            'lock_refs': sorted(set(lock_refs) | fixed_lock),
             'unseated': sorted(set(unseated)), 'notes': notes,
+            # #1054: {ref: {x, y, rot, side, basis, how, rot_kept,
+            # side_kept, clearance}} for every fixed pose this seed honoured
+            # (`how`: 'contained', 'overhang', or 'already_there' for a part
+            # the file already held at it), and {ref: {..., reason}} for
+            # every one it refused. Both empty when nothing is declared.
+            'fixed_seated': fixed_seated,
+            'fixed_refused': fixed_refused,
             # #629: a no-pose verdict that NAMES its blockers, with the count
             # each one frees. Present at every evict_depth. An empty dict for
             # a ref means the census ran and found no movable neighbour; a
@@ -4418,6 +4632,13 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     # (the unrepairable filter, and reseat's refusal list) pick it up for free.
     _extra_locked = {r for pat in (lock_globs or [])
                      for r in fnmatch.filter(sorted(pcb_data.footprints), pat)}
+    # #1054: a `fixed_poses[]` ref is a mechanical fact the seed put at its
+    # exact pose and stamped (locked yes). A repair never nudges one, stamped
+    # or not: an unstamped copy of the board must not turn the fact into a
+    # violator to move. It lands in `unrepairable` if it violates anything.
+    _extra_locked |= {str(f['ref'])
+                      for f in (getattr(intent, 'fixed_poses', ()) or ())
+                      if str(f['ref']) in (pcb_data.footprints or {})}
     # Hoisted above `make_state` (#797), as in `seed_from_intent`; the
     # `ref_zone` join below reads the same `blocks`.
     blocks, _probs = floorplan.resolve_blocks(intent, pcb_data, group_sources) \
