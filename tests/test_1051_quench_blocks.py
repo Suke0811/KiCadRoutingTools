@@ -382,6 +382,13 @@ def test_a_ref_in_two_groups_is_deduped_and_disclosed():
         {'ref': 'B', 'kept': 'array:r',
          'dropped_from': ['caller', 'tether:U1']}], info['deduped']
     assert info['held'] == {'A': 'array:r', 'B': 'array:r', 'C': 'array:r'}
+    # A tether cluster whose IC an array claimed is dropped, not left as a
+    # caps-only block that would translate the caps off their IC.
+    blocks2, info2 = q.merge_groups(
+        {}, {'array:r': ['U1', 'A']}, {'tether:U1': ['U1', 'C1', 'C2']},
+        {'U1', 'A', 'C1', 'C2'}, {r: None for r in ('U1', 'A', 'C1', 'C2')})
+    assert 'tether:U1' not in blocks2, blocks2
+    assert info2['clusters_dropped'] == ['tether:U1'], info2
     print(f"  PASS: {len(got)} ref(s) deduped into array:U4:47k and "
           f"disclosed; merge order rigid > tether > caller")
 

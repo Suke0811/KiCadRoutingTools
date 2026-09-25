@@ -2940,6 +2940,7 @@ def merge_groups(groups: Dict[str, List[str]], rigid: Dict[str, List[str]],
             kept[name] = (kind, mine)
     blocks: Dict[str, List[str]] = {}
     info: Dict[str, object] = {'groups': {}, 'held': {}, 'anchored': {},
+                               'clusters_dropped': [],
                                'deduped': [
                                    {'ref': r, 'kept': claimed[r],
                                     'dropped_from': sorted(n)}
@@ -2958,6 +2959,11 @@ def merge_groups(groups: Dict[str, List[str]], rigid: Dict[str, List[str]],
                 blocks[name] = mov
             for r in mov:
                 info['held'][r] = name
+        elif kind == 'tether' and name.split(':', 1)[1] not in refs:
+            # Its IC was claimed by an earlier (rigid) group: what is left is
+            # caps with no IC, and translating them together moves them OFF
+            # their IC rather than with it. Dropped, and disclosed.
+            info['clusters_dropped'].append(name)
         elif len(mov) >= 2:
             blocks[name] = mov
     return blocks, info
@@ -3511,8 +3517,12 @@ def quench(pcb_data: PCBData, pcb_file: str,
                   + ', '.join(f"{n} ({len(r)})" for n, r in
                               sorted(rigid_info['groups'].items())))
         if clusters:
-            print(f"Tether clusters (#1043): {len(clusters)} IC+caps "
-                  f"group(s) join the rigid translate")
+            print(f"Tether clusters (#1043): "
+                  f"{len(clusters) - len(rigid_info['clusters_dropped'])} "
+                  f"IC+caps group(s) join the rigid translate"
+                  + (f"; dropped {', '.join(rigid_info['clusters_dropped'])}"
+                     f" -- a rigid group claimed the IC"
+                     if rigid_info['clusters_dropped'] else ''))
     elif groups:
         blocks = {name: [r for r in refs if r in movable_set]
                   for name, refs in groups.items()}
@@ -3923,7 +3933,11 @@ def quench(pcb_data: PCBData, pcb_file: str,
                 'armed': sorted((intent_gate or {}).get('tethers') or ()),
                 'terms': by_rule,
                 'refs_bound': len(state._tethers_of),
-                'clusters': {n: list(r) for n, r in sorted(clusters.items())},
+                'clusters': {n: list(r) for n, r in sorted(clusters.items())
+                             if n not in (rigid_info or {}).get(
+                                 'clusters_dropped', ())},
+                'clusters_dropped': list((rigid_info or {}).get(
+                    'clusters_dropped', ())),
                 # Past its limit on the WRITTEN poses, per rule: what the
                 # gate held (never worse than the input) made visible.
                 'over_limit_after': _tether_over_limit(state),
