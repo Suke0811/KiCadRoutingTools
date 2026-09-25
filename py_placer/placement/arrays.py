@@ -637,6 +637,43 @@ def _grid_named(fp) -> bool:
                                   for n in pads) > len(pads)
 
 
+def _bridge_partner(fps, links, host: str, members: Sequence[str],
+                    floor: float) -> Optional[str]:
+    """The second big part a pin run BRIDGES to, or None.
+
+    A bridge is a run whose EVERY member also reaches, by an own signal net
+    (`links`), some part other than `host` with at least `floor` copper
+    pads -- the same floor a host must clear. Returned is the part the most
+    members reach (ties: more pads, then the reference), for the reason
+    text. One member without such a partner means the run is not a bridge:
+    a pull-up bank's far side is a rail and has none.
+
+    Only ACTIVE members (more than `SYMMETRIC_MAX_PADS` copper pads) bridge.
+    A two-pad passive in series between a chip and a connector is the
+    classic row a human DOES lay as a row -- ulx3s's GPDI coupling caps
+    C38-C45 are one (the tolerance note above measures it) -- and the
+    literal rule declined it, with glasgow's RN5+RN6 and ulx3s's audio
+    dividers."""
+    if any(_copper_pad_count(fps[m]) <= SYMMETRIC_MAX_PADS for m in members):
+        return None
+    count: Dict[str, int] = {}
+    for m in members:
+        ml = links.get(m, {})
+        # On a DIFFERENT net from the member's link to the host: a crystal
+        # on the same MCU pin as a load cap is that pin's net, not a far
+        # side (glasgow U1:9p would otherwise "bridge U1 and Y1").
+        host_nets = {lk['net'] for lk in ml.get(host, ())}
+        far = {h for h, ls in ml.items()
+               if h != host and _copper_pad_count(fps[h]) >= floor
+               and any(lk['net'] not in host_nets for lk in ls)}
+        if not far:
+            return None
+        for h in far:
+            count[h] = count.get(h, 0) + 1
+    return min(count, key=lambda h: (-count[h], -_copper_pad_count(fps[h]),
+                                     _ref_key(h)))
+
+
 def _pin_runs(pcb, refs: List[str], rails=frozenset(),
               declined: Optional[List[Dict]] = None
               ) -> Tuple[List[Dict], List[str]]:
@@ -692,6 +729,25 @@ def _pin_runs(pcb, refs: List[str], rails=frozenset(),
         ordered, _unres = pin_order(pcb, host, linked)
         if len(ordered) < MIN_MEMBERS:
             break
+        claimed = set(ordered)
+        # A BRIDGE: every member also reaches, by an own signal net, a
+        # second part at or above the host floor. That is a buffer/driver
+        # bank between two big parts (glasgow's 17 SN74LVC1T45 between U30
+        # and the IO side), which humans lay as multi-row blocks near the
+        # far part -- a shape `arrays[]` cannot express (one row per
+        # entry; multi-row blocks are not supported). Seeding it as one
+        # row at the host measured WORSE on glasgow (phase-3 verifier:
+        # crossings and hpwl both rose), so it is declined with the
+        # reason, and a reader may still declare it by hand.
+        other = _bridge_partner(fps, links, host, ordered, floor)
+        if other is not None:
+            if declined is not None:
+                declined.append({
+                    'members': list(ordered), 'serves': host,
+                    'criterion': 'pin_run',
+                    'why': f"bridges {host} and {other}"})
+            remaining = [m for m in remaining if m not in claimed]
+            continue
         grid = _grid_named(fps[host])
         found.append({
             'serves': host, 'members': ordered,

@@ -144,13 +144,29 @@ def test_glasgow_resistor_arrays_and_buffers():
         assert c['order'] == 'pin' and c['evidence']['host_pads'] == \
             'numbered'
 
-    # The 17 SN74LVC1T45: 8 + 8 on U30 by channel; U32 nowhere.
-    for bank in (BUFFERS_A, BUFFERS_B):
-        c = _by_members(cands, bank)
-        assert c['criterion'] == 'pin_run' and c['serves'] == 'U30', c
-        pads = {ln['member_pad'] for m in c['members']
-                for ln in c['evidence']['links'][m]}
-        assert pads == {'5'}, f"each buffer reaches U30 by pin 5: {pads}"
+    # The 17 SN74LVC1T45: 8 + 8 on U30 by channel, and each bank BRIDGES
+    # U30 and the channel's R-array (phase-3 fix round 1): a multi-pad run
+    # whose every member also reaches a second part at the host floor by
+    # another net. Declined, with the reason, never suggested -- a single
+    # row at U30 measured worse on glasgow, and humans lay these as 2x4
+    # blocks, which `arrays[]` cannot express. U32 nowhere.
+    declined = []
+    arr.suggest_arrays(_pcb(GLASGOW), declined=declined)
+    for bank, far in ((BUFFERS_A, 'RN7'), (BUFFERS_B, 'RN1')):
+        assert not any(sorted(c['members']) == sorted(bank) for c in cands)
+        hit = [d for d in declined if sorted(d['members']) == sorted(bank)]
+        assert len(hit) == 1, hit
+        assert hit[0]['why'] == f"bridges U30 and {far}", hit[0]
+        assert hit[0]['serves'] == 'U30' and hit[0]['criterion'] == 'pin_run'
+    # The other bridges on this board, pinned deliberately: the 10k arrays
+    # between a connector and a level shifter.
+    bridges = sorted((d['why'], tuple(sorted(d['members'])))
+                     for d in declined if d['why'].startswith('bridges'))
+    assert bridges == sorted([
+        ('bridges J2 and U19', ('RN11', 'RN12')),
+        ('bridges J3 and U5', ('RN5', 'RN6')),
+        ('bridges U30 and RN1', tuple(sorted(BUFFERS_B))),
+        ('bridges U30 and RN7', tuple(sorted(BUFFERS_A)))]), bridges
     assert not any('U32' in c['members'] for c in cands), \
         "U32 is the lone buffer on the top sheet and is no row's member"
     # Nothing without a net (fiducials) nor on shared nets only (mounting
@@ -161,8 +177,8 @@ def test_glasgow_resistor_arrays_and_buffers():
             assert 'Fiducial' not in fps[m].footprint_name
             assert 'MountingHole' not in fps[m].footprint_name
     print(f"  PASS: glasgow {len(cands)} suggestions; RN1+RN2 and RN7+RN8 "
-          f"on U30, RN3+RN4 on J3, RN9+RN10 on J2, buffers 8+8 on U30, U32 "
-          f"none")
+          f"on U30, RN3+RN4 on J3, RN9+RN10 on J2, buffers 8+8 DECLINED as "
+          f"bridges of U30, U32 none")
 
 
 def test_splitflap_pullups_in_u4_pin_order():
@@ -304,32 +320,35 @@ def _grade_auto(pcb, path):
 def test_formation_on_the_human_glasgow():
     """The human rows, graded by the ONE predicate at DEFAULT_TOLERANCES.
 
-    Measured here (and why no tolerance moved): of the 24 rows the auto
-    intent declares, 14 are formed (16 of 27 before fix round 1 stopped
+    Measured here (and why no tolerance moved): of the 20 rows the auto
+    intent declares, 12 are formed (14 of 24 before phase-3 fix round 1
+    declined the two buffer banks and the two 10k arrays as BRIDGES --
+    the 10k pairs were formed rows, the banks were not; 16 of 27 before
+    fix round 1 stopped
     socket pairs J6+J7 / J8+J9 being members -- both were formed rows --
     and dropped bank:100R, whose own nets are supply rails; 15 of 27
     before two-pad parts compared their rotation modulo 180). Every
     failure is a real non-row: the
     smallest failing axis offset is 0.65mm (J1:5k1, R52/R53), the rest
     fail on 90-degree rotation splits or multi-mm pitch gaps, and the
-    buffer banks are 2x4 GRIDS (two columns 4.0mm apart) that a row
-    schema cannot express. No failure is within a tolerance of passing.
+    buffer banks -- no longer suggested -- are 2x4 GRIDS (two columns
+    4.0mm apart) that a row schema cannot express. No failure is within a
+    tolerance of passing.
     """
     pcb = _pcb(GLASGOW)
     doc, intent, res = _grade_auto(pcb, GLASGOW)
     meas = {m['name']: m for m in res.array_measured}
-    assert len(meas) == len(doc['arrays']) == 24, len(meas)
+    assert len(meas) == len(doc['arrays']) == 20, len(meas)
     formed = sorted(n for n, m in meas.items() if m.get('formed'))
     print(f"  human glasgow: {len(formed)} of {len(meas)} detected rows "
           f"formed")
-    assert len(formed) >= 14, formed
+    assert len(formed) >= 12, formed
     by = {tuple(sorted(a['members'])): a['name'] for a in doc['arrays']}
-    for pair in (('RN1', 'RN2'), ('RN3', 'RN4'), ('RN5', 'RN6'),
-                 ('RN7', 'RN8'), ('RN10', 'RN9'), ('RN11', 'RN12')):
+    for pair in (('RN1', 'RN2'), ('RN3', 'RN4'), ('RN7', 'RN8'),
+                 ('RN10', 'RN9')):
         assert meas[by[pair]]['formed'] is True, (pair, meas[by[pair]])
     for bank in (BUFFERS_A, BUFFERS_B):
-        m = meas[by[tuple(sorted(bank))]]
-        assert m['formed'] is False and 'axis' in m['failed'], m
+        assert tuple(sorted(bank)) not in by, bank      # declined bridges
 
     # One member shuffled: the row it belonged to fails, on the axis.
     moved = copy.deepcopy(pcb)
@@ -727,6 +746,23 @@ def test_cli_bare_json_and_refusal():
           "--intent it refuses by reason")
 
 
+def test_series_passives_are_rows_not_bridges():
+    """Phase-3 fix round 1's bridge rule is for ACTIVE members only. The
+    control: ulx3s's GPDI coupling caps C38-C45 sit in series between U1 and
+    the GPDI connector -- each reaches a second big part by another net,
+    the literal bridge shape -- and are a row the human board forms, so they
+    stay a suggestion. Without the active-member conjunct they were
+    declined as 'bridges U1 and GPDI1'."""
+    declined = []
+    cands = arr.suggest_arrays(_pcb(ULX3S), declined=declined)
+    assert not [d for d in declined if d['why'].startswith('bridges')],         declined
+    hit = [c for c in cands if 'C38' in c['members']]
+    assert len(hit) == 1 and len(hit[0]['members']) == 8, hit
+    assert hit[0]['serves'] == 'U1', hit[0]['serves']
+    print(f"  PASS: ulx3s GPDI caps stay one row on U1 "
+          f"({hit[0]['name']}); no bridge declined on ulx3s")
+
+
 TESTS = [
     test_glasgow_resistor_arrays_and_buffers,
     test_splitflap_pullups_in_u4_pin_order,
@@ -741,6 +777,7 @@ TESTS = [
     test_connectors_testpoints_jumpers_are_never_members,
     test_rails_are_not_own_nets_in_a_sheet_bank,
     test_decap_row_order_is_unknown,
+    test_series_passives_are_rows_not_bridges,
     test_the_supply_pin_rail_path,
     test_rail_names_the_detector_reads_locally,
     test_host_floor_and_cascade_on_splitflap,

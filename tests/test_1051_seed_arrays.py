@@ -55,6 +55,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, TESTS_DIR)
 
 from kicad_parser import parse_kicad_pcb           # noqa: E402
+from placement import arrays as arr                # noqa: E402
 from placement import floorplan as fp              # noqa: E402
 from placement import seeder                       # noqa: E402
 from placement.legality import grade_pad_legality  # noqa: E402
@@ -167,6 +168,17 @@ def test_glasgow_resistor_pair_and_buffer_bank_are_formed():
     with tempfile.TemporaryDirectory() as td:
         pcb = parse_kicad_pcb(GLASGOW)
         doc = fp.emit_intent(pcb, GLASGOW, derive_arrays='auto')
+        # The buffer bank is a DECLINED bridge since phase-3 fix round 1;
+        # a reader may still declare it by hand, which is this row.
+        declined = []
+        arr.suggest_arrays(pcb, declined=declined)
+        bank = next(d for d in declined
+                    if d['why'] == 'bridges U30 and RN1')
+        doc['arrays'].append({'name': 'U30:SN74LVC1T45DCKR~2',
+                              'members': list(bank['members']),
+                              'serves': 'U30', 'order': 'unknown',
+                              'rotation': 'shared', 'pitch_mm': 'auto',
+                              'axis': 'auto', 'why': 'declared by hand'})
         intent, _p = _intent(doc, td)
         pcb, res = _seed(GLASGOW, intent)
         out = _write(GLASGOW, res, td, 'gl.kicad_pcb')
