@@ -128,13 +128,17 @@ KEY_SETS = {
         'must_lock', 'legality_budget', 'health', 'severity', 'context',
         'overlap_waivers', 'assembly', 'proximity',
         # #959 (#997): written answers to P1's refusals, never a verdict.
-        'dispositions'},
+        'dispositions',
+        # #1051 / #1054: declared rows, and exact poses to seat.
+        'arrays', 'fixed_poses'},
     '_ENVELOPE_KEYS': {'rect', 'tolerance_mm'},
     '_DEFAULTS_KEYS': {'zone_tolerance_mm'},
     '_BLOCK_KEYS': {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
                     'tolerance_mm', 'note', 'context',
                     # #893: a DECISION and a SET, never both on one block.
-                    'rotation', 'rotation_candidates'},
+                    'rotation', 'rotation_candidates',
+                    # #1052: opt-in, the block moves as one piece.
+                    'rigid'},
     '_KEEPOUT_KEYS': {'name', 'rect', 'circle', 'sides', 'allow', 'note',
                       'context'},
     '_EDGE_CONNECTOR_KEYS': {
@@ -170,6 +174,13 @@ KEY_SETS = {
                         'source', 'context'},
     # #959 (#997): one map per kind of question P1 refuses on.
     '_DISPOSITION_KEYS': {'rules', 'withheld', 'refs', 'contradictions'},
+    # #1051: one declared row. `members` is ordered and literal.
+    '_ARRAY_KEYS': {'name', 'members', 'serves', 'order', 'rotation',
+                    'pitch_mm', 'axis', 'allow_mixed', 'why', 'note',
+                    'source', 'context'},
+    # #1054: one exact pose to seat, and whose fact it is.
+    '_FIXED_POSE_KEYS': {'ref', 'x', 'y', 'rot', 'side', 'basis', 'why',
+                         'context'},
 }
 
 
@@ -221,6 +232,8 @@ def test_the_key_sets_are_exactly_what_is_documented():
         '_ASSEMBLY_KEYS': 'assembly',
         '_PROXIMITY_KEYS': 'proximity[]',
         '_DISPOSITION_KEYS': 'dispositions',
+        '_ARRAY_KEYS': 'arrays[]',
+        '_FIXED_POSE_KEYS': 'fixed_poses[]',
     }
     checked = 0
     for name, row in sorted(TABLE_ROWS.items()):
@@ -260,7 +273,8 @@ def test_an_intent_using_every_known_key_loads():
                     'tolerance_mm': 0.7, 'rotation': 90,
                     'note': 'n', 'context': {'why': 'w'}},
                    {'name': 'mcu', 'refs': ['U1'],
-                    'rotation_candidates': [0, 90, 180, 270]}],
+                    'rotation_candidates': [0, 90, 180, 270],
+                    'rigid': True}],
         'keepouts': [{'name': 'k', 'rect': [0, 0, 6, 6], 'sides': ['F'],
                       'allow': ['MH1'], 'note': 'n', 'context': {'why': 'w'}},
                      {'name': 'k2', 'circle': [50, 5, 8], 'sides': ['F', 'B'],
@@ -313,6 +327,16 @@ def test_an_intent_using_every_known_key_loads():
                        'basis': 'body', 'pads': {'Y1': ['1']},
                        'note': 'n', 'source': 'brief',
                        'context': {'why': 'w'}}],
+        # #1051. Every key on one row; `order: "pin"` needs `serves`.
+        'arrays': [{'name': 'bank', 'members': ['R1', 'R2'], 'serves': 'U1',
+                    'order': 'pin', 'rotation': 'shared', 'pitch_mm': 1.5,
+                    'axis': 'x', 'allow_mixed': False, 'why': 'w',
+                    'note': 'n', 'source': 'brief',
+                    'context': {'why': 'w'}}],
+        # #1054. `basis` is whose fact the pose is.
+        'fixed_poses': [{'ref': 'H1', 'x': 3.0, 'y': 4.0, 'rot': 90,
+                         'side': 'F', 'basis': 'declared', 'why': 'w',
+                         'context': {'why': 'w'}}],
     }
     # Every key of every set must appear above, or this proves less than it
     # claims -- the point is coverage of the vocabulary, not of a sample.
@@ -334,6 +358,7 @@ def test_an_intent_using_every_known_key_loads():
     seen |= set(raw['overlap_waivers'][0])
     seen |= set(raw['assembly'])
     seen |= set(raw['proximity'][0])
+    seen |= set(raw['arrays'][0]) | set(raw['fixed_poses'][0])
     seen |= set(raw['dispositions'])
     for k in raw['keepouts']:
         seen |= set(k)
@@ -617,7 +642,12 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         'plan_fixed_overlap',
                                         'plan_fixed_overlap_budget',
                                         # #959 (#1000)
-                                        'edge_connector_side'}
+                                        'edge_connector_side',
+                                        # #1051: array_problems
+                                        'array_unresolved',
+                                        'array_conflict',
+                                        # #1054: fixed_pose_violations
+                                        'fixed_pose_unresolved'}
     assert _SEVERITY_KEYS == expected, sorted(_SEVERITY_KEYS ^ expected)
     for name in sorted(expected):
         # Two names accept one direction only, and say so at load:

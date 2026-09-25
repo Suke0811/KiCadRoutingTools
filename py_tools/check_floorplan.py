@@ -46,6 +46,7 @@ KRT_TOOL = {'scope': ['placement', 'combined'], 'kind': 'instrument'}
 import _path  # noqa: F401  (py_tools -> py_router/py_placer on sys.path)
 
 import argparse
+import fnmatch
 import json
 import os
 import sys
@@ -432,6 +433,33 @@ def main(argv=None):
                 'anchored': sorted(b['name'][len('mech:'):]
                                    for b in _anchors),
                 'skipped': _skipped}
+            # #1054: the anchored poses also compile into `fixed_poses[]`,
+            # so the seeder can SEAT what the grade anchors. The grade
+            # still anchors from the FILE, so a plan that drops a row
+            # drops the seat, never the grade. A ref another claim of
+            # this intent already places is skipped by name -- the
+            # loader refuses a ref under two such claims.
+            _claimed = {}
+            for _c in doc.get('edge_connectors') or ():
+                _claimed[str(_c.get('ref'))] = (
+                    'an edge_connectors entry already places it')
+            for _pat in doc.get('must_lock') or ():
+                for _r in _ctx['mechanical']['anchored']:
+                    if fnmatch.fnmatchcase(_r, _pat):
+                        _claimed.setdefault(_r, f"must_lock {_pat!r} "
+                                                f"already names it")
+            for _f in doc.get('fixed_poses') or ():
+                _claimed.setdefault(str(_f.get('ref')),
+                                    'the design brief fixes its pose')
+            _fixed, _fskip = _rc.mechanical_fixed_poses(
+                mech, _ctx['mechanical']['anchored'], claimed=_claimed)
+            _ctx['mechanical']['fixed_poses'] = sorted(
+                f['ref'] for f in _fixed)
+            _ctx['mechanical']['fixed_skipped'] = _fskip
+            if _fixed:
+                doc['fixed_poses'] = (list(doc.get('fixed_poses') or ())
+                                      + _fixed)
+                doc['min_reader'] = max(int(doc.get('min_reader') or 0), 7)
         if not args.quiet:
             for line in _rc.format_rows(_rows):
                 print(line)
@@ -444,6 +472,11 @@ def main(argv=None):
                       f"the file at grade time; P1 requires each locked "
                       f"there)"
                       + (f"; skipped: {_sk}" if _sk else ''))
+                _fs = ', '.join(f"{k} ({v})" for k, v in
+                                sorted(_m['fixed_skipped'].items()))
+                print(f"  {len(_m['fixed_poses'])} of them compiled into "
+                      f"fixed_poses[] for the seeder to seat"
+                      + (f"; not compiled: {_fs}" if _fs else ''))
         if args.require_brief and not brief_fragment:
             print(f"  FAIL: --require-brief, but " + _brief_absence_reason(
                 args, brief)

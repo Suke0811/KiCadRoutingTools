@@ -144,13 +144,20 @@ EDGE_BAND_SANITY_MM = 5.0
 #: perpendicular-cable connector. Declarable and graded (`edge_connector_side`,
 #: an advisory WARN), so the rule above mandates the bump -- and an older
 #: build refuses the key by name, which is the safety the bump does not add.
-READER_VERSION = 6
+#: 7 (#1051, #1052, #1054): `arrays[]` -- parts that form ONE row (members,
+#: served part, order, rotation, pitch, axis) -- graded by `array_formation`;
+#: `fixed_poses[]` -- an exact pose a part is to be SEATED at, graded by an
+#: anchor the grade compiles from each entry; and `blocks[].rigid`, which
+#: opts a block into moving as one piece. One bump for the three: they
+#: arrived together, and each changes a verdict or a placement, so the rule
+#: above mandates it. An older build refuses each key by name.
+READER_VERSION = 7
 
 _TOP_LEVEL_KEYS = {
     'schema', 'kind', 'board', 'units', 'envelope', 'defaults', 'blocks',
     'keepouts', 'edge_connectors', 'decaps', 'must_lock', 'legality_budget',
     'health', 'severity', 'context', 'overlap_waivers', 'min_reader',
-    'assembly', 'proximity', 'dispositions',
+    'assembly', 'proximity', 'dispositions', 'arrays', 'fixed_poses',
 }
 #: #959 (#997). WRITTEN answers to "why is this not graded", one map per kind
 #: of question: a rule the plan leaves dark, a budget key the emitter withheld,
@@ -167,7 +174,24 @@ _BLOCK_KEYS = {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
                # seeder refuses rather than silently turning the part);
                # `rotation_candidates` is a SET a search may choose from.
                # Declaring both on one block is refused -- see `_rotation`.
-               'rotation', 'rotation_candidates'}
+               'rotation', 'rotation_candidates',
+               # #1052. Opt-in: the block moves as ONE piece in the quench.
+               # Opt-in because making every block rigid would change every
+               # intent-driven quench with no A/B behind it.
+               'rigid'}
+#: #1051. One declared row of identical parts. `members` is ORDERED and
+#: literal (no globs): `order: "declared"` reads it as the order, and a glob
+#: has none. `serves` is the part the row serves (whose pin order
+#: `order: "pin"` follows); `"unknown"` for either enum is first-class and
+#: distinct from an absent key.
+_ARRAY_KEYS = {'name', 'members', 'serves', 'order', 'rotation', 'pitch_mm',
+               'axis', 'allow_mixed', 'why', 'note', 'source', 'context'}
+#: #1054. An exact pose a part is to be seated at. `basis` says whose fact it
+#: is: `declared` (the design brief) or `mechanical` (mechanical.json).
+#: `rot`/`side` may be `"unknown"`; absent means nobody said.
+_FIXED_POSE_KEYS = {'ref', 'x', 'y', 'rot', 'side', 'basis', 'why',
+                    'context'}
+_FIXED_POSE_BASES = ('declared', 'mechanical')
 #: #837. The board-level assembly policy: which faces the fab will populate.
 #: `blocks[].side` is a claim about ONE subsystem; this is a claim about the
 #: whole board, and it is the thing `options.grow_board` needed and could not
@@ -333,6 +357,8 @@ class Zone:
     #: honoured exactly), and the set a search may choose from. Never both.
     rotation: Optional[float] = None
     rotation_candidates: Optional[Tuple[float, ...]] = None
+    #: #1052. The block moves as one piece in the quench (opt-in).
+    rigid: bool = False
     note: str = ''
     #: Free-form provenance, read by nothing (see `_BLOCK_KEYS`). Carried on
     #: the Zone rather than dropped: `keepouts`/`edge_connectors`/
@@ -393,6 +419,13 @@ class Intent:
     #: `mechanical`). Carried like `budget_withheld` so a finding can say an
     #: observed baseline is not a requirement. Read for messages only.
     basis: Dict[str, str] = field(default_factory=dict)
+    #: #1051. Declared rows of identical parts, raw validated dicts (the
+    #: absent-vs-"unknown" difference is kept; `arrays.spec_of` resolves).
+    #: NEVER emitted by default: which parts form a row is a design decision.
+    arrays: Tuple[Dict[str, object], ...] = ()
+    #: #1054. Exact poses to seat, `[{ref, x, y, rot?, side?, basis, why?}]`.
+    #: Graded by an anchor `grade` compiles from each entry.
+    fixed_poses: Tuple[Dict[str, object], ...] = ()
 
     def assembly_sides(self) -> str:
         """The declared policy, or 'both' -- which constrains nothing.
@@ -763,6 +796,192 @@ def _along_edge_claim(c: Dict, i: int) -> None:
                 f"satisfy it")
 
 
+def _must_lock_hit(ref: str, must_lock) -> Optional[str]:
+    """The `must_lock` pattern that names `ref`, or None."""
+    for pat in must_lock or ():
+        if fnmatch.fnmatchcase(ref, pat) or pat == ref:
+            return pat
+    return None
+
+
+def _fixed_pose_entries(raw: Dict, conns, must_lock) -> List[Dict]:
+    """Validate `fixed_poses[]` (#1054), AT LOAD -- the seeder acts on it and
+    never calls `validate_intent`, the reason `_proximity_claims` gives.
+
+    A fixed pose collides with two other claims on the same part, and each is
+    refused BY NAME rather than given a precedence rule: an `edge_connectors`
+    entry (the seeder's stage 1 seats it at a band midpoint, with no legality
+    gate) and a `must_lock` pattern (a claim about the FILE; a part the plan
+    says to seat is not one the file already pins).
+    """
+    got = raw.get('fixed_poses')
+    if got is not None and not isinstance(got, list):
+        raise IntentError(f"fixed_poses: expected a list, got "
+                          f"{type(got).__name__}")
+    edge_refs = {str(c.get('ref')) for c in conns}
+    out: List[Dict] = []
+    seen: Dict[str, int] = {}
+    for i, f in enumerate(got or []):
+        where = f"fixed_poses[{i}]"
+        if not isinstance(f, dict):
+            raise IntentError(f"{where}: expected an object with `ref`, `x`, "
+                              f"`y` and `basis`")
+        _reject_unknown(f, _FIXED_POSE_KEYS, where)
+        _entry_context(f, where)
+        ref = f.get('ref')
+        if not ref or not isinstance(ref, str):
+            raise IntentError(f"{where}: `ref` must be a single reference")
+        where = f"{where} ({ref})"
+        if ref in seen:
+            raise IntentError(f"{where}: duplicate fixed pose, already "
+                              f"declared at fixed_poses[{seen[ref]}] -- two "
+                              f"poses for one part, with no rule for which "
+                              f"wins")
+        seen[ref] = i
+        for k in ('x', 'y'):
+            if k not in f:
+                raise IntentError(f"{where}: needs `{k}`")
+            v = _number(f[k], f"{where}.{k}")
+            if not math.isfinite(v):
+                raise IntentError(f"{where}.{k}: {f[k]!r} is not a finite "
+                                  f"coordinate")
+        rot = f.get('rot')
+        if rot is not None and rot != 'unknown':
+            _rotation(rot, f"{where}.rot")
+        side = f.get('side')
+        if side is not None and side not in ('F', 'B', 'unknown'):
+            raise IntentError(f"{where}.side: {side!r}, expected 'F', 'B' or "
+                              f"'unknown'")
+        basis = f.get('basis')
+        if basis not in _FIXED_POSE_BASES:
+            raise IntentError(
+                f"{where}.basis: {basis!r}, expected one of "
+                f"{', '.join(map(repr, _FIXED_POSE_BASES))} -- whose fact the "
+                f"pose is decides what a contradiction means")
+        if f.get('why') is not None and not isinstance(f['why'], str):
+            raise IntentError(f"{where}.why: expected a string")
+        if ref in edge_refs:
+            raise IntentError(
+                f"{where}: {ref} is also an `edge_connectors` entry. Stage 1 "
+                f"seats an edge connector at its band, and a fixed pose seats "
+                f"it exactly -- two placements for one part. Keep one")
+        pat = _must_lock_hit(ref, must_lock)
+        if pat is not None:
+            raise IntentError(
+                f"{where}: {ref} is also named by must_lock {pat!r}. must_lock "
+                f"is a claim that the FILE already pins the part; a fixed "
+                f"pose says the seeder is to put it there. Keep one")
+        out.append(dict(f))
+    return out
+
+
+def _array_entries(raw: Dict, conns, must_lock, fixed_refs) -> List[Dict]:
+    """Validate `arrays[]` (#1051), AT LOAD, the board-free half.
+
+    The board-aware half -- members and `serves` on the board, a FILE-locked
+    member, mixed footprints, a member's block rotation or zone -- is
+    `array_problems`, which `grade` and `resolve_intent_gate` both call, the
+    way both report `block_unresolved`.
+
+    Every refusal names the member it is about: an array is a list, and "an
+    array is wrong" sends the reader hunting through it.
+    """
+    from . import arrays as arr
+    got = raw.get('arrays')
+    if got is not None and not isinstance(got, list):
+        raise IntentError(f"arrays: expected a list, got "
+                          f"{type(got).__name__}")
+    edge_refs = {str(c.get('ref')) for c in conns}
+    owner: Dict[str, str] = {}
+    names = set()
+    out: List[Dict] = []
+    for i, a in enumerate(got or []):
+        where = f"arrays[{i}]"
+        if not isinstance(a, dict):
+            raise IntentError(f"{where}: expected an object with `name` and "
+                              f"`members`")
+        _reject_unknown(a, _ARRAY_KEYS, where)
+        _entry_context(a, where)
+        name = a.get('name')
+        if not name or not isinstance(name, str):
+            raise IntentError(f"{where}: needs a `name`")
+        where = f"{where} ({name})"
+        if name in names:
+            raise IntentError(f"{where}: duplicate array name {name!r}")
+        names.add(name)
+        members = a.get('members')
+        if (not isinstance(members, list)
+                or not all(isinstance(m, str) and m for m in members)):
+            raise IntentError(f"{where}.members: expected a list of "
+                              f"references, got {members!r}")
+        if len(members) < 2:
+            raise IntentError(
+                f"{where}.members: {members!r} -- a row needs at least two "
+                f"members; one part is not an array")
+        dup = sorted({m for m in members if members.count(m) > 1})
+        if dup:
+            raise IntentError(f"{where}.members: {', '.join(dup)} listed "
+                              f"twice")
+        for m in members:
+            if m in owner:
+                raise IntentError(
+                    f"{where}: member {m} is also in array {owner[m]!r}. A "
+                    f"part is in one row; the two would pull it apart")
+            owner[m] = name
+            if m in fixed_refs:
+                raise IntentError(
+                    f"{where}: member {m} has a `fixed_poses` entry. A fixed "
+                    f"part cannot move with its row; take it out of one")
+            pat = _must_lock_hit(m, must_lock)
+            if pat is not None:
+                raise IntentError(
+                    f"{where}: member {m} is named by must_lock {pat!r}. A "
+                    f"locked part cannot move with its row; take it out of "
+                    f"one")
+            if m in edge_refs:
+                raise IntentError(
+                    f"{where}: member {m} is also an `edge_connectors` entry, "
+                    f"which is seated at its edge and frozen in the quench; "
+                    f"it cannot move with its row. Take it out of one")
+        serves = a.get('serves')
+        if serves is not None and (not isinstance(serves, str) or not serves):
+            raise IntentError(f"{where}.serves: expected a reference or "
+                              f"'unknown', got {serves!r}")
+        if serves in members:
+            raise IntentError(f"{where}.serves: {serves} is a member of the "
+                              f"row it serves")
+        order = a.get('order')
+        if order is not None and order not in arr.ORDERS:
+            raise IntentError(f"{where}.order: {order!r}, expected one of "
+                              f"{', '.join(map(repr, arr.ORDERS))}")
+        if order == 'pin' and (serves is None or serves == 'unknown'):
+            raise IntentError(
+                f"{where}: order 'pin' follows the pin numbering of the part "
+                f"the row SERVES, and `serves` is "
+                f"{'absent' if serves is None else 'unknown'}. Name it, or "
+                f"declare the order 'declared' or 'unknown'")
+        rot = a.get('rotation')
+        if rot is not None and rot not in arr.ROTATION_WORDS:
+            _rotation(rot, f"{where}.rotation")
+        pitch = a.get('pitch_mm')
+        if pitch is not None and pitch not in arr.PITCH_WORDS:
+            v = _number(pitch, f"{where}.pitch_mm")
+            if not math.isfinite(v) or v <= 0:
+                raise IntentError(f"{where}.pitch_mm: {pitch!r}, expected "
+                                  f"'auto' or a positive distance")
+        axis = a.get('axis')
+        if axis is not None and axis not in arr.AXES:
+            raise IntentError(f"{where}.axis: {axis!r}, expected one of "
+                              f"{', '.join(map(repr, arr.AXES))}")
+        if 'allow_mixed' in a and not isinstance(a['allow_mixed'], bool):
+            raise IntentError(f"{where}.allow_mixed: expected true or false")
+        for k in ('why', 'note', 'source'):
+            if a.get(k) is not None and not isinstance(a[k], str):
+                raise IntentError(f"{where}.{k}: expected a string")
+        out.append(dict(a))
+    return out
+
+
 def load_intent(path: str) -> Intent:
     """Read and structurally validate an intent file.
 
@@ -857,6 +1076,16 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
                 f"`{MECHANICAL_ANCHOR_PREFIX}` blocks are compiled from "
                 f"mechanical.json by the grade itself (#959). Remove it; the "
                 f"grade reads the declaration directly")
+        if str(name).startswith(FIXED_POSE_ANCHOR_PREFIX):
+            raise IntentError(
+                f"blocks[{i}]: the name {name!r} is reserved -- "
+                f"`{FIXED_POSE_ANCHOR_PREFIX}` blocks are compiled from "
+                f"`fixed_poses[]` by the grade itself (#1054). Declare the "
+                f"pose there instead")
+        if 'rigid' in b and not isinstance(b['rigid'], bool):
+            raise IntentError(
+                f"blocks[{i}] ({name}): rigid {b['rigid']!r}, expected true "
+                f"or false")
         if name in seen_names:
             raise IntentError(f"blocks[{i}]: duplicate block name {name!r}")
         seen_names.add(name)
@@ -890,6 +1119,7 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
             tolerance_mm=b.get('tolerance_mm'),
             rotation=rot,
             rotation_candidates=rot_cands,
+            rigid=bool(b.get('rigid', False)),
             note=b.get('note', '') or '',
             context=b.get('context') or {},
         ))
@@ -958,6 +1188,11 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         conns.append(c)
 
     proximity = _proximity_claims(raw)
+
+    must_lock = _str_tuple(raw.get('must_lock'), 'must_lock')
+    fixed_poses = _fixed_pose_entries(raw, conns, must_lock)
+    arrays = _array_entries(raw, conns, must_lock,
+                            {str(f['ref']) for f in fixed_poses})
 
     severity = _obj(raw.get('severity'), 'severity')
     if any(v not in (ERROR, WARN) for v in severity.values()):
@@ -1110,7 +1345,7 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         blocks=tuple(blocks), keepouts=tuple(keepouts),
         edge_connectors=tuple(conns),
         decaps=decaps,
-        must_lock=_str_tuple(raw.get('must_lock'), 'must_lock'),
+        must_lock=must_lock,
         legality_budget=budget,
         health=health,
         severity={str(k): str(v) for k, v in severity.items()},
@@ -1124,6 +1359,8 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         proximity=tuple(proximity),
         dispositions=dispositions,
         basis=_checked_basis(context, decaps),
+        arrays=tuple(arrays),
+        fixed_poses=tuple(fixed_poses),
     )
     # A disposition for a rule the intent ARMS says "this is not graded" about
     # a rule that is -- the two statements cannot both be true, and a reader
@@ -1254,11 +1491,16 @@ def mechanical_drift(intent: Intent, pcb_data, mechanical: Dict, *,
 #: `context.basis: mechanical`). So the grade builds them from the file, and
 #: this prefix is refused in an intent.
 MECHANICAL_ANCHOR_PREFIX = 'mech:'
+#: #1054. The same, for anchors the grade compiles from `fixed_poses[]`.
+FIXED_POSE_ANCHOR_PREFIX = 'fixed:'
 
 
 def mechanical_anchor_violations(pcb_data, pcb_file: str, mechanical: Dict,
                                  *, skip: Sequence[str] = (), state=None,
-                                 locked=(), outline=None) -> List['Violation']:
+                                 locked=(), outline=None,
+                                 prefix: str = MECHANICAL_ANCHOR_PREFIX,
+                                 basis: str = 'mechanical'
+                                 ) -> List['Violation']:
     """`zone_containment` for every anchored mechanical ref, against an
     anchor compiled from the FILE at grade time (#959, #1001).
 
@@ -1268,15 +1510,15 @@ def mechanical_anchor_violations(pcb_data, pcb_file: str, mechanical: Dict,
     `severity` map cannot demote it."""
     from . import reconcile as _rc
     anchors, _skipped = _rc.anchor_blocks(pcb_data, pcb_file, mechanical,
-                                          lost=skip, state=state)
+                                          lost=skip, state=state,
+                                          prefix=prefix, basis=basis)
     if not anchors:
         return []
     it = intent_from_dict({'schema': 1, 'kind': 'floorplan-intent',
                            'units': 'mm', 'severity': {
                                'zone_containment': 'error'}}, '')
     it = dataclasses.replace(it, blocks=[_anchor_zone(b) for b in anchors])
-    blocks = {z.name: [z.name[len(MECHANICAL_ANCHOR_PREFIX):]]
-              for z in it.blocks}
+    blocks = {z.name: [z.name[len(prefix):]] for z in it.blocks}
     if state is None:
         import pose_score
         state = pose_score.make_state(pcb_data, pcb_file)
@@ -1298,6 +1540,179 @@ def _anchor_zone(b: Dict) -> 'Zone':
                           'units': 'mm',
                           'blocks': [dict(doc, name='anchor')]}, '').blocks[0]
     return dataclasses.replace(z, name=name)
+
+
+def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
+                          mechanical=None, state=None, locked=(),
+                          outline=None) -> List['Violation']:
+    """Grade every `fixed_poses[]` entry, whatever its source (#1054).
+
+    Through `mechanical_anchor_violations` -- the anchor `reconcile.
+    anchor_blocks` builds, named `fixed:<ref>` -- so a pose the brief
+    declared is graded by exactly the geometry a mechanical.json pose is,
+    and never by a second copy of it.
+
+    A ref the mechanical file itself declares a pose for is SKIPPED here:
+    the grade anchors it from the file already (or deliberately does not,
+    when its value lost a contradiction), and grading it twice would report
+    one moved part as two findings.
+
+    A ref the board does not have is an ERROR (`fixed_pose_unresolved`): a
+    typo'd pose would otherwise grade clean. A ref the anchor declines for
+    another reason (pad-less: the seeder never places it) is a WARN with that
+    reason, so the pose is never silently ungraded.
+    """
+    from . import reconcile as _rc
+    file_refs = set((mechanical or {}).get('poses') or ())
+    poses: Dict[str, Dict] = {}
+    for f in intent.fixed_poses:
+        ref = str(f['ref'])
+        if ref in file_refs:
+            continue
+        rot = f.get('rot')
+        poses[ref] = {'x': float(f['x']), 'y': float(f['y']),
+                      'rot': (None if rot is None or rot == 'unknown'
+                              else float(rot) % 360.0),
+                      'reason': str(f.get('why') or '')
+                      or f"a {f.get('basis')} fixed pose"}
+    if not poses:
+        return []
+    out: List[Violation] = []
+    for ref in sorted(poses):
+        if ref not in (pcb_data.footprints or {}):
+            out.append(Violation(
+                rule='fixed_pose_unresolved',
+                severity=intent.severity_of('fixed_pose_unresolved'),
+                ref=ref,
+                message=(f"fixed_poses names {ref}, which is not on this "
+                         f"board -- a pose for a part that does not exist "
+                         f"grades clean, so this is an error"),
+                measured={'found': False}))
+    src = intent.source_path or 'the intent'
+    pseudo = {'poses': poses, 'path': f"{src} fixed_poses[]"}
+    _anchors, skipped = _rc.anchor_blocks(pcb_data, pcb_file, pseudo,
+                                          state=state,
+                                          prefix=FIXED_POSE_ANCHOR_PREFIX,
+                                          basis='fixed_pose')
+    for ref, why in sorted(skipped.items()):
+        if ref not in (pcb_data.footprints or {}):
+            continue
+        out.append(Violation(
+            rule='fixed_pose_unresolved',
+            severity=intent.severity_of('fixed_pose_unresolved', WARN),
+            ref=ref,
+            message=(f"fixed_poses[{ref}] is not graded: {why}"),
+            measured={'found': True, 'skipped': why}))
+    out.extend(mechanical_anchor_violations(
+        pcb_data, pcb_file, pseudo, state=state, locked=locked,
+        outline=outline, prefix=FIXED_POSE_ANCHOR_PREFIX, basis='fixed_pose'))
+    return out
+
+
+def array_problems(intent: Intent, pcb_data, blocks: Dict[str, List[str]],
+                   *, locked=None) -> List['Violation']:
+    """The board-aware half of `arrays[]` validation (#1051).
+
+    Raised by BOTH `grade` and `resolve_intent_gate` -- `block_unresolved`'s
+    shape, one raiser and two reach points -- because the gate is what the
+    quenching CLIs run and it must not seat or hold a row the grade calls
+    impossible. Each finding names the member it is about.
+
+    `array_unresolved` (a name the board does not have): a member or the
+    served part. `array_conflict` (the row cannot be formed as declared):
+    a FILE-locked member (`fp.locked`, and `locked` when the caller read the
+    file), mixed footprints without `allow_mixed`, a member whose block
+    declares a rotation the row's numeric (or shared) rotation contradicts,
+    and members split across zoned blocks -- a row is seated as one piece, so
+    it cannot be in two zones, nor half in one.
+    """
+    from . import arrays as arr
+    if not intent.arrays:
+        return []
+    fps = pcb_data.footprints or {}
+    locked = set(locked or ())
+    rots = rotations_for_ref(intent, blocks)
+    zoned = {z.name for z in intent.blocks if z.rect is not None}
+    out: List[Violation] = []
+
+    def _v(a, ref, msg, *, rule, **measured):
+        out.append(Violation(
+            rule=rule, severity=intent.severity_of(rule), ref=ref,
+            block=str(a.get('name')), message=msg, measured=measured))
+
+    for a in intent.arrays:
+        spec = arr.spec_of(a)
+        name = spec['name']
+        serves = spec['serves']
+        if serves not in (None, 'unknown') and serves not in fps:
+            _v(a, None,
+               f"array {name!r} serves {serves}, which is not on this board",
+               rule='array_unresolved', serves=serves, found=False)
+        present = [m for m in spec['members'] if m in fps]
+        for m in spec['members']:
+            if m not in fps:
+                _v(a, m,
+                   f"array {name!r}: member {m} is not on this board",
+                   rule='array_unresolved', found=False)
+        for m in present:
+            if getattr(fps[m], 'locked', False) or m in locked:
+                _v(a, m,
+                   f"array {name!r}: member {m} is locked in the board file, "
+                   f"so it cannot move with its row -- unlock it or take it "
+                   f"out of the array", rule='array_conflict', locked=True)
+        if not spec['allow_mixed'] and present:
+            names = {m: str(fps[m].footprint_name or '') for m in present}
+            first = names[present[0]]
+            for m in present[1:]:
+                if names[m] != first:
+                    _v(a, m,
+                       f"array {name!r}: member {m} is {names[m]!r} while "
+                       f"{present[0]} is {first!r} -- a row of different "
+                       f"footprints has no one pitch or rotation; set "
+                       f"`allow_mixed` if it is meant",
+                       rule='array_conflict', footprint=names[m],
+                       first=first)
+        want = spec['rotation']
+        declared = {m: rots[m] for m in present if m in rots}
+        if arr.is_number(want):
+            for m, (r, cands) in sorted(declared.items()):
+                if (r is not None and r != want) or (
+                        cands is not None and want not in cands):
+                    _v(a, m,
+                       f"array {name!r}: member {m}'s block declares "
+                       f"{'rotation ' + format(r, 'g') if r is not None else 'rotation_candidates ' + str(list(cands))}"
+                       f", and the array declares rotation {want:g}. A part "
+                       f"has one angle; resolve the two claims",
+                       rule='array_conflict', block_rotation=r,
+                       block_candidates=(None if cands is None
+                                         else list(cands)),
+                       array_rotation=want)
+        elif want == 'shared':
+            fixed = sorted({r for r, _c in declared.values()
+                            if r is not None})
+            if len(fixed) > 1:
+                for m, (r, _c) in sorted(declared.items()):
+                    if r is not None and r != fixed[0]:
+                        _v(a, m,
+                           f"array {name!r} declares ONE shared rotation, "
+                           f"and its members' blocks declare "
+                           f"{', '.join(format(x, 'g') for x in fixed)} "
+                           f"({m} at {r:g})", rule='array_conflict',
+                           block_rotation=r)
+        in_zone = {m: sorted(b for b in zoned if m in blocks.get(b, ()))
+                   for m in present}
+        zones_used = sorted({b for bs in in_zone.values() for b in bs})
+        if zones_used:
+            for m in present:
+                if in_zone[m] != zones_used or len(zones_used) > 1:
+                    _v(a, m,
+                       f"array {name!r}: member {m} is in zoned block(s) "
+                       f"{in_zone[m] or 'none'}, while the row's members are "
+                       f"in {zones_used}. A row is seated as one piece, so "
+                       f"all of it is in one zone or none of it is",
+                       rule='array_conflict', zones=in_zone[m],
+                       row_zones=zones_used)
+    return out
 
 
 def validate_intent(intent: Intent) -> List[Violation]:
@@ -1883,6 +2298,10 @@ def resolve_intent_gate(intent: Intent, pcb_data,
     # the part right now. One raiser, two reach points -- `block_unresolved`'s
     # own shape, and for the same reason.
     problems.extend(unresolved_keepout_allows(intent, pcb_data))
+    # #1051: the board-aware half of `arrays[]`, one raiser for both reach
+    # points. The FILE lock is read off `fp.locked` here -- the gate has the
+    # parsed board and no path.
+    problems.extend(array_problems(intent, pcb_data, blocks))
 
     lock: set = set()
     for pat in intent.must_lock:
@@ -1895,10 +2314,55 @@ def resolve_intent_gate(intent: Intent, pcb_data,
     # from the quench (one boolean covers position and rotation), so
     # `place_seed` -> `place_optimize` would have turned a declared part
     # straight back -- against the very U3 case the seeder docstring cites.
+    #
+    # #1051/#1052/#1054: the declared rows, the fixed poses and the rigid
+    # groups ride in the same bundle as DATA. No engine reads them yet --
+    # `quench` and the seeder `.get` only the keys above, so an intent that
+    # declares these is gated exactly as before until their consumers land.
     return ({'rotations': rotations_for_ref(intent, blocks),
              'zones': zones,
              'keepouts': tuple(intent.keepouts),
-             'lock_refs': tuple(sorted(lock))}, problems)
+             'lock_refs': tuple(sorted(lock)),
+             'arrays': resolved_arrays(intent, pcb_data),
+             'fixed_poses': tuple(dict(f) for f in intent.fixed_poses),
+             'rigid_blocks': rigid_groups(intent, blocks, pcb_data)},
+            problems)
+
+
+def resolved_arrays(intent: Intent, pcb_data) -> Tuple[Dict[str, object], ...]:
+    """Each declared array, resolved against the board: `arrays.spec_of`'s
+    fields plus `present` (members on the board, in declared order) and
+    `order_refs` / `order_unresolved` -- the expected order along the row
+    (`arrays.expected_order`: the served part's pin order, or the declared
+    list, or None for `order: "unknown"`). Plain data, for the engines."""
+    from . import arrays as arr
+    out = []
+    fps = pcb_data.footprints or {}
+    for a in intent.arrays:
+        spec = arr.spec_of(a)
+        spec['present'] = [m for m in spec['members'] if m in fps]
+        order_refs, unresolved = arr.expected_order(pcb_data, spec)
+        spec['order_refs'] = order_refs
+        spec['order_unresolved'] = dict(unresolved)
+        out.append(spec)
+    return tuple(out)
+
+
+def rigid_groups(intent: Intent, blocks: Dict[str, List[str]], pcb_data
+                 ) -> Dict[str, List[str]]:
+    """`{group name: refs}` for every group the quench is to move as ONE
+    piece: each declared array (`array:<name>`, members on the board) and
+    each block declaring `rigid: true` (`block:<name>`, its resolved refs).
+    Prefixed so an array and a block sharing a name stay two groups."""
+    fps = pcb_data.footprints or {}
+    out: Dict[str, List[str]] = {}
+    for a in intent.arrays:
+        out[f"array:{a['name']}"] = [str(m) for m in a['members']
+                                     if m in fps]
+    for z in intent.blocks:
+        if z.rigid:
+            out[f"block:{z.name}"] = list(blocks.get(z.name, ()))
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -4416,6 +4880,79 @@ def rule_pins_to_edge(ctx) -> Iterator[Violation]:
 from .edge_facing import MIN_PADS as PINS_TO_EDGE_MIN_PADS  # noqa: E402
 
 
+def rule_array_formation(ctx) -> Iterator[Violation]:
+    """Each declared array (#1051) is ONE formed row: a common axis, the
+    expected order along it, the declared rotation, an even (or declared)
+    pitch.
+
+    The verdict is `arrays.formation`'s -- the one predicate the seeder's row
+    seat and the quench's block move are to call too -- over each member's
+    courtyard centre (the grader's own `rect`, so identical parts compare
+    like for like) and its board rotation. The expected order is
+    `arrays.expected_order`: the served part's PIN order for `order: "pin"`,
+    read off pads and nets and never off poses.
+
+    An array with a member the board does not have is left to
+    `array_problems`, which reports it at ERROR; grading the survivors would
+    call a row formed that is missing a part. A member with no geometry
+    abstains, by name, rather than passing.
+    """
+    from . import arrays as arr
+    fps = ctx.pcb.footprints or {}
+    for a in ctx.intent.arrays:
+        spec = arr.spec_of(a)
+        name = spec['name']
+        if any(m not in fps for m in spec['members']):
+            continue
+        missing = [m for m in spec['members'] if m not in ctx.parts]
+        if missing:
+            ctx.abstained[f"arrays[{name}]"] = (
+                f"no placement geometry for {', '.join(missing)}, so the "
+                f"row cannot be measured")
+            continue
+        poses = []
+        for m in spec['members']:
+            r = ctx.parts[m].rect
+            poses.append({'ref': m, 'x': (r[0] + r[2]) / 2.0,
+                          'y': (r[1] + r[3]) / 2.0,
+                          'rot': float(fps[m].rotation or 0.0) % 360.0})
+        order_refs, unresolved = arr.expected_order(ctx.pcb, spec)
+        v = arr.formation(poses, order_key=order_refs,
+                          rotation_spec=spec['rotation'],
+                          pitch_spec=spec['pitch_mm'],
+                          axis_spec=spec['axis'])
+        if v['formed']:
+            continue
+        detail = []
+        for check in v['failed']:
+            c = v['checks'].get(check) or {}
+            if check == 'axis':
+                detail.append(f"off the {c.get('axis')} axis by up to "
+                              f"{c.get('max_offset_mm')}mm")
+            elif check == 'order':
+                detail.append(f"order {c.get('observed')} is not "
+                              f"{c.get('expected')} (either direction)")
+            elif check == 'rotation':
+                detail.append(f"rotations {c.get('rotations')}"
+                              + (f", {', '.join(c['off'])} off "
+                                 f"{c.get('declared'):g}"
+                                 if c.get('off') else ''))
+            elif check == 'pitch':
+                detail.append(f"gaps {c.get('gaps_mm')}mm")
+        yield Violation(
+            rule='array_formation', severity=ctx.sev('array_formation'),
+            block=name,
+            message=(f"array {name!r} is not a formed row: "
+                     + '; '.join(detail)),
+            measured={'failed': list(v['failed']),
+                      'unchecked': list(v['unchecked']),
+                      'axis': v['axis'], 'order': list(v['order']),
+                      'checks': v['checks'],
+                      'order_unresolved': dict(unresolved)},
+            expected={'order': order_refs, 'rotation': spec['rotation'],
+                      'pitch_mm': spec['pitch_mm'], 'axis': spec['axis']})
+
+
 RULES = (
     ('envelope', rule_envelope),
     ('zone_containment', rule_zone_containment),
@@ -4431,6 +4968,7 @@ RULES = (
     ('must_lock', rule_must_lock),
     ('legality', rule_legality),
     ('pins_to_edge', rule_pins_to_edge),
+    ('array_formation', rule_array_formation),
 )
 
 #: Rules whose violations are raised OUTSIDE the `RULES` loop, and so have no
@@ -4476,7 +5014,15 @@ _NON_RULE_SEVERITIES = frozenset({
     'plan_board_crowded',
     # Row 8: two FILE-locked parts overlapping. A WARN per pair; an ERROR
     # only when their overlap alone exceeds a DECLARED overlap budget.
-    'plan_fixed_overlap', 'plan_fixed_overlap_budget'})
+    'plan_fixed_overlap', 'plan_fixed_overlap_budget',
+    # #1051. Raised by `array_problems` (grade AND the quench gate): a member
+    # or served part the board does not have, and a row that cannot be
+    # formed as declared (a locked member, mixed footprints, a block
+    # rotation or zone contradicting the row). Each names its member.
+    'array_unresolved', 'array_conflict',
+    # #1054. Raised by `fixed_pose_violations`: a fixed pose for a ref the
+    # board does not have (ERROR), or one the anchor cannot grade (WARN).
+    'fixed_pose_unresolved'})
 
 #: Every rule name an intent may set a severity for. Derived from `RULES`, so a
 #: new rule is settable the moment it is registered -- a hand-listed set would
@@ -4502,6 +5048,7 @@ _SKIP_REASON = {
     # The rule's exclusion list IS the declaration: without it every
     # connector on the board would be named for facing the edge it mates at.
     'pins_to_edge': 'the intent declares no edge_connectors',
+    'array_formation': 'the intent declares no arrays',
 }
 
 
@@ -4670,6 +5217,8 @@ def _wants(intent: Intent, rule: str) -> bool:
         # exclusion list: without it the rule would name every connector on
         # the board for facing the edge it mates at.
         return bool(intent.edge_connectors)
+    if rule == 'array_formation':
+        return bool(intent.arrays)
     return True
 
 
@@ -4696,6 +5245,7 @@ _ARMING_KEY = {
     'must_lock': 'must_lock[]',
     'legality': 'legality_budget',
     'pins_to_edge': 'edge_connectors[]',
+    'array_formation': 'arrays[]',
 }
 
 #: What each rule reports at when the intent's `severity` map says nothing.
@@ -4724,6 +5274,12 @@ _POLICY_RULES = {
                   'must be near which'),
     'zone_exclusive': ('a policy about who may enter a zone; nothing on the '
                        'board says that a zone is reserved'),
+    # #1051. Which identical parts form ONE row is a design decision the
+    # board file does not record: a detector may SUGGEST a candidate from
+    # the pin numbering, and only a declaration arms the rule.
+    'array_formation': ('a design decision about which parts form one row; '
+                        'nothing on the board says which identical parts '
+                        'belong together'),
 }
 
 
@@ -4747,6 +5303,8 @@ def _brief_claims(rule: str, brief_fragment) -> List[str]:
     if rule in ('edge_connector', 'pins_to_edge'):
         return [str(c.get('ref')) for c in frag.get('edge_connectors') or ()
                 if c.get('edge')]
+    if rule == 'array_formation':
+        return [str(a.get('name')) for a in frag.get('arrays') or ()]
     return []
 
 #: Part classes whose presence makes the edge rules applicable. Strict on
@@ -6087,6 +6645,10 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
                   + list(unresolved_keepout_allows(intent, pcb_data))
                   + list(intent_zone_keepout_problems(
                       intent, blocks, pcb_data, pcb_file)))
+    # #1051: the board-aware half of `arrays[]`, raised here and by
+    # `resolve_intent_gate`, the way `block_unresolved` is.
+    violations.extend(array_problems(intent, pcb_data, blocks,
+                                     locked=ctx.locked))
     # Budget keys the emitter withheld and that are therefore NOT graded.
     # A key present in the budget was declared (by hand, deliberately) and
     # overrides its withholding note.
@@ -6108,6 +6670,11 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
         # an amended reason read as an armed abstention -- a clean board
         # then exited 4 "NOT FULLY GRADED" (narrow re-review). The anchors'
         # findings carry their own `mech:<ref>` block names instead.
+    # #1054: every `fixed_poses[]` entry, whatever its source, through the
+    # same anchor -- a ref the mechanical file declares is left to the file.
+    violations.extend(fixed_pose_violations(
+        intent, pcb_data, pcb_file, mechanical=mechanical, state=state,
+        locked=ctx.locked, outline=outline))
     # #712: a DECLARED along-edge claim this outline cannot support a verdict
     # on joins the same not-derivable channel the withheld budgets use. It is
     # neither a violation nor a pass, and `pass: true` beside a non-zero
@@ -6436,7 +7003,9 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 group_sources: Sequence[str] = ('kicad', 'sheet'),
                 zone_pad_mm: float = 1.0,
                 declare_classes: bool = False,
-                derive_decaps='off', brief_fragment=None) -> Dict:
+                derive_decaps='off', brief_fragment=None,
+                derive_arrays='off', rigid_blocks: Sequence[str] = ()
+                ) -> Dict:
     """A starter intent READ OFF the board, for a human or a model to edit.
 
     Everything here describes what the board already is. The envelope is
@@ -6448,9 +7017,24 @@ def emit_intent(pcb_data, pcb_file: str, *,
     The emitted intent grades CLEAN by construction. That is the point: it is a
     baseline to tighten, and the round trip (emit then grade) is what proves the
     rules are wired to real geometry rather than silently skipping.
+
+    It writes no `arrays`, no `fixed_poses` and no `rigid` by default (#1051,
+    #1052, #1054): which parts form a row, where a part must sit and which
+    block moves as one piece are design decisions, not observations.
+    `derive_arrays` is the switch for the row detector; only `'off'` exists
+    in this build. `rigid_blocks` names emitted blocks to mark `rigid: true`
+    -- the opt-in path the placement A/B harness selects, since it forbids
+    hand-written intents.
     """
     from .quench import QuenchState
     import routing_defaults as defaults
+
+    if derive_arrays != 'off':
+        if derive_arrays == 'auto':
+            raise NotImplementedError(
+                "derive_arrays='auto': the array detector is not in this "
+                "build (#1051 phase 2); only 'off' is accepted")
+        raise ValueError(f"derive_arrays {derive_arrays!r}: expected 'off'")
 
     outline = outline_state(pcb_data, pcb_file)
     if not outline['trustworthy']:
@@ -6899,7 +7483,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 f"{_cen['reflow_passes']} reflow pass(es). "
                 f"{_cen['basis']}"),
     }
-    return {
+    doc = {
         'schema': SCHEMA_VERSION,
         'kind': KIND,
         'board': os.path.basename(pcb_file),
@@ -6981,6 +7565,22 @@ def emit_intent(pcb_data, pcb_file: str, *,
                                     _assembly, band_default),
         },
     }
+    # #1052: the A/B emitter path for `blocks[].rigid` -- the harness names
+    # emitted blocks to opt in, because a hand-written intent is forbidden
+    # there. Absent by default, so a default emission is unchanged.
+    if rigid_blocks:
+        names = {b['name'] for b in blocks}
+        unknown = sorted(set(rigid_blocks) - names)
+        if unknown:
+            raise ValueError(
+                f"rigid_blocks names {', '.join(unknown)}, which this board "
+                f"does not emit as blocks. Emitted: "
+                f"{', '.join(sorted(names)) or 'none'}")
+        for b in blocks:
+            if b['name'] in rigid_blocks:
+                b['rigid'] = True
+        doc['min_reader'] = max(int(doc.get('min_reader') or 0), 7)
+    return doc
 
 
 def extract_locked_refs_safe(pcb_file: str):
@@ -7271,12 +7871,19 @@ def declaration_ledger(intent: Intent, rows, *, result=None,
     ko_err: set = set()
     side_warn: set = set()
     absent: set = set()
+    # #1051: a formation finding names the ARRAY (its block), not a ref, so a
+    # brief `arrays[NAME]` clause is judged by the array's name -- the
+    # keep-out case above, one rule over.
+    arr_err: set = set()
     if result is not None:
         for v in result.violations:
             if v.severity == ERROR:
                 by_rule_err.setdefault(v.rule, set()).add(v.ref or '')
                 if v.rule == 'keepout':
                     ko_err.add(str((v.measured or {}).get('keepout') or ''))
+                if v.rule in ('array_formation', 'array_unresolved',
+                              'array_conflict'):
+                    arr_err.add(v.block or '')
             if v.rule == 'edge_connector_side':
                 side_warn.add(v.ref or '')
             if v.rule == 'edge_connector' and (v.measured or {}).get(
@@ -7293,6 +7900,15 @@ def declaration_ledger(intent: Intent, rows, *, result=None,
             return 'graded_fail'
         if grader == 'keepout':
             return 'graded_fail' if keepout in ko_err else 'graded_pass'
+        if grader == 'array_formation':
+            return 'graded_fail' if ref in arr_err else 'graded_pass'
+        if grader == 'fixed_pose':
+            # #1054: the anchor's finding is a `zone_containment` on the ref;
+            # a pose for a ref the board lacks is `fixed_pose_unresolved`.
+            hit = ((ref or '') in by_rule_err.get('zone_containment', set())
+                   or (ref or '') in by_rule_err.get('fixed_pose_unresolved',
+                                                     set()))
+            return 'graded_fail' if hit else 'graded_pass'
         if grader == 'edge_connector_side':
             hit = side_warn if ref is None else side_warn & {ref}
             return 'graded_warn' if hit else 'graded_pass'

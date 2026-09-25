@@ -660,7 +660,8 @@ def format_rows(rows) -> List[str]:
 
 def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
                   lost: Sequence[str] = (), state=None,
-                  tolerance_mm: float = ANCHOR_TOL_MM):
+                  tolerance_mm: float = ANCHOR_TOL_MM,
+                  prefix: str = 'mech:', basis: str = 'mechanical'):
     """`(blocks, skipped)`: one grade-only anchor block per mechanical ref.
 
     Compiled by the GRADE from the file (`floorplan.mechanical_anchor_
@@ -686,6 +687,11 @@ def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
     Skipped, with the reason: pad-less refs (the seeder never places them;
     they are reconciled only), refs the board does not have, and refs whose
     mechanical value lost a contradiction.
+
+    `prefix`/`basis` (#1054): the same anchor, compiled from an intent's
+    `fixed_poses[]` instead of the file -- `floorplan.fixed_pose_violations`
+    passes `fixed:` and the entry's own basis, so a brief-declared pose is
+    graded by exactly this geometry and never by a second copy of it.
     """
     from .legality import rotate_local_bounds
     blocks, skipped = [], {}
@@ -733,11 +739,44 @@ def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
                 math.ceil(max(r[2] for r in rects) * 1e4) / 1e4,
                 math.ceil(max(r[3] for r in rects) * 1e4) / 1e4]
         blocks.append({
-            'name': f'mech:{ref}', 'refs': [glob.escape(ref)], 'zone': zone,
+            'name': f'{prefix}{ref}', 'refs': [glob.escape(ref)], 'zone': zone,
             'tolerance_mm': tolerance_mm,
-            'note': ('mechanical.json: '
+            'note': (('mechanical.json: ' if basis == 'mechanical'
+                      else 'fixed_poses: ')
                      + (p.get('reason') or 'a declared mechanical pose')),
-            'context': {'basis': 'mechanical',
+            'context': {'basis': basis,
                         'mechanical_pose': [p['x'], p['y'], p['rot']],
                         'source': mechanical.get('path')}})
     return blocks, skipped
+
+
+def mechanical_fixed_poses(mechanical: Dict, anchored: Sequence[str], *,
+                           claimed: Dict[str, str] = None):
+    """`(entries, skipped)`: mechanical.json poses as intent `fixed_poses[]`
+    rows (#1054), so the seeder can SEAT what the grade anchors.
+
+    Only the refs `anchor_blocks` anchored: its skips (off the board,
+    pad-less, a lost contradiction) are the same reasons not to seat one,
+    and a second list of reasons would drift from the first. `claimed` is
+    `{ref: why}` for refs another claim of the same intent already places
+    (an edge connector, a must_lock pattern, a brief-declared pose): each is
+    skipped WITH that reason, because the intent loader refuses a ref under
+    two such claims and the grade anchors it from the file either way.
+    A declaration with no `rot` compiles with no `rot` -- position only.
+    """
+    claimed = claimed or {}
+    entries, skipped = [], {}
+    for ref in sorted(anchored):
+        p = (mechanical.get('poses') or {}).get(ref)
+        if p is None:
+            continue
+        if ref in claimed:
+            skipped[ref] = claimed[ref]
+            continue
+        row = {'ref': ref, 'x': p['x'], 'y': p['y'], 'basis': 'mechanical',
+               'why': ('mechanical.json: '
+                       + (p.get('reason') or 'a declared mechanical pose'))}
+        if p.get('rot') is not None:
+            row['rot'] = p['rot']
+        entries.append(row)
+    return entries, skipped

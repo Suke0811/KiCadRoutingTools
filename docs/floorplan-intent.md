@@ -133,10 +133,10 @@ source, suspect, suspect_reason
 
 | object | keys |
 |---|---|
-| top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `dispositions`, `context` |
+| top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `dispositions`, `arrays`, `fixed_poses`, `context` |
 | `envelope` | `rect`, `tolerance_mm` |
 | `defaults` | `zone_tolerance_mm` |
-| `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `note`, `context` |
+| `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `rigid` (#1052: `true` opts the block into moving as one piece; needs `min_reader` 7), `note`, `context` |
 | `keepouts[]` | `name`, `rect`, `circle`, `sides`, `allow`, `note`, `context` |
 | `edge_connectors[]` | `ref`, `edge`, `overhang_mm`, `max_setback_mm`, `center_on_edge`, `along_edge_band`, `side` (#959: `F`/`B`, the connector's face, graded as the advisory `edge_connector_side`; needs `min_reader` 6), `class`, `note`, `context`, and the emitter-written `source`, `suspect`, `suspect_reason`, `overhang_capped`, `observed_overhang_mm` |
 | `edge_connectors[].overhang_mm` | `min`, `max` |
@@ -145,20 +145,23 @@ source, suspect, suspect_reason
 | `decaps` | `max_distance_mm`, `exempt`, `search_radius_mm`, `max_pin_distance_mm`, `pin_functions`, `same_side` |
 | `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `why`, `context` |
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `note`, `context`, and the compiler-written `source` |
+| `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (#1051; see "Arrays" below; needs `min_reader` 7) |
+| `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"` or `"mechanical"`), `why`, `context` (#1054; see "Fixed poses" below; needs `min_reader` 7) |
 | `legality_budget` | `overlap_area`, `oob_count`, `oob_amount` (`oob_area` refused — see below) |
 | `health` | `bus_corridors`, `classes`, `block_displacement_mm`, `ignore_net_ids`, `max_fanout`, `zoned_blocks`, `affinity_exempt_nets`, `affinity_exempt_net_ids`, `plane_layers` |
 | `health.bus_corridors[]` | `name`, `nets`, `width_mm` |
-| `severity` | any of the 35 rule names below |
+| `severity` | any of the 39 rule names below |
 | `overlap_waivers[]` | `pair`, `reason`, `context` |
 | `dispositions` | `rules`, `withheld`, `refs`, `contradictions` -- each `{key: why}`, a non-empty written reason (#959; see "The rule roster" below) |
 | `must_lock` | a list of reference globs (no nested keys) |
 
-`severity` keys are checked too. The settable names are the fourteen rules —
+`severity` keys are checked too. The settable names are the fifteen rules —
 `envelope`, `zone_containment`, `zone_side`, `assembly_side`, `zone_exclusive`, `keepout`,
 `edge_connector`, `decap_distance`, `decap_ungraded`, `decap_pin_distance`,
-`proximity`, `must_lock`, `legality`, `pins_to_edge` — plus the six findings raised outside
-the rule loop: `intent_zone_outside_envelope`, `intent_zone_overlap`,
+`proximity`, `must_lock`, `legality`, `pins_to_edge`, `array_formation` — plus the nine
+findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_zone_overlap`,
 `block_unresolved`, `intent_zone_in_keepout`, `keepout_allow_unresolved`,
+`array_unresolved`, `array_conflict` (#1051), `fixed_pose_unresolved` (#1054),
 `mechanical_drift` (#959, raised only when a `mechanical.json` is read, and
 settable to `error` only -- `warn` is refused, since the pose is a recorded
 fact),
@@ -220,7 +223,7 @@ The top-level `context.basis` labels numbers and changes no verdict.
 intent file at once — far too blunt for "this build learned a new field".
 
 So field-level compatibility is a second number. `READER_VERSION` (currently
-`6`) is what this build can act on, and an intent sets `min_reader` when a
+`7`) is what this build can act on, and an intent sets `min_reader` when a
 claim must not be silently ignored:
 
 ```jsonc
@@ -262,6 +265,78 @@ whose only job is to be true.
 verdicts rather than one — `assembly_side` violations, and
 `options.grow_board`'s utilisation, which credits the back face's area to every
 board and had no way to be told the board is built on one side.
+
+**Reader 7 arrived with [#1051](https://github.com/drandyhaas/KiCadRoutingTools/issues/1051),
+[#1052](https://github.com/drandyhaas/KiCadRoutingTools/issues/1052) and
+[#1054](https://github.com/drandyhaas/KiCadRoutingTools/issues/1054):**
+`arrays[]`, `fixed_poses[]` and `blocks[].rigid`, in one bump because they
+arrived together. Each changes a verdict or a placement: `arrays[]` arms
+`array_formation`, a `fixed_poses[]` entry is graded by an anchor compiled from
+it, and `rigid` opts a block into moving as one piece. The design brief
+compiles `arrays` and `fixed[].pose` with `min_reader` 7.
+
+### Arrays: parts that form one row (#1051)
+
+```jsonc
+"arrays": [{"name": "rn_bus_a", "members": ["RN1", "RN2", "RN3", "RN4"],
+            "serves": "U30", "order": "pin", "rotation": "shared",
+            "pitch_mm": "auto", "axis": "auto",
+            "why": "series terminations on U30's data bus"}]
+```
+
+An array says these parts are ONE row: on a common axis, in an order, at one
+rotation, at an even pitch. `order: "pin"` is the pin order of the part the
+row `serves` -- each member's lowest pad of `serves` on a net that member alone
+reaches, preferring a net that lands on one pad (a pull-down's ground lands on
+every ground pin), read off pads and nets and never off poses
+(`arrays.pin_order`). `"declared"` is `members` in the order written;
+`"unknown"` leaves the order unchecked. A row may run either way along its
+axis. `rotation` is a number (every member at it), `"shared"` (every member at
+one angle, whichever) or `"unknown"`. `"unknown"` is a first-class answer
+everywhere and is reported apart from an absent key.
+
+`emit_intent` never writes one: which parts form a row is a design decision the
+board file does not record. `array_formation` is a POLICY rule, dark when
+nothing is declared, and it grades through `arrays.formation`, the one
+predicate the seeder and the quench are to share (tolerances in
+`arrays.DEFAULT_TOLERANCES`, measured on courtyard centres).
+
+Refused at load, naming the member: a member in two arrays, fewer than two
+members, a member listed twice, a member also named by `must_lock`, also an
+`edge_connectors` entry or also in `fixed_poses`, and `order: "pin"` with no
+known `serves`. Reported against the board by BOTH `grade` and the quench gate
+(`resolve_intent_gate`), each naming its member: `array_unresolved` (a member
+or `serves` the board does not have) and `array_conflict` (a member locked in
+the board file; mixed footprints without `allow_mixed`; a member whose block
+declares a `rotation` or `rotation_candidates` the row's numeric or shared
+rotation contradicts; members split across zoned blocks, or only partly in
+one -- a row is seated as one piece).
+
+The quench gate bundle carries the resolved rows (`arrays`, with the expected
+`order_refs`), `fixed_poses` and `rigid_blocks` (`{"array:<name>" |
+"block:<name>": refs}` for every array and every `rigid: true` block) as data.
+No engine acts on them in this build: the seeder's row stage, stage 0 for fixed
+poses and the quench's rigid moves are separate changes (#1051, #1052, #1054).
+
+### Fixed poses: a pose to seat, not only to grade (#1054)
+
+A `fixed_poses[]` entry is an exact pose a part is to be placed at, with
+`basis` saying whose fact it is: `declared` (the design brief's
+`fixed[].pose`) or `mechanical` (`mechanical.json`, compiled by
+`check_floorplan --emit-intent` for each ref the grade anchors, unless another
+claim of the same intent already places it -- that skip is recorded in
+`context.mechanical.fixed_skipped`). Every entry is GRADED, whatever its
+source: the grade compiles an anchor block `fixed:<ref>` from it with the same
+`reconcile.anchor_blocks` geometry a `mechanical.json` pose uses, and reports a
+part outside it as `zone_containment`. A ref the mechanical file itself
+declares is left to the file's own anchor, so one moved part is one finding. A
+ref the board does not have is `fixed_pose_unresolved` (**error**); one the
+anchor cannot grade (a pad-less part) is the same name at **warn**, with the
+reason.
+
+A ref in `fixed_poses` and also in `edge_connectors` or `must_lock` is refused
+by name -- two placements for one part. `fixed:` is a reserved block-name prefix,
+like `mech:`.
 
 ### WHERE ALONG the edge: `center_on_edge` and `along_edge_band`
 
@@ -563,9 +638,9 @@ The placement skill's P1 gate refuses a plan when a rule meets all five of these
 conditions:
 
 1. The rule is dark, meaning the plan does not arm it.
-2. It is not a **policy** rule. `proximity` and `zone_exclusive` are policy
-   rules: nothing on the board says which parts belong together or which area is
-   reserved.
+2. It is not a **policy** rule. `proximity`, `zone_exclusive` and
+   `array_formation` are policy rules: nothing on the board says which parts
+   belong together, which area is reserved, or which parts form one row.
 3. A **board fact** says the rule applies. The plan's own claims never count
    here.
 4. It is **gating**: its table-default severity is ERROR. An intent can promote
@@ -627,6 +702,10 @@ status from this list:
 | `intent_zone_outside_envelope` | the intent contradicts itself (no board needed) | — |
 | `intent_zone_overlap` | two zones overlap on one face -- a **warn** since #959: a member of either may sit in the shared area, and run 29's own board satisfied two such pairs | — |
 | `plan_zone_exclusive_unsatisfiable` | a member has no pose in its own zone that stays out of a stranger's EXCLUSIVE zone -- the one overlap no placement can satisfy (#959) | `zone_pose_feasibility` with the exclusive zone as a keep-out |
+| `array_formation` | a declared array is not ONE formed row: off a common axis, out of the expected order (either direction), at more than one rotation or not the declared one, or at uneven (or not the declared) pitch. A policy rule, dark when nothing is declared ([#1051](https://github.com/drandyhaas/KiCadRoutingTools/issues/1051)) | `arrays.formation` over the courtyard centres (`GradedPart.rect`) and board rotations; the order from `arrays.pin_order` |
+| `array_unresolved` | an array names a member, or a `serves` part, this board does not have | — |
+| `array_conflict` | an array cannot be formed as declared: a member locked in the file, mixed footprints without `allow_mixed`, a block rotation contradicting the row's, members split across zoned blocks | `rotations_for_ref`, `resolve_blocks` |
+| `fixed_pose_unresolved` | a `fixed_poses[]` ref is not on this board (**error**), or the anchor cannot grade it (**warn**, with the reason) ([#1054](https://github.com/drandyhaas/KiCadRoutingTools/issues/1054)); a part off its fixed pose is reported as `zone_containment` on the anchor block `fixed:<ref>` | `reconcile.anchor_blocks` |
 
 Every one of them measures with the geometry the **optimizer itself gates on**.
 A grader with its own idea of what "legal" means grades the reimplementation
@@ -668,6 +747,7 @@ reports the whole picture in `accept_basis`.
 | `decap_ungraded`, `decap_pin_*` | yes | — | no | `decap_ungraded` is a claim about what the GRADE covers rather than about any pose, so there is nothing for a search to refuse. The pin rules are a THIRD currency — pad edge to pad edge on one net — and the objection below applies to them more strongly, not less |
 | `decap_distance` | yes | scope stage | no | graded in a currency the optimizer does not carry — pad centroid to an IC's pad bbox inflated 0.5 mm, not courtyard to courtyard. A gate in the wrong currency can *admit what the grade flags*, which is worse than no gate. And the cap→IC tether is re-elected from live poses, so a per-move form would have the `corridor_weight` non-stationarity problem too |
 | `legality` | yes | — | no | a whole-board aggregate against a BUDGET, so a per-pose form is non-local: whether A's move is admissible would depend on B's violation |
+| `array_formation` | yes | — (#1051 phase 3) | — (#1051 phase 4) | in this build the rule GRADES a declared row and no search acts on it: the seeder's row stage and the quench's rigid block move are separate changes, and both are to call the same `arrays.formation` predicate rather than a copy |
 | `proximity` | yes | — | no | the pad-edge form is a FOURTH currency (pad edge to pad edge between two DECLARED refs) and the body form a fifth, so a gate in either would be the wrong currency -- and the `decap_distance` row above already records what that costs: a gate in the wrong currency can *admit what the grade flags*, which is worse than no gate. Unlike a decap tether the pair is DECLARED and stationary, so a per-move attraction term is genuinely constructible and `reseat.clusters_from_tethers` is already generic over (member, anchor, radius) -- but it has no production caller today, so wiring one would ship a new engine path with no consumer under a grading fix. Separable work, named rather than silently absent |
 
 The two zone rows reach the seat search by **different channels**, and the
