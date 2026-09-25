@@ -3403,6 +3403,30 @@ def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],
 FIXED_POSE_EPS_MM = 1e-3
 
 
+def _holes_outside(state, gate, ref: str, x: float, y: float,
+                   rot: float) -> Tuple[int, int]:
+    """`(holes, outside)`: how many drill holes (plated and NPTH) `ref` has,
+    and how many leave `gate`'s outline at (x, y, rot) -- the hole's whole
+    bounding square, so a hole straddling the edge counts. The pad frame
+    transform is `connector_geometry.pad_copper_outside`'s own."""
+    fp = (state.pcb_data.footprints or {}).get(ref)
+    if fp is None:
+        return 0, 0
+    c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+    n = out = 0
+    for p in fp.pads:
+        d = float(getattr(p, 'drill', 0) or 0)
+        if d <= 0:
+            continue
+        n += 1
+        lx, ly = float(p.local_x), float(p.local_y)
+        px, py = x + c * lx + s * ly, y - s * lx + c * ly
+        h = d / 2.0
+        if gate.rect_outside_amount((px - h, py - h, px + h, py + h)) > 1e-9:
+            out += 1
+    return n, out
+
+
 def _fixed_pose_check(state, ref: str, x: float, y: float, rot: float,
                       placed: Set[str], exclude: Set[str]
                       ) -> Tuple[Optional[str], Optional[float], List[str]]:
@@ -3420,7 +3444,9 @@ def _fixed_pose_check(state, ref: str, x: float, y: float, rot: float,
       band (a fixed pose declares no band): EVERY pad's copper on the board
       at zero margin, no declared keep-out, no stranger's exclusive zone,
       and no pad or hole shortfall against a placed part (stage 1's
-      `_shorted_by` predicate).
+      `_shorted_by` predicate) -- plus, since the pad test is vacuous for
+      a part with no copper, at least one copper pad, and every drill hole
+      (NPTH included) inside the outline.
 
     `how` None means refused; `reasons` then says why, by name.
     """
@@ -3457,11 +3483,32 @@ def _fixed_pose_check(state, ref: str, x: float, y: float, rot: float,
         if zero is None:
             zero = BoardOutlineGate(state.pcb_data.board_info, 0.0)
             state._zero_edge_gate = zero
-        off = pad_copper_outside(
-            geometry_for(state, state.pcb_data, state.pcb_file), zero, ref,
-            (x, y, rot))
+        from .connector_geometry import pad_boxes
+        geometry = geometry_for(state, state.pcb_data, state.pcb_file)
+        # The exemption rests on "every pad's copper is on the board", which
+        # is VACUOUSLY true for a part with no copper pad: tigard's NPTH-only
+        # H1 at (300, 300) on a 30 x 76mm board read "seated exactly ...
+        # (pads on the board)" (phase-3 re-verifier). A part with nothing to
+        # anchor an overhang must be contained, and no drill hole -- plated
+        # or NPTH -- may leave the outline either.
+        # A pad-less part is judged by its HOLES (the whole drill circle,
+        # zero margin), else by its courtyard at zero margin -- not by the
+        # margin-gated courtyard: a mounting hole's courtyard legitimately
+        # crosses the edge (tigard H1 at its own human pose is 1.3mm past
+        # the margin gate, and must seat).
+        n_holes, holes_out = _holes_outside(state, zero, ref, x, y, rot)
+        if not pad_boxes(geometry, ref) and not n_holes:
+            amt = zero.rect_outside_amount(r)
+            if amt > 1e-9:
+                reasons.append(f"no copper pad or hole to anchor an "
+                               f"overhang, and its courtyard is {amt:.3f}mm "
+                               f"past the outline")
+        off = pad_copper_outside(geometry, zero, ref, (x, y, rot))
         if off > 1e-9:
             reasons.append(f"pad copper {off:.3f}mm past the outline")
+        if holes_out:
+            reasons.append(f"{holes_out} of {n_holes} drill hole(s) past "
+                           f"the outline")
         if not reasons:
             return 'overhang', None, []
     elif not reasons:

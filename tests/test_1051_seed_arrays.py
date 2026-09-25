@@ -451,6 +451,131 @@ def test_rows_are_seated_at_their_rank_after_what_outranks_them():
           f"outranks its members ({len(order)} early seats)")
 
 
+#: A row whose only free strip is > 30mm from its target: the locked B1
+#: covers x 0..45 of a 100 x 10mm board, and the row's partner L1 sits
+#: inside it at x=5. The 1mm ring (radius 30) finds nothing; the sweep does.
+SWEEP_BOARD = """(kicad_pcb
+ (version 20241229)
+ (net 0 "") (net 1 "/A") (net 2 "/B")
+ (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+ (gr_rect (start 0 0) (end 100 10) (layer "Edge.Cuts") (uuid "e1"))
+ (footprint "t:L" (layer "F.Cu") (uuid "fp-L1") (at 5 5) (locked yes)
+  (property "Reference" "L1" (at 0 0 0))
+  (fp_rect (start -1 -1) (end 1 1) (layer "F.CrtYd") (uuid "cL"))
+  (pad "1" smd rect (at -0.5 0) (size 0.4 0.4) (layers "F.Cu") (net 1 "/A") (uuid "l1"))
+  (pad "2" smd rect (at 0.5 0) (size 0.4 0.4) (layers "F.Cu") (net 2 "/B") (uuid "l2")))
+ (footprint "t:B" (layer "F.Cu") (uuid "fp-B1") (at 22.5 5) (locked yes)
+  (property "Reference" "B1" (at 0 0 0))
+  (fp_rect (start -22.5 -5) (end 22.5 5) (layer "F.CrtYd") (uuid "cB"))
+  (pad "1" smd rect (at 0 0) (size 0.4 0.4) (layers "F.Cu") (net 0 "") (uuid "b1")))
+ (footprint "t:R" (layer "F.Cu") (uuid "fp-R1") (at 80 5)
+  (property "Reference" "R1" (at 0 0 0))
+  (fp_rect (start -0.8 -0.5) (end 0.8 0.5) (layer "F.CrtYd") (uuid "c1"))
+  (pad "1" smd rect (at -0.4 0) (size 0.4 0.5) (layers "F.Cu") (net 1 "/A") (uuid "r11")))
+ (footprint "t:R" (layer "F.Cu") (uuid "fp-R2") (at 90 5)
+  (property "Reference" "R2" (at 0 0 0))
+  (fp_rect (start -0.8 -0.5) (end 0.8 0.5) (layer "F.CrtYd") (uuid "c2"))
+  (pad "1" smd rect (at -0.4 0) (size 0.4 0.5) (layers "F.Cu") (net 2 "/B") (uuid "r21")))
+)
+"""
+
+
+def test_row_seat_reaches_the_sweep_before_the_fine_rings():
+    """The band order's sweep-before-fine half (02ba1cb1a). With the fine
+    rings first, one angle's fine ring (16641 positions) plus the 1mm ring
+    (3721) is 20362 -- past the 20000 cap -- so a row whose only room is
+    beyond the rings' reach is refused as capped. Sweep-first seats it
+    beyond x=45 in a few thousand poses. (phase-3 re-verifier: the
+    ring,fine,xfine,sweep mutation survived every other test.)"""
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'b.kicad_pcb')
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(SWEEP_BOARD)
+        doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+               'arrays': [{'name': 'far', 'members': ['R1', 'R2'],
+                           'order': 'declared', 'rotation': 0,
+                           'pitch_mm': 'auto', 'axis': 'x'}]}
+        res = seeder.seed_from_intent(
+            parse_kicad_pcb(path), path, fp.intent_from_dict(doc, path),
+            random.Random('0'), group_sources=(), clearance=0.2,
+            board_edge_clearance=0.1)
+        rec = res['arrays_formed'].get('far')
+        assert rec is not None, res['array_unseated']
+        assert rec['anchor'][0] > 45.0, rec
+        assert rec['poses_tried'] < seeder.ARRAY_SEAT_POSE_CAP, rec
+    print(f"  PASS: the row seats at x={rec['anchor'][0]} after "
+          f"{rec['poses_tried']} poses, via the sweep")
+
+
+def test_row_target_is_the_partner_centroid_not_the_host_pins():
+    """19917b2d7: a row aims at the mean of its members' placed partners
+    (host AND far side). On splitflap, two rows' partner centroid differs
+    from their host-pin centroid by > 2mm, and each row is seated nearer
+    its target than the host pins; with the host-pins target the two
+    coincide and no such row exists."""
+    import math
+    with tempfile.TemporaryDirectory() as td:
+        pcb = parse_kicad_pcb(SPLITFLAP)
+        doc = fp.emit_intent(pcb, SPLITFLAP, derive_arrays='auto')
+        intent, _p = _intent(doc, td)
+        _pcb, res = _seed(SPLITFLAP, intent)
+        w = parse_kicad_pcb(_write(SPLITFLAP, res, td, 'sf.kicad_pcb'))
+        differ = []
+        for name, rec in res['arrays_formed'].items():
+            host = rec['serves']
+            if not host:
+                continue
+            mem = rec['members']
+            nets = {m: {p.net_id for p in w.footprints[m].pads if p.net_id}
+                    for m in mem}
+            pts = []
+            for m in mem:
+                own = nets[m] - set().union(*(nets[o] for o in mem if o != m))
+                q = [(p.global_x, p.global_y) for p in w.footprints[host].pads
+                     if p.net_id in own]
+                if q:
+                    pts.append((sum(a for a, _ in q) / len(q),
+                                sum(b for _, b in q) / len(q)))
+            hp = (sum(a for a, _ in pts) / len(pts),
+                  sum(b for _, b in pts) / len(pts))
+            if math.dist(rec['target'], hp) > 2.0:
+                differ.append(name)
+                assert (math.dist(rec['anchor'], rec['target'])
+                        < math.dist(rec['anchor'], hp)), (name, rec, hp)
+        assert len(differ) >= 2, differ
+    print(f"  PASS: {', '.join(sorted(differ))} aim at their partner "
+          f"centroid, away from their host pins, and sit nearer it")
+
+
+def test_padless_fixed_pose_is_judged_by_its_hole():
+    """Stage 0's overhang exemption rested on "every pad's copper is on the
+    board", vacuous for a part with no copper: tigard's NPTH-only H1 at
+    (300, 300) read "seated exactly ... (pads on the board)". The hole now
+    decides: its whole drill circle on the board. The control is H1 at its
+    own human pose (33, 33), whose COURTYARD crosses the margin gate and
+    which must still seat."""
+    tig = os.path.join(BOARDS, 'tigard.kicad_pcb')
+    got = {}
+    with tempfile.TemporaryDirectory() as td:
+        doc = fp.emit_intent(parse_kicad_pcb(tig), tig)
+        for pose in ((300.0, 300.0), (31.0, 33.0), (33.0, 33.0)):
+            d = dict(doc, fixed_poses=[{'ref': 'H1', 'x': pose[0],
+                                        'y': pose[1], 'rot': 0,
+                                        'basis': 'declared', 'why': 't'}])
+            intent, _p = _intent(d, td)
+            _pcb, res = _seed(tig, intent)
+            got[pose] = res
+        for pose in ((300.0, 300.0), (31.0, 33.0)):
+            r = got[pose]
+            assert 'H1' in r['fixed_refused'], (pose, r['fixed_seated'])
+            assert 'drill hole(s) past the outline' in                 r['fixed_refused']['H1']['reason'], r['fixed_refused']
+            assert 'H1' in r['unseated']
+        ok = got[(33.0, 33.0)]
+        assert ok['fixed_seated']['H1']['how'] in ('contained', 'overhang'),             ok['fixed_refused']
+    print("  PASS: H1 off the board and straddling the edge are refused by "
+          "the hole; at its human pose it seats")
+
+
 def test_unseatable_row_is_disclosed_and_falls_through():
     with tempfile.TemporaryDirectory() as td:
         doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
@@ -743,6 +868,9 @@ TESTS = [
     test_anchor_rounds_leave_a_formed_row_whole,
     test_early_seat_scope_keeps_the_parts_the_control_seats,
     test_rows_are_seated_at_their_rank_after_what_outranks_them,
+    test_row_seat_reaches_the_sweep_before_the_fine_rings,
+    test_row_target_is_the_partner_centroid_not_the_host_pins,
+    test_padless_fixed_pose_is_judged_by_its_hole,
     test_unseatable_row_is_disclosed_and_falls_through,
     test_pose_cap_trips_and_says_so,
     test_decaps_armed_claims_caps_on_splitflap_and_watchy,
