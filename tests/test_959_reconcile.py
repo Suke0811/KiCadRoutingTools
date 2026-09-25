@@ -442,6 +442,52 @@ def test_p1_refuses_an_unlocked_mechanical_ref():
     print("  PASS: P1 refuses an unlocked mechanical ref, passes once locked")
 
 
+def test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats():
+    """#1054: stage 0 seats an UNLOCKED `fixed_poses[]` ref at exactly its
+    pose and locks it, so P1 owes no hand lock for one named AT the declared
+    pose -- and the zone coverage owes it no zone. Not for an entry that
+    leaves the declared rotation to the part's current angle, and never for
+    a FILE-locked part off its pose (stage 0 refuses to move a file lock)."""
+    sys.path.insert(0, os.path.dirname(DRIVER))
+    import importlib
+    drv = importlib.import_module('placement_driver')
+    with tempfile.TemporaryDirectory() as tmp:
+        board = drv._tiny_board(os.path.join(tmp, 'board.kicad_pcb'),
+                                ('U1', 'U2'))
+        with open(os.path.join(tmp, 'mechanical.json'), 'w',
+                  encoding='utf-8') as fh:
+            json.dump({'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
+                                  'reason': 'the datum'}]}, fh)
+
+        def plan(name, entry):
+            p = os.path.join(tmp, name)
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(drv._zone_plan_doc(
+                    [{'name': 'rest', 'refs': ['U2'], 'zone': [0, 0, 10, 10],
+                      'note': 'U1 is seated by its fixed pose'}],
+                    min_reader=7,
+                    fixed_poses=[dict({'ref': 'U1', 'basis': 'mechanical'},
+                                      **entry)]), fh)
+            return [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
+                    '--board', board, '--zone-plan', p]
+
+        r = run_utils.check(plan('at.json', {'x': 2.0, 'y': 2.0, 'rot': 0}),
+                            accept=True)
+        assert 'not held at their declared pose' not in r.stdout, r.stdout
+        assert '1 at a fixed pose' in r.stdout, r.stdout
+        # No `rot` for a declared rotation: stage 0 keeps the current angle.
+        run_utils.check(plan('norot.json', {'x': 2.0, 'y': 2.0}),
+                        refuse='U1 is not locked', code=4)
+        # A FILE-locked part off its pose: stage 0 will not move it.
+        run_utils.check([sys.executable, '-X', 'utf8',
+                         run_utils.tool('place_pose.py'), board, board,
+                         'set', 'U1', '3', '2', 'lock', 'U1'], accept=True)
+        run_utils.check(plan('locked.json', {'x': 2.0, 'y': 2.0, 'rot': 0}),
+                        refuse='U1 is 1.000mm from its declared', code=4)
+    print("  PASS: P1 accepts an unlocked mechanical ref its fixed pose "
+          "seats; not rot-less, never a file-locked drift")
+
+
 
 
 def test_the_loader_refuses_every_stranger():
@@ -1328,6 +1374,7 @@ TESTS = [
     test_an_overhanging_mechanical_part_raises_no_envelope_error,
     test_p1_refuses_a_contradiction_until_dispositioned,
     test_p1_refuses_an_unlocked_mechanical_ref,
+    test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats,
 ]
 
 
