@@ -326,7 +326,7 @@ one -- a row is seated as one piece).
 The quench gate bundle carries the resolved rows (`arrays`, with the expected
 `order_refs`), `fixed_poses` and `rigid_blocks` (`{"array:<name>" |
 "block:<name>": refs}` for every array and every `rigid: true` block), and
-three engines act on them. **The seeder** seats each row whole (stage 2.45,
+three engines act on them. **The seeder** tries to seat each row whole (stage 2.45,
 `seeder._seat_array` -> `_seat_block`): the served part's pin order, ONE
 rotation the seeder chooses for `"shared"`/`"unknown"`, a pitch and an axis,
 searched over a capped pose count (`ARRAY_SEAT_POSE_CAP`), never a clock. A
@@ -334,7 +334,8 @@ zoned row is seated into its zone in stage 2; any other row at its members'
 rank in stage 2.4, which (armed by `arrays` or `decaps.max_distance_mm`)
 first seats the served parts and whatever outranks the early seats. A row
 that cannot be seated whole is reported in `array_unseated` and its members
-are seated one by one. **The quench** moves every rigid group only by
+are seated one by one; the quench still groups them, from wherever they
+landed. **The quench** moves every rigid group only by
 translating it; its members sit out the single-part nudge and any swap with
 a part outside the group (or, in an array ordered `pin` or `declared`, a swap of two members
 the order positions), a member failing a clause no group offset clears is released (and may
@@ -793,7 +794,7 @@ reports the whole picture in `accept_basis`.
 | `legality` | yes | — | no | a whole-board aggregate against a BUDGET, so a per-pose form is non-local: whether A's move is admissible would depend on B's violation |
 | `pins_to_edge` | yes | — | no | always-WARN advice for a reviewer: the exit gate never counts it, and the gate holds only what the exit gate counts |
 | `array_formation` | yes | stage 2.45 (#1051) | **by construction** | a declared array is a RIGID group in the quench: it only translates, its members sit out the single-part nudge and cross-member swaps, and a member leaves only through a release disclosed in `rigid_released`. The seeder owns the shared rotation |
-| `fixed_poses[]` (anchor `fixed:<ref>`) | yes, as `zone_containment` on the anchor | stage 0 (#1054): the exact pose, checked, never searched | **by freezing** | stage 0 stamps the seated part `(locked yes)`, so no move reaches it |
+| `fixed_poses[]` (anchor `fixed:<ref>`) | yes, as `zone_containment` on the anchor | stage 0 (#1054): the exact pose, checked, never searched | **by freezing, once seeded** | stage 0 stamps the seated part `(locked yes)`, and `place_seed --repair` treats every entry as locked even unstamped. The quench itself has no fixed-pose term: on a board where the part is NOT locked (never seeded by `place_seed`), a quenching CLI may move it and only the grade's anchor reports it |
 | `proximity` | yes | — | **yes** (#1043) | — armed by a non-empty `proximity[]` at error severity. One term per reach the rule reports (per declared subject pad, or one for the pair), measured by CALLING `floorplan.proximity_reaches` (pad edge) or `drawn_body_rect` (body) on the posed footprints. A move of either ref is checked |
 
 The two zone rows reach the seat search by **different channels**, and the

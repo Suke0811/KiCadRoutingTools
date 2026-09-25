@@ -141,10 +141,12 @@ ROWS = [
      (T792P, T704), 'SURVIVED'),
 
     ('the-radius-reaches-the-election', 'grp',
-     "            if best_d is None or d < best_d:\n",
-     "            if d > DECAP_RADIUS_MM:\n"
-     "                continue\n"
-     "            if best_d is None or d < best_d:\n",
+     # Re-anchored (#1051 phase 5): the election's argmin moved into
+     # `groups.nearest_chip`, one indent level out.
+     "        if best_d is None or d < best_d:\n",
+     "        if d > DECAP_RADIUS_MM:\n"
+     "            continue\n"
+     "        if best_d is None or d < best_d:\n",
      (T792P, T794), 'KILLED'),
 
     # ---- #705: the supply-pin ladder --------------------------------------

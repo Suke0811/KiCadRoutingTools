@@ -229,8 +229,10 @@ Validate routed boards against the *real* spec, with the right checker — most
   passed off as a declaration. `mechanical.json` beside the board is read the
   same way (`--mechanical` / `--no-mechanical`): reconciled against the brief
   and the outline, value by value with an authority, and compiled into
-  grade-only anchors, whose refs P1 requires to be locked. `docs/floorplan-intent.md` has the
-  authority table.
+  grade-only anchors, whose refs P1 requires to be locked -- or named, unlocked,
+  by a plan `fixed_poses[]` entry at the declared pose (with its `rot` where the
+  file has one), which the seeder's stage 0 seats and locks (#1054).
+  `docs/floorplan-intent.md` has the authority table.
 - **Protected nets (#521): matched groups and routed diff pairs are recorded in
   the sibling `.kicad_pro`** (`kicad_routing_tools.protected_nets`, written next
   to the DRC-floor writeback, carried down chains by the project copy) and later

@@ -775,19 +775,20 @@ order:
    pose, refuses rather than nudges an illegal one, and locks it. Then
    **declare the arrays**: `check_floorplan.py BOARD --suggest-arrays` lists
    rows of identical parts on one part's pins or rail, pose-blind, with
-   evidence. Accept or decline EACH with a written reason, into the brief's
-   `arrays` or the plan's (`"unknown"` is a legal order or rotation). A
-   bank BRIDGING two big parts (level shifters between an FPGA and its
-   connectors) comes back under `declined`: declare it by hand if it
-   is one row; multi-row blocks are not supported. Stage 2.45 seats each as
-   one row and the quench moves it as a rigid group (a member leaves only by
-   a disclosed release, `rigid_released`); `blocks[].rigid: true` opts a
-   block in. Then seed the rest. P1 refuses without a ZONE PLAN (`--zone-plan`,
-   a `zone` and a `note` on a block for every movable part), and refuses to
-   let the seeder choose a declared edge connector's pose unless that is on
-   the record (`--waive seed-connectors:<why>`): run 26 seeded from one zone
-   and then hand-placed most of its parts. P1 ranks SEVERAL seeds from the
-   plan with `compare_seeds.py` (next) rather than taking the first.
+   evidence. Accept or decline EACH: to accept, copy its `row` into the
+   brief's `arrays` or the plan's and put your reason in its `why`
+   (`"unknown"` is a legal order or rotation). A bank BRIDGING two big parts
+   (level shifters between an FPGA and its connectors) comes back under
+   `declined`: declare it by hand if it is one row; multi-row blocks are not
+   supported. Stage 2.45 tries to seat each as one row (else its members
+   singly, named in `array_unseated`); a seated row moves in the quench as a
+   rigid group, a member leaving only by a disclosed release
+   (`rigid_released`); `blocks[].rigid: true` opts a block in. Seed the rest.
+   P1 refuses without a ZONE PLAN (`--zone-plan`, a `zone` and a `note` on a
+   block for every movable part), and refuses to let the seeder choose a
+   declared edge connector's pose unless that is on the record (`--waive
+   seed-connectors:<why>`): run 26 seeded from one zone, then hand-placed most
+   parts. P1 ranks SEVERAL seeds with `compare_seeds.py` (next).
 
    **Check the plan before the first seed** (#959): `check_floorplan.py
    BOARD --intent PLAN --plan-only` needs no placed board. It prints the
@@ -799,18 +800,18 @@ order:
    quantities with a margin. P1 refuses every ERROR; `place_seed` refuses
    the area, edge and glob ones at exit 5, writing nothing, and seeds the
    rest, naming the member it could not seat. P1 counts every footprint
-   BLOCK: lock a pad-less one, or name it under the plan's `dispositions`
-   `refs` with a reason (in a zoned block it must be locked, or leave the
-   block's `refs` if it draws no courtyard). A rule left dark where the board
-   says it applies is armed or answered under `rules`. A dropped or
+   BLOCK: lock a pad-less one or name it under `dispositions` `refs` with a
+   reason (zoned: locked, or out of `refs` if it draws no courtyard). A rule
+   left dark where the board says it applies is armed or answered under
+   `rules`. A dropped or
    contradicted brief clause is refused by id (`--waive
    brief-clause:<id>:<why>` answers it). Each pad-carrying ref of a
    `mechanical.json` beside the board must be locked at its recorded pose,
    unless its value lost a contradiction or the plan's `fixed_poses[]` names
-   it, unlocked, at that pose; a pad-less one is refused only if it drifted;
-   a contradiction between two recorded channels is answered under
-   `contradictions`. Every refusal names its measured values and the key
-   that answers it. Answer with a fact, never an invented limit.
+   it, unlocked, at that pose (with `rot` where the file declares one); a
+   pad-less one is refused only if it drifted; a contradiction between two
+   recorded channels is answered under `contradictions`. Every refusal names
+   its measured values and the key that answers it — a fact, never a guess.
 
    The seeder turns the intent's constructs into placement (fixed poses →
    exact seats, edge bands → edge poses, single-ref zones → the spec
@@ -1093,8 +1094,8 @@ their output), so a 0.4 mm zone around a mounting hole is satisfiable. Zones
 meant to CONTAIN a group must still be at least courtyard-sized.
 
 `edge_connectors` constrains **which edge** and `overhang_mm` — it cannot pin an
-XY. Anything with an *exact* position needs a `blocks` zone a few hundred microns
-wide around the spec coordinate. Then `check_floorplan --intent` **fails** the
+XY. An *exact* position is a `fixed_poses` entry (seated and locked by stage 0),
+or a `blocks` zone a few hundred microns wide around the spec coordinate. Then `check_floorplan --intent` **fails** the
 moment an iteration walks one, which is the mechanism a spec-conformant board
 needs and prose does not provide.
 
@@ -1307,20 +1308,18 @@ three parts are required:
    fall back to rules 1 and 3.
 3. Any repo-local requirement gate must still pass.
 
-**Two numbers produced by the optimizer cannot adjudicate a requirement the
-optimizer has no term for.** Measured, one accepted-by-rule-1 placement:
-`crossings` 85→60 and `hpwl` 602→596, both "better" — while a decap requirement
-went from 2.04 mm to **9.57 mm** because the quench **rotated** the part it served
-by 180°. The footprint origin never moved, so a position diff showed nothing and
-the delta render drew no arrow.
+**Two optimizer numbers cannot adjudicate a requirement the run did not hand
+the optimizer.** Measured, with the decap limit undeclared: `crossings` 85→60 and
+`hpwl` 602→596 while a decap went 2.04 → **9.57 mm**, because the quench
+**rotated** its IC 180° — the origin never moved, so no diff or arrow showed it.
 
-**Rotation is the trap.** Lock anything whose **pin positions** a requirement
-depends on, not merely anything the spec gives a coordinate to. On one board that
-added six parts the spec pins nowhere: the flash (a decap-per-pin rule), the
-crystal and its load caps (leg length and symmetry), and two series resistors (a
-pair's coupled geometry). Expect to pay: `crossings` 85→74 instead of 85→60. That
-is the same trade the decap case records — a spec-conformant placement that routes
-slightly worse beats a spec-violating one that routes well.
+**Rotation is the trap.** Hold anything whose **pin positions** a requirement
+depends on: declare its `rotation` (the quench then keeps it), and declare the
+requirement itself — `decaps.max_pin_distance_mm`, `proximity` — at error
+severity, which the quench now holds per move (#1043). Where neither can be
+declared, lock it. Measured with locks on six such parts (flash, crystal and
+load caps, two series resistors): `crossings` 85→74 instead of 85→60 — a
+spec-conformant placement that routes slightly worse is the right trade.
 
 When routing has already failed on congestion, use the loop instead — it consumes
 exactly the failed and blocker nets the router reported:

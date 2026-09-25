@@ -390,9 +390,10 @@ later tool can see it; only a `pose` reaches an engine, through `fixed_poses[]`.
 The same row the intent's `arrays[]` carries, plus the prose slot
 `requirement` -- validated by the INTENT's own loader, so a row the brief
 accepts is a row the compiled intent loads. It compiles 1:1, with `min_reader`
-7, is graded by `array_formation`, is seated whole by the seeder (stage 2.45)
-and moves in the quench as a rigid group (a member leaves only by a
-disclosed release). Which rows to declare is the
+7, is graded by `array_formation`, and is seated by the seeder as one row
+where stage 2.45 finds a pose for it -- else member by member, named in
+`array_unseated` -- and moves in the quench as a rigid group (a member leaves
+only by a disclosed release). Which rows to declare is the
 author's decision: `check_floorplan --suggest-arrays` lists candidates with
 their evidence, and the ones it `declined` with why. `serves` and `order` may be
 `"unknown"` (the author looked and does not know), `rotation` too; each is
