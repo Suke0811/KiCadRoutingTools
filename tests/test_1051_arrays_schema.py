@@ -167,6 +167,25 @@ _REFUSALS = [
     (_base(blocks=[{'name': 'b', 'refs': ['U1'], 'rigid': 'yes'}]),
      "rigid 'yes'"),
     (_base(blocks=[{'name': 'fixed:U1', 'refs': ['U1']}]), 'is reserved'),
+    # Phase-1 verifier, finding 4: NaN / infinity loaded and then passed
+    # every rotation check.
+    (_base(arrays=[_row(rotation=float('nan'))]), 'not a finite angle'),
+    (_base(arrays=[_row(rotation=float('inf'))]), 'not a finite angle'),
+    (_base(blocks=[{'name': 'b', 'refs': ['U1'],
+                    'rotation': float('nan')}]), 'not a finite angle'),
+    (_base(blocks=[{'name': 'b', 'refs': ['U1'],
+                    'rotation_candidates': [0, float('inf')]}]),
+     'not a finite angle'),
+    (_base(fixed_poses=[{'ref': 'J1', 'x': 0, 'y': 0, 'basis': 'declared',
+                         'rot': float('nan')}]), 'not a finite angle'),
+    (_base(fixed_poses=[{'ref': 'J1', 'x': float('nan'), 'y': 0,
+                         'basis': 'declared'}]), 'not a finite coordinate'),
+    (_base(fixed_poses=[{'ref': 'J1', 'x': 0, 'y': float('inf'),
+                         'basis': 'declared'}]), 'not a finite coordinate'),
+    (_base(arrays=[_row(pitch_mm=float('inf'))]),
+     "expected 'auto' or a positive"),
+    (_base(arrays=[_row(pitch_mm=float('nan'))]),
+     "expected 'auto' or a positive"),
 ]
 
 
@@ -395,9 +414,56 @@ def test_every_fixed_pose_is_graded():
     blocks = sorted(v.block for v in r.violations
                     if v.rule == 'zone_containment')
     assert blocks == ['mech:U4'], blocks
+    _brief_pose_contradicting_mechanical_is_graded()
     print("  PASS: a fixed pose grades clean at its pose, fails 5 mm off, "
-          "refuses a missing ref, warns on a pad-less one, and is graded once "
-          "when the mechanical file also anchors it")
+          "refuses a missing ref, warns on a pad-less one, is graded once "
+          "when the mechanical file anchors the SAME pose, and a brief pose "
+          "contradicting mechanical.json is a contradiction AND graded")
+
+
+def _brief_pose_contradicting_mechanical_is_graded():
+    """Phase-1 verifier, finding 1, as reported: on esp_prog mechanical.json
+    puts U1 at its board pose and the brief's `fixed[U1].pose` 13 mm away.
+    The emit reported 0 contradictions and the grade PASSED -- the brief
+    pose was skipped because the file named the ref, whatever its pose."""
+    from placement import reconcile as rc
+    pcb = _pcb(ESP)
+    u1 = pcb.footprints['U1']
+    here = (u1.x, u1.y, (u1.rotation or 0.0) % 360.0)
+    with tempfile.TemporaryDirectory() as tmp:
+        mpath = os.path.join(tmp, 'mechanical.json')
+        with open(mpath, 'w', encoding='utf-8') as fh:
+            json.dump({'kind': 'mechanical-declaration', 'schema': 1,
+                       'refs': {'U1': list(here)},
+                       'reasons': {'U1': 'test: mechanical says here'}}, fh)
+        mech = rc.load_mechanical(mpath)
+        frag, _rep = db.compile_brief(_brief(fixed=[{
+            'ref': 'U1', 'why': 'brief says elsewhere',
+            'pose': {'x': here[0] + 13.0, 'y': here[1] - 10.0, 'rot': 0,
+                     'side': 'F'}}]), board_refs=sorted(pcb.footprints))
+        rows = rc.reconcile(pcb, ESP, brief_fragment=frag,
+                            brief_source='b.design-brief.json',
+                            mechanical=mech)
+        con = [r for r in rows if r['id'] == 'U1:pose']
+        assert con and con[0]['kind'] == 'contradiction' \
+            and 'brief' in con[0]['values'], rows
+        lost = rc.lost_mechanical_refs(rows)
+        it = fp.intent_from_dict(_base(fixed_poses=frag['fixed_poses']))
+        for skip in (lost, ()):
+            # Whichever value wins, the brief's pose is graded: U1 sits at
+            # the FILE's pose, 13 mm from the brief's.
+            r = fp.grade(it, pcb, ESP, mechanical=mech, mechanical_skip=skip)
+            hit = [v for v in r.violations if v.block == 'fixed:U1']
+            assert hit and hit[0].severity == 'error', (skip, r.violations)
+        # A basis:mechanical entry carrying the file's pose, for a ref whose
+        # file value LOST, is an error: nothing else grades it.
+        stale = fp.intent_from_dict(_base(fixed_poses=[{
+            'ref': 'U1', 'x': here[0], 'y': here[1], 'rot': here[2],
+            'basis': 'mechanical'}]))
+        r = fp.grade(stale, pcb, ESP, mechanical=mech, mechanical_skip=['U1'])
+        bad = [v for v in r.violations if v.rule == 'fixed_pose_unresolved']
+        assert bad and bad[0].severity == 'error' \
+            and 'LOST a contradiction' in bad[0].message, r.violations
 
 
 # --------------------------------------------------------------------------
@@ -601,6 +667,109 @@ def test_mechanical_poses_compile_into_fixed_poses():
           "edge connector, skipped by name) and the intent grades")
 
 
+# --------------------------------------------------------------------------
+# Phase-1 verifier, findings 2, 3, 5 and 6
+# --------------------------------------------------------------------------
+
+def test_an_order_nobody_resolves_is_unchecked_not_passed():
+    """Finding 2: with fewer than two members resolved the order check
+    compared [] to [] and passed; on splitflap `serves: J3` graded clean."""
+    v = arr.formation(_poses([('A', 0, 0, 0), ('B', 2, 0, 0)]),
+                      order_key=['B'])
+    assert 'order' in v['unchecked'] and v['checks']['order']['ok'] is None, v
+    raw = _base(arrays=[_row(serves='J3')])
+    r = _grade(raw)
+    assert r.budget_abstained.get('arrays[pullups].order', '').startswith(
+        "order 'pin' places only 0 member(s)"), r.budget_abstained
+    assert not r.complete, 'an unresolved order read as a complete grade'
+    row = r.array_measured[0]
+    assert set(row['order_unresolved']) == {'R6', 'R7', 'R8'}, row
+    # Partial resolution is disclosed on a PASS too: R8's pads taken off
+    # every net, R6 and R7 still resolve and still form a row.
+    pcb = _fresh()
+    for pd in pcb.footprints['R8'].pads:
+        pd.net_id = 0
+    r = _grade(_base(arrays=[_row()]), pcb=pcb)
+    assert not [v for v in r.violations if v.rule == 'array_formation'], \
+        r.violations
+    row = r.array_measured[0]
+    assert row['formed'] and row['order_expected'] == ['R6', 'R7'] \
+        and row['order_unresolved'] == {'R8': 'shares no net with U4'}, row
+    assert 'order unresolved for R8' in fp.format_text(r)
+    assert fp.to_json(r)['array_formation'][0]['name'] == 'pullups'
+    print("  PASS: an order that places < 2 members is unchecked and "
+          "abstains; partial resolution is disclosed on a passing grade")
+
+
+def test_the_single_pad_net_decides_the_pin_order():
+    """Finding 3: the splitflap case cannot tell `single or own` from `own`
+    (R14's GND lands on U4 8 and 15, its signal on 10 -- both sort between
+    pins 4 and 11). Here member A's ground lands on host pads 1 and 9 and
+    its signal on 5; B's signal on 3. The signal decides: B (3) then A (5).
+    Deciding on every own net would put A first, on its ground pin 1."""
+    from types import SimpleNamespace as NS
+
+    def pad(num, net):
+        return NS(pad_number=num, net_id=net)
+    pcb = NS(footprints={
+        'H': NS(pads=[pad('1', 9), pad('9', 9), pad('5', 1), pad('3', 2)]),
+        'A': NS(pads=[pad('1', 1), pad('2', 9)]),
+        'B': NS(pads=[pad('1', 2), pad('2', 7)]),
+    })
+    order, un = arr.pin_order(pcb, 'H', ['A', 'B'])
+    assert order == ['B', 'A'] and not un, (order, un)
+    print("  PASS: a net landing on one pad of the served part outranks a "
+          "multi-pad (ground) net")
+
+
+def test_a_shared_rotation_no_member_can_take_is_a_conflict():
+    """Finding 5: `shared` compared only DECIDED angles, so R6 allowed
+    {0, 90} and R7 decided 180 passed although no angle suits both."""
+    raw = _base(blocks=[{'name': 'a', 'refs': ['R6'],
+                         'rotation_candidates': [0, 90]},
+                        {'name': 'b', 'refs': ['R7'], 'rotation': 180}],
+                arrays=[_row()])
+    it = fp.intent_from_dict(raw)
+    blocks, _ = fp.resolve_blocks(it, _pcb())
+    probs = [v for v in fp.array_problems(it, _pcb(), blocks)
+             if v.rule == 'array_conflict']
+    assert {v.ref for v in probs} == {'R6', 'R7'} and \
+        'no angle is allowed to every member' in probs[0].message, probs
+    # A common angle clears it.
+    raw['blocks'][1]['rotation'] = 90
+    it = fp.intent_from_dict(raw)
+    blocks, _ = fp.resolve_blocks(it, _pcb())
+    assert not fp.array_problems(it, _pcb(), blocks)
+    print("  PASS: shared rotation with an empty common angle set is an "
+          "array_conflict on each member; a common angle clears it")
+
+
+def test_a_missing_member_skips_the_formation_and_stacked_reads_so():
+    """Finding 6: the any-member-missing guard, pinned. R8, R6 and R9 alone
+    fail the pitch (gaps 38.1 and 66.04 mm); with ZZ9 missing the rule must
+    NOT grade the survivors -- `array_unresolved` owns the finding."""
+    r = _grade(_base(arrays=[_row(members=['R8', 'R6', 'R9'],
+                                  order='declared')]))
+    assert [v for v in r.violations if v.rule == 'array_formation'], \
+        'control: the survivors alone should fail'
+    r = _grade(_base(arrays=[_row(members=['R8', 'R6', 'R9', 'ZZ9'],
+                                  order='declared')]))
+    assert not [v for v in r.violations if v.rule == 'array_formation'], \
+        r.violations
+    assert [v.ref for v in r.violations
+            if v.rule == 'array_unresolved'] == ['ZZ9'], r.violations
+    assert r.array_measured[0]['formed'] is None \
+        and 'ZZ9' in r.array_measured[0]['skipped'], r.array_measured
+    # Two members on one spot read as stacked, not as a list of zero gaps.
+    pcb = _fresh()
+    pcb.footprints['R7'].x = pcb.footprints['R6'].x
+    r = _grade(_base(arrays=[_row(members=['R6', 'R7'])]), pcb=pcb)
+    msg = [v.message for v in r.violations if v.rule == 'array_formation']
+    assert msg and 'members stacked: R6, R7' in msg[0], msg
+    print("  PASS: a missing member skips formation (array_unresolved "
+          "reports it); stacked members are named as stacked")
+
+
 TESTS = [
     test_the_new_keys_load_and_land_on_the_intent,
     test_every_load_refusal_carries_its_reason,
@@ -616,6 +785,10 @@ TESTS = [
     test_merge_drift_and_coverage,
     test_emit_intent_writes_none_of_it_by_default,
     test_mechanical_poses_compile_into_fixed_poses,
+    test_an_order_nobody_resolves_is_unchecked_not_passed,
+    test_the_single_pad_net_decides_the_pin_order,
+    test_a_shared_rotation_no_member_can_take_is_a_conflict,
+    test_a_missing_member_skips_the_formation_and_stacked_reads_so,
 ]
 
 

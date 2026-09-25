@@ -180,10 +180,20 @@ def formation(members_poses: Sequence[Dict[str, object]], *,
 
     lie = sorted(range(len(poses)), key=lambda i: (along[i], poses[i]['ref']))
     observed = [poses[i]['ref'] for i in lie]
+    want = ([] if order_key is None
+            else [r for r in order_key if r in set(observed)])
     if order_key is None:
         unchecked.append('order')
+    elif len(want) < 2:
+        # Fewer than two members HAVE an expected position: an order over
+        # one ref (or none) is satisfied by every arrangement, so it is
+        # UNCHECKED, never a pass (Phase-1 verifier: `serves: J3` on
+        # splitflap resolved nobody and graded clean).
+        unchecked.append('order')
+        checks['order'] = {'ok': None, 'expected': want,
+                           'why': (f"only {len(want)} member(s) have an "
+                                   f"expected position")}
     else:
-        want = [r for r in order_key if r in set(observed)]
         seen = [r for r in observed if r in set(want)]
         ok = seen == want or seen == list(reversed(want))
         checks['order'] = {'ok': ok, 'expected': want, 'observed': seen}
@@ -233,6 +243,13 @@ def formation(members_poses: Sequence[Dict[str, object]], *,
                            'gaps_mm': [round(g, 4) for g in gaps],
                            'spread_mm': round(spread, 4),
                            'tolerance_mm': tol['pitch_spread_mm']}
+    # Members closer along the axis than the tolerance share one spot.
+    stacked = set()
+    for i in range(len(lie) - 1):
+        a, b = lie[i], lie[i + 1]
+        if along[b] - along[a] <= tol['pitch_spread_mm']:
+            stacked.update((poses[a]['ref'], poses[b]['ref']))
+    checks['pitch']['stacked'] = sorted(stacked)
     if not ok:
         failed.append('pitch')
 

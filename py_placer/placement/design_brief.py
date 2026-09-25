@@ -2079,7 +2079,8 @@ def _abstention_is_about(akey, kind, ref, near, intent_doc) -> bool:
     if kind == 'interfaces':
         return akey.startswith(f"edge_connectors[{ref}].")
     if kind == 'arrays':
-        return akey == f"arrays[{ref}]"
+        return (akey == f"arrays[{ref}]"
+                or akey.startswith(f"arrays[{ref}]."))
     if kind != 'proximity':
         return False
     m = _ABSTAIN_PROX_RE.match(akey)

@@ -445,6 +445,25 @@ def _edge_of(rect, bounds) -> Optional[str]:
     return _nearest_edge(rect, bounds)
 
 
+def same_pose(a, b) -> bool:
+    """Two `(x, y, rot)` poses within `POSE_TOL_MM` / `ROT_TOL_DEG`; a None
+    rotation constrains nothing. The one comparison the pose row and the
+    fixed-pose grade share."""
+    return (abs(a[0] - b[0]) <= POSE_TOL_MM
+            and abs(a[1] - b[1]) <= POSE_TOL_MM
+            and (a[2] is None or b[2] is None
+                 or min(abs(a[2] - b[2]) % 360.0,
+                        360.0 - abs(a[2] - b[2]) % 360.0) <= ROT_TOL_DEG))
+
+
+def fixed_pose_tuple(entry: Dict):
+    """An intent `fixed_poses[]` entry as `(x, y, rot)`, rot None when absent
+    or "unknown"."""
+    rot = entry.get('rot')
+    return (float(entry['x']), float(entry['y']),
+            None if rot is None or rot == 'unknown' else float(rot) % 360.0)
+
+
 def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
               brief_source: Optional[str] = None,
               mechanical: Optional[Dict] = None,
@@ -534,12 +553,12 @@ def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
              'the edge each channel puts this part on, read off the rect the '
              'edge-connector rule reads (`edge_seat_rect`)')
 
-    def _same_pose(a, b):
-        return (abs(a[0] - b[0]) <= POSE_TOL_MM
-                and abs(a[1] - b[1]) <= POSE_TOL_MM
-                and (a[2] is None or b[2] is None
-                     or min(abs(a[2] - b[2]) % 360.0,
-                            360.0 - abs(a[2] - b[2]) % 360.0) <= ROT_TOL_DEG))
+    _same_pose = same_pose
+    # #1054: a brief `fixed[].pose` is a THIRD channel on the pose row. A
+    # brief pose that disagrees with mechanical.json is a contradiction P1
+    # refuses, rather than a second anchor nobody reconciled.
+    brief_poses = {str(f.get('ref')): f for f in
+                   (brief_fragment or {}).get('fixed_poses') or ()}
 
     for ref, p in sorted((mech.get('poses') or {}).items()):
         fp = pcb.footprints.get(ref)
@@ -559,6 +578,10 @@ def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
                            'authority': mech_auth, 'source': mech_src},
             'board': {'value': cur, 'authority': board_auth,
                       'source': board_path}}
+        if ref in brief_poses:
+            values['brief'] = {'value': fixed_pose_tuple(brief_poses[ref]),
+                               'authority': brief_auth,
+                               'source': brief_source}
         _row(ref, 'pose', values, _same_pose,
              p.get('reason') or 'a declared mechanical pose')
         rect = geo.body_rect(ref, p['x'], p['y'], p['rot'])

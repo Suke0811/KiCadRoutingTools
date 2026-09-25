@@ -522,6 +522,11 @@ def _rotation(raw, where: str) -> Optional[float]:
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         raise IntentError(
             f"{where}: rotation {raw!r}, expected a number of degrees")
+    if not math.isfinite(float(raw)):
+        # NaN fails every comparison and inf % 360 is NaN, so either would
+        # load as an angle no check can ever find wrong (Phase-1 verifier).
+        raise IntentError(
+            f"{where}: rotation {raw!r} is not a finite angle")
     return float(raw) % 360.0
 
 
@@ -1543,8 +1548,8 @@ def _anchor_zone(b: Dict) -> 'Zone':
 
 
 def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
-                          mechanical=None, state=None, locked=(),
-                          outline=None) -> List['Violation']:
+                          mechanical=None, mechanical_skip=(), state=None,
+                          locked=(), outline=None) -> List['Violation']:
     """Grade every `fixed_poses[]` entry, whatever its source (#1054).
 
     Through `mechanical_anchor_violations` -- the anchor `reconcile.
@@ -1552,10 +1557,15 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
     declared is graded by exactly the geometry a mechanical.json pose is,
     and never by a second copy of it.
 
-    A ref the mechanical file itself declares a pose for is SKIPPED here:
-    the grade anchors it from the file already (or deliberately does not,
-    when its value lost a contradiction), and grading it twice would report
-    one moved part as two findings.
+    An entry at the SAME pose the mechanical file declares for its ref is
+    skipped here: the file's own anchor grades that pose, and grading it
+    twice would report one moved part as two findings. An entry at a
+    DIFFERENT pose is graded too -- skipping it on the ref alone let a brief
+    pose 13 mm from the file's go ungraded (Phase-1 verifier); the pose row
+    of `reconcile` reports the disagreement as a contradiction P1 refuses.
+    And an entry carrying the file's pose for a ref whose mechanical value
+    LOST a contradiction (`mechanical_skip`) is an ERROR: the seeder would
+    seat the losing value, and neither anchor grades it.
 
     A ref the board does not have is an ERROR (`fixed_pose_unresolved`): a
     typo'd pose would otherwise grade clean. A ref the anchor declines for
@@ -1563,11 +1573,26 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
     reason, so the pose is never silently ungraded.
     """
     from . import reconcile as _rc
-    file_refs = set((mechanical or {}).get('poses') or ())
+    file_poses = (mechanical or {}).get('poses') or {}
+    lost = set(mechanical_skip or ())
     poses: Dict[str, Dict] = {}
+    out: List[Violation] = []
     for f in intent.fixed_poses:
         ref = str(f['ref'])
-        if ref in file_refs:
+        fp_ = file_poses.get(ref)
+        if fp_ is not None and _rc.same_pose(
+                _rc.fixed_pose_tuple(f), (fp_['x'], fp_['y'], fp_.get('rot'))):
+            if ref in lost:
+                out.append(Violation(
+                    rule='fixed_pose_unresolved',
+                    severity=intent.severity_of('fixed_pose_unresolved'),
+                    ref=ref,
+                    message=(f"fixed_poses[{ref}] carries the mechanical.json "
+                             f"pose, and that value LOST a contradiction -- "
+                             f"the seeder would seat the losing value and no "
+                             f"anchor grades it. Drop the entry, or answer "
+                             f"the contradiction"),
+                    measured={'found': True, 'lost_contradiction': True}))
             continue
         rot = f.get('rot')
         poses[ref] = {'x': float(f['x']), 'y': float(f['y']),
@@ -1576,8 +1601,7 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
                       'reason': str(f.get('why') or '')
                       or f"a {f.get('basis')} fixed pose"}
     if not poses:
-        return []
-    out: List[Violation] = []
+        return out
     for ref in sorted(poses):
         if ref not in (pcb_data.footprints or {}):
             out.append(Violation(
@@ -1687,18 +1711,24 @@ def array_problems(intent: Intent, pcb_data, blocks: Dict[str, List[str]],
                        block_candidates=(None if cands is None
                                          else list(cands)),
                        array_rotation=want)
-        elif want == 'shared':
-            fixed = sorted({r for r, _c in declared.values()
-                            if r is not None})
-            if len(fixed) > 1:
-                for m, (r, _c) in sorted(declared.items()):
-                    if r is not None and r != fixed[0]:
-                        _v(a, m,
-                           f"array {name!r} declares ONE shared rotation, "
-                           f"and its members' blocks declare "
-                           f"{', '.join(format(x, 'g') for x in fixed)} "
-                           f"({m} at {r:g})", rule='array_conflict',
-                           block_rotation=r)
+        elif want == 'shared' and declared:
+            # ONE angle must be allowed to every member: intersect each
+            # member's allowed set (a decided `rotation` is a one-angle set,
+            # `rotation_candidates` its list). Comparing only the decided
+            # angles missed R6 {0, 90} against R7 {180} (Phase-1 verifier).
+            allowed = {m: ({r} if r is not None else set(cands))
+                       for m, (r, cands) in declared.items()}
+            common = set.intersection(*allowed.values())
+            if not common:
+                sets = '; '.join(
+                    f"{m} {sorted(format(x, 'g') for x in allowed[m])}"
+                    for m in sorted(allowed))
+                for m in sorted(allowed):
+                    _v(a, m,
+                       f"array {name!r} declares ONE shared rotation, and no "
+                       f"angle is allowed to every member's block ({sets})",
+                       rule='array_conflict',
+                       allowed=sorted(allowed[m]))
         in_zone = {m: sorted(b for b in zoned if m in blocks.get(b, ()))
                    for m in present}
         zones_used = sorted({b for bs in in_zone.values() for b in bs})
@@ -2411,6 +2441,9 @@ class _Ctx:
         #: repo has a dedicated test class against, so the rule RECORDS what
         #: it measures and the consumer reads it.
         self.proximity_measured: List[Dict[str, object]] = []
+        #: #1051. One row per declared array, formed or not: the verdict,
+        #: the order it could place and the members it could not.
+        self.array_measured: List[Dict[str, object]] = []
         self._decap_pops: Dict[float, tuple] = {}
         self._supply_pins = None
         self._assembly_census = None
@@ -4902,7 +4935,13 @@ def rule_array_formation(ctx) -> Iterator[Violation]:
     for a in ctx.intent.arrays:
         spec = arr.spec_of(a)
         name = spec['name']
-        if any(m not in fps for m in spec['members']):
+        absent = [m for m in spec['members'] if m not in fps]
+        if absent:
+            # `array_problems` reports each at ERROR; grading the survivors
+            # would call a row formed that is missing a part.
+            ctx.array_measured.append({
+                'name': name, 'formed': None,
+                'skipped': f"not on this board: {', '.join(absent)}"})
             continue
         missing = [m for m in spec['members'] if m not in ctx.parts]
         if missing:
@@ -4921,6 +4960,22 @@ def rule_array_formation(ctx) -> Iterator[Violation]:
                           rotation_spec=spec['rotation'],
                           pitch_spec=spec['pitch_mm'],
                           axis_spec=spec['axis'])
+        # Disclosed on EVERY grade, formed or not: which members the order
+        # could place, and which it could not.
+        ctx.array_measured.append({
+            'name': name, 'formed': v['formed'], 'failed': list(v['failed']),
+            'unchecked': list(v['unchecked']), 'axis': v['axis'],
+            'order': list(v['order']), 'order_expected': order_refs,
+            'order_unresolved': dict(unresolved)})
+        if order_refs is not None and 'order' in v['unchecked']:
+            # A DECLARED order that fewer than two members resolve to is not
+            # a pass: the verdict is incomplete, and says which refs.
+            ctx.abstained[f"arrays[{name}].order"] = (
+                f"order {spec['order']!r} places only "
+                f"{len((v['checks'].get('order') or {}).get('expected') or [])}"
+                f" member(s); unresolved: "
+                + (', '.join(f"{k} ({w})" for k, w in sorted(
+                    unresolved.items())) or 'none'))
         if v['formed']:
             continue
         detail = []
@@ -4938,7 +4993,12 @@ def rule_array_formation(ctx) -> Iterator[Violation]:
                                  f"{c.get('declared'):g}"
                                  if c.get('off') else ''))
             elif check == 'pitch':
-                detail.append(f"gaps {c.get('gaps_mm')}mm")
+                if c.get('stacked'):
+                    detail.append(f"members stacked: "
+                                  f"{', '.join(c['stacked'])} share one spot "
+                                  f"along the row")
+                else:
+                    detail.append(f"gaps {c.get('gaps_mm')}mm")
         yield Violation(
             rule='array_formation', severity=ctx.sev('array_formation'),
             block=name,
@@ -5622,6 +5682,10 @@ class GradeResult:
     #: declares no proximity claim, which is DIFFERENT from every claim
     #: passing, and the consumer must not confuse the two.
     proximity_measured: List[Dict[str, object]] = field(default_factory=list)
+    #: #1051: every declared array's formation measurement, formed or not,
+    #: with the members its pin order could not place. Empty when no array
+    #: is declared.
+    array_measured: List[Dict[str, object]] = field(default_factory=list)
     #: #961: one row per declared edge connector found on the board -- the
     #: number its `overhang_mm` band was graded on and the CURRENCY of it
     #: (`overhang_basis`: the drawn body, or the legacy occupancy reading when
@@ -6673,7 +6737,8 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
     # #1054: every `fixed_poses[]` entry, whatever its source, through the
     # same anchor -- a ref the mechanical file declares is left to the file.
     violations.extend(fixed_pose_violations(
-        intent, pcb_data, pcb_file, mechanical=mechanical, state=state,
+        intent, pcb_data, pcb_file, mechanical=mechanical,
+        mechanical_skip=mechanical_skip, state=state,
         locked=ctx.locked, outline=outline))
     # #712: a DECLARED along-edge claim this outline cannot support a verdict
     # on joins the same not-derivable channel the withheld budgets use. It is
@@ -6760,6 +6825,7 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
         budget_abstained=abstained,
         edge_seating=list(ctx.edge_seating),
         proximity_measured=list(ctx.proximity_measured),
+        array_measured=list(ctx.array_measured),
         edge_connector_evidence=list(ctx.edge_connector_evidence),
         decap_pin_evidence=pin_evidence,
         n_footprints=len(pcb_data.footprints))
@@ -7631,6 +7697,19 @@ def format_text(r: GradeResult) -> str:
         for v in r.violations:
             tag = 'ERROR' if v.severity == ERROR else 'warn '
             lines.append(f"    [{tag}] {v.rule}: {v.message}")
+    # #1051: every declared array, formed or not, with what its order could
+    # not place -- a partly resolved pin order is disclosed on a pass too.
+    for a in r.array_measured:
+        state = ('skipped' if a.get('formed') is None
+                 else 'formed' if a['formed'] else 'NOT formed')
+        un = a.get('order_unresolved') or {}
+        lines.append(
+            f"  array {a['name']}: {state}"
+            + (f" ({a['skipped']})" if a.get('skipped') else '')
+            + (f"; unchecked: {', '.join(a['unchecked'])}"
+               if a.get('unchecked') else '')
+            + (f"; order unresolved for {', '.join(sorted(un))}"
+               if un else ''))
     rows = [e for e in r.edge_seating
             if e.get('along_edge_offset_mm') is not None]
     if rows:
@@ -8112,6 +8191,8 @@ def to_json(r: GradeResult) -> Dict:
         'edge_connector_evidence': r.edge_connector_evidence,
         'decap_pin_evidence': r.decap_pin_evidence,
         'n_footprints': r.n_footprints,
+        **({'array_formation': r.array_measured} if r.array_measured
+           else {}),
     }
 
 
