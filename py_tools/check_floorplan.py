@@ -572,7 +572,7 @@ def main(argv=None):
                 print(f"  {len(_m['anchored'])} mechanical ref(s) the "
                       f"grade anchors at their declared pose (compiled from "
                       f"the file at grade time; P1 requires each locked "
-                      f"there)"
+                      f"there, or seated by a fixed_poses entry)"
                       + (f"; skipped: {_sk}" if _sk else ''))
                 _fs = ', '.join(f"{k} ({v})" for k, v in
                                 sorted(_m['fixed_skipped'].items()))

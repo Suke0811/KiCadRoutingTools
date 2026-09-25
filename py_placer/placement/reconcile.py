@@ -713,11 +713,13 @@ def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
     may take when the declaration gives none. So a part sitting at its
     declared pose grades clean and one that moved does not.
 
-    Grade-only: P1 requires each anchored ref to be FILE-locked, so the
-    seeder treats it as placed and never seats it here -- measured before
-    this was built, the seeder cannot seat a part at an exact pose (a part
-    overhanging the outline has no admissible pose at all; edge claims are
-    seated before zones; a seat lands anywhere within the tolerance).
+    Grade-only: the anchor never seats anything. A part reaches its pose
+    either FILE-locked there (which P1 checks) or through an intent
+    `fixed_poses[]` entry, which the seeder's stage 0 seats exactly and
+    locks (#1054) -- a zone is no way to seat one: measured before this was
+    built, a part overhanging the outline has no admissible zone pose at
+    all, edge claims are seated before zones, and a seat lands anywhere
+    within the tolerance.
     No `rotation` key: rotation drift is graded by `mechanical_drift`, and a
     rotation DECISION on a block would collide with a plan's own claims.
 

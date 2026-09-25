@@ -228,8 +228,9 @@ generator's pile) plus a floorplan intent, it emits a legal starting
 placement: edge connectors on their declared edge inside their overhang band,
 single-ref zones at the spec coordinate, multi-ref zones packed radially,
 everything else at the nearest legal pose to its connectivity centroid (which
-is also what lands a decap next to its IC). The intent's `must_lock` refs are
-stamped `(locked yes)` into the output, a quench polish tidies the free
+is also what lands a decap next to its IC). The intent's `must_lock` and
+seated `fixed_poses[]` refs are stamped `(locked yes)` into the output, a
+quench polish tidies the free
 parts, and the result is **graded against the same intent it was built
 from** — a seed that fails its own intent exits 4, deliberately.
 
@@ -237,6 +238,25 @@ from** — a seed that fails its own intent exits 4, deliberately.
 python py_placer/place_seed.py unplaced.kicad_pcb seed.kicad_pcb --intent floorplan.json
 python py_placer/place_seed.py unplaced.kicad_pcb seed3.kicad_pcb --intent floorplan.json --seed 3
 ```
+
+The stages, in the order `seeder.seed_from_intent` runs them (file-locked
+parts, and parts outside `seed_refs`, count as placed before stage 0):
+
+| stage | what it seats |
+|---|---|
+| 0 | `fixed_poses[]` (#1054): EXACTLY at the declared pose, a check and never a search; an illegal pose is refused and the part held out of every later stage. Seated parts are stamped `(locked yes)` |
+| 1 | edge connectors on their declared edge, inside the overhang band |
+| 1.5 | `must_lock` parts, at their current pose where it is legal |
+| 2 | zoned blocks, packed radially from the zone centre; a declared array whose members all sit in one zoned block is seated into it whole (stage 2.45) |
+| 2.4 | armed only by `decaps.max_distance_mm` or `arrays` (#1053): the ICs the decap tethers and the rows serve, every part that outranks the early seats by pin count or size, and each non-zoned array at its members' rank (stage 2.45); the order is disclosed in the seeder's `early_order` |
+| 2.45 | one declared array as ONE row (`_seat_array` -> `_seat_block`, #1051): the served part's pin order, one rotation, one pitch, a capped pose count (`ARRAY_SEAT_POSE_CAP`). A row not seated whole goes to `array_unseated` and its members are seated one by one |
+| 2.5 / 2.6 | the decap-governed caps, one per supply pin; what the pin stage declines is put back into its zone. `decap_stage` says what it claimed, and why when nothing |
+| 3 | everything else, at the nearest legal pose to its connectivity centroid |
+| 3c / 3b | the eviction rung (`--evict-depth`, below), then the gated anchor re-seat rounds |
+
+`place_seed`'s `JSON_SUMMARY` carries what stages 0, 2.45 and 2.5 did, judged
+at the WRITTEN poses: `fixed_seated` / `fixed_refused`, `arrays_formed` (the
+grader's `array_formation` verdict) / `array_unseated`, and `decap_stage`.
 
 Every `JSON_SUMMARY` it prints (seed, `--repair`, `--reseat`) carries
 `connector_requirements` (#974): the declared edge connectors' graded
@@ -264,10 +284,11 @@ Rotations: the input rotation is tried in full first and kept when it fits; a
 part with no contained legal pose at it falls back to its 90° lattice (noted
 in the output — measured: an LDO with 0 legal poses at rot 0 and 3 at rot 90
 on a packed board). A part whose rotation is a *decision* (pin order, the U3
-rot-180 case) must be **locked** — the intent schema cannot express a
-rotation, and an unlocked load-bearing rotation was never protected from the
-quench either. Explore rotations deliberately with
-`place_portfolio.py --strategy poses`.
+rot-180 case) DECLARES it: a block's `rotation` / `rotation_candidates` (#893,
+honoured by the seat search and held by the quench), an array's `rotation`
+(the row is seated at one angle and the quench only translates it), or a
+`fixed_poses[]` entry's `rot` (seated exactly, then locked). Explore rotations
+deliberately with `place_portfolio.py --strategy poses`.
 
 ### The eviction rung (`--evict-depth`, #630, #699)
 
@@ -949,6 +970,32 @@ block):
 `--group-by auto` means `kicad,sheet`. Default is `none`: grouping is opt-in, and
 with it off the group phase never runs and output is byte-identical to the
 ungrouped engine — which is what lets every existing bit-identity test stand.
+
+**The intent adds groups of its own (#1051, #1052, #1043)**, whatever
+`--group-by` says, through the gate bundle `floorplan.resolve_intent_gate`
+builds for every quenching CLI:
+
+- **Rigid groups**: each declared `arrays[]` row (`array:<name>`) and each
+  block with `rigid: true` (`block:<name>`). A member sits out the
+  single-part nudge and every swap with a part outside its group (inside an
+  array ordered `pin` or `declared`, a swap of two members the order
+  positions); it leaves
+  only when its own pose fails a clause no group offset clears, and that
+  release is disclosed in `rigid_released` (a released member that is clean
+  again and still in its slot rejoins). A group with a member that cannot
+  move is `anchored`: its movable members are held still.
+- **Tethers**: `decaps.max_distance_mm`, `decaps.max_pin_distance_mm` and
+  `proximity[]`, each declared at error severity, gate every move by CALLING
+  the grader's own measurement (`QuenchState._tether_terms`): a tether within
+  its limit stays within, one past it gets no worse. With a decap limit armed,
+  each IC and its caps (the `decap` grouper's blocks) also join the group
+  phase as `tether:<IC>`, dropped when a rigid group already claims the IC.
+
+A ref claimed by several groups keeps the FIRST (rigid, then tether, then
+`--group-by`), each drop disclosed in `groups_deduped`. The summary keys
+(`quench.DISCLOSURE_KEYS`: `rigid`, `rigid_released`, `groups_deduped`,
+`tethers`) appear only when their channel is declared, and with none declared
+the quench is bit-identical to before.
 
 **What actually moves.** Small blocks move; large ones do not. On
 `splitflap_driver` with `--group-by decap`, 6 blocks of 2–3 parts translate and

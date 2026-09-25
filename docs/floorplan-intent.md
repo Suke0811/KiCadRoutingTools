@@ -295,11 +295,22 @@ axis. `rotation` is a number (every member at it), `"shared"` (every member at
 one angle, whichever) or `"unknown"`. `"unknown"` is a first-class answer
 everywhere and is reported apart from an absent key.
 
-`emit_intent` never writes one: which parts form a row is a design decision the
-board file does not record. `array_formation` is a POLICY rule, dark when
-nothing is declared, and it grades through `arrays.formation`, the one
-predicate the seeder and the quench are to share (tolerances in
-`arrays.DEFAULT_TOLERANCES`, measured on courtyard centres).
+Which parts form a row is a design decision the board file does not record,
+so `emit_intent` writes none by default. `check_floorplan BOARD
+--suggest-arrays` prints what the pose-blind detector (`arrays.suggest_arrays`)
+would suggest, as JSON with its evidence: rows of identical parts each on its
+own pin of one part (`pin_run`), caps on one chip's rail pair (`decap_row`), or
+one sheet's repeated channel (`sheet_bank`). Its `declined` list holds what it
+refused, each with a `why`: a bank that bridges its host and a second big part
+(a driver bank between an FPGA and its connectors, laid by hand as a
+multi-row block, which one `arrays[]` row cannot express), a host under the
+pad-ratio floor, parts excluded from membership. The reader accepts or
+declines each suggestion into `arrays[]`; the Python API's
+`emit_intent(derive_arrays='auto')` writes them all, and has no CLI flag.
+`array_formation` is a POLICY rule, dark when nothing is declared, and it
+grades through `arrays.formation`, the one predicate the seeder's row stage
+calls too (tolerances in `arrays.DEFAULT_TOLERANCES`, measured on courtyard
+centres).
 
 Refused at load, naming the member: a member in two arrays, fewer than two
 members, a member listed twice, a member also named by `must_lock`, also an
@@ -314,9 +325,26 @@ one -- a row is seated as one piece).
 
 The quench gate bundle carries the resolved rows (`arrays`, with the expected
 `order_refs`), `fixed_poses` and `rigid_blocks` (`{"array:<name>" |
-"block:<name>": refs}` for every array and every `rigid: true` block) as data.
-No engine acts on them in this build: the seeder's row stage, stage 0 for fixed
-poses and the quench's rigid moves are separate changes (#1051, #1052, #1054).
+"block:<name>": refs}` for every array and every `rigid: true` block), and
+three engines act on them. **The seeder** seats each row whole (stage 2.45,
+`seeder._seat_array` -> `_seat_block`): the served part's pin order, ONE
+rotation the seeder chooses for `"shared"`/`"unknown"`, a pitch and an axis,
+searched over a capped pose count (`ARRAY_SEAT_POSE_CAP`), never a clock. A
+zoned row is seated into its zone in stage 2; any other row at its members'
+rank in stage 2.4, which (armed by `arrays` or `decaps.max_distance_mm`)
+first seats the served parts and whatever outranks the early seats. A row
+that cannot be seated whole is reported in `array_unseated` and its members
+are seated one by one. **The quench** moves every rigid group only by
+translating it; its members sit out the single-part nudge and any swap with
+a part outside the group (or, in an array ordered `pin` or `declared`, a swap of two members
+the order positions), a member failing a clause no group offset clears is released (and may
+rejoin once clean), a group with a member that cannot move is anchored and
+takes no translate, and a ref in two groups keeps the first that claims it
+(arrays, then `rigid` blocks, then #1043's tether clusters, then
+`--group-by` groups). **place_seed**
+discloses them in its `JSON_SUMMARY`: `arrays_formed` (the grader's verdict at
+the WRITTEN poses), `array_unseated`, and, from the polish, `rigid`,
+`rigid_released` and `groups_deduped`.
 
 ### Fixed poses: a pose to seat, not only to grade (#1054)
 
@@ -337,6 +365,21 @@ reason.
 A ref in `fixed_poses` and also in `edge_connectors` or `must_lock` is refused
 by name -- two placements for one part. `fixed:` is a reserved block-name prefix,
 like `mech:`.
+
+The seeder's **stage 0** runs before every other stage and seats each entry
+at EXACTLY its pose -- a check, never a search. A pose that fails the seat
+predicate (or, for a part overhanging the outline, the edge seat's conjuncts
+other than its band) is REFUSED with its reasons and never nudged, and no
+later stage seats that part. `rot` / `side` absent or `"unknown"` keep the
+part's current angle / face; a declared side the part is not on is refused,
+since no search flips a part. A part already placed -- locked in the file, or
+outside the seed scope -- is recorded when it is at the pose and refused when
+it is not. A seated part is stamped `(locked yes)`, so every later stage and
+the polish treat it as an obstacle, and `place_seed --repair` never moves one.
+`place_seed`'s `JSON_SUMMARY` carries `fixed_seated` (with `at_written_pose`)
+and `fixed_refused`. The placement skill's P1 accepts an unlocked
+`mechanical.json` ref, instead of demanding a hand lock, when the plan names
+it here at the declared pose.
 
 ### WHERE ALONG the edge: `center_on_edge` and `along_edge_band`
 
@@ -745,11 +788,13 @@ reports the whole picture in `accept_basis`.
 | `assembly_side` | yes | — | no | same reason, one level up: since #714 the WRITER can mirror a footprint, but no move in any search carries a side (#836), so the term is invariant under every move. Reported once at load, and **warn** by default so it cannot become a permanent red mark |
 | `envelope` | yes | — | no | a claim about the intent FILE against the board, not about any pose |
 | `decap_ungraded`, `decap_pin_uncovered`, `decap_pin_distance_inferred` | yes | — | no | `decap_ungraded` and `decap_pin_uncovered` are claims about what the GRADE covers rather than about any pose, so there is nothing for a search to refuse. `decap_pin_distance_inferred` is a WARN about a pin inferred from a net name, and the gate holds only what the exit gate counts |
-| `decap_pin_distance` | yes | — | **yes** (#1043) | — armed by `decaps.max_pin_distance_mm`. Per (IC, declared supply pin), measured by CALLING `floorplan.nearest_rail_cap` over the rule's own cap set (`decap_pin_caps`) on footprints posed at the live poses |
-| `decap_distance` | yes | scope stage | **yes** (#1043) | — armed by `decaps.max_distance_mm`. The currency objection that kept it out is met by CALLING the grader's own distance (`groups.elect_live`: cap pad centroid to the inflated pad bbox of the nearest chip on its rail) rather than re-deriving one. The election is re-run per candidate pose over the chips on the cap's rail, because the grade re-elects: a frozen cap→IC pair is not conservative for a cap elected beyond the radius, which can walk into another chip's radius past the limit (run 32's C26). The population (which caps, graded or beyond the radius) is fixed once at state build (`floorplan.tether_pairings`) |
+| `decap_pin_distance` | yes | — | **yes** (#1043) | — armed by `decaps.max_pin_distance_mm` at error severity. Per (IC, declared supply pin), measured by CALLING `floorplan.nearest_rail_cap` over the rule's own cap set (`decap_pin_caps`) on footprints posed at the live poses |
+| `decap_distance` | yes | scope stage | **yes** (#1043) | — armed by `decaps.max_distance_mm` at error severity. The currency objection that kept it out is met by CALLING the grader's own distance (`groups.elect_live`: cap pad centroid to the inflated pad bbox of the nearest chip on its rail) rather than re-deriving one. The election is re-run per candidate pose over the chips on the cap's rail, because the grade re-elects: a frozen cap→IC pair is not conservative for a cap elected beyond the radius, which can walk into another chip's radius past the limit (run 32's C26). The population (which caps, graded or beyond the radius) is fixed once at state build (`floorplan.tether_pairings`) |
 | `legality` | yes | — | no | a whole-board aggregate against a BUDGET, so a per-pose form is non-local: whether A's move is admissible would depend on B's violation |
+| `pins_to_edge` | yes | — | no | always-WARN advice for a reviewer: the exit gate never counts it, and the gate holds only what the exit gate counts |
 | `array_formation` | yes | stage 2.45 (#1051) | **by construction** | a declared array is a RIGID group in the quench: it only translates, its members sit out the single-part nudge and cross-member swaps, and a member leaves only through a release disclosed in `rigid_released`. The seeder owns the shared rotation |
-| `proximity` | yes | — | **yes** (#1043) | — armed by a non-empty `proximity[]`. One term per reach the rule reports (per declared subject pad, or one for the pair), measured by CALLING `floorplan.proximity_reaches` (pad edge) or `drawn_body_rect` (body) on the posed footprints. A move of either ref is checked |
+| `fixed_poses[]` (anchor `fixed:<ref>`) | yes, as `zone_containment` on the anchor | stage 0 (#1054): the exact pose, checked, never searched | **by freezing** | stage 0 stamps the seated part `(locked yes)`, so no move reaches it |
+| `proximity` | yes | — | **yes** (#1043) | — armed by a non-empty `proximity[]` at error severity. One term per reach the rule reports (per declared subject pad, or one for the pair), measured by CALLING `floorplan.proximity_reaches` (pad edge) or `drawn_body_rect` (body) on the posed footprints. A move of either ref is checked |
 
 The two zone rows reach the seat search by **different channels**, and the
 difference is the reason one of them could be gated and the other could not.
@@ -1008,8 +1053,12 @@ grader's own rect at the declared pose, rounded outward, and is graded by
 `zone_containment` at a fixed ERROR. The `mech:` prefix is reserved in plans.
 
 - The anchor itself does not check a lock. P1 requires each such ref that
-  carries pads to be FILE-locked at its pose; the seeder treats a locked part
-  as placed, so an anchor is graded and never seated.
+  carries pads to be FILE-locked at its pose, or named -- unlocked, at that
+  pose -- by the plan's `fixed_poses[]`, which the seeder's stage 0 seats and
+  locks (#1054). `--emit-intent` compiles such an entry for every anchored
+  ref no edge connector, `must_lock` pattern or brief pose already claims
+  (`context.mechanical.fixed_poses` / `fixed_skipped`). A file-locked part is
+  placed already, and its anchor is only graded.
 - `mechanical_drift` reports any mechanical ref, locked or not, that moved or
   turned away from its declaration. It is an ERROR for a turn, which no anchor sees, and for any
   drift of a pad-less ref, which has no anchor -- and a plan's `severity` map
@@ -1449,7 +1498,12 @@ beyond-cap, where last and farthest are the same cap.
 It is not a grading-only knob, which is why it is opt-in, default off, and on
 its own flag rather than folded into `--declare-classes`. `place_seed` reads
 `decaps.max_distance_mm` and, when it is set, pulls every two-net-bearing-pad
-`C*` out of radial zone packing into its per-supply-pin stage. Measured:
+`C*` out of radial zone packing into its per-supply-pin stage. It also arms
+stage 2.4, which seats the ICs those caps serve (and whatever outranks the
+caps) BEFORE the pin stage, since the pin stage reads its pins off ICs already
+placed and on an unzoned seed used to claim nothing (#1053; its count and,
+when it claims none, its reason are in `decap_stage`). At error severity it
+also arms the quench's per-move tether (#1043, above). Measured:
 
 | board | in scope | graded | beyond the radius | no rail-carrying chip | predicate |
 |---|---|---|---|---|---|

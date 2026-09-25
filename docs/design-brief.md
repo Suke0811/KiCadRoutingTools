@@ -352,7 +352,9 @@ to carry the part as fixed without one); `rot` and `side` may be `"unknown"`,
 which is reported as a declared unknown. The row compiles to an intent
 `fixed_poses[]` entry with `basis: "declared"` and `min_reader` 7, which the
 grade anchors exactly as it anchors a `mechanical.json` pose (the
-`fixed_poses[]` section of [floorplan-intent.md](floorplan-intent.md)); its
+`fixed_poses[]` section of [floorplan-intent.md](floorplan-intent.md)) and
+the seeder's stage 0 SEATS: exactly at that pose, refused with its reasons and
+never nudged when the pose is illegal, and stamped `(locked yes)`. Its
 clause id is `fixed[REF].pose`, graded by that anchor. A ref with a pose that
 is also a declared `interfaces[]` row is refused by name: the interface
 compiles to an edge connector the seeder seats at its band, and a pose seats it
@@ -388,7 +390,11 @@ later tool can see it; only a `pose` reaches an engine, through `fixed_poses[]`.
 The same row the intent's `arrays[]` carries, plus the prose slot
 `requirement` -- validated by the INTENT's own loader, so a row the brief
 accepts is a row the compiled intent loads. It compiles 1:1, with `min_reader`
-7, and is graded by `array_formation`. `serves` and `order` may be
+7, is graded by `array_formation`, is seated whole by the seeder (stage 2.45)
+and moves in the quench as a rigid group (a member leaves only by a
+disclosed release). Which rows to declare is the
+author's decision: `check_floorplan --suggest-arrays` lists candidates with
+their evidence, and the ones it `declined` with why. `serves` and `order` may be
 `"unknown"` (the author looked and does not know), `rotation` too; each is
 reported as a declared unknown, apart from a key nobody wrote. Clause ids are
 `arrays[NAME].members` / `.serves` / `.order` / `.rotation` / `.pitch_mm` /
