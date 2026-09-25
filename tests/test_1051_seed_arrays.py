@@ -194,6 +194,226 @@ def test_glasgow_resistor_pair_and_buffer_bank_are_formed():
           f"rows formed, {len(res['array_unseated'])} not seated as rows")
 
 
+def _host_pin_along(pcb, host, members, axis):
+    """{member: coordinate ALONG `axis` of the host pads it reaches by its
+    own nets} on a written board -- the same own-net reading `_seat_array`
+    uses, re-derived here from the file."""
+    fps = pcb.footprints
+    nets = {m: {p.net_id for p in fps[m].pads if p.net_id} for m in members}
+    out = {}
+    for m in members:
+        others = set().union(*(nets[o] for o in members if o != m))
+        own = nets[m] - others
+        pts = [(p.global_x, p.global_y) for p in fps[host].pads
+               if p.net_id and p.net_id in own]
+        if pts:
+            k = 0 if axis == 'x' else 1
+            out[m] = sum(q[k] for q in pts) / len(pts)
+    return out
+
+
+def test_row_runs_the_way_its_host_pins_run():
+    """The DIRECTION, asserted explicitly (`_check_row` accepts either, so a
+    `_reverse` that never flips, or flips the wrong way, survived it --
+    phase-3 verifier). On watchy the detector's pin-order rows include
+    both a row whose pin order already runs with the axis and one that must
+    be flipped, so both mutations are reachable: for every formed pin-order
+    row, member centres increase in the listed order (the row is laid that
+    way) AND the first member's host pins lie no further along the axis
+    than the last member's."""
+    import pose_score
+    with tempfile.TemporaryDirectory() as td:
+        pcb = parse_kicad_pcb(WATCHY)
+        doc = fp.emit_intent(pcb, WATCHY, derive_arrays='auto')
+        intent, _p = _intent(doc, td)
+        _pcb, res = _seed(WATCHY, intent)
+        out = _write(WATCHY, res, td, 'w.kicad_pcb')
+        written = parse_kicad_pcb(out)
+        st = pose_score.make_state(written, out, clearance=CLEARANCE)
+        spec = {a['name']: a for a in fp.resolved_arrays(intent, pcb)}
+        kinds = set()
+        checked = 0
+        for name, rec in res['arrays_formed'].items():
+            sp = spec[name]
+            if sp['order'] != 'pin' or not sp['order_refs']:
+                continue
+            members = rec['members']
+            k = 0 if rec['axis'] == 'x' else 1
+            cen = [(st.parts[m].rect()[k] + st.parts[m].rect()[k + 2]) / 2
+                   for m in members]
+            assert cen == sorted(cen), (name, members, cen)
+            pins = _host_pin_along(written, sp['serves'], members,
+                                   rec['axis'])
+            ends = [pins[m] for m in members if m in pins]
+            assert len(ends) >= 2, (name, pins)
+            assert ends[0] <= ends[-1] + 1e-6, (
+                f"{name}: laid against its host pins {ends}")
+            ref_order = [m for m in sp['order_refs'] if m in members]
+            kinds.add('flipped' if members == ref_order[::-1]
+                      and members != ref_order else 'kept')
+            checked += 1
+        assert kinds == {'flipped', 'kept'}, (kinds, "the board no longer "
+                                              "exercises both directions")
+    print(f"  PASS: {checked} pin-order row(s) on watchy run with their "
+          f"host pins, both a kept and a flipped one among them")
+
+
+def test_sibling_recheck_reverts_a_row_whose_pads_collide():
+    """`_seat_block` checks each member with its unplaced siblings EXCLUDED,
+    so only the seated re-check (`_siblings_ok`) sees sibling PADS. A part
+    whose pads reach past its courtyard passes the pitch pre-check (which
+    is courtyard-based) and every per-member check, and must still be
+    refused when seated. Forcing the re-check True (phase-3 verifier:
+    survived) would ship two different-net pads on top of each other."""
+    board = '''(kicad_pcb
+ (version 20241229)
+ (net 0 "") (net 1 "/A") (net 2 "/B") (net 3 "/C") (net 4 "/D")
+ (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+ (gr_rect (start 0 0) (end 30 20) (layer "Edge.Cuts") (uuid "e1"))
+%s)
+'''
+    fp_t = ('''  (footprint "t:R" (layer "F.Cu") (uuid "fp-%(r)s") (at %(x)s 10)
+   (property "Reference" "%(r)s" (at 0 0 0))
+   (fp_rect (start -0.2 -0.2) (end 0.2 0.2) (layer "F.CrtYd") (uuid "c-%(r)s"))
+   (pad "1" smd rect (at -0.9 0) (size 0.8 0.8) (layers "F.Cu") (net %(a)s "/%(na)s") (uuid "%(r)s1"))
+   (pad "2" smd rect (at 0.9 0) (size 0.8 0.8) (layers "F.Cu") (net %(b)s "/%(nb)s") (uuid "%(r)s2"))
+  )
+''')
+    # Apart in the INPUT: pad legality is baseline-relative to the input
+    # poses, so two parts stacked in the file would license any overlap.
+    parts = (fp_t % dict(r='R1', x=25, a=1, na='A', b=2, nb='B')
+             + fp_t % dict(r='R2', x=5, a=3, na='C', b=4, nb='D'))
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'b.kicad_pcb')
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(board % parts)
+        doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+               'arrays': [{'name': 'pads_out', 'members': ['R1', 'R2'],
+                           'order': 'declared', 'rotation': 0,
+                           'pitch_mm': 'auto', 'axis': 'x'}]}
+        intent = fp.intent_from_dict(doc, path)
+        pcb = parse_kicad_pcb(path)
+        res = seeder.seed_from_intent(pcb, path, intent, random.Random('0'),
+                                      group_sources=(), clearance=0.2,
+                                      array_pose_cap=300)
+        assert 'pads_out' in res['array_unseated'], res['arrays_formed']
+        assert not res['arrays_formed'], res['arrays_formed']
+        out = _write(path, res, td, 'o.kicad_pcb')
+        g = grade_pad_legality(parse_kicad_pcb(out), 0.2, pcb_file=out)
+        assert g['pad_conflicts'] == 0, g
+    print(f"  PASS: a row whose pads collide only when seated is reverted "
+          f"at every anchor ({res['array_unseated']['pads_out']['poses_tried']}"
+          f" tried) and the members are seated apart, pad-clean")
+
+
+def test_formed_rows_are_immovable_to_the_eviction_rung():
+    """Since 406113056 a formed row's member is `immovable` to stage 3c,
+    labelled `array:<name>`, so the rung never lifts one member out of its
+    row. Observed through the census the rung records: a part that cannot
+    be seated beside a formed row names the members as FROZEN by the row,
+    not as liftable blockers."""
+    board = '''(kicad_pcb
+ (version 20241229)
+ (net 0 "") (net 1 "/A") (net 2 "/B") (net 3 "/C")
+ (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+ (gr_rect (start 0 0) (end 9 4) (layer "Edge.Cuts") (uuid "e1"))
+ (footprint "t:R" (layer "F.Cu") (uuid "fp-R1") (at 4 2)
+  (property "Reference" "R1" (at 0 0 0))
+  (fp_rect (start -0.8 -0.5) (end 0.8 0.5) (layer "F.CrtYd") (uuid "c1"))
+  (pad "1" smd rect (at -0.4 0) (size 0.5 0.6) (layers "F.Cu") (net 1 "/A") (uuid "a1"))
+  (pad "2" smd rect (at 0.4 0) (size 0.5 0.6) (layers "F.Cu") (net 3 "/C") (uuid "a2")))
+ (footprint "t:R" (layer "F.Cu") (uuid "fp-R2") (at 4 2)
+  (property "Reference" "R2" (at 0 0 0))
+  (fp_rect (start -0.8 -0.5) (end 0.8 0.5) (layer "F.CrtYd") (uuid "c2"))
+  (pad "1" smd rect (at -0.4 0) (size 0.5 0.6) (layers "F.Cu") (net 2 "/B") (uuid "b1"))
+  (pad "2" smd rect (at 0.4 0) (size 0.5 0.6) (layers "F.Cu") (net 3 "/C") (uuid "b2")))
+ (footprint "t:BIG" (layer "F.Cu") (uuid "fp-X1") (at 4 2)
+  (property "Reference" "X1" (at 0 0 0))
+  (fp_rect (start -3.6 -1.6) (end 3.6 1.6) (layer "F.CrtYd") (uuid "c3"))
+  (pad "1" smd rect (at 0 0) (size 0.5 0.5) (layers "F.Cu") (net 3 "/C") (uuid "x1")))
+)
+'''
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'b.kicad_pcb')
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(board)
+        doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+               'arrays': [{'name': 'r', 'members': ['R1', 'R2'],
+                           'order': 'declared', 'rotation': 0,
+                           'pitch_mm': 'auto', 'axis': 'x'}]}
+        intent = fp.intent_from_dict(doc, path)
+        res = seeder.seed_from_intent(parse_kicad_pcb(path), path, intent,
+                                      random.Random('0'), group_sources=(),
+                                      clearance=0.2, board_edge_clearance=0.1,
+                                      evict_depth=1)
+        assert 'r' in res['arrays_formed'], res['array_unseated']
+        assert 'X1' in res['unseated'], res['unseated']
+        frozen = (res['no_pose_census'].get('X1') or {}).get('frozen') or {}
+        assert frozen.get('R1') == 'array:r' and frozen.get('R2') == 'array:r', \
+            res['no_pose_census'].get('X1')
+        assert not [e for e in res['evictions'] if e.get('accepted')], \
+            res['evictions']
+    print(f"  PASS: the rung reports the row's members frozen by the row "
+          f"({frozen}) and evicts neither")
+
+
+def test_anchor_rounds_leave_a_formed_row_whole():
+    """Since 406113056 the `--anchors-first` rounds skip a formed row's
+    members: the rounds re-seat ONE part at a time toward its partners,
+    which pulls a row apart. Graded by the GRADER on the written board.
+    watchy seed 1: round 2 is KEPT and re-seats 48 parts, so the rounds do
+    reach the board (a reverted round would leave nothing to test; every
+    splitflap seed 0-3 reverts)."""
+    with tempfile.TemporaryDirectory() as td:
+        pcb = parse_kicad_pcb(WATCHY)
+        doc = fp.emit_intent(pcb, WATCHY, derive_arrays='auto')
+        intent, _p = _intent(doc, td)
+        _pcb, res = _seed(WATCHY, intent, seed='1', anchors_first=True,
+                          anchor_rounds=3)
+        rounds = [n for n in res['notes'] if n.startswith('anchor round')]
+        assert rounds and 'REVERTED' not in rounds[0], rounds
+        moved = int(rounds[0].split(':')[1].split('part')[0])
+        assert moved > 0, rounds      # the rounds DID move parts
+        out = _write(WATCHY, res, td, 'w.kicad_pcb')
+        graded = _graded_rows(intent, out)
+        assert res['arrays_formed']
+        for name in res['arrays_formed']:
+            assert graded[name]['formed'] is True, (name, graded[name])
+    print(f"  PASS: {len(res['arrays_formed'])} rows stay formed through "
+          f"the anchor rounds ({rounds[0]})")
+
+
+def test_early_seat_scope_keeps_the_parts_the_control_seats():
+    """Stage 2.4's two widenings, each against the part it exists for:
+    the pin-tier (esp_prog's 7-pin CON2, stranded on every seed when only
+    the owner ICs were seated first) and the size rule (tigard's 1-pin M3
+    holes, which the caps' early seats crowded out). Paired with the
+    unarmed control on the same seeds; `tier_first` counts them."""
+    with tempfile.TemporaryDirectory() as td:
+        got = {}
+        for board, seeds in ((ESP, range(4)), (os.path.join(
+                BOARDS, 'tigard.kicad_pcb'), (1, 2))):
+            doc = fp.emit_intent(parse_kicad_pcb(board), board,
+                                 derive_decaps=True)
+            off = dict(doc, decaps={})
+            on_i, _p = _intent(doc, td, 'on.json')
+            off_i, _p = _intent(off, td, 'off.json')
+            tot_on = tot_off = 0
+            for s in seeds:
+                _p1, on = _seed(board, on_i, seed=str(s))
+                _p2, ctl = _seed(board, off_i, seed=str(s))
+                assert on['decap_stage']['tier_first'] > 0, on['decap_stage']
+                assert on['decap_stage']['claimed'] > 0, on['decap_stage']
+                tot_on += len(on['unseated'])
+                tot_off += len(ctl['unseated'])
+                if board == ESP:
+                    assert 'CON2' not in on['unseated'], (s, on['unseated'])
+            assert tot_on <= tot_off, (board, tot_on, tot_off)
+            got[os.path.basename(board)] = (tot_on, tot_off)
+    print(f"  PASS: armed vs control stranded parts {got}; CON2 always "
+          f"seated")
+
+
 def test_unseatable_row_is_disclosed_and_falls_through():
     with tempfile.TemporaryDirectory() as td:
         doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
@@ -480,6 +700,11 @@ def test_unarmed_seeds_are_identical_to_the_pre_phase3_seeder():
 TESTS = [
     test_splitflap_u4_row_is_formed,
     test_glasgow_resistor_pair_and_buffer_bank_are_formed,
+    test_row_runs_the_way_its_host_pins_run,
+    test_sibling_recheck_reverts_a_row_whose_pads_collide,
+    test_formed_rows_are_immovable_to_the_eviction_rung,
+    test_anchor_rounds_leave_a_formed_row_whole,
+    test_early_seat_scope_keeps_the_parts_the_control_seats,
     test_unseatable_row_is_disclosed_and_falls_through,
     test_pose_cap_trips_and_says_so,
     test_decaps_armed_claims_caps_on_splitflap_and_watchy,
