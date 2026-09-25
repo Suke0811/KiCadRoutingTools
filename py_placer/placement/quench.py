@@ -74,7 +74,7 @@ EPS_IMPROVE = 1e-6
 #:
 #: The three TETHER rules (#1043) are enforced through a separate channel,
 #: `QuenchState._tether_terms`, because they are part-vs-PART: each is
-#: measured by CALLING the grader's own function (`groups.tether_distance`,
+#: measured by CALLING the grader's own function (`groups.elect_live`,
 #: `floorplan.nearest_rail_cap`, `floorplan.proximity_reaches`) on footprints
 #: posed at the live poses, over pairings `floorplan.tether_pairings` elects
 #: once. Each is armed only by its own declared limit at error severity.
@@ -125,7 +125,8 @@ class _TetherTerm(NamedTuple):
     """One declared part-vs-part claim, frozen at state construction (#1043).
 
     `refs` is every ref whose pose the measurement reads, so a move of ANY of
-    them is checked against it: a cap's move and its IC's move, both halves
+    them is checked against it: a cap's move and the move of any chip on its
+    rail (the decap term re-elects among them per pose), both halves
     of a swap, a proximity subject and its partner. One term per claim the
     grade can report ONCE -- a (cap, IC) pair, an (IC, supply pin), a
     proximity subject pad (or the pair, when no pads are declared) -- so the
@@ -1009,9 +1010,11 @@ class QuenchState:
         # them invalidates it (both caches are cleared on every move).
         #
         # The pairings are elected ONCE, here, by `floorplan.tether_pairings`
-        # -- the grader's own election on the board as it stands -- and every
+        # -- the grader's own election on the board as it stands; a decap
+        # term re-runs the cap's election per pose over the chips on its
+        # rail, because the grade re-elects -- and every
         # value is measured by CALLING the grader's functions on footprints
-        # posed at the live (or candidate) poses: `groups.tether_distance`,
+        # posed at the live (or candidate) poses: `groups.elect_live`,
         # `floorplan.nearest_rail_cap`, `floorplan.proximity_reaches`.
         #
         # Empty unless the intent declares a tether limit at error severity,
@@ -1021,6 +1024,7 @@ class QuenchState:
         self._inc_tval: Dict[int, float] = {}
         self._tgap: Dict[Tuple, object] = {}
         self._posed: Dict[Tuple, object] = {}
+        self._bounds: Dict[Tuple, object] = {}
         self._tether_override: Optional[Dict[str, Tuple[float, float,
                                                         float]]] = None
         self._tether_bodies = None
@@ -2081,6 +2085,7 @@ class QuenchState:
             if rule == 'decap_distance':
                 terms.append(_TetherTerm(rule, name, refs, lim, 'decap', {
                     'cap': row['cap'], 'ic': row['ic'],
+                    'rail': tuple(row['rail']),
                     'graded': row['graded'], 'radius': row['radius']}))
             elif rule == 'decap_pin_distance':
                 terms.append(_TetherTerm(rule, name, refs, lim, 'pin', {
@@ -2129,6 +2134,20 @@ class QuenchState:
             self._posed[key] = fp
         return fp
 
+    def _chip_bounds(self, ref, override=None):
+        """`groups.chip_bounds_of` for `ref` at its live (or overridden)
+        pose, cached by pose like `_posed_fp`."""
+        pose = self._pose_of(ref, override)
+        key = (ref,) + tuple(pose)
+        b = self._bounds.get(key)
+        if b is None:
+            if len(self._bounds) > 16384:
+                self._bounds.clear()
+            from . import groups as _groups
+            b = _groups.chip_bounds_of(self._posed_fp(ref, override))
+            self._bounds[key] = b
+        return b
+
     def _tether_value(self, i: int, override=None) -> float:
         """Term `i` measured with `override` poses over the live board.
 
@@ -2143,16 +2162,24 @@ class QuenchState:
         t = self._tether_terms[i]
         moving = set(override or ())
         if t.kind == 'decap':
-            d = _groups.tether_distance(
+            # The grade's LIVE election: the nearest chip on the cap's rail at
+            # these poses, not the IC elected at state build. A cap elected
+            # beyond the radius of one IC can walk into the radius of another
+            # (run 32: C26, 7.20mm from U15, walked to 3.07mm from U36), and
+            # a frozen pair would read that move as clean.
+            _ic, d = _groups.elect_live(
                 self._posed_fp(t.data['cap'], override),
-                self._posed_fp(t.data['ic'], override))
+                [(r, self._chip_bounds(r, override))
+                 for r in t.data['rail']])
             if d is None:
                 return 0.0
             if not t.data['graded'] and d > t.data['radius'] + legality.EPS:
                 # Outside the radius the grade calls it `decap_ungraded`
                 # (warn): not a finding this term counts. INSIDE it is graded,
                 # so a pair elected beyond the radius may not walk in past
-                # the limit -- that would be a new error the grade sees.
+                # the limit -- that would be a new error the grade sees. A
+                # pair graded at build stays measured beyond it: leaving the
+                # radius is not how a cap may stop being too far.
                 return 0.0
             return d
         if t.kind == 'pin':

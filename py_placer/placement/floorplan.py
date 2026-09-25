@@ -2424,13 +2424,17 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
 
     Each pairing is the grader's own: `decap_distance` from
     `groups.decap_populations` at the rule's radius (the election
-    `rule_decap_distance` reads through `_Ctx.decap_populations`), the pins
+    `rule_decap_distance` reads through `_Ctx.decap_populations`) -- with
+    the chips on the cap's rail (`groups.rail_chips`), because the grade
+    RE-ELECTS on the board it is handed and the gate must hold the pair it
+    will elect, not the one elected here -- the pins
     and caps of `decap_pin_distance` from `supply_pins` and `decap_pin_caps`,
     and a proximity claim's refs as `rule_proximity` resolves them. Frozen
-    here because the grade re-elects on the board it is handed: a quench that
-    re-elected per pose could walk a cap to a DIFFERENT IC and call the move
-    clean. A frozen pairing is conservative -- re-election can only choose a
-    nearer chip carrying the rail.
+    here, except `decap_distance`'s: its term re-runs the election per pose
+    (`groups.elect_live` over `rail`), since a frozen cap->IC pair is NOT
+    conservative for a pair elected beyond the radius -- measured on run 32,
+    C26 elected to U15 at 7.20mm (ungraded) walked to 3.07mm from U36 and
+    the grade charged a NEW error the frozen term read as 0.
 
     What is left out, each graded elsewhere or not pose-dependent:
       * exempt caps (`decaps.exempt`), as the rules skip them;
@@ -2459,10 +2463,11 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
         for cap, ic, graded in sorted(rows):
             if any(fnmatch.fnmatch(cap, p) for p in dd['exempt']):
                 continue
+            rail = tuple(groups_mod.rail_chips(pcb_data, cap))
             out.append({'rule': 'decap_distance', 'name': f"{cap}->{ic}",
-                        'refs': (cap, ic), 'cap': cap, 'ic': ic,
-                        'graded': graded, 'limit': dd['limit'],
-                        'radius': dd['radius']})
+                        'refs': (cap,) + rail, 'cap': cap, 'ic': ic,
+                        'rail': rail, 'graded': graded,
+                        'limit': dd['limit'], 'radius': dd['radius']})
     dp = tethers.get('decap_pin_distance')
     if dp:
         spec = dp['decaps']

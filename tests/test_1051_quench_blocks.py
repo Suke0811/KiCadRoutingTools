@@ -501,17 +501,22 @@ def test_tether_terms_equal_the_grader_on_every_pair():
         assert over.get(rule, 0) == sum(1 for v in errs if v.rule == rule), \
             (rule, over)
 
-    # Perturbed poses: move ICs and caps IN THE STATE, pose the board the way
-    # `floorplan.PoseGrader` does, and grade that. Every pair the grade still
-    # elects the same way reads equal; a re-elected one never reads LOWER in
-    # the gate than in the grade (a frozen pairing is conservative).
+    # Perturbed poses: move ICs and caps IN THE STATE -- every cap elected
+    # BEYOND the radius among them -- pose the board the way
+    # `floorplan.PoseGrader` does, and ask the grader's own election on it.
+    # Every decap term equals it: a pair graded at build reads the live
+    # distance, one elected beyond the radius reads it once inside the
+    # radius and 0 outside (the grade's `decap_ungraded`).
     import random
+    from placement import groups as _groups
     rng = random.Random(1043)
-    movers = sorted({t.data['cap'] for t in st._tether_terms
-                     if t.rule == 'decap_distance'}
-                    | {t.data['ic'] for t in st._tether_terms
-                       if t.rule == 'decap_distance'})
-    for ref in rng.sample(movers, 25):
+    dterms = [t for t in st._tether_terms if t.rule == 'decap_distance']
+    ungraded = sorted({t.data['cap'] for t in dterms if not t.data['graded']})
+    assert ungraded, "no cap elected beyond the radius: the arm is vacuous"
+    movers = sorted({t.data['cap'] for t in dterms}
+                    | {t.data['ic'] for t in dterms})
+    moved = sorted(set(rng.sample(movers, 25)) | set(ungraded))
+    for ref in moved:
         p = st.parts[ref]
         st.apply_move(ref, p.x + rng.uniform(-3, 3), p.y + rng.uniform(-3, 3),
                       p.rot)
@@ -520,18 +525,89 @@ def test_tether_terms_equal_the_grader_on_every_pair():
     gdd, gdp, gpx = _term_readings(st, limit)
     assert wdp == gdp, sorted(set(wdp) ^ set(gdp))[:6]
     assert wpx == gpx, (wpx, gpx)
-    frozen = {(c, i): d for c, i, d in gdd}
-    same = [(c, i, d) for c, i, d in wdd if (c, i) in frozen]
-    assert all(frozen[(c, i)] == d for c, i, d in same)
-    moved_ic = {c: i for c, i, _d in wdd}
-    for (c, i), d in frozen.items():
-        if moved_ic.get(c) not in (None, i):
-            gd = next(x for cc, ii, x in wdd if cc == c)
-            assert d >= gd - 1e-4, (c, i, d, gd)
+    radius = dterms[0].data['radius']
+    live = {cap: d for cap, _ic, d in _groups._elect_tethers(view)}
+    n_in = 0
+    for i, t in enumerate(st._tether_terms):
+        if t.rule != 'decap_distance':
+            continue
+        d = live[t.data['cap']]
+        want_v = d if (t.data['graded'] or d <= radius + 1e-9) else 0.0
+        n_in += (not t.data['graded']) and d <= radius
+        assert abs(st._tether_value(i) - want_v) < 1e-9, (t.name, d, want_v)
     print(f"  PASS: {len(want[0])} cap->IC distances, {len(want[1])} supply "
           f"pins and {len(want[2])} proximity reaches equal the grade; after "
-          f"25 perturbed moves {len(same)} same-election pairs equal and the "
-          f"re-elected {len(frozen) - len(same)} read no lower")
+          f"{len(moved)}-part perturbation every decap "
+          f"term ({len(dterms)}, {len(ungraded)} elected beyond the radius, "
+          f"{n_in} of them now inside it) equals the grader's live election")
+
+
+def test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics():
+    """#1043 verifier's C26 case, on a tracked board. Run 32: C26 was elected
+    to U15 at 7.20mm (beyond the 5mm radius, so ungraded), the quench walked
+    it to 3.07mm from U36, and the grade charged a NEW decap_distance error.
+    Here: a glasgow cap elected beyond the radius is offered a pose 3.0mm
+    from a DIFFERENT chip on its rail (limit 2.5): the gate refuses it, and
+    the grader on that pose does charge the error."""
+    from placement import groups as _groups
+    board = _glasgow_unlocked()
+    pcb = parse_kicad_pcb(board)
+    intent = fp.load_intent(RUN32_INTENT)
+    _p, _i, gate, st = _glasgow_state(intent, pcb, board)
+    base = {(v.rule, v.ref) for v in fp.grade(
+        intent, pcb, board, group_sources=('kicad', 'sheet'),
+        clearance=CLEARANCE).errors}
+    case = None
+    for t in st._tether_terms:
+        if t.rule != 'decap_distance' or t.data['graded']:
+            continue
+        cap, ic = t.data['cap'], t.data['ic']
+        if ('decap_distance', cap) in base:
+            continue
+        cfp = st._posed_fp(cap)
+        cx, cy = _groups._centroid(cfp)
+        p = st.parts[cap]
+        ib = st._chip_bounds(ic)
+        rail = [(r, st._chip_bounds(r)) for r in t.data['rail']]
+        lim, rad = t.threshold, t.data['radius']
+        for other in t.data['rail']:
+            if other == ic:
+                continue
+            b = st._chip_bounds(other)
+            mx, my = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+            # A centroid off a side of the other chip's inflated bbox whose
+            # LIVE election lands in (limit, radius] -- a new error -- while
+            # the frozen IC is beyond the radius, so the frozen pair would
+            # have read the pose as 0.
+            for off in (3.0, 3.5, 4.0, 4.5):
+                for tx, ty in ((b[2] + off, my), (b[0] - off, my),
+                               (mx, b[3] + off), (mx, b[1] - off)):
+                    _w, d = _groups.nearest_chip((tx, ty), rail)
+                    if (lim + 0.2 < d <= rad - 0.2 and
+                            _groups._point_to_bounds((tx, ty), ib) > rad):
+                        case = (cap, ic, _w,
+                                (p.x + tx - cx, p.y + ty - cy, p.rot))
+                        break
+                if case:
+                    break
+            if case:
+                break
+        if case:
+            break
+    assert case, "no ungraded cap with a second chip on its rail"
+    cap, ic, other, pose = case
+    fails = st.tether_failures({cap: pose})
+    assert any(f[0] == 'decap_distance' for f in fails), fails
+    st.apply_move(cap, *pose)
+    view = fp._PosedState(st).board()
+    after = fp.grade(intent, view, board, group_sources=('kicad', 'sheet'),
+                     clearance=CLEARANCE).errors
+    hit = [v for v in after if v.rule == 'decap_distance' and v.ref == cap]
+    assert hit and hit[0].measured['ic'] == other, [
+        (v.ref, v.measured) for v in hit]
+    print(f"  PASS: {cap} (elected to {ic} beyond the radius) offered "
+          f"{hit[0].measured['distance_mm']}mm from {other}: the gate refuses, "
+          f"and the grade there charges the new error")
 
 
 def _run(script, args):
@@ -624,6 +700,7 @@ TESTS = [
     test_a_ref_in_two_groups_is_deduped_and_disclosed,
     test_an_ic_that_would_strand_its_caps_is_refused_the_cluster_moves,
     test_tether_terms_equal_the_grader_on_every_pair,
+    test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics,
     test_every_caller_hands_the_quench_the_resolved_rows_and_tethers,
     test_unarmed_quench_is_bit_identical_to_the_pre_phase4_quench,
 ]
