@@ -920,7 +920,47 @@ def test_two_pad_parts_are_the_same_turned_180():
           "conflict check); three-pad members do not")
 
 
+def test_emit_never_fixes_an_array_member_from_mechanical_json():
+    """Review item 2: `--emit-intent` compiled a mechanical.json pose into
+    `fixed_poses[]` for a ref the brief declares as an ARRAY member, and the
+    tool's own loader then refused the intent ("member R3 has a
+    `fixed_poses` entry") -- emit exit 0, grade exit 2. A member is now a
+    CLAIMED ref: skipped by name in `fixed_skipped`, and the emitted intent
+    loads and grades."""
+    pcb = _pcb(ESP)
+    f = pcb.footprints
+    with tempfile.TemporaryDirectory() as tmp:
+        mpath = os.path.join(tmp, 'mechanical.json')
+        with open(mpath, 'w', encoding='utf-8') as fh:
+            json.dump({'kind': 'mechanical-declaration', 'schema': 1,
+                       'refs': {r: [f[r].x, f[r].y, f[r].rotation or 0]
+                                for r in ('R3', 'R4')},
+                       'reasons': {'R3': 't', 'R4': 't'}}, fh)
+        bpath = os.path.join(tmp, 'brief.json')
+        with open(bpath, 'w', encoding='utf-8') as fh:
+            json.dump(dict(BRIEF, arrays=[{
+                'name': 'uart', 'members': ['R3', 'R4'], 'serves': 'U1',
+                'order': 'pin', 'rotation': 'shared'}]), fh)
+        out = os.path.join(tmp, 'emitted.json')
+        check([sys.executable, '-X', 'utf8', CHECK_FLOORPLAN, ESP,
+               '--emit-intent', out, '--brief', bpath, '--mechanical', mpath,
+               '--quiet'], accept=True)
+        with open(out, encoding='utf-8') as fh:
+            doc = json.load(fh)
+        refs = {x['ref'] for x in doc.get('fixed_poses') or ()}
+        assert not refs & {'R3', 'R4'}, refs
+        skipped = doc['context']['mechanical']['fixed_skipped']
+        for r in ('R3', 'R4'):
+            assert skipped.get(r) == "a member of array 'uart'", skipped
+        fp.load_intent(out)          # the loader accepts what emit wrote
+        check([sys.executable, '-X', 'utf8', CHECK_FLOORPLAN, ESP,
+               '--intent', out, '--quiet'], accept=True)
+    print("  PASS: R3/R4 (array members) are skipped from mechanical "
+          "fixed_poses by name, and the emitted intent loads and grades")
+
+
 TESTS = [
+    test_emit_never_fixes_an_array_member_from_mechanical_json,
     test_the_new_keys_load_and_land_on_the_intent,
     test_every_load_refusal_carries_its_reason,
     test_a_reader_6_file_still_loads_and_a_reader_7_claim_refuses_old,

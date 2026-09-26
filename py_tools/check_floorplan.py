@@ -556,6 +556,14 @@ def main(argv=None):
             for _f in doc.get('fixed_poses') or ():
                 _claimed.setdefault(str(_f.get('ref')),
                                     'the design brief fixes its pose')
+            # An ARRAY member moves with its row, and the loader refuses a
+            # member that also has a fixed pose -- so a mechanical pose for
+            # one is skipped, by name, rather than emitted into an intent
+            # this tool's own loader then refuses (review item 2).
+            for _a in doc.get('arrays') or ():
+                for _m in _a.get('members') or ():
+                    _claimed.setdefault(str(_m), f"a member of array "
+                                                 f"{_a.get('name')!r}")
             _fixed, _fskip = _rc.mechanical_fixed_poses(
                 mech, _ctx['mechanical']['anchored'], claimed=_claimed)
             _ctx['mechanical']['fixed_poses'] = sorted(
