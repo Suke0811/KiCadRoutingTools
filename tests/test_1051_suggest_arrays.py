@@ -841,7 +841,12 @@ TESTS = [
 
 
 if __name__ == '__main__':
+    # A name filter (substring), so a mutation battery can run one test;
+    # the battery checks each name it asked for printed its `---` line.
+    only = sys.argv[1:]
     for t in TESTS:
+        if only and not any(o in t.__name__ for o in only):
+            continue
         print(f"--- {t.__name__}")
         t()
     print('ALL PASS')
