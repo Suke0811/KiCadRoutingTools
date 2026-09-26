@@ -959,7 +959,57 @@ def test_emit_never_fixes_an_array_member_from_mechanical_json():
           "fixed_poses by name, and the emitted intent loads and grades")
 
 
+def test_the_ledger_fails_a_fixed_pose_only_on_its_anchor():
+    """Review item 5. The ledger's `fixed[REF].pose` clause failed on ANY
+    zone_containment error for the ref -- a zone its block declares is a
+    different clause. U4 fixed at its own board pose (the anchor holds) and
+    in a zoned block far away (the zone fails): the pose clause PASSES and
+    the zone's finding stays the zone's. plan_check also WARNS, before any
+    write, that the fixed pose lies outside its own block's zone."""
+    u = _pcb().footprints['U4']
+    b = _brief(fixed=[{'ref': 'U4', 'pose': {'x': u.x, 'y': u.y,
+                                             'rot': u.rotation or 0}}])
+    frag, rep = db.compile_brief(b, board_refs=sorted(_pcb().footprints))
+    raw = _base(fixed_poses=frag['fixed_poses'], min_reader=7,
+                blocks=[{'name': 'far', 'refs': ['U4'],
+                         'zone': [0.0, 0.0, 5.0, 5.0]}])
+    it = fp.intent_from_dict(raw)
+    res = fp.grade(it, _pcb(), SPLITFLAP, with_roster=True,
+                   brief_fragment=frag)
+    zc = [v for v in res.violations if v.rule == 'zone_containment'
+          and v.ref == 'U4']
+    assert [v.block for v in zc] == ['far'], [(v.block, v.message)
+                                             for v in zc]
+    cov = db.clause_coverage(rep, raw, rules_run=res.rules_run)
+    led = fp.declaration_ledger(it, res.roster, result=res, coverage=cov)
+    row = [x for x in led if x['id'] == 'fixed[U4].pose']
+    assert row and row[0]['status'] == 'graded_pass', row
+    # Control: the pose itself moved 5mm -- the anchor fails, and so does
+    # the clause.
+    moved = json.loads(json.dumps(raw))
+    moved['fixed_poses'][0]['x'] = u.x + 5.0
+    it2 = fp.intent_from_dict(moved)
+    res2 = fp.grade(it2, _pcb(), SPLITFLAP, with_roster=True,
+                    brief_fragment=frag)
+    led2 = fp.declaration_ledger(it2, res2.roster, result=res2,
+                                 coverage=db.clause_coverage(
+                                     rep, moved, rules_run=res2.rules_run))
+    row2 = [x for x in led2 if x['id'] == 'fixed[U4].pose']
+    assert row2 and row2[0]['status'] == 'graded_fail', row2
+    # plan_check: the declared pose is outside its own block's zone.
+    found, _meas = fp.plan_check(it, _pcb(), SPLITFLAP)
+    w = [v for v in found if v.rule == 'plan_fixed_outside_zone'
+         and v.ref == 'U4']
+    assert len(w) == 1 and w[0].severity == fp.WARN, [
+        (v.rule, v.ref, v.severity) for v in found]
+    assert "fixed pose" in w[0].message and "'far'" in w[0].message, \
+        w[0].message
+    print("  PASS: a zone failure is not the fixed-pose clause's; a moved "
+          "pose is; plan_check warns the pose is outside its own zone")
+
+
 TESTS = [
+    test_the_ledger_fails_a_fixed_pose_only_on_its_anchor,
     test_emit_never_fixes_an_array_member_from_mechanical_json,
     test_the_new_keys_load_and_land_on_the_intent,
     test_every_load_refusal_carries_its_reason,

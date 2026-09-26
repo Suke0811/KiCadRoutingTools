@@ -6533,6 +6533,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
       4. `plan_fixed_outside_zone`: a FILE-locked member already outside its
          zone. A lock is the only thing the seeder does not move (edge claims
          and must_lock are seated), so this is a fact about the plan.
+         Also (#1054, WARN unless set) a `fixed_poses[]` entry whose DECLARED
+         pose is outside its own block's zone: stage 0 seats it exactly.
       8. `plan_fixed_overlap` (WARN, per pair) / `plan_fixed_overlap_budget`
          (ERROR): two FILE-locked parts whose courtyards overlap on a shared
          face overlap in every placement. The grade counts courtyard overlap
@@ -6593,6 +6595,46 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                          f"outside its zone: {v.message}. Nothing the seeder "
                          f"does will move it -- fix the zone or the pose"),
                 measured=v.measured, expected=v.expected))
+
+    # 4b. #1054: a FIXED POSE outside its own block's zone, at the declared
+    #     pose. Stage 0 seats the pose exactly and never moves it, so the zone
+    #     is failed from the first write -- the same contradiction row 4
+    #     names for a file lock, raised before anything is seeded. A WARN
+    #     unless the plan sets it: the author may mean the pose to win.
+    _fx = {str(f['ref']): f for f in intent.fixed_poses}
+    for z in intent.blocks:
+        if z.rect is None:
+            continue
+        tol = intent.zone_tolerance(z)
+        for ref in blocks.get(z.name, ()):
+            f = _fx.get(ref)
+            part = state.parts.get(ref)
+            if f is None or part is None:
+                continue
+            rot = f.get('rot')
+            rot = (part.rot if rot is None or rot == 'unknown'
+                   else float(rot) % 360.0)
+            r = part.rect(float(f['x']), float(f['y']), rot)
+            if zone_fits_courtyard(z.rect, r, tol):
+                esc, _axis = _rect_escape(z.rect, r)
+            else:
+                cx, cy = (r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0
+                esc, _axis = _rect_escape(z.rect, (cx, cy, cx, cy))
+            if esc > tol + 1e-9:
+                out.append(Violation(
+                    rule='plan_fixed_outside_zone',
+                    severity=intent.severity.get('plan_fixed_outside_zone',
+                                                 WARN),
+                    ref=ref, block=z.name,
+                    message=(f"{ref}'s fixed pose ({float(f['x']):g}, "
+                             f"{float(f['y']):g}) lies {esc:.2f}mm outside "
+                             f"its block {z.name!r}'s zone (tolerance "
+                             f"{tol:g}mm). Stage 0 seats the pose exactly, "
+                             f"so the zone fails from the first write -- "
+                             f"move the pose or the zone"),
+                    measured={'escape_mm': round(esc, 4),
+                              'pose': [float(f['x']), float(f['y']), rot]},
+                    expected={'zone': list(z.rect), 'tolerance_mm': tol}))
 
     # 8. two FILE-locked parts overlapping -- in every placement there is.
     fixed_gp = {p.ref: p for p in state.graded_parts() if p.ref in ctx.locked}
@@ -8310,6 +8352,10 @@ def declaration_ledger(intent: Intent, rows, *, result=None,
     # brief `arrays[NAME]` clause is judged by the array's name -- the
     # keep-out case above, one rule over.
     arr_err: set = set()
+    # #1054: a fixed pose's anchor finding is a `zone_containment` on a
+    # COMPILED anchor block (`fixed:<ref>`, or `mech:<ref>` when the file's
+    # anchor grades it) -- not any zone the ref happens to fail.
+    anchor_err: set = set()
     if result is not None:
         for v in result.violations:
             if v.severity == ERROR:
@@ -8319,6 +8365,10 @@ def declaration_ledger(intent: Intent, rows, *, result=None,
                 if v.rule in ('array_formation', 'array_unresolved',
                               'array_conflict'):
                     arr_err.add(v.block or '')
+                if v.rule == 'zone_containment' and str(
+                        v.block or '').startswith((FIXED_POSE_ANCHOR_PREFIX,
+                                                   MECHANICAL_ANCHOR_PREFIX)):
+                    anchor_err.add(v.ref or '')
             if v.rule == 'edge_connector_side':
                 side_warn.add(v.ref or '')
             if v.rule == 'edge_connector' and (v.measured or {}).get(
@@ -8338,9 +8388,11 @@ def declaration_ledger(intent: Intent, rows, *, result=None,
         if grader == 'array_formation':
             return 'graded_fail' if ref in arr_err else 'graded_pass'
         if grader == 'fixed_pose':
-            # #1054: the anchor's finding is a `zone_containment` on the ref;
-            # a pose for a ref the board lacks is `fixed_pose_unresolved`.
-            hit = ((ref or '') in by_rule_err.get('zone_containment', set())
+            # #1054: the anchor's finding is a `zone_containment` on the
+            # ref's ANCHOR block (a plain zone the ref fails is its block's
+            # clause, not this one); a pose for a ref the board lacks is
+            # `fixed_pose_unresolved`.
+            hit = ((ref or '') in anchor_err
                    or (ref or '') in by_rule_err.get('fixed_pose_unresolved',
                                                      set()))
             return 'graded_fail' if hit else 'graded_pass'
