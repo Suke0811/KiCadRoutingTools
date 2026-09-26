@@ -3465,10 +3465,12 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple]
     the searched-seat floor stage 0 refused 15 of 30 human glasgow poses,
     each "within 0.02mm".
 
-    Everything else at its normal rule: the outline (containment at the
-    board-edge margin), declared keep-outs and exclusive zones, and pad /
-    hole clearance to every obstacle (`legality_ctx.pair_shortfall`, the
-    predicate stage 1's `_shorted_by` uses).
+    Everything else at its normal rule, ABSOLUTE (a declared pose has no
+    incumbent to be "no worse than"): the outline (containment at the
+    board-edge margin), declared keep-outs and exclusive zones, #1031's
+    rule-area keep-out band (`legality_ctx.keepout_amount`), and to every
+    obstacle `legality_ctx.pair_shortfall`'s pad clearance, hole clearance,
+    pad short and cross-part pad stack -- `pads_ok`'s conjuncts, called.
 
     * `'contained'`: inside the outline, and nothing above fails.
     * `'overhang'`: the courtyard leaves the outline -- a connector or a
@@ -3503,14 +3505,35 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple]
                                     f"{w:.2f}x{h:.2f}mm ({area:.3f}mm2)")
         if ctx is not None:
             sf = ctx.pair_shortfall(ref, other, pose_a=pose, pose_b=opose)
-            if sf.pad > 1e-6 or sf.hole > 1e-6:
-                what = (f"pad clearance to {other} short by {sf.pad:.3f}mm"
-                        if sf.pad > 1e-6 else
-                        f"hole clearance to {other} short by "
-                        f"{sf.hole:.3f}mm")
-                conflicts[other] = (conflicts[other] + '; ' + what
-                                    if other in conflicts else what)
+            # `pads_ok`'s conjuncts, ABSOLUTE rather than seed-relative: a
+            # declared pose has no incumbent to be "no worse than".
+            what = []
+            if sf.pad_overlap:
+                what.append(f"pads short {other}'s (different-net copper "
+                            f"intersects)")
+            elif sf.stack:
+                what.append(f"pads stack on {other}'s copper")
+            if sf.pad > 1e-6 and not sf.pad_overlap:
+                what.append(f"pad clearance to {other} short by "
+                            f"{sf.pad:.3f}mm")
+            if sf.hole > 1e-6:
+                what.append(f"hole clearance to {other} short by "
+                            f"{sf.hole:.3f}mm")
+            if what:
+                conflicts[other] = '; '.join(
+                    ([conflicts[other]] if other in conflicts else [])
+                    + what)
     reasons.extend(conflicts[o] for o in sorted(conflicts))
+    # #1031's rule-area keep-out band, ABSOLUTE (`keepout_ok` is seed-
+    # relative, and a pile seed is no licence): pad copper the band forbids
+    # at this pose refuses it, measured in the band's own currency. Without
+    # it stage 0 seated test_1031's R2 at (37.6, 15) -- a pose place_pose
+    # refuses and grade_pad_legality reports under oob_keepout_copper_refs.
+    if ctx is not None:
+        ko = ctx.keepout_amount(ref, x, y, rot)
+        if ko > 1e-6:
+            reasons.append(f"pad copper {ko:.3f}mm into a rule-area "
+                           f"keep-out band")
     if outside:
         from .connector_geometry import (geometry_for, pad_boxes,
                                          pad_copper_outside)

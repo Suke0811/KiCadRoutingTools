@@ -1037,6 +1037,64 @@ def test_abutting_fixed_poses_seat_and_overlapping_ones_both_refuse():
           "each naming the other")
 
 
+def test_fixed_pose_obeys_the_keepout_band_and_pad_stacks_absolutely():
+    """Review item 3: stage 0 must refuse what `pads_ok` refuses, ABSOLUTE
+    rather than seed-relative -- #1031's rule-area keep-out band and a
+    cross-part pad STACK were missing. (a) test_1031's R2 at (37.6, 15) puts
+    pad 2 in the band (place_pose refuses it; grade_pad_legality reports it)
+    and was seated 'contained'; (30, 15) is the clear control. (b) Two
+    declared parts whose courtyards do not touch but whose SAME-net pads
+    lie on each other: no clearance shortfall (same net), but a stack, and
+    both declarations are refused."""
+    import test_1031_keepout_legality as t1031
+    with tempfile.TemporaryDirectory() as td:
+        bd = os.path.join(td, 'ko.kicad_pcb')
+        with open(bd, 'w', encoding='utf-8') as fh:
+            fh.write(t1031.board_text(t1031.default_parts()))
+        got = {}
+        for x in (37.6, 30.0):
+            doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+                   'fixed_poses': [{'ref': 'R2', 'x': x, 'y': 15.0,
+                                    'rot': 0, 'basis': 'declared'}]}
+            got[x] = seeder.seed_from_intent(
+                parse_kicad_pcb(bd), bd, fp.intent_from_dict(doc, bd),
+                random.Random('0'), group_sources=(), clearance=0.2)
+        why = got[37.6]['fixed_refused']['R2']['reason']
+        assert 'mm into a rule-area keep-out band' in why, why
+        assert got[30.0]['fixed_seated']['R2']['how'] == 'contained', got[30.0]
+
+        part = """ (footprint "t:P" (layer "F.Cu") (uuid "fp-%(r)s") (at %(x)s 10)
+  (property "Reference" "%(r)s" (at 0 0 0))
+  (fp_rect (start -0.2 -0.2) (end 0.2 0.2) (layer "F.CrtYd") (uuid "c-%(r)s"))
+  (pad "1" smd rect (at -0.9 0) (size 0.8 0.8) (layers "F.Cu") (net %(a)s "/N%(a)s") (uuid "%(r)s1"))
+  (pad "2" smd rect (at 0.9 0) (size 0.8 0.8) (layers "F.Cu") (net %(b)s "/N%(b)s") (uuid "%(r)s2")))
+"""
+        nets = ''.join(' (net %d "/N%d")' % (i, i) for i in (1, 2, 3))
+        body = ('(kicad_pcb (version 20241229) (net 0 "")' + nets
+                + ' (layers (0 "F.Cu" signal) (31 "B.Cu" signal))'
+                + ' (gr_rect (start 0 0) (end 30 20) (layer "Edge.Cuts")'
+                + ' (uuid "e1"))\n'
+                + part % dict(r='A', x=5, a=1, b=2)
+                + part % dict(r='B', x=25, a=2, b=3) + ')\n')
+        sb = os.path.join(td, 'stack.kicad_pcb')
+        with open(sb, 'w', encoding='utf-8') as fh:
+            fh.write(body)
+        # A pad 2 (net 2) at 15.9; B pad 1 (net 2) at 16.8 - 0.9 = 15.9.
+        doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm', 'fixed_poses': [
+            {'ref': 'A', 'x': 15.0, 'y': 10.0, 'rot': 0, 'basis': 'declared'},
+            {'ref': 'B', 'x': 16.8, 'y': 10.0, 'rot': 0,
+             'basis': 'declared'}]}
+        res = seeder.seed_from_intent(
+            parse_kicad_pcb(sb), sb, fp.intent_from_dict(doc, sb),
+            random.Random('0'), group_sources=(), clearance=0.2,
+            board_edge_clearance=0.1)
+        assert set(res['fixed_refused']) == {'A', 'B'}, res['fixed_seated']
+        assert "pads stack on B's copper" in \
+            res['fixed_refused']['A']['reason'], res['fixed_refused']
+    print(f"  PASS: R2 into the band refused ({why}); the clear pose seats; "
+          f"a same-net pad stack refuses both declarations")
+
+
 def test_refused_fixed_pose_stays_unwritten_under_anchors_first():
     """`--anchors-first` builds its anchor queue from `unplaced` directly,
     not through `_order`, so a REFUSED fixed pose (held in `unplaced`) was
@@ -1154,6 +1212,7 @@ TESTS = [
     test_human_glasgow_rows_seat_as_fixed_poses,
     test_a_real_overlap_is_refused_with_its_measurement,
     test_abutting_fixed_poses_seat_and_overlapping_ones_both_refuse,
+    test_fixed_pose_obeys_the_keepout_band_and_pad_stacks_absolutely,
     test_refused_fixed_pose_stays_unwritten_under_anchors_first,
     test_stage1_treats_a_stage0_part_as_an_obstacle,
     test_unarmed_seeds_are_identical_to_the_pre_phase3_seeder,
