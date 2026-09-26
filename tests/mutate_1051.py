@@ -65,6 +65,24 @@ EXPECTED SURVIVORS, with the reason, rather than deleted rows:
   that the row, not the pack, owns its members.
 
 THE MEASURED RESULT is recorded below from the run, never predicted.
+
+MEASURED on the tree of `test_1051_hardening: a plain string where the
+f-string had no placeholder` (7857a2455, 2026-09-26, Windows; every killer
+run unmutated first, every selected test name seen to run, all green):
+**154 rows, 153 KILLED, 1 SURVIVED -- the expected one above -- 0 broken,
+1340 s wall.** That is the run of record.
+
+The earlier run, which changed the tests rather than the table:
+- 154 rows at b0dfc488f (1525 s): 124 KILLED, 30 SURVIVED, none expected.
+  29 were holes in the PR's tests -- the pin order's shared-net and
+  lowest-pad rules, the grid host, an absent member, place_seed's written-
+  pose verdicts, an anchored rigid group, six row-seat mechanisms (courtyard
+  offsets, pin order over a shuffled list, the self-check, the mod-180
+  dedupe, the pin-side axis, the revert), two row refusals, stage 0's pad
+  clearance / eviction freeze / copper-less courtyard, 2.4's row rank and
+  the decap stage's claim on row caps, five release/rejoin rules, and four
+  tether rules. `tests/test_1051_hardening.py` kills each (named in its
+  docstring); the thirtieth is the expected survivor above.
 """
 from __future__ import annotations
 
