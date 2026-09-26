@@ -370,10 +370,17 @@ by name -- two placements for one part. `fixed:` is a reserved block-name prefix
 like `mech:`.
 
 The seeder's **stage 0** runs before every other stage and seats each entry
-at EXACTLY its pose -- a check, never a search. A pose that fails the seat
-predicate (or, for a part overhanging the outline, the edge seat's conjuncts
-other than its band) is REFUSED with its reasons and never nudged, and no
-later stage seats that part. `rot` / `side` absent or `"unknown"` keep the
+at EXACTLY its pose -- a check, never a search. Courtyards are judged the way
+KiCad's DRC judges them: an overlap is illegal, courtyards that abut (gap 0)
+are not -- unlike a searched seat, which keeps the board clearance -- so a
+human's edge-to-edge rows can be declared. Pad and hole clearance, keep-outs
+and the outline keep their normal rules (a part overhanging the outline must
+keep its pad copper and holes on the board). Every declared pose is judged
+against the placed parts AND every other declared pose, so the verdict does
+not depend on ref order; two declarations that clash are BOTH refused, each
+naming the other. A refused pose states its measurement ("courtyard
+overlaps FID8 by 1.15x1.15mm"), is never nudged, and no later stage seats
+that part. `rot` / `side` absent or `"unknown"` keep the
 part's current angle / face; a declared side the part is not on is refused,
 since no search flips a part. A part already placed -- locked in the file, or
 outside the seed scope -- is recorded when it is at the pose and refused when

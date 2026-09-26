@@ -244,7 +244,7 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 
 | stage | what it seats |
 |---|---|
-| 0 | `fixed_poses[]` (#1054): EXACTLY at the declared pose, a check and never a search; an illegal pose is refused and the part held out of every later stage. Seated parts are stamped `(locked yes)` |
+| 0 | `fixed_poses[]` (#1054): EXACTLY at the declared pose, a check and never a search -- courtyards may abut (KiCad's rule) but not overlap, pads and holes keep their clearance, and every declared pose is judged against every other one, so a clashing pair is refused BOTH; an illegal pose is refused with its measurement and the part held out of every later stage. Seated parts are stamped `(locked yes)` |
 | 1 | edge connectors on their declared edge, inside the overhang band |
 | 1.5 | `must_lock` parts, at their current pose where it is legal |
 | 2 | zoned blocks, packed radially from the zone centre; a declared array whose members all sit in one zoned block is seated into it whole (stage 2.45) |

@@ -3427,75 +3427,115 @@ def _holes_outside(state, gate, ref: str, x: float, y: float,
     return n, out
 
 
-def _fixed_pose_check(state, ref: str, x: float, y: float, rot: float,
-                      placed: Set[str], exclude: Set[str]
-                      ) -> Tuple[Optional[str], Optional[float], List[str]]:
-    """`(how, clearance, reasons)` for seating `ref` EXACTLY at (x, y, rot).
+#: #1054: a courtyard overlap AREA (mm^2) above this is an overlap; below it
+#: is float noise on two courtyards that abut. KiCad's `courtyards_overlap`
+#: is an intersection test, so abutting courtyards (gap 0) are legal.
+FIXED_OVERLAP_EPS_MM2 = 1e-6
+
+
+def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
+    """`(area mm^2, w, h)` of the courtyard overlap of `a` at `pose_a` with
+    `b` at `pose_b`. The VERDICT is `legality.pair_overlap_area` -- the
+    side-aware measure `legality_metrics`' `overlap_area` and the seeder's
+    `_overlap_at` use -- called, not re-derived; `w` x `h` is the courtyard
+    rects' intersection, for the refusal's text only."""
+    from .legality import pair_overlap_area
+    pa, pb = state.parts[a], state.parts[b]
+    ra, ta = pa.rect(*pose_a), pa.tht_rect(*pose_a)
+    rb, tb = pb.rect(*pose_b), pb.tht_rect(*pose_b)
+    area = pair_overlap_area(pa.sides, pa.side, ra, ta,
+                             pb.sides, pb.side, rb, tb)
+    w = max(0.0, min(ra[2], rb[2]) - max(ra[0], rb[0]))
+    h = max(0.0, min(ra[3], rb[3]) - max(ra[1], rb[1]))
+    return area, w, h
+
+
+def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple]
+                      ) -> Tuple[Optional[str], List[str], Dict[str, str]]:
+    """`(how, reasons, conflicts)` for seating `ref` EXACTLY at `pose`.
 
     A CHECK, never a search (#1054): the pose is a mechanical fact, so a
     pose that fails is refused with its reasons and never nudged.
 
-    * `'contained'`: `pose_ok`, walked down `seat_clearances` exactly as a
-      searched seat is -- a courtyard graze below the board clearance is
-      accepted at a reduced clearance and disclosed, as `_try_place` does.
+    `obstacles` is `{ref: pose}`: every part already placed, at its pose,
+    AND every other declared fixed pose at ITS declared pose -- so two
+    declarations are judged against each other symmetrically, whatever
+    order they are seated in. `conflicts` is `{other: reason}` for the
+    obstacles this pose collides with, so the caller can refuse both halves
+    of a clash between two declarations.
+
+    COURTYARDS, the way KiCad judges them: an OVERLAP (area above
+    `FIXED_OVERLAP_EPS_MM2`, `legality.pair_overlap_area`) is illegal;
+    courtyards that ABUT (gap >= 0) are legal. Only for a DECLARED pose:
+    every searched seat keeps the board clearance and its 0.02mm floor
+    (`seat_clearances`), which buy margin where the seeder chooses. A
+    human layout packs courtyards edge to edge (glasgow's RN banks and
+    SN74LVC1T45 buffers: 14 pairs at exactly 0.000mm, which kicad-cli's DRC
+    accepts) and a fixed pose exists to express THAT arrangement -- under
+    the searched-seat floor stage 0 refused 15 of 30 human glasgow poses,
+    each "within 0.02mm".
+
+    Everything else at its normal rule: the outline (containment at the
+    board-edge margin), declared keep-outs and exclusive zones, and pad /
+    hole clearance to every obstacle (`legality_ctx.pair_shortfall`, the
+    predicate stage 1's `_shorted_by` uses).
+
+    * `'contained'`: inside the outline, and nothing above fails.
     * `'overhang'`: the courtyard leaves the outline -- a connector or a
       mounting part may overhang by design, which is stage 1's exemption --
-      and is accepted only on `edge_seat_ok`'s own conjuncts other than its
-      band (a fixed pose declares no band): EVERY pad's copper on the board
-      at zero margin, no declared keep-out, no stranger's exclusive zone,
-      and no pad or hole shortfall against a placed part (stage 1's
-      `_shorted_by` predicate) -- plus, since the pad test is vacuous for
-      a part with no copper, at least one copper pad, and every drill hole
-      (NPTH included) inside the outline.
+      accepted only when every pad's copper is on the board at zero margin
+      and every drill hole (NPTH included) too, and a part with neither is
+      judged by its courtyard at zero margin (the pad test is vacuous for a
+      part with no copper).
 
-    `how` None means refused; `reasons` then says why, by name.
+    `how` None means refused; `reasons` then says why, with the measurement.
     """
     part = state.parts[ref]
-    full = state.clearance
-    try:
-        for clr in seat_clearances(full):
-            _set_seat_clearance(state, clr)
-            if pose_ok(state, ref, x, y, rot, exclude):
-                return 'contained', clr, []
-    finally:
-        _set_seat_clearance(state, full)
+    x, y, rot = pose
     reasons: List[str] = []
+    conflicts: Dict[str, str] = {}
     r, tht = part.rects(x, y, rot)
     outside = state.edge_gate.rect_outside_amount(r) > 1e-9
     reasons.extend(f"keep-out {n!r}"
                    for n in state.keepout_blockers(ref, (r, tht)))
     reasons.extend(f"exclusive zone {n!r}"
                    for n in state.exclusive_blockers(ref, (r, tht)))
-    shorted = []
+    containers = getattr(state, 'container_refs', ()) or ()
     ctx = state.legality_ctx
-    if ctx is not None:
-        for other in sorted(placed):
-            if other == ref or other not in state.parts:
-                continue
-            sf = ctx.pair_shortfall(ref, other, pose_a=(x, y, rot))
+    for other in sorted(obstacles):
+        if other == ref or other not in state.parts:
+            continue
+        opose = obstacles[other]
+        if ref not in containers and other not in containers:
+            area, w, h = _courtyard_overlap(state, ref, pose, other, opose)
+            if area > FIXED_OVERLAP_EPS_MM2:
+                conflicts[other] = (f"courtyard overlaps {other} by "
+                                    f"{w:.2f}x{h:.2f}mm ({area:.3f}mm2)")
+        if ctx is not None:
+            sf = ctx.pair_shortfall(ref, other, pose_a=pose, pose_b=opose)
             if sf.pad > 1e-6 or sf.hole > 1e-6:
-                shorted.append(other)
-    reasons.extend(f"pad/hole clearance to placed {o}" for o in shorted)
+                what = (f"pad clearance to {other} short by {sf.pad:.3f}mm"
+                        if sf.pad > 1e-6 else
+                        f"hole clearance to {other} short by "
+                        f"{sf.hole:.3f}mm")
+                conflicts[other] = (conflicts[other] + '; ' + what
+                                    if other in conflicts else what)
+    reasons.extend(conflicts[o] for o in sorted(conflicts))
     if outside:
-        from .connector_geometry import geometry_for, pad_copper_outside
+        from .connector_geometry import (geometry_for, pad_boxes,
+                                         pad_copper_outside)
         from .legality import BoardOutlineGate
         zero = getattr(state, '_zero_edge_gate', None)
         if zero is None:
             zero = BoardOutlineGate(state.pcb_data.board_info, 0.0)
             state._zero_edge_gate = zero
-        from .connector_geometry import pad_boxes
         geometry = geometry_for(state, state.pcb_data, state.pcb_file)
-        # The exemption rests on "every pad's copper is on the board", which
-        # is VACUOUSLY true for a part with no copper pad: tigard's NPTH-only
-        # H1 at (300, 300) on a 30 x 76mm board read "seated exactly ...
-        # (pads on the board)" (phase-3 re-verifier). A part with nothing to
-        # anchor an overhang must be contained, and no drill hole -- plated
-        # or NPTH -- may leave the outline either.
         # A pad-less part is judged by its HOLES (the whole drill circle,
         # zero margin), else by its courtyard at zero margin -- not by the
         # margin-gated courtyard: a mounting hole's courtyard legitimately
         # crosses the edge (tigard H1 at its own human pose is 1.3mm past
-        # the margin gate, and must seat).
+        # the margin gate, and must seat). Without this a part with no copper
+        # passed "every pad on the board" vacuously (tigard H1 at (300, 300)).
         n_holes, holes_out = _holes_outside(state, zero, ref, x, y, rot)
         if not pad_boxes(geometry, ref) and not n_holes:
             amt = zero.rect_outside_amount(r)
@@ -3509,29 +3549,17 @@ def _fixed_pose_check(state, ref: str, x: float, y: float, rot: float,
         if holes_out:
             reasons.append(f"{holes_out} of {n_holes} drill hole(s) past "
                            f"the outline")
-        if not reasons:
-            return 'overhang', None, []
-    elif not reasons:
-        floor = seat_clearances(full)[-1]
-        near = []
-        for other in sorted(placed):
-            if other == ref or other not in state.parts:
-                continue
-            o = state.parts[other].rect()
-            if (o[0] - floor < r[2] and r[0] < o[2] + floor
-                    and o[1] - floor < r[3] and r[1] < o[3] + floor):
-                near.append(other)
-        reasons.append("courtyard within " + format(floor, 'g')
-                       + "mm (the ladder's floor) of placed "
-                       + (', '.join(near) if near else 'a part'))
-    return None, None, reasons
+        return (None if reasons else 'overhang'), reasons, conflicts
+    return (None if reasons else 'contained'), reasons, conflicts
 
 
-def _seat_fixed_pose(state, pcb_data, f: Dict, placed: Set[str],
-                     unplaced: Set[str], held: Set[str],
-                     seated: Dict[str, Dict], refused: Dict[str, Dict],
-                     lock: Set[str], notes: List[str]) -> None:
-    """Stage 0 for one `fixed_poses[]` entry (#1054). See the stage comment.
+def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
+                     held: Set[str], seated: Dict[str, Dict],
+                     refused: Dict[str, Dict], lock: Set[str],
+                     notes: List[str]):
+    """The per-entry half of stage 0: resolve one `fixed_poses[]` entry's
+    pose, and settle the entries no geometry check is needed for. Returns
+    `(ref, pose, rec)` for an entry to check, else None.
 
     `rot` / `side` absent or `"unknown"` keep the part's CURRENT rotation /
     side, and the record says so (`rot_kept`, `side_kept`) -- the author
@@ -3549,7 +3577,7 @@ def _seat_fixed_pose(state, pcb_data, f: Dict, placed: Set[str],
                     '(pad-less)')
         refused[ref] = {'reason': why, 'pose': [x, y, f.get('rot')]}
         notes.append(f"fixed pose {ref}: REFUSED -- {why}")
-        return
+        return None
     part = state.parts[ref]
     rot_decl = f.get('rot')
     rot_kept = rot_decl is None or rot_decl == 'unknown'
@@ -3567,7 +3595,7 @@ def _seat_fixed_pose(state, pcb_data, f: Dict, placed: Set[str],
             f"seeder has no flip move, so it cannot seat it there"))
         notes.append(f"fixed pose {ref}: REFUSED -- {refused[ref]['reason']}"
                      f"; flip the part on the board first")
-        return
+        return None
     if ref in placed:
         # Authoritative already: locked in the FILE, or outside an explicit
         # `seed_refs` scope. Not this stage's to move -- the file lock is the
@@ -3579,7 +3607,7 @@ def _seat_fixed_pose(state, pcb_data, f: Dict, placed: Set[str],
             seated[ref] = dict(rec, how='already_there')
             if not part.locked:
                 lock.add(ref)
-            return
+            return None
         refused[ref] = dict(rec, reason=(
             f"already placed at ({part.x:g}, {part.y:g}, {part.rot:g}deg) -- "
             + ("locked in the board file" if part.locked
@@ -3587,33 +3615,78 @@ def _seat_fixed_pose(state, pcb_data, f: Dict, placed: Set[str],
             + ", and not this stage's to move"))
         notes.append(f"fixed pose {ref}: REFUSED -- {refused[ref]['reason']}"
                      f" (declared ({x:g}, {y:g}, {rot:g}deg))")
-        return
+        return None
     rot = _materialise_rotation(part, rot)
-    how, clr, reasons = _fixed_pose_check(state, ref, x, y, rot, placed,
-                                          unplaced - {ref})
-    if how is None:
-        held.add(ref)
-        refused[ref] = dict(rec, reason='; '.join(reasons))
-        notes.append(f"fixed pose {ref}: REFUSED at ({x:g}, {y:g}, "
-                     f"{rot:g}deg) -- {refused[ref]['reason']}. The pose is "
-                     f"a fact, so it is never nudged: fix the pose or what "
-                     f"it collides with")
-        return
-    state.apply_move(ref, x, y, rot)
-    placed.add(ref)
-    unplaced.discard(ref)
-    lock.add(ref)
-    seated[ref] = dict(rec, how=how,
-                       clearance=(None if clr is None else round(clr, 4)))
-    notes.append(f"fixed pose {ref}: seated exactly at ({x:g}, {y:g}, "
-                 f"{rot:g}deg)"
-                 + (" overhanging the outline (pads on the board)"
-                    if how == 'overhang' else '')
-                 + (f" at reduced courtyard clearance {clr:g}"
-                    if clr is not None and clr < state.clearance else '')
-                 + (" at its current rotation (declared unknown)"
-                    if rot_kept else '')
-                 + " -- locked")
+    return ref, (x, y, rot), rec
+
+
+def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
+                      unplaced: Set[str], held: Set[str],
+                      seated: Dict[str, Dict], refused: Dict[str, Dict],
+                      lock: Set[str], notes: List[str]) -> None:
+    """Stage 0 (#1054): every `fixed_poses[]` entry, judged as ONE batch.
+
+    ORDER-INDEPENDENT. Each declared pose is checked against the parts
+    already placed AND every other declared pose at its declared pose, and
+    only then are the survivors seated -- so the verdict on A never depends
+    on whether B's ref sorts first. Seating in ref order and checking each
+    against the ones already seated refused glasgow's human poses in an
+    alternating pattern (phase-6 verifier).
+
+    A clash between two DECLARATIONS refuses BOTH, each naming the other
+    and the measurement. Neither declaration outranks the other -- both are
+    the author's statement of where a part IS -- so keeping one would pick
+    a winner by reference name, and a refusal that names the pair is what
+    the author needs to fix the one that is wrong.
+    """
+    declared: Dict[str, Tuple] = {}
+    recs: Dict[str, Dict] = {}
+    for f in sorted(entries, key=lambda f: str(f['ref'])):
+        got = _fixed_pose_prep(state, pcb_data, f, placed, held, seated,
+                               refused, lock, notes)
+        if got is not None:
+            ref, pose, rec = got
+            declared[ref] = pose
+            recs[ref] = rec
+    fixed_obstacles = {r: (state.parts[r].x, state.parts[r].y,
+                           state.parts[r].rot) for r in placed
+                       if r in state.parts}
+    verdicts = {}
+    for ref in sorted(declared):
+        obstacles = dict(fixed_obstacles)
+        obstacles.update({o: p for o, p in declared.items() if o != ref})
+        verdicts[ref] = _fixed_pose_check(state, ref, declared[ref],
+                                          obstacles)
+    for ref in sorted(declared):
+        how, reasons, conflicts = verdicts[ref]
+        x, y, rot = declared[ref]
+        rec = recs[ref]
+        clash = sorted(o for o in conflicts if o in declared)
+        if how is None:
+            held.add(ref)
+            refused[ref] = dict(rec, reason='; '.join(reasons),
+                                conflicts_with_declared=clash)
+            notes.append(
+                f"fixed pose {ref}: REFUSED at ({x:g}, {y:g}, {rot:g}deg) -- "
+                f"{refused[ref]['reason']}."
+                + (f" {', '.join(clash)} {'is' if len(clash) == 1 else 'are'}"
+                   f" ALSO a declared fixed pose, so both declarations are "
+                   f"refused: they cannot both be true" if clash else '')
+                + " The pose is a fact, so it is never nudged: fix the pose "
+                  "or what it collides with")
+            continue
+        state.apply_move(ref, x, y, rot)
+        placed.add(ref)
+        unplaced.discard(ref)
+        lock.add(ref)
+        seated[ref] = dict(rec, how=how)
+        notes.append(f"fixed pose {ref}: seated exactly at ({x:g}, {y:g}, "
+                     f"{rot:g}deg)"
+                     + (" overhanging the outline (pads on the board)"
+                        if how == 'overhang' else '')
+                     + (" at its current rotation (declared unknown)"
+                        if rec['rot_kept'] else '')
+                     + " -- locked")
 
 
 def _ang_close(a: float, b: float, eps: float = 1e-6) -> bool:
@@ -3803,10 +3876,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     fixed_seated: Dict[str, Dict] = {}
     fixed_refused: Dict[str, Dict] = {}
     fixed_lock: Set[str] = set()
-    for _f in sorted((getattr(intent, 'fixed_poses', ()) or ()),
-                     key=lambda f: str(f['ref'])):
-        _seat_fixed_pose(state, pcb_data, _f, placed, unplaced, held,
-                         fixed_seated, fixed_refused, fixed_lock, notes)
+    _seat_fixed_poses(state, pcb_data,
+                      getattr(intent, 'fixed_poses', ()) or (), placed,
+                      unplaced, held, fixed_seated, fixed_refused,
+                      fixed_lock, notes)
 
     # ---- 1. edge connectors: spec geometry, no legality gate ---------------
     # edge_claims(), not the raw key: a connector_affinity entry declares a
@@ -5179,10 +5252,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             'lock_refs': sorted(set(lock_refs) | fixed_lock),
             'unseated': sorted(set(unseated)), 'notes': notes,
             # #1054: {ref: {x, y, rot, side, basis, how, rot_kept,
-            # side_kept, clearance}} for every fixed pose this seed honoured
-            # (`how`: 'contained', 'overhang', or 'already_there' for a part
-            # the file already held at it), and {ref: {..., reason}} for
-            # every one it refused. Both empty when nothing is declared.
+            # side_kept}} for every fixed pose this seed honoured (`how`:
+            # 'contained', 'overhang', or 'already_there' for a part the file
+            # already held at it), and {ref: {..., reason,
+            # conflicts_with_declared}} for every one it refused (the other
+            # DECLARED poses it clashes with; each of those is refused too).
+            # Both empty when nothing is declared.
             'fixed_seated': fixed_seated,
             'fixed_refused': fixed_refused,
             # #1053: {armed, scope, claimed, put_back, pins, reason,

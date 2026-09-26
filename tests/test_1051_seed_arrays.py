@@ -893,38 +893,148 @@ def test_every_unhonoured_fixed_pose_fails_the_gate():
 
 
 def test_illegal_fixed_pose_is_refused_not_nudged():
+    """Off the board, on the wrong side, and two DECLARATIONS on one spot.
+    The pair clash refuses BOTH C1 and C3, each naming the other and the
+    measured overlap -- neither declaration outranks the other, and keeping
+    the one whose ref sorts first would decide by name. Q1, at its human
+    pose, seats exactly and is locked."""
     with tempfile.TemporaryDirectory() as td:
         doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
         doc['fixed_poses'] = [
             {'ref': 'R1', 'x': 100.0, 'y': 100.0, 'rot': 0,
              'basis': 'declared', 'why': 'off the board'},
             {'ref': 'C1', 'x': 138.46, 'y': 96.23, 'rot': 90,
-             'basis': 'declared', 'why': 'legal'},
+             'basis': 'declared', 'why': 'clashes with C3'},
             {'ref': 'C3', 'x': 138.46, 'y': 96.23, 'rot': 90,
              'basis': 'declared', 'why': 'on top of C1'},
             {'ref': 'R2', 'x': 136.4, 'y': 101.6, 'rot': 90, 'side': 'B',
              'basis': 'declared', 'why': 'wrong side'},
+            {'ref': 'Q1', 'x': 139.0, 'y': 99.7, 'rot': 180,
+             'basis': 'declared', 'why': 'its human pose'},
         ]
         intent, _p = _intent(doc, td)
         pcb, res = _seed(ESP, intent)
         ref_ = res['fixed_refused']
-        assert set(ref_) == {'R1', 'C3', 'R2'}, ref_
+        assert set(ref_) == {'R1', 'C1', 'C3', 'R2'}, ref_
         assert 'past the outline' in ref_['R1']['reason'], ref_['R1']
-        assert 'C1' in ref_['C3']['reason'], ref_['C3']
+        for a, b in (('C1', 'C3'), ('C3', 'C1')):
+            assert f"courtyard overlaps {b} by" in ref_[a]['reason'], ref_[a]
+            assert ref_[a]['conflicts_with_declared'] == [b], ref_[a]
         assert 'no flip move' in ref_['R2']['reason'], ref_['R2']
-        assert res['fixed_seated']['C1']['how'] == 'contained'
+        assert res['fixed_seated']['Q1']['how'] == 'contained'
         written = {p['reference']: p for p in res['placements']}
-        assert (written['C1']['new_x'], written['C1']['new_y'],
-                written['C1']['new_rotation']) == (138.46, 96.23, 90.0)
-        for r in ('R1', 'C3', 'R2'):
+        assert (written['Q1']['new_x'], written['Q1']['new_y'],
+                written['Q1']['new_rotation']) == (139.0, 99.7, 180.0)
+        for r in ('R1', 'C1', 'C3', 'R2'):
             assert r in res['unseated'], (r, res['unseated'])
             assert r not in written, r
             assert r not in res['lock_refs'], r
-        assert 'C1' in res['lock_refs']
-        assert sum('REFUSED' in n for n in res['notes']) == 3, res['notes']
-    print("  PASS: off-board, colliding (names C1) and wrong-side fixed poses "
-          "are refused, unseated, unwritten and unlocked; C1 is exact and "
+        assert 'Q1' in res['lock_refs']
+        assert sum('REFUSED' in n for n in res['notes']) == 4, res['notes']
+    print("  PASS: off-board, wrong-side, and BOTH halves of a declared "
+          "clash are refused (each naming the other); Q1 is exact and "
           "locked")
+
+
+def _glasgow_human_fixed(td, extra=()):
+    """glasgow's RN banks and SN74LVC1T45 buffers (plus `extra`) declared as
+    fixed poses AT THEIR HUMAN POSES, seeded on the human board itself --
+    every unlocked part is the pile there, so this is the unplaced board's
+    question without depending on wk/."""
+    pcb = parse_kicad_pcb(GLASGOW)
+    fps = pcb.footprints
+    rn = sorted(r for r in fps if r.startswith('RN'))
+    buf = sorted(r for r, f in fps.items()
+                 if 'SN74LVC1T45' in str(getattr(f, 'value', '')))
+    assert len(rn) == 12 and len(buf) == 17, (rn, buf)
+    doc = fp.emit_intent(pcb, GLASGOW)
+    doc['fixed_poses'] = [{'ref': r, 'x': fps[r].x, 'y': fps[r].y,
+                           'rot': fps[r].rotation or 0, 'basis': 'declared',
+                           'why': 'the human pose'}
+                          for r in rn + buf + list(extra)]
+    intent, _p = _intent(doc, td)
+    _pcb, res = _seed(GLASGOW, intent)
+    return rn + buf, res
+
+
+def test_human_glasgow_rows_seat_as_fixed_poses():
+    """Stage 0 judges courtyards the way KiCad does: an OVERLAP is illegal,
+    ABUTTING is not. glasgow's human RN banks and buffers abut at exactly
+    0.000mm (kicad-cli's DRC accepts them) and ALL 29 seat. Before this,
+    under the searched seat's 0.02mm floor and checked against only the
+    poses already seated in ref order, 15 of the 29 were refused, in an
+    alternating pattern, each "within 0.02mm"."""
+    with tempfile.TemporaryDirectory() as td:
+        refs, res = _glasgow_human_fixed(td)
+        assert not res['fixed_refused'], res['fixed_refused']
+        assert set(refs) <= set(res['fixed_seated']), sorted(
+            set(refs) - set(res['fixed_seated']))
+        written = {p['reference']: p for p in res['placements']}
+        fps = parse_kicad_pcb(GLASGOW).footprints
+        for r in refs:
+            assert (written[r]['new_x'], written[r]['new_y']) == (
+                round(fps[r].x, 3), round(fps[r].y, 3)), r
+    print(f"  PASS: all {len(refs)} human RN/buffer poses seat exactly")
+
+
+def test_a_real_overlap_is_refused_with_its_measurement():
+    """U30 at its human pose overlaps the file-locked FID8 by 1.15 x 1.15mm
+    (kicad-cli flags that pair). The refusal states the measured overlap,
+    not a clearance floor it was never judged at."""
+    with tempfile.TemporaryDirectory() as td:
+        _refs, res = _glasgow_human_fixed(td, extra=('U30',))
+        why = res['fixed_refused']['U30']['reason']
+        assert 'courtyard overlaps FID8 by 1.15x1.15mm' in why, why
+        assert 'within' not in why, why
+        assert set(res['fixed_refused']) == {'U30'}, res['fixed_refused']
+    print(f"  PASS: U30 refused -- {why}")
+
+
+def _pair_board(td, xb):
+    """Two 2 x 2mm courtyards on a 30 x 20 board, A at x=10, B at x=`xb`,
+    pads 0.6mm from centre (so abutting courtyards keep pad clearance)."""
+    part = """ (footprint "t:P" (layer "F.Cu") (uuid "fp-%(r)s") (at %(x)s 10)
+  (property "Reference" "%(r)s" (at 0 0 0))
+  (fp_rect (start -1 -1) (end 1 1) (layer "F.CrtYd") (uuid "c-%(r)s"))
+  (pad "1" smd rect (at -0.6 0) (size 0.4 0.4) (layers "F.Cu") (net %(a)s "/N%(a)s") (uuid "%(r)s1"))
+  (pad "2" smd rect (at 0.6 0) (size 0.4 0.4) (layers "F.Cu") (net %(b)s "/N%(b)s") (uuid "%(r)s2")))
+"""
+    body = ('(kicad_pcb\n (version 20241229)\n (net 0 "") (net 1 "/N1") '
+            '(net 2 "/N2") (net 3 "/N3") (net 4 "/N4")\n'
+            ' (layers (0 "F.Cu" signal) (31 "B.Cu" signal))\n'
+            ' (gr_rect (start 0 0) (end 30 20) (layer "Edge.Cuts") '
+            '(uuid "e1"))\n'
+            + part % dict(r='A', x=5, a=1, b=2)
+            + part % dict(r='B', x=25, a=3, b=4) + ')\n')
+    path = os.path.join(td, f'pair_{xb}.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(body)
+    doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm', 'fixed_poses': [
+        {'ref': 'A', 'x': 10.0, 'y': 10.0, 'rot': 0, 'basis': 'declared'},
+        {'ref': 'B', 'x': xb, 'y': 10.0, 'rot': 0, 'basis': 'declared'}]}
+    return seeder.seed_from_intent(
+        parse_kicad_pcb(path), path, fp.intent_from_dict(doc, path),
+        random.Random('0'), group_sources=(), clearance=0.2,
+        board_edge_clearance=0.1)
+
+
+def test_abutting_fixed_poses_seat_and_overlapping_ones_both_refuse():
+    """Synthetic, so the answer is arithmetic: courtyards touching at x=11
+    (gap 0) are legal, as KiCad has them, and both seat; B 0.1mm further in
+    overlaps A by 0.10 x 2.00mm and BOTH declarations are refused, each
+    naming the other -- the verdict cannot depend on which ref sorts first."""
+    with tempfile.TemporaryDirectory() as td:
+        ok = _pair_board(td, 12.0)
+        assert set(ok['fixed_seated']) == {'A', 'B'}, ok['fixed_refused']
+        bad = _pair_board(td, 11.9)
+        assert set(bad['fixed_refused']) == {'A', 'B'}, bad['fixed_seated']
+        for a, b in (('A', 'B'), ('B', 'A')):
+            rec = bad['fixed_refused'][a]
+            assert f"courtyard overlaps {b} by 0.10x2.00mm" in rec['reason'], \
+                rec
+            assert rec['conflicts_with_declared'] == [b], rec
+    print("  PASS: abutting courtyards seat; a 0.1mm overlap refuses both, "
+          "each naming the other")
 
 
 def test_refused_fixed_pose_stays_unwritten_under_anchors_first():
@@ -1041,6 +1151,9 @@ TESTS = [
     test_fixed_pose_exact_locked_and_survives_repair_and_force,
     test_every_unhonoured_fixed_pose_fails_the_gate,
     test_illegal_fixed_pose_is_refused_not_nudged,
+    test_human_glasgow_rows_seat_as_fixed_poses,
+    test_a_real_overlap_is_refused_with_its_measurement,
+    test_abutting_fixed_poses_seat_and_overlapping_ones_both_refuse,
     test_refused_fixed_pose_stays_unwritten_under_anchors_first,
     test_stage1_treats_a_stage0_part_as_an_obstacle,
     test_unarmed_seeds_are_identical_to_the_pre_phase3_seeder,
