@@ -625,30 +625,28 @@ ROWS += [
 ]
 ROWS += [
     {
-        # (b) #1053: stage 2.4 seats the served ICs (and what outranks the
-        # early seats) before the decap pin stage. BOTH arms seed from the
-        # same auto-decaps intent; the OFF arm turns stage 2.4's part seats
-        # off through the seeder's harness-private `_served_first`, so it is
-        # the pre-#1053 seeder, not "decaps off".
+        # (b) #1053: stage 2.4 seats the decap owner ICs (and what outranks
+        # the early seats) before the decap pin stage -- opt-in, through
+        # `decaps.seat_owners_first`. BOTH arms seed from an auto-decaps
+        # intent; only the ON intent sets the key, so the OFF arm is the
+        # default seeder, not "decaps off".
         'name': f'served-ics-first-{b[:-len(".kicad_pcb")]}',
         'board': b,
         'corridors': [],
         'engine': 'seed',
-        'seed_intent_param': 'derive_decaps',
-        'seed_intents': {'off': 'auto', 'on': 'auto', 'grade': 'auto'},
-        'seed_off': {'_served_first': False},
+        'seed_intent_param': 'seat_owners_first',
+        'seed_intents': {'off': 'off', 'on': 'on', 'grade': 'off'},
         'ignore_nets': ['GND'],
         'signal': 'intent_errors',
         'guard': ('crossings', 'hpwl', 'inversions', 'body_blocking',
                   'unseated'),
         # REJECTED on this table (#1051 Phase 6): regressed on all four
         # boards, every time on a GUARD (hpwl on all four, crossings on
-        # three) while the signal moved on one board only. NOT switched off
-        # by this commit: stage 2.4 ships armed whenever an intent declares
-        # `decaps.max_distance_mm` (never by default -- check_floorplan's
-        # DECLARE_DECAPS_DEFAULT is 'off'), and whether to keep it is a
-        # decision this row informs, not one it makes. The numbers are in
-        # the baseline.
+        # three) while the signal moved on one board only. So stage 2.4's
+        # owner seat SHIPS OFF: it runs only when an intent sets
+        # `decaps.seat_owners_first: true` (the user's decision, #1051
+        # Phase 6), and this row measures exactly that key. The numbers are
+        # in the baseline.
         'expect': 'regress',
         'rejected': True,
         'why': ('MECHANISM: stage 2.5 seats a cap at the rail pins of ICs '
@@ -746,6 +744,9 @@ SEED_INTENT_PARAMS = {
     'derive_decaps': ('off', 'auto', 'strict'),
     'derive_arrays': ('off', 'auto'),
     'rigid_blocks': ('none', 'zoned'),
+    # #1053: auto decaps on BOTH arms; 'on' also sets the opt-in
+    # `decaps.seat_owners_first`, so the pair measures stage 2.4 alone.
+    'seat_owners_first': ('off', 'on'),
 }
 
 
@@ -758,6 +759,9 @@ def _emit_kwargs(param, value, board_path):
     if value not in SEED_INTENT_PARAMS[param]:
         raise AssertionError(f"{param}={value!r}: expected one of "
                              f"{', '.join(SEED_INTENT_PARAMS[param])}")
+    if param == 'seat_owners_first':
+        return {'derive_decaps': 'auto',
+                '_decaps_update': {'seat_owners_first': value == 'on'}}
     if param != 'rigid_blocks':
         return {param: value}
     if value == 'none':
@@ -789,6 +793,14 @@ def _intent_claims(param, value, doc):
     elif param == 'derive_decaps':
         has = (doc.get('decaps') or {}).get('max_distance_mm') is not None
         what = 'decaps.max_distance_mm'
+    elif param == 'seat_owners_first':
+        dec = doc.get('decaps') or {}
+        if dec.get('max_distance_mm') is None:
+            return [f"{param}={value!r}: the intent declares no "
+                    f"decaps.max_distance_mm, so neither arm runs the decap "
+                    f"stage"]
+        has = dec.get('seat_owners_first') is True
+        what = 'decaps.seat_owners_first: true'
     else:
         return [f"unknown seed_intent_param {param!r}"]
     if on and not has:
@@ -837,7 +849,10 @@ def _intent_for(board_path, corridors, workdir, zone_flags=None,
     path = os.path.join(workdir, name)
     kw = {'derive_decaps': derive_decaps}
     kw.update(emit_kw or {})
+    decaps_update = kw.pop('_decaps_update', None)
     doc = floorplan.emit_intent(parse_kicad_pcb(board_path), board_path, **kw)
+    if decaps_update:
+        doc['decaps'] = dict(doc.get('decaps') or {}, **decaps_update)
     if corridors:
         # Guarded: an unconditional assignment plants an empty `bus_corridors`
         # on a row that declares none, which makes
@@ -1833,6 +1848,18 @@ def _self_test():
                _intent_claims('derive_decaps', 'auto', {'decaps': {}}))
     assert any('carries decaps' in p for p in _intent_claims(
         'derive_decaps', 'off', {'decaps': {'max_distance_mm': 3.0}}))
+    # 31b. #1053's key: ON carries `seat_owners_first: true` with a limit,
+    #      OFF the limit without it, and neither arm without a limit runs.
+    lim = {'max_distance_mm': 3.0}
+    assert _intent_claims('seat_owners_first', 'on', {'decaps': dict(
+        lim, seat_owners_first=True)}) == []
+    assert _intent_claims('seat_owners_first', 'off', {'decaps': lim}) == []
+    assert any('carries no decaps.seat_owners_first' in p for p in
+               _intent_claims('seat_owners_first', 'on', {'decaps': lim}))
+    assert any('no decaps.max_distance_mm' in p for p in _intent_claims(
+        'seat_owners_first', 'on', {'decaps': {'seat_owners_first': True}}))
+    assert _emit_kwargs('seat_owners_first', 'on', 'unused')[
+        '_decaps_update'] == {'seat_owners_first': True}
     # 32. an unknown parameter or value refuses rather than emitting a default
     #     intent the row would then mistake for its ON arm.
     for bad in (('derive_nothing', 'auto'), ('derive_arrays', 'strict'),

@@ -150,7 +150,9 @@ EDGE_BAND_SANITY_MM = 5.0
 #: anchor the grade compiles from each entry; and `blocks[].rigid`, which
 #: opts a block into moving as one piece. One bump for the three: they
 #: arrived together, and each changes a verdict or a placement, so the rule
-#: above mandates it. An older build refuses each key by name.
+#: above mandates it. An older build refuses each key by name. The same
+#: bump carries `decaps.seat_owners_first` (#1053): opt-in, it changes a
+#: placement (the seeder seats the decap owner ICs before its pin stage).
 READER_VERSION = 7
 
 _TOP_LEVEL_KEYS = {
@@ -254,7 +256,10 @@ _CENTER_ON_EDGE_KEYS = {'tolerance_mm'}
 #: resize. `from < to`, both in [0, 1].
 _ALONG_EDGE_BAND_KEYS = {'from', 'to'}
 _DECAP_KEYS = {'max_distance_mm', 'exempt', 'search_radius_mm',
-               'max_pin_distance_mm', 'pin_functions', 'same_side'}
+               'max_pin_distance_mm', 'pin_functions', 'same_side',
+               # #1053: opt-in -- the seeder seats the decap owner ICs (and
+               # what outranks the caps) before its decap pin stage.
+               'seat_owners_first'}
 #: #902. One declared claim: these two named parts, no further apart than
 #: `max_mm`. `ref` is always a SINGLE ref here -- the brief's list form is
 #: sugar that `compile_brief` expands, so the intent carries one row per claim
@@ -1292,6 +1297,16 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
                 "decaps.pin_functions is empty: it REPLACES the default "
                 "keyword table, so an empty list silently disables the "
                 "pinfunction channel. Omit the key to keep the default")
+    if 'seat_owners_first' in decaps:
+        if not isinstance(decaps['seat_owners_first'], bool):
+            raise IntentError(
+                f"decaps.seat_owners_first must be true or false, got "
+                f"{type(decaps['seat_owners_first']).__name__}")
+        if decaps.get('max_distance_mm') is None:
+            raise IntentError(
+                "decaps.seat_owners_first without decaps.max_distance_mm "
+                "seats nothing: the decap pin stage it reorders runs only "
+                "when the limit is declared")
     if 'same_side' in decaps and not isinstance(decaps['same_side'],
                                                 bool):
         raise IntentError(

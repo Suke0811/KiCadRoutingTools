@@ -190,44 +190,56 @@ def test_the_control_arm_is_never_what_changed():
           "every armed board")
 
 
-def test_the_SHIPPING_arm_leaves_no_part_unseated_that_the_control_seated():
-    """The put-back falls through to the centroid stage rather than appending
-    to `unseated`, so it cannot strand a part. Re-derived per board.
+def test_the_SHIPPING_arm_strands_only_what_the_pin_stage_crowds_out():
+    """What the SHIPPING arm (`decaps.max_distance_mm` declared, no
+    `decaps.seat_owners_first`) leaves unseated that the no-decaps control
+    seats, re-derived per board and pinned EXACTLY: rp2350's J2, and
+    nothing else.
 
-    Scoped to the arm that SHIPS. The `chips` arm is excluded here and asserted
-    separately below (it stranded parts until #1053's stage 2.4, which was
-    a finding, not a reason to weaken this claim)."""
+    The put-back falls through to the centroid stage rather than appending
+    to `unseated`, so it cannot strand a part; the pin stage CAN, by
+    claiming room near the ICs already placed before the parts stage 3
+    seats last (rp2350 claims 15 caps; J2 then no longer fits). History,
+    so the number is not mistaken for news: the first rows file (measured
+    at b9055e1) did not show it, the pre-phase-3 seeder at 754e7f419 does,
+    and #1053's stage 2.4 hid it while it ran by default (f061f78cf ..
+    5712eea2e) -- its size rule seats large parts before the caps. Stage
+    2.4 is opt-in since #1051 Phase 6 (it failed its A/B, test_placement_ab
+    served-ics-first-*), so the shipping arm is the pre-#1053 order again,
+    and this is its measured cost. Any other board or part appearing, or
+    J2 going, fails here and is read deliberately."""
     rows = _armed(_rows())
+    stranded = {}
     for r in rows:
         extra = sorted(set(r['on']['unseated']) - set(r['off']['unseated']))
-        assert not extra, (r['board'], extra)
-    print(f"  PASS: {len(rows)} board(s), no part newly unseated by the "
-          f"narrowing or the put-back")
+        if extra:
+            stranded[r['board']] = extra
+    assert stranded == {'rp2350_fpga_eensy_prePlane': ['J2']}, stranded
+    print(f"  PASS: {len(rows)} board(s); the shipping arm strands only "
+          f"{stranded} beyond the control -- the pin stage's crowding, "
+          f"pinned")
 
 
-def test_the_owner_test_arm_strands_nothing_and_buys_no_pin_geometry():
+def test_the_owner_test_arm_STRANDS_parts_and_that_is_why_it_ships_off():
     """What `decap_owner_chips` (the grouper's chip set as the pin owners,
-    instead of `U*`) does, measured, and why it still ships OFF.
+    instead of `U*`) does, measured against the SHIPPING arm, and why it
+    ships OFF.
 
-    THIS CLAIM WAS REWRITTEN in #1051 phase 3 (the commit after 4b7a0643f),
-    because the measurement changed under it. Until then it asserted that
-    the widened arm STRANDS four parts across three boards the control
-    seats -- orangecrab_ext_pll U4, rp2350_fpga_eensy_prePlane L1, tigard
-    H1 and H3 -- and that stranding was the whole reason the flag ships
-    off. Stage 2.4 (#1053, f32efda17) seats the served ICs, everything
-    that outranks the early seats by pins, and everything much larger than
-    them BEFORE the pin stage claims its caps; that stranding came from the
-    caps taking room those parts needed, and it is gone. Re-measured: the
-    chips arm strands exactly what the shipping arm strands, on every
-    armed board.
+    The widened arm strands FOUR parts across THREE boards that the
+    shipping arm seats: orangecrab_ext_pll U4, rp2350_fpga_eensy_prePlane
+    L1, and tigard H1 and H3. A stranded part is a worse outcome than every
+    gain the flag buys.
 
-    So the old reason no longer holds, and the default was re-decided on
-    the evidence that remains -- the independent pin-gap grade: the chips
-    arm claims more caps and places them WORSE more often than better
-    (pin_gap_sum: better on 2 boards, worse on 6, equal on 2 at the time
-    of rewriting). The default stays False. Both halves are asserted, so a
-    change that makes the chips arm strand again, or makes it the better
-    arm, fails here and is revisited deliberately.
+    History: this was the claim's original finding. #1053's stage 2.4 made
+    it false while stage 2.4 ran by default (f061f78cf .. 5712eea2e: the
+    chips arm stranded nothing, and the claim was rewritten to say so and
+    to rest the default on pin geometry instead). Stage 2.4 is opt-in since
+    #1051 Phase 6 (`decaps.seat_owners_first`), the shipping arm is the
+    pre-#1053 order again, and the original finding is back, measured
+    against the shipping arm rather than the no-decaps control (the control
+    now differs from both by rp2350's J2 -- see the arm above). The pin
+    geometry is recorded too: the chips arm is worse on glasgow, rp2350 and
+    ulx3s and better nowhere -- no reason to turn it on either.
     """
     rows = _armed(_rows())
     stranded = {}
@@ -235,25 +247,23 @@ def test_the_owner_test_arm_strands_nothing_and_buys_no_pin_geometry():
         extra = sorted(set(r['chips']['unseated']) - set(r['on']['unseated']))
         if extra:
             stranded[r['board']] = extra
-    assert not stranded, (
-        f"the chips arm strands parts the shipping arm seats again: "
-        f"{stranded}. Re-read the flag's default deliberately")
-    better, worse, same = [], [], []
+    assert stranded == {'orangecrab_ext_pll': ['U4'],
+                        'rp2350_fpga_eensy_prePlane': ['L1'],
+                        'tigard': ['H1', 'H3']}, stranded
+    better, worse = [], []
     for r in rows:
         a, b = r['on']['pin_gap_sum'], r['chips']['pin_gap_sum']
         if a is None or b is None:
             continue
-        (worse if b > a + 1e-6 else better if b < a - 1e-6
-         else same).append(r['board'])
-    assert len(worse) + len(better) >= MIN_BOARDS, (better, worse)
-    assert len(worse) > len(better), (
-        f"the chips arm now improves pin geometry on {better} and worsens "
-        f"it on {worse}: the evidence for its default has turned -- "
-        f"revisit `decap_owner_chips` deliberately")
-    print(f"  PASS: the owner-test arm strands nothing the shipping arm "
-          f"seats; pin_gap_sum better on {len(better)} ({', '.join(better)}),"
-          f" worse on {len(worse)}, equal on {len(same)} -- so "
-          f"`decap_owner_chips` stays False")
+        if b > a + 1e-6:
+            worse.append(r['board'])
+        elif b < a - 1e-6:
+            better.append(r['board'])
+    assert len(worse) >= len(better), (better, worse)
+    print(f"  PASS: the owner-test arm strands {stranded} the shipping arm "
+          f"seats; pin_gap_sum worse on {worse}, better on {better} -- so "
+          f"`decap_owner_chips` defaults to False")
+
 
 def test_what_DECLARING_the_key_costs_is_recorded_not_gated():
     """`off` carries no `decaps` key, so stage 2.5 does not run in it at all.
@@ -311,8 +321,8 @@ TESTS = [
     test_one_board_is_RE_MEASURED_live_so_a_stale_file_cannot_pass,
     test_the_rows_cover_the_tracked_corpus_and_say_what_they_skipped,
     test_the_control_arm_is_never_what_changed,
-    test_the_SHIPPING_arm_leaves_no_part_unseated_that_the_control_seated,
-    test_the_owner_test_arm_strands_nothing_and_buys_no_pin_geometry,
+    test_the_SHIPPING_arm_strands_only_what_the_pin_stage_crowds_out,
+    test_the_owner_test_arm_STRANDS_parts_and_that_is_why_it_ships_off,
     test_what_DECLARING_the_key_costs_is_recorded_not_gated,
     test_the_put_back_actually_fires_somewhere,
 ]

@@ -155,7 +155,8 @@ KEY_SETS = {
     '_CENTER_ON_EDGE_KEYS': {'tolerance_mm'},
     '_ALONG_EDGE_BAND_KEYS': {'from', 'to'},
     '_DECAP_KEYS': {'max_distance_mm', 'exempt', 'search_radius_mm',
-                    'max_pin_distance_mm', 'pin_functions', 'same_side'},
+                    'max_pin_distance_mm', 'pin_functions', 'same_side',
+                    'seat_owners_first'},
     '_HEALTH_KEYS': {'bus_corridors', 'classes', 'zoned_blocks',
                      'affinity_exempt_nets', 'affinity_exempt_net_ids',
                      'ignore_net_ids', 'max_fanout', 'block_displacement_mm',
@@ -294,7 +295,8 @@ def test_an_intent_using_every_known_key_loads():
              'along_edge_band': {'from': 0.10, 'to': 0.35}}],
         'decaps': {'max_distance_mm': 2.5, 'exempt': ['C99'],
                    'search_radius_mm': 6.0, 'max_pin_distance_mm': 1.5,
-                   'pin_functions': ['VCC', 'VDD'], 'same_side': False},
+                   'pin_functions': ['VCC', 'VDD'], 'same_side': False,
+                   'seat_owners_first': True},
         'must_lock': ['MH*'],
         'legality_budget': {'overlap_area': 1.0, 'oob_count': 2,
                             'oob_amount': 3.0},
@@ -371,6 +373,7 @@ def test_an_intent_using_every_known_key_loads():
     assert i.decaps['max_pin_distance_mm'] == 1.5
     assert i.decaps['pin_functions'] == ['VCC', 'VDD']
     assert i.decaps['same_side'] is False
+    assert i.decaps['seat_owners_first'] is True
     assert i.health['max_fanout'] == 30
     assert i.legality_budget['oob_amount'] == 3.0
     assert i.keepouts[0]['allow'] == ('MH1',)
