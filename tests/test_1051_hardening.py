@@ -3,6 +3,10 @@
 unguarded -- each test here exists because a named mutant survived every
 test the PR had written, and each names the row it kills.
 
+25 tests. (The commit that added this file, 8de18a378, says 25; it held
+24 then -- the 25th is the zoned-row case below, added with the phase-7
+verification.)
+
 Kept apart from the phase files so each case is a FAST, single-purpose
 killer (synthetic boards and direct calls wherever the mechanism allows),
 and so the battery can select it by name:
@@ -34,6 +38,9 @@ and so the battery can select it by name:
 * stage 2.4 seats a row ahead of the parts it outranks, and a row's caps
   are not the decap pin stage's (`rows-after-every-part`,
   `row-member-claimed-by-the-decap-stage`);
+* a zoned row that seats nowhere is not zone-packed a second time
+  (`zoned-row-zone-packed-first`; added after the phase-7 verifier reached
+  the double failure the battery had called unreachable);
 * release and rejoin: a block move that clears keeps the member, a member
   that moved away stays released, a tight formation is its own business on
   both sides, and a release in an empty pass still gets its pass
@@ -447,6 +454,44 @@ def test_a_declared_row_of_caps_is_not_the_decap_stages_to_claim():
     assert not got, got
     print(f"  PASS: {members} claimed by the pin stage without the array, "
           f"and not with it")
+
+
+def test_a_zoned_row_that_seats_nowhere_is_not_zone_packed_again():
+    """A ZONED row owns its members through stage 2: `_seat_array` runs in
+    the zone's turn and, when the row does not seat, puts each member into
+    the zone one by one. The zone pack must not then take them a second
+    time. esp_prog (the phase-7 verifier's probe): U1 pinned at its own
+    pose, R3/R4 a row in a block zoned to U1's pad bounding box -- the row
+    hits its pose cap AND the one-by-one fallback finds no pose in the zone
+    (U1 fills it). The pack, re-run over them, would log "no legal pose
+    inside zone 'z'" for each and hand them a zone-jittered context."""
+    pcb = parse_kicad_pcb(ESP)
+    u1 = pcb.footprints['U1']
+    xs = [p.global_x for p in u1.pads]
+    ys = [p.global_y for p in u1.pads]
+    zone = [min(xs), min(ys), max(xs), max(ys)]
+    doc = fp.emit_intent(pcb, ESP)
+    doc['fixed_poses'] = [{'ref': 'U1', 'x': u1.x, 'y': u1.y,
+                           'rot': u1.rotation or 0, 'basis': 'declared'}]
+    doc['blocks'] = list(doc.get('blocks') or []) + [
+        {'name': 'z', 'refs': ['R3', 'R4'], 'zone': zone}]
+    doc['arrays'] = [dict(ESP_ROW)]
+    res = _seed(ESP, fp.intent_from_dict(doc, ESP), array_pose_cap=200)
+    assert 'U1' in res['fixed_seated'], res['fixed_refused']
+    un = res['array_unseated'].get('u1_uart')
+    assert un and un['capped'], (un, res['arrays_formed'])
+    got = {p['reference']: p for p in res['placements']}
+    for m in ('R3', 'R4'):
+        x, y = got[m]['new_x'], got[m]['new_y']
+        # The fallback did NOT put it in the zone: the double failure is
+        # reached, so the assertion below is not vacuous.
+        assert not (zone[0] <= x <= zone[2] and zone[1] <= y <= zone[3]), \
+            (m, x, y, zone)
+    packed = [n for n in res['notes'] if 'no legal pose inside zone' in n
+              and n.split(':')[0] in ('R3', 'R4')]
+    assert not packed, packed
+    print("  PASS: the row capped, the fallback found no zone pose, and the "
+          "zone pack left R3/R4 alone")
 
 
 # --------------------------------------------------------------------------
@@ -898,6 +943,7 @@ TESTS = [
     test_a_term_already_past_its_limit_may_improve,
     test_a_tethers_only_quench_gates_swaps_and_drops_icless_clusters,
     test_a_declared_row_of_caps_is_not_the_decap_stages_to_claim,
+    test_a_zoned_row_that_seats_nowhere_is_not_zone_packed_again,
 ]
 
 

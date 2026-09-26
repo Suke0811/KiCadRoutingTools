@@ -54,23 +54,19 @@ every battery, whatever this one's module scope happens to do.
 `_uncache` is carried over from `tests/mutate_983.py`: several rows are
 same-size edits, and CPython trusts a `.pyc` on (mtime seconds, size).
 
-EXPECTED SURVIVORS, with the reason, rather than deleted rows:
-- `zoned-row-zone-packed-first`: stage 2's zone pack filters its members
-  through `_order`, which keeps only UNPLACED refs, and `_seat_array` runs
-  first in the same zone's turn -- seating the row, or, when the row does
-  not seat, placing each member into the zone one by one. So a zoned row's
-  member reaches the pack only when the row seat AND that fallback both
-  failed for it, and then the pack's jittered retry is the one difference.
-  No fixture reaches that double failure; the filter stays as the statement
-  that the row, not the pack, owns its members.
+EXPECTED SURVIVORS, with the reason, rather than deleted rows: none.
+`zoned-row-zone-packed-first` was one until a verifier reached the double
+failure it needs (esp_prog, U1 pinned by a fixed pose, R3/R4 a row zoned to
+U1's pads: the row caps and the one-by-one zone fallback finds nothing);
+`test_1051_hardening`'s zoned-row test now kills it.
 
 THE MEASURED RESULT is recorded below from the run, never predicted.
 
 MEASURED on the tree of `test_1051_hardening: a plain string where the
 f-string had no placeholder` (7857a2455, 2026-09-26, Windows; every killer
 run unmutated first, every selected test name seen to run, all green):
-**154 rows, 153 KILLED, 1 SURVIVED -- the expected one above -- 0 broken,
-1340 s wall.** That is the run of record.
+**154 rows, 153 KILLED, 1 SURVIVED -- the then-expected
+`zoned-row-zone-packed-first` -- 0 broken, 1340 s wall.** Superseded below.
 
 The earlier run, which changed the tests rather than the table:
 - 154 rows at b0dfc488f (1525 s): 124 KILLED, 30 SURVIVED, none expected.
@@ -81,8 +77,18 @@ The earlier run, which changed the tests rather than the table:
   dedupe, the pin-side axis, the revert), two row refusals, stage 0's pad
   clearance / eviction freeze / copper-less courtyard, 2.4's row rank and
   the decap stage's claim on row caps, five release/rejoin rules, and four
-  tether rules. `tests/test_1051_hardening.py` kills each (named in its
-  docstring); the thirtieth is the expected survivor above.
+  tether rules. `tests/test_1051_hardening.py` -- 24 tests at 8de18a378,
+  not the 25 its commit message says -- kills each (named in its
+  docstring); the thirtieth was then taken for an equivalent survivor.
+
+Phase-7 verification (one fresh verifier reproduced every row): the
+survivor above was reachable (now KILLED, one more hardening test, 25);
+`array-formation-no-geometry-passes` killed only through the KeyError its
+mutant causes further down the rule, so it is renamed for what it shows
+(`array-formation-no-geometry-reaches-the-measurement`) and the abstention
+and its disclosed row get rows of their own; and the baseline's "did the
+named test run" check matches the exact `--- name` line, no longer a
+substring of it.
 """
 from __future__ import annotations
 
@@ -385,9 +391,23 @@ ROWS = [
      (T_H + '::test_a_row_naming_a_missing_ref_is_skipped_as_absent',
       T_AS + '::test_a_missing_member_skips_the_formation_and_stacked_reads_so',),
      'KILLED'),
-    ('array-formation-no-geometry-passes', 'fp',
+    # Killed by the KeyError the measurement below raises for a member with
+    # no geometry -- a crash, which is what this row shows: the guard is
+    # all that stands between such a member and it.
+    ('array-formation-no-geometry-reaches-the-measurement', 'fp',
      "        missing = [m for m in spec['members'] if m not in ctx.parts]",
      "        missing = []",
+     (T_AS + '::test_a_member_with_no_geometry_gets_a_measured_row',),
+     'KILLED'),
+    ('array-formation-no-geometry-not-abstained', 'fp',
+     "            ctx.abstained[f\"arrays[{name}]\"] = why",
+     "            pass",
+     (T_AS + '::test_a_member_with_no_geometry_gets_a_measured_row',),
+     'KILLED'),
+    ('array-formation-no-geometry-row-not-disclosed', 'fp',
+     "            ctx.array_measured.append({'name': name, 'formed': None,\n"
+     "                                       'skipped': why})",
+     "            pass",
      (T_AS + '::test_a_member_with_no_geometry_gets_a_measured_row',),
      'KILLED'),
     ('array-formation-unresolved-order-not-abstained', 'fp',
@@ -570,8 +590,9 @@ ROWS = [
     ('zoned-row-zone-packed-first', 'sd',
      "                   if r not in decap_scope and r not in array_zoned_members]",
      "                   if r not in decap_scope]",
-     (T_SEED + '::test_glasgow_resistor_pair_and_buffer_bank_are_formed',),
-     'SURVIVED'),
+     (T_H + '::test_a_zoned_row_that_seats_nowhere_is_not_zone_packed_again',
+      T_SEED + '::test_glasgow_resistor_pair_and_buffer_bank_are_formed'),
+     'KILLED'),
     ('seat-block-pose-cap-off', 'sd',
      "                        if tried >= cap:",
      "                        if False:",
@@ -955,7 +976,8 @@ def run(only=None):
             print('BROKEN: %s fails on the UNMUTATED tree (exit %d); every '
                   'verdict below would be meaningless.' % (shown, p.returncode))
             return 2
-        ran = [n for n in names if ('--- ' + n) in p.stdout]
+        lines = set(p.stdout.splitlines())
+        ran = [n for n in names if ('--- ' + n) in lines]
         if len(ran) != len(names) or 'ALL PASS' not in p.stdout:
             print('BROKEN: %s selected %s but ran %s -- a killer that runs '
                   'nothing kills nothing.' % (shown, names, ran))
