@@ -410,8 +410,8 @@ def test_a_row_the_intent_check_refuses_or_with_a_placed_member_is_not_seated():
     if 'R4' in got:
         assert (abs(got['R4']['new_x'] - r4.x) < 1e-6
                 and abs(got['R4']['new_y'] - r4.y) < 1e-6), got['R4']
-    print(f"  PASS: mixed footprints refused by the intent check; a placed "
-          f"R4 is left where it is")
+    print("  PASS: mixed footprints refused by the intent check; a placed "
+          "R4 is left where it is")
 
 
 def test_a_declared_row_of_caps_is_not_the_decap_stages_to_claim():
