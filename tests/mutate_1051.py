@@ -3,7 +3,7 @@
 notice when the arrays, fixed poses, rigid groups or tethers stop doing what
 the PR says they do?
 
-One row per load-bearing mechanism, across the six places the PR put one:
+One row per load-bearing mechanism, across the eight places the PR put one:
 
   ar  `placement/arrays.py`: the formation predicate (axis, order, rotation
       incl. the 2-pad modulo-180, pitch; an order with < 2 resolved members
@@ -30,6 +30,10 @@ One row per load-bearing mechanism, across the six places the PR put one:
   pd  the plan-pcb-placement driver's P1: a `fixed_poses[]` entry excuses a
       mechanical ref's hand lock only AT the declared pose (`same_pose`),
       with a `rot`, on an unlocked part.
+  rl  `place_route_loop.py`: each round's quench disclosure reaches the
+      JSON_SUMMARY.
+  rc  `placement/reconcile.py`: a brief array member with a mechanical pose
+      is a contradiction row.
 
 Every row carries an EXPECTATION, and a verdict that does not match it is
 reported as WRONG. An anchor that does not match its target EXACTLY ONCE is
@@ -67,6 +71,13 @@ f-string had no placeholder` (7857a2455, 2026-09-26, Windows; every killer
 run unmutated first, every selected test name seen to run, all green):
 **154 rows, 153 KILLED, 1 SURVIVED -- the then-expected
 `zoned-row-zone-packed-first` -- 0 broken, 1340 s wall.** Superseded below.
+
+The table is now **159 rows**: the phase-7 verifier added 2 (156), and the
+final re-review 3 -- `fixed-pad-short-unnamed` and
+`route-loop-disclosure-dropped` (two survivors it found, each killed by a new
+assertion) and `mechanical-array-member-not-a-contradiction`. Each of the
+three was run alone and KILLED; the full table has not been re-run on this
+count, so the measured result above is still the run of record.
 
 The earlier run, which changed the tests rather than the table:
 - 154 rows at b0dfc488f (1525 s): 124 KILLED, 30 SURVIVED, none expected.
@@ -109,8 +120,10 @@ QUENCH = os.path.join(_ROOT, 'py_placer', 'placement', 'quench.py')
 PLACE_SEED = os.path.join(_ROOT, 'py_placer', 'place_seed.py')
 DRIVER = os.path.join(_ROOT, '.claude', 'skills', 'plan-pcb-placement',
                       'scripts', 'placement_driver.py')
+ROUTE_LOOP = os.path.join(_ROOT, 'py_placer', 'place_route_loop.py')
+RECONCILE = os.path.join(_ROOT, 'py_placer', 'placement', 'reconcile.py')
 TARGETS = {'ar': ARRAYS, 'fp': FLOORPLAN, 'sd': SEEDER, 'qu': QUENCH,
-           'ps': PLACE_SEED, 'pd': DRIVER}
+           'ps': PLACE_SEED, 'pd': DRIVER, 'rl': ROUTE_LOOP, 'rc': RECONCILE}
 
 T_AS = os.path.join(_TESTS, 'test_1051_arrays_schema.py')
 T_SA = os.path.join(_TESTS, 'test_1051_suggest_arrays.py')
@@ -911,6 +924,23 @@ ROWS = [
      "    left = sorted(movable - locked - edge - fixed - covered)",
      "    left = sorted(movable - locked - edge - covered)",
      (T_959 + '::test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats',),
+     'KILLED'),
+    # --- the re-review's two survivors (both reached by new assertions) ---
+    ('fixed-pad-short-unnamed', 'sd',
+     "            if sf.pad_overlap:",
+     "            if False:",
+     (T_H + '::test_declared_poses_whose_courtyards_clear_but_pads_collide_are_refused',),
+     'KILLED'),
+    ('route-loop-disclosure-dropped', 'rl',
+     "        summary['quench_disclosure'] = list(sink)",
+     "        pass",
+     (T_QB + '::test_route_loop_summary_carries_each_rounds_quench_disclosure',),
+     'KILLED'),
+    # --- the re-review's contradiction row (#1051/#1054) ---
+    ('mechanical-array-member-not-a-contradiction', 'rc',
+     "        if ref not in members or ref not in pcb.footprints:",
+     "        if True:",
+     (T_959 + '::test_p1_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction',),
      'KILLED'),
 ]
 

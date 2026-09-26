@@ -609,6 +609,24 @@ def _ratsnest_screen(before, after, pct):
     return False, txt
 
 
+def record_quench_disclosure(sink, metrics_out, rnd) -> None:
+    """Append this round's `quench.disclosure` (rigid groups, released
+    members, tethers -- #1051/#1052/#1043) to `sink`, tagged with the round,
+    when the quench had anything to disclose."""
+    from placement.quench import disclosure
+    disc = disclosure(metrics_out)
+    if disc:
+        sink.append(dict(disc, round=rnd))
+
+
+def add_quench_disclosure(summary, sink) -> None:
+    """`summary['quench_disclosure']`: every round's disclosure, present
+    only when a round had one (an intent declaring no rows, rigid blocks or
+    tethers leaves the JSON_SUMMARY exactly as before)."""
+    if sink:
+        summary['quench_disclosure'] = list(sink)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Router-in-the-loop placement repair.",
@@ -1248,10 +1266,7 @@ def main():
         # #1051/#1052/#1043: what this round's quench held rigid or
         # tethered, and what it released -- recorded per round, only when
         # the intent declares that channel (`quench.disclosure`).
-        from placement.quench import disclosure as _disclosure
-        _disc = _disclosure(ratsnest)
-        if _disc:
-            quench_disclosures.append(dict(_disc, round=rnd))
+        record_quench_disclosure(quench_disclosures, ratsnest, rnd)
 
         if not placements and (reloc is None or reloc.refusal):
             # #702: name the declared gate when it is what refused, or
@@ -1420,8 +1435,7 @@ def main():
         'work_dir': work,
         'output': args.output_file,
     }
-    if quench_disclosures:
-        summary['quench_disclosure'] = quench_disclosures
+    add_quench_disclosure(summary, quench_disclosures)
     if args.relocate:
         from placement.relocate import NO_EFFICACY_CLAIM as _NEC
         summary.update({

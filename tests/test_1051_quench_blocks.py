@@ -339,6 +339,32 @@ def test_portfolio_candidates_disclose_rigid_groups_and_tethers():
           f"rigid / rigid_released / tethers")
 
 
+def test_route_loop_summary_carries_each_rounds_quench_disclosure():
+    """place_route_loop's JSON_SUMMARY gains `quench_disclosure` -- one entry
+    per round whose quench held rows, rigid blocks or tethers -- and stays
+    exactly as before when no round did. Unit level, through the two
+    helpers `main` calls, because the loop itself routes."""
+    sys.path.insert(0, os.path.join(ROOT, 'py_placer'))
+    import place_route_loop as prl
+    sink = []
+    prl.record_quench_disclosure(sink, {'after': {'crossings': 3}}, 1)
+    assert sink == [], sink                       # nothing to disclose
+    m = {'rigid': {'groups': {'array:x': ['R1', 'R2']}, 'unformed': {}},
+         'rigid_released': [], 'tethers': {'armed': ['decap_distance']},
+         'after': {'crossings': 3}}
+    prl.record_quench_disclosure(sink, m, 2)
+    assert sink == [{'rigid': m['rigid'], 'rigid_released': [],
+                     'tethers': m['tethers'], 'round': 2}], sink
+    summary = {'rounds': 2}
+    prl.add_quench_disclosure(summary, sink)
+    assert summary['quench_disclosure'] == sink, summary
+    bare = {'rounds': 2}
+    prl.add_quench_disclosure(bare, [])
+    assert bare == {'rounds': 2}, bare
+    print("  PASS: the route loop records each round's disclosure and adds "
+          "`quench_disclosure` only when a round had one")
+
+
 def test_member_leaves_only_through_a_disclosed_release():
     td = _workdir()
     doc, ipath = _splitflap_intent()
@@ -1066,6 +1092,7 @@ TESTS = [
     test_a_refused_array_is_no_rigid_group,
     test_an_unformed_row_is_not_held_rigid,
     test_portfolio_candidates_disclose_rigid_groups_and_tethers,
+    test_route_loop_summary_carries_each_rounds_quench_disclosure,
     test_member_leaves_only_through_a_disclosed_release,
     test_a_released_member_rejoins_when_clean_and_in_its_slot,
     test_release_and_rejoin_do_not_oscillate,

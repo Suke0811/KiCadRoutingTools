@@ -515,6 +515,9 @@ def test_declared_poses_whose_courtyards_clear_but_pads_collide_are_refused():
     ref = res['fixed_refused']
     assert set(ref) == {'R1', 'R2'}, (ref, res['fixed_seated'])
     assert 'pad clearance to R2' in ref['R1']['reason'], ref['R1']
+    # The SHORT is named, not only its clearance number (re-review: an
+    # `if sf.pad_overlap:` -> `if False:` mutant survived on the number).
+    assert "pads short R2's" in ref['R1']['reason'], ref['R1']
     assert 'courtyard' not in ref['R1']['reason'], ref['R1']
     assert ref['R1']['conflicts_with_declared'] == ['R2'], ref['R1']
     print(f"  PASS: {ref['R1']['reason']}")

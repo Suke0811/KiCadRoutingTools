@@ -379,7 +379,10 @@ at EXACTLY its pose -- a check, never a search. Courtyards are judged the way
 KiCad's DRC judges them: an overlap is illegal, courtyards that abut (gap 0)
 are not -- unlike a searched seat, which keeps the board clearance -- so a
 human's edge-to-edge rows can be declared. Pad and hole clearance, keep-outs
-and the outline keep their normal rules (a part overhanging the outline must
+(#1031's rule-area band included) and the outline keep their normal rules,
+ABSOLUTE rather than against an input pose, and as in `pads_ok` two parts'
+pads may not stack on each other whatever their nets -- a same-net stack is
+refused too (a part overhanging the outline must
 keep its pad copper and holes on the board). Every declared pose is judged
 against the placed parts AND every other declared pose, so the verdict does
 not depend on ref order; two declarations that clash are BOTH refused, each
