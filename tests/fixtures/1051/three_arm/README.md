@@ -92,20 +92,36 @@ is failed nets / open nets / unconnected pad pairs / vias, OFF -> ON.
 **Arm cd.** Every cd board is pose- and lock-identical to the c board of the
 same seed: 272 footprints, x/y/rotation/side/locked all equal, seeds 0-4. This
 is recorded per seed in `armcd_s*.json` as `pose_identical_to`, checked by
-`--pose-identity c cd`. The probe is deterministic, so a->cd equals a->c.
-The seed-0 a->cd probe was run anyway as a check: 38 -> 22 / 1 -> 1 /
+`--pose-identity c cd`.
+
+What that comparison covers: every footprint's x, y, rotation, side and lock
+state. It does NOT compare the two board files whole; they carry per-run
+UUIDs. The router's input is the parts' poses on an otherwise identical
+unplaced board, and the probe is deterministic, so a->cd is expected to equal
+a->c.
+
+The seed-0 a->cd probe was run anyway, as a check: 38 -> 22 / 1 -> 1 /
 28 -> 16 / 503 -> 388, the same as a->c on every rung. cd seeds 1-2 were not
-probed, because identical boards route identically.
+probed, on that basis.
 
 **Full-board route.** Not re-run at this commit. Under this machine's load a
 route takes 1.5-2.5 h per board. The four routes of the previous round are
 kept in `recorded_5712eea2e/`:
-- They ran the same chain on the seeds committed in 5712eea2e (engine
-  0a2a3358e), not on these boards.
-- At that engine, stage 2.4 was armed by the decap limit, so its arm a and b
-  boards differ from today's. Its arm c is the same method.
-- Broken nets: a 20 (best a seed; 37 on another), b 25, c 11. Treat them as
-  history, not as a measurement of these boards.
+- They ran the same chain on the boards committed in 5712eea2e, not on
+  these. Those boards were SEEDED at 0a2a3358e (arm c at 43eae2deb). The
+  routes themselves ran at 43eae2deb, the commit their records carry.
+- The engine is identical between those two commits.
+- At that engine, stage 2.4 was armed by the decap limit, so the a and b
+  boards differ from today's. Arm c used the same method as today.
+
+| board | nets with issues | unrouted | broken |
+|---|---|---|---|
+| a seed 4 (best a) | 20 | 0 | 20 |
+| a seed 0 | 40 | 3 | 37 |
+| b seed 0 | 26 | 1 | 25 |
+| c seed 1 | 11 | 0 | 11 |
+
+Treat these as history, not as a measurement of these boards.
 
 ### Placement proxies
 
@@ -129,6 +145,13 @@ human board measures 1352 crossings and 3641 mm hpwl. At this commit,
   plus `decap_distance` plus `decap_pin_distance`
   (`grade.floorplan_base_errors_by_rule`). `pins_to_edge` and the other decap
   rules are warnings.
+- `seed_run.grade_errors` is `place_seed`'s own count. It is smaller than
+  `floorplan_own_errors` on some seeds, for example c seed 1: 13 vs 17.
+  - It is graded under the same intent, but `_split_pinned` leaves out every
+    error whose part is `(locked yes)` in the written board or matches
+    `must_lock`.
+  - Measured: c seed 1 excludes 4, on C1, U22 and U30 (twice), which gives
+    17 - 4 = 13. b seed 0 excludes 1, on C1: 38 - 1 = 37.
 
 | arm | errors per seed | `decap_pin_distance` | `decap_distance` |
 |---|---|---|---|
@@ -142,7 +165,7 @@ This round has none.
 **Why a's errors rose from 8-16 to 31-37 since 5712eea2e.** Stage 2.4 is
 opt-in now (`decaps.seat_owners_first`), and this intent does not opt in. So
 fewer ICs are placed when the decap pin stage runs: it claims 29 caps in arm a
-(81 before), 50-51 in b and 60 in c. The locked FPGA and buffers give c's pin
+(81-82 before), 50-51 in b and 60 in c. The locked FPGA and buffers give c's pin
 stage its owners.
 
 ## Findings, plainly
