@@ -1,0 +1,74 @@
+{
+ "arm": "c",
+ "commit": "43eae2debc9290d1d93c639d0e28ec73079ec17b",
+ "grade": {
+  "crossings": 2211,
+  "floorplan_base_errors": 5,
+  "floorplan_base_violations_by_rule": {
+   "decap_distance": 2,
+   "decap_pin_distance": 2,
+   "decap_pin_distance_inferred": 1,
+   "decap_pin_uncovered": 2,
+   "decap_ungraded": 11,
+   "legality": 1,
+   "pins_to_edge": 4
+  },
+  "floorplan_own_errors": 5,
+  "floorplan_own_violations_by_rule": {
+   "decap_distance": 2,
+   "decap_pin_distance": 2,
+   "decap_pin_distance_inferred": 1,
+   "decap_pin_uncovered": 2,
+   "decap_ungraded": 11,
+   "legality": 1,
+   "pins_to_edge": 4
+  },
+  "hpwl": 4406.63,
+  "render_exit": 0
+ },
+ "probe_vs_a": {
+  "exit": 0,
+  "rungs": {
+   "failed nets": [
+    36,
+    14
+   ],
+   "open nets": [
+    0,
+    1
+   ],
+   "unconnected pad pairs": [
+    31,
+    11
+   ],
+   "vias": [
+    443,
+    408
+   ]
+  },
+  "seconds": 5104.6,
+  "tail": null,
+  "verdict": "BETTER on the first rung that moved (failed nets 36 -> 14)"
+ },
+ "seed": 1,
+ "seed_run": {
+  "array_unseated": [],
+  "arrays_formed": [],
+  "decap_stage": {
+   "armed": true,
+   "claimed": 82,
+   "scope": 92
+  },
+  "exit": 4,
+  "fixed_refused": [],
+  "fixed_seated": [],
+  "grade_errors": 3,
+  "pad_conflicts_seeded": 0,
+  "rigid_released": {},
+  "seconds": 1564.2,
+  "seed_crossings": 2211,
+  "seed_hpwl": 4406.63,
+  "summary_read": true,
+  "unseated": []
+ }
+}

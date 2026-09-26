@@ -1,0 +1,127 @@
+{
+ "arm": "b",
+ "commit": "0a2a3358ec5e381734506a69d41524da76d0c9db",
+ "grade": {
+  "crossings": 3355,
+  "floorplan_base_errors": 20,
+  "floorplan_base_violations_by_rule": {
+   "decap_distance": 11,
+   "decap_pin_distance": 8,
+   "decap_pin_distance_inferred": 1,
+   "decap_pin_uncovered": 2,
+   "decap_ungraded": 15,
+   "legality": 1,
+   "pins_to_edge": 4
+  },
+  "floorplan_own_errors": 23,
+  "floorplan_own_violations_by_rule": {
+   "array_formation": 3,
+   "decap_distance": 11,
+   "decap_pin_distance": 8,
+   "decap_pin_distance_inferred": 1,
+   "decap_pin_uncovered": 2,
+   "decap_ungraded": 15,
+   "legality": 1,
+   "pins_to_edge": 4
+  },
+  "hpwl": 4871.74,
+  "render_exit": 0
+ },
+ "seed": 3,
+ "seed_run": {
+  "array_unseated": [],
+  "arrays_formed": [
+   "J1:5k1",
+   "J2:33R",
+   "J2:SP3012-06UTG",
+   "J3:33R",
+   "J3:SP3012-06UTG",
+   "U12:4R7",
+   "U1:100k",
+   "U1:10k",
+   "U1:1k",
+   "U1:2k2",
+   "U1:9p",
+   "U21:4R7",
+   "U30:+1V2:4u7",
+   "U30:+1V2:u1",
+   "U30:2k2",
+   "U30:33R",
+   "U30:33R~2",
+   "U30:47R",
+   "bank:BLU",
+   "bank:PNK"
+  ],
+  "decap_stage": {
+   "armed": true,
+   "claimed": 74,
+   "scope": 84
+  },
+  "exit": 4,
+  "fixed_refused": [],
+  "fixed_seated": [],
+  "grade_errors": 23,
+  "pad_conflicts_seeded": 0,
+  "rigid_released": [
+   {
+    "clause": "intent:decap_distance",
+    "group": "array:U1:9p",
+    "pass": 1,
+    "ref": "C12"
+   },
+   {
+    "clause": "intent:decap_pin_distance",
+    "group": "array:U30:+1V2:4u7",
+    "pass": 1,
+    "ref": "C14"
+   },
+   {
+    "clause": "intent:decap_distance",
+    "group": "array:U30:+1V2:u1",
+    "pass": 1,
+    "ref": "C18"
+   },
+   {
+    "clause": "intent:decap_distance",
+    "group": "array:U30:+1V2:u1",
+    "pass": 1,
+    "ref": "C24"
+   },
+   {
+    "clause": "intent:decap_distance",
+    "group": "array:U30:+1V2:u1",
+    "pass": 1,
+    "ref": "C25"
+   },
+   {
+    "clause": "intent:decap_pin_distance",
+    "group": "array:U30:+1V2:4u7",
+    "pass": 1,
+    "ref": "C27"
+   },
+   {
+    "clause": "intent:decap_distance",
+    "group": "array:U30:+1V2:u1",
+    "pass": 1,
+    "ref": "C77"
+   },
+   {
+    "clause": "intent:decap_distance",
+    "group": "array:J3:SP3012-06UTG",
+    "pass": 1,
+    "ref": "D20"
+   },
+   {
+    "clause": "intent:decap_distance",
+    "group": "array:J2:SP3012-06UTG",
+    "pass": 1,
+    "ref": "D22"
+   }
+  ],
+  "seconds": 1387.9,
+  "seed_crossings": 3338,
+  "seed_hpwl": 4871.743,
+  "summary_read": true,
+  "unseated": []
+ }
+}

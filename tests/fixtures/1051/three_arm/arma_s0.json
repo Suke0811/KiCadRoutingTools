@@ -1,0 +1,50 @@
+{
+ "arm": "a",
+ "commit": "0a2a3358ec5e381734506a69d41524da76d0c9db",
+ "grade": {
+  "crossings": 3637,
+  "floorplan_base_errors": 9,
+  "floorplan_base_violations_by_rule": {
+   "decap_distance": 5,
+   "decap_pin_distance": 3,
+   "decap_pin_distance_inferred": 1,
+   "decap_pin_uncovered": 2,
+   "decap_ungraded": 11,
+   "legality": 1,
+   "pins_to_edge": 5
+  },
+  "floorplan_own_errors": 9,
+  "floorplan_own_violations_by_rule": {
+   "decap_distance": 5,
+   "decap_pin_distance": 3,
+   "decap_pin_distance_inferred": 1,
+   "decap_pin_uncovered": 2,
+   "decap_ungraded": 11,
+   "legality": 1,
+   "pins_to_edge": 5
+  },
+  "hpwl": 5170.05,
+  "render_exit": 0
+ },
+ "seed": 0,
+ "seed_run": {
+  "array_unseated": [],
+  "arrays_formed": [],
+  "decap_stage": {
+   "armed": true,
+   "claimed": 81,
+   "scope": 92
+  },
+  "exit": 4,
+  "fixed_refused": [],
+  "fixed_seated": [],
+  "grade_errors": 9,
+  "pad_conflicts_seeded": 0,
+  "rigid_released": {},
+  "seconds": 1411.4,
+  "seed_crossings": 3633,
+  "seed_hpwl": 5170.05,
+  "summary_read": true,
+  "unseated": []
+ }
+}

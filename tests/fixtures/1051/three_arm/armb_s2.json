@@ -1,0 +1,111 @@
+{
+ "arm": "b",
+ "commit": "0a2a3358ec5e381734506a69d41524da76d0c9db",
+ "grade": {
+  "crossings": 3828,
+  "floorplan_base_errors": 19,
+  "floorplan_base_violations_by_rule": {
+   "decap_distance": 8,
+   "decap_pin_distance": 9,
+   "decap_pin_distance_inferred": 1,
+   "decap_pin_uncovered": 2,
+   "decap_ungraded": 16,
+   "legality": 1,
+   "pins_to_edge": 4,
+   "zone_containment": 1
+  },
+  "floorplan_own_errors": 20,
+  "floorplan_own_violations_by_rule": {
+   "array_formation": 1,
+   "decap_distance": 8,
+   "decap_pin_distance": 9,
+   "decap_pin_distance_inferred": 1,
+   "decap_pin_uncovered": 2,
+   "decap_ungraded": 16,
+   "legality": 1,
+   "pins_to_edge": 4,
+   "zone_containment": 1
+  },
+  "hpwl": 5245.07,
+  "render_exit": 0
+ },
+ "probe_vs_a": {
+  "exit": 0,
+  "rungs": {
+   "failed nets": [
+    29,
+    28
+   ],
+   "open nets": [
+    0,
+    0
+   ],
+   "unconnected pad pairs": [
+    22,
+    18
+   ],
+   "vias": [
+    453,
+    484
+   ]
+  },
+  "seconds": 7027.4,
+  "tail": null,
+  "verdict": "BETTER on the first rung that moved (failed nets 29 -> 28)"
+ },
+ "seed": 2,
+ "seed_run": {
+  "array_unseated": [],
+  "arrays_formed": [
+   "J1:5k1",
+   "J2:33R",
+   "J2:SP3012-06UTG",
+   "J3:33R",
+   "J3:SP3012-06UTG",
+   "U12:4R7",
+   "U1:100k",
+   "U1:10k",
+   "U1:1k",
+   "U1:2k2",
+   "U1:9p",
+   "U21:4R7",
+   "U30:+1V2:4u7",
+   "U30:+1V2:u1",
+   "U30:2k2",
+   "U30:33R",
+   "U30:33R~2",
+   "U30:47R",
+   "bank:BLU",
+   "bank:PNK"
+  ],
+  "decap_stage": {
+   "armed": true,
+   "claimed": 74,
+   "scope": 84
+  },
+  "exit": 4,
+  "fixed_refused": [],
+  "fixed_seated": [],
+  "grade_errors": 20,
+  "pad_conflicts_seeded": 0,
+  "rigid_released": [
+   {
+    "clause": "intent:decap_distance",
+    "group": "array:U30:+1V2:4u7",
+    "pass": 1,
+    "ref": "C14"
+   },
+   {
+    "clause": "intent:decap_distance",
+    "group": "array:U30:+1V2:4u7",
+    "pass": 1,
+    "ref": "C27"
+   }
+  ],
+  "seconds": 1203.7,
+  "seed_crossings": 3828,
+  "seed_hpwl": 5245.068,
+  "summary_read": true,
+  "unseated": []
+ }
+}
