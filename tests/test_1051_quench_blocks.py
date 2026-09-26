@@ -127,21 +127,33 @@ def _splitflap_intent():
     return _CACHE['sf_intent']
 
 
-def _seeded_no_polish():
+#: The place_seed `--seed` of the shared splitflap fixture. The release
+#: and rigid-block arms read the layout it seeds (a dropped intruder must be
+#: unable to clear a member from its own side at 1mm and able to at 3mm; a
+#: rigid block must have somewhere to go), so the layout is a fixture choice:
+#: 0 was the seed until #1051 Phase 6 made stage 2.4 opt-in and moved the
+#: rows; seed 2 is the first whose layout still makes those arms live
+#: (measured over 0-3).
+SF_SEED = '2'
+
+
+def _seeded_no_polish(seed=None):
     """splitflap seeded from the rows intent, WITHOUT the polish: the board
-    the polish would start from."""
-    if 'sf_seed' not in _CACHE:
+    the polish would start from (place_seed `--seed`)."""
+    seed = SF_SEED if seed is None else seed
+    key = f'sf_seed_{seed}'
+    if key not in _CACHE:
         td = _workdir()
         _doc, ipath = _splitflap_intent()
-        out = os.path.join(td, 'sf_seed.kicad_pcb')
+        out = os.path.join(td, f'sf_seed_{seed}.kicad_pcb')
         s = _summary(_run_seed([SPLITFLAP, out, '--intent', ipath, '--force',
                                 '--no-polish', '--clearance',
-                                str(CLEARANCE)]).stdout)
+                                str(CLEARANCE), '--seed', str(seed)]).stdout)
         formed = {n for n, r in s['arrays_formed'].items()
                   if r['verdict'] == 'formed'}
         assert 'U4:47k' in formed, s['arrays_formed']
-        _CACHE['sf_seed'] = (out, formed)
-    return _CACHE['sf_seed']
+        _CACHE[key] = (out, formed)
+    return _CACHE[key]
 
 
 def _gate(intent, pcb):
@@ -190,9 +202,18 @@ def _quench_to(board, gate, out, **kw):
 def test_seeded_row_keeps_formation_through_the_polish():
     td = _workdir()
     doc, ipath = _splitflap_intent()
-    out = os.path.join(td, 'sf_polished.kicad_pcb')
-    s = _summary(_run_seed([SPLITFLAP, out, '--intent', ipath, '--force',
-                            '--clearance', str(CLEARANCE)]).stdout)
+    # The polish must actually MOVE a row for "formed after the polish" to
+    # mean anything, and whether it does depends on the seed and on every
+    # seeder stage: the first seed (of 6) where a row translates is taken,
+    # and the control below is seeded the same (seed 0 moved no row once
+    # stage 2.4 went opt-in; seeds 1-5 all did).
+    for seed in range(6):
+        out = os.path.join(td, f'sf_polished_{seed}.kicad_pcb')
+        s = _summary(_run_seed([SPLITFLAP, out, '--intent', ipath, '--force',
+                                '--clearance', str(CLEARANCE),
+                                '--seed', str(seed)]).stdout)
+        if sum(s['rigid']['moved_as_block'].values()) > 0:
+            break
     rows = s['arrays_formed']
     assert rows and all(r['verdict'] == 'formed' for r in rows.values()), \
         {n: (r['verdict'], r['failed']) for n, r in rows.items()}
@@ -205,14 +226,14 @@ def test_seeded_row_keeps_formation_through_the_polish():
         "a quench that simply froze them", rigid)
 
     # Control: the SAME seed, polished with the rows withheld from the gate.
-    seed, formed_at_seed = _seeded_no_polish()
+    seed_board, formed_at_seed = _seeded_no_polish(seed)
     intent = fp.load_intent(ipath)
-    pcb = parse_kicad_pcb(seed)
+    pcb = parse_kicad_pcb(seed_board)
     gate = _gate(intent, pcb)
     assert gate['rigid_blocks'], gate['rigid_blocks']
     ctl_gate = dict(gate, rigid_blocks={})
     ctl_out = os.path.join(td, 'sf_ctl.kicad_pcb')
-    _m, _p = _quench_to(seed, ctl_gate, ctl_out)
+    _m, _p = _quench_to(seed_board, ctl_gate, ctl_out)
     g = fp.grade(intent, parse_kicad_pcb(ctl_out), ctl_out,
                  group_sources=('kicad', 'sheet'), clearance=CLEARANCE)
     broken = sorted(a['name'] for a in g.array_measured
@@ -304,7 +325,13 @@ def test_a_released_member_rejoins_when_clean_and_in_its_slot():
             for r in (victim, other)]
     released, rejoined = list(recs), []
     p = st.parts[other]
-    st.apply_move(other, p.x, p.y + 2.0, p.rot)     # it moved alone
+    # 2mm ACROSS the row (along it, it would land on a sibling and release
+    # that one too): the row's axis is read off the fixture, not assumed.
+    xs = [st.parts[r].x for r in row]
+    ys = [st.parts[r].y for r in row]
+    across_y = (max(xs) - min(xs)) >= (max(ys) - min(ys))
+    st.apply_move(other, p.x + (0.0 if across_y else 2.0),
+                  p.y + (2.0 if across_y else 0.0), p.rot)  # it moved alone
     # Hysteresis: not in the pass after the release (2), from pass 3 on.
     assert not _quiet(q._update_releases, st, held, blocks, info, released,
                       rejoined, 2, 3.0, 1.0, 0.1) and not rejoined
