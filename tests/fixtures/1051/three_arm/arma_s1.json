@@ -1,29 +1,39 @@
 {
  "arm": "a",
- "commit": "0a2a3358ec5e381734506a69d41524da76d0c9db",
+ "commit": "b8575189e53a9e5cea5f9e360a777408680aee95",
  "grade": {
-  "crossings": 3277,
-  "floorplan_base_errors": 8,
+  "crossings": 3746,
+  "floorplan_base_errors": 36,
+  "floorplan_base_errors_by_rule": {
+   "decap_distance": 6,
+   "decap_pin_distance": 29,
+   "legality": 1
+  },
   "floorplan_base_violations_by_rule": {
-   "decap_distance": 3,
-   "decap_pin_distance": 4,
+   "decap_distance": 6,
+   "decap_pin_distance": 29,
    "decap_pin_distance_inferred": 1,
    "decap_pin_uncovered": 2,
-   "decap_ungraded": 14,
+   "decap_ungraded": 23,
    "legality": 1,
    "pins_to_edge": 4
   },
-  "floorplan_own_errors": 8,
+  "floorplan_own_errors": 36,
+  "floorplan_own_errors_by_rule": {
+   "decap_distance": 6,
+   "decap_pin_distance": 29,
+   "legality": 1
+  },
   "floorplan_own_violations_by_rule": {
-   "decap_distance": 3,
-   "decap_pin_distance": 4,
+   "decap_distance": 6,
+   "decap_pin_distance": 29,
    "decap_pin_distance_inferred": 1,
    "decap_pin_uncovered": 2,
-   "decap_ungraded": 14,
+   "decap_ungraded": 23,
    "legality": 1,
    "pins_to_edge": 4
   },
-  "hpwl": 5060.26,
+  "hpwl": 5349.12,
   "render_exit": 0
  },
  "seed": 1,
@@ -32,19 +42,20 @@
   "arrays_formed": [],
   "decap_stage": {
    "armed": true,
-   "claimed": 82,
+   "claimed": 29,
    "scope": 92
   },
   "exit": 4,
   "fixed_refused": [],
   "fixed_seated": [],
-  "grade_errors": 8,
+  "grade_errors": 36,
   "pad_conflicts_seeded": 0,
   "rigid_released": {},
-  "seconds": 1427.3,
-  "seed_crossings": 3277,
-  "seed_hpwl": 5060.26,
+  "seconds": 1624.2,
+  "seed_crossings": 3746,
+  "seed_hpwl": 5349.123,
   "summary_read": true,
   "unseated": []
- }
+ },
+ "unplaced_sha256": "a6e0f99b46d7d5405dcf3cbe61df71abe1d1cb4fd9e8508a5acf9d32150217a4"
 }

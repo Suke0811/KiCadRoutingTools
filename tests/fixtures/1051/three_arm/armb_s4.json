@@ -1,30 +1,41 @@
 {
  "arm": "b",
- "commit": "0a2a3358ec5e381734506a69d41524da76d0c9db",
+ "commit": "b8575189e53a9e5cea5f9e360a777408680aee95",
  "grade": {
-  "crossings": 3909,
-  "floorplan_base_errors": 15,
+  "crossings": 4029,
+  "floorplan_base_errors": 31,
+  "floorplan_base_errors_by_rule": {
+   "decap_distance": 7,
+   "decap_pin_distance": 23,
+   "legality": 1
+  },
   "floorplan_base_violations_by_rule": {
-   "decap_distance": 5,
-   "decap_pin_distance": 9,
+   "decap_distance": 7,
+   "decap_pin_distance": 23,
    "decap_pin_distance_inferred": 1,
    "decap_pin_uncovered": 2,
-   "decap_ungraded": 18,
+   "decap_ungraded": 19,
    "legality": 1,
-   "pins_to_edge": 4
+   "pins_to_edge": 5
   },
-  "floorplan_own_errors": 18,
+  "floorplan_own_errors": 34,
+  "floorplan_own_errors_by_rule": {
+   "array_formation": 3,
+   "decap_distance": 7,
+   "decap_pin_distance": 23,
+   "legality": 1
+  },
   "floorplan_own_violations_by_rule": {
    "array_formation": 3,
-   "decap_distance": 5,
-   "decap_pin_distance": 9,
+   "decap_distance": 7,
+   "decap_pin_distance": 23,
    "decap_pin_distance_inferred": 1,
    "decap_pin_uncovered": 2,
-   "decap_ungraded": 18,
+   "decap_ungraded": 19,
    "legality": 1,
-   "pins_to_edge": 4
+   "pins_to_edge": 5
   },
-  "hpwl": 5290.34,
+  "hpwl": 5296.28,
   "render_exit": 0
  },
  "seed": 4,
@@ -54,13 +65,13 @@
   ],
   "decap_stage": {
    "armed": true,
-   "claimed": 75,
+   "claimed": 51,
    "scope": 84
   },
   "exit": 4,
   "fixed_refused": [],
   "fixed_seated": [],
-  "grade_errors": 18,
+  "grade_errors": 34,
   "pad_conflicts_seeded": 0,
   "rigid_released": [
    {
@@ -104,12 +115,19 @@
     "group": "array:J3:SP3012-06UTG",
     "pass": 1,
     "ref": "D20"
+   },
+   {
+    "clause": "intent:decap_distance",
+    "group": "array:J2:SP3012-06UTG",
+    "pass": 1,
+    "ref": "D22"
    }
   ],
-  "seconds": 1223.4,
-  "seed_crossings": 3909,
-  "seed_hpwl": 5290.337,
+  "seconds": 1543.6,
+  "seed_crossings": 4029,
+  "seed_hpwl": 5296.282,
   "summary_read": true,
   "unseated": []
- }
+ },
+ "unplaced_sha256": "a6e0f99b46d7d5405dcf3cbe61df71abe1d1cb4fd9e8508a5acf9d32150217a4"
 }

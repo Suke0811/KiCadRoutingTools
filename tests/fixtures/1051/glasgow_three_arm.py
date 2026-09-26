@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""#1051 evidence: glasgow from scratch, three arms, graded against the human.
+"""#1051 evidence: glasgow from scratch, four arms, graded against the human.
 
-  a  the current seeder, from the run-32 intent (no arrays)
-  b  the same intent + every `check_floorplan --suggest-arrays` row declared
-     (the detector's suggestions, accepted wholesale), then seed + quench
-  c  "the AI places the key parts": the run-32 intent + `fixed_poses[]` at the
-     HUMAN poses (kicad_files/glasgow_revC.kicad_pcb) of U30, RN1-RN12 and the
-     17 SN74LVC1T45 buffers -- stage 0 seats and locks them -- then seed
+  a   the current seeder, from the run-32 intent (no arrays)
+  b   the same intent + every `check_floorplan --suggest-arrays` row declared
+      (the detector's suggestions, accepted wholesale), then seed + quench
+  c   "the AI places the key parts": U30, RN1-RN12 and the 17 SN74LVC1T45
+      buffers written at their HUMAN pose (kicad_files/glasgow_revC.kicad_pcb)
+      and stamped `(locked yes)` in the INPUT board, then the base intent
+      seeds the rest (`stage_human_key_parts`)
+  cd  the same 29 RN/buffer poses DECLARED as intent `fixed_poses[]` (stage 0
+      seats them) instead of file-locked. U30 is file-locked at its human
+      pose exactly as in c: its human pose overlaps FID8 (itself file-locked
+      at the human pose in the input), so stage 0 refuses it by design, and
+      declaring FID8 too would change nothing. So c and cd differ ONLY in how
+      the 29 small parts are held.
 
 Each arm runs `place_seed` (polish ON, clearance 0.2) on seeds 0-4 and is
 graded by tools that are not the seeder:
@@ -16,13 +23,24 @@ graded by tools that are not the seeder:
   * check_floorplan under the BASE run-32 intent (one ruler for all arms) and
     under the arm's own intent; place_seed's exit and `unseated`;
   * the ROUTED outcome: tests/test_placement_probe.py --off <a seed N>
-    --on <b|c seed N> --extra-nets <the array bus nets>, read on its own
+    --on <b|c|cd seed N> --extra-nets <the scope below>, read on its own
     verdict ladder (failed nets, open nets, unconnected pad pairs, vias).
 
 The probe's net scope is FIXED before any arm is seeded: every net of fanout
 <= DISPLACEMENT_MAX_FANOUT on a pad of the 30 key parts or of a detector-row
 member, read off the UNPLACED board. It is identical for every comparison, and
-it is not scoped by which parts moved (see test_placement_probe.py).
+it is not scoped by which parts moved (see test_placement_probe.py). It is
+also WIDE: 202 of glasgow's 251 nets. test_placement_probe's own
+MAX_SCOPE_FRACTION (0.5) would refuse it, but that cap is applied only on the
+--intent path, which this does not use -- so each probe is close to a
+whole-board signal route (planes excluded by the fanout cut), not a scoped one.
+
+Crossings/hpwl are render_placement's figures. place_seed's own JSON_SUMMARY
+figure is recorded beside them as `seed_run.seed_crossings` and can differ (by up
+to 40 crossings, ~1%, at 5712eea2e); the tables use render_placement's.
+
+Provenance: `setup.json` and every record carry the SHA-256 of the unplaced
+input board and the commit the run executed at.
 
 Deterministic: place_seed reproduces byte for byte per seed, and the grades
 are functions of the written board. Re-running writes the same JSONs except
@@ -31,10 +49,11 @@ are functions of the written board. Re-running writes the same JSONs except
 Usage (from the repo root):
     python -X utf8 tests/fixtures/1051/glasgow_three_arm.py \
         --src C:/.../wk/run32/glasgow_unplaced.kicad_pcb [--workdir DIR] \
-        [--seeds 0 1 2 3 4] [--arms a b c] [--probe-seeds 0 1 2]
+        [--seeds 0 1 2 3 4] [--arms a b c cd] [--probe-seeds 0 1 2]
     python -X utf8 tests/fixtures/1051/glasgow_three_arm.py --table
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -79,6 +98,11 @@ def _copy_board(src, dst):
         raise SystemExit(f"copy_board failed: {r.stdout}{r.stderr}")
 
 
+def _sha256(path):
+    with open(path, 'rb') as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 def key_refs(pcb):
     return sorted(r for r, f in pcb.footprints.items()
                   if r == 'U30' or re.fullmatch(r'RN\d+', r)
@@ -102,21 +126,24 @@ def build_intents(src, work):
     assert len(keys) == 30, keys          # U30 + RN1-12 + 17 buffers
     fixed = []
     for ref in keys:
+        if ref == 'U30':
+            continue          # file-locked in cd's input; see the docstring
         fp = human.footprints[ref]
         assert unplaced.footprints[ref].footprint_name == fp.footprint_name
         fixed.append({'ref': ref, 'x': fp.x, 'y': fp.y,
                       'rot': float(fp.rotation) % 360.0,
                       'side': 'B' if fp.layer.startswith('B') else 'F',
                       'basis': 'declared',
-                      'why': 'arm c: the human pose (glasgow_revC), placed '
-                             'by the "AI" before the seed'})
+                      'why': 'arm cd: the human pose (glasgow_revC), '
+                             'declared by the "AI" before the seed'})
+    assert len(fixed) == 29, len(fixed)
 
     intents = {}
     # arm c seeds from the BASE intent on a board whose key parts already
     # stand, file-locked, at the human pose (`stage_human_key_parts`); arm
-    # cf declares the same poses as `fixed_poses[]` instead.
+    # cd declares 29 of them as `fixed_poses[]` instead (U30 file-locked).
     for arm, extra in (('a', {}), ('b', {'arrays': rows}), ('c', {}),
-                       ('cf', {'fixed_poses': fixed})):
+                       ('cd', {'fixed_poses': fixed})):
         doc = json.loads(json.dumps(base))
         doc.update(extra)
         if extra:
@@ -173,11 +200,19 @@ def grade(board, intent_own, work_tag):
            'hpwl': None if m.get('hpwl') is None else round(m['hpwl'], 2),
            'render_exit': r.returncode}
     for tag, ipath in (('base', BASE_INTENT), ('own', intent_own)):
+        fj = f'{work_tag}_floorplan_{tag}.json'
         r, _ = _run([os.path.join('py_tools', 'check_floorplan.py'), board,
                      '--intent', ipath, '--clearance', CLEARANCE,
-                     '--exit-zero', '-q', '--allow-routed'])
+                     '--exit-zero', '-q', '--allow-routed', '--json', fj])
         s = _json_summary(r.stdout) or {}
         out[f'floorplan_{tag}_errors'] = s.get('errors')
+        # ERRORS ONLY, by rule -- the count `errors` is the sum of.
+        by = {}
+        if os.path.exists(fj):
+            for v in json.load(open(fj)).get('violations') or ():
+                if v.get('severity') == 'error':
+                    by[v['rule']] = by.get(v['rule'], 0) + 1
+        out[f'floorplan_{tag}_errors_by_rule'] = dict(sorted(by.items()))
         # errors AND warnings, by rule (floorplan.summary's own key).
         out[f'floorplan_{tag}_violations_by_rule'] = dict(
             sorted((s.get('violations_by_rule') or {}).items()))
@@ -324,6 +359,20 @@ def connectivity(routed):
             'broken_nets': broken}
 
 
+def pose_identity(board_a, board_b):
+    """Every footprint's (x, y, rotation, side, locked) on both boards:
+    the refs that differ. Empty = the two seeds wrote the same placement."""
+    from kicad_parser import parse_kicad_pcb
+    pa, pb = parse_kicad_pcb(board_a), parse_kicad_pcb(board_b)
+
+    def pose(f):
+        return (f.x, f.y, float(f.rotation) % 360.0, f.layer, bool(f.locked))
+    refs = sorted(set(pa.footprints) | set(pb.footprints))
+    return [r for r in refs
+            if r not in pa.footprints or r not in pb.footprints
+            or pose(pa.footprints[r]) != pose(pb.footprints[r])]
+
+
 def _commit():
     r = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT,
                        capture_output=True, text=True)
@@ -338,7 +387,7 @@ def table(out_dir):
     hc, hh = human['crossings'], human['hpwl']
     recs = []
     for fn in sorted(os.listdir(out_dir)):
-        if re.fullmatch(r'arm(a|b|c|cf)_s\d+\.json', fn):
+        if re.fullmatch(r'arm(a|b|c|cd)_s\d+\.json', fn):
             recs.append(json.load(open(os.path.join(out_dir, fn))))
     print(f"human glasgow_revC: crossings {hc}  hpwl {hh}\n")
     print(f"{'arm':<4}{'seed':>5}{'cross':>7}{'x hum':>7}{'hpwl':>9}"
@@ -361,13 +410,19 @@ def table(out_dir):
               f"{g['hpwl'] / hh:>7.2f}{g['floorplan_base_errors']!s:>10}"
               f"{g['floorplan_own_errors']!s:>9}{len(s['unseated']):>7}"
               f"{s['exit']:>5}  {ptxt}")
-    routes = sorted(fn for fn in os.listdir(out_dir)
-                    if re.fullmatch(r'route_[a-z]+_s\d+\.json', fn))
+    routes = [(d, fn) for d in (out_dir, os.path.join(out_dir,
+                                                      'recorded_5712eea2e'))
+              if os.path.isdir(d)
+              for fn in sorted(os.listdir(d))
+              if re.fullmatch(r'route_[a-z]+_s\d+\.json', fn)]
     if routes:
         print("\nfull-board route (run 32 chain), graded check_drc at the "
               "written floor + check_connected:")
-        for fn in routes:
-            r = json.load(open(os.path.join(out_dir, fn)))
+        for d, fn in routes:
+            r = json.load(open(os.path.join(d, fn)))
+            if d != out_dir:
+                print(f"  [recorded at {r.get('commit', '?')[:9]} on THAT "
+                      f"commit's seeds -- not these boards]", end='')
             c = r.get('connectivity') or {}
             print(f"  arm {r['arm']} seed {r['seed']}: DRC "
                   f"{(r.get('drc') or {}).get('violations')} "
@@ -375,7 +430,7 @@ def table(out_dir):
                   f"{c.get('unrouted')}  broken {c.get('broken')}  "
                   f"({r.get('seconds')}s)")
     print()
-    for arm in ('a', 'b', 'c', 'cf'):
+    for arm in ('a', 'b', 'c', 'cd'):
         rs = [r for r in recs if r['arm'] == arm]
         if not rs:
             continue
@@ -398,7 +453,8 @@ def main(argv=None):
     p.add_argument('--workdir', default=None)
     p.add_argument('--out', default=OUT)
     p.add_argument('--seeds', type=int, nargs='*', default=[0, 1, 2, 3, 4])
-    p.add_argument('--arms', nargs='*', default=['a', 'b', 'c'])
+    p.add_argument('--arms', nargs='*', default=['a', 'b', 'c', 'cd'])
+    p.add_argument('--probe-arms', nargs='*', default=['b', 'c', 'cd'])
     p.add_argument('--probe-seeds', type=int, nargs='*', default=[0, 1, 2])
     p.add_argument('--reuse', nargs='*', default=None, metavar='DIR',
                    help='workdirs of earlier invocations: an arm/seed whose '
@@ -409,6 +465,15 @@ def main(argv=None):
                         'found via --reuse; records route_<arm>_s<seed>.json')
     p.add_argument('--regrade-route', nargs='*', metavar='ARM:SEED',
                    default=None)
+    p.add_argument('--regrade', action='store_true',
+                   help='re-run the placement grade on the --arms/--seeds '
+                        'boards found in --reuse, replacing each record\'s '
+                        '`grade` (the grade is a function of the board)')
+    p.add_argument('--pose-identity', nargs=2, metavar=('REF_ARM', 'ARM'),
+                   default=None,
+                   help='compare ARM\'s boards with REF_ARM\'s on --seeds '
+                        '(found via --reuse) and record the result in ARM\'s '
+                        'records as `pose_identical_to`')
     p.add_argument('--table', action='store_true',
                    help='print the table from the committed JSONs and exit')
     a = p.parse_args(argv)
@@ -434,6 +499,50 @@ def main(argv=None):
                 json.dump(rec, fh, indent=1, sort_keys=True)
             print(spec, {k: v for k, v in rec['connectivity'].items()
                          if not k.endswith('_nets')}, flush=True)
+        return 0
+    if a.pose_identity:
+        ref_arm, arm = a.pose_identity
+        for seed in a.seeds:
+            found = {}
+            for x in (ref_arm, arm):
+                fn = f'arm{x}_s{seed}.kicad_pcb'
+                found[x] = next((os.path.join(d, fn) for d in (a.reuse or ())
+                                 if os.path.exists(os.path.join(d, fn))),
+                                None)
+                if found[x] is None:
+                    p.error(f'--pose-identity: no {fn} in --reuse')
+            diff = pose_identity(found[ref_arm], found[arm])
+            jf = os.path.join(a.out, f'arm{arm}_s{seed}.json')
+            rec = json.load(open(jf))
+            rec['pose_identical_to'] = {'arm': ref_arm, 'identical': not diff,
+                                        'differing_refs': diff}
+            with open(jf, 'w') as fh:
+                json.dump(rec, fh, indent=1, sort_keys=True)
+            print(f'seed {seed}: {arm} vs {ref_arm}: '
+                  f'{"IDENTICAL" if not diff else diff}', flush=True)
+        return 0
+    if a.regrade:
+        for arm in a.arms:
+            for seed in a.seeds:
+                fn = f'arm{arm}_s{seed}.kicad_pcb'
+                b = next((os.path.join(d, fn) for d in (a.reuse or ())
+                          if os.path.exists(os.path.join(d, fn))), None)
+                jf = os.path.join(a.out, f'arm{arm}_s{seed}.json')
+                if b is None or not os.path.exists(jf):
+                    p.error(f'--regrade: no {fn} in --reuse, or no {jf}')
+                own = os.path.join(os.path.dirname(b), f'intent_{arm}.json')
+                rec = json.load(open(jf))
+                g = grade(b, own, os.path.splitext(b)[0] + '_rg')
+                for k in ('crossings', 'hpwl', 'floorplan_base_errors',
+                          'floorplan_own_errors'):
+                    if g[k] != rec['grade'][k]:
+                        raise SystemExit(f'{fn}: regrade moved {k} '
+                                         f'{rec["grade"][k]} -> {g[k]}')
+                rec['grade'] = g
+                with open(jf, 'w') as fh:
+                    json.dump(rec, fh, indent=1, sort_keys=True)
+                print(f'regraded {fn}: errors by rule '
+                      f'{g["floorplan_base_errors_by_rule"]}', flush=True)
         return 0
     if a.route:
         os.makedirs(a.out, exist_ok=True)
@@ -469,13 +578,21 @@ def main(argv=None):
     _copy_board(a.src, src)
     intents, nets, rows, keys = build_intents(src, work)
     src_c = os.path.join(work, 'glasgow_c_input.kicad_pcb')
+    src_cd = os.path.join(work, 'glasgow_cd_input.kicad_pcb')
     if 'c' in a.arms:
         n = stage_human_key_parts(src, keys, src_c)
         print(f"arm c input: {n} key part(s) at the human pose, locked",
               flush=True)
+    if 'cd' in a.arms:
+        n = stage_human_key_parts(src, ['U30'], src_cd)
+        print(f"arm cd input: {n} part (U30) at the human pose, locked",
+              flush=True)
+    inputs = {'a': src, 'b': src, 'c': src_c, 'cd': src_cd}
     commit = _commit()
+    src_sha = _sha256(src)
     with open(os.path.join(a.out, 'setup.json'), 'w') as fh:
-        json.dump({'commit': commit, 'detector_rows': rows,
+        json.dump({'commit': commit, 'unplaced_sha256': src_sha,
+                   'detector_rows': rows,
                    'key_refs': keys, 'probe_nets': nets,
                    'clearance': float(CLEARANCE)}, fh, indent=1)
     hg = grade(HUMAN, BASE_INTENT, os.path.join(work, 'human'))
@@ -498,12 +615,11 @@ def main(argv=None):
                 boards[(arm, seed)] = prior[0]
                 print(f"arm {arm} seed {seed}: reused {prior[0]}", flush=True)
                 continue
-            sr = seed_one(src_c if arm == 'c' else src, intents[arm], b,
-                          seed)
+            sr = seed_one(inputs[arm], intents[arm], b, seed)
             g = grade(b, intents[arm], os.path.join(work, f'arm{arm}_s{seed}'))
             boards[(arm, seed)] = b
             rec = {'arm': arm, 'seed': seed, 'commit': commit,
-                   'seed_run': sr, 'grade': g}
+                   'unplaced_sha256': src_sha, 'seed_run': sr, 'grade': g}
             with open(os.path.join(a.out, f'arm{arm}_s{seed}.json'), 'w') as fh:
                 json.dump(rec, fh, indent=1, sort_keys=True)
             print(f"arm {arm} seed {seed}: exit {sr['exit']} "
@@ -514,7 +630,7 @@ def main(argv=None):
     for seed in a.probe_seeds:
         if ('a', seed) not in boards:
             continue
-        for arm in ('b', 'c', 'cf'):
+        for arm in a.probe_arms:
             if (arm, seed) not in boards:
                 continue
             pw = os.path.join(work, f'probe_{arm}_s{seed}')

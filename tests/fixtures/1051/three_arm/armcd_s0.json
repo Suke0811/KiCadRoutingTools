@@ -1,5 +1,5 @@
 {
- "arm": "c",
+ "arm": "cd",
  "commit": "b8575189e53a9e5cea5f9e360a777408680aee95",
  "grade": {
   "crossings": 2406,
@@ -36,6 +36,11 @@
   "hpwl": 4389.47,
   "render_exit": 0
  },
+ "pose_identical_to": {
+  "arm": "c",
+  "differing_refs": [],
+  "identical": true
+ },
  "probe_vs_a": {
   "exit": 0,
   "rungs": {
@@ -56,7 +61,7 @@
     388
    ]
   },
-  "seconds": 7433.1,
+  "seconds": 3602.5,
   "tail": null,
   "verdict": "BETTER on the first rung that moved (failed nets 38 -> 22)"
  },
@@ -71,11 +76,41 @@
   },
   "exit": 4,
   "fixed_refused": [],
-  "fixed_seated": [],
+  "fixed_seated": [
+   "RN1",
+   "RN10",
+   "RN11",
+   "RN12",
+   "RN2",
+   "RN3",
+   "RN4",
+   "RN5",
+   "RN6",
+   "RN7",
+   "RN8",
+   "RN9",
+   "U10",
+   "U11",
+   "U16",
+   "U17",
+   "U18",
+   "U22",
+   "U23",
+   "U24",
+   "U25",
+   "U26",
+   "U27",
+   "U28",
+   "U29",
+   "U32",
+   "U4",
+   "U6",
+   "U9"
+  ],
   "grade_errors": 18,
   "pad_conflicts_seeded": 0,
   "rigid_released": {},
-  "seconds": 1451.2,
+  "seconds": 1471.8,
   "seed_crossings": 2406,
   "seed_hpwl": 4389.469,
   "summary_read": true,

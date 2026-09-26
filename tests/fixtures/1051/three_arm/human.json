@@ -1,6 +1,10 @@
 {
  "crossings": 1352,
  "floorplan_base_errors": 3,
+ "floorplan_base_errors_by_rule": {
+  "decap_distance": 2,
+  "legality": 1
+ },
  "floorplan_base_violations_by_rule": {
   "decap_distance": 2,
   "decap_pin_distance_inferred": 1,
@@ -10,6 +14,10 @@
   "pins_to_edge": 4
  },
  "floorplan_own_errors": 3,
+ "floorplan_own_errors_by_rule": {
+  "decap_distance": 2,
+  "legality": 1
+ },
  "floorplan_own_violations_by_rule": {
   "decap_distance": 2,
   "decap_pin_distance_inferred": 1,

@@ -1,57 +1,64 @@
 {
  "arm": "b",
- "commit": "0a2a3358ec5e381734506a69d41524da76d0c9db",
+ "commit": "b8575189e53a9e5cea5f9e360a777408680aee95",
  "grade": {
-  "crossings": 3828,
-  "floorplan_base_errors": 19,
+  "crossings": 3902,
+  "floorplan_base_errors": 31,
+  "floorplan_base_errors_by_rule": {
+   "decap_distance": 5,
+   "decap_pin_distance": 25,
+   "legality": 1
+  },
   "floorplan_base_violations_by_rule": {
-   "decap_distance": 8,
-   "decap_pin_distance": 9,
+   "decap_distance": 5,
+   "decap_pin_distance": 25,
    "decap_pin_distance_inferred": 1,
    "decap_pin_uncovered": 2,
-   "decap_ungraded": 16,
+   "decap_ungraded": 21,
    "legality": 1,
-   "pins_to_edge": 4,
-   "zone_containment": 1
+   "pins_to_edge": 5
   },
-  "floorplan_own_errors": 20,
+  "floorplan_own_errors": 31,
+  "floorplan_own_errors_by_rule": {
+   "decap_distance": 5,
+   "decap_pin_distance": 25,
+   "legality": 1
+  },
   "floorplan_own_violations_by_rule": {
-   "array_formation": 1,
-   "decap_distance": 8,
-   "decap_pin_distance": 9,
+   "decap_distance": 5,
+   "decap_pin_distance": 25,
    "decap_pin_distance_inferred": 1,
    "decap_pin_uncovered": 2,
-   "decap_ungraded": 16,
+   "decap_ungraded": 21,
    "legality": 1,
-   "pins_to_edge": 4,
-   "zone_containment": 1
+   "pins_to_edge": 5
   },
-  "hpwl": 5245.07,
+  "hpwl": 5449.84,
   "render_exit": 0
  },
  "probe_vs_a": {
-  "exit": 0,
+  "exit": 1,
   "rungs": {
    "failed nets": [
-    29,
-    28
+    32,
+    44
    ],
    "open nets": [
-    0,
+    1,
     0
    ],
    "unconnected pad pairs": [
-    22,
-    18
+    26,
+    33
    ],
    "vias": [
-    453,
-    484
+    437,
+    491
    ]
   },
-  "seconds": 7027.4,
+  "seconds": 8498.2,
   "tail": null,
-  "verdict": "BETTER on the first rung that moved (failed nets 29 -> 28)"
+  "verdict": "WORSE on the first rung that moved (failed nets 32 -> 44)"
  },
  "seed": 2,
  "seed_run": {
@@ -80,13 +87,13 @@
   ],
   "decap_stage": {
    "armed": true,
-   "claimed": 74,
+   "claimed": 50,
    "scope": 84
   },
   "exit": 4,
   "fixed_refused": [],
   "fixed_seated": [],
-  "grade_errors": 20,
+  "grade_errors": 31,
   "pad_conflicts_seeded": 0,
   "rigid_released": [
    {
@@ -96,16 +103,41 @@
     "ref": "C14"
    },
    {
+    "clause": "intent:decap_pin_distance",
+    "group": "array:U30:+1V2:u1",
+    "pass": 1,
+    "ref": "C18"
+   },
+   {
+    "clause": "intent:decap_pin_distance",
+    "group": "array:U30:+1V2:u1",
+    "pass": 1,
+    "ref": "C24"
+   },
+   {
+    "clause": "intent:decap_pin_distance",
+    "group": "array:U30:+1V2:u1",
+    "pass": 1,
+    "ref": "C25"
+   },
+   {
     "clause": "intent:decap_distance",
     "group": "array:U30:+1V2:4u7",
     "pass": 1,
     "ref": "C27"
+   },
+   {
+    "clause": "intent:decap_pin_distance",
+    "group": "array:U30:+1V2:u1",
+    "pass": 1,
+    "ref": "C77"
    }
   ],
-  "seconds": 1203.7,
-  "seed_crossings": 3828,
-  "seed_hpwl": 5245.068,
+  "seconds": 1916.1,
+  "seed_crossings": 3902,
+  "seed_hpwl": 5449.839,
   "summary_read": true,
   "unseated": []
- }
+ },
+ "unplaced_sha256": "a6e0f99b46d7d5405dcf3cbe61df71abe1d1cb4fd9e8508a5acf9d32150217a4"
 }
