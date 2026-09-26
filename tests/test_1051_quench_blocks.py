@@ -245,6 +245,62 @@ def test_seeded_row_keeps_formation_through_the_polish():
           f"control polish breaks {', '.join(broken)}")
 
 
+def test_a_refused_array_is_no_rigid_group():
+    """An array the intent check refuses (`array_problems` at error) is not
+    one the seeder seats as a row, so the gate must not hand it to the
+    quench as a rigid group either (review: esp_prog `mixed: [R3, C4]`
+    came out `array:mixed` alongside its own array_conflict)."""
+    esp = os.path.join(BOARDS, 'esp_prog.kicad_pcb')
+    pcb = parse_kicad_pcb(esp)
+    doc = fp.emit_intent(pcb, esp)
+    doc['arrays'] = [{'name': 'mixed', 'members': ['R3', 'C4']}]
+    intent = fp.intent_from_dict(doc, esp)
+    gate, probs = fp.resolve_intent_gate(intent, pcb, ('kicad', 'sheet'))
+    assert any(v.rule == 'array_conflict' and v.block == 'mixed'
+               for v in probs), [v.rule for v in probs]
+    assert 'array:mixed' not in gate['rigid_blocks'], gate['rigid_blocks']
+    # Control: the same members as a legal row ARE a rigid group.
+    doc['arrays'] = [{'name': 'ok', 'members': ['R3', 'R4']}]
+    gate2, probs2 = fp.resolve_intent_gate(fp.intent_from_dict(doc, esp),
+                                           pcb, ('kicad', 'sheet'))
+    assert not [v for v in probs2 if v.block == 'ok'], probs2
+    assert gate2['rigid_blocks'].get('array:ok') == ['R3', 'R4'], gate2
+    print("  PASS: array_conflict 'mixed' is no rigid group; the legal "
+          "'ok' row is")
+
+
+def test_an_unformed_row_is_not_held_rigid():
+    """The quench holds a declared array rigid only while it is a FORMED row
+    at the poses it starts from -- the rule that makes a row the seeder
+    could NOT seat (`array_unseated`, members seated one by one) move as
+    single parts in the polish, and a row a later edit broke likewise. On
+    the HUMAN splitflap none of the detector's four rows is formed
+    (arrays.py's measurement), so none is held, each disclosed in
+    `rigid.unformed` with its failed checks; on the seeded board (the
+    control) the same rows are formed and held."""
+    td = _workdir()
+    doc, ipath = _splitflap_intent()
+    intent = fp.load_intent(ipath)
+    pcb = parse_kicad_pcb(SPLITFLAP)
+    gate = _gate(intent, pcb)
+    names = {f"array:{a['name']}" for a in doc['arrays']}
+    assert names <= set(gate['rigid_blocks']), gate['rigid_blocks']
+    m, _p = _quench_to(SPLITFLAP, gate,
+                       os.path.join(td, 'sf_human_q.kicad_pcb'))
+    rigid = m['rigid']
+    held = {n for n in rigid['groups'] if n.startswith('array:')}
+    assert not held, rigid['groups']
+    assert set(rigid['unformed']) == names, rigid['unformed']
+    assert all(rigid['unformed'][n] for n in names), rigid['unformed']
+    seed, _formed = _seeded_no_polish()
+    m2, _p2 = _quench_to(seed, _gate(intent, parse_kicad_pcb(seed)),
+                         os.path.join(td, 'sf_seed_q.kicad_pcb'))
+    assert names <= set(m2['rigid']['groups']), m2['rigid']
+    assert m2['rigid']['unformed'] == {}, m2['rigid']['unformed']
+    print(f"  PASS: {len(names)} unformed rows on the human board are not "
+          f"held ({rigid['unformed']}); seeded, all are")
+
+
 def test_member_leaves_only_through_a_disclosed_release():
     td = _workdir()
     doc, ipath = _splitflap_intent()
@@ -969,6 +1025,8 @@ def test_unarmed_quench_is_bit_identical_to_the_pre_phase4_quench():
 
 TESTS = [
     test_seeded_row_keeps_formation_through_the_polish,
+    test_a_refused_array_is_no_rigid_group,
+    test_an_unformed_row_is_not_held_rigid,
     test_member_leaves_only_through_a_disclosed_release,
     test_a_released_member_rejoins_when_clean_and_in_its_slot,
     test_release_and_rejoin_do_not_oscillate,

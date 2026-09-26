@@ -2364,7 +2364,8 @@ def resolve_intent_gate(intent: Intent, pcb_data,
     # #1051: the board-aware half of `arrays[]`, one raiser for both reach
     # points. The FILE lock is read off `fp.locked` here -- the gate has the
     # parsed board and no path.
-    problems.extend(array_problems(intent, pcb_data, blocks))
+    _aprobs = array_problems(intent, pcb_data, blocks)
+    problems.extend(_aprobs)
 
     lock: set = set()
     for pat in intent.must_lock:
@@ -2393,7 +2394,8 @@ def resolve_intent_gate(intent: Intent, pcb_data,
              'lock_refs': tuple(sorted(lock)),
              'arrays': resolved_arrays(intent, pcb_data),
              'fixed_poses': tuple(dict(f) for f in intent.fixed_poses),
-             'rigid_blocks': rigid_groups(intent, blocks, pcb_data),
+             'rigid_blocks': rigid_groups(intent, blocks, pcb_data,
+                                          problems=_aprobs),
              'tethers': tether_gate_spec(intent)},
             problems)
 
@@ -2544,15 +2546,28 @@ def resolved_arrays(intent: Intent, pcb_data) -> Tuple[Dict[str, object], ...]:
     return tuple(out)
 
 
-def rigid_groups(intent: Intent, blocks: Dict[str, List[str]], pcb_data
+def rigid_groups(intent: Intent, blocks: Dict[str, List[str]], pcb_data,
+                 problems: Sequence['Violation'] = ()
                  ) -> Dict[str, List[str]]:
     """`{group name: refs}` for every group the quench is to move as ONE
     piece: each declared array (`array:<name>`, members on the board) and
     each block declaring `rigid: true` (`block:<name>`, its resolved refs).
-    Prefixed so an array and a block sharing a name stay two groups."""
+    Prefixed so an array and a block sharing a name stay two groups.
+
+    An array `problems` (`array_problems`) names at ERROR is left out: a row
+    the intent check refuses is not one the seeder seats (it seats the
+    members one by one), so holding the members together would weld two
+    unrelated poses (esp_prog `mixed: [R3, C4]`, an array_conflict, used to
+    come out `array:mixed` all the same). The quench then holds an array
+    only while it is FORMED at the poses it starts from (`quench`,
+    `rigid.unformed`)."""
     fps = pcb_data.footprints or {}
+    refused = {str(v.block) for v in problems or ()
+               if v.severity == ERROR and v.block}
     out: Dict[str, List[str]] = {}
     for a in intent.arrays:
+        if str(a['name']) in refused:
+            continue
         out[f"array:{a['name']}"] = [str(m) for m in a['members']
                                      if m in fps]
     for z in intent.blocks:

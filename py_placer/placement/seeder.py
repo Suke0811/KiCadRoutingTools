@@ -3209,17 +3209,7 @@ def _formation_at(state, pcb_data, spec: Dict, members: Sequence[str]
     count) -- the seeder's self-check that the row it just seated is the row
     the grader will call formed. One predicate, called, never copied."""
     from . import arrays as arr
-    poses = []
-    for m in members:
-        p = state.parts[m]
-        r = p.rect()
-        poses.append({'ref': m, 'x': (r[0] + r[2]) / 2.0,
-                      'y': (r[1] + r[3]) / 2.0, 'rot': p.rot % 360.0,
-                      'pads': arr._copper_pad_count(pcb_data.footprints[m])})
-    return arr.formation(poses, order_key=spec.get('order_refs'),
-                         rotation_spec=spec['rotation'],
-                         pitch_spec=spec['pitch_mm'],
-                         axis_spec=spec['axis'])
+    return arr.formation_at_state(state, pcb_data, spec, members)
 
 
 def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],

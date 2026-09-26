@@ -336,8 +336,12 @@ there -- measured better on all four arrays-auto A/B boards than also seating
 what outranks the members first; with `decaps.seat_owners_first` the rows
 take their members' rank among everything 2.4 then seats). A row
 that cannot be seated whole is reported in `array_unseated` and its members
-are seated one by one; the quench still groups them, from wherever they
-landed. **The quench** moves every rigid group only by
+are seated one by one. **The quench** holds a declared array rigid only while
+it is a FORMED row (`arrays.formation`) at the poses it starts from -- so an
+unseated row's members move as single parts, and so does a row a later edit
+broke; each is disclosed in `rigid.unformed` with its failed checks. An array
+the intent check refuses (`array_problems` at error) is no rigid group at all.
+It moves every rigid group only by
 translating it; its members sit out the single-part nudge and any swap with
 a part outside the group (or, in an array ordered `pin` or `declared`, a swap of two members
 the order positions), a member failing a clause no group offset clears is released (and may

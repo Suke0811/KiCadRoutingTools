@@ -3561,6 +3561,31 @@ def quench(pcb_data: PCBData, pcb_file: str,
     # `merge_groups` then returns the caller's groups exactly as the plain
     # filter below always did.
     rigid_in = dict((intent_gate or {}).get('rigid_blocks') or {})
+    # A declared ARRAY is held rigid only while it is a formed row at the
+    # poses this quench starts from (`arrays.formation`, the grader's own
+    # predicate): holding a row the seeder could not seat (its members were
+    # seated one by one, `array_unseated`), or one a later edit broke, would
+    # weld unrelated poses together. Disclosed in `rigid.unformed`, with the
+    # checks it fails. Blocks declaring `rigid: true` are held as declared.
+    rigid_unformed: Dict[str, List[str]] = {}
+    if any(n.startswith('array:') for n in rigid_in):
+        from placement import arrays as _arr
+        _specs = {f"array:{a.get('name')}": a
+                  for a in (intent_gate or {}).get('arrays') or ()}
+        for name in sorted(rigid_in):
+            if not name.startswith('array:'):
+                continue
+            mem = [r for r in rigid_in[name] if r in state.parts]
+            spec = _specs.get(name)
+            if spec is None or len(mem) < 2:
+                continue
+            v = _arr.formation_at_state(state, pcb_data, spec, mem)
+            if not v['formed']:
+                rigid_unformed[name] = list(v['failed'])
+                del rigid_in[name]
+                print(f"  NOTE: {name} is not a formed row here "
+                      f"({', '.join(v['failed'])} failed), so it is not "
+                      f"held rigid -- its members move as single parts")
     clusters: Dict[str, List[str]] = {}
     if state._tether_active and any(
             t.rule in ('decap_distance', 'decap_pin_distance')
@@ -4012,8 +4037,14 @@ def quench(pcb_data: PCBData, pcb_file: str,
                 # gate held (never worse than the input) made visible.
                 'over_limit_after': _tether_over_limit(state),
             }
+        if rigid_info is None and rigid_unformed:
+            metrics_out['rigid'] = {'groups': {}, 'moved_as_block': {},
+                                    'anchored': {}, 'released': [],
+                                    'rejoined': [], 'swaps_refused': 0,
+                                    'unformed': rigid_unformed}
         if rigid_info is not None:
             metrics_out['rigid'] = {
+                'unformed': rigid_unformed,
                 'groups': {n: list(r) for n, r in
                            sorted(rigid_info['groups'].items())},
                 'moved_as_block': {n: moved_as_block.get(n, 0)

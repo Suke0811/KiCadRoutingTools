@@ -781,8 +781,8 @@ order:
    (level shifters between an FPGA and its connectors) comes back under
    `declined`: declare it by hand if it is one row; multi-row blocks are not
    supported. Stage 2.45 tries to seat each as one row (else its members
-   singly, named in `array_unseated`); a seated row moves in the quench as a
-   rigid group, a member leaving only by a disclosed release
+   singly, named in `array_unseated`); a FORMED row moves in the quench as a
+   rigid group (an unformed one is not: `rigid.unformed`), a member leaving only by a disclosed release
    (`rigid_released`); `blocks[].rigid: true` opts a block in. Seed the rest.
    P1 refuses without a ZONE PLAN (`--zone-plan`, a `zone` and a `note` on a
    block for every movable part), and refuses to let the seeder choose a
