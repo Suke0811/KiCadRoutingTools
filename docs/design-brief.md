@@ -392,7 +392,8 @@ The same row the intent's `arrays[]` carries, plus the prose slot
 accepts is a row the compiled intent loads. It compiles 1:1, with `min_reader`
 7, is graded by `array_formation`, and is seated by the seeder as one row
 where stage 2.45 finds a pose for it -- else member by member, named in
-`array_unseated` -- and moves in the quench as a rigid group (a member leaves
+`array_unseated` -- and moves in the quench as a rigid group while it is a
+formed row (an unformed one is not held: `rigid.unformed`; a member leaves
 only by a disclosed release). Which rows to declare is the
 author's decision: `check_floorplan --suggest-arrays` lists candidates with
 their evidence, and the ones it `declined` with why. `serves` and `order` may be

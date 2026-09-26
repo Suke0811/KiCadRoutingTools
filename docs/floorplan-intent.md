@@ -325,7 +325,8 @@ one -- a row is seated as one piece).
 
 The quench gate bundle carries the resolved rows (`arrays`, with the expected
 `order_refs`), `fixed_poses` and `rigid_blocks` (`{"array:<name>" |
-"block:<name>": refs}` for every array and every `rigid: true` block), and
+"block:<name>": refs}` for every array the intent check does not refuse
+and every `rigid: true` block), and
 three engines act on them. **The seeder** tries to seat each row whole (stage 2.45,
 `seeder._seat_array` -> `_seat_block`): the served part's pin order, ONE
 rotation the seeder chooses for `"shared"`/`"unknown"`, a pitch and an axis,
