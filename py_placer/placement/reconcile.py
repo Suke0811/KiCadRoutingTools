@@ -617,6 +617,37 @@ def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
                 'why': 'the declared pose puts the drawn body entirely '
                        'outside the board outline\'s bounding box'})
 
+    # #1051/#1054: a mechanical POSE for a part the brief declares an ARRAY
+    # member. The file pins the part; the brief says it moves with its row --
+    # and no plan can do both (the loader refuses a fixed pose on a member,
+    # and a FILE lock on a member is an array_conflict). So it is the same
+    # kind of disagreement as a brief edge against a mechanical edge: two
+    # declared/recorded values that disagree are a CONTRADICTION P1 refuses
+    # until answered, and the stronger source wins -- a declared brief over
+    # a recorded file, so the mechanical value LOSES, is not anchored
+    # (`lost_mechanical_refs`) and owes no lock. A brief the run wrote itself
+    # (hypothesis) loses to the recorded file instead: drift, which P1
+    # refuses with "correct the losing source" -- take the part out of the
+    # array. Either way the remedy is one that can be carried out.
+    members = {}
+    for a in (brief_fragment or {}).get('arrays') or ():
+        for m in a.get('members') or ():
+            members.setdefault(str(m), str(a.get('name')))
+    for ref, p in sorted((mech.get('poses') or {}).items()):
+        if ref not in members or ref not in pcb.footprints:
+            continue
+        values = {
+            'mechanical': {'value': f"fixed at ({p['x']:g}, {p['y']:g}"
+                                    + (f", {p['rot']:g}deg)"
+                                       if p.get('rot') is not None else ')'),
+                           'authority': mech_auth, 'source': mech_src},
+            'brief': {'value': f"moves with array {members[ref]!r}",
+                      'authority': brief_auth, 'source': brief_source}}
+        _row(ref, 'array', values, lambda a, b: a == b,
+             'the mechanical file pins this part at a pose, and the brief '
+             'declares it a member of a row that moves as one piece -- one '
+             'of the two has to give')
+
     knobs = ((mech.get('floors') or {}).get('knobs') or {})
     unavailable = (mech.get('floors') or {}).get('unavailable')
     if (knobs or unavailable) and floors_used:

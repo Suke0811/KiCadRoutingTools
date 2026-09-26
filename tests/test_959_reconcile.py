@@ -414,6 +414,62 @@ def test_p1_refuses_a_contradiction_until_dispositioned():
           "once dispositioned, and --no-mechanical is the OFF arm")
 
 
+def test_p1_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction():
+    """#1051/#1054: mechanical.json pins U1 while the brief makes it a
+    member of a row. No plan can hold both -- the loader refuses a fixed
+    pose on an array member, and a FILE lock on one is an array_conflict --
+    so P1 used to demand exactly those two impossible remedies. It is now a
+    CONTRADICTION row (`U1:array`), refused by name until answered, and the
+    declared brief wins: once acknowledged the mechanical value has LOST,
+    is not anchored, and P1 owes no lock or fixed pose for it."""
+    sys.path.insert(0, os.path.dirname(DRIVER))
+    import importlib
+    drv = importlib.import_module('placement_driver')
+    with tempfile.TemporaryDirectory() as tmp:
+        d = os.path.join(tmp, 'b')
+        os.makedirs(d)
+        board = drv._tiny_board(os.path.join(d, 'board.kicad_pcb'),
+                                ('U1', 'U2', 'U3'))
+        row = {'name': 'pair', 'members': ['U1', 'U2'], 'order': 'declared',
+               'rotation': 'shared'}
+        with open(os.path.join(d, 'board.design-brief.json'), 'w',
+                  encoding='utf-8') as fh:
+            json.dump({'schema': 1, 'kind': 'design-brief', 'units': 'mm',
+                       'board': 'board.kicad_pcb', 'arrays': [row]}, fh)
+        with open(os.path.join(d, 'mechanical.json'), 'w',
+                  encoding='utf-8') as fh:
+            json.dump({'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
+                                  'reason': 'the datum'}]}, fh)
+
+        def plan(name, **extra):
+            p = os.path.join(tmp, name)
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(drv._zone_plan_doc(
+                    [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
+                      'note': 'one zone'}], min_reader=7,
+                    arrays=[dict(row, source='brief')], **extra), fh)
+            return p
+        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
+                '--board', board]
+        r = run_utils.check(argv + ['--zone-plan', plan('a.json')],
+                            refuse='contradiction(s) between DECLARED',
+                            code=4)
+        out = r.stdout + r.stderr
+        assert 'U1:array' in out and "moves with array 'pair'" in out, out
+        assert '-> brief wins' in out, out
+        # No remedy that cannot work: neither a lock nor a fixed pose.
+        assert "lock 'U1'" not in out and 'fixed_poses' not in out, out
+        disp = {'rules': {'envelope': 'fixture', 'legality': 'fixture'},
+                'contradictions': {'U1:array': 'the row holds; the pose '
+                                               'in the file was stale'}}
+        r = run_utils.check(argv + ['--zone-plan',
+                                    plan('b.json', dispositions=disp)],
+                            accept=True)
+        assert 'not held at their declared pose' not in r.stdout, r.stdout
+    print("  PASS: P1 refuses U1:array by name (brief wins), offers no lock or "
+          "fixed pose, and passes once acknowledged with nothing owed")
+
+
 def test_p1_refuses_an_unlocked_mechanical_ref():
     sys.path.insert(0, os.path.dirname(DRIVER))
     import importlib
@@ -1385,6 +1441,7 @@ TESTS = [
     test_a_hypothesis_is_drift_not_a_contradiction,
     test_an_overhanging_mechanical_part_raises_no_envelope_error,
     test_p1_refuses_a_contradiction_until_dispositioned,
+    test_p1_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction,
     test_p1_refuses_an_unlocked_mechanical_ref,
     test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats,
 ]

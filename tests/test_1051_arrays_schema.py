@@ -949,9 +949,19 @@ def test_emit_never_fixes_an_array_member_from_mechanical_json():
             doc = json.load(fh)
         refs = {x['ref'] for x in doc.get('fixed_poses') or ()}
         assert not refs & {'R3', 'R4'}, refs
-        skipped = doc['context']['mechanical']['fixed_skipped']
+        # Since the re-review this is a CONTRADICTION the brief wins
+        # (`R3:array`), so the mechanical value LOST and neither is anchored
+        # at all; a member the file still anchors (a brief the run wrote,
+        # which loses) is skipped by the `_claimed` guard instead.
+        rows = {r['id']: r for r in doc['context']['reconciliation']}
+        mech = doc['context']['mechanical']
         for r in ('R3', 'R4'):
-            assert skipped.get(r) == "a member of array 'uart'", skipped
+            row = rows.get(f'{r}:array')
+            assert row and row['kind'] == 'contradiction' \
+                and row['winner'] == 'brief', row
+            assert r not in mech['anchored'], mech['anchored']
+            assert 'lost a contradiction' in mech['skipped'].get(r, ''), \
+                mech['skipped']
         fp.load_intent(out)          # the loader accepts what emit wrote
         check([sys.executable, '-X', 'utf8', CHECK_FLOORPLAN, ESP,
                '--intent', out, '--quiet'], accept=True)

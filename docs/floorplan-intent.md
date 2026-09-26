@@ -1056,7 +1056,12 @@ top-level `reconciliation`.
 
 - **Two declared or recorded values that disagree** are a CONTRADICTION, and P1
   refuses until it is answered in `dispositions.contradictions`, because the
-  loser may be the right one.
+  loser may be the right one. That includes a mechanical POSE for a part the
+  brief declares an ARRAY member (`<ref>:array`): the file pins it, the row
+  moves it, and no plan can hold both (the loader refuses a fixed pose on a
+  member, and a file-locked member is an `array_conflict`). The declared brief
+  wins, so the mechanical value loses and is not anchored; to keep the pose
+  instead, take the part out of the array.
 - **A plan that disagrees with the brief** is DRIFT, and the declared value wins.
   No `dispositions` entry clears it. P1 refuses it with the brief-clause
   wording, and only `--waive brief-clause:<id>:<why>` answers it there.
