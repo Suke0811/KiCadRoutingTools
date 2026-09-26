@@ -301,6 +301,44 @@ def test_an_unformed_row_is_not_held_rigid():
           f"held ({rigid['unformed']}); seeded, all are")
 
 
+def test_portfolio_candidates_disclose_rigid_groups_and_tethers():
+    """Review item 4: place_portfolio's quench ran with the rows and the
+    tethers held and disclosed neither. Each candidate's `metrics` now
+    carries `quench.disclosure`'s keys when the intent declares them:
+    the rigid groups (the rows, formed on the seeded board), the released
+    members, and the tether terms (decaps.max_distance_mm)."""
+    td = _workdir()
+    doc, _ip = _splitflap_intent()
+    doc = dict(doc, decaps=dict(doc.get('decaps') or {},
+                                max_distance_mm=3.0))
+    ipath = os.path.join(td, 'pf_intent.json')
+    with open(ipath, 'w', encoding='utf-8') as fh:
+        json.dump(doc, fh)
+    seed_board, _formed = _seeded_no_polish()
+    out = os.path.join(td, 'pf')
+    r = subprocess.run([sys.executable, '-X', 'utf8',
+                        os.path.join(ROOT, 'py_placer', 'place_portfolio.py'),
+                        seed_board, '--out-dir', out, '--seed', '0',
+                        '--candidates', '2', '--keep', '1', '--route-top',
+                        '0', '--intent', ipath, '--clearance',
+                        str(CLEARANCE)], capture_output=True, text=True,
+                       encoding='utf-8', errors='replace', cwd=ROOT,
+                       timeout=900)
+    assert 'Traceback' not in r.stdout + r.stderr, (r.stdout + r.stderr)[-1500:]
+    with open(os.path.join(out, 'portfolio.json'), encoding='utf-8') as fh:
+        pf = json.load(fh)
+    rows = {f"array:{a['name']}" for a in doc['arrays']}
+    for c in pf['candidates']:
+        m = c['metrics']
+        for k in ('rigid', 'rigid_released', 'tethers'):
+            assert k in m, (c['index'], k, sorted(m))
+        assert rows <= set(m['rigid']['groups']) | set(
+            m['rigid']['unformed']), m['rigid']
+        assert 'decap_distance' in m['tethers']['armed'], m['tethers']
+    print(f"  PASS: {len(pf['candidates'])} portfolio candidate(s) disclose "
+          f"rigid / rigid_released / tethers")
+
+
 def test_member_leaves_only_through_a_disclosed_release():
     td = _workdir()
     doc, ipath = _splitflap_intent()
@@ -1027,6 +1065,7 @@ TESTS = [
     test_seeded_row_keeps_formation_through_the_polish,
     test_a_refused_array_is_no_rigid_group,
     test_an_unformed_row_is_not_held_rigid,
+    test_portfolio_candidates_disclose_rigid_groups_and_tethers,
     test_member_leaves_only_through_a_disclosed_release,
     test_a_released_member_rejoins_when_clean_and_in_its_slot,
     test_release_and_rejoin_do_not_oscillate,

@@ -696,7 +696,17 @@ def _quench_metrics(m: Dict) -> Dict:
             # produces. Assert on `_step`; the number lives in `_reason`.
             'board_grid_occupancy': (m.get('board_grid') or {}).get(
                 'occupancy'),
-            'board_grid_reason': (m.get('board_grid') or {}).get('reason')}
+            'board_grid_reason': (m.get('board_grid') or {}).get('reason'),
+            # #1051/#1052/#1043: the rigid groups and tethers this candidate's
+            # quench held, and any member it released -- present only when
+            # the intent declares that channel (`quench.disclosure`, the
+            # same keys place_seed's polish reports).
+            **_quench_disclosure(m)}
+
+
+def _quench_disclosure(m: Dict) -> Dict:
+    from placement.quench import disclosure
+    return disclosure(m)
 
 
 # --------------------------------------------------------------------------

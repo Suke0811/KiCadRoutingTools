@@ -1031,6 +1031,7 @@ def main():
     swap_cap = (args.max_displacement if args.swap_max_displacement is None
                 else args.swap_max_displacement)
 
+    quench_disclosures = []
     for rnd in range(1, args.rounds + 1):
         if best['failures'] == 0:
             print("No failures left - stopping.")
@@ -1244,6 +1245,14 @@ def main():
             intent_gate=intent_gate,
         )
 
+        # #1051/#1052/#1043: what this round's quench held rigid or
+        # tethered, and what it released -- recorded per round, only when
+        # the intent declares that channel (`quench.disclosure`).
+        from placement.quench import disclosure as _disclosure
+        _disc = _disclosure(ratsnest)
+        if _disc:
+            quench_disclosures.append(dict(_disc, round=rnd))
+
         if not placements and (reloc is None or reloc.refusal):
             # #702: name the declared gate when it is what refused, or
             # widening the radius reads as "try harder" while every
@@ -1411,6 +1420,8 @@ def main():
         'work_dir': work,
         'output': args.output_file,
     }
+    if quench_disclosures:
+        summary['quench_disclosure'] = quench_disclosures
     if args.relocate:
         from placement.relocate import NO_EFFICACY_CLAIM as _NEC
         summary.update({
