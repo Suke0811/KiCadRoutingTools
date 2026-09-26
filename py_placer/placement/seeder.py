@@ -3513,7 +3513,7 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple]
                             f"intersects)")
             elif sf.stack:
                 what.append(f"pads stack on {other}'s copper")
-            if sf.pad > 1e-6 and not sf.pad_overlap:
+            if sf.pad > 1e-6:
                 what.append(f"pad clearance to {other} short by "
                             f"{sf.pad:.3f}mm")
             if sf.hole > 1e-6:
