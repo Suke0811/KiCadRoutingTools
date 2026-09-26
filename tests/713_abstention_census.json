@@ -26,6 +26,7 @@
    "rules_run": 3,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -56,6 +57,7 @@
    "rules_run": 3,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -86,6 +88,7 @@
    "rules_run": 5,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -116,6 +119,7 @@
    "rules_run": 6,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -143,6 +147,7 @@
    "rules_run": 5,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -171,6 +176,7 @@
    "rules_run": 5,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -199,6 +205,7 @@
    "rules_run": 5,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -227,6 +234,7 @@
    "rules_run": 7,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -253,6 +261,7 @@
    "rules_run": 3,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -283,6 +292,7 @@
    "rules_run": 3,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -315,6 +325,7 @@
    "rules_run": 7,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -341,6 +352,7 @@
    "rules_run": 3,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -371,6 +383,7 @@
    "rules_run": 3,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -401,6 +414,7 @@
    "rules_run": 3,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -431,6 +445,7 @@
    "rules_run": 3,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -461,6 +476,7 @@
    "rules_run": 5,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -491,6 +507,7 @@
    "rules_run": 7,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -517,6 +534,7 @@
    "rules_run": 5,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -545,6 +563,7 @@
    "rules_run": 5,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -575,6 +594,7 @@
    "rules_run": 5,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -605,6 +625,7 @@
    "rules_run": 7,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
@@ -633,6 +654,7 @@
    "rules_run": 5,
    "skipped_arm": [],
    "skipped_not_asked": [
+    "array_formation",
     "decap_distance",
     "decap_pin_distance",
     "decap_ungraded",
