@@ -6614,7 +6614,19 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
             rot = f.get('rot')
             rot = (part.rot if rot is None or rot == 'unknown'
                    else float(rot) % 360.0)
-            r = part.rect(float(f['x']), float(f['y']), rot)
+            fx_, fy_ = float(f['x']), float(f['y'])
+            side = f.get('side')
+            if side in ('F', 'B') and side != getattr(part, 'side', side):
+                # The DECLARED face: the part's courtyard mirrored the way
+                # the placement writer flips a footprint (local y -> -y, the
+                # caller's angle), then turned to the declared rotation --
+                # not its outline on the face it is on now.
+                from .legality import rotate_local_bounds
+                b0 = part.bounds_by_rot[0.0]
+                e = rotate_local_bounds(b0[0], -b0[3], b0[2], -b0[1], rot)
+                r = (fx_ + e[0], fy_ + e[1], fx_ + e[2], fy_ + e[3])
+            else:
+                r = part.rect(fx_, fy_, rot)
             if zone_fits_courtyard(z.rect, r, tol):
                 esc, _axis = _rect_escape(z.rect, r)
             else:

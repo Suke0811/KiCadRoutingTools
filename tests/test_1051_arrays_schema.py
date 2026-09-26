@@ -1018,7 +1018,48 @@ def test_the_ledger_fails_a_fixed_pose_only_on_its_anchor():
           "pose is; plan_check warns the pose is outside its own zone")
 
 
+def test_plan_check_measures_a_fixed_pose_on_its_declared_face():
+    """Re-review item 3: plan_check's fixed-pose zone check measured the
+    part's courtyard on the face it is on NOW. A declared `side` flips it
+    (the writer mirrors local y), so a courtyard that extends only +y on F
+    extends -y on B. The zone holds the F outline and not the B one: the
+    WARN must follow the DECLARED side."""
+    board = """(kicad_pcb (version 20241229) (net 0 "") (net 1 "/A")
+ (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+ (gr_rect (start 0 0) (end 30 30) (layer "Edge.Cuts") (uuid "e1"))
+ (footprint "t:P" (layer "F.Cu") (uuid "fp-P1") (at 5 5)
+  (property "Reference" "P1" (at 0 0 0))
+  (fp_rect (start -1 0) (end 1 4) (layer "F.CrtYd") (uuid "c1"))
+  (pad "1" smd rect (at 0 1) (size 0.5 0.5) (layers "F.Cu") (net 1 "/A") (uuid "p1")))
+ (footprint "t:Q" (layer "F.Cu") (uuid "fp-Q1") (at 20 20)
+  (property "Reference" "Q1" (at 0 0 0))
+  (pad "1" smd rect (at 0 0) (size 0.5 0.5) (layers "F.Cu") (net 1 "/A") (uuid "q1")))
+)
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'b.kicad_pcb')
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(board)
+        pcb = parse_kicad_pcb(path)
+        got = {}
+        for side in ('F', 'B'):
+            it = fp.intent_from_dict(_base(
+                min_reader=7,
+                blocks=[{'name': 'z', 'refs': ['P1'],
+                         'zone': [8.0, 9.5, 12.0, 14.5]}],
+                fixed_poses=[{'ref': 'P1', 'x': 10.0, 'y': 10.0, 'rot': 0,
+                              'side': side, 'basis': 'declared'}]))
+            found, _m = fp.plan_check(it, pcb, path)
+            got[side] = [v for v in found
+                         if v.rule == 'plan_fixed_outside_zone']
+        assert got['F'] == [], [v.message for v in got['F']]
+        assert len(got['B']) == 1 and got['B'][0].ref == 'P1', got['B']
+    print("  PASS: the fixed pose fits its zone on F and not mirrored on B, "
+          "and plan_check warns only for the declared B")
+
+
 TESTS = [
+    test_plan_check_measures_a_fixed_pose_on_its_declared_face,
     test_the_ledger_fails_a_fixed_pose_only_on_its_anchor,
     test_emit_never_fixes_an_array_member_from_mechanical_json,
     test_the_new_keys_load_and_land_on_the_intent,
