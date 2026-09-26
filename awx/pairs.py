@@ -157,6 +157,15 @@ def end_run(cfg, tips, u=None) -> float:
     return end_connector(cfg, tips) + handover_setback(cfg) + probe_len(cfg, u)
 
 
+def opposite_hands(ctx, n) -> bool:
+    """An OPPOSITE-HANDS pair: P on one side of its travel at its tooth, on the other arriving at its berth (hand) --
+    its legs must swap sides once, at a dive (a crossover): it cannot be laid with no layer change."""
+    (tp, tn), (sp, sn) = ctx.pair_ends[n]
+    a = hand(ctx.tooth_dir.get(n), tp, tn)
+    b = hand(ctx.stub_dir.get(n), sp, sn, arriving=True)
+    return a != 0 and b != 0 and a != b
+
+
 def dive_room(cfg, tips, u=None) -> float:
     """How far from its two tips a pair's own DIVE may stand: its end connector onto the pose, then the router's
     straight from the pose into the via (via_straight, or the probe past the pose where that is longer -- both are
@@ -444,7 +453,6 @@ def offset_polyline(pts: Sequence[Pt], h: float) -> List[Pt]:
 def _chain(segs, start: Pt, tol: float = 0.01):
     """Order the envelope's segments from `start` into runs per layer:
     [(layer, [pts...]), ...] with a via between consecutive runs."""
-    key = lambda x, y: (round(x, 3), round(y, 3))
     left = list(segs)
     runs: List[Tuple[str, List[Pt]]] = []
     cur = start
