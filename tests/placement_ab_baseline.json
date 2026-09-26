@@ -23,18 +23,18 @@
   "on": {
    "body_advisory": 3,
    "body_blocking": 0,
-   "crossings": 3833,
-   "edge_facing_pads": 8,
-   "health_block_displacement_max_mm": 15.2871,
+   "crossings": 3613,
+   "edge_facing_pads": 10,
+   "health_block_displacement_max_mm": 16.0257,
    "health_bus_foreign_crossings": null,
-   "hpwl": 5047.42,
+   "hpwl": 4901.15,
    "intent_errors": 1,
    "intent_errors_by_rule": {
     "edge_connector": 1
    },
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
-   "inversions": 1659,
+   "inversions": 1693,
    "unseated": 0
   }
  },
@@ -61,24 +61,24 @@
   "on": {
    "body_advisory": 0,
    "body_blocking": 0,
-   "crossings": 5062,
+   "crossings": 3789,
    "edge_facing_pads": 0,
-   "health_block_displacement_max_mm": 34.6828,
+   "health_block_displacement_max_mm": 32.3672,
    "health_bus_foreign_crossings": null,
-   "hpwl": 13162.89,
+   "hpwl": 10812.4,
    "intent_errors": 1,
    "intent_errors_by_rule": {
     "zone_containment": 1
    },
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
-   "inversions": 1309,
+   "inversions": 1341,
    "unseated": 0
   }
  },
  "arrays-auto-splitflap_driver": {
   "board": "splitflap_driver.kicad_pcb",
-  "mark": "regress",
+  "mark": "improve",
   "off": {
    "body_advisory": 2,
    "body_blocking": 0,
@@ -100,18 +100,18 @@
   "on": {
    "body_advisory": 2,
    "body_blocking": 0,
-   "crossings": 675,
-   "edge_facing_pads": 2,
+   "crossings": 452,
+   "edge_facing_pads": 0,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
-   "hpwl": 3352.18,
+   "hpwl": 2815.85,
    "intent_errors": 1,
    "intent_errors_by_rule": {
     "legality": 1
    },
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
-   "inversions": 188,
+   "inversions": 186,
    "unseated": 0
   }
  },
@@ -136,20 +136,20 @@
    "unseated": 2
   },
   "on": {
-   "body_advisory": 19,
-   "body_blocking": 2,
-   "crossings": 4460,
-   "edge_facing_pads": 0,
+   "body_advisory": 16,
+   "body_blocking": 1,
+   "crossings": 4358,
+   "edge_facing_pads": 3,
    "health_block_displacement_max_mm": 18.6488,
    "health_bus_foreign_crossings": null,
-   "hpwl": 8152.3,
+   "hpwl": 8135.73,
    "intent_errors": 1,
    "intent_errors_by_rule": {
     "zone_containment": 1
    },
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
-   "inversions": 755,
+   "inversions": 767,
    "unseated": 2
   }
  },
@@ -407,7 +407,7 @@
  },
  "decaps-auto-esp_prog": {
   "board": "esp_prog.kicad_pcb",
-  "mark": "regress",
+  "mark": "neutral",
   "off": {
    "body_advisory": 18,
    "body_blocking": 0,
@@ -426,20 +426,20 @@
    "unseated": 0
   },
   "on": {
-   "body_advisory": 17,
+   "body_advisory": 18,
    "body_blocking": 0,
-   "crossings": 45,
+   "crossings": 47,
    "edge_facing_pads": 3,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
-   "hpwl": 260.05,
+   "hpwl": 240.97,
    "intent_errors": 1,
    "intent_errors_by_rule": {
     "decap_distance": 1
    },
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
-   "inversions": 13,
+   "inversions": 15,
    "unseated": 0
   }
  },
@@ -465,13 +465,13 @@
    "unseated": 0
   },
   "on": {
-   "body_advisory": 3,
+   "body_advisory": 5,
    "body_blocking": 0,
-   "crossings": 3702,
-   "edge_facing_pads": 8,
-   "health_block_displacement_max_mm": 17.5429,
+   "crossings": 3810,
+   "edge_facing_pads": 10,
+   "health_block_displacement_max_mm": 20.3971,
    "health_bus_foreign_crossings": null,
-   "hpwl": 5170.92,
+   "hpwl": 5289.7,
    "intent_errors": 2,
    "intent_errors_by_rule": {
     "decap_distance": 1,
@@ -479,7 +479,7 @@
    },
    "intent_errors_enforced": 1,
    "intent_errors_other": 1,
-   "inversions": 1668,
+   "inversions": 1750,
    "unseated": 0
   }
  },
@@ -504,26 +504,26 @@
    "unseated": 4
   },
   "on": {
-   "body_advisory": 11,
+   "body_advisory": 18,
    "body_blocking": 5,
-   "crossings": 3830,
-   "edge_facing_pads": 9,
-   "health_block_displacement_max_mm": 15.5971,
+   "crossings": 3921,
+   "edge_facing_pads": 4,
+   "health_block_displacement_max_mm": 13.0365,
    "health_bus_foreign_crossings": null,
-   "hpwl": 2996.31,
-   "intent_errors": 14,
+   "hpwl": 2911.42,
+   "intent_errors": 5,
    "intent_errors_by_rule": {
-    "decap_distance": 14
+    "decap_distance": 5
    },
-   "intent_errors_enforced": 14,
+   "intent_errors_enforced": 5,
    "intent_errors_other": 0,
-   "inversions": 684,
+   "inversions": 670,
    "unseated": 4
   }
  },
  "decaps-auto-splitflap_driver": {
   "board": "splitflap_driver.kicad_pcb",
-  "mark": "regress",
+  "mark": "neutral",
   "off": {
    "body_advisory": 2,
    "body_blocking": 0,
@@ -544,24 +544,24 @@
   "on": {
    "body_advisory": 2,
    "body_blocking": 0,
-   "crossings": 589,
+   "crossings": 556,
    "edge_facing_pads": 2,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
-   "hpwl": 3172.1,
+   "hpwl": 3093.66,
    "intent_errors": 1,
    "intent_errors_by_rule": {
     "legality": 1
    },
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
-   "inversions": 189,
+   "inversions": 194,
    "unseated": 0
   }
  },
  "decaps-auto-tigard": {
   "board": "tigard.kicad_pcb",
-  "mark": "regress",
+  "mark": "neutral",
   "off": {
    "body_advisory": 1,
    "body_blocking": 0,
@@ -580,21 +580,21 @@
    "unseated": 2
   },
   "on": {
-   "body_advisory": 2,
+   "body_advisory": 1,
    "body_blocking": 0,
-   "crossings": 568,
+   "crossings": 510,
    "edge_facing_pads": 1,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
-   "hpwl": 1593.1,
+   "hpwl": 1499.61,
    "intent_errors": 4,
    "intent_errors_by_rule": {
     "decap_distance": 4
    },
    "intent_errors_enforced": 4,
    "intent_errors_other": 0,
-   "inversions": 221,
-   "unseated": 0
+   "inversions": 211,
+   "unseated": 2
   }
  },
  "decaps-auto-ulx3s": {
@@ -616,20 +616,20 @@
    "unseated": 2
   },
   "on": {
-   "body_advisory": 30,
+   "body_advisory": 32,
    "body_blocking": 0,
-   "crossings": 4451,
+   "crossings": 4403,
    "edge_facing_pads": 2,
-   "health_block_displacement_max_mm": 18.8385,
+   "health_block_displacement_max_mm": 17.3051,
    "health_bus_foreign_crossings": null,
-   "hpwl": 8257.15,
-   "intent_errors": 12,
+   "hpwl": 8219.23,
+   "intent_errors": 1,
    "intent_errors_by_rule": {
-    "zone_containment": 12
+    "decap_distance": 1
    },
-   "intent_errors_enforced": 12,
+   "intent_errors_enforced": 1,
    "intent_errors_other": 0,
-   "inversions": 797,
+   "inversions": 815,
    "unseated": 2
   }
  },

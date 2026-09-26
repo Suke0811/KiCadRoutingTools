@@ -525,8 +525,10 @@ ROWS = [
 # tethered caps. Both arms are graded against the SAME auto intent, so the
 # signal is how many intent errors each SEED leaves under one ruler.
 #
-# The flat boards could not move before #1053 (below); since stage 2.4 they
-# do, and regress like the zoned ones, so a re-trial is judged on all six.
+# The flat boards do not move: stage 2.5 reads its pins off PLACED ICs and
+# none is placed before it on a flat seed. #1053's stage 2.4 moved them while
+# it ran by default; it is opt-in since (`decaps.seat_owners_first`, measured
+# on its own in the served-ics-first-* rows), so they are neutral again.
 _FLAT = ('esp_prog.kicad_pcb', 'splitflap_driver.kicad_pcb',
          'tigard.kicad_pcb')
 ROWS += [
@@ -546,29 +548,26 @@ ROWS += [
         # change detector with its measured mark; the numbers are in the
         # baseline, not here.
         'rejected': True,
-        # UPDATED for #1053 (#1051 Phase 6): the flat boards were NEUTRAL
-        # and are now REGRESS, which is this row detecting exactly the change
-        # it was kept for. Their ON arm is the same seed as the
-        # served-ics-first-* ON arm, and moves for the same reason.
-        'expect': 'regress',
+        # #1053 (#1051 Phase 6) made the flat boards REGRESS while stage 2.4
+        # ran by default; with it opt-in they are NEUTRAL again, on the same
+        # numbers as before phase 3 (re-recorded with e1f325789).
+        'expect': 'neutral' if b in _FLAT else 'regress',
         'why': (('MECHANISM: the ON arm seeds from an intent carrying the '
-                 'observed decap limit, so seeder stage 2.4 seats the served '
-                 'ICs first and stage 2.5 each tethered cap at its supply '
-                 'pin; the OFF arm packs them with their zone. Graded under '
+                 'observed decap limit, so seeder stage 2.5 seats each '
+                 'tethered cap at a supply pin of an IC its zone placed '
+                 'first; the OFF arm packs them with their zone. Graded under '
                  'ONE auto intent. Since #1043 decap_distance is an ENFORCED '
                  'rule, so its errors moved from intent_errors_other to '
                  'intent_errors_enforced on both arms -- a relabel, not a '
                  'change in either seed.')
                 if b not in _FLAT else
-                ('MECHANISM: WAS structurally neutral -- stage 2.5 seats a '
+                ('MECHANISM: structurally neutral -- stage 2.5 seats a '
                  'cap at the rail pads of PLACED ICs, and with no zoned '
-                 'block none was placed before it, so the limit moved '
-                 'nothing. #1053 added stage 2.4, which seats the served '
-                 'ICs (and what outranks the early seats) first whenever '
-                 'the limit is declared, so the ON arm now differs: the caps '
-                 'are claimed, and the guards pay for it. The OFF arm is '
-                 'unchanged. Same enforced/other relabel as the zoned '
-                 'rows.')),
+                 'block none is placed before it, so the limit moves '
+                 'nothing (it says so in decap_stage.reason). The opt-in '
+                 'decaps.seat_owners_first seats them first; that is the '
+                 'served-ics-first-* rows. Same enforced/other relabel as '
+                 'the zoned rows.')),
     }
     # The first three emit NO zoned block (flat schematics); the last three
     # do, which is where the doc says a decap limit moves caps: out of zone
@@ -606,12 +605,17 @@ ROWS += [
         # -- on a guard everywhere, and on the signal itself on three. So
         # `emit_intent(derive_arrays=)` stays 'off' and an array reaches an
         # intent only when the author accepts a suggestion. Kept as a change
-        # detector; the numbers are in the baseline.
-        'expect': 'regress',
+        # detector; the numbers are in the baseline. Re-measured after the
+        # rows stopped taking the pin tier early (hosts only, e1f325789):
+        # splitflap now IMPROVES (crossings 556 -> 452, hpwl 3094 -> 2816),
+        # the other three still regress -- still rejected, 3 of 4.
+        'expect': ('improve' if b == 'splitflap_driver.kicad_pcb'
+                   else 'regress'),
         'rejected': True,
         'why': ('MECHANISM: the ON arm seeds each suggested row as one '
-                'rigid strip (stage 2.45, non-zoned rows at their rank in '
-                'stage 2.4) aimed at its members\' placed partners; the OFF '
+                'rigid strip (stage 2.45; a non-zoned row in stage 2.4, '
+                'right after the part it serves) aimed at its members\' '
+                'placed partners; the OFF '
                 'arm seats the same parts one by one. Graded under ONE '
                 'intent carrying the rows, so array_formation is charged to '
                 'the OFF arm by construction -- which is why the guard is '
