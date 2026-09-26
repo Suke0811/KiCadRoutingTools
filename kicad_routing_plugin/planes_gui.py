@@ -1071,15 +1071,24 @@ class PlanesTab(wx.Panel):
                     gnd_via_net = config.get('gnd_via_net', defaults.GND_VIA_NET)
 
                     def _gnd_via_edge_clearance():
-                        """The board's copper-to-edge rule, mm. 0.0 when it cannot
-                        be read -- add_gnd_vias' own bounding-box backstop then
-                        still keeps the via inside the outline."""
+                        """The board's copper-to-edge rule, mm, pinned UP to the fab
+                        copper-to-edge floor exactly as route_planes' CLI pins it
+                        (effective_board_edge_clearance, #441) -- a board declaring
+                        a sub-fab or 0 edge rule must not get return vias against
+                        the milled edge. 0.0 when neither can be read --
+                        add_gnd_vias' own bounding-box backstop then still keeps
+                        the via inside the outline."""
                         try:
                             import pcbnew as _pcbnew
-                            return (_pcbnew.GetBoard().GetDesignSettings()
+                            live = (_pcbnew.GetBoard().GetDesignSettings()
                                     .m_CopperEdgeClearance or 0) / 1e6
                         except Exception:
-                            return 0.0
+                            live = 0.0
+                        try:
+                            from fix_kicad_drc_settings import fab_edge_floor
+                            return max(live, fab_edge_floor(self.board_filename or None))
+                        except Exception:
+                            return live
 
                     # Create config for GND via placement
                     gnd_config = GridRouteConfig(
@@ -1088,7 +1097,12 @@ class PlanesTab(wx.Panel):
                         track_width=config.get('track_width', defaults.TRACK_WIDTH),
                         clearance=config.get('clearance', defaults.CLEARANCE),
                         grid_step=config.get('grid_step', defaults.GRID_STEP),
-                        layers=all_layers,
+                        # A THROUGH via must clear copper on EVERY board layer --
+                        # NOT `all_layers`, which is the plane step's routing set
+                        # (outer + pour layers) and leaves inner signal layers out,
+                        # so a return via could land on an inner track. CLI parity
+                        # with route_planes main (the bitaxe fix, 5c4a9f8d).
+                        layers=list(self.pcb_data.board_info.copper_layers),
                         # Thread the fab hole-to-hole minimum so GND-via placement
                         # enforces real drill spacing (issue #125), not the default.
                         hole_to_hole_clearance=config.get(
@@ -1104,6 +1118,12 @@ class PlanesTab(wx.Panel):
                         # (same reasoning as _run_kicad_oracle_after_apply).
                         board_edge_clearance=_gnd_via_edge_clearance(),
                     )
+                    # #498: the board's .kicad_dru per-layer clearance rules, read
+                    # from the live board's own project file as create_plane does
+                    # above -- CLI parity with route_planes main.
+                    from kicad_dru import install_layer_clearances
+                    install_layer_clearances(gnd_config, None, self.board_filename,
+                                             self.pcb_data)
                     coord = GridCoord(gnd_config.grid_step)
 
                     # Build obstacle map from PCB data (excluding no nets since we want all obstacles)
@@ -1413,12 +1433,12 @@ class PlanesTab(wx.Panel):
         # re-apply the create run's swaps (#508 finding 19's shape).
         self._reconnect_swap_data = {}
 
-        # Get layer name to ID mapping
-        name_to_id = {}
-        for i in range(pcbnew.PCB_LAYER_ID_COUNT):
-            name = board.GetLayerName(i)
-            if name:
-                name_to_id[name] = i
+        # Get layer name to ID mapping -- the CANONICAL names the engine emits.
+        # This used to be keyed by board.GetLayerName(), a renamed layer's
+        # DISPLAY name, so a board whose In1.Cu is called "GND" poured every
+        # plane onto the F.Cu fallback below (#1056).
+        from .swig_gui import _build_layer_mappings
+        name_to_id, id_to_name = _build_layer_mappings()
 
         def get_layer_id(layer_name):
             return name_to_id.get(layer_name, pcbnew.F_Cu)
@@ -1485,7 +1505,10 @@ class PlanesTab(wx.Panel):
                     except Exception:
                         existing_net = ''
                     try:
-                        existing_layer = board.GetLayerName(existing_zone.GetLayer())
+                        # Canonical, to compare with zone_data['layer']: the
+                        # display name never matched a renamed layer, so a
+                        # re-run duplicated every pour on it (#1056).
+                        existing_layer = id_to_name.get(existing_zone.GetLayer(), '')
                     except Exception:
                         existing_layer = ''
                     existing_zone_keys.add((existing_net, existing_layer))

@@ -169,18 +169,50 @@ def is_kicad_10(content: str) -> bool:
     return detect_kicad_version(content) >= KICAD_10_MIN_VERSION
 
 
+def has_numeric_net_table(content: str) -> bool:
+    """True if the file declares nets as a numeric table, ``(net <id> "name")``.
+
+    KiCad 9 and earlier always write one (``(net 0 "")`` at least); pcbnew 10
+    never does. Third-party generators write one under a KiCad-10 version
+    stamp, which is why the stamp alone cannot decide the net dialect (#1028).
+    """
+    return bool(re.search(r'\(net\s+\d+\s+"', content))
+
+
 def board_uses_name_nets(content: str) -> bool:
     """True if the board references nets by NAME (KiCad 10 style) rather than by
-    numeric id (KiCad 9). Detected from the ACTUAL content, not just the version
-    header: a KiCad 10+ header, OR name-only refs ``(net "name")`` already present
-    (a pre-2025 board a previous pass may have round-tripped). KiCad 9 numeric
-    boards only have ``(net <id> "name")`` declarations and ``(net <id>)`` refs,
-    neither of which matches ``(net "``.
+    numeric id (KiCad 9). Decided from the ACTUAL content, in this order:
+
+    1. name-only refs ``(net "name")`` present -> names. Includes a pre-2025
+       board a previous pass round-tripped (#163): its refs must be matched,
+       and extended, by name.
+    2. a numeric net table and no name refs -> ids, WHATEVER the version stamp
+       says: third-party generators write a KiCad-10 stamp over a numeric table
+       (#1028), and emitting name refs into it made a mixed file whose
+       by-name strip/relabel matched none of its numeric-ref copper.
+    3. neither (a board with no nets yet) -> the stamp decides.
+
+    For every file pcbnew itself writes this agrees with the stamp: KiCad 9
+    has the table and no name refs, KiCad 10 has name refs and no table.
 
     Writers use this to keep the output's net-token format consistent with the
     input - never emitting KiCad-10 name nets into a KiCad-9 numeric board (which
     KiCad 9 reads as net-less), nor numeric ids into a name-net board."""
-    return is_kicad_10(content) or bool(re.search(r'\(net\s+"', content))
+    if re.search(r'\(net\s+"', content):
+        return True
+    if has_numeric_net_table(content):
+        return False
+    return is_kicad_10(content)
+
+
+def pcb_uses_name_nets(pcb) -> bool:
+    """board_uses_name_nets() for a parsed PCBData: the answer parse_kicad_pcb
+    recorded from the file, else (the pcbnew path, which has no file text) the
+    version stamp -- the GUI writes through pcbnew, never these net tokens."""
+    recorded = getattr(pcb, 'uses_name_nets', None)
+    if recorded is not None:
+        return recorded
+    return getattr(pcb, 'kicad_version', 0) >= KICAD_10_MIN_VERSION
 
 
 @dataclass
@@ -596,6 +628,10 @@ class PCBData:
     pads_by_net: Dict[int, List[Pad]]
     zones: List[Zone] = field(default_factory=list)
     kicad_version: int = 0  # File format version (e.g., 20241229 for KiCad 9)
+    # The file's net-token dialect, board_uses_name_nets() over its text. Read
+    # it through pcb_uses_name_nets(). None on the pcbnew path, which has no
+    # file text and writes through pcbnew rather than net tokens.
+    uses_name_nets: Optional[bool] = None
     net_id_to_name: Dict[int, str] = field(default_factory=dict)  # Synthetic ID -> net name (for KiCad 10 output)
     guide_paths: List[GuidePath] = field(default_factory=list)  # User-drawn guide corridors (issue #7)
     keepout_zones: List[GuidePath] = field(default_factory=list)  # User-drawn keepout polygons (issue #27)
@@ -3018,7 +3054,7 @@ def extract_nets(content: str, kicad_version: int = 0) -> Tuple[Dict[int, Net], 
     nets = {}
     name_to_id: Dict[str, int] = {}
 
-    if not re.search(r'\(net\s+\d+\s+"', content):
+    if not has_numeric_net_table(content):
         # No numeric table: KiCad 10 name nets.
         # Discover all net names from their usage in pads, segments, vias, and zones.
         # Match (net "name") anywhere in the file — deduplicate to build the net list.
@@ -5226,6 +5262,7 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
         pads_by_net=pads_by_net,
         zones=zones,
         kicad_version=kicad_version,
+        uses_name_nets=board_uses_name_nets(content),
         net_id_to_name=net_id_to_name,
         guide_paths=guide_paths,
         keepout_zones=keepout_zones,
@@ -5533,6 +5570,23 @@ def _pcbnew_unmodelled_copper(live_fps, live_keys, get_layer_name) -> List[dict]
     return out
 
 
+def pcbnew_copper_layer_names() -> Dict[int, str]:
+    """{pcbnew layer id: CANONICAL copper name} -- 'F.Cu', 'In1.Cu', ...,
+    'B.Cu', the names the .kicad_pcb file and every engine layer list use.
+
+    Never map a live board's copper through board.GetLayerName(): it returns
+    the user's display name once a layer is renamed in Board Setup (In1.Cu ->
+    "GND"), which matches nothing the engine emits. The Planes tab did, and
+    every pour for a renamed layer landed on its F.Cu fallback (#1056)."""
+    import pcbnew
+    names = {pcbnew.F_Cu: 'F.Cu', pcbnew.B_Cu: 'B.Cu'}
+    for i in range(1, 31):
+        layer_id = getattr(pcbnew, f'In{i}_Cu', None)
+        if layer_id is not None:
+            names[layer_id] = f'In{i}.Cu'
+    return names
+
+
 def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                               keepout_layer: str = "User.2") -> PCBData:
     """Build PCBData directly from a pcbnew board object (no file I/O).
@@ -5569,11 +5623,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
     # pad '*.Cu' wildcard collapse iterate this; mixing non-copper tokens in
     # broke both. id_to_name (below) adds the non-copper tokens for
     # get_layer_name.
-    copper_id_to_name = {pcbnew.F_Cu: 'F.Cu', pcbnew.B_Cu: 'B.Cu'}
-    for i in range(1, 31):
-        layer_id = getattr(pcbnew, f'In{i}_Cu', None)
-        if layer_id is not None:
-            copper_id_to_name[layer_id] = f'In{i}.Cu'
+    copper_id_to_name = pcbnew_copper_layer_names()
     id_to_name = dict(copper_id_to_name)
 
     # Non-copper layers: the .kicad_pcb s-expression always uses the CANONICAL
@@ -5597,7 +5647,17 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
     def get_layer_name(layer_id):
         if layer_id in id_to_name:
             return id_to_name[layer_id]
-        return board.GetLayerName(layer_id)
+        # Anything else (User.1..User.N, ...) by its FILE token too: the
+        # display name is the user's, and a User.1 renamed "In1.Cu" read back
+        # through it became copper here and not in the text parse (#1056).
+        # LSET.Name is the token (probed, KiCad 10); display name as a last
+        # resort for a binding without it, or one that returns no str.
+        try:
+            token = pcbnew.LSET.Name(layer_id)
+        except Exception:
+            token = None
+        return token if isinstance(token, str) and token \
+            else board.GetLayerName(layer_id)
 
     # --- Pad shape mapping ---
     pad_shape_map = {}
@@ -5703,7 +5763,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             lname = id_to_name.get(lid)
             if lname is None:
                 try:
-                    lname = board.GetLayerName(lid)
+                    lname = get_layer_name(lid)
                 except Exception:
                     lname = None
             if lname is not None:

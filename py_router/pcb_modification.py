@@ -1300,7 +1300,7 @@ def clean_plane_copper(output_file: str, plane_net_names, clearance: float = 0.1
     a file -- see kicad_routing_plugin/planes_gui.py -- so CLI and GUI plane
     copper come out identical.
     """
-    from kicad_parser import parse_kicad_pcb, is_kicad_10
+    from kicad_parser import parse_kicad_pcb, board_uses_name_nets
     from kicad_writer import remove_segments_from_content, generate_segment_sexpr
 
     pcb = parse_kicad_pcb(output_file)
@@ -1311,7 +1311,7 @@ def clean_plane_copper(output_file: str, plane_net_names, clearance: float = 0.1
         return 0, 0
 
     n2n = getattr(pcb, 'net_id_to_name', {}) or {}
-    v10 = is_kicad_10(content)
+    v10 = board_uses_name_nets(content)
     if delta.segments_to_remove:
         content, _ = remove_segments_from_content(content, delta.segments_to_remove,
                                                   n2n if v10 else None)
@@ -1459,7 +1459,7 @@ def retract_castellated_landings(output_file: str,
     stripped and re-emitted with the retracted endpoint). Returns the number of
     landings retracted. The GUI applies the SAME delta to the live pcbnew board
     (gui_utils.apply_castellated_landing_retract), so the two cannot drift."""
-    from kicad_parser import parse_kicad_pcb, is_kicad_10
+    from kicad_parser import parse_kicad_pcb, board_uses_name_nets
     from kicad_writer import remove_segments_from_content, generate_segment_sexpr
 
     pcb = parse_kicad_pcb(output_file)
@@ -1469,7 +1469,7 @@ def retract_castellated_landings(output_file: str,
     with open(output_file, 'r', encoding='utf-8') as f:
         content = f.read()
     n2n = getattr(pcb, 'net_id_to_name', {}) or {}
-    v10 = is_kicad_10(content)
+    v10 = board_uses_name_nets(content)
     content, _ = remove_segments_from_content(
         content, [m[0] for m in delta.moves], n2n if v10 else None)
     sexprs = []
@@ -4251,8 +4251,18 @@ def smooth_octolinear_chains(results, pcb_data: PCBData, scope_net_ids=None,
                            _segment_to_rings_distance, point_to_pad_distance,
                            npth_slot_capsules, segment_to_npth_slots_distance)
     from connectivity import COINCIDENCE_TOL
+    from obstacle_map import resolve_hole_clearance
 
-    npth_clr = max(clearance, NPTH_TO_TRACK_CLEARANCE)
+    # #1038: the board's DECLARED copper-to-hole floor, not the flat 0.20. The
+    # smoother CHOOSES where new copper goes (a shortcut replacing a staircase
+    # the router already laid clear), so it is on the raise side of
+    # resolve_hole_clearance's rule: refusing a connector costs nothing but the
+    # shortcut -- the original copper stays. At the flat floor it collapsed
+    # spans into the 0.20-0.25 band the router had kept clear (run 32, J5's
+    # NPTH hole: 0.201 / 0.212 mm against the announced 0.25). `base_clearance`
+    # (#760) also honours a hole pad's own override above that floor.
+    npth_clr = max(clearance, NPTH_TO_TRACK_CLEARANCE,
+                   resolve_hole_clearance(pcb_data, config))
 
     def eff_clr(nid):
         if not net_clearances:
@@ -4433,7 +4443,8 @@ def smooth_octolinear_chains(results, pcb_data: PCBData, scope_net_ids=None,
                                       track_clearances=_trk_clr),  # dru track rules
                 _seg_foreign_via_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
                                       net_clearances=net_clearances, base_clearance=eff))
-        hd = _seg_foreign_hole_dist(pcb_data, net_id, x1, y1, x2, y2)
+        hd = _seg_foreign_hole_dist(pcb_data, net_id, x1, y1, x2, y2,
+                                    base_clearance=npth_clr)  # #1038, per-hole #760
         ok = (d >= eff + w / 2.0 - 1e-4 and
               hd >= npth_clr + w / 2.0 - 1e-4 and
               edge_clears(x1, y1, x2, y2, w) and

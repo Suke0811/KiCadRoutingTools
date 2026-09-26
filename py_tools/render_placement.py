@@ -1881,7 +1881,7 @@ Examples:
                         "JSON checklist then carries d={moved, expected, "
                         "match} -- mandate 8's question (d), quotable instead "
                         'of recalled (run-4 G5)')
-    p.add_argument('--theme', default=None, help="'dark' (default, or $KICAD_RENDER_THEME) or 'light'. A light ground is for a figure going into a light-background document; the file's ground cannot be changed afterwards.")
+    p.add_argument('--theme', default=None, type=str.lower, choices=('dark', 'light'), help="'dark' (default, or $KICAD_RENDER_THEME) or 'light'. A light ground is for a figure going into a light-background document; the file's ground cannot be changed afterwards.")
     p.add_argument('--quiet', action='store_true',
                    help='suppress narration. With --json-out it now also '
                         'suppresses the stdout JSON_SUMMARY echo and the '
@@ -2653,7 +2653,7 @@ def main(argv=None):
             'a_off_outline.keepout_copper':
                 len(doc['checklist']['a_off_outline']['keepout_copper']),
             # a keep-out census that could not be BUILT is not a clean one
-            # (#1031 review): its error row fails the gate like a finding
+            # (#1031): its error row fails the gate like a finding
             'a_off_outline.keepout_copper_unmeasured(error)':
                 sum(1 for _u in doc['checklist']['a_off_outline'].get(
                     'keepout_copper_unmeasured') or ()
