@@ -10,9 +10,8 @@ JSON results are committed. The boards are regenerable and are not
   `copy_board.py`. Its SHA-256 is in `setup.json` and every record
   (`unplaced_sha256`).
 - **Intent:** run 32's intent, `tests/fixtures/1051/glasgow_run32.intent.json`.
-  It declares `decaps.max_distance_mm` 2.5 and does NOT declare
-  `decaps.seat_owners_first`, so since e1f325789 stage 2.4 seats no owner ICs
-  in any arm. Declared rows (arm b) still seat their host first.
+  It declares `decaps.max_distance_mm` 2.5. Stage 2.4 seats only declared
+  rows' hosts, so it seats nothing in arms a, c and cd.
 - **Seeding:** `place_seed --clearance 0.2 --force`, polish ON, seeds 0-4.
   `--force` is needed because the run-32 pile reads as placed: its connectors
   and holes are file-locked at their real poses.
@@ -168,11 +167,8 @@ example, c seed 1 is 13 vs 17.
   which gives 17 - 4 = 13. b seed 0 excludes 1, on C1: 38 - 1 = 37.
 
 **The decap pin stage** claims 29 caps on every a seed, 50-51 in b and 60 in
-c/cd. Stage 2.4 is opt-in (`decaps.seat_owners_first`) and this intent does
-not opt in, so arm a places no owner IC before that stage. The locked FPGA and
-buffers give c/cd's pin stage its owners. For history: at 5712eea2e, when the
-decap limit alone armed stage 2.4, arm a's errors were 8-16 and the stage
-claimed 81-82 caps.
+c/cd. Arm a places no owner IC before that stage. The locked FPGA and
+buffers give c/cd's pin stage its owners.
 
 ### What moved since the b8575189e recording
 

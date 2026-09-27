@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""#1051 / #1053 / #1054 phase 3: the SEEDER seats declared rows, seats the
-served ICs first, and seats fixed poses exactly.
+"""#1051 / #1053 / #1054 phase 3: the SEEDER seats declared rows, seats each
+row's served part first, and seats fixed poses exactly.
 
 What each case pins, and why:
 
@@ -19,9 +19,10 @@ What each case pins, and why:
   the default cap in which the same row forms -- so "capped" is not how that
   row always ends.
 * `decaps.max_distance_mm = 3`: splitflap and watchy claim > 0 caps at a
-  supply pin (#1053; both claimed 0 before stage 2.4), and the forced 0-claim
-  case (the only cap's owner is not U-prefixed) returns the reason and prints
-  the note.
+  supply pin once their owner ICs are seated first (#1053: declared as fixed
+  poses; unzoned and undeclared they claim 0 and say why), and the forced
+  0-claim case (the only cap's owner is not U-prefixed) returns the reason
+  and prints the note.
 * fixed poses (#1054): seated EXACTLY, stamped `(locked yes)`, and unmoved by
   `place_seed --repair` and `--force` (CLI). The repair arm is not vacuous: a
   control intent WITHOUT the fixed pose moves the same part on the same board.
@@ -390,83 +391,9 @@ def test_anchor_rounds_leave_a_formed_row_whole():
           f"the anchor rounds ({rounds[0]})")
 
 
-def test_early_seat_scope_keeps_the_parts_the_control_seats():
-    """Stage 2.4's two widenings under `decaps.seat_owners_first` (opt-in
-    since #1051 Phase 6), each against the part it exists for: the pin-tier
-    (esp_prog's 7-pin CON2, stranded on every seed when only the owner ICs
-    were seated first) and the size rule (tigard's 1-pin M3 holes, which the
-    caps' early seats crowded out). Paired with the unarmed control on the
-    same seeds; `tier_first` counts them."""
-    with tempfile.TemporaryDirectory() as td:
-        got = {}
-        # tigard 0 and 10 at the seeder's default clearance (0.25) and
-        # integer rng seeds -- the verifier's measurement (verify3/
-        # strand.py; `Random(0)` and `Random('0')` are different streams):
-        # the seeds where the pin tier ALONE strands holes the control
-        # seats (3 against 0), so only the size rule passes.
-        for board, seeds, clr in ((ESP, range(4), CLEARANCE), (os.path.join(
-                BOARDS, 'tigard.kicad_pcb'), (0, 10), 0.25)):
-            doc = fp.emit_intent(parse_kicad_pcb(board), board,
-                                 derive_decaps=True)
-            off = dict(doc, decaps={})
-            doc['decaps'] = dict(doc['decaps'], seat_owners_first=True)
-            on_i, _p = _intent(doc, td, 'on.json')
-            off_i, _p = _intent(off, td, 'off.json')
-            tot_on = tot_off = 0
-            for s in seeds:
-                _p1, on = _seed(board, on_i, seed=s, clearance=clr)
-                _p2, ctl = _seed(board, off_i, seed=s, clearance=clr)
-                assert on['decap_stage']['tier_first'] > 0, on['decap_stage']
-                assert on['decap_stage']['claimed'] > 0, on['decap_stage']
-                tot_on += len(on['unseated'])
-                tot_off += len(ctl['unseated'])
-                if board == ESP:
-                    assert 'CON2' not in on['unseated'], (s, on['unseated'])
-            assert tot_on <= tot_off, (board, tot_on, tot_off)
-            got[os.path.basename(board)] = (tot_on, tot_off)
-    print(f"  PASS: armed vs control stranded parts {got}; CON2 always "
-          f"seated")
-
-
-def test_rows_are_seated_at_their_rank_after_what_outranks_them():
-    """Under `decaps.seat_owners_first` the rows are early seats too: every
-    part with more pins than a row's members goes down in stage 2.4 BEFORE
-    that row, and the row takes its members' rank in stage 3's order
-    (`early_order`). On splitflap, a pin-tier-less 2.4 would seat the rows
-    among the owners and hosts only."""
-    with tempfile.TemporaryDirectory() as td:
-        pcb = parse_kicad_pcb(SPLITFLAP)
-        doc = fp.emit_intent(pcb, SPLITFLAP, derive_arrays='auto')
-        doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=3.0,
-                             seat_owners_first=True)
-        intent, _p = _intent(doc, td)
-        _pcb, res = _seed(SPLITFLAP, intent)
-        order = res['early_order']
-        rows = {a['name']: a for a in doc['arrays']}
-        import pose_score
-        st = pose_score.make_state(pcb, SPLITFLAP, clearance=CLEARANCE)
-        for name, a in rows.items():
-            key = f"array:{name}"
-            assert key in order, (key, order)
-            tier = min(st.parts[m].pin_count for m in a['members'])
-            above = {r for r, p in st.parts.items()
-                     if p.pin_count > tier and not p.locked
-                     and r not in {m for b in rows.values()
-                                   for m in b['members']}
-                     and r not in {c['ref'] for c in doc['edge_connectors']
-                                   if c.get('edge')}}
-            before = set(order[:order.index(key)])
-            assert above <= before, (name, sorted(above - before))
-    print(f"  PASS: {len(rows)} rows each seated after every part that "
-          f"outranks its members ({len(order)} early seats)")
-
-
-def test_rows_without_the_key_seat_only_their_hosts_first():
-    """Declared rows WITHOUT `decaps.seat_owners_first`: stage 2.4 seats
-    each non-zoned row's `serves` and the rows, nothing else (#1051 Phase 6:
-    the arrays-auto A/B rows measured hosts-only better on all four boards
-    than also seating what outranks the members). Every row comes after its
-    own host."""
+def test_rows_seat_only_their_hosts_first():
+    """Declared rows: stage 2.4 seats each non-zoned row's `serves` and the
+    rows, nothing else. Every row comes after its own host."""
     with tempfile.TemporaryDirectory() as td:
         pcb = parse_kicad_pcb(SPLITFLAP)
         doc = fp.emit_intent(pcb, SPLITFLAP, derive_arrays='auto')
@@ -483,44 +410,41 @@ def test_rows_without_the_key_seat_only_their_hosts_first():
             if a.get('serves'):
                 assert order.index(a['serves']) < order.index(key), order
         assert res['decap_stage']['armed'] is False
-    print(f"  PASS: without the key 2.4 seats only {sorted(hosts)} and the "
+    print(f"  PASS: 2.4 seats only {sorted(hosts)} and the "
           f"{len(rows)} rows, each row after its host")
 
 
 def test_a_row_member_is_never_seated_alone_before_its_row():
-    """Phase-4 audit: 2.4's owner seat did not exclude row members, so a
-    chip that is both a decap tether owner and a member of an unzoned row
-    was seated ALONE ahead of its row. glasgow's unzoned buffer bank
-    declared by hand (a declined bridge), with decaps armed and the key
-    set: its
-    members own tethered caps, yet none appears alone in 2.4's seat order,
-    and the bank forms."""
-    from placement import groups as groups_mod
+    """A part that is a member of one row and the `serves` of another is
+    seated WITH its row, never alone in stage 2.4 ahead of it. glasgow's
+    unzoned buffer bank declared by hand (a declined bridge, serving U30),
+    and a second row, RN11+RN12, declared as serving one of the bank's
+    buffers: that buffer is a 2.4 host, yet no bank member appears alone in
+    2.4's seat order, and the bank forms."""
     with tempfile.TemporaryDirectory() as td:
         pcb = parse_kicad_pcb(GLASGOW)
-        doc = fp.emit_intent(pcb, GLASGOW, derive_decaps=True)
-        doc['decaps'] = dict(doc['decaps'], seat_owners_first=True)
+        doc = fp.emit_intent(pcb, GLASGOW)
         declined = []
         arr.suggest_arrays(pcb, declined=declined)
         # The UNZONED bank (RN7's side): the RN1-side bank lies in a zoned
         # sheet block and is seated in stage 2, never by 2.4.
         bank = next(d for d in declined if d['why'] == 'bridges U30 and RN7')
-        near, beyond, _o = groups_mod.decap_populations(pcb)
-        owners = set(near) | {ic for _c, ic, _d in beyond}
-        both = sorted(set(bank['members']) & owners)
-        assert both, "no bank member owns a tethered cap: vacuous fixture"
-        doc['arrays'] = [{'name': 'bank', 'members': list(bank['members']),
-                          'serves': 'U30', 'order': 'unknown',
-                          'rotation': 'shared', 'pitch_mm': 'auto',
-                          'axis': 'auto', 'why': 'declared by hand'}]
+        host = bank['members'][0]
+        doc['arrays'] = [
+            {'name': 'bank', 'members': list(bank['members']),
+             'serves': 'U30', 'order': 'unknown', 'rotation': 'shared',
+             'pitch_mm': 'auto', 'axis': 'auto', 'why': 'declared by hand'},
+            {'name': 'rn', 'members': ['RN11', 'RN12'], 'serves': host,
+             'order': 'unknown', 'rotation': 'shared', 'pitch_mm': 'auto',
+             'axis': 'auto', 'why': 'serves a bank member'}]
         intent, _p = _intent(doc, td)
         _pcb, res = _seed(GLASGOW, intent)
         order = res['early_order']
-        assert 'array:bank' in order, order
-        assert not set(bank['members']) & set(order), (both, order)
+        assert 'array:bank' in order and 'array:rn' in order, order
+        assert not set(bank['members']) & set(order), (host, order)
         assert 'bank' in res['arrays_formed'], res['array_unseated']
-    print(f"  PASS: {len(both)} bank member(s) own tethered caps and none is "
-          f"seated before the bank row")
+    print(f"  PASS: {host} serves row rn and is a bank member; no bank "
+          f"member is seated before the bank row")
 
 
 #: A row whose only free strip is > 30mm from its target: the locked B1
@@ -690,31 +614,49 @@ def test_pose_cap_trips_and_says_so():
           f"forms the same row after {rec['poses_tried']} pose(s)")
 
 
-def test_decaps_armed_claims_caps_on_splitflap_and_watchy():
-    """#1053 with the opt-in `decaps.seat_owners_first`: both boards claimed
-    0 caps before stage 2.4 existed."""
+def _owner_fixed_poses(pcb):
+    """A `fixed_poses[]` entry at its own pose for every U-prefixed IC a cap
+    elects a tether to -- the owners the decap pin stage reads its pins off
+    (U-prefixed without `decap_owner_chips`), seated by stage 0."""
+    from placement import groups as groups_mod
+    near, beyond, _o = groups_mod.decap_populations(pcb)
+    fps = pcb.footprints
+    owners = sorted(r for r in set(near) | {ic for _c, ic, _d in beyond}
+                    if r.startswith('U'))
+    return owners, [{'ref': r, 'x': fps[r].x, 'y': fps[r].y,
+                     'rot': fps[r].rotation or 0, 'basis': 'declared',
+                     'why': 'the owner IC, seated first'} for r in owners]
+
+
+def test_decaps_armed_claims_caps_once_the_owners_are_seated():
+    """#1053: the pin stage claims caps at the supply pins of ICs already
+    seated. With the owner ICs declared as fixed poses (stage 0), splitflap
+    and watchy claim caps; unzoned and undeclared they claim 0 (the next
+    test)."""
     got = {}
     with tempfile.TemporaryDirectory() as td:
         for board in (SPLITFLAP, WATCHY):
-            doc = fp.emit_intent(parse_kicad_pcb(board), board)
-            doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=3.0,
-                                 seat_owners_first=True)
+            pcb = parse_kicad_pcb(board)
+            doc = fp.emit_intent(pcb, board)
+            doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=3.0)
+            owners, doc['fixed_poses'] = _owner_fixed_poses(pcb)
+            assert owners, board
             intent, _p = _intent(doc, td, os.path.basename(board) + '.json')
             _pcb, res = _seed(board, intent)
+            assert not res['fixed_refused'], res['fixed_refused']
             ds = res['decap_stage']
             assert ds['armed'] and ds['scope'] > 0, ds
             assert ds['claimed'] > 0, ds
-            assert ds['served_first'], ds
             got[os.path.basename(board)] = (ds['claimed'], ds['scope'])
     print(f"  PASS: with max_distance_mm 3 the pin stage claims caps "
           f"(claimed, scope): {got}")
 
 
-def test_without_the_key_the_decap_stage_says_why_it_claims_nothing():
-    """#1053's "or say loudly why it did not": without
-    `decaps.seat_owners_first` the stage keeps the pre-#1053 order, so on
-    splitflap and watchy it claims 0 -- and the NOTE and
-    `decap_stage.reason` name the key that would change that."""
+def test_the_decap_stage_says_why_it_claims_nothing():
+    """#1053's "or say loudly why it did not": on an unzoned seed with no
+    owner IC seated before the pin stage, splitflap and watchy claim 0 --
+    and the NOTE and `decap_stage.reason` say that no owner IC was seated,
+    and what would seat one."""
     with tempfile.TemporaryDirectory() as td:
         for board in (SPLITFLAP, WATCHY):
             doc = fp.emit_intent(parse_kicad_pcb(board), board)
@@ -723,28 +665,14 @@ def test_without_the_key_the_decap_stage_says_why_it_claims_nothing():
             _pcb, res = _seed(board, intent)
             ds = res['decap_stage']
             assert ds['armed'] and ds['scope'] > 0, ds
-            assert ds['claimed'] == 0 and ds['seat_owners_first'] is False, ds
-            assert 'set decaps.seat_owners_first' in (ds['reason'] or ''), ds
+            assert ds['claimed'] == 0, ds
+            why = 'no owner IC is seated before this stage'
+            assert why in (ds['reason'] or ''), ds
             note = [n for n in res['notes']
                     if n.startswith('decap stage 2.5:')]
-            assert note and 'set decaps.seat_owners_first' in note[0], note
-    print("  PASS: unset, the stage claims 0 and says to set "
-          "decaps.seat_owners_first")
-
-
-def test_seat_owners_first_is_validated_at_load():
-    for bad, why in (({'max_distance_mm': 3.0, 'seat_owners_first': 'yes'},
-                      'must be true or false'),
-                     ({'seat_owners_first': True},
-                      'without decaps.max_distance_mm')):
-        try:
-            fp.intent_from_dict({'schema': 1, 'kind': fp.KIND, 'units': 'mm',
-                                 'decaps': bad}, 'x')
-        except fp.IntentError as exc:
-            assert why in str(exc), exc
-        else:
-            raise AssertionError(f"accepted {bad}")
-    print("  PASS: a non-bool key, and the key without a limit, are refused")
+            assert note and why in note[0], note
+    print("  PASS: the stage claims 0 and says no owner IC was seated "
+          "before it")
 
 
 def test_zero_claim_reports_why():
@@ -1193,18 +1121,15 @@ TESTS = [
     test_sibling_recheck_reverts_a_row_whose_pads_collide,
     test_formed_rows_are_immovable_to_the_eviction_rung,
     test_anchor_rounds_leave_a_formed_row_whole,
-    test_early_seat_scope_keeps_the_parts_the_control_seats,
-    test_rows_without_the_key_seat_only_their_hosts_first,
+    test_rows_seat_only_their_hosts_first,
     test_a_row_member_is_never_seated_alone_before_its_row,
-    test_rows_are_seated_at_their_rank_after_what_outranks_them,
     test_row_seat_reaches_the_sweep_before_the_fine_rings,
     test_row_target_is_the_partner_centroid_not_the_host_pins,
     test_padless_fixed_pose_is_judged_by_its_hole,
     test_unseatable_row_is_disclosed_and_falls_through,
     test_pose_cap_trips_and_says_so,
-    test_decaps_armed_claims_caps_on_splitflap_and_watchy,
-    test_without_the_key_the_decap_stage_says_why_it_claims_nothing,
-    test_seat_owners_first_is_validated_at_load,
+    test_decaps_armed_claims_caps_once_the_owners_are_seated,
+    test_the_decap_stage_says_why_it_claims_nothing,
     test_zero_claim_reports_why,
     test_fixed_pose_exact_locked_and_survives_repair_and_force,
     test_every_unhonoured_fixed_pose_fails_the_gate,

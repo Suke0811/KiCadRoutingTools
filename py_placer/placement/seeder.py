@@ -3021,17 +3021,6 @@ def _partner_centroid(state, ref: str, placed: Set[str],
 #: Hitting it is disclosed (`array_unseated[name].capped`).
 ARRAY_SEAT_POSE_CAP = 20000
 
-#: #1053/#1051: stage 2.4, under `decaps.seat_owners_first`, seats ahead of
-#: the early seats (the decap pin stage, the declared rows) every part whose
-#: courtyard is larger than this many times the largest early-seated part's. Pin count, stage 3's order,
-#: does not rank SIZE: a 1-pin M3 mounting hole is the last part stage 3
-#: seats, and once the caps sit at their pins it no longer fits (tigard,
-#: seeds 0-11: 15-16 holes stranded, the unarmed control 10; 0 at this
-#: ratio). 10, not 4: at 4 orangecrab's M2 holes counted as big and the
-#: early seats then stranded its fiducials and L1/L2 instead (seeds 11/0/1:
-#: 5/6/7 parts at 4, 4/4/4 at 10, the control 5/4/4).
-EARLY_SEAT_AREA_RATIO = 10.0
-
 #: #1051: `pitch_mm: auto` is the widest member's courtyard extent along the
 #: row plus the board clearance plus THIS, rounded up to 0.01mm. Measured,
 #: not cosmetic: at exactly extent + clearance the siblings' courtyard gap is
@@ -4341,9 +4330,6 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # 3.5mm from the flash's VCC pin).
     decap_spec = getattr(intent, 'decaps', None) or {}
     decap_scope: Set[str] = set()
-    # #1053: {cap: the IC its tether elects}, over the scope below -- the
-    # owners stage 2.4 seats before the pin stage reads them.
-    decap_owner_of: Dict[str, str] = {}
     if decap_spec.get('max_distance_mm') is not None:
         exempt = tuple(decap_spec.get('exempt') or ())
         # NARROWED by #792 to the caps that ELECT A TETHER at any distance --
@@ -4377,10 +4363,6 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         decap_scope = {r for r in tethered
                        if r in state.parts
                        and not any(fnmatch.fnmatch(r, pat) for pat in exempt)}
-        decap_owner_of = {c: ic for ic, caps in near.items()
-                          for c, _d in caps if c in decap_scope}
-        decap_owner_of.update({c: ic for c, ic, _d in beyond
-                               if c in decap_scope})
 
     # ---- #1051: which declared rows stage 2.45 will seat ----------------------
     # Decided HERE, before stage 2, because two earlier stages must step
@@ -4431,8 +4413,6 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         decap_array_skipped = sorted(decap_scope & array_members)
         if decap_array_skipped:
             decap_scope -= array_members
-            for _c in decap_array_skipped:
-                decap_owner_of.pop(_c, None)
             notes.append(f"decap stage: {len(decap_array_skipped)} cap(s) "
                          f"are declared array members, and the array wins -- "
                          f"the pin stage skips "
@@ -4518,85 +4498,26 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                              f"{clr:g} (none at {state.clearance:g})")
         return clr, target, jx, jy
 
-    # ---- 2.4 served ICs first -- two modes, both opt-in --------------------
-    # Stage 2.5 reads its pins off ICs ALREADY PLACED, and on an unzoned seed
-    # no IC is placed before stage 3 -- so the pin stage claims 0 caps (#1053:
-    # splitflap 12 in scope, watchy 26, both 0). Seated here, in STAGE 3's
-    # order and with stage 3's own seat (`_centroid_seat`: "the two paths
-    # cannot diverge"):
-    #
-    # (a) `decaps.seat_owners_first: true` (OPT-IN, #1053). The decap pin
-    #     stage and the rows are EARLY seats (E: the scoped caps, the
-    #     non-zoned rows' members), so 2.4 first seats:
-    #      * every IC owning an elected decap tether (2.5's owner predicate,
-    #        `decap_owner_chips` included) and every row's `serves`;
-    #      * every part that OUTRANKS E by pin count (esp_prog's 7-pin CON2
-    #        was stranded on 12 of 12 seeds with the owners alone);
-    #      * every part LARGER than `EARLY_SEAT_AREA_RATIO` x E's largest
-    #        courtyard (tigard, seeds 0-11: 15-16 M3 holes stranded without
-    #        it, 0 with it, the unarmed control 10);
-    #      * each non-zoned row at its members' rank.
-    #     OFF BY DEFAULT because it failed its A/B: test_placement_ab's
-    #     served-ics-first rows regress on all four boards, on a guard (hpwl
-    #     4/4, crossings 3/4). Unset, the decap stage keeps the pre-#1053
-    #     order and SAYS so when it claims nothing (`decap_stage.reason`).
-    # (b) Declared ROWS without the key: only each non-zoned row's `serves`
-    #     (the target the row aims at) and the rows themselves, in pin-count
-    #     order -- no early seat of what outranks the members. Measured on
-    #     the arrays-auto A/B rows, ON arm, hosts-only against the (a)-style
-    #     expansion: crossings glasgow 3833 -> 3613, ulx3s 4460 -> 4358,
-    #     splitflap 675 -> 452, coldfire 5062 -> 3789; hpwl lower on all
-    #     four. Zoned rows are seated in stage 2.
+    # ---- 2.4 declared rows: each row's served part, then the row ---------
+    # A non-zoned declared row aims at the part it serves, so that part is
+    # seated first, in STAGE 3's order and with stage 3's own seat
+    # (`_centroid_seat`: "the two paths cannot diverge"), and each row at its
+    # members' rank in that order. Zoned rows are seated in stage 2.
     #
     # A ROW MEMBER is never seated alone here, whatever else it is. A part
-    # that finds no seat is left to stage 3, which reports it. Neither the
-    # key nor a non-zoned row declared: skipped, and the seed is
-    # bit-identical.
-    owners_first = (decap_spec.get('max_distance_mm') is not None
-                    and decap_spec.get('seat_owners_first') is True)
+    # that finds no seat is left to stage 3, which reports it. No non-zoned
+    # row declared: skipped, and the seed is bit-identical.
     served_first: List[str] = []
-    tier_first: List[str] = []
     early_order: List[str] = []
     rows_early = [sp for sp in array_try if sp['name'] not in array_zone]
-    if owners_first or rows_early:
-        want24: Set[str] = set()
-        if owners_first:
-            from placement import groups as _g24
-            _chips24 = (_g24.chip_refs(pcb_data) if decap_owner_chips
-                        else None)
-            want24 = {ic for ic in set(decap_owner_of.values())
-                      if ((ic in _chips24) if _chips24 is not None
-                          else ic[0:1] == 'U')}
+    if rows_early:
         # Only rows this seed will actually seat: a refused row's host is
         # an ordinary part and keeps its stage-3 turn.
-        want24.update(str(a['serves']) for a in rows_early
-                      if a.get('serves') not in (None, 'unknown'))
-        # A ROW MEMBER is never seated alone here, even when it is also a
-        # tether owner or another row's host: it is seated with its row
-        # (phase-4 audit -- an unzoned row of chips that own decaps had its
-        # members seated one by one ahead of the row).
+        want24: Set[str] = {str(a['serves']) for a in rows_early
+                            if a.get('serves') not in (None, 'unknown')}
+        # A ROW MEMBER is never seated alone here, even when it is another
+        # row's host: it is seated with its row.
         want24 -= array_members
-        served = set(want24)
-        early = ((set(decap_scope) if owners_first else set())
-                 | {m for sp in rows_early for m in sp['present']})
-        if early and owners_first:
-            # E's lowest tier: the caps' (their most pins -- a part with more
-            # is ranked above EVERY cap) and each row's (its fewest).
-            tiers = ([max(state.parts[c].pin_count for c in decap_scope)]
-                     if decap_scope else [])
-            tiers += [min(state.parts[m].pin_count for m in sp['present'])
-                      for sp in rows_early]
-            tier = min(tiers)
-
-            def _area(r):
-                b = state.parts[r].rect(0.0, 0.0, state.parts[r].rot)
-                return (b[2] - b[0]) * (b[3] - b[1])
-            big = EARLY_SEAT_AREA_RATIO * max(_area(r) for r in early)
-            want24.update(r for r in unplaced
-                          if r not in held and r not in array_members
-                          and r not in decap_scope
-                          and (state.parts[r].pin_count > tier
-                               or _area(r) > big))
         # (key, kind, payload): parts in `_order`'s key, rows at their rank.
         items = [((-state.parts[r].pin_count, tiebreak[r]), 0, r)
                  for r in _order(sorted(r for r in want24
@@ -4616,16 +4537,15 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             early_order.append(what)
             clr, _t, _jx, _jy = _centroid_seat(what)
             if clr is not None:
-                (served_first if what in served else tier_first).append(what)
+                served_first.append(what)
             else:
-                notes.append(f"{what}: stage 2.4 (served ICs first) found no "
-                             f"seat -- left to the centroid stage")
-        if served_first or tier_first:
-            notes.append(f"stage 2.4: seated {len(served_first)} served "
-                         f"IC(s) before the decap/array stages ("
-                         + ', '.join(served_first) + f"), and "
-                         f"{len(tier_first)} other part(s) that outrank the "
-                         f"early seats")
+                notes.append(f"{what}: stage 2.4 (a declared row's served "
+                             f"part) found no seat -- left to the centroid "
+                             f"stage")
+        if served_first:
+            notes.append(f"stage 2.4: seated {len(served_first)} part(s) "
+                         f"that declared rows serve, before the decap/array "
+                         f"stages (" + ', '.join(served_first) + ")")
 
     # ---- 2.5 decap-governed caps: one cap per supply PIN -------------------
     # A 100nF's two nets are a rail and GND -- both usually above the fanout
@@ -4862,10 +4782,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 _why = 'no cap in scope carries a rail net'
             elif not decap_pins:
                 _why = ("no PLACED IC carries a scoped cap's rail (pins 0) "
-                        + ("-- no owner IC seated yet; set "
-                           "decaps.seat_owners_first to seat them first"
-                           if not owners_first else
-                           "-- the owners were not seated before this stage")
+                        "-- no owner IC is seated before this stage (a "
+                        "fixed pose, must_lock, a zoned block or a declared "
+                        "row's `serves` seats one earlier)"
                         + ('' if decap_owner_chips else
                            '; owners must be U-prefixed unless '
                            'decap_owner_chips'))
@@ -4876,9 +4795,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                        'claimed': len(decap_claimed),
                        'put_back': len(decap_put_back),
                        'pins': decap_pins, 'reason': _why,
-                       'seat_owners_first': owners_first,
                        'served_first': list(served_first),
-                       'tier_first': len(tier_first),
                        'array_members_skipped': list(decap_array_skipped)}
         if decap_scope and not decap_claimed:
             notes.append(f"decap stage 2.5: {len(decap_scope)} cap(s) in "
@@ -5286,9 +5203,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # every row not seated whole, whose members were seated one by one.
             'arrays_formed': arrays_formed,
             'array_unseated': array_unseated,
-            # Stage 2.4's seat order (refs, and `array:<name>` for a row):
-            # what went down ahead of the early seats, and where each row
-            # fell among it. Empty when 2.4 is not armed.
+            # Stage 2.4's seat order: each declared row's served part, and
+            # `array:<name>` where each row fell among them. Empty when no
+            # non-zoned row is declared.
             'early_order': early_order,
             # #629: a no-pose verdict that NAMES its blockers, with the count
             # each one frees. Present at every evict_depth. An empty dict for

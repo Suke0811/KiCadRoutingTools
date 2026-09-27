@@ -16,7 +16,7 @@ One row per load-bearing mechanism, across the eight places the PR put one:
   sd  `placement/seeder.py`: stage 0's exact seat and its KiCad-style
       courtyard rule (abutting is legal, overlapping is not, judged pairwise
       over every DECLARED pose), the held / anchors-first exclusion,
-      `seat_owners_first` arming, hosts-only-first for rows, a row member
+      hosts-only-first for rows, a row member
       never seated alone, `_seat_block`'s pose cap / sibling re-check / band
       order, the partner-centroid target, the decap NOTE on a zero claim, and
       the ref tie-break keys that make a seed hash-seed independent.
@@ -565,27 +565,10 @@ ROWS = [
      'KILLED'),
 
     # ==== seeder: stage 2.4 / 2.45, the rows ================================
-    ('owners-first-armed-without-the-key', 'sd',
-     "                    and decap_spec.get('seat_owners_first') is True)",
-     "                    and True)",
-     (T_SEED + '::test_without_the_key_the_decap_stage_says_why_it_claims_nothing',
-      T_SEED + '::test_rows_without_the_key_seat_only_their_hosts_first'),
-     'KILLED'),
-    ('rows-seat-the-whole-tier-first', 'sd',
-     "        if early and owners_first:",
-     "        if early:",
-     (T_SEED + '::test_rows_without_the_key_seat_only_their_hosts_first',),
-     'KILLED'),
     ('row-member-seated-alone-first', 'sd',
      "        want24 -= array_members",
      "        pass",
      (T_SEED + '::test_a_row_member_is_never_seated_alone_before_its_row',),
-     'KILLED'),
-    ('rows-after-every-part', 'sd',
-     "        items.sort(key=lambda it: (it[0], it[1]))",
-     "        items.sort(key=lambda it: (it[1], it[0]))",
-     (T_H + '::test_rows_go_down_ahead_of_the_parts_they_outrank',
-      T_SEED + '::test_rows_are_seated_at_their_rank_after_what_outranks_them',),
      'KILLED'),
     ('row-refused-by-the-intent-check-still-seated', 'sd',
      "            if _an in _aprobs:",
@@ -603,7 +586,7 @@ ROWS = [
      "            decap_scope -= array_members",
      "            pass",
      (T_H + '::test_a_declared_row_of_caps_is_not_the_decap_stages_to_claim',
-      T_SEED + '::test_decaps_armed_claims_caps_on_splitflap_and_watchy',),
+      T_SEED + '::test_decaps_armed_claims_caps_once_the_owners_are_seated',),
      'KILLED'),
     ('zoned-row-zone-packed-first', 'sd',
      "                   if r not in decap_scope and r not in array_zoned_members]",
@@ -701,13 +684,13 @@ ROWS = [
      "        if decap_scope and not decap_claimed:",
      "        if False:",
      (T_SEED + '::test_zero_claim_reports_why',
-      T_SEED + '::test_without_the_key_the_decap_stage_says_why_it_claims_nothing'),
+      T_SEED + '::test_the_decap_stage_says_why_it_claims_nothing'),
      'KILLED'),
     ('decap-zero-claim-reason-missing', 'sd',
      "        elif not decap_claimed:",
      "        elif False:",
      (T_SEED + '::test_zero_claim_reports_why',
-      T_SEED + '::test_without_the_key_the_decap_stage_says_why_it_claims_nothing'),
+      T_SEED + '::test_the_decap_stage_says_why_it_claims_nothing'),
      'KILLED'),
     ('anchors-queue-ties-by-hash', 'sd',
      "                          and part_extent_mm(state, r) >= thr),\n"

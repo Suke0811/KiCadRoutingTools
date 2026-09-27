@@ -248,9 +248,9 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 | 1 | edge connectors on their declared edge, inside the overhang band |
 | 1.5 | `must_lock` parts, at their current pose where it is legal |
 | 2 | zoned blocks, packed radially from the zone centre; a declared array whose members all sit in one zoned block is seated into it whole (stage 2.45) |
-| 2.4 | declared non-zoned arrays: each row's served part, then the row (stage 2.45). With the opt-in `decaps.seat_owners_first` (#1053; it failed its A/B, so it is off unless declared) also the ICs the decap tethers serve and every part that outranks the early seats by pin count or size, the rows at their members' rank. A row member is never seated alone here. The order is disclosed in the seeder's `early_order` |
+| 2.4 | declared non-zoned arrays: each row's served part, then the row (stage 2.45), each row at its members' rank. A row member is never seated alone here. The order is disclosed in the seeder's `early_order` |
 | 2.45 | one declared array as ONE row (`_seat_array` -> `_seat_block`, #1051): the served part's pin order, one rotation, one pitch, a capped pose count (`ARRAY_SEAT_POSE_CAP`). A row not seated whole goes to `array_unseated` and its members are seated one by one |
-| 2.5 / 2.6 | the decap-governed caps, one per supply pin; what the pin stage declines is put back into its zone. `decap_stage` says what it claimed, and why when nothing -- without the key on an unzoned seed that is "no owner IC seated yet; set decaps.seat_owners_first" |
+| 2.5 / 2.6 | the decap-governed caps, one per supply pin; what the pin stage declines is put back into its zone. `decap_stage` says what it claimed, and why when nothing -- on an unzoned seed, that no owner IC is seated before the stage (#1053) |
 | 3 | everything else, at the nearest legal pose to its connectivity centroid |
 | 3c / 3b | the eviction rung (`--evict-depth`, below), then the gated anchor re-seat rounds |
 

@@ -1564,8 +1564,8 @@ The quench HOLDS what the intent declares (#1043): `decaps.max_distance_mm`,
 gated per move by the grader's own measurement — a tether within its limit
 stays within, one past it gets no worse — and with a decap limit armed an IC
 moves with its caps as one group. Only a run handed that `--intent` sees it. The seeder claims caps
-at their pins only once the owner ICs are down: `decaps.seat_owners_first`
-(opt-in, it failed its A/B) seats them first, else `decap_stage.reason` says why it claimed 0.
+at their pins only once the owner ICs are down (a fixed pose, must_lock, a zoned
+block or a row's `serves` seats one earlier), else `decap_stage.reason` says why it claimed 0.
 
 ### Board features that live ON the outline
 

@@ -191,23 +191,18 @@ def test_the_control_arm_is_never_what_changed():
 
 
 def test_the_SHIPPING_arm_strands_only_what_the_pin_stage_crowds_out():
-    """What the SHIPPING arm (`decaps.max_distance_mm` declared, no
-    `decaps.seat_owners_first`) leaves unseated that the no-decaps control
-    seats, re-derived per board and pinned EXACTLY: rp2350's J2, and
-    nothing else.
+    """What the SHIPPING arm (`decaps.max_distance_mm` declared) leaves
+    unseated that the no-decaps control seats, re-derived per board and
+    pinned EXACTLY: rp2350's J2, and nothing else.
 
     The put-back falls through to the centroid stage rather than appending
     to `unseated`, so it cannot strand a part; the pin stage CAN, by
     claiming room near the ICs already placed before the parts stage 3
     seats last (rp2350 claims 15 caps; J2 then no longer fits). History,
     so the number is not mistaken for news: the first rows file (measured
-    at b9055e1) did not show it, the pre-phase-3 seeder at 754e7f419 does,
-    and #1053's stage 2.4 hid it while it ran by default (f061f78cf ..
-    5712eea2e) -- its size rule seats large parts before the caps. Stage
-    2.4 is opt-in since #1051 Phase 6 (it failed its A/B, test_placement_ab
-    served-ics-first-*), so the shipping arm is the pre-#1053 order again,
-    and this is its measured cost. Any other board or part appearing, or
-    J2 going, fails here and is read deliberately."""
+    at b9055e1) did not show it; the pre-phase-3 seeder at 754e7f419
+    does. Any other board or part appearing, or J2 going, fails here and
+    is read deliberately."""
     rows = _armed(_rows())
     stranded = {}
     for r in rows:
@@ -230,16 +225,10 @@ def test_the_owner_test_arm_STRANDS_parts_and_that_is_why_it_ships_off():
     L1, and tigard H1 and H3. A stranded part is a worse outcome than every
     gain the flag buys.
 
-    History: this was the claim's original finding. #1053's stage 2.4 made
-    it false while stage 2.4 ran by default (f061f78cf .. 5712eea2e: the
-    chips arm stranded nothing, and the claim was rewritten to say so and
-    to rest the default on pin geometry instead). Stage 2.4 is opt-in since
-    #1051 Phase 6 (`decaps.seat_owners_first`), the shipping arm is the
-    pre-#1053 order again, and the original finding is back, measured
-    against the shipping arm rather than the no-decaps control (the control
-    now differs from both by rp2350's J2 -- see the arm above). The pin
-    geometry is recorded too: the chips arm is worse on glasgow, rp2350 and
-    ulx3s and better nowhere -- no reason to turn it on either.
+    Measured against the shipping arm rather than the no-decaps control
+    (the control differs from both by rp2350's J2 -- see the arm above).
+    The pin geometry is recorded too: the chips arm is worse on glasgow,
+    rp2350 and ulx3s and better nowhere -- no reason to turn it on either.
     """
     rows = _armed(_rows())
     stranded = {}

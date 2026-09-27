@@ -142,7 +142,7 @@ source, suspect, suspect_reason
 | `edge_connectors[].overhang_mm` | `min`, `max` |
 | `edge_connectors[].center_on_edge` | `tolerance_mm` (required — see below) |
 | `edge_connectors[].along_edge_band` | `from`, `to` |
-| `decaps` | `max_distance_mm`, `exempt`, `search_radius_mm`, `max_pin_distance_mm`, `pin_functions`, `same_side`, `seat_owners_first` (reader 7) |
+| `decaps` | `max_distance_mm`, `exempt`, `search_radius_mm`, `max_pin_distance_mm`, `pin_functions`, `same_side` |
 | `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `why`, `context` |
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `note`, `context`, and the compiler-written `source` |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (#1051; see "Arrays" below; needs `min_reader` 7) |
@@ -333,9 +333,7 @@ rotation the seeder chooses for `"shared"`/`"unknown"`, a pitch and an axis,
 searched over a capped pose count (`ARRAY_SEAT_POSE_CAP`), never a clock. A
 zoned row is seated into its zone in stage 2; any other row in stage 2.4,
 right after the part it serves (only the served parts and the rows are seated
-there -- measured better on all four arrays-auto A/B boards than also seating
-what outranks the members first; with `decaps.seat_owners_first` the rows
-take their members' rank among everything 2.4 then seats). A row
+there, each row at its members' rank in stage 3's order). A row
 that cannot be seated whole is reported in `array_unseated` and its members
 are seated one by one. **The quench** holds a declared array rigid only while
 it is a FORMED row (`arrays.formation`) at the poses it starts from -- so an
@@ -1521,15 +1519,11 @@ beyond-cap, where last and farthest are the same cap.
 It is not a grading-only knob, which is why it is opt-in, default off, and on
 its own flag rather than folded into `--declare-classes`. `place_seed` reads
 `decaps.max_distance_mm` and, when it is set, pulls every two-net-bearing-pad
-`C*` out of radial zone packing into its per-supply-pin stage. Stage 2.4
-seats the ICs those caps serve (and whatever outranks the caps) BEFORE the
-pin stage -- **only with `decaps.seat_owners_first: true`**
-(#1053). The pin stage reads its pins off ICs already placed, so on an
-unzoned seed without the key it claims nothing; it says so in a `NOTE:` and
-in `decap_stage.reason` ("no owner IC seated yet; set
-decaps.seat_owners_first to seat them first"). The key is opt-in because it
-failed its A/B (`test_placement_ab`'s `served-ics-first-*` rows regress on
-all four boards, on a guard). At error severity the limit also arms the
+`C*` out of radial zone packing into its per-supply-pin stage. The pin stage
+reads its pins off ICs already placed -- by a fixed pose, must_lock, a zoned
+block or a declared row's `serves` -- so on an unzoned seed with none of
+those it claims nothing, and says so in a `NOTE:` and in
+`decap_stage.reason` (#1053). At error severity the limit also arms the
 quench's per-move tether (#1043, above). Measured:
 
 | board | in scope | graded | beyond the radius | no rail-carrying chip | predicate |

@@ -3,9 +3,7 @@
 unguarded -- each test here exists because a named mutant survived every
 test the PR had written, and each names the row it kills.
 
-25 tests. (The commit that added this file, 8de18a378, says 25; it held
-24 then -- the 25th is the zoned-row case below, added with the phase-7
-verification.)
+24 tests.
 
 Kept apart from the phase files so each case is a FAST, single-purpose
 killer (synthetic boards and direct calls wherever the mechanism allows),
@@ -35,9 +33,8 @@ and so the battery can select it by name:
   a seated fixed pose frozen to the eviction rung, and a copper-less part
   judged by its courtyard (`fixed-pad-clearance-unchecked`,
   `fixed-seated-evictable`, `fixed-padless-courtyard-unchecked`);
-* stage 2.4 seats a row ahead of the parts it outranks, and a row's caps
-  are not the decap pin stage's (`rows-after-every-part`,
-  `row-member-claimed-by-the-decap-stage`);
+* a row's caps are not the decap pin stage's
+  (`row-member-claimed-by-the-decap-stage`);
 * a zoned row that seats nowhere is not zone-packed a second time
   (`zoned-row-zone-packed-first`; added after the phase-7 verifier reached
   the double failure the battery had called unreachable);
@@ -429,12 +426,18 @@ def test_a_declared_row_of_caps_is_not_the_decap_stages_to_claim():
     from placement import groups as groups_mod
     pcb = parse_kicad_pcb(ESP)
     doc = fp.emit_intent(pcb, ESP)
-    doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=3.0,
-                         seat_owners_first=True)
+    doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=3.0)
+    # The owner ICs seated first (stage 0), so the pin stage has pins.
+    near, beyond, _o = groups_mod.decap_populations(pcb)
+    fps = pcb.footprints
+    doc['fixed_poses'] = [
+        {'ref': r, 'x': fps[r].x, 'y': fps[r].y, 'rot': fps[r].rotation or 0,
+         'basis': 'declared', 'why': 'the owner IC, seated first'}
+        for r in sorted(set(near) | {ic for _c, ic, _d in beyond})
+        if r.startswith('U')]
     ctl = _seed(ESP, fp.intent_from_dict(doc, ESP))
     claimed = sorted(n.split(':')[0] for n in ctl['notes']
                      if ': decap for ' in n)
-    near, _b, _o = groups_mod.decap_populations(pcb)
     caps = sorted(c for ic in near for c, _d in near[ic] if c in claimed)
     same = {}
     for c in caps:
@@ -591,38 +594,6 @@ def test_a_copperless_fixed_pose_past_the_outline_is_refused():
     assert 'no copper pad or hole to anchor an overhang' in why, got[19.5]
     assert got[10.0]['fixed_seated']['G1']['how'] == 'contained', got[10.0]
     print(f"  PASS: {why}")
-
-
-def test_rows_go_down_ahead_of_the_parts_they_outrank():
-    """Stage 2.4 seats in stage 3's order with each row at its members'
-    rank: a part with FEWER pins than the row's members comes after the
-    row. glasgow's hand-declared buffer bank (six-pin SOT-363) under
-    `seat_owners_first`: every part 2.4 seats after the bank has at most
-    the bank's pin count, and some part does come after it."""
-    import pose_score
-    board = os.path.join(BOARDS, 'glasgow_revC.kicad_pcb')
-    pcb = parse_kicad_pcb(board)
-    doc = fp.emit_intent(pcb, board, derive_decaps=True)
-    doc['decaps'] = dict(doc['decaps'], seat_owners_first=True)
-    declined = []
-    arr.suggest_arrays(pcb, declined=declined)
-    bank = next(d for d in declined if d['why'] == 'bridges U30 and RN7')
-    doc['arrays'] = [{'name': 'bank', 'members': list(bank['members']),
-                      'serves': 'U30', 'order': 'unknown',
-                      'rotation': 'shared', 'pitch_mm': 'auto',
-                      'axis': 'auto', 'why': 'declared by hand'}]
-    res = _seed(board, fp.intent_from_dict(doc, board))
-    order = res['early_order']
-    st = pose_score.make_state(pcb, board, clearance=0.2)
-    top = max(st.parts[m].pin_count for m in bank['members'])
-    after = order[order.index('array:bank') + 1:]
-    assert after, ("nothing is seated after the bank, so its rank is "
-                   "untested", order)
-    assert all(st.parts[r].pin_count <= top for r in after), [
-        (r, st.parts[r].pin_count) for r in after
-        if st.parts[r].pin_count > top]
-    print(f"  PASS: {len(after)} part(s) with <= {top} pins seated after the "
-          f"bank")
 
 
 #: A free 30 x 20mm board: a two-part row R1+R2, and X1 (the intruder,
@@ -937,7 +908,6 @@ TESTS = [
     test_declared_poses_whose_courtyards_clear_but_pads_collide_are_refused,
     test_a_seated_fixed_pose_is_frozen_to_the_eviction_rung,
     test_a_copperless_fixed_pose_past_the_outline_is_refused,
-    test_rows_go_down_ahead_of_the_parts_they_outrank,
     test_a_member_a_block_move_can_clear_is_not_released,
     test_a_released_member_that_moved_away_clean_stays_released,
     test_a_formation_tighter_than_the_clearance_is_its_own_business,
