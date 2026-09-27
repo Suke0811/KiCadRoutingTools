@@ -3218,11 +3218,13 @@ def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],
       declared ladder allows (`arrays.allowed_angles`), and deduplicated
       modulo 180 when every member is a <= 2-pad part.
     * AXIS: a declared `x` / `y` is used alone. `"auto"` tries both, in a
-      DETERMINISTIC order: the row is first laid PARALLEL to the side of the
-      served part its pins are on -- the pin centroid's offset from the
-      host's courtyard centre, |dx| >= |dy| (an east/west side) giving 'y'
-      first, else 'x' -- and then the other axis. With no placed host, 'x'
-      then 'y'.
+      DETERMINISTIC order: the row is first laid ACROSS the line from the
+      served part to the TARGET (below) -- the target's offset from the
+      host's courtyard centre, |dx| >= |dy| (east or west of it) giving 'y'
+      first, else 'x' -- and then the other axis. With members that have no
+      far-side partner the target is on the host's pin side, so the row
+      lies parallel to that side. With no placed host, or no member
+      reaching its pads, 'x' then 'y'.
     * DIRECTION: along the chosen axis the order is flipped when the first
       member's served pins lie further along the axis than the last's, so
       the row runs the way the pins do.
@@ -3290,7 +3292,8 @@ def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],
     # which is what a member seated alone would aim at. The host pins alone
     # (the first form) pulled the row off its far-side nets: on glasgow the
     # airwire length on the members' nets rose 3264 -> 3718mm (phase-3
-    # verifier). The host pins still decide the AXIS and the DIRECTION.
+    # verifier). The host pins still decide the DIRECTION; the axis is laid
+    # across the host-to-target line (AXIS, above).
     cs = [c for c in (_partner_centroid(state, m, placed) for m in members)
           if c is not None]
     if cs:
@@ -3343,6 +3346,7 @@ def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],
             # to the unconstrained centroid stage.
             zx = (zone.rect[0] + zone.rect[2]) / 2.0
             zy = (zone.rect[1] + zone.rect[3]) / 2.0
+            missed = []
             for ref in sorted(members, key=lambda r: (
                     -state.parts[r].pin_count, r)):
                 if _try_place(state, ref, zx, zy, unplaced - {ref},
@@ -3350,6 +3354,13 @@ def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],
                               rotations=rot_ladder(ref)) is not None:
                     placed.add(ref)
                     unplaced.discard(ref)
+                else:
+                    missed.append(ref)
+                    notes.append(f"{ref}: array {name}'s zone fallback "
+                                 f"found no pose in zone {zone.name!r} -- "
+                                 f"left to the centroid stage")
+            if missed:
+                unseated[name]['zone_unseated'] = missed
         return
     for m in res['order']:
         placed.add(m)
@@ -4433,8 +4444,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         # -- a row needs a contiguous strip, and the radial pack fills the
         # zone around it (measured on glasgow: RN5+RN6 seated into a packed
         # sheet zone only at clearance 0.1, after 243k poses; into the
-        # empty one first). It aims at its served pins when the host is
-        # placed already, else at the zone's centre (`_seat_array`).
+        # empty one first). It aims at `_seat_array`'s target (its members'
+        # placed partners, else the served pins, else the board centre),
+        # clamped into the zone.
         for spec in array_try:
             if getattr(array_zone.get(spec['name']), 'name', None) == name:
                 _seat_array(state, pcb_data, intent, spec, z, placed,
@@ -5200,7 +5212,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # `verdict` is `arrays.formation`'s at the SEEDED poses (a later
             # polish can move them -- place_seed re-grades at the written
             # ones). And {name: {members, reason, poses_tried, capped}} for
-            # every row not seated whole, whose members were seated one by one.
+            # every row not seated whole, whose members were seated one by one
+            # (with `zone_unseated`: the members a zoned row's fallback could
+            # not seat in its zone).
             'arrays_formed': arrays_formed,
             'array_unseated': array_unseated,
             # Stage 2.4's seat order: each declared row's served part, and

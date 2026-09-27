@@ -972,6 +972,35 @@ def test_a_swap_that_strands_a_cap_is_refused_on_the_tether():
           f"{fails[0][1]} ({fails[0][2]}mm > limit)")
 
 
+def test_the_cli_gate_is_not_called_inert_when_it_holds_tethers_or_rows():
+    """`resolve_intent_gate_for_cli` prints "the gate is inert" only for an
+    intent the quench cannot gate on at all. A tethers-only or rows-only
+    intent is gated (the tether terms; the rigid rows), so it gets the
+    summary line, naming the tether rules and the rigid groups."""
+    from contextlib import redirect_stderr
+    from placement.cli_gates import resolve_intent_gate_for_cli
+    pcb = parse_kicad_pcb(SPLITFLAP)
+    base = {'schema': 1, 'kind': fp.KIND, 'units': 'mm'}
+    row = next(a for a in _splitflap_intent()[0]['arrays']
+               if a['name'] == 'U4:47k')
+    cases = (('nothing', dict(base), 'the gate is inert'),
+             ('tethers', dict(base, decaps={'max_distance_mm': 3.0}),
+              'tethers (decap_distance)'),
+             ('rows', dict(base, arrays=[row], min_reader=7),
+              '1 rigid group(s)'))
+    for what, doc, want in cases:
+        err = io.StringIO()
+        with redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+            resolve_intent_gate_for_cli(fp.intent_from_dict(doc, SPLITFLAP),
+                                        pcb, (), 'x.json')
+        said = err.getvalue() + out.getvalue()
+        assert want in said, (what, said)
+        if what != 'nothing':
+            assert 'the gate is inert' not in said, (what, said)
+    print("  PASS: an empty intent is inert; tethers-only and rows-only "
+          "intents are summarised with what they hold")
+
+
 def test_rigid_swap_rule_stays_inside_one_group():
     """`_rigid_swap_ok` is the only thing between a held member and a swap
     with a part outside its group (the swap phase never calls the nudge's
@@ -1146,6 +1175,7 @@ TESTS = [
     test_a_swap_that_strands_a_cap_is_refused_on_the_tether,
     test_the_tether_shortcuts_change_no_decision,
     test_rigid_swap_rule_stays_inside_one_group,
+    test_the_cli_gate_is_not_called_inert_when_it_holds_tethers_or_rows,
     test_every_caller_hands_the_quench_the_resolved_rows_and_tethers,
     test_unarmed_quench_is_bit_identical_to_the_pre_phase4_quench,
 ]

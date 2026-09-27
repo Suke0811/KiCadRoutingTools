@@ -493,8 +493,13 @@ def test_a_zoned_row_that_seats_nowhere_is_not_zone_packed_again():
     packed = [n for n in res['notes'] if 'no legal pose inside zone' in n
               and n.split(':')[0] in ('R3', 'R4')]
     assert not packed, packed
-    print("  PASS: the row capped, the fallback found no zone pose, and the "
-          "zone pack left R3/R4 alone")
+    # The fallback's own miss is disclosed, in the notes and the record.
+    assert sorted(un.get('zone_unseated') or ()) == ['R3', 'R4'], un
+    missed = [n for n in res['notes'] if "zone fallback found no pose" in n
+              and n.split(':')[0] in ('R3', 'R4')]
+    assert len(missed) == 2, missed
+    print("  PASS: the row capped, the fallback found no zone pose and said "
+          "so for R3/R4, and the zone pack left them alone")
 
 
 # --------------------------------------------------------------------------
