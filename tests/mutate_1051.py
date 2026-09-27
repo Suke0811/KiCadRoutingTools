@@ -77,12 +77,22 @@ final re-review 3 -- `fixed-pad-short-unnamed` and
 `route-loop-disclosure-dropped` (two survivors it found, each killed by a new
 assertion) and `mechanical-array-member-not-a-contradiction`.
 
-MEASURED, the run of record, on e91f019f3 (2026-09-26, Windows; every killer
-run unmutated first, every selected test name seen to run, all green):
-**159 rows, 159 KILLED, 0 SURVIVED, 0 broken, 1467 s wall.**
+MEASURED on e91f019f3 (2026-09-26, Windows; every killer run unmutated
+first, every selected test name seen to run, all green): **159 rows, 159
+KILLED, 0 SURVIVED, 0 broken, 1467 s wall.**
 `mechanical-array-member-not-a-contradiction` is killed through run_utils'
 "failed, but NOT for the stated reason": without the contradiction row P1
 falls back to its unlocked-anchor refusal, which is the mutant's effect.
+Superseded below.
+
+The #1059 review removed `decaps.seat_owners_first` and the three rows that
+guarded it (`owners-first-armed-without-the-key`,
+`rows-seat-the-whole-tier-first`, `rows-after-every-part`): **156 rows**.
+
+MEASURED, the run of record, on 21b3de07 (2026-09-27, Windows, beside a full
+suite run; every killer run unmutated first, every selected test name seen
+to run, all green): **156 rows, 156 KILLED, 0 SURVIVED, 0 broken, 2018 s
+wall.**
 
 The earlier run, which changed the tests rather than the table:
 - 154 rows at b0dfc488f (1525 s): 124 KILLED, 30 SURVIVED, none expected.
