@@ -1503,7 +1503,15 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
                 # glasgow /SDA #217) and graded a connected net as split.
                 # Exact tangency is still NOT credited, matching the #285
                 # endpoint-cap rule.
-                seg_tolerance = max((psize + seg.width) / 2 - _cap_margin, tolerance)
+                # #1045: a centreline inside the barrel is joined in the strict
+                # view too, as a track end inside a pad is. For a track under
+                # 2 x STRICT_JOINT_OVERLAP the lens rule alone demanded the end
+                # sit deeper than that, which is stricter than the removal
+                # twin: the graze prune dropped watchy SCL's via connector
+                # (twin: joined) and the fragment sweep then reported an open
+                # that check_connected and kicad-cli both graded connected.
+                seg_tolerance = max((psize + seg.width) / 2 - _cap_margin,
+                                    psize / 2, tolerance)
             else:
                 seg_tolerance = max(seg.width / 2, tolerance)
             if point_on_segment(px, py, seg.start_x, seg.start_y, seg.end_x, seg.end_y, seg_tolerance):
