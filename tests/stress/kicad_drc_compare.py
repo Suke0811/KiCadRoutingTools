@@ -34,6 +34,10 @@ the flagged artifact lives in KiCad's own float-borderline web measurement.
 Usage:
   python3 tests/stress/kicad_drc_compare.py <board.kicad_pcb> [...]
   python3 tests/stress/kicad_drc_compare.py --wave <wave_dir>   # summary.json
+
+Exit: 0 every board compared and consistent; 1 a board diverged; 2 a board
+was NOT compared (kicad-cli missing or failed on it), or none was given (#995).
+Exit 2 outranks 1, and is never agreement.
 """
 import argparse
 import json
@@ -1065,9 +1069,14 @@ def main():
                 if os.path.exists(p):
                     clr = e.get("clearance")
                     jobs.append((p, float(clr) if clr else None))
-    rows = [r for b, clr in jobs
-            if (r := compare_board(b, label=None, clearance=clr,
-                                   baseline=args.baseline))]
+    rows = []
+    not_compared = []
+    for b, clr in jobs:
+        r = compare_board(b, label=None, clearance=clr, baseline=args.baseline)
+        if r:
+            rows.append(r)
+        else:
+            not_compared.append(os.path.basename(b))
     div = [r for r in rows if r["kicad_only"] or r["checkdrc_only"]]
     print(f"\n{len(rows)} boards compared: {len(rows) - len(div)} consistent, "
           f"{len(div)} diverged "
@@ -1078,6 +1087,17 @@ def main():
     print(f"connection_width: {sum(r['kicad_connection_width'] for r in cw_rows)} "
           f"item(s) on {len(cw_rows)} graded board(s) "
           f"({len(rows) - len(cw_rows)} not graded: no recorded min floor)")
+    # #995: a board that was never compared is not a board that agreed. With
+    # no kicad-cli every board SKIPs, and this used to print "0 boards
+    # compared" and exit 0, which a caller reading the exit code took as
+    # agreement. It outranks a divergence: the verdict no longer covers the
+    # boards that were asked for.
+    if not jobs or not_compared:
+        print(f"NOT RUN: {len(not_compared)} of {len(jobs)} board(s) not "
+              f"compared{': ' + ', '.join(not_compared) if not_compared else ''}"
+              f"{' (no board given)' if not jobs else ''} -- exit 2, never "
+              f"read this as agreement")
+        return 2
     return 1 if div else 0
 
 

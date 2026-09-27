@@ -48,8 +48,8 @@ The tools are of two kinds, and the difference decides how you use one:
 in run 29, where KiCad's DRC was the only channel that saw copper against a
 part's own net-0 tab (#962, #994). It needs `kicad-cli`,
 and `krt_registry` does not list it because it lives under `tests/`. Without
-`kicad-cli` it prints SKIP, compares 0 boards and exits 0: record that as NOT
-RUN, never as agreement.
+`kicad-cli` it prints SKIP and `NOT RUN`, compares 0 boards and exits 2: record
+that as NOT RUN, never as agreement.
 
 Every runnable tool in this clone declares which door it serves and which of
 those two kinds it is. The routing door's own view, with each tool's purpose:
