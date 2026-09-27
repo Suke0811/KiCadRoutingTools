@@ -9,7 +9,9 @@ The audit is read by its own summary lines, and an audit that lacks one did not 
 traceback and no counts): that fails too, as does a pitch count the per-pair lines do not add up to.
 
 --hot OUT.json writes where the audit found the plan short -- every dive, pitch, static and shape finding's position,
-{"hot": [[x, y, kind], ...]} -- the history the solve prices (whole_solve, HIST)."""
+and the lanes it names, and every lane a snap could not lay where its search got stuck (whole_snap's conflicts, SNAP),
+{"hot": [[x, y, kind, [lanes]], ...]} -- the history the solve prices (whole_solve, HIST) and the ends the fanout is
+asked to avoid (whole_feedback)."""
 import json
 import re
 import sys
@@ -23,7 +25,18 @@ if '--hot' in sys.argv:
         k = line.split(' ', 1)[0]
         m = re.search(rf'\(\s*{NUM_},\s*{NUM_}\)', line) if k in ('DIVE', 'PITCH', 'STATIC', 'SHAPE') else None
         if m:
-            hot.append([float(m.group(1)), float(m.group(2)), k])
+            w = line.split()
+            # the lanes it names: PITCH two; STATIC its lane and a run net's copper it runs against; SHAPE its lane;
+            # DIVE its lane and the lane it stands too near
+            ln = w[1:3] if k == 'PITCH' else w[1:2]
+            if k == 'STATIC' and 'copper' in w:
+                ln = ln + w[w.index('copper') + 1:w.index('copper') + 2]
+            if k == 'DIVE':
+                ln = ln + re.findall(r'\(([^\s,()]+)(?: [FB])?\)', line)     # '(LANE F)' a line, '(LANE)' a via
+            hot.append([float(m.group(1)), float(m.group(2)), k, ln])
+    for c_ in geo.get('conflicts', ()):
+        if c_.get('frame') == 'snap':
+            hot.append([float(c_['xy'][0]), float(c_['xy'][1]), 'SNAP', list(c_['lanes'])])
     json.dump({'hot': hot}, open(sys.argv[sys.argv.index('--hot') + 1], 'w'))
 lanes = set(geo['lanes'])
 

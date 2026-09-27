@@ -542,6 +542,40 @@ def _level_many(polys, ends, nids, obss, D, C, dnet, cnet, rounds, tol_h, step):
     return [done[s] if done[s] is not None else cur[s] for s in range(n)], used
 
 
+def pad_discs(caps, cnets):
+    """[(x, y, r, name, net)]: each pad a model draws as capsules (braid._build_obstacles: a rect or an oval; every
+    capsule but a track's 'seg:NET') as the one disc round them all -- a rect's its half diagonal, an oval's its half
+    length, each grown by the capsules' margin"""
+    pads = {}
+    for (a, b, r, n_), net in zip(caps, cnets):
+        if not str(n_).startswith('seg:'):
+            pads.setdefault((n_, net), []).append((a, b, r))
+    out = []
+    for (n_, net), cs in pads.items():
+        xs = [q[0] for a, b, _r in cs for q in (a, b)]
+        ys = [q[1] for a, b, _r in cs for q in (a, b)]
+        cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+        out.append((cx, cy, max(max(math.hypot(a[0] - cx, a[1] - cy), math.hypot(b[0] - cx, b[1] - cy)) + r
+                                for a, b, r in cs), n_, net))
+    return out
+
+
+def _string_model(base):
+    """(D, disc nets, C, capsule nets) as the strings see a model: its discs, its TRACKS' capsules ('seg:NET'), and
+    each pad drawn as capsules (braid._build_obstacles: a rect or an oval) as the one disc round them all. A string is
+    pushed off a disc from its centre but off a capsule along the capsule's normal, and where it crosses the capsule that
+    normal runs along the string: a crossed track is a dive (transparent, below), a crossed pad would be let through"""
+    discs = [(x, y, r) for (x, y, r, _n) in base.discs]
+    dnets = list(base.dnets)
+    caps = [(a[0], a[1], b[0] - a[0], b[1] - a[1], r) for (a, b, r, n_) in base.caps if str(n_).startswith('seg:')]
+    cnets = [net for (_a, _b, _r, n_), net in zip(base.caps, base.cnets) if str(n_).startswith('seg:')]
+    for x, y, r, _n, net in pad_discs(base.caps, base.cnets):
+        discs.append((x, y, r))
+        dnets.append(net)
+    return (np.array(discs, dtype=float).reshape(-1, 3), np.array([(-1 if v is None else v) for v in dnets], dtype=int),
+            np.array(caps, dtype=float).reshape(-1, 5), np.array([(-1 if v is None else v) for v in cnets], dtype=int))
+
+
 def relax_many(items, rounds: int = 400, start=None):
     """[(src, dst, obs)] -> [(points, rounds used)], every string relaxed
     together. The models must derive from one base (they share their
@@ -549,11 +583,7 @@ def relax_many(items, rounds: int = 400, start=None):
     if not items:
         return []
     base = items[0][2]
-    D = np.array([(x, y, r) for (x, y, r, _n) in base.discs], dtype=float).reshape(-1, 3)
-    C = np.array([(a[0], a[1], b[0] - a[0], b[1] - a[1], r) for (a, b, r, _n) in base.caps],
-                 dtype=float).reshape(-1, 5)
-    dnet = np.array([(-1 if v is None else v) for v in base.dnets], dtype=int)
-    cnet = np.array([(-1 if v is None else v) for v in base.cnets], dtype=int)
+    D, dnet, C, cnet = _string_model(base)
     ends = [(src, dst) for (src, dst, _o) in items]
     obss = [o for (_s, _d, o) in items]
     nids = [_own_net(o) for o in obss]

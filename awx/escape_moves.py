@@ -99,14 +99,17 @@ def enumerate_moves(pad, grid: Grid, layers: Sequence[str],
                     clear: Callable[[Pt, Pt, str], bool],
                     via_clear: Callable[[Pt, str], bool] = None,
                     margin: float = 0.0, climb: int = 0,
-                    own_line: bool = False) -> List[Move]:
+                    own_line: bool = False, straight: bool = False) -> List[Move]:
     """Every escape move this pad has. `clear(p, q, layer)` says whether
     a track from p to q on `layer` is free of foreign copper;
     `via_clear(p, layer)` whether a via barrel fits at p (checked on
     every layer by the caller). Moves whose geometry is blocked are not
     returned, so an empty list means this pad is boxed in. `own_line`
     adds the pad's OWN column (or row) line to the climb lanes of a
-    via-in-pad start -- see the climb block."""
+    via-in-pad start -- see the climb block. `straight` adds the surface
+    escape straight out along the pad's own row or column line, wherever
+    `clear` allows it: an edge ball, or one whose balls outward are not
+    populated."""
     net = getattr(pad, 'net_name', '') or ''
     net = net.split('/')[-1]
     px, py = pad.global_x, pad.global_y
@@ -143,6 +146,17 @@ def enumerate_moves(pad, grid: Grid, layers: Sequence[str],
                 out.append(Move(net, 'surface', d, home, e, 0,
                                 [((px, py), gate, home),
                                  (gate, e, home)]))
+    # ...and (`straight`) straight out along its OWN line: the rule above
+    # assumes other balls stand on it, but `clear` refuses the move where
+    # they do -- an edge ball, or empty positions outward, leave that way
+    # (14 of the human's 50 teeth at K51), and the half pitches of the
+    # row lines are as usable as the gaps between them
+    if straight:
+        for d in DIRS:
+            e = edge(d)
+            if clear((px, py), e, home):
+                out.append(Move(net, 'surface', d, home, e, 0,
+                                [((px, py), e, home)]))
 
     # --- via_in_pad: dive where the pad is, leave on another layer
     for L in others:

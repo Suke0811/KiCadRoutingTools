@@ -16,6 +16,7 @@ came from that evolution.
     python3 evolve_movie.py TAG 51 --gif                # the movie of a run
     python3 make_bench.py BOARD SRC DST OUT             # another array pair, from any board
     bash pose_gate.sh BOARD SRC DST 15 28               # the same pair in every pose
+    PLAN_JUDGE=ends python3 fanout_from_plan.py FO.kicad_pcb 35 --board=fb_t2q_pairs.kicad_pcb   # our own ends (whole_ends.py)
     python3 whole_solve.py SOLVE.json                   # the whole-route plan: crossings and layer changes (BENCH/NETS/DEST)
     bash whole_loop.sh SOLVE.json OUTDIR                # ... geometry, polish, snap, audit: OUTDIR/plan.json
 
@@ -156,6 +157,19 @@ vias on the board against the human's 88, and no net over two. The braid planner
 are in `braid.py` and change the braid's default routing; the tables above
 predate them, and were run with the portfolio chain
 (`CHAIN_FANOUT_AB=1 CHAIN_BRAID_AB=1`), which is no longer the default.
+
+**On our own ends** (2026-09-27, below). The fanout chooses every net's
+tooth and berth with the whole route's own ends model (`whole_ends.py`,
+`PLAN_JUDGE=ends`), and the whole route plans and routes on them -- no
+braid planner, no human ends. Every lane in its band at once, every net
+connected, DRC-clean; counted as every via and millimetre of the run's
+nets on each board, the human's counted the same way:
+
+| | K15 | K28 | K35 |
+|---|---|---|---|
+| the whole route on our own ends | **12 v, 191 mm** | **32 v, 550 mm** | **52 v, 810 mm** |
+| human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm |
+| rounds | one fanout | one fanout | two: the first's crowded teeth fed back |
 
 ## The pack (`pack_board.py`, opt-in)
 
@@ -784,27 +798,85 @@ The braid plans a corridor's lanes stage by stage -- launch order, pages,
 exits, rings -- and learns at the last call what the plan could not fit.
 The whole-route plan decides every lane's whole path first -- crossings,
 layer changes and geometry together -- checks it against the router's own
-rules, and only then hands it on.
+rules, and only then hands it on. It plans on a bench's ends: the human's
+(clipped from the human's board), or our own, which the fanout chooses
+with the whole route's own ends model.
 
     NETS=$(python3 coherent_nets.py 51 --board=fb_t2q_pairs.kicad_pcb)
+    # the human's ends ...
     python3 human_ends_bench.py HUMAN.kicad_pcb tmp/hp/HHe_k51.kicad_pcb "$NETS" \
         --others bench:fb_t2q_pairs.kicad_pcb --ladder fb_t2q_pairs.ladder.txt --sidecar --marker
-    export BENCH=tmp/hp/HHe_k51.kicad_pcb NETS DEST=DU1   # the bench every whole_* tool reads (whole_ctx.py)
+    # ... or our own (the fanout's plan environment: PYTHONHASHSEED=7 PLAN_PAGES=1 BRAID_PAIRS=1 PLAN_PAIRS=1)
+    PLAN_JUDGE=ends python3 fanout_from_plan.py tmp/e/fo.kicad_pcb 51 --board=fb_t2q_pairs.kicad_pcb
+    export BENCH=tmp/hp/HHe_k51.kicad_pcb NETS DEST=DU1   # (or tmp/e/fo.kicad_pcb) the bench every whole_* tool reads
     python3 whole_solve.py SOLVE.json                  # crossings and layer changes
     bash whole_loop.sh SOLVE.json OUTDIR               # geometry -> polish -> audit -> pairs -> singles -> snap
     python3 whole_render.py OUTDIR/plan.json OUT.png   # look at it (AUDIT=FILE marks the audit's findings)
     python3 route_lanes.py all --plan OUTDIR/plan.json --board $BENCH --nets "$NETS" --dest DU1 \
         --mode seq --write ROUTED.kicad_pcb            # the router on the plan, each lane in its band
     python3 ../py_router/check_connected.py ROUTED.kicad_pcb   # and check_drc.py: routed is not connected
+    # whole_loop.sh exit 4 (ends crowded, on our own ends): the audits' findings there back to the fanout
+    python3 whole_gate.py OUTDIR/p1.json OUTDIR/p1.audit --hot HOT.json
+    python3 whole_feedback.py tmp/e/fo.plan.json FEEDBACK.json HOT.json
+    FEEDBACK=FEEDBACK.json INCREMENTAL=tmp/e/fo.plan.json PLAN_JUDGE=ends \
+        python3 fanout_from_plan.py tmp/e2/fo.kicad_pcb 51 --board=tmp/e/SOURCE_BOARD   # the 'source board:' its log names
 
+- **The ends** (`whole_ends.py`; `fanout_from_plan.py` under
+  `PLAN_JUDGE=ends`). Each net's tooth at the source and berth at the
+  destination, chosen together from the fanout's escape menus, because the
+  ends decide the braid: the teeth's order round the source and the
+  berths' round the destination fix every crossing, and the layers at the
+  two ends fix what each costs. The route's layer changes are ESTIMATED
+  from the ends alone -- the end-layer changes, a least-weight cover of the
+  crossings between lanes on one layer end to end, the settling of a lane
+  whose end layers differ, the coupling of two such lanes -- and the best
+  few states are ranked EXACT on their orders (the whole solve's order
+  model without its lengths, CP-SAT on one worker to a deterministic work
+  limit). The objective is the solve's: nets over two vias, then vias --
+  the ends' own and the route's -- with each lane's ride at
+  `select_moves.VIA_MM` a via, then CONGESTION on the trunk between the
+  arrays -- each lane's load there (the room its crossings and changes
+  take, over the trunk's length) priced by the square of its excess over
+  half, and each crossing there a twentieth of a via. Searched one
+  lane's tooth or berth at a time (one other lane ejected where it is in
+  the way), then iterated from seeded random kicks; first with the teeth as
+  laid, then with the teeth free from the berths just chosen. The fanout
+  lays what the model chose and it is judged AS LAID: a board not laid as
+  asked is not kept, and the moves it missed are planned again without.
+  Never chosen: two moves the fanout cannot lay together (an F exit stacked
+  over a B one allowed; two exits on one layer closer than a track and a
+  clearance), a tooth move through another run net's laid tooth, a pair's
+  legs apart, a tooth on the source's far face.
+- **The frame** (`whole_frame.py`). The whole route's own frame of a bench,
+  read off the board alone -- no braid corridor, branch or path: a straight
+  trunk spine from the source's pad box through the destination's, a ring
+  round the destination for each of its north and south faces, the two
+  orders the solve inverts (teeth round the source, berths round the
+  destination), and each lane's taut reference path. A tooth on the
+  source's far face has no way round the source here, and is refused.
+- **Feedback** (`whole_feedback.py`, `FEEDBACK=`, `INCREMENTAL=`). A finding
+  the audits make AT the ends -- beside a face within the width its lanes
+  stack to, or in front of it within the band the solve keeps clear -- is
+  the fanout's to move: two lanes named together become a pair of ends not
+  to choose together again, one alone an end to avoid, priced in the ends
+  model. The loop stops for it (exit 4) at once for a finding no solve moves
+  (a pitch, a static clearance there) and for any that stands two rounds
+  running -- once the round has no side flip left to try. The next fanout
+  is INCREMENTAL, as `replan.py`'s rounds were: from the previous round's
+  source board, only the teeth the feedback names free, every other berth
+  held, the run's nets the previous round's.
 - **The solve** (`whole_solve.py`, CP-SAT). Every lane's route is one
   coordinate: the trunk from its tooth, then its ring round the destination
   (the pad box unrolled from a cut between the branches) to its berth. Every
   pair whose launch and berth orders disagree crosses once; the braid rule
   holds over every triple; a lane's crossings keep a pitch along a stayer
-  and less along a mover's sweep; up to four layer changes per lane, each a
-  via's room from its own crossings and, along the route, far enough from
-  any other lane's that two on neighbouring lanes clear the via-to-via rule;
+  and less along a mover's sweep, a pair's two crossings of opposite ways
+  its turning run apart; up to four layer changes per lane, each a via's
+  room from its own crossings, a single's a change's room from both its
+  ends, and along the route far enough from a neighbouring lane's (a
+  neighbour at either end, or a lane it crosses) that the two vias clear
+  the via-to-via rule; no crossing and no change in the band along the
+  source's near face, where the teeth stand;
   crossing lanes on different layers; an opposite-hands pair at least one
   change, where its tooth and berth share a layer (elsewhere the berth rule
   asks one already -- a constraint that binds nothing still moves CP-SAT to
@@ -827,7 +899,13 @@ rules, and only then hands it on.
   proven optimal in seconds (K51: 17 s). Bounded in work, not time: a count of CP-SAT's interleaved
   batches, the workers sharing no clauses (`WHOLE_SOLVE_BATCHES`) -- bounded
   by deterministic time, or sharing clauses, one model gave a different
-  answer on every run.
+  answer on every run. It stops sooner once the vias are PROVED (the plan's
+  vias no more than the bound's whole vias, read off the search's own log:
+  only the history's tie-break open) or, once it has a plan, when the search
+  STALLS (three of its own model reductions in a row with no better plan or
+  bound -- events, never a clock: K35 found its one plan at 46 s and spent
+  145 s more on nothing; before a first plan the budget decides). Only a plan proved optimal in its vias goes on to
+  the geometry; one the search could not prove is no plan.
 - **The geometry** (`whole_geo.py`). One joint LP over the trunk and both
   rings, columns four grid steps apart: each lane's offset per column in the
   solve's order on its solved layers, same-layer neighbours a bar apart
@@ -837,9 +915,14 @@ rules, and only then hands it on.
   lane takes the comfortable pitch -- a track more than the bar -- wherever
   there is room, as the human's lanes do), the bends, and every neighbour
   short of that comfortable pitch, four times as steeply below halfway to
-  the bar, so the tightest are spread first. A second pass holds each lane to one side of every piece
+  the bar, so the tightest are spread first; a lane turns at most 45
+  degrees a column (elastic). A second pass holds each lane to one side of every piece
   of static copper near it: one split per island and layer, in the lane
-  order, pinned by the lanes' own ends. A pair runs straight for the pair
+  order, pinned by the lanes' own ends. An island is a part (a lane goes
+  round it, not between its pads) -- or parts no lane can surely pass
+  between (`whole_ctx.part_islands`: closer than a track, a clearance and
+  the router's corner buffer either side and a grid step; K35 had routed
+  SA4 through R4 and R5's 0.37 mm, where the router's grid has no column). A pair runs straight for the pair
   router's straight run either side of each dive, and where a dive falls
   within reach of its fixed end, straight from the end right through it --
   its sideways shift onto its terminal comes before the dive, never between
@@ -850,7 +933,9 @@ rules, and only then hands it on.
   inequality -- and the lanes are read back from the dual's multipliers: the
   same optimum, six times faster (K51's second pass 30 s, not 188).
 - **The polish** (`whole_polish.py`). The audit's own measures -- pitch, via
-  rooms, static clearance, turns -- met in board xy by small vertex moves,
+  rooms, static clearance (a pad as KiCad draws it, its corners rounded,
+  and for a single, in a pad's corner zone, the router's corner buffer
+  further: `pairs.pad_corner_buffer`), turns -- met in board xy by small vertex moves,
   one LP per round, each bar the snap's plus a grid step, so every gap the
   snap later splits holds a grid row. The audit's own shape findings (a
   fold at a vertex or at the lane's scale, a notch) are straightened before
@@ -894,9 +979,11 @@ rules, and only then hands it on.
   pose, owing the router's probe past each pose (`pairs.pose_probe_steps`).
   An OPPOSITE-HANDS pair -- P on one side of its travel at its tooth, on the
   other arriving at its berth (SCK) -- swaps its legs at its dive with a
-  CROSSOVER (`pairs.crossover`), as a designer does: the first diver steps
-  out to its barrel and dives, the other jogs at 45 degrees over the first's
-  new-layer leg to its barrel just beyond, both barrels on one side,
+  CROSSOVER (`pairs.crossover`), as a designer does: the first diver jogs
+  out at 45 degrees to its barrel and dives, the other jogs at 45 degrees
+  over the first's new-layer leg to its barrel just beyond and back onto
+  its line at 45 -- no leg turns more than 45 degrees, so the lane's own
+  turn into the dive cannot make a fold of one -- both barrels on one side,
   staggered by the least whole grid steps that keep a via's pitch and each
   jog's clearance -- on the side where the singles not yet laid leave
   room for its barrels. It is laid as drawn; the search reserves its half-span
@@ -927,14 +1014,22 @@ rules, and only then hands it on.
   into clean jogs. A single's search runs in the router's Rust core
   (`grid_router.lane_search`: the same search, the same path; an older
   binary searches in Python), and a lane asked again on a board unchanged
-  since it was laid is answered as before.
-- **The audit and the gate.** `whole_ctx.install` puts a plan in the
-  planned corridor as the router gets it -- reservations, via sites, bands,
+  since it was laid is answered as before. The Python search (every pair's)
+  packs each state -- cell, heading, vias taken, run counters -- into one
+  integer in the tuple's own order, so it pops the same states in the same
+  order at a fraction of the memory (K35's pairs: 843 MB, now 520). A single
+  the snap cannot lay is named with where its search got stuck (the
+  farthest along the lane any path from its start reached), and the loop
+  sends that place to the solve.
+- **The audit and the gate.** `whole_ctx.lanes` puts a plan in the whole
+  route's own lanes (`PlanLanes` on the whole frame: no braid corridor) as
+  the router gets it -- reservations, via sites, bands,
   layer runs, search windows; a SNAPPED lane's band is its own grid line
   (half a grid step either side, its end cells and its via cells: a lane
   free to roam a track and a clearance either side takes the next lane's
   row). `whole_audit.py` runs every `plan_audit.py` check on it: pads as
-  KiCad draws them (rounded corners, an oval a stadium); a single's terminal
+  KiCad draws them (rounded corners, an oval a stadium), a single's track
+  and via held the router's corner buffer further in a pad's corner zone; a single's terminal
   join as the router lays it (exactly, to the grid point its end rounds
   to); each piece's allowance none where it is fixed or on the grid, half a
   grid step at a free end off it, linear between; a pair's end connectors
@@ -955,7 +1050,9 @@ rules, and only then hands it on.
   layer at its own barrel, the legs swapping sides). `whole_loop.sh` sends
   the solve every audit's findings as HISTORY with the cuts, so a round the
   geometry has no cut for -- a pitch, a shape, the singles not fitting round
-  the held pairs, a snapped plan short -- solves again rather than stopping;
+  the held pairs, a snapped plan short, a single the snap could not lay --
+  solves again rather than stopping (each finding's place and the lanes it
+  names: `whole_gate --hot`);
   it stops a loop that is NOT CONVERGING: two rounds that do not beat the
   best score so far (how far the plan got -- smooth, the pairs held,
   snapped -- then its findings there). A round with new side flips and cuts
@@ -978,8 +1075,10 @@ rules, and only then hands it on.
   loads it in a third of a second. A bench outside the canonical frame
   (`flow_frame.py`) or with more than two copper layers is refused, not
   misread.
-- **The route** (`route_lanes.py --plan`). The router on the installed
-  plan, every lane in its band (post-passes off), a pair's end connectors
+- **The route** (`route_lanes.py --plan`). The router on the plan installed
+  in the whole route's own lanes -- the pairs first, then the singles, each
+  in the berths' order round the destination -- every lane in its band
+  (post-passes off), a pair's end connectors
   and crossover laid as given and the pair router run between them
   (`connect.connect_pair`'s `a_given` / `b_given` / `x_given`): each alone, or all in
   order (`--mode seq`), the board written for `check_connected` and
@@ -1020,11 +1119,16 @@ all at once (86 vias); right, the human (88). The three pairs are yellow.
 SCK's legs swap sides at a crossover just past its tooth end (lower
 left). The human's meanders match lengths.*
 
-On our OWN ends -- the chain's fanout (`chain_k.sh`: our teeth and our
-berths) of K15 on `fb_t2q_pairs` (15 nets, two of them pairs: 13 lanes) --
-the plan passes in one round (12 s) and routes all at once, 13 of 13 in
-their bands, all 15 nets connected, DRC-clean: 16 vias on the board against
-the chain braid's 18 on the same fanout and the human's 22.
+On our OWN ends -- the ends model's fanout on `fb_t2q_pairs` -- the plan
+passes and routes all at once, every lane in its band, every net connected,
+DRC-clean (the table in *Where it stands*): K15 (13 lanes) 12 vias against
+the human's 22, the loop and the route in 22 s; K28 (25 lanes) 32 against
+48, in a minute; K35 (32 lanes) 52 against 60 over two fanouts -- the first
+round's loop stopped at once at its crowded teeth (SA9 short of its pitch to
+SCK), the incremental fanout moved SCKN's tooth alone (10 s), and the loop
+passed in one round, the route about three minutes after the fanout. The
+heaviest processes at K35 are the two snaps (the pairs' 515 MB, the
+singles' 435 MB); the pairs' snap, 97 s, is the longest stage.
 
 ## The chain's other pieces
 
@@ -1207,6 +1311,7 @@ is byte-inert on the H3 bench (K28: 34 vias, 786 segments, as recorded).*
 | `plan_audit.py`, `route_lanes.py` | a plan checked before routing (reservation pitch, via sites, static clearance, shape, bands, swimmers, what is reserved near a point); chosen lanes routed one at a time in band, with renders and a refused search's frontiers |
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py`, `whole_loop.sh` | the whole-route plan: the crossing and layer solve, the geometry LP, the polish, the snap onto the router's grid, the loop that drives them |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a whole-route plan installed and audited, gated (complete and clean), linted, drawn; the bench they share |
+| `whole_frame.py`, `whole_ends.py`, `whole_feedback.py` | the whole route's own frame of a bench; its own choice of ends (the fanout's `PLAN_JUDGE=ends`); the audits' findings at the ends, back to the fanout |
 | `stage_cache.py` | a whole-route stage run, or restored when its script, arguments, environment and every file it read are unchanged |
 | `wall_probe.py`, `pinch_gate.py`, `judge_gate.py`, `floor_survey.py`, `ledger_cal.py`, `cut_ledger.py`, `rule_table.py`, `solve_curve.py`, `modal_curve.py` | probes and gates: a lane's walls, the braid's refusals, the plan judge, the floor per net, a corridor's cut, the length rule over arms, the CP-SAT's convergence |
 | `modal_k.py`, `arms.example.json`, `arms.rec51.json` | cloud arms, one container per (arm, K); `return_board`, `return_files` bring artifacts back |
@@ -1366,10 +1471,6 @@ abandoned with a measurement. Untried ideas live here and nowhere else.
 
 First, the whole-route plan (`whole_*.py`):
 
-- **A lane's turn per column in the geometry.** Its bends cost next to
-  nothing against its hard rules, so where those conflict it can zigzag
-  (SDQS1 at its dive, before the via cut moved it); at most 45 degrees per
-  column, as an elastic rule, would make such a conflict a paid row instead.
 - **The crossover in the pose router** (#1055): an opposite-hands pair
   swapping its legs at any dive the pose search finds room for, not only
   where a plan puts it.
@@ -1380,8 +1481,34 @@ First, the whole-route plan (`whole_*.py`):
   are still millimetres where they should be the rules' units.
 - **Speed.** A K51 loop is under three minutes, half of it the geometry's LP in HiGHS
   itself: one elastic column per pitch rule, rather than one per tangent cut
-  of it, would shrink it. A pair's grid search (its pose counters, its
-  crossover) is still Python.
+  of it, would shrink it. The pairs' snap is the longest stage at K35 (97
+  s), and its searches are a third of that: the rest (each pair's windows,
+  its pose candidates) is unmeasured. A pair's grid search (its pose
+  counters, its crossover) is still Python.
+- **Memory.** The pairs' search states are packed integers, but their cost
+  and predecessor still sit in dicts and the heap holds a tuple per push
+  (K35: 1.8 M states, 520 MB); flat arrays indexed by the packed state --
+  the layout a Rust search would take -- would keep every stage well under
+  1 GB at K51 and past. The rest is a floor of about 85 MB per process in
+  imports: `braid.py` pins HiGHS at import, which loads `scipy.optimize` in
+  stages that solve no LP.
+- **Intra-pair skew.** Nothing plans a pair's two legs to one length: K35's
+  SDQS1 legs differ by 1.06 mm (the human's 0.54, with a serpentine),
+  SDQS0's by 0.47 (0.01), SCK's by 0.32 (0.02). The crossover and the turns
+  make the difference; a skew term in the snap's pair search, or a
+  serpentine the geometry reserves, would bound it.
+- **Berths at the destination without long stubs through its balls.** The
+  ends model reaches DU1's inner balls with long F stubs between its ball
+  columns (K15: SDQ0, SDQM0 and SDQM1, 5-6 mm each; SDQS0 round the south
+  face, 17 mm a leg against the human's 13.4), where the human dives near
+  the ball and runs B inside the array -- at K35 its SCK up DU1's central
+  street and SDQS1 in it, where ours go round (and ours run F 538 mm to B
+  272, the human's 463 to 427). That needs destination climbs in
+  the whole route's menus (`DST_CLIMB` is 0, and building `Ends` does not
+  yet scale to them: conflicts only for the options a search asks), and
+  the array's empty rows offered as streets -- lanes at track pitch, F jogs
+  into them, via sites along them, sent to the engine as `path` hints (its
+  walked dogbone).
 
 - **awx in production.** The harness commands turn the caches on
   (`TAUT_MEMO`, `STAGE_CACHE`, `PROBE_MEMO`) and keep them under

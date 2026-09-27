@@ -9,7 +9,9 @@ least movement that meets them all, and that repeats (re-linearised) until the a
   pitch    same-layer lanes: track + clearance + grid (+ a pair's legs' reach, below)
   dives    a via (a pair: its two barrels, pairs.dive_offset across the arriving direction) vs other lanes' lines on
            either layer, other lanes' vias, static copper of other nets
-  static   lane vs other nets' pads / stubs / vias on its layer: track/2 + clearance + grid/2
+  static   lane vs other nets' pads / stubs / vias on its layer: track/2 + clearance + grid/2 (a pad as KiCad draws
+           it, rounded corners and all, and a single's in its corner zone the router's corner buffer further:
+           pairs.pad_corner_buffer)
   shape    a moved vertex keeps its turn under 90 degrees at the lane's scale; the AUDIT's own shape findings (a
            turn over 100 degrees at a vertex or over the lane's scale, a notch) straightened before the rounds and
            after them, and the rounds run again
@@ -146,11 +148,12 @@ def octi(u):
 def stub_ways(n, router=True):
     """(the way lane n leaves its tooth, the way it arrives at its berth) from its stubs' last segments -- each the
     router direction nearest it, or (router False) the segment's own -- None where the stub ends in a via (the lane
-    lands on it and continues no line)"""
+    lands on it and continues no line). A PAIR's are the pair's own escape directions, as the snap's (end_dirs) and
+    the frame's landing (whole_frame): one leg's last stub segment can converge on the tips at 45 degrees (SCKP at
+    K28's berth), and held along it the pair folded back onto its landing"""
     L0, L1 = LANES[n]['L'][0], LANES[n]['L'][-1]
     if n in prs:
-        (sp_, _sn), (tp_, _tn) = ctx.pair_ends[n]
-        a, b = whole_ctx.stub_dir(ctx, prs[n][0], sp_, L0), whole_ctx.stub_dir(ctx, prs[n][0], tp_, L1)
+        a, b = ctx.tooth_dir.get(n), ctx.stub_dir.get(n)
     else:
         a, b = whole_ctx.stub_dir(ctx, n, ctx.ends[n][0], L0), whole_ctx.stub_dir(ctx, n, ctx.ends[n][1], L1)
     w = octi if router else (lambda u: np.asarray(u, float))
@@ -237,20 +240,20 @@ def drop_faults():
 
 
 # ------------------------------------------------------------------ static copper of other nets, per layer
-STATIC = []          # (kind, layers, net, data): pads ('rect' cx cy hx hy | 'circ' cx cy r), segs (x0 y0 x1 y1 hw), vias (x y r)
-for fp in ctx.pcb.footprints.values():
+STATIC = []          # (kind, layers, net, data): pads ('rect' cx cy hx hy cr), holes and vias ('circ' cx cy r), segs (x0 y0 x1 y1 hw)
+for ref_, fp in ctx.pcb.footprints.items():            # (labelled by the board's key: a repeated reference has its own)
     for pd in fp.pads:
         if pd.pad_type == 'np_thru_hole':
-            STATIC.append(('circ', {'F.Cu', 'B.Cu'}, pd.net_id, (pd.global_x, pd.global_y, (pd.drill or 0) / 2), f'hole {fp.reference}.{pd.pad_number}'))
+            STATIC.append(('circ', {'F.Cu', 'B.Cu'}, pd.net_id, (pd.global_x, pd.global_y, (pd.drill or 0) / 2), f'hole {ref_}.{pd.pad_number}'))
             continue
         Ls = {'F.Cu', 'B.Cu'} if (pd.drill and pd.drill > 0) or any(L.startswith('*') for L in pd.layers) \
             else {L for L in pd.layers if L in ('F.Cu', 'B.Cu')}
         if not Ls:
             continue
-        if pd.shape == 'circle':
-            STATIC.append(('circ', Ls, pd.net_id, (pd.global_x, pd.global_y, pd.size_x / 2), f'pad {fp.reference}.{pd.pad_number}'))
-        else:
-            STATIC.append(('rect', Ls, pd.net_id, (pd.global_x, pd.global_y, pd.size_x / 2, pd.size_y / 2), f'pad {fp.reference}.{pd.pad_number}'))
+        # a pad as KiCad draws its copper: a rectangle with its corners rounded (a circle's and an oval's by half its
+        # width), where the router's corner buffer takes over from the flat bar (pad_dist)
+        STATIC.append(('rect', Ls, pd.net_id, (pd.global_x, pd.global_y, pd.size_x / 2, pd.size_y / 2,
+                                               _pairs.pad_corner_radius(pd)), f'pad {ref_}.{pd.pad_number}'))
 for s in ctx.base_segments:
     STATIC.append(('seg', {s.layer}, s.net_id, (s.start_x, s.start_y, s.end_x, s.end_y, s.width / 2), 'copper'))
 for v in ctx.base_vias:
@@ -277,7 +280,8 @@ for n in sorted(HELD):
 OWN = {n: {ctx.byname[n][0]} | {ctx.byname[leg][0] for leg in prs.get(n, ()) if leg in ctx.byname} for n in LANES}
 # static objects binned by bounding box; a query looks SREACH round its point: the widest bar to static copper
 SCELL = 2 * _pairs.pitch(TW)
-SREACH = max(NEED_VST + OFF + g2, NEED_ST + HALF_SNAP + g2, BLOCK + 2 * (HALF_SNAP + g2)) + MARGIN
+SREACH = (max(NEED_VST + OFF + g2, NEED_ST + HALF_SNAP + g2, BLOCK + 2 * (HALF_SNAP + g2)) + MARGIN
+          + _pairs.corner_buffer(cfg.grid_step))            # (a pad's corner buffer: pad_dist)
 SGRID = collections.defaultdict(list)
 for k_, (kind, Ls, net, d, lab) in enumerate(STATIC):
     if kind == 'circ':
@@ -291,8 +295,23 @@ for k_, (kind, Ls, net, d, lab) in enumerate(STATIC):
             SGRID[(cx, cy)].append(k_)
 
 
-def static_near(P, L, own):
-    """(distance to the object's edge, the object's nearest point) for every static object of other nets on L near P"""
+def pad_dist(P, d, pair):
+    """(distance from P to a pad's copper, less -- a single's (not `pair`) -- the router's corner buffer where P stands
+    in its corner zone (pairs.pad_corner_buffer), the pad's nearest point -- None inside), for a pad d = (cx, cy, hx, hy,
+    cr): the rounded rectangle is its inner rectangle grown by cr"""
+    cx, cy, hx, hy, cr = d
+    ix, iy = hx - cr, hy - cr
+    q = np.array([min(max(P[0], cx - ix), cx + ix), min(max(P[1], cy - iy), cy + iy)])
+    v = P - q; dd = float(np.linalg.norm(v))
+    cb = 0.0 if pair else float(_pairs.pad_corner_buffer(P[0] - cx, P[1] - cy, hx, hy, cr, cfg.grid_step))
+    if dd <= 1e-9:                      # inside the inner rectangle: no normal
+        return -min(hx - abs(P[0] - cx), hy - abs(P[1] - cy)) - cb, None
+    return dd - cr - cb, q + v / dd * cr    # (within the rounding, inside or out: its signed distance and its normal)
+
+
+def static_near(P, L, own, pair=False):
+    """(distance to the object's edge, the object's nearest point) for every static object of other nets on L near P
+    (a pad's as pad_dist reads it; `pair`: a pair's copper)"""
     out = []
     ks = set()
     for cx in range(int(math.floor((P[0] - SREACH) / SCELL)), int(math.floor((P[0] + SREACH) / SCELL)) + 1):
@@ -309,13 +328,8 @@ def static_near(P, L, own):
                 continue
             out.append((dd - r, np.array([cx, cy]) + v / dd * r, lab))
         elif kind == 'rect':
-            cx, cy, hx, hy = d
-            q = np.array([min(max(P[0], cx - hx), cx + hx), min(max(P[1], cy - hy), cy + hy)])
-            dd = np.linalg.norm(P - q)
-            if dd < 1e-9:
-                out.append((-min(hx - abs(P[0] - cx), hy - abs(P[1] - cy)), None, lab))   # inside: no normal
-                continue
-            out.append((dd, q, lab))
+            dd, q = pad_dist(P, d, pair)
+            out.append((dd, q, lab))                     # inside: no normal (q None)
         else:
             x0, y0, x1, y1, r = d
             a, b = np.array([x0, y0]), np.array([x1, y1]); ab = b - a; l2 = ab @ ab
@@ -341,10 +355,12 @@ def mitre(n, i):
     return max(HALF / max(math.cos(math.radians(min(worst, 120.0)) / 2), 0.3), HALF_SNAP) + g2
 
 
-def static_seg(p0, p1, L, own, cut=math.inf):
+def static_seg(p0, p1, L, own, cut=math.inf, pair=False):
     """(edge distance, parameter on p0p1, the object's nearest point) for other nets' static copper on L near the
-    segment p0p1 -- exact: circles and stubs by segment-segment distance, rectangles by their four edges. An object
-    whose bounding box stands further than cut from the segment's is further still, and left out"""
+    segment p0p1 -- exact: circles and stubs by segment-segment distance, a pad by its inner rectangle's four edges
+    grown by its corner radius (seg_rrect), and -- a single's (not `pair`) -- the part of the segment in each of the
+    pad's corner zones again, less the router's corner buffer (pad_dist), the worst of them. An object whose bounding
+    box stands further than cut (and a pad's buffer) from the segment's is further still, and left out"""
     out = []
     sx0, sy0, sx1, sy1 = min(p0[0], p1[0]), min(p0[1], p1[1]), max(p0[0], p1[0]), max(p0[1], p1[1])
     cut2 = (cut + 1e-9) ** 2
@@ -379,21 +395,64 @@ def static_seg(p0, p1, L, own, cut=math.inf):
             v = P - C; nv_ = np.linalg.norm(v)
             out.append((dd - d[4], s, (C + v / nv_ * d[4]) if nv_ > 1e-9 else None, lab))
         else:
-            cx, cy, hx, hy = d
-            if far(cx - hx, cy - hy, cx + hx, cy + hy, 0.0):
+            cx, cy, hx, hy, cr = d
+            if far(cx - hx, cy - hy, cx + hx, cy + hy, _pairs.corner_buffer(cfg.grid_step)):
                 continue
-            corners = [np.array(q) for q in ((cx - hx, cy - hy), (cx + hx, cy - hy), (cx + hx, cy + hy), (cx - hx, cy + hy))]
-            inside = [s for s in (0.0, 0.5, 1.0) if abs((p0 + (p1 - p0) * s)[0] - cx) <= hx and abs((p0 + (p1 - p0) * s)[1] - cy) <= hy]
+            inside = [s for s in (0.0, 0.5, 1.0)       # (in the copper, its corners rounded: not the box)
+                      if _pairs.pad_distance(*(p0 + (p1 - p0) * s - np.array([cx, cy])), hx, hy, cr) <= 0.0]
             if inside:
                 out.append((-1.0, inside[0], None, lab)); continue
-            best = None
-            for e in range(4):
-                a, b = corners[e], corners[(e + 1) % 4]
-                dd, s, t_ = seg_seg(p0, p1, a, b)
-                if best is None or dd < best[0]:
-                    best = (dd, s, a + (b - a) * t_)
+            # the rounded rectangle's distance, and within each corner's zone (the router's corner buffer: pad_dist)
+            # the part of the segment there, less the buffer -- the worst of them
+            best = seg_rrect(p0, p1, d)
+            ax_, ay_ = _pairs.corner_zone(hx, hy, cr, cfg.grid_step)
+            cb = 0.0 if pair else _pairs.corner_buffer(cfg.grid_step)
+            for sx in ((-1.0, 1.0) if cb > 0 else ()):
+                for sy in (-1.0, 1.0):
+                    t = clip_quadrant(p0, p1, cx + sx * ax_, cy + sy * ay_, sx, sy)
+                    if t is None:
+                        continue
+                    a_, b_ = p0 + (p1 - p0) * t[0], p0 + (p1 - p0) * t[1]
+                    dd, s_, q = seg_rrect(a_, b_, d)
+                    if dd - cb < best[0]:
+                        best = (dd - cb, t[0] + s_ * (t[1] - t[0]), q)
             out.append((best[0], best[1], best[2], lab))
     return out
+
+
+def seg_rrect(p0, p1, d):
+    """(distance, parameter on p0p1, nearest point of the pad) from segment p0p1 to a pad d = (cx, cy, hx, hy, cr)
+    outside it: its inner rectangle's four edges, grown by cr"""
+    cx, cy, hx, hy, cr = d
+    ix, iy = hx - cr, hy - cr
+    corners = [np.array(q) for q in ((cx - ix, cy - iy), (cx + ix, cy - iy), (cx + ix, cy + iy), (cx - ix, cy + iy))]
+    best = None
+    for e in range(4):
+        a, b = corners[e], corners[(e + 1) % 4]
+        dd, s, t_ = seg_seg(p0, p1, a, b)
+        if best is None or dd < best[0]:
+            best = (dd, s, a + (b - a) * t_)
+    dd, s, qi = best
+    P = p0 + (p1 - p0) * s
+    v = P - qi; nv_ = np.linalg.norm(v)
+    return dd - cr, s, (qi + v / nv_ * cr) if nv_ > 1e-9 else qi
+
+
+def clip_quadrant(p0, p1, x0, y0, sx, sy):
+    """the parameter interval (t0, t1) of segment p0p1 inside the quadrant sx * (x - x0) > 0, sy * (y - y0) > 0, or
+    None"""
+    lo, hi = 0.0, 1.0
+    for c0, dc in ((sx * (p0[0] - x0), sx * (p1[0] - p0[0])), (sy * (p0[1] - y0), sy * (p1[1] - p0[1]))):
+        if abs(dc) < 1e-15:
+            if c0 <= 0:
+                return None
+            continue
+        t = -c0 / dc
+        if dc > 0:
+            lo = max(lo, t)
+        else:
+            hi = min(hi, t)
+    return (lo, hi) if hi - lo > 1e-12 else None
 
 
 # ------------------------------------------------------------------ geometry helpers
@@ -543,7 +602,7 @@ def gather():
                     nv = (B - C) / d
                     rows.append(([(n, i, nv), (m, k, -nv)], need + EPS - d, 'via-via', f'{n}~{m}', d - need))
             for L in ('F.Cu', 'B.Cu'):
-                for dd, q, lab in static_near(B, L, OWN[n]):
+                for dd, q, lab in static_near(B, L, OWN[n], pair=n in prs):
                     need = NEED_VST + vx
                     if dd >= need + MARGIN:
                         continue
@@ -620,7 +679,7 @@ def gather():
         for i in range(len(X) - 1):
             if i in ln['NC']:
                 continue
-            for dd, s, q, lab in static_seg(X[i], X[i + 1], Ls[i], OWN[n], cut=NEED_ST + hw[n] + MARGIN):
+            for dd, s, q, lab in static_seg(X[i], X[i + 1], Ls[i], OWN[n], cut=NEED_ST + hw[n] + MARGIN, pair=n in prs):
                 need = NEED_ST + hw[n]
                 if dd >= need + MARGIN:
                     continue
@@ -977,12 +1036,15 @@ _SRC = collections.Counter(ctx.src_ref[n] for n in geo['lanes']).most_common(1)[
 _DST = __import__('os').environ['DEST']
 
 
+ISLAND = whole_ctx.part_islands(ctx, skip=(_SRC, _DST))
+
+
 def island_of(lab):
-    """the island a static label names ('pad REF.N ...', 'hole REF.N'), or None"""
+    """the island a static label names ('pad REF.N ...', 'hole REF.N': its part's, whole_ctx.part_islands), or None"""
     for pre in ('pad ', 'hole '):
         if lab.startswith(pre):
             ref = lab[len(pre):].split('.')[0]
-            return ref if ref not in (_SRC, _DST) else None
+            return ISLAND.get(ref) if ref not in (_SRC, _DST) else None
     return None
 
 
@@ -1006,7 +1068,7 @@ for r in bad:
     for i in range(len(X)):
         if (s[i] < 2 * W_SCALE) if end == '<' else (s[-1] - s[i] < 2 * W_SCALE):
             L = Ls[min(i, len(Ls) - 1)]
-            near += [(dd, island_of(lab)) for dd, _q, lab in static_near(X[i], L, OWN[lane_]) if island_of(lab)]
+            near += [(dd, island_of(lab)) for dd, _q, lab in static_near(X[i], L, OWN[lane_], pair=lane_ in prs) if island_of(lab)]
     if near:
         flips.add((lane_, min(near)[1]))
 res['flips'] = sorted(flips)

@@ -256,7 +256,11 @@ def check_pitch(ctx, corridors, png=None):
                 for om in mem[i + 1:]:
                     _m, d, ab = _dist_allow(Pa, R[om], L)
                     need = TW + CL + Aa + ab
-                    bad = d < need - 1e-6
+                    # ...short by half a step at most without failing, where the pieces are off the grid: the bar
+                    # already charges each such piece half a step as if it landed toward the other, the snap lays them
+                    # on the grid and its audit holds the laid pieces to the bar exactly (K35's smooth plan: four pairs
+                    # short by a few microns, a whole round spent on them)
+                    bad = d < need - np.minimum(g / 2, Aa + ab) - 1e-6
                     if bad.any():
                         k = int(np.argmin(d - need))
                         d_, need_, (x, y), ln_ = float(d[k]), float(need[k]), Pa[k], float(bad.sum()) * g
@@ -269,7 +273,8 @@ def check_pitch(ctx, corridors, png=None):
         print(f'PITCH {a:7s} {b:7s} {L[0]} min {d:.3f}  over {ln:4.2f} mm  at ({xy[0]:.2f},{xy[1]:.2f})  '
               f'corridor {ci} s {S:6.2f} {where}  (bar {need:.4f})')
     print(f'PITCH {len(hits)} pair(s) short of their bar on one layer (track + clearance {TW + CL:.3f}, + half a '
-          f'grid step per piece off the grid): {dict(collections.Counter(h[6] for h in hits))}')
+          f'grid step per piece off the grid, less half a step where any is): '
+          f'{dict(collections.Counter(h[6] for h in hits))}')
     if png:
         from route_render import BoardRenderer
         from kicad_parser import Segment as _S
@@ -355,10 +360,13 @@ def check_swim(ctx, corridors, only=None):
     return bad_all
 
 
-def _pad_edge(x, y, pd):
-    """signed distance to a pad's copper as KiCad draws it: rounded corners, a stadium for an oval"""
-    return float(_pairs.pad_distance(x - pd.global_x, y - pd.global_y, pd.size_x / 2, pd.size_y / 2,
-                                     _pairs.pad_corner_radius(pd)))
+def _pad_edge(x, y, pd, g=0.0):
+    """signed distance to a pad's copper as KiCad draws it: rounded corners, a stadium for an oval -- less, in its
+    corner zone, the router's corner buffer for a grid of step g (pairs.pad_corner_buffer; g 0: none)"""
+    cr = _pairs.pad_corner_radius(pd)
+    dx, dy = x - pd.global_x, y - pd.global_y
+    return float(_pairs.pad_distance(dx, dy, pd.size_x / 2, pd.size_y / 2, cr)
+                 - _pairs.pad_corner_buffer(dx, dy, pd.size_x / 2, pd.size_y / 2, cr, g))
 
 
 def _straight_len(pieces, s, u, tol=1e-6):
@@ -476,7 +484,7 @@ def check_dives(ctx, corridors, show_all=False):
                     need_static = VR + CL + g2 * vo
                     # (distance, its bar, what): a via's bar is the via-to-via
                     # rule (copper and drill), everything else copper's
-                    st = min([(_pad_edge(x, y, pd), need_static, f'pad {ref}.{pd.pad_number} {name(pd.net_id)}')
+                    st = min([(_pad_edge(x, y, pd, 0.0 if nm in pairs else g), need_static, f'pad {ref}.{pd.pad_number} {name(pd.net_id)}')
                               for ref, pd in pads if pd.net_id not in own[nm] and near(pd.global_x, pd.global_y)]
                              + [(dseg(x, y, (s_.start_x, s_.start_y), (s_.end_x, s_.end_y)) - s_.width / 2,
                                  need_static, f'{s_.layer[0]} copper {name(s_.net_id)}')
@@ -495,10 +503,12 @@ def check_dives(ctx, corridors, show_all=False):
                     # a via keeps a track's grid cells out of its RING (pairs.via_ring: the clearance rounded up to
                     # whole cells plus a quarter, and as far again as the via stands off its grid point); a pair's
                     # centreline by the pair's ring -- the router's pair map is its centreline's
-                    # (a site ON the grid is where the router puts it: its barrels' own offsets; a smooth plan's
-                    # site is not yet placed -- half a step, the allowance the polish leaves it)
+                    # (a site ON the grid is where the router puts it: its barrels' own offsets. A site not yet
+                    # placed is charged none: short of the bar by half a step at most, it does not fail -- the snap
+                    # places it on the grid and its audit holds the placed site to the bar exactly (K28 SCKE1: 0.322
+                    # against 0.331, and a whole round spent moving it))
                     voff = (math.hypot(x - round(x / g) * g, y - round(y / g) * g)
-                            if _pt_on_grid(s[0], s[1], g) or s in exact_b[nm] else g2)
+                            if _pt_on_grid(s[0], s[1], g) or s in exact_b[nm] else 0.0)
                     ln = min([(dseg(x, y, p, q), ring[om] + voff + g2 * (0 if _on_grid(p, q, g) else 1), om, L)
                               for om in M if om != nm for (p, q, L) in ring_lines[om]]
                              + [(dseg(x, y, p, q), ring_one + voff + g2 * (0 if _on_grid(p, q, g) else 1), om, L)
@@ -582,9 +592,10 @@ def check_static(ctx, corridors, only=None):
     nets on its layer -- pads (a drilled pad on both layers, an unplated hole by
     its drill), the base segments (other nets' and other lanes' stubs and teeth)
     and base vias -- nearer than half a track plus the clearance to that
-    copper's edge: a planned line the router cannot sit on. The pitch audit
-    measures lanes against lanes and the dives audit vias against static
-    copper; neither sees a line through a pad."""
+    copper's edge (and a single's, in a pad's corner zone, the router's corner
+    buffer further: pairs.pad_corner_buffer): a planned line the router cannot sit
+    on. The pitch audit measures lanes against lanes and the dives audit vias
+    against static copper; neither sees a line through a pad."""
     cfg = ctx.cfg
     TW, CL, g = cfg.track_width, cfg.clearance, cfg.grid_step
     need = TW / 2 + CL + g / 2                   # the bar for a lane piece off the grid (it lands up to half a step off)
@@ -631,9 +642,13 @@ def check_static(ctx, corridors, only=None):
                         continue
                     if kind == 'hole':
                         d = np.hypot(P[:, 0] - pd.global_x, P[:, 1] - pd.global_y) - (pd.drill or 0) / 2
-                    else:       # the copper as KiCad draws it: rounded corners, a stadium for an oval
-                        d = _pairs.pad_distance(P[:, 0] - pd.global_x, P[:, 1] - pd.global_y, pd.size_x / 2,
-                                                pd.size_y / 2, _pairs.pad_corner_radius(pd))
+                    else:       # the copper as KiCad draws it: rounded corners, a stadium for an oval -- and, a
+                        # single's, in its corner zone as far again as the router's corner buffer
+                        cr_ = _pairs.pad_corner_radius(pd)
+                        dx_, dy_ = P[:, 0] - pd.global_x, P[:, 1] - pd.global_y
+                        d = _pairs.pad_distance(dx_, dy_, pd.size_x / 2, pd.size_y / 2, cr_)
+                        if nm not in pairs:
+                            d = d - _pairs.pad_corner_buffer(dx_, dy_, pd.size_x / 2, pd.size_y / 2, cr_, g)
                     cand.append((d, f'{kind} {ref}.{pd.pad_number} {name(pd.net_id)}'))
                 for s in ctx.base_segments:
                     if s.layer != L or s.net_id in own or not (inb(s.start_x, s.start_y) or inb(s.end_x, s.end_y)):

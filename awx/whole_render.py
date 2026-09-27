@@ -1,10 +1,11 @@
 """whole_render.py PLAN.json OUT.png [view x0,y0,x1,y1] [LANES] -- a whole-route plan drawn over its board: F red, B blue,
 vias white, LANES thick and labelled; the plan's conflicts (a failed snap's lanes) yellow and numbered, and with
-AUDIT=FILE the audit's failures as magenta crosses. The board is BENCH; the pad boxes drawn are DEST's (and SRC's)."""
+AUDIT=FILE the audit's failures as magenta crosses. The board is BENCH (NETS, DEST: whole_ctx), drawn in the plan's frame -- turned over at pair chirality -1, as the
+plan is; the pad boxes drawn are DEST's (and SRC's)."""
 import sys, os, json, contextlib, io
 A = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, A); sys.path.insert(0, os.path.join(A, '..', 'py_router')); os.chdir(A)
-from kicad_parser import parse_kicad_pcb, Segment as _S
+from kicad_parser import Segment as _S
 from route_render import BoardRenderer
 from PIL import ImageFont
 g = json.load(open(sys.argv[1])); out = sys.argv[2]
@@ -12,7 +13,8 @@ view = tuple(map(float, sys.argv[3].split(','))) if len(sys.argv) > 3 and sys.ar
 hl = set(sys.argv[4].split(',')) if len(sys.argv) > 4 and sys.argv[4] else set()
 ONLY = os.environ.get('LAYER')
 with contextlib.redirect_stdout(io.StringIO()):
-    pcb = parse_kicad_pcb(os.environ['BENCH'])
+    import whole_ctx
+    pcb = whole_ctx.board_in_frame()        # the board in the plan's own frame (turned over at chirality -1)
 try:
     font = ImageFont.truetype('/System/Library/Fonts/Supplemental/Arial.ttf', 18)
 except Exception:

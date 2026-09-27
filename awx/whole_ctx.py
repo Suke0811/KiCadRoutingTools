@@ -1,18 +1,20 @@
-"""whole_ctx.py -- the bench every whole_* tool plans, and the braid's plan of it.
+"""whole_ctx.py -- the bench every whole_* tool plans, read as the braid's setup reads it, and the whole route's
+lanes as the router and the audit take them.
 
-The whole-route tools read one bench from the environment, like the rest of the
-chain: BENCH (the board, fanned out: teeth and berths laid), NETS (N1,N2,.. or
-@FILE) and DEST (the destination part's reference). Under the braid's plan
-environment the planning reads -- BRAID_PAIRS=1 BRAID_EXACT_PAGES=0
-PLAN_PAGES_SIDERS=2 (whole_loop.sh sets it) -- plan() returns the corridors
-exactly as braid.run and plan_audit plan them.
+The whole-route tools read one bench from the environment, like the rest of the chain: BENCH (the board, fanned out:
+teeth and berths laid), NETS (N1,N2,.. or @FILE) and DEST (the destination part's reference). plan() reads it --
+braid.setup's reading of the board (its ends, layers, escape directions, pairs and taut paths, a board of the other
+pair chirality turned over), under the braid's plan environment (BRAID_PAIRS=1 BRAID_EXACT_PAGES=0
+PLAN_PAGES_SIDERS=2, which whole_loop.sh sets); none of the braid's own planning. The whole route's frame is built on
+it (whole_frame.py).
 
-install(ctx, corridor, geo) puts a whole-route plan (a geometry, a polish or a snap: per-lane board polylines with
-per-piece layers, via sites) in place of the braid's own, through the things the router and plan_audit read from a
-plan: virtual_of (a lane's reserved lines on their layers; a pair's two legs), virtual_vias_of (its planned via sites),
-band_of (a tube round its own lines on each layer, both layers round its via sites; a snapped lane's just its own grid
-line), layer_profile (its layer runs) and lane_xy (its search window); every lane a page lane (nothing weaves). The
-audit (whole_audit) and the router (route_lanes --plan) install the same plan the same way."""
+PlanLanes(ctx, frame) holds the whole route's lanes where the router and plan_audit's checks expect a corridor, and
+install(ctx, lanes, geo) puts a whole-route plan (a geometry, a polish or a snap: per-lane board polylines with
+per-piece layers, via sites) into it, through the things they read from a plan: virtual_of (a lane's reserved lines on
+their layers; a pair's two legs), virtual_vias_of (its planned via sites), band_of (a tube round its own lines on each
+layer, both layers round its via sites; a snapped lane's just its own grid line), layer_profile (its layer runs) and
+lane_xy (its search window); every lane a page lane (nothing weaves). The audit (whole_audit) and the router
+(route_lanes --plan) install the same plan the same way."""
 import collections
 import contextlib
 import hashlib
@@ -45,6 +47,54 @@ def bench():
     return os.environ['BENCH'], pa.read_nets(os.environ['NETS']), os.environ['DEST']
 
 
+def part_islands(ctx, skip=()):
+    """{part: its ISLAND's label} for every part but `skip` (the arrays): a lane goes round an island, never through
+    it. A part is one (not between its own pads), and parts whose pads stand closer on a layer they share than a lane
+    can surely pass between are one: a track, its clearance either side, the router's corner buffer either side (a
+    gap between two pads runs past their corners: pairs.pad_corner_buffer) and a grid step, so that a grid column is
+    free -- K35's R4 and R5 stood 0.37 mm apart, a lane through the gap asked 0.362 and the router's grid had no
+    column there. The label names the parts, sorted and joined with '+'."""
+    import pairs as _pairs
+    cfg = ctx.cfg
+    g = cfg.grid_step
+    need = cfg.track_width + 2 * cfg.clearance + 2 * _pairs.corner_buffer(g) + g
+    boxes = []
+    for ref, fp in ctx.pcb.footprints.items():
+        if ref in skip:
+            continue
+        for p in fp.pads:
+            drilled = bool(p.drill and p.drill > 0)
+            if p.pad_type == 'np_thru_hole':
+                hx = hy = (p.drill or 0) / 2
+                Ls = {'F.Cu', 'B.Cu'}
+            else:
+                hx, hy = p.size_x / 2, p.size_y / 2
+                Ls = {'F.Cu', 'B.Cu'} if drilled else {L for L in ('F.Cu', 'B.Cu') if L in p.layers}
+            if Ls:
+                boxes.append((ref, p.global_x - hx, p.global_y - hy, p.global_x + hx, p.global_y + hy, Ls))
+    up = {b[0]: b[0] for b in boxes}
+
+    def root(r):
+        while up[r] != r:
+            up[r] = up[up[r]]
+            r = up[r]
+        return r
+    boxes.sort(key=lambda b: b[1])
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            if b[1] - a[3] >= need:
+                break
+            if a[0] == b[0] or not (a[5] & b[5]):
+                continue
+            dx, dy = max(0.0, b[1] - a[3], a[1] - b[3]), max(0.0, b[2] - a[4], a[2] - b[4])
+            if math.hypot(dx, dy) < need:
+                up[root(a[0])] = root(b[0])
+    members = collections.defaultdict(list)
+    for r in up:
+        members[root(r)].append(r)
+    return {r: '+'.join(sorted(members[root(r)])) for r in up}
+
+
 def stub_dir(ctx, net, pt, layer):
     """the direction of net's stub's LAST segment at its free end pt ON THE LANE'S LAYER, pointing out of the stub (the
     way a lane leaves that end); None when the stub reaches pt on the other layer -- it ends in a via there, and the
@@ -67,8 +117,9 @@ def stub_dir(ctx, net, pt, layer):
 
 
 def plan(quiet=True):
-    """(ctx, corridors): the braid's plan of the bench -- planned once, and SAVED: every whole_* stage plans the same
-    bench (4.5 s of each, a fifth of a loop), so the plan is kept under tmp/ctx_cache, keyed as a stage is
+    """(ctx, the braid's corridor groups): braid.setup's reading of the bench -- planned once, and SAVED: every
+    whole_* stage plans the same bench (4.5 s of each, a fifth of a loop), so the plan is kept under tmp/ctx_cache,
+    keyed as a stage is
     (stage_cache: the environment, which names the bench and its nets, by content) and restored while every file the
     planning read -- the board, its siblings, every module loaded -- is unchanged and every file it looked for and did
     not find is still absent, as a stage is. Only with STAGE_CACHE=1 (a harness redoing the bench); without it every
@@ -114,23 +165,69 @@ def _guard(out, nets, dest):
     return out
 
 
-def _plan(board, nets, dest, quiet):
-    if quiet:
-        with contextlib.redirect_stdout(io.StringIO()):
-            ctx, cs, _logs = pa.plan(board, nets, dest)
-    else:
-        ctx, cs, _logs = pa.plan(board, nets, dest)
-    return ctx, cs
+def board_in_frame():
+    """the bench's board as its plans are drawn: turned over when its pairs' chirality is -1 (braid.setup turns such a
+    board in memory, every plan is drawn in that frame, and route_lanes.write turns the copper back)"""
+    return _plan(*bench(), True)[0].pcb
 
+
+def bench_with(board, nets, dest):
+    """plan() for a board, its nets and destination given (route_lanes --plan); never saved"""
+    return _guard(_plan(board, nets, dest, True), nets, dest)
+
+
+def _plan(board, nets, dest, quiet):
+    """(ctx, the braid's corridor groups): braid.setup's reading of the bench (the groups only reported)"""
+    import braid as bd
+    cm = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
+    with cm:
+        ctx, groups = bd.setup(board, list(nets), dest, print, pairs=bool(bd.PAIRS))
+    return ctx, groups
+
+
+class PlanLanes:
+    """the whole route's lanes where the braid's lane and pair routers and plan_audit's checks expect a corridor:
+    every lane of the frame (whole_frame) with its tooth and berth, the frame's trunk spine (a lane's layer runs are
+    ordered along it), and -- once a plan is installed (install) -- each lane's reserved copper, band, search window
+    and layer runs. Those are all they read, so they run on it unchanged; nothing of the braid's own planning (its
+    corridors, spines, schedules) is in it"""
+    idx = 0
+    import braid as _bd
+    route_lane = _bd.Corridor.route_lane
+    route_pair_lane = _bd.Corridor.route_pair_lane
+    _pair_band_slack = _bd.Corridor._pair_band_slack
+    _pair_conn_points = _bd.Corridor._pair_conn_points
+    _pair_fanin_band = _bd.Corridor._pair_fanin_band
+    _pair_debug_image = _bd.Corridor._pair_debug_image
+    del _bd
+
+    def __init__(self, ctx, frame, log=print):
+        self.ctx, self.log = ctx, log
+        self.members = list(frame.M)
+        self.spine = frame.spine
+        self.order = list(frame.final)             # the berths' order round the destination, north to south
+        self.teeth = {n: tuple(map(float, ctx.ends[n][0])) for n in self.members}
+        self.stubs = {n: tuple(map(float, ctx.ends[n][1])) for n in self.members}
+        self.lane_xy = {}
+        self.sched_cur = types.SimpleNamespace(page={})
+
+
+def lanes(ctx, dest, geo, log=print):
+    """the bench's lanes (PlanLanes, on the whole frame) with the plan `geo` installed"""
+    import whole_frame
+    L = PlanLanes(ctx, whole_frame.build(ctx, dest), log)
+    install(ctx, L, geo)
+    return L
 
 # ---- saving the plan: pickle, with the functions pickle cannot name (the braid's closures, a lambda) saved BY VALUE --
 # their code, and their cells filled once the function exists, so a closure that refers back to itself or to what
 # holds it comes back whole. The plan fills only caches as it goes (the braid's obstacle models, the taut memo's
 # shards: pure functions of their keys, rebuilt when asked), so a restored plan is the plan.
 CTX_CACHE = os.path.join(HERE, 'tmp', 'ctx_cache')
-# what the loop hands one stage and not the next, read only by whole_solve and whole_geo once the bench is planned:
-# not in the plan's key, or each stage would plan the same bench again
-STAGE_VARS = ('HINT', 'CUTS', 'HIST', 'GEO_FLIPS_FROM', 'SEED_FLIPS', 'SEED_CUTS', 'SEED_HIST', 'WHOLE_SOLVE_BATCHES')
+# what the loop hands one stage and not the next, read only by whole_solve, whole_geo and whole_snap once the bench is
+# planned: not in the plan's key, or each stage would plan the same bench again
+STAGE_VARS = ('HINT', 'CUTS', 'HIST', 'GEO_FLIPS_FROM', 'SEED_FLIPS', 'SEED_CUTS', 'SEED_HIST', 'WHOLE_SOLVE_BATCHES',
+              'SNAP_KEEP')
 
 
 class _NoCell:

@@ -12,9 +12,12 @@ usage: route_lanes.py NETS|all --board B --nets N1,..|@FILE [--dest REF]
                   [--plan PLAN.json] [--mode alone|seq] [--write OUT.kicad_pcb]
                   [--png DIR] [--probe X,Y;..|stops] [--box X0,Y0,X1,Y1] [--viacheck]
 
-  --plan PLAN   a WHOLE-ROUTE plan (whole_snap's) installed in place of the braid's
-                (whole_ctx.install): its reservations, via sites, bands and
-                search windows are what the lanes route against
+  --plan PLAN   a WHOLE-ROUTE plan (whole_snap's), routed in place of the braid's
+                plan: the bench read as braid.setup reads it and the plan's
+                lanes installed in the whole route's own frame (whole_ctx.lanes,
+                no braid corridor) -- its reservations, via sites, bands and
+                search windows are what the lanes route against; pairs first,
+                then the singles, in the berths' order round the destination
   --mode alone  the copper is reset before each lane (each alone against the plan)
          seq    the lanes accumulate in order (the kept attempt, these lanes only)
   --write OUT   the board the run leaves -- the bench plus every segment and via
@@ -236,16 +239,25 @@ def main(argv=None):
     if a.nets.startswith('@'):
         a.nets = '@' + os.path.abspath(a.nets[1:])
     box = tuple(map(float, a.box.split(','))) if a.box else None
-    ctx, corridors, logs = plan(a.board, read_nets(a.nets), a.dest)
     if a.plan:
+        # a whole-route plan: the bench as the braid's setup reads it, the plan's lanes in the whole route's own frame
+        # (whole_ctx.lanes) -- none of the braid's corridors -- routed pairs first, then the singles, each set in the
+        # berths' order round the destination
         import whole_ctx
         geo = json.load(open(a.plan))
-        whole_ctx.install(ctx, corridors[0], geo)
-        corridors = corridors[:1]
+        ctx, _groups = whole_ctx.bench_with(a.board, read_nets(a.nets), a.dest)
+        logs = []
+        lanes_ = whole_ctx.lanes(ctx, a.dest, geo, logs.append)
+        corridors = [lanes_]
+        prs_ = getattr(ctx, 'pairs', {}) or {}
+        order = ([(lanes_, nm) for nm in lanes_.order if nm in prs_ and nm in geo['lanes']]
+                 + [(lanes_, nm) for nm in lanes_.order if nm not in prs_ and nm in geo['lanes']])
         print(f'installed {os.path.basename(a.plan)}: {len(geo["lanes"])} lanes, {len(geo["vias"])} vias')
+    else:
+        ctx, corridors, logs = plan(a.board, read_nets(a.nets), a.dest)
+        order = attempt0_order(ctx, corridors)
     base_s, base_v = list(ctx.base_segments), list(ctx.base_vias)
     ctx.pcb.segments, ctx.pcb.vias = list(base_s), list(base_v)
-    order = attempt0_order(ctx, corridors)
     chosen = [p for p in order if a.only == 'all' or p[1] in a.only.split(',')]
     miss = set(a.only.split(',')) - {nm for _c, nm in chosen} - {'all'}
     if miss:
@@ -295,7 +307,7 @@ def main(argv=None):
         calls = rec.calls[k0:]
         kind = ('pair' if nm in getattr(ctx, 'pairs', {})
                 else 'swim' if c.sched_cur.page.get(nm) is None else 'page')
-        exp = max(0, len(c.layer_profile(nm)) - 1)
+        exp = max(0, len(c.layer_profile(nm)) - 1) * (2 if kind == 'pair' else 1)   # a pair's change: a via per leg
         w = list(c.lane_xy.get(nm) or [])
         Lp = sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in zip(w, w[1:]))
         if res is not None:

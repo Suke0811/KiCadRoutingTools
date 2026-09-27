@@ -1,18 +1,20 @@
 """whole_geo.py SOLVE.json OUT.json -- per-layer GEOMETRY from a whole-route solve (whole_solve.py), ONE joint LP
 over the trunk and both rings: smooth lanes, each at any angle, in their frames.
 
-Frames: the trunk spine (u = s) and each ring's spine (u = H0 + s_b - rs). A lane of class W lives in the trunk
-from its tooth to its berth; a lane of class N / S in the trunk from its tooth to the handoff (s = H0), then in
+Frames: the trunk spine (u = s) and each ring's spine (u = Hk + s_b - rs). A lane of class W lives in the trunk
+from its tooth to its berth; a lane of class N / S in the trunk from its tooth to its ring's start (s = Hk), then in
 its ring from the handoff to its berth -- the two pieces joined by a linear equality (the ring's start offset is an
 affine function of the trunk's handoff offset) and a bend term across the join. Columns every G mm of s in each
 frame; the solve fixes the ORDER of the lanes present at every column (below(): launch order, flipped by each
 solved crossing) and each lane's LAYER (flipped at each solved change; both layers within a via's reach of one).
-  hard (elastic, priced W_HARD, reported): the order; same-layer neighbours P_MIN apart (+ half a pair's pitch
+  hard (elastic, priced W_HARD, reported): the order of each layer's own lanes (a lane on the other layer may run
+  beside, over or under it); same-layer neighbours P_MIN apart (+ half a pair's pitch
   each), slope corrected (tangent cuts of sqrt(1 + k^2) on the pair's mean slope); every neighbour a via's room
   from a change, changes a via pitch apart; inside the board and outside both pad boxes grown by a track's
   clearance (a via: grown by its static room), waived near the lane's own terminals; static copper to one side
-  (from a first pass); the slope capped at K_MAX.
-  soft: the length a lane's sideways moves add, bends, neighbours short of P_COMF (a different-layer pair only away from its own crossing).
+  (from a first pass); the slope capped at K_MAX; at most 45 degrees of turn per column.
+  soft: the length a lane's sideways moves add, bends, same-layer neighbours short of P_COMF (two lane pitches: the
+  room a human leaves), a lane within a clearance more than its bar of static copper.
 Two passes: the second holds every lane to ONE side of each piece of static copper near it (static_sides: one split
 per island and layer, in the lane order, pinned by the lanes' own ends), and a lane the polish found no room for on
 its side is flipped to the other (GEO_FLIPS_FROM=POLISH.json,..: data the polish measured, never typed). What the
@@ -24,12 +26,15 @@ from scipy.optimize import linprog
 from scipy.sparse import coo_matrix, csr_matrix, hstack
 from types import SimpleNamespace
 import whole_ctx
+import whole_frame
 import braid as bd
 import pairs as _pairs
 
 # every length below is in the design rules' own units: track, clearance, via size, a via's room, the lane pitch
 P_MIN = bd.LANE_MIN
-P_COMF = bd.LANE_MIN + bd.TRACK           # a comfortable pitch: a track's width of air more
+# a comfortable pitch: two lane pitches, the room a human leaves between lanes (and a later meander needs) -- lanes
+# planned at the bare minimum lost their last hundredths to the snap beside a pair or a pad (K28's SDQ13 by SDQS0)
+P_COMF = 2 * bd.LANE_MIN
 TW, CL = bd.TRACK, bd.CLEAR
 B_M = TW / 2                            # a lane's copper outside the pad box line
 VIA_R = bd.VIA_NEED
@@ -38,10 +43,7 @@ VIA_ST = bd.VIA_SIZE / 2 + CL
 LANE_ST = TW / 2 + CL
 PP = _pairs.pitch(TW)
 K_MAX = 8.0                              # the steepest a lane runs to its spine
-XW = 2 * bd.LANE_MIN                    # a different-layer pair may close up within XW of its own crossing
-D_X = TW / 2                            # different-layer neighbours never touch away from their crossing
-W_LEN, W_BEND, W_COMF, W_HARD = 1.0, 3.0, 0.5, 1e4
-W_COMF_X = 1.0                           # the soft gap between different-layer neighbours
+W_LEN, W_BEND, W_COMF, W_HARD = 1.0, 3.0, 1.0, 1e4
 TANG = [0.0, 1.0, -1.0, 2.5, -2.5, 5.0, -5.0]
 LEN_T = [0.5, -0.5, 1.0, -1.0, 2.0, -2.0, 4.0, -4.0]   # the slopes a column's added length is cut at
 # the tangent cuts under-state sqrt(1 + k^2) between their tangent points: the SLOPED ones are scaled by the set's own
@@ -54,9 +56,9 @@ log = lambda *a: print(*a, flush=True)
 
 J = json.load(open(sys.argv[1]))
 OUT = sys.argv[2] if len(sys.argv) > 2 else '/dev/null'
-ctx, cs = whole_ctx.plan()
-c = cs[0]
-M = list(c.members)
+ctx, _cs = whole_ctx.plan()
+Fr = whole_frame.build(ctx, os.environ['DEST'])   # the whole route's own frame (whole_frame.py)
+M = list(Fr.M)
 GRID2 = ctx.cfg.grid_step / 2             # half the router's grid step (the router's bar for a line off the grid)
 G = 4 * ctx.cfg.grid_step                 # a column: four router grid steps
 # a pair's straight run either side of its via (the longer, diagonal one, and a grid step) and a turn's own straight
@@ -79,9 +81,8 @@ VIA_VV += 2 * GRID2; VIA_ST += GRID2; LANE_ST += GRID2     # planned vs planned 
 # clearance alone left the polish 8 um to find at every via
 VIA_R = max(VIA_R, _pairs.via_ring(ctx.cfg) + 2 * GRID2)
 M_VIA = VIA_ST
-bo = c.branch_of or {}
 prs = getattr(ctx, 'pairs', {}) or {}
-H0 = J['H0']; RS = J['rs']; cls = J['branch']
+RS = J['rs']; cls = J['branch']; HK = J['Hk']     # HK: each ring's start, where its lanes leave the trunk
 li = {n: i for i, n in enumerate(J['launch'])}
 cross = {frozenset(k.split('|')): v['u'] for k, v in J['cross'].items()}
 chg = {n: sorted(v) for n, v in J['changes'].items()}
@@ -93,10 +94,7 @@ VS = {n: (VIA_R + PP / 2 if n in prs else VIA_R) for n in M}
 # a pair's dive is TWO barrels, pairs.dive_offset either side of its centreline across the lane (where both pair
 # routers stand them): its room is a single via's along the lane, widened across by that offset
 VX = {n: (_pairs.dive_offset(ctx.cfg, PP / 2) if n in prs else 0.0) for n in M}
-ring_sp = {}
-for b in {id(v): v for v in bo.values()}.values():
-    ring_sp['N' if b.spine.pts[0][1] < c.spine.xy(H0, 0.0)[1] else 'S'] = b.spine
-bend_xy = {n: tuple(map(float, c.lane_xy[n][-1])) for n in M}
+ring_sp, bend_xy = Fr.rings, Fr.bend
 
 
 def below(a, b, u):
@@ -173,7 +171,9 @@ def intervals(ftag, sp, s, margin):
 
 
 STATIC = []
-ISL = {}             # a footprint's pads on one layer set: ONE island (a lane goes round the part, not between its pads)
+ISL = {}             # an island's pads on one layer set: ONE box (a lane goes round a part, not between its pads, and
+                     # round parts no lane can pass between: whole_ctx.part_islands)
+ISLAND = whole_ctx.part_islands(ctx, skip=(SRC_REF, DST_REF))
 for ref, fp in ctx.pcb.footprints.items():
     if ref in (SRC_REF, DST_REF):
         continue
@@ -185,7 +185,7 @@ for ref, fp in ctx.pcb.footprints.items():
             hx, hy = p.size_x / 2, p.size_y / 2
             Ls = {0, 1} if drilled else {F(L) for L in ('F.Cu', 'B.Cu') if L in p.layers}
         if Ls and BX0 < p.global_x < BX1 and BY0 < p.global_y < BY1:
-            ISL.setdefault((ref, frozenset(Ls)), []).append((p.global_x - hx, p.global_y - hy, p.global_x + hx, p.global_y + hy))
+            ISL.setdefault((ISLAND[ref], frozenset(Ls)), []).append((p.global_x - hx, p.global_y - hy, p.global_x + hx, p.global_y + hy))
 for (ref, Ls), bxs in ISL.items():
     STATIC.append((min(b[0] for b in bxs), min(b[1] for b in bxs), max(b[2] for b in bxs), max(b[3] for b in bxs),
                    set(Ls), ref))
@@ -206,17 +206,26 @@ for n in M:
     LANE_OF[n] = n
     for leg in prs.get(n, ()):
         LANE_OF[leg] = n
-TERMS = []                                   # (x, y, layer 0/1, owner lane)
+LEAVE_ROOM = TW + CL                         # the length the audit reads a turn on
 for net, (src, tgt, _ref) in ctx.ends.items():
     if net not in LANE_OF:
         continue
-    for pt, Lnm in ((src, ctx.tooth_layer.get(net)), (tgt, ctx.dest_layer.get(net))):
+    for k_, (pt, Lnm) in enumerate(((src, ctx.tooth_layer.get(net)), (tgt, ctx.dest_layer.get(net)))):
         if Lnm is None:
             continue
-        TERMS.append((float(pt[0]), float(pt[1]), F(Lnm), LANE_OF[net]))
-for (x, y, L, own) in TERMS:
-    r = TW / 2
-    STATIC.append((x - r, y - r, x + r, y + r, {L}, f'end {own}', own))
+        x, y, L, own = float(pt[0]), float(pt[1]), F(Lnm), LANE_OF[net]
+        # ...and the ROOM past it, along its stub's way, where its own lane leaves it and turns: a lane's end kept to a
+        # track's width let the lanes beside it pass right at the stub's end, and a lane whose stub points at them had
+        # no way out but back against its stub (K28 SCKE0: tooth south into the south-face bundle, folded 126
+        # degrees). A stub ending in a via has none: its lane lands on the via and leaves it any way
+        if own in prs:
+            u = (ctx.tooth_dir if k_ == 0 else ctx.stub_dir).get(own)
+        else:
+            u = whole_ctx.stub_dir(ctx, net, pt, Lnm)
+        ul = math.hypot(*u) if u is not None else 0.0
+        x1, y1 = (x + u[0] / ul * LEAVE_ROOM, y + u[1] / ul * LEAVE_ROOM) if ul > 1e-9 else (x, y)
+        r = TW / 2
+        STATIC.append((min(x, x1) - r, min(y, y1) - r, max(x, x1) + r, max(y, y1) + r, {L}, f'end {own}', own))
 # the stubs' COPPER within a via's reach of the box line (a via beside the line meets the stub inside it, not only
 # its end): every base segment of a lane's net with an end within that reach, clipped to it -- for VIAS only
 NET_LANE = {ctx.byname[n][0]: n for n in M}
@@ -267,9 +276,37 @@ def face_of(xy, box):
 
 
 # ---------------------------------------------------------------- frames and lane pieces
-FR = {'T': dict(sp=c.spine, u=lambda s: s, s=lambda u: u)}
+FR = {'T': dict(sp=Fr.spine, u=lambda s: s, s=lambda u: u)}
 for k_, sp in ring_sp.items():
-    FR[k_] = dict(sp=sp, u=(lambda s, k_=k_: H0 + (s - RS[k_])), s=(lambda u, k_=k_: RS[k_] + (u - H0)))
+    FR[k_] = dict(sp=sp, u=(lambda s, k_=k_: HK[k_] + (s - RS[k_])), s=(lambda u, k_=k_: RS[k_] + (u - HK[k_])))
+TURN_RUN = _pairs.turn_straight_steps(ctx.cfg) * ctx.cfg.grid_step     # a pair's 45-degree turn: its diagonal's run
+
+
+def _chamfer(pieces, xy_all, t):
+    """the corner before the last piece cut t back along the line on either side: the last piece's start moved t on
+    toward its end, the line before it cut back t (over as many pieces as that takes), a diagonal between"""
+    lx, ly, ex, ey, L = pieces[-1]
+    d_out = math.hypot(ex - lx, ey - ly)
+    if d_out <= t or len(pieces) < 2:
+        return
+    c2 = (lx + (ex - lx) * t / d_out, ly + (ey - ly) * t / d_out)
+    back, k = t, len(pieces) - 2
+    while k >= 0 and pieces[k][4] == L:
+        a0, a1, b0, b1, _ = pieces[k]
+        ln = math.hypot(b0 - a0, b1 - a1)
+        if ln > back:
+            c1 = (b0 + (a0 - b0) * back / ln, b1 + (a1 - b1) * back / ln)
+            del pieces[k + 1:]
+            del xy_all[k + 2:]
+            pieces[k] = (a0, a1, c1[0], c1[1], L)
+            xy_all[-1] = c1
+            pieces.append((c1[0], c1[1], c2[0], c2[1], L)); xy_all.append(c2)
+            pieces.append((c2[0], c2[1], ex, ey, L)); xy_all.append((ex, ey))
+            return
+        back -= ln
+        k -= 1
+
+
 def hold_pair(tips):
     """A PAIR's end is held straight (in columns) for its END RUN (pairs.end_run: its end connector from those tips to
     the pose where the pair router takes over, then the straight the router probes past the pose): the pose lies on
@@ -278,29 +315,84 @@ def hold_pair(tips):
     return max(HOLD, int(math.ceil(_pairs.end_run(ctx.cfg, tips) / G)))
 
 
+# the RING STANDOFF: a ring's lanes run along it this far out from where they berth and drop in at their own berths
+# only -- as deep as a ring pair's landing (its end run and its turn off the ring), so a pair turns once into its end
+# run and the lanes outside it pass beyond its landing. Hugging the face, the innermost pair stepped out to its landing
+# and back in, and pressed the lanes outside it into each other and the part beside the face (K35 SDQS0 at DU1's south
+# face: SODT0/SODT1 0.141 apart, into C12)
+_dc = [(p_.global_x, p_.global_y) for p_ in ctx.pcb.footprints[DST_REF].pads]
+DCEN = (sum(x for x, _y in _dc) / len(_dc), sum(y for _x, y in _dc) / len(_dc))
+
+
+def _out_of(sp, o_at):
+    """+1 / -1: which way of offset o in ring frame sp points away from the destination part"""
+    return 1.0 if o_at >= sp.project_pt(DCEN)[1] else -1.0
+
+
+_depths = []
+for n in M:
+    if n in cls and n in prs:
+        sp_ = ring_sp[cls[n]]
+        m_ = _pairs.mid(*ctx.pair_ends[n][1])
+        _depths.append(abs(sp_.project_pt(Fr.land[n])[1] - sp_.project_pt(m_)[1]))
+RING_STANDOFF = max(_depths) if _depths else TURN_RUN + TW + CL
+
 SB0 = {}
 PIECE = {}          # (frame, n) -> dict(k0, k1, o0, o1, hold0, hold1, ex0, ex1, ref)
-ms_of = lambda n: (np.array([p[0] for p in c.mid[n]]), np.array([p[1] for p in c.mid[n]]))
+ms_of = lambda n: (np.array([p[0] for p in Fr.mid[n]]), np.array([p[1] for p in Fr.mid[n]]))
 for n in M:
-    s0, o0 = c.st[n]
-    f0 = face_of(c.spine.xy(s0, o0), BOX[0])
+    s0, o0 = Fr.st[n]
+    f0 = face_of(Fr.tooth[n], BOX[0])
     hold0 = (hold_pair(ctx.pair_ends[n][0]) if n in prs else HOLD) if f0 in ('E', 'W') else 0
     ms, mo = ms_of(n)
     ref = (lambda s, ms=ms, mo=mo: float(np.interp(s, ms, mo)))
     if n in cls:
-        PIECE[('T', n)] = dict(k0=int(round(s0 / G)), k1=int(round(H0 / G)), o0=o0, o1=None, hold0=hold0, hold1=0,
+        # its reference ends ON its handoff (the frame stacks the ring's lanes there, outside the destination's corner):
+        # the taut path, then 45 degrees onto the handoff offset -- the taut path alone ran inside the corner, where the
+        # free intervals it chose kept the lane (K28 SDQ10 across C9's pads at DU1's north-west corner)
+        # -- never before its own tooth: a lane crossing the whole trunk had its whole reference drawn through the
+        # source's balls (K28 SCKE0)
+        hk_, oh_ = HK[cls[n]], Fr.o_h[n]
+        dh_ = abs(oh_ - ref(hk_))
+        ref = (lambda s, r=ref, a=max(hk_ - dh_, s0), b=hk_, oh=oh_: r(s) if s <= a else float(np.interp(s, [a, b], [r(a), oh])))
+        PIECE[('T', n)] = dict(k0=int(round(s0 / G)), k1=int(round(HK[cls[n]] / G)), o0=o0, o1=None, hold0=hold0, hold1=0,
                                ex0=max(hold0 + 1, EXC), ex1=0, ref=ref)
         sp = ring_sp[cls[n]]
-        o_h = float(np.interp(H0, ms, mo))                      # the old plan's offset at the handoff: the start column
-        sb0, ob0 = sp.project_pt(c.spine.xy(H0, o_h))
+        o_h = Fr.o_h[n]                                         # its offset on the arrival line (whole_frame: the order)
+        sb0, ob0 = sp.project_pt(Fr.spine.xy(HK[cls[n]], o_h))
         SB0.setdefault(cls[n], []).append(sb0)
-        sb1, ob1 = sp.project_pt(bend_xy[n])
-        PIECE[(cls[n], n)] = dict(k0=int(round(sb0 / G)), k1=int(round(sb1 / G)), o0=None, o1=ob1, hold0=0, hold1=0,
-                                  ex0=0, ex1=EXC, ref=(lambda s, a=(sb0, ob0), b=(sb1, ob1): float(np.interp(s, [a[0], b[0]], [a[1], b[1]]))),
+        sb1, ob1 = sp.project_pt(Fr.land[n])                   # where the lane lands (whole_frame)
+        # a PAIR arrives on its landing's offset, held along the ring over its turn's run (the diagonal the output lays
+        # there, _chamfer) and the length the audit reads a turn on (track + clearance) before it, and turns there into
+        # its end run: arriving inside it, it climbed out to the landing and folded back into its tips (K28 SDQS1, 113 degrees
+        # at DU1's north-west corner)
+        hold1 = max(HOLD, int(math.ceil((TURN_RUN + TW + CL) / G)) + 1) if n in prs else 0
+        # its reference: from its handoff out to the ring's standoff at 45 degrees (a pair: its landing's offset, which is
+        # that deep), held there until its own berth, then in -- a single at 45 degrees onto its stub over the standoff and a
+        # turn's length (track + clearance) more, a pair along its hold into its turn
+        if n in prs:
+            o_run, d_in = ob1, hold1 * G + TW + CL
+        else:
+            o_run = ob1 + _out_of(sp, ob1) * RING_STANDOFF
+            d_in = RING_STANDOFF + TW + CL
+        s_run = sb1 - d_in
+        s_out = sb0 + abs(o_run - ob0)                          # out to the standoff at 45 degrees past the handoff
+        rpts = ([(sb0, ob0), (s_out, o_run), (s_run, o_run), (sb1, ob1)] if s_out < s_run else
+                [(sb0, ob0), (s_run, o_run), (sb1, ob1)] if s_run > sb0 + 1e-9 else [(sb0, ob0), (sb1, ob1)])
+        PIECE[(cls[n], n)] = dict(k0=int(round(sb0 / G)), k1=int(round(sb1 / G)), o0=None, o1=ob1, hold0=0, hold1=hold1,
+                                  ex0=0, ex1=max(hold1 + 1, EXC),
+                                  ref=(lambda s, P=rpts: float(np.interp(s, [q[0] for q in P], [q[1] for q in P]))),
                                   o_h=o_h)
+    elif Fr.land[n] != Fr.bend[n]:
+        # a pair ending from the trunk on a face across it: to its LANDING, as a ring pair (whole_frame), held and
+        # turned there
+        s1, o1 = Fr.spine.project_pt(Fr.land[n])
+        hold1 = max(HOLD, int(math.ceil((TURN_RUN + TW + CL) / G)) + 1)
+        PIECE[('T', n)] = dict(k0=int(round(s0 / G)), k1=int(round(s1 / G)), o0=o0, o1=o1, hold0=hold0, hold1=hold1,
+                               ex0=max(hold0 + 1, EXC), ex1=max(hold1 + 1, EXC), ref=ref)
     else:
-        s1, o1 = c.se[n]
-        f1 = face_of(c.spine.xy(s1, o1), BOX[1])
+        s1, o1 = Fr.se[n]
+        f1 = face_of(bend_xy[n], BOX[1])
         hold1 = (hold_pair(ctx.pair_ends[n][1]) if n in prs else HOLD) if f1 in ('E', 'W') else 0
         PIECE[('T', n)] = dict(k0=int(round(s0 / G)), k1=int(round(s1 / G)), o0=o0, o1=o1, hold0=hold0, hold1=hold1,
                                ex0=max(hold0 + 1, EXC), ex1=max(hold1 + 1, EXC), ref=ref)
@@ -311,9 +403,9 @@ for (f, n), v in PIECE.items():
     if f != 'T':
         v['k0'] = int(round(S0C[f] / G))                    # every lane of a ring enters it at ONE column
 for f in S0C:                                               # ... and the ring's u starts THERE
-    FR[f]['u'] = (lambda s, f=f: H0 + (s - S0C[f]))
-    FR[f]['s'] = (lambda u, f=f: S0C[f] + (u - H0))
-TERM = {n: (tuple(map(float, c.spine.xy(*c.st[n]))), bend_xy[n]) for n in M}
+    FR[f]['u'] = (lambda s, f=f: HK[f] + (s - S0C[f]))
+    FR[f]['s'] = (lambda u, f=f: S0C[f] + (u - HK[f]))
+TERM = {n: (Fr.tooth[n], bend_xy[n]) for n in M}
 
 
 def build_and_solve(sides, prev=None):
@@ -377,15 +469,9 @@ def build_and_solve(sides, prev=None):
                 if (f, n, k - 1) in var:
                     out.append((var[(f, n, k)], var[(f, n, k - 1)]))
                 return out
-            for a, b in zip(od, od[1:]):
-                ja, jb = var[(f, a, k)], var[(f, b, k)]
-                le([(ja, 1.0), (jb, -1.0)], 0.0, ('order', f, k, a, b))
-                if not (lay[a] & lay[b]):
-                    x = frozenset((a, b))
-                    if not (x in cross and abs(cross[x] - u) < XW):
-                        le([(ja, 1.0), (jb, -1.0)], -D_X, ('kiss', f, k, a, b))
-                        e = newvar(W_COMF_X * G)
-                        le([(ja, 1.0), (jb, -1.0), (e, -1.0)], -(P_MIN + hw[a] + hw[b]))
+            # the ORDER binds a layer's own lanes only (its pitch rows below): a lane on the other layer may run
+            # beside, over or under it -- F over B, as a human stacks them, where one plane order made every B lane
+            # detour round an F part with an F lane beside it. A via still keeps its order's side (the via rows)
             def term_o(n):
                 """(which end, its fixed offset) when column k is within this lane's terminal zone here"""
                 v = pcs[n]
@@ -440,9 +526,9 @@ def build_and_solve(sides, prev=None):
     for (f, n), v in PIECE.items():
         sfun = FR[f]['s']
         for cu in chg[n]:
-            if f == 'T' and n in cls and cu > H0:
+            if f == 'T' and n in cls and cu > HK[cls[n]]:
                 continue
-            if f != 'T' and cu <= H0:
+            if f != 'T' and cu <= HK[f]:
                 continue
             s_c = sfun(cu)
             kc = int(round(s_c / G))
@@ -464,7 +550,17 @@ def build_and_solve(sides, prev=None):
                 # (tangent cuts of sqrt(1 + k^2) on the neighbour's own slope at the column)
                 # the TWO nearest lanes each side: in a stacked F/B comb the nearest can share the via lane's offset
                 # on the other layer, and the lane that matters is the next one
-                for nb in [od[j] for j in (i + 1, i + 2, i - 1, i - 2) if 0 <= j < len(od)]:
+                nbs = [od[j] for j in (i + 1, i + 2, i - 1, i - 2) if 0 <= j < len(od)]
+                # ...and each side's nearest lane ON EACH LAYER: the order binds a layer's own lanes only, so a lane
+                # further along it on one layer is held off this via by nothing else (by the pitch alone, 0.257 where
+                # a via asks 0.3235)
+                uk = FR[f]['u'](k * G)
+                for side_ in (range(i + 1, len(od)), range(i - 1, -1, -1)):
+                    for Ly in (0, 1):
+                        nb_ = next((od[j] for j in side_ if Ly in layers_at(od[j], uk)), None)
+                        if nb_ is not None and nb_ not in nbs:
+                            nbs.append(nb_)
+                for nb in nbs:
                     up = od.index(nb) > i
                     jm = var[(f, nb, k)]
                     segs_ = [(var[(f, nb, k + 1)], jm)] if (f, nb, k + 1) in var else []
@@ -541,6 +637,11 @@ def build_and_solve(sides, prev=None):
                 d2 = newvar(W_BEND)
                 le([(b, 1.0), (a, -2.0), (p, 1.0), (d2, -1.0)], 0.0)
                 le([(b, -1.0), (a, 2.0), (p, -1.0), (d2, -1.0)], 0.0)
+                # ...and at most 45 degrees of TURN per column (its slope changes by at most 1: exact from a straight
+                # run, stricter from a steep one), elastic: a bend costs next to nothing against the hard rules, so
+                # where they conflicted a lane zigzagged (SDQS0 at K28, north-east then south-east a column apart)
+                le([(b, 1.0), (a, -2.0), (p, 1.0)], G, ('turn', f, k, n))
+                le([(b, -1.0), (a, 2.0), (p, -1.0)], G, ('turn', f, k, n))
     # a PAIR moves through its dives as the pair router does: straight for its straight run either side of each change
     # (no turn at or near its via), and where a dive falls within its end hold, that run and a turn of its fixed end,
     # straight from the end right through it -- its sideways shift onto its terminal comes before the dive, never
@@ -589,7 +690,7 @@ def build_and_solve(sides, prev=None):
         vT, vR = PIECE[('T', n)], PIECE[(cls[n], n)]
         sp = ring_sp[cls[n]]
         o_h = vR['o_h']
-        ob1, ob2 = sp.project_pt(c.spine.xy(H0, o_h))[1], sp.project_pt(c.spine.xy(H0, o_h + 1.0))[1]
+        ob1, ob2 = sp.project_pt(Fr.spine.xy(HK[cls[n]], o_h))[1], sp.project_pt(Fr.spine.xy(HK[cls[n]], o_h + 1.0))[1]
         beta = ob2 - ob1
         alpha = ob1 - beta * o_h
         jT, jR = var[('T', n, vT['k1'])], var[(cls[n], n, vR['k0'])]
@@ -608,6 +709,12 @@ def build_and_solve(sides, prev=None):
             le([(j, 1.0)], lo_, ('static', f, k, n, what))
         else:
             le([(j, -1.0)], -hi_, ('static', f, k, n, what))
+        # ...and a clearance more of air, soft (comfort): a lane planned at the bar lost it to the snap
+        e = newvar(W_COMF * G)
+        if side < 0:
+            le([(j, 1.0), (e, -1.0)], lo_ - CL)
+        else:
+            le([(j, -1.0), (e, -1.0)], -(hi_ + CL))
     ncol = nv + len(extra)
     cost = np.zeros(ncol); cost[nv:] = extra
     Aub = coo_matrix((vals, (rows, cols)), shape=(len(rhs), ncol)).tocsr()
@@ -749,6 +856,11 @@ def static_sides(sol):
                     room[-1] = min(room[-1], oa - lo_i)
                     room[1] = min(room[1], hi_i - ob)
                     span = [max(span[0], lo_i), min(span[1], hi_i)]
+            if f != 'T':
+                # on a RING the lanes run the ring's standoff out from the destination's face (its pairs' landings
+                # lie that deep): the room between the island and the face is that much less (K35 C12 at DU1's south
+                # face: four F lanes and a pair kept inside it, the pair pressed onto the face and folded to its landing)
+                room[-int(_out_of(FR[f]['sp'], (oa + ob) / 2))] -= RING_STANDOFF
             SPLIT.add((f, ii))
             for Ly in (0, 1):
                 if Ly not in Ls:
@@ -863,7 +975,7 @@ for n in M:
         # every column kept: simplified in (s, o), a straight run across a spine corner was drawn from the corner's
         # mitre straight to its far end, which is not the image of a leg whose offset changes (SA13 over SA7)
         keep = [(k * G, sol['o'][(f, n, k)]) for k in range(v['k0'], v['k1'] + 1)]
-        cuts = sorted(sfun(cu) for cu in chg[n] if (f == 'T') == (cu <= H0 or n not in cls))
+        cuts = sorted(sfun(cu) for cu in chg[n] if (f == 'T') == (n not in cls or cu <= HK[cls[n]]))
         pts = []
         for (sa, oa), (sb, ob) in zip(keep, keep[1:]):
             pts.append((sa, oa))
@@ -894,7 +1006,15 @@ for n in M:
     (tx, ty), (ex, ey) = TERM[n]
     if pieces:
         a = pieces[0]; pieces[0] = (tx, ty, a[2], a[3], a[4]); xy_all[0] = (tx, ty)
-        z = pieces[-1]; pieces[-1] = (z[0], z[1], ex, ey, z[4]); xy_all[-1] = (ex, ey)
+        lx, ly = Fr.land[n]
+        z = pieces[-1]; pieces[-1] = (z[0], z[1], lx, ly, z[4]); xy_all[-1] = (lx, ly)
+        if math.hypot(ex - lx, ey - ly) > 1e-9:          # ...and from its landing straight into its berth
+            pieces.append((lx, ly, ex, ey, z[4])); xy_all.append((ex, ey))
+            if n in prs and Fr.land[n] != Fr.bend[n]:
+                # a ring pair turns off the ring into its end run as the pair router turns: two 45-degree bends a
+                # turning radius apart (TURN_RUN either side of the landing), not one 90-degree corner the polish
+                # then cut (K28 SDQS1 folded 113 degrees)
+                _chamfer(pieces, xy_all, TURN_RUN)
     # reversing vertices next to a short side (mapping artifacts inside spine corners, at a replaced terminal):
     # dropped over the finished line, while the two sides share a layer
     changed = True

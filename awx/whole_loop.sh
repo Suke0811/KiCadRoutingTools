@@ -7,7 +7,8 @@
 #      its stub): the geometry again on the SAME solve, before anything is snapped -- or, when the round has cuts or
 #      findings as well, the solve again with them and the geometry with the flips, in one round
 #   -> a smooth plan that passes: its PAIRS laid first as the pair router moves (whole_snap --pairs), the singles
-#      fitted round them (whole_polish, the pairs held) and SNAPPED onto the router's grid (whole_snap); audited, gated
+#      fitted round them (whole_polish, the pairs held; where a single is short of room, the pairs laid again keeping
+#      it -- whole_snap SNAP_KEEP) and SNAPPED onto the router's grid (whole_snap); audited, gated
 #      and linted (the pair router's turning radius and straight dives) -- done
 #   -> else the solve again (warm), with every cut so far -- the island / via cuts the geometry could not meet and the
 #      via cuts of the pair dives the polish could not lay straight -- and every audit's findings so far as HISTORY
@@ -23,8 +24,11 @@
 # and its audit findings there (dive, static, shape, swim, pitch in the plan, any length outside its band), and two
 # rounds in a row that fail to beat the best so far end it -- flips, cuts and prices that only move the findings about
 # are not getting there, and every such round pays a solve.
+# A finding at the ENDS -- within whole_feedback's reach of the teeth or the berths -- stops it too, at once when it is
+# one no solve moves (a pitch or a static clearance there), else when it stands in two rounds running: only the
+# fanout can move it (whole_feedback.py, FEEDBACK=) -- once the round has no new side flip left to try.
 # Exit 0 with OUTDIR/plan.json the snapped plan that passed; 1 when no round got there; 3 when it stopped not
-# converging.
+# converging; 4 when it stopped at crowded ends.
 HERE=${0:A:h}
 solve=${1:A}; out=${2:A}; rounds=${3:-6}
 cd $HERE
@@ -47,6 +51,7 @@ try:
     n = sum(int(re.search(k + r' (\d+)', s).group(1)) for k in ('dive', 'static', 'shape', 'swim'))
     n += int(re.search(r'pitch (\d+) in the plan', s).group(1))
     n += int(re.search(r'band broken (\d+)', s).group(1)) if 'band broken' in s else 0
+    n += int(re.search(r'(\d+) lane\(s\) missing', s).group(1)) if 'missing' in s else 0     # a lane a snap could not lay
     print(n + (1 if float(re.search(r'band ([\d.]+) mm', s).group(1)) > 0 else 0))
 except AttributeError:
     print(999)" "$1"; }
@@ -85,6 +90,7 @@ progress() {
   fi
 }
 for i in $(seq 1 $rounds); do
+  rm -f $out/hp$i.json                     # (a round that passes writes none: an earlier run's must not stand in for it)
   echo "=== round $i: geometry of $(basename $solve)${flips:+ (flips from $(basename ${flips##*,}))}"
   GEO_FLIPS_FROM=$flips $ST --out $out/g$i.json -- whole_geo.py $solve $out/g$i.json > $out/g$i.log 2>&1 || { tail -3 $out/g$i.log; exit 1; }
   $ST --out $out/p$i.json -- whole_polish.py $out/g$i.json $out/p$i.json > $out/p$i.log 2>&1 || { tail -3 $out/p$i.log; exit 1; }
@@ -109,6 +115,23 @@ PY
 )
   passes=$(python3 whole_gate.py $out/p$i.json $out/p$i.audit > /dev/null && echo 1 || echo 0)
   [ $passes = 0 ] && addhot $out/p$i.json $out/p$i.audit $out/hp$i.json && n=$((n + 1))
+  # a finding at the ENDS standing in two rounds running: the solve had its round and did not move it, the fanout must
+  # (whole_feedback --repeat; the fanout's sidecar beside BENCH) -- stopped here rather than solving again and again.
+  # Not while the round has new side flips: a flip is the geometry's own answer, still to be tried (K35 SA4 squeezed
+  # between two resistors' pads by the berths, answered by going round them)
+  sidecar=${BENCH%.kicad_pcb}.plan.json
+  newflips=$([ "$after" -gt "$before" ] && echo 1 || echo 0)
+  if [ $passes = 0 ] && [ $newflips = 0 ] && [ -f $out/hp$i.json ] && [ -f "$sidecar" ] \
+      && python3 whole_feedback.py --now $sidecar $out/hp$i.json; then
+    # ...and at once, when a finding there is one no solve moves (a pitch or a static clearance at the ends)
+    echo "=== round $i: ENDS CROWDED -- findings at the ends no solve moves: the fanout's to change"
+    exit 4
+  fi
+  if [ $passes = 0 ] && [ $newflips = 0 ] && [ $i -gt 1 ] && [ -f $out/hp$((i - 1)).json ] && [ -f $out/hp$i.json ] && [ -f "$sidecar" ] \
+      && python3 whole_feedback.py --repeat $sidecar $out/hp$((i - 1)).json $out/hp$i.json; then
+    echo "=== round $i: ENDS CROWDED -- the same findings at the ends two rounds running: the fanout's to change"
+    exit 4
+  fi
   if [ "$after" -gt "$before" ]; then
     progress $((2000 + f))
     flips=$out/p$i.json                    # the polish output carries every flip so far
@@ -133,7 +156,26 @@ PY
     $ST -- whole_audit.py $out/q$i.json > $out/q$i.audit 2>&1 || { tail -3 $out/q$i.audit; exit 1; }
     gq=$(python3 whole_gate.py $out/q$i.json $out/q$i.audit)
     echo "$gq" | sed 's/^/  pairs held: /'
+    q=$out/q$i.json
     if ! python3 whole_gate.py $out/q$i.json $out/q$i.audit > /dev/null; then
+      # the singles do not fit round the pairs: the pairs laid AGAIN keeping each single's room where it was short
+      # (whole_snap SNAP_KEEP), then the singles fitted again round those
+      python3 whole_gate.py $out/q$i.json $out/q$i.audit --hot $out/hk$i.json > /dev/null
+      # (a pair that cannot be laid so is no plan: the pairs laid first stand, and their singles' places go to the
+      # solve below; any other failure stops)
+      if ! SNAP_KEEP=$out/hk$i.json $ST --out $out/pairs${i}k.json -- whole_snap.py $out/p$i.json $out/pairs${i}k.json --pairs > $out/pairs${i}k.log 2>&1; then
+        grep -q "^SNAP FAILED" $out/pairs${i}k.log || { tail -3 $out/pairs${i}k.log; exit 1; }
+        echo "  pairs laid again, the singles kept room: $(grep '^SNAP FAILED' $out/pairs${i}k.log)"
+      fi
+      if ! grep -q "^SNAP FAILED" $out/pairs${i}k.log; then
+        $ST --out $out/qk$i.json -- whole_polish.py $out/pairs${i}k.json $out/qk$i.json > $out/qk$i.log 2>&1 || { tail -3 $out/qk$i.log; exit 1; }
+        $ST -- whole_audit.py $out/qk$i.json > $out/qk$i.audit 2>&1 || { tail -3 $out/qk$i.audit; exit 1; }
+        gk=$(python3 whole_gate.py $out/qk$i.json $out/qk$i.audit)
+        echo "$gk" | sed 's/^/  pairs laid again, the singles kept room: /'
+        python3 whole_gate.py $out/qk$i.json $out/qk$i.audit > /dev/null && q=$out/qk$i.json
+      fi
+    fi
+    if [ $q = $out/q$i.json ] && ! python3 whole_gate.py $out/q$i.json $out/q$i.audit > /dev/null; then
       # the singles do not fit round the pairs: where they are short goes to the solve as history
       progress $((1000 + $(findings "$gq")))
       addhot $out/q$i.json $out/q$i.audit $out/hq$i.json || { echo "=== round $i: the singles do not fit round the pairs"; exit 1; }
@@ -141,7 +183,11 @@ PY
       resolve
       continue
     fi
-    $ST --out $out/plan.json -- whole_snap.py $out/q$i.json $out/plan.json > $out/snap.log 2>&1 || { tail -3 $out/snap.log; exit 1; }
+    # (a single the snap cannot lay leaves the plan without it -- the gate fails it -- and where it got stuck goes to the
+    # solve with the audit's findings below; any other failure stops)
+    if ! $ST --out $out/plan.json -- whole_snap.py $q $out/plan.json > $out/snap.log 2>&1; then
+      grep -q "^SNAP FAILED" $out/snap.log || { tail -3 $out/snap.log; exit 1; }
+    fi
     grep -E "^snap:|FAILED" $out/snap.log | sed 's/^/  /'
     $ST -- whole_audit.py $out/plan.json > $out/plan.audit 2>&1 || { tail -3 $out/plan.audit; exit 1; }
     gs=$(python3 whole_gate.py $out/plan.json $out/plan.audit)

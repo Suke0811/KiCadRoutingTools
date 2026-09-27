@@ -97,6 +97,33 @@ def pad_distance(dx, dy, hx, hy, cr):
     return (_np.hypot(_np.maximum(qx, 0.0), _np.maximum(qy, 0.0)) + _np.minimum(_np.maximum(qx, qy), 0.0)) - cr
 
 
+def corner_buffer(grid):
+    """The router's corner buffer round a pad's corners for a single's track or via (routing_utils.
+    pad_blocked_cells_array): half a grid step"""
+    return grid / 2
+
+
+def corner_zone(hx, hy, cr, grid):
+    """(ax, ay): a pad's CORNER zone is where a point stands past both |dx| > ax and |dy| > ay from its centre -- its
+    flat edges less the corner radius, or less half a grid step for a square corner (routing_utils.
+    pad_blocked_cells_array)"""
+    thr = grid / 2 if cr <= 0 else 0.0
+    return hx - cr - thr, hy - cr - thr
+
+
+def pad_corner_buffer(dx, dy, hx, hy, cr, grid):
+    """How much further the router keeps a single's track centre -- or a via's -- off a pad at points (dx, dy) from
+    the pad's centre (arrays or numbers): past both its flat edges less the corner radius (half a grid step, a square
+    corner) -- the CORNER's zone -- its bar grows by the corner buffer, and elsewhere not at all
+    (routing_utils.pad_blocked_cells_array). A gap between two pads' corners the flat bar passes can have no grid
+    column the router leaves open: K35 SA4 between R4's and R5's pads, 0.37 mm where a track asks 0.337. (A pair's
+    map is read on its centreline, which the pair models already stand wider of: the snap's legs' reach at its
+    45-degree corners and half a step.)"""
+    import numpy as _np
+    ax, ay = corner_zone(hx, hy, cr, grid)
+    return _np.where((_np.abs(dx) > ax) & (_np.abs(dy) > ay), corner_buffer(grid), 0.0)
+
+
 def turn_straight_steps(cfg) -> int:
     """How many router grid steps a pair runs straight after each 45-degree turn before it may turn again: the
     pair router's turning radius (rust_router pose_router.rs, ceil(min_turning_radius / grid))."""
@@ -279,15 +306,17 @@ def cut_span(pieces, P_in, P_out):
 def crossover(V, u, s_in: int, half: float, via_size: float, via_half: float, track: float, clearance: float,
               grid: float, L1: str, L2: str, p_id: int = 1, n_id: int = 2, first: str = 'P', floor: float = 0.0):
     """A pair's CROSSOVER at its dive V on a straight stretch along u (#622): the two legs swap sides the way a
-    designer swaps them. The FIRST diver runs its old line on L1, steps out to its barrel (away from the other leg,
-    by what an ordinary dive gives a barrel: via_half - half), dives, and jogs at 45 degrees on L2 onto its new line
-    (the other's old one); the SECOND runs its old line on L1, jogs at 45 degrees over the first's new-layer leg to
-    its barrel beside its new line, dives and steps back onto it. Both barrels stand on one side, staggered along u
-    by the least whole grid steps that keep a via's pitch and each jog its clearance from the other's barrel. `s_in`:
-    the side of u P lies on before the dive (+1 left, -1 right); after it, the other. Each leg is exact copper, laid
-    as drawn; the pair router takes over from the entry and exit points, half the pitch either side of the centre
-    line, on each side's own hand -- its POSES `floor` further out (its own setback), each run on to a whole grid step
-    from V along u so the pose is a grid point when V is. -> dict(entry={P, N}, exit={P, N}, poses=(in, out),
+    designer swaps them. The FIRST diver runs its old line on L1, steps out at 45 degrees to its barrel (away from
+    the other leg, by what an ordinary dive gives a barrel: via_half - half), dives, and jogs at 45 degrees on L2 onto
+    its new line (the other's old one); the SECOND runs its old line on L1, jogs at 45 degrees over the first's
+    new-layer leg to its barrel beside its new line, dives and steps back onto it at 45 degrees. No leg turns more
+    than 45 degrees, so a turn of the lane just outside the crossover cannot make a fold of one (a square step there,
+    after the lane's 45-degree turn into the dive, turned SDQS1's leg 135 degrees in 0.27 mm). Both barrels stand on
+    one side, staggered along u by the least whole grid steps that keep a via's pitch and each jog its clearance from
+    the other's barrel. `s_in`: the side of u P lies on before the dive (+1 left, -1 right); after it, the other. Each
+    leg is exact copper, laid as drawn; the pair router takes over from the entry and exit points, half the pitch
+    either side of the centre line, on each side's own hand -- its POSES `floor` further out (its own setback), each
+    run on to a whole grid step from V along u so the pose is a grid point when V is. -> dict(entry={P, N}, exit={P, N}, poses=(in, out),
     legs={P: [(points, layer)], N: ...}, vias=[(x, y, 'P' | 'N')], span=(x_in, x_out) along u from V), or None when
     its own legs would not clear"""
     ul = math.hypot(*u)
@@ -303,13 +332,14 @@ def crossover(V, u, s_in: int, half: float, via_size: float, via_half: float, tr
     dx = math.ceil(need / grid - 1e-9) * grid                 # the stagger
     xa = -math.floor(dx / 2 / grid) * grid
     xb = xa + dx
-    x_in, x_out = min(xa, xb - jog), max(xa + jog, xb)
+    st = abs(vy - yF0)                                        # a step between a line and its barrel (at 45 degrees)
+    x_in, x_out = min(xa - st, xb - jog), max(xa + jog, xb + st)
     step = grid / max(abs(ux), abs(uy))                       # a grid step along u
     pose_in = math.floor((x_in - floor) / step + 1e-9) * step
     pose_out = math.ceil((x_out + floor) / step - 1e-9) * step
     x_in, x_out = pose_in + floor, pose_out - floor
-    F = [([(x_in, yF0), (xa, yF0), (xa, vy)], L1), ([(xa, vy), (xa + jog, -yF0), (x_out, -yF0)], L2)]
-    S = [([(x_in, -yF0), (xb - jog, -yF0), (xb, vy)], L1), ([(xb, vy), (xb, yF0), (x_out, yF0)], L2)]
+    F = [([(x_in, yF0), (xa - st, yF0), (xa, vy)], L1), ([(xa, vy), (xa + jog, -yF0), (x_out, -yF0)], L2)]
+    S = [([(x_in, -yF0), (xb - jog, -yF0), (xb, vy)], L1), ([(xb, vy), (xb + st, yF0), (x_out, yF0)], L2)]
     legs = {'P': F, 'N': S} if first == 'P' else {'P': S, 'N': F}
     legs = {k: [([to_xy(*q) for q in pts], L) for pts, L in v] for k, v in legs.items()}
     va, vb = to_xy(xa, vy), to_xy(xb, vy)

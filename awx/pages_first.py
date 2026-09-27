@@ -200,10 +200,13 @@ def current_tooth(st, nm) -> Optional[Move]:
                 site=(tuple(g['site']) if g.get('site') else None))
 
 
-def _conflicts(cands: Dict[str, List[Move]], strict: bool) -> List[Tuple[str, int, str, int]]:
+def _conflicts(cands: Dict[str, List[Move]], strict: bool, stack: bool = False) -> List[Tuple[str, int, str, int]]:
     """Every (net a, index, net b, index) whose two moves cannot both be
     laid, tested only between moves sharing a lane, a site or an exit
-    (bucketed: the all-pairs test is 10^6-10^7 calls at K41)."""
+    (bucketed: the all-pairs test is 10^6-10^7 calls at K41). `stack`:
+    two exits at one point on different layers do not conflict, and two on
+    one layer closer than select_moves._STACK_PITCH do (select_moves.
+    _conflict) -- so the exits are bucketed at that pitch."""
     buckets: Dict[tuple, List[Tuple[str, int]]] = {}
     for nm, ms in cands.items():
         for i, m in enumerate(ms):
@@ -236,8 +239,9 @@ def _conflicts(cands: Dict[str, List[Move]], strict: bool) -> List[Tuple[str, in
                     for c in cells:
                         for L in ('F.Cu', 'B.Cu'):
                             keys.add(('lane', axis, c, L))
-            for cx in q(m.exit_pt[0]):
-                for cy in q(m.exit_pt[1]):
+            etol = max(sm._EXIT_TOL, sm._STACK_PITCH) if stack else sm._EXIT_TOL
+            for cx in q(m.exit_pt[0], etol):
+                for cy in q(m.exit_pt[1], etol):
                     keys.add(('exit', cx, cy))
             # SORTED: `keys` is a set of string-keyed tuples, whose iteration
             # order follows the process's hash seed -- and the ORDER the
@@ -260,7 +264,7 @@ def _conflicts(cands: Dict[str, List[Move]], strict: bool) -> List[Tuple[str, in
                 if a == b or (a, i, b, j) in seen or (b, j, a, i) in seen:
                     continue
                 seen.add((a, i, b, j))
-                if sm._conflict(cands[a][i], cands[b][j], strict=strict):
+                if sm._conflict(cands[a][i], cands[b][j], strict=strict, stack=stack):
                     out.append((a, i, b, j))
     return out
 

@@ -556,7 +556,7 @@ def score(choice: Dict[str, Move], groups, geo: 'Corridor',
 _TOUCH = 1e-6        # two spans that meet at a point DO conflict (see below)
 
 
-def _conflict(m: Move, om: Move, tol: float = 0.16, strict: bool = True) -> bool:
+def _conflict(m: Move, om: Move, tol: float = 0.16, strict: bool = True, stack: bool = False) -> bool:
     """Two moves that cannot both be laid: a shared lane stretch or a
     shared site -- and, `strict`, a lane matched within `tol` (half a
     fine-pitch gap) or one's via site in the other's lane. The strict
@@ -570,7 +570,10 @@ def _conflict(m: Move, om: Move, tol: float = 0.16, strict: bool = True) -> bool
     there it took the restricted K19 plan from floor 12 to 20, moved
     SDQ0 from the south face to the west, split the corridor in two and
     left 5 lanes open (2026-08-30, measured after the fact: the ladder
-    had been run on fanout boards recorded before the change)."""
+    had been run on fanout boards recorded before the change). `stack`
+    (the whole route's ends): two exits at one point conflict only on one
+    layer (an F lane stacks over a B one), and two on one layer closer
+    than _STACK_PITCH do."""
     spans, ospans = _lane_spans(m), _lane_spans(om)
     for key, a, b in spans:
         for ok, oa, ob in ospans:
@@ -608,17 +611,29 @@ def _conflict(m: Move, om: Move, tol: float = 0.16, strict: bool = True) -> bool
     if any(_site_in_lane(om, key, a, b) for key, a, b in spans) \
             or any(_site_in_lane(m, ok, oa, ob) for ok, oa, ob in ospans):
         return True
-    # two teeth cannot share one exit point, whatever their layers: the
-    # braid orders lanes by their offset at the array, and two lanes at
-    # one offset have no pitch between them (K28: SA6 on F and SBA1 on B
-    # at DU1's (146.35, 62.56), a corridor of two, both refused)
+    # two teeth cannot share one exit point: the braid orders lanes by their
+    # offset at the array, whatever their layers, and two lanes at one
+    # offset have no pitch between them (K28: SA6 on F and SBA1 on B at
+    # DU1's (146.35, 62.56), a corridor of two, both refused). `stack`
+    # (the whole route, which orders each layer's lanes on their own and
+    # stacks an F lane over a B lane as a human does): only on ONE layer --
+    # K15's SDQS1 could not leave the source's east face on B under
+    # SDQ11's F tooth, and left 5 mm north through the balls instead
     if (abs(m.exit_pt[0] - om.exit_pt[0]) < _EXIT_TOL
-            and abs(m.exit_pt[1] - om.exit_pt[1]) < _EXIT_TOL):
+            and abs(m.exit_pt[1] - om.exit_pt[1]) < _EXIT_TOL
+            and (not stack or m.layer == om.layer)):
+        return True
+    # ...and in the whole route (`stack`) two exits on ONE layer hold two lanes side by side from there on: a track
+    # and a clearance apart at least (K35: SA12's tooth laid between SDQ14's and SDQ0's on F, 0.22 and 0.20 from
+    # them -- clear of the shared-exit rule, and no geometry could lay the three lanes on)
+    if stack and m.layer == om.layer and \
+            math.hypot(m.exit_pt[0] - om.exit_pt[0], m.exit_pt[1] - om.exit_pt[1]) < _STACK_PITCH:
         return True
     return False
 
 
 _EXIT_TOL = 0.16    # half a fine-pitch gap
+_STACK_PITCH = _rules.TRACK + _rules.SPEC_CLEARANCE + _rules.HUG_OVER   # two lanes' centres side by side
 
 
 _VIA_REACH = 0.30   # via radius + clearance + half a track, rounded up

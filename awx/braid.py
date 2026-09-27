@@ -392,6 +392,26 @@ def _on_board(pcb, x, y, inset):
     return inside
 
 
+def sweep_round(path, cen):
+    """the angle `path` turns through round the point `cen` (radians, counterclockwise positive): a ring's wrap
+    direction is the sign of its lanes' sum"""
+    a = [math.atan2(y - cen[1], x - cen[0]) for x, y in path]
+    return sum((v - u + math.pi) % (2 * math.pi) - math.pi for u, v in zip(a, a[1:]))
+
+
+def ring_spine(dpads, handoffs, stubs, start, ccw, arrive, tails):
+    """(core, spine) of a RING: the wrap spine round the destination's pads `dpads` from `start` on the trunk's
+    handoff line, `ccw` its direction, through the lanes' berth `stubs` and outside `tails` (the head-on lanes' copper
+    it must pass), `arrive` the trunk's direction at its end -- extended back past the lanes' `handoffs` and on past
+    their stubs. The braid's branches ride it, and the whole route's rings where the braid made none (whole_ctx)"""
+    spn = cr.build_wrap_spine(dpads, list(stubs), [start], ccw, arrive, LPITCH, hull_extra=tails)
+    P0, d0 = spn.P[0], spn.d[0]
+    Pn, dn_ = spn.P[-1], spn.d[-1]
+    back = max([0.3] + [-((t[0] - P0[0]) * d0[0] + (t[1] - P0[1]) * d0[1]) + 0.3 for t in handoffs])
+    fwd = max([0.3] + [((t[0] - Pn[0]) * dn_[0] + (t[1] - Pn[1]) * dn_[1]) + 0.3 for t in stubs])
+    return spn, spn.extend(back, fwd)
+
+
 def build_branches(ctx, c1, log, _tgt=None, _before=None, _round=0):
     """BRAID_BRANCH: the corridor `c1` (planned) as a TRUNK with BRANCHES.
     Its side exits leave it at HANDOFF points -- their exit-block slot HAND_DS
@@ -415,9 +435,6 @@ def build_branches(ctx, c1, log, _tgt=None, _before=None, _round=0):
     dpads = [(p.global_x, p.global_y) for p in ctx.pcb.footprints[dest].pads]
     cen = (sum(p[0] for p in dpads) / len(dpads), sum(p[1] for p in dpads) / len(dpads))
 
-    def sweep(nm):
-        a = [math.atan2(y - cen[1], x - cen[0]) for x, y in ctx.paths[nm]]
-        return sum((v - u + math.pi) % (2 * math.pi) - math.pi for u, v in zip(a, a[1:]))
     tgt = dict(_tgt) if _tgt else {nm: c1.target_o[nm] for nm in xs}
     H = {nm: sp.xy(s_h, tgt[nm]) for nm in xs}
     L_h = {nm: (sc1.page.get(nm) or ctx.dest_layer[nm]) for nm in xs}
@@ -466,7 +483,7 @@ def build_branches(ctx, c1, log, _tgt=None, _before=None, _round=0):
         mem = [nm for nm in xs if c1.exit_side[nm] == sg]
         if len(mem) < 2:
             continue
-        ccw = sum(sweep(nm) for nm in mem) > 0
+        ccw = sum(sweep_round(ctx.paths[nm], cen) for nm in mem) > 0
         o_in = min((c2.target_o[nm] for nm in mem), key=lambda v: sg * v) - sg * LPITCH
         start = sp.xy(s_h, o_in)
         vb = CtxView(ctx, ends={nm: (H[nm], ctx.ends[nm][1], ctx.ends[nm][2]) for nm in mem},
@@ -481,13 +498,8 @@ def build_branches(ctx, c1, log, _tgt=None, _before=None, _round=0):
             self.wrap = True
             teeth = {nm: ctx_.ends[nm][0] for nm in self.members}
             stubs = {nm: ctx_.ends[nm][1] for nm in self.members}
-            spn = cr.build_wrap_spine(dpads, list(stubs.values()), [start], ccw, dn, LPITCH, hull_extra=tails)
-            self.spine_core = spn
-            P0, d0 = spn.P[0], spn.d[0]
-            Pn, dn_ = spn.P[-1], spn.d[-1]
-            back = max([0.3] + [-((t[0] - P0[0]) * d0[0] + (t[1] - P0[1]) * d0[1]) + 0.3 for t in teeth.values()])
-            fwd = max([0.3] + [((t[0] - Pn[0]) * dn_[0] + (t[1] - Pn[1]) * dn_[1]) + 0.3 for t in stubs.values()])
-            self.spine = spn.extend(back, fwd)
+            self.spine_core, self.spine = ring_spine(dpads, list(teeth.values()), list(stubs.values()), start, ccw,
+                                                     dn, tails)
             self.teeth, self.stubs = teeth, stubs
             self.st = {nm: self.spine.project_pt(teeth[nm]) for nm in self.members}
             self.se = {nm: self.spine.project_pt(stubs[nm]) for nm in self.members}
@@ -872,7 +884,8 @@ def unthreadable(fp, track=None, clear=None):
 
 def build_obstacles(pcb, nid, kids, layer):
     """A static-copper model for one net on one layer: every foreign
-    pad as a disc, every foreign segment as a capsule, every foreign
+    pad as KiCad draws it (a rect or an oval as capsules, _build_obstacles;
+    others a disc), every foreign segment as a capsule, every foreign
     via as a disc, all inflated by clearance + half a track. The PLAN
     prices its candidate moves against it, the taut paths and the
     spines are relaxed against it; the braid's copper is routed against
@@ -913,6 +926,12 @@ def build_obstacles(pcb, nid, kids, layer):
     return obs
 
 
+# a rect pad is modelled by capsules -- its rectangle grown by the margin, exactly (a roundrect as its square-cornered
+# rectangle: never smaller than its copper) -- while half its short side is within this many margins: past it, the
+# long axis's capsule and the edges' leave the pad's deep corners uncovered (exact to (sqrt 2 + 1) / (sqrt 2 - 1))
+RECT_EXACT = 5.5
+
+
 def _build_obstacles(pcb, kids, layer):
     """Every pad on `layer` (drilled: on both), every segment on it
     whose net is not in `kids`, every via -- each tagged with its net,
@@ -926,14 +945,32 @@ def _build_obstacles(pcb, kids, layer):
                 on_layer = True
             if not on_layer:
                 continue
+            nm_ = f'{ref}.{p.pad_number}'
             if p.pad_type == 'np_thru_hole' and p.drill:
-                r0 = p.drill / 2
-            elif p.shape in ('circle', 'oval'):
-                r0 = max(p.size_x, p.size_y) / 2
+                obs.add_disc(p.global_x, p.global_y, p.drill / 2 + m, nm_, net=p.net_id)
+                continue
+            hx, hy = p.size_x / 2, p.size_y / 2
+            lo, hi = min(hx, hy), max(hx, hy)
+            ax = (hi - lo, 0.0) if hx >= hy else (0.0, hi - lo)      # the long axis, from the centre
+            a_ = (p.global_x - ax[0], p.global_y - ax[1])
+            b_ = (p.global_x + ax[0], p.global_y + ax[1])
+            tilted = abs(getattr(p, 'rect_rotation', 0.0) or 0.0) > 1e-6
+            if p.shape == 'circle':
+                obs.add_disc(p.global_x, p.global_y, hi + m, nm_, net=p.net_id)
+            elif p.shape == 'oval' and not tilted:
+                # an oval pad IS a stadium: the capsule of its long axis
+                obs.add_cap(a_, b_, lo + m, nm_, net=p.net_id)
+            elif p.shape in ('rect', 'roundrect') and not tilted and lo <= RECT_EXACT * m:
+                # a rectangle grown by the margin, exactly: its long axis's capsule (every point of the pad) and a
+                # capsule of the margin along each edge (the corners' rounding) -- exact while half its short side
+                # is within RECT_EXACT margins. The circumscribed disc it replaces refused lanes that clear a
+                # passive's pads (a B lane 0.19 / 0.22 mm from two 0402 pads' edges, 0.15 asked)
+                obs.add_cap(a_, b_, lo + m, nm_, net=p.net_id)
+                x0, y0, x1, y1 = p.global_x - hx, p.global_y - hy, p.global_x + hx, p.global_y + hy
+                for e0, e1 in (((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))):
+                    obs.add_cap(e0, e1, m, nm_, net=p.net_id)
             else:
-                r0 = math.hypot(p.size_x, p.size_y) / 2
-            obs.add_disc(p.global_x, p.global_y, r0 + m,
-                         f'{ref}.{p.pad_number}', net=p.net_id)
+                obs.add_disc(p.global_x, p.global_y, math.hypot(hx, hy) + m, nm_, net=p.net_id)
     for s in pcb.segments:
         if s.net_id in kids or s.layer != layer:
             continue
@@ -1422,6 +1459,11 @@ class Corridor:
         obs = ts.Obstacles()
         for (x, y, r, name) in ctx.spine_obs.discs:
             if name.split('.')[0] in big:
+                obs.add_disc(x, y, r, name)
+        # ...and its pads drawn as capsules (a rect, an oval: _build_obstacles), each as the disc round them
+        import taut_fast as _tf
+        for (x, y, r, name, _net) in _tf.pad_discs(ctx.spine_obs.caps, ctx.spine_obs.cnets):
+            if str(name).split('.')[0] in big:
                 obs.add_disc(x, y, r, name)
         obs.build()
         spine = ctx.spine_of(self.members, extra=extra, log=self.log,
@@ -6860,7 +6902,7 @@ def setup(board, names, dest, log, plan=None, pairs=False):
     # relax algorithm changes; per-net entries so a different K
     # fills in only what is missing. json round-trips floats exactly
     # (repr), so the cached run stays bit-identical.
-    TAUT_CACHE_VERSION = 2   # 2: taut_clean reseeds (0902)
+    TAUT_CACHE_VERSION = 3   # 2: taut_clean reseeds (0902); 3: rect and oval pads as capsules, a string's disc round them
     log('taut paths...')
     import json as _json
     _tc_path = os.path.splitext(board)[0] + '.taut.json'

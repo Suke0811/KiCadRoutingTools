@@ -129,7 +129,9 @@ def assess(pts, it, obs):
     # assert-only: violations are classified and reported, never
     # reseeded (a reseed was tried and lost on the ladder). A capsule
     # is a single-layer foreign track a lane crosses by diving, so on a
-    # two-layer ribbon a chord across one is not wrong-sector.
+    # two-layer ribbon a chord across one is not wrong-sector -- or a
+    # side of a pad drawn as capsules, which the strings see as its disc
+    # (taut_fast.pad_discs) and count here as a capsule.
     viol = violations(pts, obs)
     if not viol:
         return pts, it, 'clean', 0
