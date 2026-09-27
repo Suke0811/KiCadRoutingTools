@@ -17,6 +17,8 @@ import json
 import os
 import re
 import shutil
+import stat
+import sys
 import tempfile
 import time
 
@@ -90,13 +92,32 @@ STAGE_LABELS = {
 _STAGE_RE = re.compile(
     r"--stage[=\s]+[\"']?(P-brief|P-close|P[0-6]|L[1-5])\b")
 
+# The folder beside the board that holds one directory per run (#1057).
+RUNS_DIRNAME = "krt_placement"
+# `*` ignores the .gitignore itself too, so the whole folder stays out of the
+# user's repository. Written once, never over a file the user already has.
+_RUNS_GITIGNORE = (
+    "# KiCad Routing Tools placement runs: scratch, never version it.\n*\n")
+# Per-run record of the board the run was started on: several boards can
+# share one folder, and a run's own files do not say which one it served.
+RUN_MARKER = ".krt_run.json"
+# How many runs of one board the folder keeps, the new run included.
+KEEP_RUNS = 3
+# Only directories named the way create_workdir names them are ever pruned,
+# so nothing else a user keeps in the folder can be touched.
+_RUN_DIR_RE = re.compile(
+    r"^(\d{8}_\d{6})_(?:%s)(?:_(\d+))?$"
+    % "|".join(sorted(PLACEMENT_SKILLS, key=len, reverse=True)))
+
 
 def create_workdir(board_filename, mode):
     """Create and return the run's working directory.
 
     Lives next to the board file (krt_placement/<stamp>_<mode>/) so the movie
     and REPORT.md survive the session and are easy to find; falls back to the
-    system temp dir when the board has no on-disk file yet.
+    system temp dir when the board has no on-disk file yet. The folder gets a
+    .gitignore and the run a RUN_MARKER naming its board, which is what lets
+    prune_runs keep the folder bounded (#1057).
     """
     base = None
     if board_filename:
@@ -105,19 +126,203 @@ def create_workdir(board_filename, mode):
             base = d
     if base is None:
         base = tempfile.gettempdir()
+    root = os.path.join(base, RUNS_DIRNAME)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     # exist_ok=False + suffix retry: a same-second restart must NOT reuse a
     # dirty workdir (its leftover final.kicad_pcb/REPORT.md would be
     # scavenged as the new run's outputs).
     for n in range(1, 100):
         suffix = "" if n == 1 else f"_{n}"
-        workdir = os.path.join(base, "krt_placement", f"{stamp}_{mode}{suffix}")
+        workdir = os.path.join(root, f"{stamp}_{mode}{suffix}")
         try:
             os.makedirs(workdir, exist_ok=False)
-            return workdir
         except FileExistsError:
             continue
+        _ensure_gitignore(root)
+        _write_run_marker(workdir, board_filename, mode)
+        return workdir
     raise OSError(f"could not create a fresh workdir under {base}")
+
+
+def _ensure_gitignore(root):
+    path = os.path.join(root, ".gitignore")
+    if os.path.lexists(path):
+        return
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(_RUNS_GITIGNORE)
+    except OSError:
+        pass  # a read-only project dir still gets its run
+
+
+def _write_run_marker(workdir, board_filename, mode):
+    # Best effort: a run without a marker is attributed to no board, and
+    # prune_runs never deletes an unattributed run.
+    try:
+        with open(os.path.join(workdir, RUN_MARKER), "w",
+                  encoding="utf-8") as f:
+            json.dump({
+                "board": (os.path.abspath(board_filename)
+                          if board_filename else None),
+                "mode": mode,
+                "started": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }, f)
+    except OSError:
+        pass
+
+
+def _board_key(path):
+    return os.path.normcase(os.path.abspath(path)) if path else None
+
+
+def _run_board(run_dir, sole_board):
+    """(attributed, board key) for one run directory.
+
+    A run from before RUN_MARKER existed names no board. It is attributed to
+    the folder's board when that board is the ONLY one beside the folder --
+    it cannot have served another -- and otherwise stays unattributed.
+    """
+    try:
+        with open(os.path.join(run_dir, RUN_MARKER), encoding="utf-8") as f:
+            return True, _board_key(json.load(f).get("board"))
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, AttributeError):
+        return False, None      # unreadable marker: leave the run alone
+    if sole_board is None:
+        return False, None
+    return True, sole_board
+
+
+def _sole_board(board_dir):
+    """The one .kicad_pcb in board_dir (KiCad autosaves excluded), or None."""
+    try:
+        boards = [n for n in os.listdir(board_dir)
+                  if n.endswith(".kicad_pcb") and not n.startswith("_autosave-")
+                  and os.path.isfile(os.path.join(board_dir, n))]
+    except OSError:
+        return None
+    return _board_key(os.path.join(board_dir, boards[0])) \
+        if len(boards) == 1 else None
+
+
+def _is_link(path):
+    isjunction = getattr(os.path, "isjunction", None)   # Python 3.12+
+    return os.path.islink(path) or bool(isjunction and isjunction(path))
+
+
+def _tree_bytes(path):
+    total = 0
+    for dirpath, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _remove_tree(path):
+    """rmtree that clears read-only bits; True when the tree is gone."""
+    def _retry(func, p, _exc):
+        if func not in (os.unlink, os.remove, os.rmdir):
+            return
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass    # judged below by whether the tree is still there
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_retry)
+    else:
+        shutil.rmtree(path, onerror=_retry)
+    return not os.path.lexists(path)
+
+
+def prune_runs(workdir, board_filename, keep):
+    """Delete this board's oldest run directories beyond `keep` (#1057).
+
+    `workdir` is the run just created by create_workdir: it counts as one of
+    the `keep` and is never deleted. keep <= 0 keeps every run. Only this
+    board's runs are candidates (see _run_board); another board's runs in the
+    same folder, unattributed runs, links and anything not named like a run
+    are left alone.
+
+    Returns {"root", "pruned": [(path, bytes)], "failed": [path],
+    "kept": [(path, bytes)], "unattributed": int}.
+    """
+    root = os.path.dirname(os.path.abspath(workdir))
+    result = {"root": root, "pruned": [], "failed": [], "kept": [],
+              "unattributed": 0}
+    if keep <= 0 or os.path.basename(root) != RUNS_DIRNAME:
+        return result
+    me = _board_key(board_filename)
+    sole = _sole_board(os.path.dirname(root))
+    this_run = os.path.normcase(os.path.abspath(workdir))
+    runs = []
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return result
+    for name in names:
+        m = _RUN_DIR_RE.match(name)
+        path = os.path.join(root, name)
+        if (m is None or os.path.normcase(path) == this_run
+                or _is_link(path) or not os.path.isdir(path)):
+            continue
+        attributed, board = _run_board(path, sole)
+        if not attributed:
+            result["unattributed"] += 1
+        elif board == me:
+            runs.append(((m.group(1), int(m.group(2) or 1)), path))
+    runs.sort(reverse=True)                     # newest first
+    keep_others = [p for _k, p in runs[:keep - 1]]
+    for path in [workdir] + keep_others:
+        result["kept"].append((path, _tree_bytes(path)))
+    for _key, path in runs[keep - 1:]:
+        size = _tree_bytes(path)
+        if _remove_tree(path):
+            result["pruned"].append((path, size))
+        else:
+            # rmtree may have taken the marker before failing on an open
+            # file; without it the next run could not retry this one.
+            if not os.path.exists(os.path.join(path, RUN_MARKER)):
+                _write_run_marker(path, board_filename, None)
+            result["failed"].append(path)
+    return result
+
+
+def _fmt_bytes(n):
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.1f} GB"
+    if n >= 1024 ** 2:
+        return f"{n / 1024 ** 2:.1f} MB"
+    return f"{n / 1024:.0f} KB"
+
+
+def format_prune_note(result):
+    """prune_runs' result as log lines ('' when there is nothing to say)."""
+    lines = []
+    root = result["root"]
+    if result["pruned"]:
+        kept = result["kept"]
+        lines.append(
+            f"Placement: removed {len(result['pruned'])} older run(s) of this "
+            f"board from {root} "
+            f"({_fmt_bytes(sum(b for _p, b in result['pruned']))} freed); "
+            f"keeping the newest {len(kept)} "
+            f"({_fmt_bytes(sum(b for _p, b in kept))}).")
+    if result["failed"]:
+        lines.append(
+            f"Placement: could not fully remove {len(result['failed'])} old "
+            f"run folder(s) (a file may be open); retried at the next run: "
+            + ", ".join(result["failed"]))
+    if result["unattributed"]:
+        lines.append(
+            f"Placement: {result['unattributed']} run folder(s) in {root} "
+            f"name no board, so they are never pruned; delete them by hand "
+            f"if unneeded.")
+    return "".join(line + "\n" for line in lines)
 
 
 def stage_inputs(workdir, snapshot_path, board_filename):

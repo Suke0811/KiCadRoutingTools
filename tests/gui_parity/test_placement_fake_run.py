@@ -254,6 +254,38 @@ def main():
               " 0 applied" in label, label)
         check("beautify re-armed", tab.action_btn.IsEnabled())
 
+    # --- KEEP_RUNS (#1057): a second run through the tab prunes this
+    # board's oldest run folders, keeps the newest, and says so in the log.
+    # With KEEP_RUNS older runs beside the first run, exactly the oldest two
+    # go: the new run plus the KEEP_RUNS - 1 newest others stay.
+    import json as _json
+    from kicad_routing_plugin.placement_run import KEEP_RUNS
+    runs_root = os.path.dirname(workdir)
+    check("krt_placement carries a .gitignore",
+          os.path.isfile(os.path.join(runs_root, ".gitignore")))
+    old_runs = []                                   # oldest first
+    for i in range(1, KEEP_RUNS + 1):
+        d = os.path.join(runs_root, f"20000101_{i:06d}_place")
+        os.makedirs(os.path.join(d, "boards"))
+        with open(os.path.join(d, ".krt_run.json"), "w") as f:
+            _json.dump({"board": board, "mode": "place"}, f)
+        old_runs.append(d)
+    tab._start_ai_run("place")
+    second = tab.last_workdir
+    check("second run accepted", tab._runner is not None and second != workdir)
+    check("preview cleared for the new run",
+          not tab.preview._frames and tab.preview._movie is None)
+    check("second run finished before timeout",
+          pump_until(lambda: tab._runner is None
+                     and any("older run(s)" in t for t in logged), 90))
+    check("KEEP_RUNS pruned the board's two oldest run folders",
+          not any(os.path.exists(d) for d in old_runs[:2]))
+    check("KEEP_RUNS kept the newest runs, the new one included",
+          all(os.path.isdir(d) for d in old_runs[2:] + [workdir, second]))
+    check("the prune is disclosed in the log",
+          any("removed 2 older run(s)" in t for t in logged),
+          "".join(t for t in logged if "Placement:" in t))
+
     # Deterministic wx teardown (headless_plan.py precedent: leaving pending
     # timers/windows to interpreter shutdown corrupts the heap and crashes
     # AFTER the verdict). Stop everything, destroy while the App lives, then

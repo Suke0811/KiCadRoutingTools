@@ -29,10 +29,10 @@ import wx
 from .ai_backend import BACKENDS, BACKEND_IDS
 from . import placement_run
 from .placement_run import (
-    PLACEMENT_ALLOWED_TOOLS, PLACEMENT_SUPPORTED_BACKENDS,
-    build_placement_prompt, create_workdir, derive_stage,
+    KEEP_RUNS, PLACEMENT_ALLOWED_TOOLS, PLACEMENT_SUPPORTED_BACKENDS,
+    build_placement_prompt, create_workdir, derive_stage, format_prune_note,
     list_board_artifacts, newest_stable_board, parse_placement_result,
-    read_ledger_tail, scan_workdir_outputs, stage_inputs,
+    prune_runs, read_ledger_tail, scan_workdir_outputs, stage_inputs,
 )
 
 # Same path setup as ai_gui/swig_gui: the engine modules live in py_router/,
@@ -552,7 +552,8 @@ class PlacementTab(wx.Panel):
         self.place_btn.SetToolTip(
             "Claude Code runs the /plan-pcb-placement skill headless on a "
             "snapshot of this board. Runs minutes to hours; artifacts land "
-            "in a krt_placement folder next to the board file.")
+            "in a krt_placement folder next to the board file, which keeps "
+            f"this board's newest {KEEP_RUNS} runs.")
         ai_sizer.Add(self.place_btn, 0,
                      wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         self.place_route_btn = wx.Button(sw, label="Place + Route (AI)")
@@ -560,7 +561,8 @@ class PlacementTab(wx.Panel):
             "Claude Code runs the /plan-pcb-placement-and-routing skill "
             "headless (place, then route, looping on the outcome). Runs "
             "minutes to hours; artifacts land in a krt_placement folder "
-            "next to the board file.")
+            f"next to the board file, which keeps this board's newest "
+            f"{KEEP_RUNS} runs.")
         ai_sizer.Add(self.place_route_btn, 0,
                      wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         right.Add(ai_sizer, 0, wx.EXPAND | wx.BOTTOM, 6)
@@ -747,6 +749,10 @@ class PlacementTab(wx.Panel):
         self.last_workdir = workdir
         self._mode = mode
         self._pending_result = None
+        # This run's frames and outputs only: the previous run's files may be
+        # pruned (KEEP_RUNS) the moment this one launches.
+        self.preview.set_frames([])
+        self.preview.set_outputs()
         prompt = build_placement_prompt(
             self.backend, workdir, staged, mode,
             extra=self.extra_instructions.GetValue())
@@ -786,6 +792,32 @@ class PlacementTab(wx.Panel):
             return
         self._monitor = PlacementRunMonitor(self, workdir, mode)
         self._monitor.start()
+        self._start_prune(workdir)
+
+    def _start_prune(self, workdir):
+        """Delete this board's run folders beyond KEEP_RUNS (#1057).
+
+        Called only once the new run has launched, so a run that never
+        started cannot cost the user an old one. Off the UI thread: a run
+        folder's converge board store can hold thousands of files.
+        """
+        board = self.board_filename
+
+        def work():
+            try:
+                note = format_prune_note(prune_runs(workdir, board, KEEP_RUNS))
+            except Exception as e:                         # noqa: BLE001
+                note = f"Placement: pruning old runs failed: {e}\n"
+            if note:
+                wx.CallAfter(self._prune_done, note)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _prune_done(self, note):
+        if not self:
+            return
+        self._append_transcript(note)
+        self.append_log(note)
 
     def _set_running_ui(self, running):
         self.place_btn.Enable(not running and self.backend.find_cli() is not None)

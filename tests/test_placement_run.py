@@ -9,6 +9,8 @@ import importlib.util
 import json
 import os
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import types
@@ -22,10 +24,10 @@ import ai_backend  # noqa: E402
 import placement_run  # noqa: E402
 from placement_run import (  # noqa: E402
     PLACEMENT_ALLOWED_TOOLS, PLACEMENT_RESULT_SCHEMA, PLACEMENT_SKILLS,
-    build_placement_instructions, build_placement_prompt, create_workdir,
-    derive_stage, list_board_artifacts, newest_stable_board,
-    parse_placement_result, read_ledger_tail, scan_workdir_outputs,
-    stage_inputs,
+    RUN_MARKER, RUNS_DIRNAME, build_placement_instructions,
+    build_placement_prompt, create_workdir, derive_stage, format_prune_note,
+    list_board_artifacts, newest_stable_board, parse_placement_result,
+    prune_runs, read_ledger_tail, scan_workdir_outputs, stage_inputs,
 )
 
 FAILURES = []
@@ -91,6 +93,190 @@ check("discover_mechanical finds it from the STAGED board",
       os.path.normcase(discover_mechanical(staged_mech))
       == os.path.normcase(os.path.join(wk_mech, "mechanical.json")),
       discover_mechanical(staged_mech))
+
+# ----------------------------------------------- retention + .gitignore (#1057)
+
+runs_root = os.path.join(board_dir, RUNS_DIRNAME)
+gi = os.path.join(runs_root, ".gitignore")
+check("krt_placement carries a .gitignore that ignores everything",
+      os.path.isfile(gi) and "*" in open(gi).read().split())
+def read_marker(run_dir):
+    try:
+        with open(os.path.join(run_dir, RUN_MARKER)) as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        return {"unreadable": str(e)}
+
+
+_marker = read_marker(wk)
+check("run marker names the board and mode",
+      os.path.normcase(_marker.get("board") or "") == os.path.normcase(board)
+      and _marker.get("mode") == "place", str(_marker))
+_marker_tmp = read_marker(wk_tmp)
+check("unsaved board's marker names no board",
+      "board" in _marker_tmp and _marker_tmp["board"] is None, str(_marker_tmp))
+
+# A user's own .gitignore is never overwritten.
+own = os.path.join(TMP, "own")
+os.makedirs(os.path.join(own, RUNS_DIRNAME))
+open(os.path.join(own, RUNS_DIRNAME, ".gitignore"), "w").write("mine\n")
+open(os.path.join(own, "o.kicad_pcb"), "w").write("(kicad_pcb)\n")
+create_workdir(os.path.join(own, "o.kicad_pcb"), "place")
+check("existing .gitignore left alone",
+      open(os.path.join(own, RUNS_DIRNAME, ".gitignore")).read() == "mine\n")
+
+# The claim the .gitignore exists for, asked of git itself.
+if shutil.which("git"):
+    repo = os.path.join(TMP, "repo")
+    os.makedirs(repo)
+    subprocess.run(["git", "init", "-q", repo], check=True)
+    rb = os.path.join(repo, "r.kicad_pcb")
+    open(rb, "w").write("(kicad_pcb)\n")
+    rwk = create_workdir(rb, "place")
+    open(os.path.join(rwk, "final.kicad_pcb"), "w").write("(kicad_pcb)\n")
+    st = subprocess.run(["git", "status", "--porcelain",
+                         "--untracked-files=all"], cwd=repo,
+                        capture_output=True, text=True, check=True).stdout
+    check("git status sees the board but nothing under krt_placement",
+          "r.kicad_pcb" in st and RUNS_DIRNAME not in st, st)
+else:
+    print("[skip] git not on PATH: .gitignore not checked against git")
+
+
+def mk_run(root, name, board_path=None, marker=True, payload=2000):
+    """A fabricated run directory, so the test controls its stamp."""
+    d = os.path.join(root, name)
+    os.makedirs(os.path.join(d, "boards", "cafe"))
+    open(os.path.join(d, "boards", "cafe", "b.kicad_pcb"), "w").write(
+        "x" * payload)
+    if marker:
+        with open(os.path.join(d, RUN_MARKER), "w") as f:
+            json.dump({"board": board_path, "mode": "place"}, f)
+    return d
+
+
+# Two boards share one folder: A's runs, B's runs, one run from before the
+# marker existed (whose board cannot be told), and things that are not runs.
+two = os.path.join(TMP, "two")
+os.makedirs(two)
+ba = os.path.join(two, "a.kicad_pcb")
+bb = os.path.join(two, "b.kicad_pcb")
+for _b in (ba, bb):
+    open(_b, "w").write("(kicad_pcb)\n")
+root2 = os.path.join(two, RUNS_DIRNAME)
+a_runs = [mk_run(root2, f"20260101_00000{i}_place", ba) for i in (1, 2, 3)]
+a_runs.append(mk_run(root2, "20260101_000003_place_2", ba))   # same second
+a_runs.append(mk_run(root2, "20260101_000004_place_route", ba))
+b_runs = [mk_run(root2, f"20260101_00000{i}_place", bb) for i in (5, 6)]
+legacy2 = mk_run(root2, "20250101_000000_place", marker=False)
+os.makedirs(os.path.join(root2, "notes"))
+open(os.path.join(root2, "20250101_000001_place"), "w").write("a file")
+# A read-only file inside a run that must go (Windows rmtree trips on it).
+_ro = os.path.join(a_runs[0], "boards", "cafe", "b.kicad_pcb")
+os.chmod(_ro, stat.S_IREAD)
+new_a = create_workdir(ba, "place")
+
+res0 = prune_runs(new_a, ba, 0)
+check("keep 0 keeps every run",
+      not res0["pruned"] and all(os.path.isdir(d) for d in a_runs))
+
+res = prune_runs(new_a, ba, 3)
+check("keep 3 = the new run + this board's two newest",
+      [os.path.basename(p) for p, _b in res["kept"]]
+      == [os.path.basename(new_a), "20260101_000004_place_route",
+          "20260101_000003_place_2"], str(res["kept"]))
+check("this board's older runs removed (read-only file included)",
+      sorted(os.path.basename(p) for p, _b in res["pruned"])
+      == ["20260101_000001_place", "20260101_000002_place",
+          "20260101_000003_place"]
+      and not any(os.path.exists(p) for p, _b in res["pruned"])
+      and not res["failed"], str(res))
+check("pruned sizes measured", all(b >= 2000 for _p, b in res["pruned"]),
+      str(res["pruned"]))
+check("the other board's runs untouched", all(os.path.isdir(d) for d in b_runs))
+check("an unattributable run in a two-board folder untouched + counted",
+      os.path.isdir(legacy2) and res["unattributed"] == 1, str(res))
+check("non-run entries untouched",
+      os.path.isdir(os.path.join(root2, "notes"))
+      and os.path.isfile(os.path.join(root2, "20250101_000001_place")))
+check("the new run is never pruned", os.path.isdir(new_a))
+note = format_prune_note(res)
+check("prune note says what was removed and what is kept",
+      "removed 3 older run(s)" in note and "keeping the newest 3" in note
+      and "never pruned" in note, note)
+
+new_b = create_workdir(bb, "place")
+res1 = prune_runs(new_b, bb, 1)
+check("keep 1 removes every other run of the board, and only that board's",
+      not any(os.path.isdir(d) for d in b_runs)
+      and os.path.isdir(new_b) and os.path.isdir(new_a), str(res1))
+_quiet = format_prune_note(prune_runs(new_a, ba, 99))
+check("nothing pruned -> the note is only the unattributed-run line",
+      _quiet.count("\n") == 1 and "never pruned" in _quiet, _quiet)
+
+if os.name == "nt":
+    # A file held open (a movie in a player) blocks deletion on Windows, and
+    # rmtree removes .krt_run.json first there. The half-deleted run must stay
+    # this board's so the next run retries it, as the note promises -- in a
+    # two-board folder a marker-less run would be nobody's.
+    busy = mk_run(root2, "20260101_000000_place", ba)
+    held = open(os.path.join(busy, "placement.mp4"), "w")
+    try:
+        res_busy = prune_runs(new_a, ba, 1)
+        check("an open file fails the prune, disclosed",
+              os.path.isdir(busy) and busy in res_busy["failed"]
+              and "could not fully remove" in format_prune_note(res_busy),
+              str(res_busy))
+        check("...and the half-deleted run is still this board's",
+              read_marker(busy).get("board") is not None
+              and res_busy["unattributed"] == 1, str(read_marker(busy)))
+    finally:
+        held.close()
+    res_retry = prune_runs(new_a, ba, 1)
+    check("the next run's prune finishes it",
+          not os.path.exists(busy) and not res_retry["failed"], str(res_retry))
+
+# One board in the folder: a marker-less run can only have been its run.
+one = os.path.join(TMP, "one")
+os.makedirs(one)
+bo = os.path.join(one, "o.kicad_pcb")
+open(bo, "w").write("(kicad_pcb)\n")
+open(os.path.join(one, "_autosave-o.kicad_pcb"), "w").write("(kicad_pcb)\n")
+root1 = os.path.join(one, RUNS_DIRNAME)
+legacy1 = [mk_run(root1, f"20250101_00000{i}_place", marker=False)
+           for i in (1, 2)]
+new_o = create_workdir(bo, "place_route")
+res_o = prune_runs(new_o, bo, 2)
+check("marker-less runs of a one-board folder are that board's",
+      not os.path.exists(legacy1[0]) and os.path.isdir(legacy1[1])
+      and res_o["unattributed"] == 0, str(res_o))
+
+if os.name == "nt":
+    other_case = mk_run(root1, "20250101_000003_place", bo.upper())
+    prune_runs(new_o, bo, 1)
+    check("board paths compare case-insensitively on Windows",
+          not os.path.exists(other_case))
+
+# A link named like a run is never followed or removed.
+lnk_target = os.path.join(TMP, "lnk_target")
+os.makedirs(lnk_target)
+open(os.path.join(lnk_target, "precious.txt"), "w").write("keep")
+lnk = os.path.join(root1, "20250101_000009_place")
+try:
+    os.symlink(lnk_target, lnk, target_is_directory=True)
+except (OSError, NotImplementedError):
+    print("[skip] cannot create a directory symlink here")
+else:
+    res_l = prune_runs(new_o, bo, 1)
+    # Not even attempted: rmtree refusing a link is not the guard.
+    check("a link named like a run is left alone",
+          os.path.islink(lnk) and not res_l["failed"]
+          and os.path.isfile(os.path.join(lnk_target, "precious.txt")),
+          str(res_l))
+    if os.name == "nt":
+        os.rmdir(lnk)       # a directory symlink is removed as a directory
+    else:
+        os.remove(lnk)
 
 # ------------------------------------------------------------- instructions
 
