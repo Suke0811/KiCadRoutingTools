@@ -1,6 +1,6 @@
 {
  "arm": "b",
- "commit": "b8575189e53a9e5cea5f9e360a777408680aee95",
+ "commit": "f8441b4c11ffe7357cf73f2c45bb442901d17120",
  "grade": {
   "crossings": 3651,
   "floorplan_base_errors": 36,
@@ -58,7 +58,7 @@
     468
    ]
   },
-  "seconds": 8929.4,
+  "seconds": 11647.6,
   "tail": null,
   "verdict": "BETTER on the first rung that moved (failed nets 38 -> 26)"
  },
@@ -147,7 +147,7 @@
     "ref": "D22"
    }
   ],
-  "seconds": 1263.2,
+  "seconds": 2216.7,
   "seed_crossings": 3651,
   "seed_hpwl": 5042.169,
   "summary_read": true,

@@ -1,6 +1,6 @@
 {
  "arm": "b",
- "commit": "b8575189e53a9e5cea5f9e360a777408680aee95",
+ "commit": "f8441b4c11ffe7357cf73f2c45bb442901d17120",
  "grade": {
   "crossings": 4029,
   "floorplan_base_errors": 31,
@@ -123,7 +123,7 @@
     "ref": "D22"
    }
   ],
-  "seconds": 1543.6,
+  "seconds": 1662.0,
   "seed_crossings": 4029,
   "seed_hpwl": 5296.282,
   "summary_read": true,

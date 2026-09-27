@@ -50,24 +50,29 @@ It is just not a scoped probe.
 
 **Which crossings figure.** Crossings and hpwl are `render_placement`'s
 figures. `place_seed`'s own `JSON_SUMMARY` crossings are recorded beside them
-(`seed_run.seed_crossings`). They can differ: at 5712eea2e, by up to 40 on
-a/b seed 3.
+(`seed_run.seed_crossings`). At f8441b4c1 the two agree on all 20 seeds. They
+can differ: at 5712eea2e they differed by up to 40, on a/b seed 3.
 
 ## Commands
 
 ```bash
 SRC=C:/Users/rob/Documents/prive/git/KiCadRoutingTools/wk/run32/glasgow_unplaced.kicad_pcb
 D=tests/fixtures/1051/glasgow_three_arm.py
-# seeds: one process per arm
+# seeds: two processes per arm (seeds 0-2 and 3-4), each to its own --out,
+# then the arm*_s*.json records copied into three_arm/
 for arm in a b c cd; do
-  python -X utf8 $D --src $SRC --workdir W_$arm --arms $arm --probe-seeds &
+  python -X utf8 $D --src $SRC --workdir W1_$arm --out O1 --arms $arm --seeds 0 1 2 --probe-seeds &
+  python -X utf8 $D --src $SRC --workdir W2_$arm --out O2 --arms $arm --seeds 3 4 --probe-seeds &
 done; wait
-# errors-by-rule re-grade; refuses if any headline number moves
-python -X utf8 $D --regrade --arms a b c cd --reuse W_a W_b W_c W_cd
-# probes, one process per (seed, arm)
+R="W1_a W2_a W1_b W2_b W1_c W2_c W1_cd W2_cd"
+# c vs cd pose identity, then the errors-by-rule re-grade
+# (the re-grade refuses if any headline number moves)
+python -X utf8 $D --pose-identity c cd --reuse $R
+python -X utf8 $D --regrade --arms a b c cd --reuse $R
+# probes, one process per (seed, arm), arm a as OFF
 for s in 0 1 2; do for arm in b c cd; do
   python -X utf8 $D --src $SRC --workdir P_${arm}_$s --arms a $arm --seeds $s \
-      --probe-seeds $s --probe-arms $arm --reuse W_a W_$arm &
+      --probe-seeds $s --probe-arms $arm --reuse W1_a W1_$arm &
 done; done; wait
 python -X utf8 $D --table
 ```
@@ -75,19 +80,23 @@ python -X utf8 $D --table
 The full-board routes use `$D --route ARM:SEED --reuse W_x --workdir R`, then
 `$D --regrade-route ARM:SEED --reuse R`.
 
-## Results (at b8575189e)
+## Results (at f8441b4c1)
+
+All 20 arm records and `setup.json` carry commit f8441b4c1 and unplaced
+SHA-256 a6e0f99b46d7...
+(full value in `setup.json`).
 
 ### The routed outcome
 
 **Probe.** Seeds 0-2, arm a as OFF, same seed, same 202-net scope. The ladder
 is failed nets / open nets / unconnected pad pairs / vias, OFF -> ON.
 
-| seed | a -> b | a -> c |
-|---|---|---|
-| 0 | 38 -> 26 / 1 -> 1 / 28 -> 28 / 503 -> 468, better | 38 -> **22** / 1 -> 1 / 28 -> 16 / 503 -> 388, better |
-| 1 | 39 -> 40 / 0 -> 2 / 32 -> 29 / 461 -> 495, **worse** | 39 -> **13** / 0 -> 0 / 32 -> 10 / 461 -> 419, better |
-| 2 | 32 -> 44 / 1 -> 0 / 26 -> 33 / 437 -> 491, **worse** | 32 -> **15** / 1 -> 0 / 26 -> 11 / 437 -> 394, better |
-| failed nets, total | 109 -> 110 | 109 -> 50 |
+| seed | a -> b | a -> c | a -> cd |
+|---|---|---|---|
+| 0 | 38 -> 26 / 1 -> 1 / 28 -> 28 / 503 -> 468, better | 38 -> **18** / 1 -> 0 / 28 -> 11 / 503 -> 404, better | same as c on every rung |
+| 1 | 39 -> 40 / 0 -> 2 / 32 -> 29 / 461 -> 495, **worse** | 39 -> **13** / 0 -> 0 / 32 -> 10 / 461 -> 419, better | same as c on every rung |
+| 2 | 32 -> 44 / 1 -> 0 / 26 -> 33 / 437 -> 491, **worse** | 32 -> **15** / 1 -> 0 / 26 -> 11 / 437 -> 394, better | same as c on every rung |
+| failed nets, total | 109 -> 110 | 109 -> 46 | 109 -> 46 |
 
 **Arm cd.** Every cd board is pose- and lock-identical to the c board of the
 same seed: 272 footprints, x/y/rotation/side/locked all equal, seeds 0-4. This
@@ -96,17 +105,12 @@ is recorded per seed in `armcd_s*.json` as `pose_identical_to`, checked by
 
 What that comparison covers: every footprint's x, y, rotation, side and lock
 state. It does NOT compare the two board files whole; they carry per-run
-UUIDs. The router's input is the parts' poses on an otherwise identical
-unplaced board, and the probe is deterministic, so a->cd is expected to equal
-a->c.
-
-The seed-0 a->cd probe was run anyway, as a check: 38 -> 22 / 1 -> 1 /
-28 -> 16 / 503 -> 388, the same as a->c on every rung. cd seeds 1-2 were not
-probed, on that basis.
+UUIDs. At this commit cd was also probed on all three seeds, not inferred
+from the identity. Its ladder equals c's on every rung of every seed.
 
 **Full-board route.** Not re-run at this commit. Under this machine's load a
-route takes 1.5-2.5 h per board. The four routes of the previous round are
-kept in `recorded_5712eea2e/`:
+route takes 1.5-2.5 h per board. The four routes of an earlier round are kept
+in `recorded_5712eea2e/`:
 - They ran the same chain on the boards committed in 5712eea2e, not on
   these. Those boards were SEEDED at 0a2a3358e (arm c at 43eae2deb). The
   routes themselves ran at 43eae2deb, the commit their records carry.
@@ -126,32 +130,27 @@ Treat these as history, not as a measurement of these boards.
 ### Placement proxies
 
 Measured by `render_placement` at clearance 0.2 with no ignored nets. The
-human board measures 1352 crossings and 3641 mm hpwl. At this commit,
-`place_seed`'s own crossings figure equals render's on all 20 seeds.
+human board measures 1352 crossings and 3641 mm hpwl.
 
 | arm | crossings (mean +- sd, n=5) | x human | hpwl | x human |
 |---|---|---|---|---|
 | a | 3748 +- 309 | 2.77 | 5346 +- 92 | 1.47 |
 | b | 3785 +- 300 | 2.80 | 5226 +- 239 | 1.44 |
-| c | 2371 +- 78 | 1.75 | 4410 +- 94 | 1.21 |
-| cd | 2371 +- 78 (identical boards) | 1.75 | 4410 +- 94 | 1.21 |
+| c | 2387 +- 94 | 1.77 | 4425 +- 95 | 1.22 |
+| cd | 2387 +- 94 (identical boards) | 1.77 | 4425 +- 95 | 1.22 |
 
 ### Legality
 
 - Every seed of every arm exits `place_seed` 4, with a non-empty grade under
   its own intent.
 - No seed leaves a part unseated.
+- In arm b all 20 rows form on every seed. The polish releases 6-8 members
+  per seed (`rigid_released`).
+- In arm cd all 29 declared poses seat on every seed, and none is refused.
 - Under the base intent, the ERRORS on every seed are exactly `legality` 1
   plus `decap_distance` plus `decap_pin_distance`
   (`grade.floorplan_base_errors_by_rule`). `pins_to_edge` and the other decap
-  rules are warnings.
-- `seed_run.grade_errors` is `place_seed`'s own count. It is smaller than
-  `floorplan_own_errors` on some seeds, for example c seed 1: 13 vs 17.
-  - It is graded under the same intent, but `_split_pinned` leaves out every
-    error whose part is `(locked yes)` in the written board or matches
-    `must_lock`.
-  - Measured: c seed 1 excludes 4, on C1, U22 and U30 (twice), which gives
-    17 - 4 = 13. b seed 0 excludes 1, on C1: 38 - 1 = 37.
+  rules are warnings. No seed has a `zone_containment` error.
 
 | arm | errors per seed | `decap_pin_distance` | `decap_distance` |
 |---|---|---|---|
@@ -159,14 +158,34 @@ human board measures 1352 crossings and 3641 mm hpwl. At this commit,
 | b | 26-36 | 20-28 | 5-7 |
 | c / cd | 17-19 | 10-13 | 3-8 |
 
-In the previous round, b seed 2 also carried one `zone_containment` error.
-This round has none.
+**`seed_run.grade_errors`** is `place_seed`'s own count. It is smaller than
+`floorplan_own_errors` on every c/cd seed and on b seeds 0 and 3. For
+example, c seed 1 is 13 vs 17.
+- It is graded under the same intent, but `_split_pinned` leaves out every
+  error whose part is `(locked yes)` in the written board or matches
+  `must_lock`.
+- Re-measured at f8441b4c1: c seed 1 excludes 4, on C1, U22 and U30 (twice),
+  which gives 17 - 4 = 13. b seed 0 excludes 1, on C1: 38 - 1 = 37.
 
-**Why a's errors rose from 8-16 to 31-37 since 5712eea2e.** Stage 2.4 is
-opt-in now (`decaps.seat_owners_first`), and this intent does not opt in. So
-fewer ICs are placed when the decap pin stage runs: it claims 29 caps in arm a
-(81-82 before), 50-51 in b and 60 in c. The locked FPGA and buffers give c's pin
-stage its owners.
+**The decap pin stage** claims 29 caps on every a seed, 50-51 in b and 60 in
+c/cd. Stage 2.4 is opt-in (`decaps.seat_owners_first`) and this intent does
+not opt in, so arm a places no owner IC before that stage. The locked FPGA and
+buffers give c/cd's pin stage its owners. For history: at 5712eea2e, when the
+decap limit alone armed stage 2.4, arm a's errors were 8-16 and the stage
+claimed 81-82 caps.
+
+### What moved since the b8575189e recording
+
+The HEAD merge brought #1048's quench keep-out gate and #1049's py_router
+changes.
+- Every a and b seed reproduced exactly: crossings, hpwl, errors and all three
+  b probes.
+- c/cd seeds 1-4 reproduced exactly, as did their seed 1-2 probes.
+- c/cd seed 0 moved: crossings 2406 -> 2486, hpwl 4389 -> 4462, errors
+  19 -> 17. Its probe went 38 -> 22 then, and 38 -> 18 now, with unconnected
+  pairs 16 -> 11.
+- No direction changed: b vs a is still no gain on the routed outcome, and c
+  vs a is still better on every probed seed.
 
 ## Findings, plainly
 
@@ -179,13 +198,12 @@ stage its owners.
      RN5/6, RN11/12 and both buffer banks as bridges.
    - Most of the structure the human used is outside what it suggests.
 2. **(c), the key parts at the human pose, routes clearly better.**
-   - Probe failed nets 109 -> 50, better on all three seeds.
-   - Crossings are 37% lower, with a quarter of a's spread.
-3. **(cd): yes, the winning structure can now be expressed by declaration.**
-   - Declaring the 29 RN/buffer poses as `fixed_poses[]` seats all 29 at
-     b8575189e.
-   - The result is the SAME board as the file-locked arm, seed for seed.
+   - Probe failed nets 109 -> 46, better on all three seeds.
+   - Crossings are 36% lower, with under a third of a's spread.
+3. **(cd): yes, the winning structure can be expressed by declaration.**
+   - Declaring the 29 RN/buffer poses as `fixed_poses[]` seats all 29.
+   - The result is the SAME placement as the file-locked arm, seed for seed,
+     and routes identically on the three probed seeds.
    - One exception: U30. Its human pose overlaps FID8 by 1.15 x 1.15 mm, so
      stage 0 refuses it as a declaration. It stays file-locked here, and a
      brief or intent cannot place it where the human did.
-

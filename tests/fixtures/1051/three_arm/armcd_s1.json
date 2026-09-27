@@ -1,6 +1,6 @@
 {
  "arm": "cd",
- "commit": "b8575189e53a9e5cea5f9e360a777408680aee95",
+ "commit": "f8441b4c11ffe7357cf73f2c45bb442901d17120",
  "grade": {
   "crossings": 2367,
   "floorplan_base_errors": 17,
@@ -40,6 +40,30 @@
   "arm": "c",
   "differing_refs": [],
   "identical": true
+ },
+ "probe_vs_a": {
+  "exit": 0,
+  "rungs": {
+   "failed nets": [
+    39,
+    13
+   ],
+   "open nets": [
+    0,
+    0
+   ],
+   "unconnected pad pairs": [
+    32,
+    10
+   ],
+   "vias": [
+    461,
+    419
+   ]
+  },
+  "seconds": 9563.4,
+  "tail": null,
+  "verdict": "BETTER on the first rung that moved (failed nets 39 -> 13)"
  },
  "seed": 1,
  "seed_run": {
@@ -86,7 +110,7 @@
   "grade_errors": 13,
   "pad_conflicts_seeded": 0,
   "rigid_released": {},
-  "seconds": 2050.6,
+  "seconds": 2066.2,
   "seed_crossings": 2367,
   "seed_hpwl": 4393.564,
   "summary_read": true,

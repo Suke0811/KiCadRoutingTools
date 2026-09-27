@@ -1,39 +1,39 @@
 {
  "arm": "cd",
- "commit": "b8575189e53a9e5cea5f9e360a777408680aee95",
+ "commit": "f8441b4c11ffe7357cf73f2c45bb442901d17120",
  "grade": {
-  "crossings": 2406,
-  "floorplan_base_errors": 19,
+  "crossings": 2486,
+  "floorplan_base_errors": 17,
   "floorplan_base_errors_by_rule": {
-   "decap_distance": 7,
-   "decap_pin_distance": 11,
+   "decap_distance": 6,
+   "decap_pin_distance": 10,
    "legality": 1
   },
   "floorplan_base_violations_by_rule": {
-   "decap_distance": 7,
-   "decap_pin_distance": 11,
+   "decap_distance": 6,
+   "decap_pin_distance": 10,
    "decap_pin_distance_inferred": 1,
    "decap_pin_uncovered": 2,
    "decap_ungraded": 13,
    "legality": 1,
-   "pins_to_edge": 5
+   "pins_to_edge": 4
   },
-  "floorplan_own_errors": 19,
+  "floorplan_own_errors": 17,
   "floorplan_own_errors_by_rule": {
-   "decap_distance": 7,
-   "decap_pin_distance": 11,
+   "decap_distance": 6,
+   "decap_pin_distance": 10,
    "legality": 1
   },
   "floorplan_own_violations_by_rule": {
-   "decap_distance": 7,
-   "decap_pin_distance": 11,
+   "decap_distance": 6,
+   "decap_pin_distance": 10,
    "decap_pin_distance_inferred": 1,
    "decap_pin_uncovered": 2,
    "decap_ungraded": 13,
    "legality": 1,
-   "pins_to_edge": 5
+   "pins_to_edge": 4
   },
-  "hpwl": 4389.47,
+  "hpwl": 4461.76,
   "render_exit": 0
  },
  "pose_identical_to": {
@@ -46,24 +46,24 @@
   "rungs": {
    "failed nets": [
     38,
-    22
+    18
    ],
    "open nets": [
     1,
-    1
+    0
    ],
    "unconnected pad pairs": [
     28,
-    16
+    11
    ],
    "vias": [
     503,
-    388
+    404
    ]
   },
-  "seconds": 3602.5,
+  "seconds": 10774.3,
   "tail": null,
-  "verdict": "BETTER on the first rung that moved (failed nets 38 -> 22)"
+  "verdict": "BETTER on the first rung that moved (failed nets 38 -> 18)"
  },
  "seed": 0,
  "seed_run": {
@@ -107,12 +107,12 @@
    "U6",
    "U9"
   ],
-  "grade_errors": 18,
+  "grade_errors": 16,
   "pad_conflicts_seeded": 0,
   "rigid_released": {},
-  "seconds": 1471.8,
-  "seed_crossings": 2406,
-  "seed_hpwl": 4389.469,
+  "seconds": 1941.9,
+  "seed_crossings": 2486,
+  "seed_hpwl": 4461.762,
   "summary_read": true,
   "unseated": []
  },

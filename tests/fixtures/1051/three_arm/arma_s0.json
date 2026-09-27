@@ -1,6 +1,6 @@
 {
  "arm": "a",
- "commit": "b8575189e53a9e5cea5f9e360a777408680aee95",
+ "commit": "f8441b4c11ffe7357cf73f2c45bb442901d17120",
  "grade": {
   "crossings": 4203,
   "floorplan_base_errors": 31,
@@ -51,7 +51,7 @@
   "grade_errors": 31,
   "pad_conflicts_seeded": 0,
   "rigid_released": {},
-  "seconds": 996.1,
+  "seconds": 1832.3,
   "seed_crossings": 4203,
   "seed_hpwl": 5459.224,
   "summary_read": true,
