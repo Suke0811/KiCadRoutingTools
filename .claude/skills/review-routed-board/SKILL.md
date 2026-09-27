@@ -78,6 +78,13 @@ c=[x for x in v if x['type'] not in drop];\
 print(f'{len(c)} copper/connectivity violations ({len(v)-len(c)} silk/dangling ignored)')"
 ```
 
+A `shorting_items` between `<no net>` and a net, on a part's own graphic copper
+("Polygon [<no net>] of U2"), is not a short when that net is the part's own
+pad's: a SOT-89 tab its pad's net was routed onto. `check_drc.py` lists each one
+under WARNINGS as `footprint own copper` (#995). Report them as KiCad errors the
+user will see, not as shorts. A `<no net>` item with any OTHER net is a real
+short.
+
 The cross-check is one-directional (#260): kicad-cli can refute a borderline
 check_drc *near-miss* (a sub-clearance gap), but a kicad-cli "0" does NOT clear
 an *overlap/short* finding — KiCad 10 net-unifies touching copper on load, so

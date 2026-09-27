@@ -680,9 +680,10 @@ _GRAPHIC_EFFECTIVE_NETS = None  # set per check run by _build_graphic_unificatio
 
 def _build_graphic_unification(pcb_data):
     """Set the module-level map `check_drc` reads. See `graphic_effective_nets`."""
-    global _GRAPHIC_EFFECTIVE_NETS, _GRAPHIC_OWN_PAD_NETS
+    global _GRAPHIC_EFFECTIVE_NETS, _GRAPHIC_OWN_PAD_NETS, _FOOTPRINT_OWN_COPPER_NETS
     _GRAPHIC_EFFECTIVE_NETS = graphic_effective_nets(pcb_data)
     _GRAPHIC_OWN_PAD_NETS = graphic_own_pad_nets(pcb_data)
+    _FOOTPRINT_OWN_COPPER_NETS = footprint_own_copper_nets(pcb_data)
 
 
 def graphic_effective_nets(pcb_data, include_mutable=True):
@@ -940,6 +941,84 @@ def _net_tie_group_nets(fp, touched):
 
 
 _GRAPHIC_OWN_PAD_NETS = {}  # set per check run beside _GRAPHIC_EFFECTIVE_NETS
+_FOOTPRINT_OWN_COPPER_NETS = {}  # likewise; see footprint_own_copper_nets
+
+
+def footprint_own_copper_nets(pcb_data):
+    """`{footprint key: frozenset(net_ids)}` -- the nets of a footprint's OWN
+    pads that its own net-less copper touches (#995).
+
+    KiCad gives a footprint's graphic copper no net, so it grades every contact
+    between that copper and a net's copper as `shorting_items` (or `clearance`,
+    short of contact) against `<no net>` -- esp_prog's SOT-89 tab against pad
+    2's own track, and against pad 2 itself on the unrouted board. When the
+    part's copper touches exactly ONE net's pads, that contact is the pad's own
+    copper and nothing is shorted: check_drc waives it and publishes it as an
+    accepted `footprint-own-copper` row, which kicad_drc_compare subtracts from
+    KiCad's side.
+
+    Pads only, never tracks or vias: a track that touches the art cannot make
+    its own net "own" (a GND track on esp_prog's tab is a real GND short to
+    `Net-(C1-Pad1)`, which KiCad reports in the same `<no net>` form). A part
+    whose copper touches two nets' pads (an antenna fed and grounded, a solder
+    jumper, a net tie) gets no single net, so nothing on it is accepted.
+    Touch is judged at the segment endpoints, as `graphic_own_pad_nets` does.
+    """
+    out = {}
+    fps = getattr(pcb_data, 'footprints', None) or {}
+    for g in pcb_data.segments:
+        if not getattr(g, 'graphic', False) or g.net_id:
+            continue
+        owner = getattr(g, 'owner_ref', '')
+        fp = fps.get(owner) if owner else None
+        if fp is None:
+            continue
+        nets = out.setdefault(owner, set())
+        hw = g.width / 2.0
+        for pd in fp.pads:
+            # expanded against [layer]: `*.Cu` and `F&B.Cu` both count (#1046)
+            if not pd.net_id or g.layer not in expand_pad_layers(pd.layers or [], [g.layer]):
+                continue
+            if min(point_to_pad_distance(g.start_x, g.start_y, pd),
+                   point_to_pad_distance(g.end_x, g.end_y, pd)) <= hw + 1e-6:
+                nets.add(pd.net_id)
+    return {k: frozenset(v) for k, v in out.items()}
+
+
+def _footprint_own_copper_owner(seg_a, seg_b, net_a, net_b) -> str:
+    """The owning footprint's key when a WAIVED pair is a part's own net-less
+    copper against the one net its own pads give it (#995), else ''.
+
+    `seg_b` is None for a via or pad partner; only its net is read.
+    """
+    for g, other, other_net in ((seg_a, seg_b, net_b), (seg_b, seg_a, net_a)):
+        if (g is None or not getattr(g, 'graphic', False) or g.net_id
+                or not other_net or getattr(other, 'graphic', False)):
+            continue
+        owner = getattr(g, 'owner_ref', '')
+        if owner and _FOOTPRINT_OWN_COPPER_NETS.get(owner) == frozenset((other_net,)):
+            return owner
+    return ''
+
+
+def _footprint_own_copper_row(pcb_data, owner, net_id, layer, gap, pos):
+    """The accepted row `_footprint_own_copper_owner` publishes (#995).
+
+    `owner` is the file's reference (KiCad names the part that way), `net2` is
+    KiCad's own spelling of the graphic's net, and `kicad_class` is the item
+    KiCad raises: `shorting_items` at contact, `clearance` short of it.
+    """
+    fp = (getattr(pcb_data, 'footprints', None) or {}).get(owner)
+    net = pcb_data.nets.get(net_id)
+    return {'type': 'footprint-own-copper',
+            'net1': net.name if net else f'net_{net_id}',
+            'net2': '<no net>',
+            'owner': getattr(fp, 'reference', '') or owner,
+            'layer': layer,
+            'gap_mm': round(gap, 4),
+            'kicad_class': 'shorting_items' if gap <= 1e-6 else 'clearance',
+            'loc1': (float(pos[0]), float(pos[1])),
+            'accepted': 'footprint-own-copper'}
 
 
 def _graphic_own_pad_pair(seg_a, seg_b, net_a, net_b) -> bool:
@@ -3043,6 +3122,14 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             has_violation, overlap, pt1, pt2 = check_segment_overlap(seg1, seg2, _eff, clearance_margin)
             if has_violation and _graphic_pair_is_same_net(seg1, seg2, net1, net2):
                 has_violation = False
+                # #995: published, not counted. A crossing always lands here
+                # first, so the crossing waiver below needs no row of its own.
+                _own = _footprint_own_copper_owner(seg1, seg2, net1, net2)
+                if _own:
+                    _accepted_edge.append(_footprint_own_copper_row(
+                        pcb_data, _own,
+                        net2 if getattr(seg1, 'graphic', False) else net1,
+                        seg1.layer, _eff - overlap, pt1))
             if has_violation:
                 net1_name = pcb_data.nets.get(net1, None)
                 net2_name = pcb_data.nets.get(net2, None)
@@ -3246,6 +3333,11 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                 has_violation, overlap = check_via_segment_overlap(via, seg, _eff, clearance_margin)
                 if has_violation and _graphic_pair_is_same_net(seg, None, seg_net, via_net):
                     has_violation = False
+                    _own = _footprint_own_copper_owner(seg, None, seg_net, via_net)
+                    if _own:    # #995
+                        _accepted_edge.append(_footprint_own_copper_row(
+                            pcb_data, _own, via_net, seg.layer,
+                            _eff - overlap, (via.x, via.y)))
                 if has_violation:
                     via_net_name = pcb_data.nets.get(via_net, None)
                     seg_net_name = pcb_data.nets.get(seg_net, None)
@@ -3337,6 +3429,11 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             )
             if has_violation and _graphic_pair_is_same_net(seg, None, seg_net, pad_net):
                 has_violation = False
+                _own = _footprint_own_copper_owner(seg, None, seg_net, pad_net)
+                if _own:    # #995: the part's own pad against its own copper
+                    _accepted_edge.append(_footprint_own_copper_row(
+                        pcb_data, _own, pad_net, seg.layer, _eff - overlap,
+                        closest_pt or (pad.global_x, pad.global_y)))
             if has_violation:
                 pad_net_name = pcb_data.nets.get(pad_net, None)
                 seg_net_name = pcb_data.nets.get(seg_net, None)
@@ -4330,9 +4427,23 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
     _warn_ids = {id(v) for v in warnings}
     violations = [v for v in violations if id(v) not in _warn_ids]
 
+    own_copper = [a for a in _accepted_edge
+                  if a.get('accepted') == 'footprint-own-copper']
+
     def _warn_note():
-        if warnings:
-            print(f"\nWARNINGS ({len(warnings)}, not DRC failures):")
+        if warnings or own_copper:
+            print(f"\nWARNINGS ({len(warnings) + len(own_copper)}, not DRC failures):")
+            if own_copper:
+                # #995: KiCad gives a footprint's graphic copper no net, so it
+                # raises each of these in the user's own DRC run.
+                from collections import Counter as _C995
+                _by995 = _C995((a['owner'], a['net1']) for a in own_copper)
+                print(f"  footprint own copper: {len(own_copper)} contact(s) "
+                      f"between a part's net-less copper and its own pad's net "
+                      f"({', '.join(f'{o} {n} x{c}' for (o, n), c in sorted(_by995.items()))}). "
+                      f"Not a short -- the copper is that pad's -- but KiCad's DRC "
+                      f"reports them as shorting_items (clearance short of "
+                      f"contact) against <no net>, one per pair of items")
             if subcoinc_warns:
                 print(f"  sub-coincidence endpoint gap: {len(subcoinc_warns)} "
                       f"(<= {_COINC_TOL}mm -- quantization-level; treated as "
@@ -4355,7 +4466,10 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                 print(f"FAILED ({len(violations)} violations)")
         else:
             if print_summary:
-                print("OK" + (f" ({len(warnings)} same-net copper warning(s))" if warnings else ""))
+                _notes = ([f"{len(warnings)} same-net copper warning(s)"] if warnings else []) \
+                    + ([f"{len(own_copper)} footprint own-copper contact(s) KiCad reports"]
+                       if own_copper else [])
+                print("OK" + (f" ({'; '.join(_notes)})" if _notes else ""))
             return violations + _accepted_edge
 
     # Print detailed results (always for non-quiet, or when violations in quiet mode)
@@ -4900,6 +5014,9 @@ if __name__ == "__main__":
             },
             'violations': len(_real),
             'accepted': len(violations) - len(_real),
+            # #995: accepted, and each one an error in KiCad's own DRC
+            'footprint_own_copper': sum(
+                1 for v in violations if v.get('accepted') == 'footprint-own-copper'),
             'by_type': dict(_c.Counter(v.get('type') for v in _real)),
             # CONTACT, per type. `overlap_mm >= clearance` means the two pieces
             # of copper physically reach each other -- required_dist is

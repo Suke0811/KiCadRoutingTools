@@ -174,6 +174,8 @@ def run_kicad_drc(board: str):
         pos = None
         copper_pos = None
         kinds = set()
+        owners = _graphic_owners(i.get("description", "")
+                                 for i in v.get("items", []))
         for item in v.get("items", []):
             d = item.get("description", "")
             # descriptions look like: "Track [/NET] on F.Cu, length ..." or
@@ -198,8 +200,21 @@ def run_kicad_drc(board: str):
         out.append({"type": vtype, "nets": frozenset(nets),
                     "pos": pos or (0.0, 0.0),
                     "desc": v.get("description", ""),
-                    "kinds": tuple(sorted(kinds))})
+                    "kinds": tuple(sorted(kinds)),
+                    "graphic_owners": owners})
     return out, None
+
+
+# "Polygon [<no net>] of U2 on F.Cu" -- a footprint's own graphic copper. A
+# net-less PAD ("Pad 3 [<no net>] of U2") is not graphic copper and never
+# matches.
+_GRAPHIC_OWNER_RE = re.compile(r"^(?!Pad\b)\S+ \[<no net>\] of (\S+) on ")
+
+
+def _graphic_owners(descriptions):
+    """The footprints whose net-less GRAPHIC copper a KiCad item names (#995)."""
+    return tuple(sorted({m.group(1) for d in descriptions
+                         if (m := _GRAPHIC_OWNER_RE.match(d or ""))}))
 
 
 def run_check_drc(board: str, clearance: float = None, netclasses: bool = False,
@@ -269,6 +284,8 @@ def run_check_drc(board: str, clearance: float = None, netclasses: bool = False,
         # on as a false negative. Carry the flag through for the reconciler.
         if v.get("accepted"):
             item["accepted"] = v["accepted"]
+        if v.get("owner"):
+            item["owner"] = v["owner"]     # #995 footprint-own-copper
         # Board-edge reconciliation (edge family) needs the WHOLE segment, not
         # just its start: check_drc anchors segment-board-edge at the segment
         # start while kicad anchors copper_edge_clearance at the edge-closest
@@ -491,6 +508,34 @@ def _drop_net_tie_accepted(items, tie_pairs):
         else:
             kept.append(v)
     return kept, dropped
+
+
+def _drop_kicad_own_copper(kicad, cd_own):
+    """Drop the KiCad items check_drc published as `footprint-own-copper` (#995).
+
+    KiCad gives a footprint's graphic copper no net, so a track, via or pad of
+    the one net that part's own pads give its copper is reported against
+    `<no net>`: esp_prog's SOT-89 tab and pad 2's `Net-(C1-Pad1)`. Matched by
+    the part KiCad names and that net, not by position -- KiCad anchors an
+    item at the item, not at the contact. A different net on the same part's
+    copper (a real short, which KiCad reports in the same form) matches no
+    accepted pair and stays kicad_only. Returns (remaining_kicad, n_dropped).
+    """
+    accepted = {(c["owner"], n) for c in cd_own if c.get("owner")
+                for n in c["nets"] if n != "<no net>"}
+    if not accepted:
+        return kicad, 0
+    keep, dropped = [], 0
+    for kv in kicad:
+        nets = kv.get("nets") or frozenset()
+        if (kv.get("type") in ("shorting_items", "clearance")
+                and len(nets) == 2 and "<no net>" in nets):
+            (other,) = nets - {"<no net>"}
+            if any((o, other) in accepted for o in kv.get("graphic_owners", ())):
+                dropped += 1
+                continue
+        keep.append(kv)
+    return keep, dropped
 
 
 def _web_min_connection(cfg: dict):
@@ -876,6 +921,10 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
         "kicad": None,      # KiCad has no via-in-paste check
     }
     cd = [c for c in cd if c["type"] not in CD_VIA_PASTE_TYPES]
+    # #995: a part's own copper against its own pad's net -- its own channel,
+    # never the edge family's `intentional` count.
+    cd_own = [c for c in cd if c.get("accepted") == "footprint-own-copper"]
+    cd = [c for c in cd if c.get("accepted") != "footprint-own-copper"]
     cd_accepted = [c for c in cd if c.get("accepted")]
     cd = [c for c in cd if not c.get("accepted")]
     # Symmetric baseline subtraction (#405): drop the input's own check_drc
@@ -888,7 +937,8 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
             cd_base = run_check_drc(baseline, clearance, netclasses=not bool(clearance))
         except Exception:  # noqa: BLE001 -- best-effort, tolerate a bad input
             cd_base = None
-        cd_base = [c for c in (cd_base or []) if c["type"] not in CD_VIA_PASTE_TYPES]
+        cd_base = [c for c in (cd_base or []) if c["type"] not in CD_VIA_PASTE_TYPES
+                   and c.get("accepted") != "footprint-own-copper"]
         cd, cd_pre = _subtract_baseline(cd, cd_base or [])
     kicad_intentional = checkdrc_intentional = 0
     # Static footprint-geometry conditions (#450 kbic65): a hole_clearance
@@ -928,6 +978,7 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
         cd, c_tie = _drop_net_tie_accepted(cd, tie_pairs)
         kicad_intentional += k_tie
         checkdrc_intentional += c_tie
+    kicad, kicad_own = _drop_kicad_own_copper(kicad, cd_own)
     matched, kicad_only, cd_only = match(kicad, cd)
     # Part B: collapse the board-edge anchor double-count (same edge violation
     # anchored differently by each engine). One-sided edge divergence survives.
@@ -963,6 +1014,10 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
             "check_drc": len(cd), "checkdrc_preexisting": cd_pre,
             "kicad_intentional_edge": kicad_intentional,
             "checkdrc_intentional_edge": checkdrc_intentional,
+            # #995: KiCad items on a part's own copper and its own pad's net,
+            # and the check_drc contacts that accepted them
+            "kicad_own_copper": kicad_own,
+            "checkdrc_own_copper": len(cd_own),
             "matched": n_matched, "kicad_only": len(kicad_only),
             "checkdrc_only": len(cd_only),
             "pairs_both": len(kpairs & cpairs),
@@ -984,6 +1039,7 @@ def compare_board_data(board: str, label: str = None, clearance: float = None,
 # Summary keys the CLI callers persist (item lists + verdict are print-only).
 _SUMMARY_KEYS = ("board", "kicad", "kicad_preexisting", "check_drc",
                  "kicad_intentional_edge", "checkdrc_intentional_edge",
+                 "kicad_own_copper", "checkdrc_own_copper",
                  "matched", "kicad_only", "checkdrc_only",
                  "pairs_kicad_only", "pairs_checkdrc_only",
                  "kicad_connection_width", "connection_width_min",
@@ -1006,6 +1062,9 @@ def compare_board(board: str, label: str = None, clearance: float = None,
     ie = data.get("kicad_intentional_edge", 0) or data.get("checkdrc_intentional_edge", 0)
     ie_note = (f" [#408: -{data.get('kicad_intentional_edge', 0)} kicad / "
                f"-{data.get('checkdrc_intentional_edge', 0)} check_drc intentional edge]") if ie else ""
+    if data.get("kicad_own_copper") or data.get("checkdrc_own_copper"):
+        ie_note += (f" [#995: -{data.get('kicad_own_copper', 0)} kicad / "
+                    f"-{data.get('checkdrc_own_copper', 0)} check_drc footprint own copper]")
     # #406 min copper web: separate class, not matched against check_drc.
     cw = data.get("kicad_connection_width")
     cw_min = data.get("connection_width_min")

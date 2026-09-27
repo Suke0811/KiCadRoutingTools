@@ -436,7 +436,12 @@ harmless.
    Record the kicad count and any KICAD-ONLY items in the results JSON
    (`drc.kicad_violations`, `drc.kicad_only`); KICAD-ONLY shorting_items are a
    red-alert finding (check_drc false negative -- the #324 offset-pad class
-   shipped real shorts on boards check_drc graded clean). Two caveats: a
+   shipped real shorts on boards check_drc graded clean). The one exception is
+   KiCad's `<no net>` item on a part's own graphic copper against the net of
+   that part's own pad (a SOT-89 tab its pad's net routes onto, #995): not a
+   short, listed by check_drc under WARNINGS as `footprint own copper`, and
+   reported by the cross-check on its own `#995` channel. A `<no net>` item on
+   any other net stays KICAD-ONLY and is real. Two caveats: a
    kicad-cli "0" does NOT clear an *overlap/short* finding (KiCad 10
    net-unifies touching copper on load -- verified minimal repro, #260/#264;
    check_drc stays authoritative for touching-copper overlaps), and

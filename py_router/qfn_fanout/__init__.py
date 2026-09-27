@@ -1793,7 +1793,10 @@ def main():
             # #962: via-in-paste rows (and their accepted protected/inherited
             # twins) are a fab-protection finding, not a clearance graze; a
             # fanout's own stamped via-in-pad would otherwise inflate `total`.
-            _viols = [_v for _v in _viols if _v.get('type') != 'via-in-paste']
+            # #995: an accepted footprint-own-copper contact is not a graze
+            # either -- published by check_drc, counted by nobody.
+            _viols = [_v for _v in _viols
+                      if _v.get('type') not in ('via-in-paste', 'footprint-own-copper')]
             _by = {}
             for _v in _viols:
                 _by[_v['type']] = _by.get(_v['type'], 0) + 1
