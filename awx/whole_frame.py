@@ -143,7 +143,7 @@ def build(ctx, dest, _trunk=frozenset()):
     F.bend = {n: tuple(map(float, ctx.ends[n][1])) for n in F.M}
     SB = grown(box_of(pcb, src), F.tooth.values())
     DB = grown(box_of(pcb, dest), F.bend.values())
-    F.SB = SB
+    F.SB, F.DB = SB, DB                     # the arrays' pad boxes, grown to the line their stubs end on
     # ---- the source side: a tooth on the far (west) face would have to go round the source
     tf = {n: face(F.tooth[n], SB) for n in F.M}
     far = sorted(n for n in F.M if tf[n] == 'W')
@@ -157,7 +157,6 @@ def build(ctx, dest, _trunk=frozenset()):
     back = math.hypot(SB[2] - SB[0], SB[3] - SB[1]) / 2 + bd.LPITCH
     fwd = math.hypot(DB[2] - DB[0], DB[3] - DB[1]) / 2 + bd.LPITCH
     F.spine = cr.Spine([tuple(ca - d * back), tuple(cb + d * fwd)])
-    F.st = {n: tuple(map(float, F.spine.project_pt(F.tooth[n]))) for n in F.M}
     F.mid = {n: in_frame(F.spine, ctx.paths[n]) for n in F.M}
     # ---- the destination side: classes, the far face's cut, the berths' order
     x0, y0, x1, y1 = DB
@@ -242,6 +241,24 @@ def build(ctx, dest, _trunk=frozenset()):
             m = _pairs.mid(tips[0], tips[1])
             r = _pairs.end_run(ctx.cfg, tips, e) + (_pairs.turn_straight_steps(ctx.cfg) + 1) * ctx.cfg.grid_step
             F.land[n] = (float(m[0] + e[0] * r), float(m[1] + e[1] * r))
+    # ...and each lane's START, the same at its tooth: the tooth, or for a pair whose stub stands across the trunk (a
+    # tooth on the source's side face) the end of its end run out of its tooth and the run its turn onto the trunk
+    # takes -- the lanes launched farther along that face pass outside it there, as a ring's lanes pass outside a ring
+    # pair's landing. Started at its tooth, the pair had no room to turn: the lanes from the face's far part passed
+    # 0.36 to 0.58 mm out, and it folded between them and its own teeth (K35 and K41: SCK on the source's south face)
+    F.start = dict(F.tooth)
+    t0 = tuple(float(v) for v in F.spine.d[0])
+    for n in [n for n in prs if n in F.M]:
+        e = ctx.tooth_dir.get(n)
+        if e is None:
+            continue
+        el = math.hypot(*e)
+        if el > 1e-9 and abs(e[0] * t0[0] + e[1] * t0[1]) < math.sqrt(0.5) * el:
+            tips = ctx.pair_ends[n][0]
+            m = _pairs.mid(tips[0], tips[1])
+            r = _pairs.end_run(ctx.cfg, tips, e) + (_pairs.turn_straight_steps(ctx.cfg) + 1) * ctx.cfg.grid_step
+            F.start[n] = (float(m[0] + e[0] / el * r), float(m[1] + e[1] / el * r))
+    F.st = {n: tuple(map(float, F.spine.project_pt(F.start[n]))) for n in F.M}
     F.launch = sorted(F.M, key=lambda n: perim_src(F.tooth[n]))
     F.final = sorted(F.M, key=lambda n: F.P[n])
     # ---- the rings

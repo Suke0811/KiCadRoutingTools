@@ -112,26 +112,9 @@ def layers_at(n, u):
     return {layer_of(n, u)}
 
 
-def pbox(ref, m):
-    f_ = ctx.pcb.footprints[ref]
-    xs = [p.global_x for p in f_.pads]; ys = [p.global_y for p in f_.pads]
-    return (min(xs) - m, min(ys) - m, max(xs) + m, max(ys) + m)
-
-
-def term_margin(ref, pts):
-    """how far outside an array's pad box its lanes' terminals sit (the box the stubs end on): the median
-    distance of the terminals from the pads' bounding box -- read off the board, not assumed"""
-    f_ = ctx.pcb.footprints[ref]
-    xs = [p.global_x for p in f_.pads]; ys = [p.global_y for p in f_.pads]
-    ds = [max(min(xs) - x, x - max(xs), min(ys) - y, y - max(ys)) for (x, y) in pts]
-    ds = [d for d in ds if d > 0]
-    return float(np.median(ds)) if ds else 0.0
-
-
 DST_REF = os.environ['DEST']
 SRC_REF = collections.Counter(ctx.src_ref[n] for n in M).most_common(1)[0][0]
-BOX = [pbox(SRC_REF, term_margin(SRC_REF, [ctx.ends[n][0] for n in M])),
-       pbox(DST_REF, term_margin(DST_REF, [ctx.ends[n][1] for n in M]))]
+BOX = [Fr.SB, Fr.DB]       # the arrays' pad boxes, grown by how far outside them the terminals sit (whole_frame)
 log(f'pad boxes grown by the terminals: {[round(b[2] - b[0], 3) for b in BOX]}')
 BX0, BY0, BX1, BY1 = ctx.pcb.board_info.board_bounds
 EDGE = (float(getattr(ctx.cfg, 'board_edge_clearance', 0.0) or 0.0) or ctx.cfg.clearance) + TW / 2
@@ -189,15 +172,8 @@ for ref, fp in ctx.pcb.footprints.items():
 for (ref, Ls), bxs in ISL.items():
     STATIC.append((min(b[0] for b in bxs), min(b[1] for b in bxs), max(b[2] for b in bxs), max(b[3] for b in bxs),
                    set(Ls), ref))
-mem = {ctx.byname[n][0] for n in M} | {ctx.byname[leg][0] for n in M for leg in prs.get(n, ()) if leg in ctx.byname}
-for s_ in ctx.base_segments:
-    if s_.net_id in mem:
-        continue
-    for (x, y) in ((s_.start_x, s_.start_y), (s_.end_x, s_.end_y)):
-        if any(((abs(x - b[0]) < TW / 6 or abs(x - b[2]) < TW / 6) and b[1] - TW / 6 <= y <= b[3] + TW / 6)
-               or ((abs(y - b[1]) < TW / 6 or abs(y - b[3]) < TW / 6) and b[0] - TW / 6 <= x <= b[2] + TW / 6) for b in BOX):
-            r = s_.width / 2
-            STATIC.append((x - r, y - r, x + r, y + r, {F(s_.layer)}, 'tooth ' + ctx.pcb.nets[s_.net_id].name.split('/')[-1]))
+for (x, y, r, L, nm) in whole_ctx.foreign_teeth(ctx, M, BOX):      # the teeth of the nets outside the bus
+    STATIC.append((x - r, y - r, x + r, y + r, {F(L)}, 'tooth ' + nm))
 
 
 # every other lane's tooth and berth END on the box line, on its stub's layer (a pair: both legs' ends)
@@ -344,6 +320,10 @@ for n in M:
     s0, o0 = Fr.st[n]
     f0 = face_of(Fr.tooth[n], BOX[0])
     hold0 = (hold_pair(ctx.pair_ends[n][0]) if n in prs else HOLD) if f0 in ('E', 'W') else 0
+    if Fr.start[n] != Fr.tooth[n]:
+        # a pair STARTED at the end of its end run out of a side-face tooth (whole_frame) leaves it along the trunk,
+        # held over its turn's run and the length the audit reads a turn on, as a ring pair arrives at its landing
+        hold0 = max(HOLD, int(math.ceil((TURN_RUN + TW + CL) / G)) + 1)
     ms, mo = ms_of(n)
     ref = (lambda s, ms=ms, mo=mo: float(np.interp(s, ms, mo)))
     if n in cls:
@@ -591,7 +571,12 @@ def build_and_solve(sides, prev=None):
             ka, kb = (kc, kc2) if a == n else (kc2, kc)
             le([(var[(f, a, ka)], 1.0), (var[(f, b, kb)], -1.0)], -h, ('viavia', f, km, a, b))
     via_at = {(f, n, kc) for (f, n, cu, kc) in vias}
-    # bounds: board, pad boxes (a via further off), the interval nearest the reference
+    # bounds: board, pad boxes (a via further off), the interval the reference lies in -- and where it lies in none
+    # (it cuts a box's corner), the interval the lane was in a column before, which it cannot leave across the box
+    # (K41: at the column clipping the source's south-east corner, the interval nearest the south-face lanes'
+    # references was the one NORTH of the box, and six lanes were bounded 2.7 to 3.9 mm off where they ran); the
+    # nearest one only with neither
+    held_iv = {}
     for (f, n, k), j in var.items():
         v = PIECE[(f, n)]
         s_ = k * G
@@ -607,7 +592,15 @@ def build_and_solve(sides, prev=None):
         if not iv:
             continue
         ref = v['ref'](s_)
-        lo_, hi_ = min(iv, key=lambda q: 0 if q[0] <= ref <= q[1] else min(abs(ref - q[0]), abs(ref - q[1])))
+        was = held_iv.get((f, n))
+        inside = [q for q in iv if q[0] <= ref <= q[1]]
+        if inside:
+            lo_, hi_ = inside[0]
+        elif was is not None and any(min(q[1], was[1]) > max(q[0], was[0]) for q in iv):
+            lo_, hi_ = max(iv, key=lambda q: min(q[1], was[1]) - max(q[0], was[0]))
+        else:
+            lo_, hi_ = min(iv, key=lambda q: min(abs(ref - q[0]), abs(ref - q[1])))
+        held_iv[(f, n)] = (lo_, hi_)
         le([(j, -1.0)], -lo_, ('bound', f, k, n, 'lo'))
         le([(j, 1.0)], hi_, ('bound', f, k, n, 'hi'))
     # terminals, holds, slope cap, travel, bends
@@ -642,6 +635,21 @@ def build_and_solve(sides, prev=None):
                 # where they conflicted a lane zigzagged (SDQS0 at K28, north-east then south-east a column apart)
                 le([(b, 1.0), (a, -2.0), (p, 1.0)], G, ('turn', f, k, n))
                 le([(b, -1.0), (a, 2.0), (p, -1.0)], G, ('turn', f, k, n))
+            # ...and a PAIR 45 degrees per TURNING RUN: the pair router turns 45 degrees, then runs its turning radius
+            # straight (pairs.turn_straight_steps) before it turns again, so two of its segments W_TURN columns apart
+            # differ by 45 degrees at most. An angle is not linear in the offsets: the bound is the slope span of 45
+            # degrees centred on the two segments' mean heading in the first pass -- a slope's change is a large turn
+            # near the spine's way and a small one across it (bounded in slope, a pair sweeping steeply onto a ring
+            # swung its whole bundle 2.7 mm wide, K35 SCK). Turning 45 degrees a column, a pair was bent round other
+            # lanes' vias in V's of three columns, 110 to 134 degrees in 0.3 mm: folds the pair router cannot lay
+            # (K41 SDQS1)
+            if n in prs and prev is not None and k - W_TURN >= v['k0']:
+                q0, q1 = var[(f, n, k - W_TURN)], var[(f, n, k - W_TURN + 1)]
+                th = sum(math.atan((prev.get(inv[y1], 0.0) - prev.get(inv[y0], 0.0)) / G) for (y1, y0) in ((b, a), (q1, q0))) / 2
+                lo_t, hi_t = th - math.pi / 8, th + math.pi / 8
+                allow = 2 * K_MAX if max(abs(lo_t), abs(hi_t)) >= math.atan(2 * K_MAX) else min(math.tan(hi_t) - math.tan(lo_t), 2 * K_MAX)
+                le([(b, 1.0), (a, -1.0), (q1, -1.0), (q0, 1.0)], allow * G, ('pturn', f, k, n))
+                le([(b, -1.0), (a, 1.0), (q1, 1.0), (q0, -1.0)], allow * G, ('pturn', f, k, n))
     # a PAIR moves through its dives as the pair router does: straight for its straight run either side of each change
     # (no turn at or near its via), and where a dive falls within its end hold, that run and a turn of its fixed end,
     # straight from the end right through it -- its sideways shift onto its terminal comes before the dive, never
@@ -775,6 +783,25 @@ for _f in [x for x in os.environ.get('GEO_FLIPS_FROM', '').split(',') if x]:
 WIN = 12 * bd.LANE_MIN                  # an island concerns the lanes within this of it (first pass)
 
 
+def island_reach(f, sa, sb, oa, ob):
+    """[(lo, hi) of the free intervals holding an island, per column] where its sides are measured: its own span -- or,
+    where it lies in no free interval there (a stub ending on an array's box line, inside the box's margin), the reach
+    of its rows past that span, where the lanes meet it beyond the box (K41: SDQ5's stub on the source's east face;
+    judged from the one interval within WIN of it, the north, it forced SCK and SBA0 from the south over 3.7 mm).
+    None when it lies in none either way"""
+    gx = LANE_ST + max(hw.values())
+    for lo, hi in ((sa, sb), (sa - gx, sb + gx)):
+        out = []
+        for s_ in np.arange(lo, hi + 1e-9, G):
+            iv = intervals(f, FR[f]['sp'], float(s_), round(B_M, 4))
+            around = [q for q in iv if q[0] <= oa + 1e-6 and q[1] >= ob - 1e-6]
+            if around:
+                out.append((min(q[0] for q in around), max(q[1] for q in around)))
+        if out:
+            return out
+    return None
+
+
 def static_sides(sol):
     out = []
     boxes = {}
@@ -801,13 +828,16 @@ def static_sides(sol):
             if own is not None or sb < 0:
                 continue
             below_ok = above_ok = True
-            for s_ in np.arange(sa, sb + 1e-9, G):
-                iv = intervals(f, FR[f]['sp'], float(s_), round(B_M, 4))
-                around = [q for q in iv if q[0] <= oa + 1e-6 and q[1] >= ob - 1e-6] or \
-                         [q for q in iv if q[1] >= oa - WIN and q[0] <= ob + WIN]
-                if not around:
-                    continue
-                lo_i, hi_i = min(q[0] for q in around), max(q[1] for q in around)
+            reach = island_reach(f, sa, sb, oa, ob)
+            if reach is None:
+                # in no free interval anywhere its rows reach: the intervals within WIN of it
+                reach = []
+                for s_ in np.arange(sa, sb + 1e-9, G):
+                    iv = intervals(f, FR[f]['sp'], float(s_), round(B_M, 4))
+                    around = [q for q in iv if q[1] >= oa - WIN and q[0] <= ob + WIN]
+                    if around:
+                        reach.append((min(q[0] for q in around), max(q[1] for q in around)))
+            for lo_i, hi_i in reach:
                 below_ok &= (oa - lo_i) >= need
                 above_ok &= (hi_i - ob) >= need
             if below_ok != above_ok:
@@ -848,14 +878,10 @@ def static_sides(sol):
             um = FR[f]['u'](kmid * G)
             room = {-1: math.inf, 1: math.inf}
             span = [-math.inf, math.inf]                    # the free interval the island stands in
-            for s_ in np.arange(sa, sb + 1e-9, G):
-                iv = intervals(f, FR[f]['sp'], float(s_), round(B_M, 4))
-                around = [q for q in iv if q[0] <= oa + 1e-6 and q[1] >= ob - 1e-6]
-                if around:
-                    lo_i, hi_i = min(q[0] for q in around), max(q[1] for q in around)
-                    room[-1] = min(room[-1], oa - lo_i)
-                    room[1] = min(room[1], hi_i - ob)
-                    span = [max(span[0], lo_i), min(span[1], hi_i)]
+            for lo_i, hi_i in island_reach(f, sa, sb, oa, ob) or ():
+                room[-1] = min(room[-1], oa - lo_i)
+                room[1] = min(room[1], hi_i - ob)
+                span = [max(span[0], lo_i), min(span[1], hi_i)]
             if f != 'T':
                 # on a RING the lanes run the ring's standoff out from the destination's face (its pairs' landings
                 # lie that deep): the room between the island and the face is that much less (K35 C12 at DU1's south
@@ -1015,6 +1041,15 @@ for n in M:
                 # turning radius apart (TURN_RUN either side of the landing), not one 90-degree corner the polish
                 # then cut (K28 SDQS1 folded 113 degrees)
                 _chamfer(pieces, xy_all, TURN_RUN)
+        # ...and at its tooth: a pair started past its end run (whole_frame) runs straight out of its tooth to its
+        # start and turns there onto its lane, the same two bends
+        sx, sy = Fr.start[n]
+        if math.hypot(tx - sx, ty - sy) > 1e-9:
+            a = pieces[0]; pieces[0] = (sx, sy, a[2], a[3], a[4]); xy_all[0] = (sx, sy)
+            pieces.insert(0, (tx, ty, sx, sy, a[4])); xy_all.insert(0, (tx, ty))
+            rp, rx = [(q[2], q[3], q[0], q[1], q[4]) for q in reversed(pieces)], xy_all[::-1]
+            _chamfer(rp, rx, TURN_RUN)
+            pieces[:] = [(q[2], q[3], q[0], q[1], q[4]) for q in reversed(rp)]; xy_all[:] = rx[::-1]
     # reversing vertices next to a short side (mapping artifacts inside spine corners, at a replaced terminal):
     # dropped over the finished line, while the two sides share a layer
     changed = True

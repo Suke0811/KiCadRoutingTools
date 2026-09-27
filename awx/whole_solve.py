@@ -191,30 +191,30 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
         VCUTS += [{'lane': n, 'u': u_, 'w': L_DIVE + turn_room(d_)} for u_, d_ in turns]
     if len(VCUTS) > NVC0:
         print(f'   built-in via cuts at the pairs\' known turns: {len(VCUTS) - NVC0}')
-    # ...and at the OTHER PARTS' PADS on the trunk: a lane whose reference (its taut path, whole_frame.ref) passes within
-    # a via's reach of one -- the pad's half size, a via's copper and clearance, a pair's barrel offset, and a lane pitch
-    # the geometry may move it -- keeps its changes off that pad's stretch (K35: SDQS0's dive planned beside C5's pad,
-    # 0.127 from it where 0.242 was asked, and the geometry folded the pair round it)
+    # ...and at the OTHER PARTS' PADS on the trunk and the TEETH of the nets outside the bus (whole_ctx.foreign_teeth:
+    # their stubs' ends on the arrays' box lines): a lane whose reference (its taut path, whole_frame.ref) passes within
+    # a via's reach of one -- its half size, a via's copper and clearance, a pair's barrel offset, and a lane pitch the
+    # geometry may move it -- keeps its changes off that stretch (K35: SDQS0's dive planned beside C5's pad, 0.127 from
+    # it where 0.242 was asked, and the geometry folded the pair round it). A PAIR's stretch is longer by its dive's
+    # straight run (L_DIVE) either side: its lane bends round the item, and the pair router neither turns at its via
+    # nor within that run of one (K41: SDQS0's dive planned 0.6 past its tooth, where its lane bent round SDQ4's tooth
+    # beside it, turned 75 degrees at the via)
     NVC1 = len(VCUTS)
-    s_lo, s_hi = min(entry.values()), max(tend.values())
     off_ = {n: (_pairs.dive_offset(ctx.cfg, _pairs.pitch(TRK) / 2) if n in prs else 0.0) for n in M}
-    for ref_, fp_ in ctx.pcb.footprints.items():
-        if ref_ in (Fr.src, Fr.dst):
-            continue
-        for pd_ in fp_.pads:
-            if pd_.pad_type == 'np_thru_hole' or not any(L.endswith('.Cu') for L in pd_.layers):
+    items = [((pd_.global_x, pd_.global_y), max(pd_.size_x, pd_.size_y) / 2)
+             for ref_, fp_ in ctx.pcb.footprints.items() if ref_ not in (Fr.src, Fr.dst) for pd_ in fp_.pads
+             if pd_.pad_type != 'np_thru_hole' and any(L.endswith('.Cu') for L in pd_.layers)]
+    items += [((x_, y_), r_) for (x_, y_, r_, _L, _nm) in whole_ctx.foreign_teeth(ctx, M, (Fr.SB, Fr.DB))]
+    for (px_, py_), rp_ in items:
+        sp_, op_ = (float(v_) for v_ in spine.project_pt((px_, py_)))
+        for n in M:
+            w_ = rp_ + VIA / 2 + CLR + (L_DIVE if n in prs else 0.0)
+            if not (entry[n] < sp_ + w_ and sp_ - w_ < tend[n]):       # the stretch reaches into the trunk's route
                 continue
-            sp_, op_ = (float(v_) for v_ in spine.project_pt((pd_.global_x, pd_.global_y)))
-            if not (s_lo < sp_ < s_hi):
-                continue
-            rp_ = max(pd_.size_x, pd_.size_y) / 2
-            for n in M:
-                if not (entry[n] < sp_ < tend[n]):
-                    continue
-                if abs(whole_frame.ref(Fr, n, sp_) - op_) < rp_ + VIA / 2 + CLR + off_[n] + PITCH:
-                    VCUTS.append({'lane': n, 'u': sp_, 'w': rp_ + VIA / 2 + CLR})
+            if abs(whole_frame.ref(Fr, n, sp_) - op_) < rp_ + VIA / 2 + CLR + off_[n] + PITCH:
+                VCUTS.append({'lane': n, 'u': sp_, 'w': w_})
     if len(VCUTS) > NVC1:
-        print(f'   built-in via cuts at other parts\' pads on the trunk: {len(VCUTS) - NVC1}')
+        print(f'   built-in via cuts at other parts\' pads and the teeth outside the bus: {len(VCUTS) - NVC1}')
     # ---- the braid rule over every triple
     nt = 0
     for i, j, k in itertools.combinations(Ln, 3):
@@ -275,10 +275,13 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
             if k:
                 m.Add(cs_[k] >= cs_[k - 1] + Q(Dv[n])).OnlyEnforceIf(act[k]); m.AddImplication(act[k], act[k - 1])
         # a change's room from each of its lane's crossings, along s: a STAYER's via is passed by a steep mover at an
-        # angle (VR_STAY x the room), a MOVER's via sits on its own steep track (the room itself)
-        h_st, h_mv = QU(VR_STAY * Dv[n] / 2), QU(Dv[n] / 2)                # a room rounds UP to the grid
+        # angle (VR_STAY x the room), a MOVER's via sits on its own steep track (the room itself) -- the room of both
+        # lanes there, a PAIR crossing the via's lane the wider by its second leg: sized by the via's lane alone, SDQ13's
+        # via stood 0.40 before SDQS1 swept across it, and the pair folded round it twice (K41)
         before = {}
         for key in ev[n]:
+            wide = Dv[n] + (_pairs.pitch(TRK) if (key[1] if key[0] == n else key[0]) in prs else 0.0)
+            h_st, h_mv = QU(VR_STAY * wide / 2), QU(wide / 2)               # a room rounds UP to the grid
             stay = MV[key].Not() if key[0] == n else MV[key]
             bits = []
             for k in range(KMAX):

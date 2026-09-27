@@ -95,6 +95,26 @@ def part_islands(ctx, skip=()):
     return {r: '+'.join(sorted(members[root(r)])) for r in up}
 
 
+def foreign_teeth(ctx, M, boxes):
+    """the TEETH of the nets outside the bus M: each end of their stubs (ctx.base_segments) on an array's box line
+    (`boxes`: whole_frame's pad boxes, grown to the line the stubs end on), as (x, y, the track's half width, its
+    layer, the net's short name) -- copper a lane passes as it leaves its own tooth, which the geometry keeps its
+    lanes off as it does a part (whole_geo) and the solve its changes (whole_solve)"""
+    import braid as bd
+    prs = getattr(ctx, 'pairs', {}) or {}
+    tol = bd.TRACK / 6
+    mem = {ctx.byname[n][0] for n in M} | {ctx.byname[leg][0] for n in M for leg in prs.get(n, ()) if leg in ctx.byname}
+    out = []
+    for s_ in ctx.base_segments:
+        if s_.net_id in mem:
+            continue
+        for (x, y) in ((s_.start_x, s_.start_y), (s_.end_x, s_.end_y)):
+            if any(((abs(x - b[0]) < tol or abs(x - b[2]) < tol) and b[1] - tol <= y <= b[3] + tol)
+                   or ((abs(y - b[1]) < tol or abs(y - b[3]) < tol) and b[0] - tol <= x <= b[2] + tol) for b in boxes):
+                out.append((x, y, s_.width / 2, s_.layer, ctx.pcb.nets[s_.net_id].name.split('/')[-1]))
+    return out
+
+
 def stub_dir(ctx, net, pt, layer):
     """the direction of net's stub's LAST segment at its free end pt ON THE LANE'S LAYER, pointing out of the stub (the
     way a lane leaves that end); None when the stub reaches pt on the other layer -- it ends in a via there, and the

@@ -320,6 +320,8 @@ class Ends:
                 self.fb_pairs.append((a_['lane'], b_['lane'], a_['end'], ma, mb))
         self._xroute = {}          # the exact route per state (exact_route)
         self.pool = {}             # every search's result: its state -> its objective by the estimate
+        self._memo = {}            # every state scored: its (objective, parts) -- the search asks a third of them again
+        self._perim = {}           # a point's place round a grown box: one lane's move rarely moves the box
 
     def ride(self, lane, npair, ti, bi):
         """a lane's ride in mm, each leg's: round the destination and the source from its tooth to its berth
@@ -344,7 +346,16 @@ class Ends:
 
     # ---- the objective
     def score(self, state, exact=False):
-        """(objective, parts) of a state {lane: (tooth option index, berth option index)}"""
+        """(objective, parts) of a state {lane: (tooth option index, berth option index)}: each state scored once
+        (the local search asks a third of its states again -- an ejection's winner is scored in the min and then again,
+        a sweep revisits the kicks' states)"""
+        key = (tuple(state[l_] for l_, _lg in self.lanes), exact)
+        got = self._memo.get(key)
+        if got is None:
+            got = self._memo[key] = self._score(state, exact)
+        return got
+
+    def _score(self, state, exact=False):
         import whole_frame
         T, B = self.T, self.B
         lanes = [l_ for l_, _lg in self.lanes]
@@ -364,9 +375,26 @@ class Ends:
         # the orders, as the whole frame reads them (whole_frame.build)
         SB = whole_frame.grown(self.sbox, [to[l_][1] for l_ in lanes])
         DB = whole_frame.grown(self.dbox, [bo[l_][1] for l_ in lanes])
-        cut = whole_frame.cut([bo[l_][1][1] for l_ in lanes if whole_frame.face(bo[l_][1], DB) == 'E'], DB[1], DB[3])
-        psrc = lambda p: whole_frame.perim_s(p, SB)
-        pdst = lambda p: whole_frame.perim_d(p, DB, cut)
+        pc = self._perim
+
+        def dface(p):
+            k = ('face', p, DB)
+            if k not in pc:
+                pc[k] = whole_frame.face(p, DB)
+            return pc[k]
+        cut = whole_frame.cut([bo[l_][1][1] for l_ in lanes if dface(bo[l_][1]) == 'E'], DB[1], DB[3])
+
+        def psrc(p):
+            k = (p, SB)
+            if k not in pc:
+                pc[k] = whole_frame.perim_s(p, SB)
+            return pc[k]
+
+        def pdst(p):
+            k = (p, DB, cut)
+            if k not in pc:
+                pc[k] = whole_frame.perim_d(p, DB, cut)
+            return pc[k]
         ps = {l_: psrc(to[l_][1]) for l_ in lanes}
         pd = {l_: pdst(bo[l_][1]) for l_ in lanes}
         tl = {l_: to[l_][2] for l_ in lanes}
@@ -509,7 +537,7 @@ class Ends:
         # mm trunk, the solve found no plan)
         dcls = {}
         for l_ in lanes:
-            f_ = whole_frame.face(bo[l_][1], DB)
+            f_ = dface(bo[l_][1])
             dcls[l_] = ('N' if bo[l_][1][1] < cut else 'S') if f_ == 'E' else f_
         gT = max(DB[0] - SB[2], _LANE_PITCH)
         xT = collections.Counter()

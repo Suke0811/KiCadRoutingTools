@@ -185,6 +185,17 @@ def full_move(m):
         # asks held (measured K41 122 -> 96 with the planner's own
         # conflict test made complete)
         d['legs'] = [(tuple(a), tuple(b), L) for (a, b, L) in m.legs]
+    # a dog-bone whose via stands PAST its ball's diagonal cells (a stub along the ball's own line, or one that bends
+    # into a gap first) carries that stub as the engine's walked `path` [ball, elbow, .., site]: the engine takes a
+    # caller's site only from an adjacent cell or reached by such a path (underpad._dogbone_path_valid), and otherwise
+    # put the via in a diagonal cell of its own and walked the run from there (K15 SDQ15, a via planned 1.6 mm into
+    # DU1's empty band: laid at the diagonal, its B run wound 3 mm round the balls and shut SDQS1N out). A plain
+    # dog-bone's stub is ONE 45-degree leg into its diagonal cell, and carries none
+    if m.kind == 'dogbone' and m.site is not None and m.legs:
+        stub = [(a, b) for (a, b, L) in m.legs if L != m.layer]
+        if stub and math.hypot(m.site[0] - stub[-1][1][0], m.site[1] - stub[-1][1][1]) < 1e-6 and \
+                (len(stub) > 1 or min(abs(stub[0][1][0] - stub[0][0][0]), abs(stub[0][1][1] - stub[0][0][1])) < 1e-6):
+            d['path'] = [tuple(stub[0][0])] + [tuple(b) for (_a, b) in stub]
     return d
 
 

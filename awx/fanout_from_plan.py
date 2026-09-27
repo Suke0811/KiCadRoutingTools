@@ -225,6 +225,18 @@ def plan_state(pcb, names, banned=frozenset()):
     dref = ends[names[0]][2]
     dgrid = em.grid_of(pcb.footprints[dref])
     dboxes = dgrid.bbox
+    # the destination's FAR face, the one facing away from the source: under the whole route's ends a far-face move
+    # is offered only to a ball in the array's half beside that face -- in ten fanouts over K15-K41 the ends model
+    # chose 3 of 341 berths there, one net one column from the far face (K41 SA11), from 518 of 2269 menu moves
+    # (every dog-bone and via-in-pad among them unchosen)
+    _sc = [sum(ends[n][0][k] for n in names) / len(names) for k in (0, 1)]
+    _dc = ((dboxes[0] + dboxes[2]) / 2, (dboxes[1] + dboxes[3]) / 2)
+    far = max(em.DIRS, key=lambda d: em.DIRS[d][0] * (_dc[0] - _sc[0]) + em.DIRS[d][1] * (_dc[1] - _sc[1]))
+    _fax = 0 if em.DIRS[far][0] else 1
+
+    def far_half(pad):
+        mid = (dboxes[_fax] + dboxes[_fax + 2]) / 2
+        return ((pad.global_x, pad.global_y)[_fax] - mid) * em.DIRS[far][_fax] >= -1e-6
     for nm in names:
         nid, net = byname[nm]
         fp = pcb.footprints[ends[nm][2]]
@@ -233,6 +245,8 @@ def plan_state(pcb, names, banned=frozenset()):
                   + (p.global_y - by) ** 2)
         dst_pad[nm] = pad
         moves = dedupe_climbs(menu(pad, em.grid_of(fp), nid, climb=DST_CLIMB))
+        if PLAN_JUDGE == 'ends' and not far_half(pad):
+            moves = [m for m in moves if m.direction != far]
         dmenu[nm] = [m for m in moves if (nm, sr.move_sig(m)) not in banned]
         # a pad of this net on the other layer UNDER the ball (a back-side
         # termination resistor under a DDR clock ball) is served by a TIE
@@ -291,6 +305,15 @@ def plan_state(pcb, names, banned=frozenset()):
         _fx = sum(x for x, _y in _dp) / len(_dp) - sum(x for x, _y in _sp) / len(_sp)
         _fy = sum(y for _x, y in _dp) / len(_dp) - sum(y for _x, y in _sp) / len(_sp)
         far_dir = min(DIRS, key=lambda d_: DIRS[d_][0] * _fx + DIRS[d_][1] * _fy)
+        near_dir = max(DIRS, key=lambda d_: DIRS[d_][0] * _fx + DIRS[d_][1] * _fy)
+    # ...and a tooth on a SIDE face only from a ball in the array's half beside that face: in eleven fanouts over K15-K41
+    # every one of the 40 side-face teeth the ends model asked came from its face's half, and the north face's 387
+    # menu moves (the bus in the source's south half) were never asked
+    _sb = sgrid.bbox
+
+    def side_half(pad_, d_):
+        ax = 0 if DIRS[d_][0] else 1
+        return ((pad_.global_x, pad_.global_y)[ax] - (_sb[ax] + _sb[ax + 2]) / 2) * DIRS[d_][ax] >= -1e-6
     for nm in names:
         p = src_pad[nm]
         if p is None or p.component_ref != sref:
@@ -301,7 +324,8 @@ def plan_state(pcb, names, banned=frozenset()):
         # stubs (own_only)
         smenu[nm] = [m for m in dedupe_climbs(menu(p, sgrid, byname[nm][0], own_only=(PLAN_JUDGE != 'ends'),
                                                    climb=SRC_CLIMB))
-                     if (nm, sr.move_sig(m)) not in banned and m.direction != far_dir]
+                     if (nm, sr.move_sig(m)) not in banned and m.direction != far_dir
+                     and (far_dir is None or m.direction == near_dir or side_half(p, m.direction))]
         _plegs = getattr(plan_state, '_pair_legs', None) or {}
         if nm in _plegs and _plegs[nm] in byname:
             keep = [m for m in smenu[nm] if pair_exit_clear(pcb, byname[nm][0], byname[_plegs[nm]][0], m, free=run_free)]

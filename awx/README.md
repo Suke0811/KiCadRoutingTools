@@ -167,9 +167,9 @@ nets on each board, the human's counted the same way:
 
 | | K15 | K28 | K35 |
 |---|---|---|---|
-| the whole route on our own ends | **12 v, 191 mm** | **32 v, 550 mm** | **52 v, 810 mm** |
+| the whole route on our own ends | **12 v, 194 mm** | **34 v, 554 mm** | **52 v, 774 mm** |
 | human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm |
-| rounds | one fanout | one fanout | two: the first's crowded teeth fed back |
+| rounds | one fanout | one fanout | one fanout |
 
 ## The pack (`pack_board.py`, opt-in)
 
@@ -846,13 +846,28 @@ with the whole route's own ends model.
   Never chosen: two moves the fanout cannot lay together (an F exit stacked
   over a B one allowed; two exits on one layer closer than a track and a
   clearance), a tooth move through another run net's laid tooth, a pair's
-  legs apart, a tooth on the source's far face.
+  legs apart, a tooth on the source's far face. Never offered: a berth on
+  the destination's far face from a ball in the array's other half, and a
+  tooth on a source side face from a ball in the other half (over K15-K41
+  the model chose 3 of 341 berths on the far face, all from its half, and
+  asked none of the 387 teeth on the source's north face), which halves
+  each pass. A dog-bone whose via stands past its ball's diagonal cells goes
+  to the engine with its stub as a walked `path`, the one way the engine
+  takes a caller's far site. Each state is scored once (the search asks a
+  third of them again) and each end's place round a grown box is cached:
+  the same answer, twice as fast.
 - **The frame** (`whole_frame.py`). The whole route's own frame of a bench,
   read off the board alone -- no braid corridor, branch or path: a straight
   trunk spine from the source's pad box through the destination's, a ring
   round the destination for each of its north and south faces, the two
   orders the solve inverts (teeth round the source, berths round the
-  destination), and each lane's taut reference path. A tooth on the
+  destination), and each lane's taut reference path. A pair whose stub
+  stands across the trunk -- a tooth on the source's side face -- STARTS at
+  the end of its end run out of the tooth and the run its turn onto the
+  trunk takes, as a ring pair lands (the geometry holds it there and
+  chamfers the corner at the tooth): started at the tooth, the lanes from
+  the face's far part passed across its front and it folded between them
+  and its teeth (K35 and K41: SCK on U1's south face). A tooth on the
   source's far face has no way round the source here, and is refused.
 - **Feedback** (`whole_feedback.py`, `FEEDBACK=`, `INCREMENTAL=`). A finding
   the audits make AT the ends -- beside a face within the width its lanes
@@ -872,8 +887,9 @@ with the whole route's own ends model.
   holds over every triple; a lane's crossings keep a pitch along a stayer
   and less along a mover's sweep, a pair's two crossings of opposite ways
   its turning run apart; up to four layer changes per lane, each a via's
-  room from its own crossings, a single's a change's room from both its
-  ends, and along the route far enough from a neighbouring lane's (a
+  room from its own crossings -- the room of both lanes there, a pair
+  crossing the via's lane the wider by its second leg -- a single's a
+  change's room from both its ends, and along the route far enough from a neighbouring lane's (a
   neighbour at either end, or a lane it crosses) that the two vias clear
   the via-to-via rule; no crossing and no change in the band along the
   source's near face, where the teeth stand;
@@ -888,7 +904,11 @@ with the whole route's own ends model.
   the turns its route is known to make before any geometry -- its spine's
   and its ring's corners, the handoff onto its ring -- and beyond the turn
   onto an end whose stub stands more than its connector's 45 degrees off
-  the route there (built-in via cuts). First no net over two vias on the
+  the route there, and every lane's off the stretch where its reference
+  passes within a via's reach of another part's pad or the tooth of a net
+  outside the bus (`whole_ctx.foreign_teeth`, the list the geometry keeps
+  its lanes off), a pair's the longer by its dive's straight run, since its
+  lane bends round the item (built-in via cuts). First no net over two vias on the
   board (its stubs' own and its lane's changes, a pair's leg a barrel a
   dive: a preference, never a cap), then the fewest vias, then HISTORY
   congestion, as a negotiated router prices a place overused before: every
@@ -916,9 +936,14 @@ with the whole route's own ends model.
   there is room, as the human's lanes do), the bends, and every neighbour
   short of that comfortable pitch, four times as steeply below halfway to
   the bar, so the tightest are spread first; a lane turns at most 45
-  degrees a column (elastic). A second pass holds each lane to one side of every piece
+  degrees a column, a pair 45 degrees per turning run (two segments that
+  run apart within 45 degrees, the bound taken at the first pass's
+  heading; elastic). A lane is bounded by the free interval its reference
+  lies in, or where the reference cuts a pad box's corner by the one it was
+  in a column before -- it cannot leave that interval across the box. A second pass holds each lane to one side of every piece
   of static copper near it: one split per island and layer, in the lane
-  order, pinned by the lanes' own ends. An island is a part (a lane goes
+  order, pinned by the lanes' own ends, the room either side measured
+  where the island's rows reach past any pad box it stands in. An island is a part (a lane goes
   round it, not between its pads) -- or parts no lane can surely pass
   between (`whole_ctx.part_islands`: closer than a track, a clearance and
   the router's corner buffer either side and a grid step; K35 had routed
