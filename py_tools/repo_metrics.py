@@ -45,6 +45,7 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -240,6 +241,88 @@ def _merge_daily(store, key, rows):
     return added
 
 
+#: KiCad's PCM catalogue is GENERATED from this GitLab repo, so the merge that
+#: added a version to our package file is when PCM began serving that version.
+_PCM_UPSTREAM = 'https://gitlab.com/api/v4/projects/kicad%2Faddons%2Fmetadata'
+
+
+def _gitlab(path):
+    """GET one public GitLab API path, anonymously. (payload, error), never raises."""
+    try:
+        req = urllib.request.Request(f'{_PCM_UPSTREAM}/{path}',
+                                     headers={'User-Agent': 'KiCadRoutingTools-metrics'})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode()), ''
+    except urllib.error.HTTPError as e:
+        return None, f'HTTP {e.code}'
+    except Exception as e:                                    # pragma: no cover
+        return None, str(e)
+
+
+def _vkey(v):
+    return tuple(int(x) if x.isdigit() else 0 for x in str(v).split('.'))
+
+
+def collect_pcm_listings(store):
+    """Bank WHEN the PCM catalogue began serving each version -> error or ''.
+
+    GitHub records when a release was published, not when PCM started handing
+    it out, and PCM serves only the newest listed version -- so an unlisted
+    release gets almost no zip installs while the listed one before it keeps
+    them all. The per-release timeline cannot be placed without this history.
+
+    `store` is {commit sha: {'version', 'listed'}}, one entry per upstream
+    commit that touched our package file. The version is the newest one in the
+    FILE at that commit (an MR title can be stale; the file is what PCM reads),
+    and the date is the MR's merge, falling back to the commit date for a
+    direct push. Each sha is fetched once and kept: this is history, it never
+    changes, and a failed fetch is simply retried by the next run.
+    """
+    try:
+        with open(os.path.join(ROOT, 'metadata.json')) as f:
+            ident = json.load(f)['identifier']
+    except Exception as e:
+        return f'metadata.json: {e}'
+    fpath = urllib.parse.quote(f'packages/{ident}/metadata.json', safe='')
+    commits, page = [], 1
+    while page <= 20:
+        chunk, err = _gitlab(f'repository/commits?path={fpath}&per_page=100&page={page}')
+        if err or not isinstance(chunk, list):
+            return err or 'unexpected payload'
+        commits.extend(chunk)
+        if len(chunk) < 100:
+            break
+        page += 1
+    for c in commits:
+        sha = c.get('id', '')
+        if not sha or sha in store:
+            continue
+        doc, err = _gitlab(f'repository/files/{fpath}/raw?ref={sha}')
+        versions = [v.get('version', '') for v in (doc or {}).get('versions') or []]
+        if err or not versions:
+            return err or f'{sha[:8]}: no versions in the package file'
+        mrs, _err = _gitlab(f'repository/commits/{sha}/merge_requests')
+        when = next((m['merged_at'] for m in mrs or [] if m.get('merged_at')),
+                    c.get('committed_date', ''))
+        try:
+            listed = datetime.fromisoformat(when.replace('Z', '+00:00')) \
+                .astimezone(timezone.utc).date().isoformat()
+        except Exception:
+            return f'{sha[:8]}: unreadable date {when!r}'
+        store[sha] = {'version': max(versions, key=_vkey), 'listed': listed}
+    return ''
+
+
+def pcm_listing_dates(store):
+    """{sha: {version, listed}} -> {release tag: first day PCM served it}."""
+    out = {}
+    for rec in (store or {}).values():
+        tag, day = 'v' + str(rec.get('version', '')), str(rec.get('listed', ''))[:10]
+        if len(tag) > 1 and day and (tag not in out or day < out[tag]):
+            out[tag] = day
+    return out
+
+
 # --------------------------------------------------------------- collect
 
 
@@ -293,6 +376,15 @@ def collect(slug, token=''):
         if n:
             print(f'  releases.json: thinned {n} old snapshot(s) to weekly')
         print(f'  releases: {len(snap)} release(s) snapshotted')
+
+    listings = _load('pcm_listings.json', {})
+    err = collect_pcm_listings(listings)
+    _save('pcm_listings.json', listings)   # whatever was banked before a failure
+    if err:
+        errors['pcm listings (gitlab kicad/addons/metadata)'] = err
+    else:
+        collected.append('pcm_listings')
+        print(f'  pcm listings: {len(pcm_listing_dates(listings))} version(s) listed')
 
     meta = _load('meta.json', {})
     meta['last_collected'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -348,14 +440,20 @@ def _fmt_tick(v):
     return f'{v:.1f}'
 
 
-def _legend(series):
-    return '<div class="legend">' + ' '.join(
-        f'<span class="key"><i style="background:{s["color"]}"></i>'
-        f'{_esc(s["label"])}</span>' for s in series) + '</div>'
+def _legend(series, mark=None):
+    keys = [f'<span class="key"><i style="background:{s["color"]}"></i>'
+            f'{_esc(s["label"])}</span>' for s in series]
+    if mark:
+        keys.append(f'<span class="key"><i class="mk"></i>{_esc(mark[1])}</span>')
+    return '<div class="legend">' + ' '.join(keys) + '</div>'
 
 
-def _line_chart(series, width=880, height=200):
-    """Inline SVG, no dependencies -- the page must render from a file:// URL."""
+def _line_chart(series, width=880, height=200, mark=None):
+    """Inline SVG, no dependencies -- the page must render from a file:// URL.
+
+    `mark` = (day, label) draws a dashed vertical rule at that day, labelled in
+    the legend (never in the SVG -- see `_axis_frame`).
+    """
     days = sorted(set().union(*[set(s['points']) for s in series if s['points']])
                   or {''})
     days = [d for d in days if d]
@@ -381,59 +479,118 @@ def _line_chart(series, width=880, height=200):
         out.append(f'<polyline points="{pts}" fill="none" stroke="{s["color"]}" '
                    f'stroke-width="2" stroke-linejoin="round" '
                    f'vector-effect="non-scaling-stroke"/>')
+    if mark and mark[0] in days:
+        x = xy(days.index(mark[0]), 0).split(',')[0]
+        out.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{height}" class="mark" '
+                   f'vector-effect="non-scaling-stroke"/>')
+    else:
+        mark = None
     out.append('</svg>')
-    return _axis_frame(''.join(out), top, days[0], days[-1], height) + _legend(series)
+    return (_axis_frame(''.join(out), top, days[0], days[-1], height)
+            + _legend(series, mark))
 
 
-def spread_downloads(rows, today=None):
-    """Per-release lifetime totals -> an estimated downloads-per-day timeline.
+def reign_downloads(releases, listed=None):
+    """Snapshots -> (downloads-per-day timeline, first MEASURED day or None).
 
     WHY NOT BARS. A release's counter is cumulative and never stops rising, and
-    PCM piles every install onto whichever release it points at -- so a bar
-    chart shows three towers and thirty-six stubs. That is true but unreadable,
-    and it says nothing about WHEN any of it happened.
+    PCM piles every install onto whichever release it serves -- so a bar chart
+    shows a few towers and many stubs, and says nothing about WHEN any of it
+    happened.
 
-    Each release's total is spread evenly across its lifetime (publish date to
-    today) and the per-day contributions are summed, which turns the towers
-    into overlapping plateaus: a release that gathered 4,000 installs over a
-    month reads as ~130/day for that month, directly comparable to one that
-    gathered 200 over the same span.
+    MEASURED where the archive can measure it. From the first snapshot on, the
+    day-to-day difference of each counter IS the downloads of that period, with
+    no assumption at all. The collector runs early in the UTC day, so the
+    interval between two snapshots is mostly the EARLIER day and is booked
+    there, [prev, cur).
 
-    TWO BIASES, BOTH DISCLOSED ON THE PAGE RATHER THAN HIDDEN:
+    ESTIMATED only before the first snapshot, where each release's count is one
+    lifetime total. It is spread evenly over the release's REIGN: from when it
+    became the newest release until its successor did. For the PCM zip of a
+    release PCM listed, both ends are PCM listing dates (`listed`, {tag: day},
+    from `collect_pcm_listings`), because PCM serves only its newest listed
+    version and skips every release in between. The archive measured why this
+    is the right window: the day PCM switched from v0.20.4 to v0.22.1, v0.20.4
+    fell from ~150 installs a day to ~3, and superseded binaries likewise drop
+    to about one a day as soon as the next release is published.
 
-    1. Even spread is wrong in a known direction -- downloads arrive fastest
-       just after a release and taper -- so the start of each plateau is
-       understated and the tail overstated.
-    2. The TOTAL slopes upward as an artifact: every release ever published
-       keeps contributing to every later day, so the sum grows with the size of
-       the catalogue even if interest is flat. The shape of the plateaus is
-       meaningful; the trend of their sum is not.
+    The window used to run from publish to TODAY instead, and that made the
+    total slope upward whatever interest did: every release ever published kept
+    contributing to every later day, so the sum grew with the size of the
+    catalogue. With reigns, a flat level of interest draws a flat line.
 
-    Both are TEMPORARY. Once two snapshots exist, differencing them gives the
-    real per-period rate with no assumption at all, which is what
-    `_weekly_deltas` already does for the table.
+    Two biases remain, and the page states both: the trickle a superseded
+    release keeps gathering is booked inside its own reign, so the earliest
+    plateaus read slightly high; and even spread flattens the burst right after
+    each release. Neither creates or destroys a download -- the timeline sums to
+    the same max-across-snapshots totals `_release_rollup` reports.
     """
     from datetime import date as _date, timedelta
-    if today is None:
-        today = _date(*map(int, _today().split('-')))
-    out = {}
-    for r in rows:
-        pub = (r.get('published') or '')[:10]
-        if not pub:
-            continue
+    one = timedelta(days=1)
+
+    def day(s):
         try:
-            start = _date(*map(int, pub.split('-')))
+            return _date(*map(int, str(s)[:10].split('-')))
         except Exception:
-            continue
-        days = max(1, (today - start).days + 1)
-        pcm = r['pcm'] / days
-        binr = sum(r['binaries'].values()) / days
-        for i in range(days):
-            key = (start + timedelta(days=i)).isoformat()
-            cell = out.setdefault(key, {'pcm': 0.0, 'bin': 0.0})
-            cell['pcm'] += pcm
-            cell['bin'] += binr
-    return out
+            return None
+
+    stamps = [s for s in sorted(releases) if day(s)]
+    if not stamps:
+        return {}, None
+    s0 = day(stamps[0])
+    pub = {}
+    for s in stamps:
+        for tag, rel in (releases[s] or {}).items():
+            if day(rel.get('published_at')):
+                pub[tag] = rel['published_at']
+    started = {t: day(p) for t, p in pub.items()}
+    on_pcm = {t: day(d) for t, d in (listed or {}).items() if t in pub and day(d)}
+    names = {n for n, _ in PLATFORMS}
+    series = (('pcm', lambda k: bool(_PCM_RE.match(k))), ('bin', lambda k: k in names))
+
+    out = {}
+
+    def book(a, b, mass, key):
+        """Spread `mass` evenly over the days [a, b)."""
+        n = (b - a).days
+        if mass <= 0 or n <= 0:
+            return
+        for i in range(n):
+            cell = out.setdefault((a + i * one).isoformat(), {'pcm': 0.0, 'bin': 0.0})
+            cell[key] += mass / n
+
+    def successor(start, starts):
+        later = [d for d in starts if d > start]
+        return min(later) if later else None
+
+    for tag in sorted(pub, key=lambda t: pub[t]):
+        for key, pred in series:
+            cum, peak = [], 0
+            for s in stamps:
+                assets = ((releases[s] or {}).get(tag) or {}).get('assets') or {}
+                # Running max, the same discipline as `_release_rollup`: a short
+                # read must not become a negative day followed by a double one.
+                peak = max(peak, sum(int(v) for k, v in assets.items() if pred(k)))
+                cum.append(peak)
+            if key == 'pcm' and tag in on_pcm:
+                start = on_pcm[tag]
+                end = successor(start, on_pcm.values())
+            else:
+                start = started[tag]
+                end = successor(start, started.values())
+            # Before the archive: the reign, cut at the first snapshot, and
+            # never shorter than the release's own first day.
+            stop = min(end, s0) if end else s0
+            book(start, max(stop, start + one), cum[0], key)
+            for i in range(1, len(stamps)):
+                book(day(stamps[i - 1]), day(stamps[i]), cum[i] - cum[i - 1], key)
+    # Every day present, zeros included: the chart places points by INDEX, so
+    # a day with no downloads left out would silently squeeze the time axis.
+    if out:
+        first, last = day(min(out)), day(max(out))
+        for i in range((last - first).days + 1):
+            out.setdefault((first + i * one).isoformat(), {'pcm': 0.0, 'bin': 0.0})
+    return out, (stamps[0] if len(stamps) > 1 else None)
 
 
 def _grouped_bars(rows, series, width=880, height=220):
@@ -616,15 +773,56 @@ def currently_accumulating(releases):
     if len(stamps) < 2:
         return None
     prev, cur = releases[stamps[-2]], releases[stamps[-1]]
-
-    def pcm_of(snap, tag):
-        return sum(v for k, v in (snap.get(tag, {}).get('assets') or {}).items()
-                   if _PCM_RE.match(k))
-    gains = {tag: pcm_of(cur, tag) - pcm_of(prev, tag) for tag in cur}
+    gains = {tag: _pcm_count(cur, tag) - _pcm_count(prev, tag) for tag in cur}
     tag, gain = max(gains.items(), key=lambda kv: kv[1], default=(None, 0))
     if not tag or gain <= 0:
         return None
     return tag, gain, stamps[-2]
+
+
+def _pcm_count(snap, tag):
+    return sum(v for k, v in ((snap or {}).get(tag, {}).get('assets') or {}).items()
+               if _PCM_RE.match(k))
+
+
+def pcm_now_serving(store):
+    """The release tag PCM's catalogue serves now, or None with no history.
+
+    The NEWEST upstream commit decides, not the highest version ever listed:
+    its file is what the catalogue is generated from, so a withdrawn version
+    stops being named the moment the file stops listing it.
+    """
+    recs = [r for r in (store or {}).values() if r.get('version') and r.get('listed')]
+    if not recs:
+        return None
+    return 'v' + max(recs, key=lambda r: (r['listed'], _vkey(r['version'])))['version']
+
+
+def pcm_card_hint(releases, store, pcm_tot):
+    """The PCM card's second line: the release PCM is serving, best source first.
+
+    1. The listing history, when collected. That is a FACT about what the
+       catalogue offers, so a burst on some other release cannot move it.
+    2. Else the release that climbed most between the last two snapshots
+       (`currently_accumulating`). Measured, but it is a guess about PCM, and
+       it guesses wrong on a burst: v0.19.0 took 264 zip downloads in one day
+       while PCM was serving v0.22.1, and the card named v0.19.0.
+    3. Else the lifetime maximum, labelled as exactly that.
+    """
+    serving = pcm_now_serving(store)
+    stamps = sorted(releases)
+    if serving:
+        if len(stamps) < 2:
+            since = pcm_listing_dates(store).get(serving, '?')
+            return f'now serving {serving}, listed {since}'
+        gain = (_pcm_count(releases[stamps[-1]], serving)
+                - _pcm_count(releases[stamps[-2]], serving))
+        return f'now serving {serving} (+{max(0, gain):,} since {stamps[-2]})'
+    acc = currently_accumulating(releases)
+    if acc:
+        return f'now serving {acc[0]} (+{acc[1]:,} since {acc[2]})'
+    head = max(pcm_tot.items(), key=lambda kv: kv[1]) if pcm_tot else ('-', 0)
+    return f'largest single release: {head[0]} ({head[1]:,})'
 
 
 def _weekly_deltas(releases):
@@ -659,13 +857,8 @@ def render(slug):
     def _sum(d, days, key):
         return sum(d.get(x, {}).get(key, 0) for x in days)
 
-    pcm_head = max(pcm_tot.items(), key=lambda kv: kv[1]) if pcm_tot else ('-', 0)
-    # Prefer the MEASURED answer -- the release still gaining installs is the
-    # one PCM is serving -- and fall back to the lifetime maximum, labelled as
-    # such, while the archive has fewer than two days of snapshots.
-    acc = currently_accumulating(releases)
-    pcm_hint = (f'now serving {acc[0]} (+{acc[1]:,} since {acc[2]})' if acc
-                else f'largest single release: {pcm_head[0]} ({pcm_head[1]:,})')
+    listings = _load('pcm_listings.json', {})
+    pcm_hint = pcm_card_hint(releases, listings, pcm_tot)
     cards = [
         ('PCM installs', f'{sum(pcm_tot.values()):,}', pcm_hint),
         ('Router binaries', f'{sum(plat_tot.values()):,}',
@@ -703,13 +896,31 @@ def render(slug):
                     f'than a quiet week:<ul>{items}</ul>'
                     f'The traffic endpoints need a token with push access.</div>')
 
-    spread = spread_downloads(rows)
+    listed = pcm_listing_dates(listings)
+    spread, measured_from = reign_downloads(releases, listed)
     dl_chart = _line_chart([
         {'label': 'PCM zip installs/day', 'color': '#3b82f6',
          'points': {d: v['pcm'] for d, v in spread.items()}},
         {'label': 'router binaries/day', 'color': '#f97316',
          'points': {d: v['bin'] for d, v in spread.items()}},
-    ], height=220)
+    ], height=220, mark=measured_from and (
+        measured_from, f'measured from {measured_from}; estimated before'))
+    if measured_from:
+        dl_head = (f'Estimated before {_esc(measured_from)}, measured from '
+                   f'then on.')
+        dl_measured = (f'From {_esc(measured_from)} on, every point is the '
+                       f'difference between two daily snapshots, with no '
+                       f'assumption at all, and that part of the chart only '
+                       f'grows.')
+    else:
+        dl_head = 'Estimated rate, not a measurement — yet.'
+        dl_measured = ('Once the archive holds two snapshots, the days after '
+                       'the first are measured directly instead.')
+    dl_unlisted = '' if listed else (
+        ' <strong>The PCM listing history could not be read</strong>, so the '
+        'PCM line treats every release as served by PCM in turn, which it was '
+        'not: its early plateaus are unreliable until a collection reaches '
+        'GitLab.')
 
     wk = weekly_rollup(traffic)
     _wk_rows = []
@@ -785,6 +996,9 @@ th {{ font-weight:600 }}
 .legend {{ font-size:.82rem; color:var(--muted); margin-top:6px }}
 .key i {{ display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px }}
 .key {{ margin-right:14px }}
+.mark {{ stroke:var(--muted); stroke-dasharray:4 3 }}
+.key i.mk {{ width:0; height:11px; border-radius:0; border-left:2px dashed var(--muted);
+  vertical-align:-1px }}
 .muted {{ color:var(--muted) }}
 .up {{ margin:0 0 12px; font-size:.86rem }}
 .up a {{ color:var(--muted); text-decoration:none }}
@@ -811,22 +1025,22 @@ rebuilt weekly from GitHub's API</p>
 
 <h2>Downloads by release</h2>
 {dl_chart}
-<p class="note"><strong>Estimated rate, not a measurement — yet.</strong> A
-release's counter is cumulative and never stops rising, and PCM piles every
-install onto whichever release it points at, so the raw numbers are three
-towers and thirty-six stubs. Here each release's lifetime total is spread
-evenly across the days since it was published and the contributions are summed,
-which makes a release that gathered 4,000 installs over a month read as ~130/day
-rather than one spike. <strong>Even spread is an assumption, and it is wrong in
-a known direction:</strong> downloads arrive fastest just after a release and
-taper, so the start of each plateau is understated and the tail overstated. It
-is temporary — once two weekly snapshots exist, differencing them gives the
-real per-period rate with no assumption at all. <strong>The upward slope is
-partly an artifact of the method</strong> for the same reason: every release
-ever published keeps contributing to every later day, so the total rises as the
-catalogue grows even if interest is flat. Read the SHAPE of the plateaus, not
-the trend. Exact per-release totals are in the table below; the two series are
-still never added together.</p>
+<p class="note"><strong>{dl_head}</strong> A release's counter is cumulative
+and never stops rising, so before the archive began the only facts are each
+release's lifetime total and its dates. Each total is spread evenly over the
+release's <em>reign</em>: from when it became the newest release until its
+successor took over. For the PCM zip both dates are when KiCad's catalogue
+began serving a version, read from the merge history of
+<code>kicad/addons/metadata</code>, because PCM serves only its newest listed
+version and skips every release in between. The measured days show why this
+is the right window: when a successor arrives, the old release drops to a
+trickle within a day. So a level of interest that stays flat draws a flat
+line, however many releases have been published.{dl_unlisted} <strong>Two
+known biases remain in the estimate:</strong> the trickle a superseded release
+keeps gathering is counted inside its own reign, so the earliest plateaus read
+slightly high, and even spread flattens the burst right after each release.
+{dl_measured} Exact per-release totals are in the table below; the two series
+are never added together.</p>
 
 <h2>Daily views and clones</h2>
 {chart}

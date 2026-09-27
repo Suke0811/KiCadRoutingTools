@@ -123,15 +123,15 @@ REGISTRY = {
     'py_tools/repo_metrics.py': (
         'record',
         'the COLLECTION DATE of a metrics snapshot: `_today()` keys the '
-        'snapshot and defaults `meta.last_collected`. It does reach two '
-        'decisions -- which snapshots `thin_snapshots` keeps and which ISO '
-        'week `spread_downloads` buckets a release into -- but both take '
-        '`today` as a parameter and only fall back to the clock when the '
+        'snapshot and defaults `meta.last_collected`. It does reach one '
+        'decision -- which snapshots `thin_snapshots` keeps -- but that takes '
+        '`today` as a parameter and only falls back to the clock when the '
         'caller passes none, so the arithmetic is testable without one. '
         'Nothing measures a DURATION: the file declares no timeout or '
         'threshold constant and never compares an elapsed time to a limit '
-        '(the date maths at :494 and :631 reads stamps out of the collected '
-        'DATA, not off the clock).'),
+        '(the date maths in `reign_downloads`, `weekly_rollup` and '
+        '`collect_pcm_listings` reads stamps out of the collected DATA, not '
+        'off the clock).'),
     'py_router/cmd_timing.py': (
         'record',
         'reads back the clock tee_cmd already recorded, and formats it -- a '

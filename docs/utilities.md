@@ -1921,6 +1921,25 @@ from-source installs **including this project's own CI**: every Modal image
 build downloads the Linux binary, which makes Linux an upper bound rather than
 a user count.
 
+**PCM listing history.** GitHub records when a release was published, not when
+PCM began serving it, and PCM serves only its newest *listed* version, skipping
+every release in between. So the collector also reads the merge history of our
+package file in `gitlab.com/kicad/addons/metadata` (public API, no token) into
+`pcm_listings.json`. That file holds one entry per upstream commit: the newest
+version in the file at that commit, and the date its MR merged. This is
+history, so each commit is fetched once and kept.
+
+**How the downloads chart places counts in time.** From the first snapshot on,
+each day is the difference between two snapshots of the counters, which is a
+measurement. Before that, the archive holds only each release's lifetime total,
+so the chart spreads that total evenly over the release's *reign*. The reign
+runs from when the release became the newest until its successor did. For the
+PCM zip, both dates come from the listing history above. The chart used to
+spread each total from publish to *today* instead. Every release then added a
+layer to every later day, so flat interest drew a rising line. The snapshots
+show why the reign is the right window: when PCM switched from v0.20.4 to
+v0.22.1, v0.20.4 dropped from ~150 installs a day to ~3.
+
 ```bash
 # Both stages (default): snapshot, then render
 python3 py_tools/repo_metrics.py
