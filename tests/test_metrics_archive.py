@@ -96,7 +96,7 @@ def t_pcm_and_binaries_are_counted_apart():
                'KiCadRoutingTools-1.zip': 18, 'grid_router-linux-x86_64.so': 9}}}}
     d = M._weekly_deltas(two)
     check('t_deltas_separate_the_two_populations',
-          d == [{'date': '2026-09-15', 'pcm': 8, 'bin': 4}], f"{d}")
+          d == [{'date': '2026-09-15', 'pcm': 8, 'zip': 0, 'bin': 4}], f"{d}")
 
 
 def _render_into(tmp, meta, extra=None):
@@ -169,6 +169,32 @@ def t_page_discloses_what_the_numbers_are_not():
           'now serving v1 (+2 since 2026-09-15)' in read
           and 'now serving v0' in unread,
           'the listed release with the history, the burst without it')
+    card = '<div class="l">PCM installs</div><div class="n">{}</div>'
+    check('t_page_card_total_counts_only_listed_zips',
+          card.format(9) in read and card.format(59) in unread,
+          "9 (v1's zips) with the history, all 59 zips without it")
+    check('t_page_deltas_table_splits_the_zips',
+          '<th>2026-09-16</th><td class="num">2</td><td class="num">45</td>' in read,
+          'v1 +2 as PCM, the unlisted v0 +45 as direct')
+    # The chart reads the recorded snapshot times: a steady 1/hour with the
+    # middle snapshot taken late (18:00) peaks at 24 a day, where booking
+    # whole intervals to a day would read 30.
+    hourly = {'2026-09-15': {'v1': _rel('2026-09-15', 0)},
+              '2026-09-16': {'v1': _rel('2026-09-15', 30)},
+              '2026-09-17': {'v1': _rel('2026-09-15', 48)}}
+    at = {'2026-09-15': '2026-09-15T12:00:00Z', '2026-09-16': '2026-09-16T18:00:00Z',
+          '2026-09-17': '2026-09-17T12:00:00Z'}
+    with tempfile.TemporaryDirectory() as tmp:
+        timed = _render_into(tmp, {'last_collected': 'x', 'errors': {}},
+                             {'releases.json': hourly, 'pcm_listings.json': listing,
+                              'release_times.json': at})
+    check('t_page_chart_reads_the_snapshot_times',
+          'style="top:0%">24<' in timed and 'style="top:0%">30<' not in timed,
+          'the downloads chart tops out at 24/day')
+    check('t_page_draws_direct_zips_apart_only_when_it_can',
+          'direct zip downloads/day' in read and 'stroke-dasharray="6 4"' in read
+          and 'direct zip downloads/day' not in unread,
+          'a dashed third line with the history, none without')
 
 
 def t_clone_character_is_a_ratio_not_a_headcount():
@@ -361,9 +387,12 @@ def t_the_timeline_conserves_every_download():
                           'b': _rel('2026-08-01', 41, 9),
                           'c': _rel('2026-09-15', 80, 12),
                           'd': _rel('2026-09-16', 5, 2)}}
-    sp, _ = M.reign_downloads(rel, {'a': '2026-08-02', 'c': '2026-09-16'})
+    sp, _ = M.reign_downloads(rel, {'a': '2026-08-02', 'c': '2026-09-16'},
+                              {'2026-09-16': '2026-09-16T19:04:00Z',
+                               '2026-09-17': '2026-09-17T11:20:00Z'}, partial=True)
     rows, plat, pcm = M._release_rollup(rel)
-    tp = sum(v['pcm'] for v in sp.values())
+    # Every zip is in exactly one of the two zip series.
+    tp = sum(v['pcm'] + v['zip'] for v in sp.values())
     tb = sum(v['bin'] for v in sp.values())
     check('t_the_timeline_conserves_every_download',
           abs(tp - sum(pcm.values())) < 1e-6 and abs(tb - sum(plat.values())) < 1e-6,
@@ -373,6 +402,101 @@ def t_the_timeline_conserves_every_download():
     sp2, _ = M.reign_downloads({'2026-09-15': {'x': {'published_at': '',
                                                      'assets': {'KiCadRoutingTools-x.zip': 999}}}})
     check('t_an_undated_release_is_dropped_not_guessed', sp2 == {}, f"{sp2}")
+
+
+def t_an_interval_is_spread_over_the_hours_it_covers():
+    """A late snapshot must not pile a long interval onto one day.
+
+    The real case, 2026-09-27: the scheduled run took its snapshot at 11:59,
+    a manual run replaced it at 19:04, and the interval since the previous
+    snapshot (09-26 11:21) was 31.7 hours -- all booked to one day, so a steady
+    rate read 30% high. Here a release gains exactly one download an hour
+    throughout; every complete day must read 24.
+    """
+    rel = {'2026-09-25': {'v1': _rel('2026-09-25', pcm=12)},
+           '2026-09-26': {'v1': _rel('2026-09-25', pcm=36)},
+           '2026-09-27': {'v1': _rel('2026-09-25', pcm=67)}}
+    times = {'2026-09-25': '2026-09-25T12:00:00Z', '2026-09-26': '2026-09-26T12:00:00Z',
+             '2026-09-27': '2026-09-27T19:00:00+00:00'}
+    sp, _ = M.reign_downloads(rel, {'v1': '2026-09-25'}, times)
+    got = {d: round(v['pcm'], 9) for d, v in sp.items()}
+    check('t_an_interval_is_spread_over_the_hours_it_covers',
+          got == {'2026-09-25': 24, '2026-09-26': 24}, f"{got}")
+    # The day the last snapshot falls in is still accumulating: 19 hours of
+    # it drawn as a day would read as a 20% collapse. With `partial` it is
+    # there, and it is exactly those 19 hours.
+    full, _ = M.reign_downloads(rel, {'v1': '2026-09-25'}, times, partial=True)
+    check('t_the_day_still_accumulating_is_left_out',
+          '2026-09-27' not in sp
+          and abs(full.get('2026-09-27', {}).get('pcm', 0) - 19) < 1e-9,
+          f"withheld; with partial it holds "
+          f"{full.get('2026-09-27', {}).get('pcm', 0):.1f}")
+    # The key IS the collection date, so a time on another day is corrupt and
+    # the snapshot counts from the start of its own day instead.
+    bad = dict(times, **{'2026-09-26': '2026-09-24T12:00:00Z'})
+    sp3, _ = M.reign_downloads(rel, {'v1': '2026-09-25'}, bad, partial=True)
+    check('t_a_time_on_another_day_is_not_trusted',
+          abs(sum(v['pcm'] for v in sp3.values()) - 67) < 1e-9
+          and abs(sp3['2026-09-25']['pcm'] - 36) < 1e-9,
+          f"09-25 books 12 + all 24 to 00:00 of 09-26: {sp3['2026-09-25']['pcm']:.1f}")
+
+
+def t_unlisted_zips_are_direct_downloads_not_pcm():
+    """PCM cannot install a version it does not list.
+
+    The real case: v0.19.0 -- never listed, superseded for two months -- took
+    415 zip downloads in a day while PCM served v0.22.1, and the PCM line
+    counted every one of them as an install.
+    """
+    rel = {'2026-09-26': {'v0.19.0': _rel('2026-07-23', pcm=65),
+                          'v0.22.1': _rel('2026-09-17', pcm=1481)},
+           '2026-09-27': {'v0.19.0': _rel('2026-07-23', pcm=480),
+                          'v0.22.1': _rel('2026-09-17', pcm=1627)}}
+    listed = {'v0.22.1': '2026-09-17'}
+    sp, _ = M.reign_downloads(rel, listed)
+    day = sp['2026-09-26']
+    check('t_unlisted_zips_are_direct_downloads_not_pcm',
+          abs(day['pcm'] - 146) < 1e-9 and abs(day['zip'] - 415) < 1e-9,
+          f"PCM {day['pcm']:.0f}, direct {day['zip']:.0f}")
+    d = M._weekly_deltas(rel, listed)
+    check('t_the_deltas_table_splits_the_zips_the_same_way',
+          d == [{'date': '2026-09-27', 'pcm': 146, 'zip': 415, 'bin': 0}], f"{d}")
+    # With no listing history nothing can be told apart: every zip stays PCM,
+    # and the page says it cannot vouch for that line.
+    bare, _ = M.reign_downloads(rel, {})
+    check('t_without_listings_every_zip_is_pcm',
+          abs(bare['2026-09-26']['pcm'] - 561) < 1e-9 and bare['2026-09-26']['zip'] == 0,
+          f"{bare['2026-09-26']}")
+
+
+def t_the_collector_records_when_it_snapshotted():
+    """`release_times.json` gains today's collection time and keeps no orphans.
+
+    Offline: both APIs are replaced by canned responders.
+    """
+    def fake_api(slug, path, token='', paginate=False):
+        if path == 'releases':
+            return [{'tag_name': 'v1', 'published_at': '2026-09-01T00:00:00Z',
+                     'assets': [{'name': 'KiCadRoutingTools-1.zip', 'download_count': 3}]}], ''
+        if path in ('traffic/views', 'traffic/clones'):
+            return {path.split('/')[1]: []}, ''
+        return [], ''
+    real_api, real_gl, data = M._api, M._gitlab, M.DATA
+    M._api, M._gitlab = fake_api, lambda path: (None, 'offline')
+    with tempfile.TemporaryDirectory() as tmp:
+        M.DATA = tmp
+        try:
+            M._save('release_times.json', {'2020-01-01': '2020-01-01T12:00:00Z'})
+            errors, _ = M.collect('owner/repo')
+            times = M._load('release_times.json', {})
+        finally:
+            M._api, M._gitlab, M.DATA = real_api, real_gl, data
+    stamp = M._today()
+    check('t_the_collector_records_when_it_snapshotted',
+          list(times) == [stamp] and times[stamp].startswith(stamp + 'T'),
+          f"{times}; the orphan 2020-01-01 pruned")
+    check('t_an_unreachable_gitlab_is_disclosed',
+          any('gitlab' in k for k in errors), f"{sorted(errors)}")
 
 
 def t_pcm_listings_read_the_file_and_the_merge():
@@ -557,6 +681,9 @@ def main():
     t_measured_days_are_the_snapshot_differences()
     t_the_timeline_conserves_every_download()
     t_pcm_listings_read_the_file_and_the_merge()
+    t_an_interval_is_spread_over_the_hours_it_covers()
+    t_unlisted_zips_are_direct_downloads_not_pcm()
+    t_the_collector_records_when_it_snapshotted()
     t_thinning_never_moves_a_lifetime_total()
     t_the_pcm_card_names_the_climbing_release_not_the_biggest_pile()
     t_the_pcm_card_names_the_listed_release_not_a_burst()

@@ -1930,8 +1930,14 @@ version in the file at that commit, and the date its MR merged. This is
 history, so each commit is fetched once and kept.
 
 **How the downloads chart places counts in time.** From the first snapshot on,
-each day is the difference between two snapshots of the counters, which is a
-measurement. Before that, the archive holds only each release's lifetime total,
+the chart is measured: the difference between two snapshots of the counters,
+spread over the hours between them. The collector records each snapshot's time
+in `release_times.json`, because runs do not land a day apart. Scheduled runs
+start anywhere from about 11:00 to 13:00 UTC, and a manual or release-triggered
+run replaces the day's snapshot at any hour. When one whole interval was booked
+to a single day, a manual run at 19:04 made one day read 30% high. The day the
+last snapshot falls in is left out until it is over. Before the first snapshot,
+the archive holds only each release's lifetime total,
 so the chart spreads that total evenly over the release's *reign*. The reign
 runs from when the release became the newest until its successor did. For the
 PCM zip, both dates come from the listing history above. The chart used to
@@ -1939,6 +1945,16 @@ spread each total from publish to *today* instead. Every release then added a
 layer to every later day, so flat interest drew a rising line. The snapshots
 show why the reign is the right window: when PCM switched from v0.20.4 to
 v0.22.1, v0.20.4 dropped from ~150 installs a day to ~3.
+
+**PCM installs count only listed releases.** PCM cannot install a version its
+catalogue does not list, so a zip downloaded from any other release is a
+*direct* download. It comes from the release page, or from automation. The
+chart draws these as a separate dashed line, and the PCM card and tables count
+them apart. On 2026-09-27, v0.19.0 was never listed and had been superseded for
+two months. It took 415 zip downloads in a day, and its Linux binary climbed
+alongside while its other platforms did not move. Before the split, the PCM
+line counted every one of those as an install. With no listing history
+collected, every zip is counted as PCM and the page says so.
 
 ```bash
 # Both stages (default): snapshot, then render

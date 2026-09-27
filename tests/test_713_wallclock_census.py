@@ -123,7 +123,8 @@ REGISTRY = {
     'py_tools/repo_metrics.py': (
         'record',
         'the COLLECTION DATE of a metrics snapshot: `_today()` keys the '
-        'snapshot and defaults `meta.last_collected`. It does reach one '
+        'snapshot and defaults `meta.last_collected`, and the collection TIME '
+        'is stored in `release_times.json` as data. It does reach one '
         'decision -- which snapshots `thin_snapshots` keeps -- but that takes '
         '`today` as a parameter and only falls back to the clock when the '
         'caller passes none, so the arithmetic is testable without one. '

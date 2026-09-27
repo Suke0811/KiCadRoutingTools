@@ -372,6 +372,13 @@ def collect(slug, token=''):
         store[stamp] = snap
         n = thin_snapshots(store)
         _save('releases.json', store)
+        # WHEN, not just which day: a scheduled run lands anywhere from ~11:00
+        # to ~13:00 UTC and a manual or release-triggered run replaces the
+        # day's snapshot at any hour, so intervals between snapshots are not a
+        # day long. `reign_downloads` spreads each one over the hours it spans.
+        times = _load('release_times.json', {})
+        times[stamp] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        _save('release_times.json', {k: v for k, v in times.items() if k in store})
         collected.append('releases')
         if n:
             print(f'  releases.json: thinned {n} old snapshot(s) to weekly')
@@ -441,8 +448,11 @@ def _fmt_tick(v):
 
 
 def _legend(series, mark=None):
-    keys = [f'<span class="key"><i style="background:{s["color"]}"></i>'
-            f'{_esc(s["label"])}</span>' for s in series]
+    keys = [f'<span class="key"><i class="ds" style="border-color:{s["color"]}"></i>'
+            if s.get('dash') else
+            f'<span class="key"><i style="background:{s["color"]}"></i>'
+            for s in series]
+    keys = [k + f'{_esc(s["label"])}</span>' for k, s in zip(keys, series)]
     if mark:
         keys.append(f'<span class="key"><i class="mk"></i>{_esc(mark[1])}</span>')
     return '<div class="legend">' + ' '.join(keys) + '</div>'
@@ -452,7 +462,8 @@ def _line_chart(series, width=880, height=200, mark=None):
     """Inline SVG, no dependencies -- the page must render from a file:// URL.
 
     `mark` = (day, label) draws a dashed vertical rule at that day, labelled in
-    the legend (never in the SVG -- see `_axis_frame`).
+    the legend (never in the SVG -- see `_axis_frame`). A series with `dash`
+    is drawn dashed, and its legend key is a dashed stroke to match.
     """
     days = sorted(set().union(*[set(s['points']) for s in series if s['points']])
                   or {''})
@@ -478,6 +489,7 @@ def _line_chart(series, width=880, height=200, mark=None):
         pts = ' '.join(xy(i, s['points'].get(d, 0)) for i, d in enumerate(days))
         out.append(f'<polyline points="{pts}" fill="none" stroke="{s["color"]}" '
                    f'stroke-width="2" stroke-linejoin="round" '
+                   f'{"stroke-dasharray=\"6 4\" " if s.get("dash") else ""}'
                    f'vector-effect="non-scaling-stroke"/>')
     if mark and mark[0] in days:
         x = xy(days.index(mark[0]), 0).split(',')[0]
@@ -490,8 +502,25 @@ def _line_chart(series, width=880, height=200, mark=None):
             + _legend(series, mark))
 
 
-def reign_downloads(releases, listed=None):
+def _zip_series(tag, listed):
+    """Which series a release's ZIP downloads belong to: 'pcm' or 'zip'.
+
+    PCM fetches only the zips of versions its catalogue lists, so a zip from a
+    release it never listed cannot be a PCM install -- it was downloaded from
+    the release page, or by automation (v0.19.0, never listed and superseded
+    for two months, took 415 zip downloads in a day). Those are DIRECT zip
+    downloads. With no listing history at all nothing can be told apart, and
+    every zip counts as PCM, which the page then says it cannot vouch for.
+    """
+    return 'pcm' if not listed or tag in listed else 'zip'
+
+
+def reign_downloads(releases, listed=None, times=None, partial=False):
     """Snapshots -> (downloads-per-day timeline, first MEASURED day or None).
+
+    Three series, never summed: 'pcm' (zips of PCM-listed releases), 'zip'
+    (direct downloads of every other zip, see `_zip_series`) and 'bin' (the
+    router binaries).
 
     WHY NOT BARS. A release's counter is cumulative and never stops rising, and
     PCM piles every install onto whichever release it serves -- so a bar chart
@@ -499,20 +528,24 @@ def reign_downloads(releases, listed=None):
     happened.
 
     MEASURED where the archive can measure it. From the first snapshot on, the
-    day-to-day difference of each counter IS the downloads of that period, with
-    no assumption at all. The collector runs early in the UTC day, so the
-    interval between two snapshots is mostly the EARLIER day and is booked
-    there, [prev, cur).
+    difference between two snapshots IS the downloads of that interval, with no
+    assumption at all. Each interval is spread over the HOURS it covers, from
+    `times` ({snapshot key: ISO time}, recorded by the collector). Booking a
+    whole interval to one day was wrong whenever a run came late: a manual run
+    at 19:04 made the last interval 31.7 hours long and put all of it on one
+    day. A snapshot with no recorded time counts from the start of its day.
+    The day the last snapshot falls in is still accumulating, so it is left out
+    unless `partial` -- a part-day drawn as a day always reads as a collapse.
 
     ESTIMATED only before the first snapshot, where each release's count is one
     lifetime total. It is spread evenly over the release's REIGN: from when it
-    became the newest release until its successor did. For the PCM zip of a
-    release PCM listed, both ends are PCM listing dates (`listed`, {tag: day},
-    from `collect_pcm_listings`), because PCM serves only its newest listed
-    version and skips every release in between. The archive measured why this
-    is the right window: the day PCM switched from v0.20.4 to v0.22.1, v0.20.4
-    fell from ~150 installs a day to ~3, and superseded binaries likewise drop
-    to about one a day as soon as the next release is published.
+    became the newest release until its successor did. For the zip of a release
+    PCM listed, both ends are PCM listing dates (`listed`, {tag: day}, from
+    `collect_pcm_listings`), because PCM serves only its newest listed version
+    and skips every release in between. The archive measured why this is the
+    right window: the day PCM switched from v0.20.4 to v0.22.1, v0.20.4 fell
+    from ~150 installs a day to ~3, and superseded binaries likewise drop to
+    about one a day as soon as the next release is published.
 
     The window used to run from publish to TODAY instead, and that made the
     total slope upward whatever interest did: every release ever published kept
@@ -522,11 +555,13 @@ def reign_downloads(releases, listed=None):
     Two biases remain, and the page states both: the trickle a superseded
     release keeps gathering is booked inside its own reign, so the earliest
     plateaus read slightly high; and even spread flattens the burst right after
-    each release. Neither creates or destroys a download -- the timeline sums to
-    the same max-across-snapshots totals `_release_rollup` reports.
+    each release. Neither creates or destroys a download -- with `partial` the
+    timeline sums to the same max-across-snapshots totals `_release_rollup`
+    reports.
     """
-    from datetime import date as _date, timedelta
+    from datetime import date as _date, datetime as _dt, time as _time, timedelta
     one = timedelta(days=1)
+    zero = {'pcm': 0.0, 'zip': 0.0, 'bin': 0.0}
 
     def day(s):
         try:
@@ -534,10 +569,25 @@ def reign_downloads(releases, listed=None):
         except Exception:
             return None
 
+    def midnight(d):
+        return _dt.combine(d, _time())
+
+    def at(stamp):
+        """When a snapshot was taken: its recorded time, else its day's start."""
+        try:
+            t = _dt.fromisoformat(str((times or {}).get(stamp, '')).replace('Z', '+00:00'))
+            if t.tzinfo:
+                t = t.astimezone(timezone.utc).replace(tzinfo=None)
+        except ValueError:
+            t = None
+        # The key IS the collection date, so a time on another day is a
+        # corrupt record, not a fact to honour.
+        return t if t and t.date() == day(stamp) else midnight(day(stamp))
+
     stamps = [s for s in sorted(releases) if day(s)]
     if not stamps:
         return {}, None
-    s0 = day(stamps[0])
+    first = at(stamps[0])
     pub = {}
     for s in stamps:
         for tag, rel in (releases[s] or {}).items():
@@ -546,25 +596,29 @@ def reign_downloads(releases, listed=None):
     started = {t: day(p) for t, p in pub.items()}
     on_pcm = {t: day(d) for t, d in (listed or {}).items() if t in pub and day(d)}
     names = {n for n, _ in PLATFORMS}
-    series = (('pcm', lambda k: bool(_PCM_RE.match(k))), ('bin', lambda k: k in names))
+    kinds = (('zip', lambda k: bool(_PCM_RE.match(k))), ('bin', lambda k: k in names))
 
     out = {}
 
-    def book(a, b, mass, key):
-        """Spread `mass` evenly over the days [a, b)."""
-        n = (b - a).days
-        if mass <= 0 or n <= 0:
+    def book(t0, t1, mass, key):
+        """Spread `mass` evenly over the instants [t0, t1), day by day."""
+        span = (t1 - t0).total_seconds()
+        if mass <= 0 or span <= 0:
             return
-        for i in range(n):
-            cell = out.setdefault((a + i * one).isoformat(), {'pcm': 0.0, 'bin': 0.0})
-            cell[key] += mass / n
+        d = t0.date()
+        while midnight(d) < t1:
+            lo, hi = max(t0, midnight(d)), min(t1, midnight(d + one))
+            cell = out.setdefault(d.isoformat(), dict(zero))
+            cell[key] += mass * (hi - lo).total_seconds() / span
+            d += one
 
     def successor(start, starts):
         later = [d for d in starts if d > start]
         return min(later) if later else None
 
     for tag in sorted(pub, key=lambda t: pub[t]):
-        for key, pred in series:
+        for kind, pred in kinds:
+            key = _zip_series(tag, listed) if kind == 'zip' else 'bin'
             cum, peak = [], 0
             for s in stamps:
                 assets = ((releases[s] or {}).get(tag) or {}).get('assets') or {}
@@ -580,16 +634,19 @@ def reign_downloads(releases, listed=None):
                 end = successor(start, started.values())
             # Before the archive: the reign, cut at the first snapshot, and
             # never shorter than the release's own first day.
-            stop = min(end, s0) if end else s0
-            book(start, max(stop, start + one), cum[0], key)
+            lo = midnight(start)
+            hi = min(midnight(end), first) if end else first
+            book(lo, hi if hi > lo else lo + one, cum[0], key)
             for i in range(1, len(stamps)):
-                book(day(stamps[i - 1]), day(stamps[i]), cum[i] - cum[i - 1], key)
+                book(at(stamps[i - 1]), at(stamps[i]), cum[i] - cum[i - 1], key)
+    if not partial:
+        out = {d: v for d, v in out.items() if d < stamps[-1][:10]}
     # Every day present, zeros included: the chart places points by INDEX, so
     # a day with no downloads left out would silently squeeze the time axis.
     if out:
-        first, last = day(min(out)), day(max(out))
-        for i in range((last - first).days + 1):
-            out.setdefault((first + i * one).isoformat(), {'pcm': 0.0, 'bin': 0.0})
+        lo, hi = day(min(out)), day(max(out))
+        for i in range((hi - lo).days + 1):
+            out.setdefault((lo + i * one).isoformat(), dict(zero))
     return out, (stamps[0] if len(stamps) > 1 else None)
 
 
@@ -825,21 +882,28 @@ def pcm_card_hint(releases, store, pcm_tot):
     return f'largest single release: {head[0]} ({head[1]:,})'
 
 
-def _weekly_deltas(releases):
-    """Per-snapshot NEW downloads: cumulative counters differenced in time."""
+def _weekly_deltas(releases, listed=None):
+    """Per-snapshot NEW downloads: cumulative counters differenced in time.
+
+    Zips split the same way as the chart (`_zip_series`): PCM-listed releases
+    in 'pcm', every other zip in 'zip'.
+    """
     stamps = sorted(releases)
+    names = {n for n, _ in PLATFORMS}
+    preds = (('pcm', lambda t, k: bool(_PCM_RE.match(k)) and _zip_series(t, listed) == 'pcm'),
+             ('zip', lambda t, k: bool(_PCM_RE.match(k)) and _zip_series(t, listed) == 'zip'),
+             ('bin', lambda t, k: k in names))
     out = []
     for prev, cur in zip(stamps, stamps[1:]):
         a, b = releases[prev], releases[cur]
 
         def total(snap, pred):
-            return sum(v for rel in snap.values()
-                       for k, v in rel.get('assets', {}).items() if pred(k))
-        pcm = total(b, lambda k: bool(_PCM_RE.match(k))) - \
-            total(a, lambda k: bool(_PCM_RE.match(k)))
-        names = {n for n, _ in PLATFORMS}
-        binr = total(b, lambda k: k in names) - total(a, lambda k: k in names)
-        out.append({'date': cur, 'pcm': max(0, pcm), 'bin': max(0, binr)})
+            return sum(v for tag, rel in snap.items()
+                       for k, v in rel.get('assets', {}).items() if pred(tag, k))
+        row = {'date': cur}
+        for key, pred in preds:
+            row[key] = max(0, total(b, pred) - total(a, pred))
+        out.append(row)
     return out
 
 
@@ -850,17 +914,19 @@ def render(slug):
     meta = _load('meta.json', {})
 
     rows, plat_tot, pcm_tot = _release_rollup(releases)
-    deltas = _weekly_deltas(releases)
+    listings = _load('pcm_listings.json', {})
+    listed = pcm_listing_dates(listings)
+    deltas = _weekly_deltas(releases, listed)
     views, clones = traffic.get('views', {}), traffic.get('clones', {})
     last14 = sorted(views)[-14:]
 
     def _sum(d, days, key):
         return sum(d.get(x, {}).get(key, 0) for x in days)
 
-    listings = _load('pcm_listings.json', {})
     pcm_hint = pcm_card_hint(releases, listings, pcm_tot)
+    pcm_installs = sum(v for t, v in pcm_tot.items() if _zip_series(t, listed) == 'pcm')
     cards = [
-        ('PCM installs', f'{sum(pcm_tot.values()):,}', pcm_hint),
+        ('PCM installs', f'{pcm_installs:,}', pcm_hint),
         ('Router binaries', f'{sum(plat_tot.values()):,}',
          'prebuilt .so/.pyd, all releases'),
         ('Clones / 14d', f'{_sum(clones, last14, "count"):,}',
@@ -878,12 +944,15 @@ def render(slug):
     for r in rows[:14]:
         b = ' / '.join(f'{v:,}' for v in r['binaries'].values()) or '-'
         rel_html.append(
-            f'<tr><th>{_esc(r["tag"])}</th><td>{_esc(r["published"])}</td>'
+            f'<tr><th>{_esc(r["tag"])}'
+            f'{"<span class=part> PCM</span>" if r["tag"] in listed else ""}</th>'
+            f'<td>{_esc(r["published"])}</td>'
             f'<td class="num">{r["pcm"]:,}</td><td class="num">{b}</td>'
             f'<td class="num">{r["total"]:,}</td></tr>')
 
     delta_html = ''.join(
         f'<tr><th>{_esc(d["date"])}</th><td class="num">{d["pcm"]:,}</td>'
+        f'<td class="num">{format(d["zip"], ",") if listed else "—"}</td>'
         f'<td class="num">{d["bin"]:,}</td></tr>' for d in deltas[-12:])
 
     errs = meta.get('errors') or {}
@@ -896,31 +965,46 @@ def render(slug):
                     f'than a quiet week:<ul>{items}</ul>'
                     f'The traffic endpoints need a token with push access.</div>')
 
-    listed = pcm_listing_dates(listings)
-    spread, measured_from = reign_downloads(releases, listed)
-    dl_chart = _line_chart([
-        {'label': 'PCM zip installs/day', 'color': '#3b82f6',
+    spread, measured_from = reign_downloads(
+        releases, listed, _load('release_times.json', {}))
+    dl_series = [
+        {'label': 'PCM installs/day', 'color': '#3b82f6',
          'points': {d: v['pcm'] for d, v in spread.items()}},
         {'label': 'router binaries/day', 'color': '#f97316',
          'points': {d: v['bin'] for d, v in spread.items()}},
-    ], height=220, mark=measured_from and (
+    ]
+    if listed:
+        # Dashed as well as a third hue: aqua sits close to the blue for a
+        # tritan reader (ΔE 6.2), so the dash carries identity on its own.
+        dl_series.append({'label': 'direct zip downloads/day', 'color': '#1baf7a',
+                          'dash': True,
+                          'points': {d: v['zip'] for d, v in spread.items()}})
+    dl_chart = _line_chart(dl_series, height=220, mark=measured_from and (
         measured_from, f'measured from {measured_from}; estimated before'))
     if measured_from:
         dl_head = (f'Estimated before {_esc(measured_from)}, measured from '
                    f'then on.')
         dl_measured = (f'From {_esc(measured_from)} on, every point is the '
-                       f'difference between two daily snapshots, with no '
-                       f'assumption at all, and that part of the chart only '
-                       f'grows.')
+                       f'difference between two snapshots, spread over the '
+                       f'hours between them, with no assumption at all; '
+                       f'today is left out until it is over, because a part-day '
+                       f'always looks like a collapse.')
     else:
         dl_head = 'Estimated rate, not a measurement — yet.'
         dl_measured = ('Once the archive holds two snapshots, the days after '
                        'the first are measured directly instead.')
-    dl_unlisted = '' if listed else (
+    dl_split = (
+        ' <strong>The PCM line counts only the zips of releases PCM '
+        'listed.</strong> Every other zip is on the dashed line as a direct '
+        'download, because PCM cannot install a version it does not list: '
+        'those come from the release page, or from automation (a release '
+        'superseded two months earlier once took 415 zip downloads in a day, '
+        'with its Linux binary climbing alongside and nothing else).'
+        if listed else
         ' <strong>The PCM listing history could not be read</strong>, so the '
-        'PCM line treats every release as served by PCM in turn, which it was '
-        'not: its early plateaus are unreliable until a collection reaches '
-        'GitLab.')
+        'PCM line counts every zip and treats every release as served by PCM '
+        'in turn, neither of which is true: it is unreliable until a '
+        'collection reaches GitLab.')
 
     wk = weekly_rollup(traffic)
     _wk_rows = []
@@ -997,6 +1081,7 @@ th {{ font-weight:600 }}
 .key i {{ display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px }}
 .key {{ margin-right:14px }}
 .mark {{ stroke:var(--muted); stroke-dasharray:4 3 }}
+.key i.ds {{ height:0; border-radius:0; border-top:2px dashed; vertical-align:3px }}
 .key i.mk {{ width:0; height:11px; border-radius:0; border-left:2px dashed var(--muted);
   vertical-align:-1px }}
 .muted {{ color:var(--muted) }}
@@ -1035,11 +1120,11 @@ began serving a version, read from the merge history of
 version and skips every release in between. The measured days show why this
 is the right window: when a successor arrives, the old release drops to a
 trickle within a day. So a level of interest that stays flat draws a flat
-line, however many releases have been published.{dl_unlisted} <strong>Two
+line, however many releases have been published.{dl_split} <strong>Two
 known biases remain in the estimate:</strong> the trickle a superseded release
 keeps gathering is counted inside its own reign, so the earliest plateaus read
 slightly high, and even spread flattens the burst right after each release.
-{dl_measured} Exact per-release totals are in the table below; the two series
+{dl_measured} Exact per-release totals are in the table below; the series
 are never added together.</p>
 
 <h2>Daily views and clones</h2>
@@ -1090,7 +1175,7 @@ it.</p>
 
 <h2>Downloads per release</h2>
 <div class="wrap"><table>
-<tr><th>release</th><th>published</th><th class="num">PCM zip</th>
+<tr><th>release (PCM = listed)</th><th>published</th><th class="num">zip</th>
 <th class="num">binaries (L/W/M)</th><th class="num">total</th></tr>
 {''.join(rel_html)}
 </table></div>
@@ -1106,8 +1191,9 @@ rather than a user count.</p>
 
 <h2>New downloads between snapshots</h2>
 <div class="wrap"><table>
-<tr><th>snapshot</th><th class="num">new PCM</th><th class="num">new binaries</th></tr>
-{delta_html or '<tr><td colspan="3" class="muted">needs two snapshots</td></tr>'}
+<tr><th>snapshot</th><th class="num">new PCM</th><th class="num">new direct zips</th>
+<th class="num">new binaries</th></tr>
+{delta_html or '<tr><td colspan="4" class="muted">needs two snapshots</td></tr>'}
 </table></div>
 
 <h2>Platform mix</h2>
