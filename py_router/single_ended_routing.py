@@ -136,12 +136,19 @@ def _foreign_pad_arrays(pcb_data, layer):
     cache = cache[1]
     arr = cache.get(layer)
     if arr is None:
+        # #1046: a pad's layer list keeps KiCad's `F&B.Cu` token as written,
+        # which is neither `layer` nor `*.Cu`, so the old membership test left
+        # every such pad (a through-hole pad on F and B only) out of every
+        # sampled foreign-pad check. Expanding against [layer] alone keeps the
+        # old answer for `*.Cu` (every copper layer, so this one) and needs no
+        # board layer list, which a hand-built PCBData may not carry.
+        from net_queries import expand_pad_layers
         nids, cx, cy, hx, hy, cr = [], [], [], [], [], []
         rc, rs, ex, ey, lc = [], [], [], [], []
         custom = []  # (net_id, pad) -- exact-outline pads handled per-pad
         for nid, pads in pcb_data.pads_by_net.items():
             for pad in pads:
-                if layer in pad.layers or '*.Cu' in pad.layers:
+                if layer in expand_pad_layers(pad.layers, [layer]):
                     if getattr(pad, 'polygons', None):
                         # CUSTOM pad with real polygon outline(s): the rounded
                         # rect model would use its bounding box, which both
