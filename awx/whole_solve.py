@@ -96,6 +96,13 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
             for n in M}
     VIN1 = {n: (_pairs.dive_room(ctx.cfg, ctx.pair_ends[n][1], _axis(ctx.stub_dir.get(n))) if n in prs else END_ROOM)
             for n in M}
+    # ...a CROSSED pair's (pairs.opposite_hands: its legs swap once, at its first dive, a crossover) by the crossover's
+    # own runs (pairs.crossover_room) -- its first change from its tooth, and at its berth where that change is its only
+    # one; its other changes are plain dives, and its changes' cuts are the crossover's, the longer
+    XO = {n for n in prs if n in M and _pairs.opposite_hands(ctx, n)}
+    for n in XO:
+        VIN0[n] = _pairs.crossover_room(ctx.cfg, ctx.pair_ends[n][0], _axis(ctx.tooth_dir.get(n)), 0)
+        VIN1[n] = max(VIN1[n], _pairs.crossover_room(ctx.cfg, ctx.pair_ends[n][1], _axis(ctx.stub_dir.get(n)), 1))
     # a PAIR's KNOWN TURNS: the pair router neither turns at its via nor within its straight run of one, so its changes
     # stay out of every stretch of its route where the frames already turn (below, as built-in via cuts) -- and, where an
     # end's stub stands more than its connector's 45 degrees off the route's own way there, beyond the turn onto that way
@@ -103,6 +110,9 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
     # berth -- only the geometry knows, and it and the polish send those (whole_geo / whole_polish vcuts)
     TURN_DEG = 22.5
     L_DIVE = _pairs.via_straight(ctx.cfg, (math.sqrt(0.5), math.sqrt(0.5))) + ctx.cfg.grid_step   # the longer (diagonal) run
+    _xs = _pairs.crossover_shape(ctx.cfg, (math.sqrt(0.5), math.sqrt(0.5)))
+    L_XO = (max(_xs[1], _xs[2]) + ctx.cfg.grid_step) if _xs else L_DIVE                        # ... a crossover's
+    LD = lambda n: L_XO if n in XO else L_DIVE
 
 
     def turn_room(deg):
@@ -132,9 +142,9 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
             th = _deg((esc[0] * sg, esc[1] * sg), rd) - 45.0         # what the connector's 45 degrees leave to turn
             if th >= TURN_DEG:
                 if k_ == 0:
-                    VIN0[n] += 2 * turn_room(th) + L_DIVE
+                    VIN0[n] += 2 * turn_room(th) + LD(n)
                 else:
-                    VIN1[n] += 2 * turn_room(th) + L_DIVE
+                    VIN1[n] += 2 * turn_room(th) + LD(n)
     print('classes:', dict(collections.Counter(bname.get(n, 'W') for n in M)), 'W ends', sorted(round(end[n], 2) for n in M if n not in bname))
     Ln, Fn = list(Fr.launch), list(Fr.final)                  # both north to south (whole_frame)
     li = {n: i for i, n in enumerate(Ln)}; fi = {n: i for i, n in enumerate(Fn)}
@@ -188,7 +198,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
             dh = _deg(route_dir(n, Hn[n] - G), route_dir(n, Hn[n] + G))
             if dh >= TURN_DEG and entry[n] < Hn[n] < end[n]:
                 turns.append((Hn[n], dh))
-        VCUTS += [{'lane': n, 'u': u_, 'w': L_DIVE + turn_room(d_)} for u_, d_ in turns]
+        VCUTS += [{'lane': n, 'u': u_, 'w': LD(n) + turn_room(d_)} for u_, d_ in turns]
     if len(VCUTS) > NVC0:
         print(f'   built-in via cuts at the pairs\' known turns: {len(VCUTS) - NVC0}')
     # ...and at the OTHER PARTS' PADS on the trunk and the TEETH of the nets outside the bus (whole_ctx.foreign_teeth:
@@ -208,7 +218,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
     for (px_, py_), rp_ in items:
         sp_, op_ = (float(v_) for v_ in spine.project_pt((px_, py_)))
         for n in M:
-            w_ = rp_ + VIA / 2 + CLR + (L_DIVE if n in prs else 0.0)
+            w_ = rp_ + VIA / 2 + CLR + (LD(n) if n in prs else 0.0)
             if not (entry[n] < sp_ + w_ and sp_ - w_ < tend[n]):       # the stretch reaches into the trunk's route
                 continue
             if abs(whole_frame.ref(Fr, n, sp_) - op_) < rp_ + VIA / 2 + CLR + off_[n] + PITCH:

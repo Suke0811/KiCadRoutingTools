@@ -140,6 +140,25 @@ def via_idx(n):
 OCT = [np.array(v, float) / math.hypot(*v) for v in ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1))]
 
 
+# a crossed pair's CROSSOVER not yet laid (pairs.opposite_hands: its legs swap once, at its first dive): its two barrels
+# on ONE side, staggered along it, and its own straight runs either way (pairs.crossover_shape) -- on the side with
+# the more room from the other lanes when first asked (whole_snap lays it on the side that leaves them the most), as the
+# audit measures it
+XO_SIDE = {}
+
+
+def xo_at(n, i):
+    """is lane n's via vertex i its crossover (a crossed pair's first dive, not yet laid)?"""
+    return n in prs and n not in HELD and _pairs.opposite_hands(ctx, n) and bool(via_idx(n)) and i == via_idx(n)[0]
+
+
+def xo_runs(u, side=1):
+    """a crossover's straight runs (before, after) on heading u, and a grid step more each way, as a dive's"""
+    sh = _pairs.crossover_shape(cfg, (float(u[0]), float(u[1])), side)
+    L_ = _pairs.via_straight(cfg, u)
+    return ((sh[1] if sh else L_) + cfg.grid_step, (sh[2] if sh else L_) + cfg.grid_step)
+
+
 def octi(u):
     """the router direction (0, 45, 90 ... degrees) nearest u"""
     return max(OCT, key=lambda o: float(o @ np.asarray(u, float)))
@@ -489,6 +508,18 @@ def barrels(n, i):
         d = X[i + 1] - X[i]
     d = d / max(np.linalg.norm(d), 1e-12)
     nn = np.array([-d[1], d[0]])
+    if xo_at(n, i):
+        if n not in XO_SIDE:
+            def room_(side):
+                sh = _pairs.crossover_shape(cfg, (float(d[0]), float(d[1])), side)
+                if sh is None:
+                    return -math.inf
+                return min(float(np.linalg.norm(X[i] + a_ * d + c_ * nn - q_)) for a_, c_ in sh[0]
+                           for m, v_ in LANES.items() if m != n for q_ in v_['X'])
+            XO_SIDE[n] = max((1, -1), key=room_)
+        sh = _pairs.crossover_shape(cfg, (float(d[0]), float(d[1])), XO_SIDE[n])
+        if sh is not None:
+            return [a_ * d + c_ * nn for a_, c_ in sh[0]]
     return [nn * OFF, -nn * OFF]
 
 
@@ -838,6 +869,8 @@ def pair_approaches():
             # (a dive inside the end run as well: the end run is short, a grid step or two past the connector's pose,
             # and the dive is moved out along the line to where the router can make it)
             Lst = _pairs.via_straight(cfg, (1.0, 1.0)) + cfg.grid_step
+            if _pairs.opposite_hands(ctx, n):
+                Lst = max(Lst, max(xo_runs((1.0, 1.0))))               # (its first dive a crossover)
             vn = sorted(v for v in vs if v > 1)
             joined = None
             if u is not None and vn and s[vn[0]] - Lst <= sb + Lst:
@@ -848,7 +881,9 @@ def pair_approaches():
                 A = A0 + c2 * sbk
                 # the router may dive once its probe past the pose and its straight run into a via are both behind it
                 # -- both are counted from the pose (whole_snap's search: its straight count starts there)
-                Pv = A0 + c2 * max(float(w @ c2), sbk, _pairs.via_straight(cfg, c2) + cfg.grid_step)
+                vi_ = v0 if end == 0 else len(Ls) - v0                 # (the vertex in the lane's own order)
+                Lv_ = xo_runs(c2)[end] if xo_at(n, vi_) else _pairs.via_straight(cfg, c2) + cfg.grid_step
+                Pv = A0 + c2 * max(float(w @ c2), sbk, Lv_)
                 joined = (v0, Pv)
                 DIVE_U[(n, v0 if end == 0 else len(Ls) - v0)] = c2 if end == 0 else -c2
             new = X.copy()
@@ -908,18 +943,20 @@ def pair_dive_straights():
             joined = (n, v) in DIVE_U
             u = DIVE_U.get((n, v), octi(at(s[v] + reach) - at(s[v] - reach)))
             L = _pairs.via_straight(cfg, u) + cfg.grid_step
-            ib = int(np.searchsorted(s, s[v] - L, side='left'))
-            ia = int(np.searchsorted(s, s[v] + L, side='right')) - 1
+            Lb_, La_ = xo_runs(u, XO_SIDE.get(n, 1)) if xo_at(n, v) else (L, L)      # (a crossover's own runs)
+            L = max(Lb_, La_)
+            ib = int(np.searchsorted(s, s[v] - Lb_, side='left'))
+            ia = int(np.searchsorted(s, s[v] + La_, side='right')) - 1
             lay_b = not (joined and ln['H'][v - 1])
             lay_a = not (joined and ln['H'][min(v + 1, len(X) - 1)])
-            if (lay_b and (s[v] - L < 0 or ib >= v or ln['H'][ib:v].any())) \
-                    or (lay_a and (s[v] + L > s[-1] or ia <= v or ln['H'][v + 1:ia + 1].any())) \
+            if (lay_b and (s[v] - Lb_ < 0 or ib >= v or ln['H'][ib:v].any())) \
+                    or (lay_a and (s[v] + La_ > s[-1] or ia <= v or ln['H'][v + 1:ia + 1].any())) \
                     or (not joined and ln['H'][v]):
                 laid.append(f'{n}@{v} not laid (an end or a held stretch within {L:.3f})')
                 via_cut(n, v, L)
                 continue
             new = X.copy()
-            P0, Pb, Pa = X[v], X[v] - u * L, X[v] + u * L
+            P0, Pb, Pa = X[v], X[v] - u * Lb_, X[v] + u * La_
             if lay_b:
                 for i in range(ib, v):
                     new[i] = Pb + (P0 - Pb) * ((s[i] - s[ib]) / max(s[v] - s[ib], 1e-12))
@@ -929,8 +966,8 @@ def pair_dive_straights():
                     new[i] = P0 + (Pa - P0) * ((s[i] - s[v]) / max(s[ia] - s[v], 1e-12))
                 new[ia] = Pa
             # the lane runs straight into the held stretch from a straight run's length further on each side
-            jb = int(np.searchsorted(s, s[ib] - L, side='left'))
-            ja = int(np.searchsorted(s, s[ia] + L, side='right')) - 1
+            jb = int(np.searchsorted(s, s[ib] - Lb_, side='left'))
+            ja = int(np.searchsorted(s, s[ia] + La_, side='right')) - 1
             if lay_b and 0 < jb < ib and not ln['H'][jb:ib].any() and not any(jb < w < ib for w in via_idx(n)):
                 for i in range(jb + 1, ib):
                     new[i] = X[jb] + (Pb - X[jb]) * ((i - jb) / (ib - jb))

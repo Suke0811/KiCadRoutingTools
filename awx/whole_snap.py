@@ -779,7 +779,10 @@ def route(n, strict=True):
         def xo(i, j, d):
             key = (i, j, d)
             if key not in XO:
-                XO[key] = crossover_at(n, ((i + i0) * g, (j + j0) * g), d, hand0, lays[0], lays[-1])
+                # (its first dive: from the first layer to the SECOND -- the last only when it is the lane's one dive; a
+                # crossover laid F to F had its new layer's legs on the old layer's copper, and none cleared: K41
+                # SDQS0, F-B-F, could not be laid at all)
+                XO[key] = crossover_at(n, ((i + i0) * g, (j + j0) * g), d, hand0, lays[0], lays[1])
             return XO[key]
 
         def xo_steps(d):

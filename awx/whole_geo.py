@@ -65,6 +65,13 @@ G = 4 * ctx.cfg.grid_step                 # a column: four router grid steps
 # run, in columns
 W_DIVE = int(math.ceil((_pairs.via_straight(ctx.cfg, (math.sqrt(0.5), math.sqrt(0.5))) + ctx.cfg.grid_step) / G - 1e-9))
 W_TURN = int(math.ceil(_pairs.turn_straight_steps(ctx.cfg) * ctx.cfg.grid_step / G - 1e-9))
+# ...and a crossed pair's CROSSOVER (pairs.opposite_hands: its legs swap once, at its first dive): the crossover's own
+# runs before and after it (pairs.crossover_shape, on the diagonal as W_DIVE), and its two barrels on ONE side of the
+# pair, staggered along it -- no via's room on its other side at all
+_XS = _pairs.crossover_shape(ctx.cfg, (math.sqrt(0.5), math.sqrt(0.5)))
+W_XB, W_XA = ((int(math.ceil((_XS[1] + ctx.cfg.grid_step) / G - 1e-9)), int(math.ceil((_XS[2] + ctx.cfg.grid_step) / G - 1e-9)))
+              if _XS else (W_DIVE, W_DIVE))
+XO_B = [(a_, abs(c_)) for a_, c_ in _pairs.crossover_shape(ctx.cfg, (1.0, 0.0))[0]] if _XS else []   # (along, across)
 HOLD = max(1, int(round(TW / G)))                 # a tooth / west-face berth stub held straight a track's width
 EXC = max(2, int(math.ceil(bd.LANE_MIN / G)))     # the box margin waived a lane pitch from the lane's own terminal
 P_MIN = max(P_MIN, TW + CL + 2 * GRID2)      # two planned lines: each lands up to half a grid step off (the router's bar)
@@ -95,6 +102,8 @@ VS = {n: (VIA_R + PP / 2 if n in prs else VIA_R) for n in M}
 # routers stand them): its room is a single via's along the lane, widened across by that offset
 VX = {n: (_pairs.dive_offset(ctx.cfg, PP / 2) if n in prs else 0.0) for n in M}
 ring_sp, bend_xy = Fr.rings, Fr.bend
+XO_AT = {n: min(J['changes'].get(n) or [math.inf]) for n in M if n in prs and _pairs.opposite_hands(ctx, n)}
+is_xo = lambda n, cu: n in XO_AT and abs(cu - XO_AT[n]) < 1e-9       # the change that is the pair's crossover
 
 
 def below(a, b, u):
@@ -517,13 +526,29 @@ def build_and_solve(sides, prev=None):
             vias.append((f, n, cu, kc))
             jc = var[(f, n, kc)]
             r = VIA_R if VX[n] else VS[n]
-            for k in range(int(math.floor((s_c - r) / G)), int(math.ceil((s_c + r) / G)) + 1):
+            # (a plain dive: its barrel(s) at the site, VX either side; a CROSSOVER: its two barrels along it, on the
+            # side with the more room in the first pass -- both sides in the first pass itself)
+            bar_ = [(0.0, VX[n], 0)]
+            if is_xo(n, cu):
+                side_ = 0
+                od_c = orders.get((f, kc), [])
+                if prev is not None and n in od_c:
+                    ic = od_c.index(n)
+                    o_n = prev.get((f, n, kc), 0.0)
+                    up_ = min((prev.get((f, od_c[j], kc), o_n) - o_n for j in range(ic + 1, len(od_c))), default=9.0)
+                    dn_ = min((o_n - prev.get((f, od_c[j], kc), o_n) for j in range(ic - 1, -1, -1)), default=9.0)
+                    side_ = 1 if up_ >= dn_ else -1
+                bar_ = [(a_, c_, side_) for a_, c_ in XO_B]
+            for (a_b, c_b, sd_b) in bar_:
+              s_b = s_c + a_b
+              jb_ = var.get((f, n, int(round(s_b / G))), jc)     # the lane where the barrel stands along it
+              for k in range(int(math.floor((s_b - r) / G)), int(math.ceil((s_b + r) / G)) + 1):
                 if (f, k) not in orders or (f, n, k) not in var:
                     continue
-                ds = k * G - s_c
+                ds = k * G - s_b
                 if abs(ds) >= r:
                     continue
-                h = math.sqrt(r * r - ds * ds) + VX[n]
+                h = math.sqrt(r * r - ds * ds) + c_b
                 od = orders[(f, k)]
                 i = od.index(n)
                 # the neighbour's LINE a via's room off: its offset at this column, slope corrected
@@ -542,6 +567,8 @@ def build_and_solve(sides, prev=None):
                             nbs.append(nb_)
                 for nb in nbs:
                     up = od.index(nb) > i
+                    if sd_b and (sd_b > 0) != up:
+                        continue                     # (a crossover's barrels are all on its other side)
                     jm = var[(f, nb, k)]
                     segs_ = [(var[(f, nb, k + 1)], jm)] if (f, nb, k + 1) in var else []
                     segs_ += [(jm, var[(f, nb, k - 1)])] if (f, nb, k - 1) in var else []
@@ -551,11 +578,11 @@ def build_and_solve(sides, prev=None):
                         need += G / 4          # its terminal is drawn exact, up to half a column from its column
                     sg = 1.0 if up else -1.0
                     # up: o_m - o_v >= need * (al + be * k_m)   down: o_v - o_m >= need * (al - be * k_m)
-                    le([(jc, sg), (jm, -sg)], -need, ('via', f, k, n, nb))
+                    le([(jb_, sg), (jm, -sg)], -need, ('via', f, k, n, nb))
                     for (j1, j0) in segs_:
                         for t0_, sc_ in tangents([(j1, j0)]):
                             al, be = sc_ / math.sqrt(1 + t0_ ** 2), sc_ * t0_ / math.sqrt(1 + t0_ ** 2)
-                            terms = [(jc, sg), (jm, -sg), (j1, sg * need * be / G), (j0, -sg * need * be / G)]
+                            terms = [(jb_, sg), (jm, -sg), (j1, sg * need * be / G), (j0, -sg * need * be / G)]
                             le(terms, -need * al, ('via', f, k, n, nb))
     for i, (f, n, cu, kc) in enumerate(vias):
         for (f2, m_, cu2, kc2) in vias[i + 1:]:
@@ -661,15 +688,16 @@ def build_and_solve(sides, prev=None):
             continue
         v = PIECE[(f, n)]
         tag = ('pdive', f, kc, n)
-        if v['o1'] is not None and v['k1'] - kc <= v['hold1'] + W_DIVE + W_TURN:
-            for k in range(max(v['k0'], kc - W_DIVE), v['k1'] - v['hold1']):
+        wb, wa = (W_XB, W_XA) if is_xo(n, cu) else (W_DIVE, W_DIVE)     # (a crossover's runs are its own)
+        if v['o1'] is not None and v['k1'] - kc <= v['hold1'] + wa + W_TURN:
+            for k in range(max(v['k0'], kc - wb), v['k1'] - v['hold1']):
                 le([(var[(f, n, k)], 1.0)], v['o1'], tag); le([(var[(f, n, k)], -1.0)], -v['o1'], tag)
             continue
-        if v['o0'] is not None and kc - v['k0'] <= v['hold0'] + W_DIVE + W_TURN:
-            for k in range(v['k0'] + v['hold0'] + 1, min(v['k1'], kc + W_DIVE) + 1):
+        if v['o0'] is not None and kc - v['k0'] <= v['hold0'] + wb + W_TURN:
+            for k in range(v['k0'] + v['hold0'] + 1, min(v['k1'], kc + wa) + 1):
                 le([(var[(f, n, k)], 1.0)], v['o0'], tag); le([(var[(f, n, k)], -1.0)], -v['o0'], tag)
             continue
-        for k in range(max(v['k0'] + 1, kc - W_DIVE + 1), min(v['k1'] - 1, kc + W_DIVE - 1) + 1):
+        for k in range(max(v['k0'] + 1, kc - wb + 1), min(v['k1'] - 1, kc + wa - 1) + 1):
             a_, b_, p_ = var[(f, n, k - 1)], var[(f, n, k)], var[(f, n, k + 1)]
             le([(p_, 1.0), (b_, -2.0), (a_, 1.0)], 0.0, tag)
             le([(p_, -1.0), (b_, 2.0), (a_, -1.0)], 0.0, tag)
@@ -1128,7 +1156,7 @@ for q in sol['paid'].get('pdive', []):
     for (f2, n2, cu, kc2) in sol['vias']:
         if f2 == f and n2 == n and kc2 == kc and (n, round(cu, 3)) not in vseen:
             vseen.add((n, round(cu, 3)))
-            vcuts.append({'lane': n, 'u': cu, 'w': W_DIVE * G})
+            vcuts.append({'lane': n, 'u': cu, 'w': (max(W_XB, W_XA) if is_xo(n, cu) else W_DIVE) * G})
 res['vcuts'] = vcuts
 res['flips'] = sorted(FLIP)
 res['changes'] = {n: sorted(J['changes'].get(n, [])) for n in res['lanes']}    # each lane's changes in route u, in order

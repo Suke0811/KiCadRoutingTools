@@ -357,6 +357,35 @@ def crossover(V, u, s_in: int, half: float, via_size: float, via_half: float, tr
                 legs=legs, vias=vias, span=(pose_in, pose_out))
 
 
+def crossover_shape(cfg, u, side: int = 1):
+    """A crossed pair's CROSSOVER (crossover) at its dive, on the unit heading u, its barrels on `side` of the pair
+    (+1 left of u, -1 right: the first diver's old line, which of its legs dives first): -> (barrels [(along, across)]
+    from the dive's centre, the straight run (mm) the pair router takes before it, after it). The runs are the
+    crossover's span to each pose and pose_probe_steps past it (whole_snap's search owes exactly those); the barrels
+    stand on one side, staggered along u. A plain dive's are one either side at dive_offset across, and via_straight
+    each way: a crossover takes more length, and no room at all on its other side. None when no crossover fits."""
+    ul = math.hypot(u[0], u[1])
+    ux, uy = u[0] / ul, u[1] / ul
+    half = pitch(cfg.track_width) / 2
+    c = crossover((0.0, 0.0), (ux, uy), side, half, cfg.via_size, dive_offset(cfg, half), cfg.track_width,
+                  cfg.clearance, cfg.grid_step, 'F.Cu', 'B.Cu', floor=handover_setback(cfg))
+    if c is None:
+        return None
+    step = cfg.grid_step / max(abs(ux), abs(uy))
+    barrels = [(x * ux + y * uy, -x * uy + y * ux) for x, y, _k in c['vias']]
+    return barrels, -c['span'][0] + pose_probe_steps(cfg) * step, c['span'][1] + pose_probe_steps(cfg) * step
+
+
+def crossover_room(cfg, tips, u=None, end: int = 0) -> float:
+    """How far from its two tips (at its tooth, end 0, or its berth, 1) a pair's CROSSOVER may stand: its end connector
+    onto the pose, then the router's straight from the pose to the crossover (its probe past the pose, or the
+    crossover's own run that way where that is longer) -- dive_room, for the crossover's runs"""
+    uu = u if u is not None else (math.sqrt(0.5), math.sqrt(0.5))
+    sh = crossover_shape(cfg, uu)
+    run = sh[1 + end] if sh is not None else via_straight(cfg, uu)
+    return end_connector(cfg, tips) + handover_setback(cfg) + max(probe_len(cfg, u), run)
+
+
 def envelope_via_half(cfg, half: float) -> float:
     """How far each barrel stands from the centreline at a dive the ENVELOPE
     lays (connect.py: the crossover and the routed end connectors): half a

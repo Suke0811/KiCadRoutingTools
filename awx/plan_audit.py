@@ -427,6 +427,19 @@ def _dive_straight(pieces, s, tol=1e-4):
     return (la, ua), (lb, (-ub[0], -ub[1]))
 
 
+def _arc_at(pieces, s):
+    """how far along a centreline [(p, q, layer)] the point nearest s stands"""
+    acc, best = 0.0, (math.inf, 0.0)
+    for p, q, _L in pieces:
+        ln = math.hypot(q[0] - p[0], q[1] - p[1])
+        t = 0.0 if ln < 1e-12 else max(0.0, min(1.0, ((s[0] - p[0]) * (q[0] - p[0]) + (s[1] - p[1]) * (q[1] - p[1])) / ln ** 2))
+        d = math.hypot(p[0] + t * (q[0] - p[0]) - s[0], p[1] + t * (q[1] - p[1]) - s[1])
+        if d < best[0]:
+            best = (d, acc + t * ln)
+        acc += ln
+    return best[1]
+
+
 def check_dives(ctx, corridors, show_all=False):
     cfg = ctx.cfg
     VR, CL, TW = cfg.via_size / 2, cfg.clearance, cfg.track_width
@@ -474,6 +487,40 @@ def check_dives(ctx, corridors, show_all=False):
         # a track's ring from them
         ring_one = _pairs.via_ring(cfg, 0.0)
         leg_lines = {om: [tuple(lg[:3]) for lg in lines[om]] for om in M if om in pairs}
+        # a crossed pair's CROSSOVER not yet laid (pairs.opposite_hands: its legs swap once, at its first dive; laid,
+        # `cross` names its barrels exactly): its two barrels on ONE side of the pair, staggered along its heading, and
+        # its own straight runs (pairs.crossover_shape) -- on the side with the more room, as whole_snap lays it. As a
+        # plain dive it was audited one barrel either side and the plain run each way: K41 SDQS0's passed, and the
+        # pair router could not lay the 0.4 mm straight the crossover needs past it
+        def room_at(nm, x, y):
+            r_ = [dseg(x, y, p, q) - ring[om] for om in M if om != nm for (p, q, _L) in ring_lines[om]]
+            r_ += [dseg(x, y, (s_.start_x, s_.start_y), (s_.end_x, s_.end_y)) - s_.width / 2 - (VR + CL)
+                   for s_ in ctx.base_segments if s_.net_id not in own[nm]]
+            r_ += [_pad_edge(x, y, pd, 0.0) - (VR + CL) for _r, pd in pads if pd.net_id not in own[nm]
+                   and abs(pd.global_x - x) < REACH_ and abs(pd.global_y - y) < REACH_]
+            return min(r_, default=9.0)
+        xsite = {}
+        for nm in M:
+            if nm not in pairs or cross[nm] is not None or not sites[nm] or not _pairs.opposite_hands(ctx, nm):
+                continue
+            pcs_ = centre([nm])
+            s0 = min(sites[nm], key=lambda s_: _arc_at(pcs_, s_))
+            st0 = _dive_straight(pcs_, s0)
+            if st0 is None:
+                continue
+            u_ = st0[0][1]
+            best_ = None
+            for side in (1, -1):
+                sh = _pairs.crossover_shape(cfg, u_, side)
+                if sh is None:
+                    continue
+                bs = [(s0[0] + a_ * u_[0] - c_ * u_[1], s0[1] + a_ * u_[1] + c_ * u_[0]) for a_, c_ in sh[0]]
+                rm = min(room_at(nm, x_, y_) for x_, y_ in bs)
+                if best_ is None or rm > best_[0]:
+                    best_ = (rm, side, bs)
+            if best_ is not None:
+                xsite[(nm, s0)] = best_[1]
+                barrels[nm][s0] = best_[2]
         for nm in M:
             for s in sites[nm]:
                 n_sites += 1
@@ -530,6 +577,9 @@ def check_dives(ctx, corridors, show_all=False):
                     if st_ is not None:
                         (lb, ub), (la, ua) = st_
                         need_b, need_a = _pairs.via_straight(cfg, ub), _pairs.via_straight(cfg, ua)
+                        if (nm, s) in xsite:
+                            need_b = _pairs.crossover_shape(cfg, ub, xsite[(nm, s)])[1]
+                            need_a = _pairs.crossover_shape(cfg, ua, xsite[(nm, s)])[2]
                         turn_ = ub[0] * ua[0] + ub[1] * ua[1] < 1 - 1e-6
                         if turn_ or lb < need_b - 1e-6 or la < need_a - 1e-6:
                             hits.append(f'straight {lb:.3f}/{need_b:.3f} before, {la:.3f}/{need_a:.3f} after'
@@ -547,11 +597,16 @@ def check_dives(ctx, corridors, show_all=False):
                         ub, ua = (st_[0][1], st_[1][1]) if st_ is not None else ((1.0, 0.0), (1.0, 0.0))
                         need0 = _pairs.dive_room(cfg, ctx.pair_ends[nm][0], ub)
                         need1 = _pairs.dive_room(cfg, ctx.pair_ends[nm][1], ua)
+                        if (nm, s) in xsite:
+                            need0 = _pairs.crossover_room(cfg, ctx.pair_ends[nm][0], ub, 0)
+                            need1 = _pairs.crossover_room(cfg, ctx.pair_ends[nm][1], ua, 1)
                         if a0 < need0 - 1e-6 or a1 < need1 - 1e-6:
                             hits.append(f'end {a0:.3f}/{need0:.3f} from its tooth, {a1:.3f}/{need1:.3f} from its berth')
                             fail['end'] += 1
                 if hits or show_all:
                     tag = ' pair' if nm in pairs and s not in exact_b[nm] else (' crossover' if nm in pairs else '')
+                    if (nm, s) in xsite:
+                        tag = ' crossover (planned)'
                     print(f'DIVE {nm:7s} ({s[0]:7.2f},{s[1]:6.2f}){tag}  ' + ('; '.join(hits) if hits else 'ok'))
             # a pair with END CONNECTORS: the pair router runs pose to pose, and from a pose it looks
             # pairs.pose_probe_steps straight ahead before it accepts it -- that many grid steps straight along the

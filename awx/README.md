@@ -165,12 +165,12 @@ braid planner, no human ends. Every lane in its band at once, every net
 connected, DRC-clean; counted as every via and millimetre of the run's
 nets on each board, the human's counted the same way:
 
-| | K15 | K28 | K35 |
-|---|---|---|---|
-| the whole route on our own ends | **12 v, 187 mm** | **32 v, 540 mm** | **58 v, 745 mm** |
-| human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm |
-| rounds | one fanout | one fanout | one fanout |
-| fanout to checked route | 34 s | 166 s | 287 s |
+| | K15 | K28 | K35 | K41 |
+|---|---|---|---|---|
+| the whole route on our own ends | **10 v, 199 mm** | **30 v, 580 mm** | **58 v, 779 mm** | **70 v, 972 mm** |
+| human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm | 70 v, 1081 mm |
+| rounds | one fanout | one fanout | one fanout | two fanouts |
+| fanout to checked route | 37 s | 133 s | 237 s | 1043 s |
 
 ## The pack (`pack_board.py`, opt-in)
 
@@ -838,7 +838,10 @@ with the whole route's own ends model.
   `select_moves.VIA_MM` a via, then CONGESTION on the trunk between the
   arrays -- each lane's load there (the room its crossings and changes
   take, over the trunk's length) priced by the square of its excess over
-  half, and each crossing there a twentieth of a via. Searched one
+  half, and each crossing there a fifth of a via: the solve's work follows
+  its crossings, not its vias (K35 at 131 crossings proved in 10 s, at 163
+  in 121 s; K41's ends at a twentieth of a via stalled unproved, at a fifth
+  they prove in 26-38 s, for a few mm of ride). Searched one
   lane's tooth or berth at a time (one other lane ejected where it is in
   the way), then iterated from seeded random kicks; first with the teeth as
   laid, then with the teeth free from the berths just chosen. The fanout
@@ -1025,7 +1028,16 @@ with the whole route's own ends model.
   jog's clearance -- on the side where the singles not yet laid leave
   room for its barrels. It is laid as drawn; the search reserves its half-span
   and the router's probe on each side, and the pair router routes the two
-  one-hand spans either side of it. Static copper is read
+  one-hand spans either side of it. Its dive is the pair's FIRST, from the
+  lane's first layer to its second (a pair that changes twice, F-B-F, has a
+  plain dive later). The whole plan knows its shape before the snap lays it
+  (`pairs.crossover_shape`, the same `pairs.crossover` and probe steps): a
+  longer straight run than a plain dive's either side (0.375 / 0.400 mm on an
+  axis against 0.225), both barrels on one side, staggered along it, and no
+  via's room at all on its other side -- in the geometry's rows (the side
+  chosen from its first pass), the polish, the audit's dive check and the
+  solve's rooms and cuts; audited as a plain dive, K41 SDQS0's crossover
+  passed with 0.25 mm each side, and the pair router could not lay it. Static copper is read
   from the router's own base map (its pad stamps with their corner buffers,
   other nets' stubs and vias, holes, the board edge) over each lane's
   window, a pair's with the pair's extra clearance; placed copper at the
@@ -1158,10 +1170,13 @@ left). The human's meanders match lengths.*
 
 On our OWN ends -- the ends model's fanout on `fb_t2q_pairs` -- the plan
 passes and routes all at once, every lane in its band, every net connected,
-DRC-clean (the table in *Where it stands*): K15 (13 lanes) 12 vias against
-the human's 22, K28 (25 lanes) 32 against 48, K35 (32 lanes) 58 against 60,
-each on its first fanout, the loop passing in one round. From the start of
-the fanout to the checked route: 34 s, 166 s and 287 s. The
+DRC-clean (the table in *Where it stands*): K15 (13 lanes) 10 vias against
+the human's 22, K28 (25 lanes) 30 against 48, K35 (32 lanes) 58 against 60,
+each on its first fanout, the loop passing in one round; K41 (38 lanes) 70
+against 70, in 972 mm against the human's 1081, on its second fanout (the
+first round's loop stopped not converging, and the feedback's incremental
+round passed). From the start of the fanout to the checked route: 37 s,
+133 s, 237 s and 1043 s. The
 heaviest processes at K35 are the two snaps (the pairs' 515 MB, the
 singles' 435 MB); the pairs' snap, 97 s, is the longest stage.
 
