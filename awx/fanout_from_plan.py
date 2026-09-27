@@ -70,6 +70,11 @@ DST_CLIMB = int(os.environ.get('DST_CLIMB', '0'))
 # judge approved every worse plan); the pages-first key becomes (count,
 # residue). 'flat': the same with a flat prices.SWIM per swimmer.
 PLAN_JUDGE = os.environ.get('PLAN_JUDGE', '')
+# DST_STREET=k: destination STREET dog-bones (escape_moves street=) -- a via in an empty band of the destination
+# array, on a lane a track pitch from the next, at k sites along it, the run leaving toward the source. On (2) under
+# the whole route's ends: the braid they give is far simpler (K35: 132 crossings against 162, the solve 10 s against
+# 121, the whole run 287 s against 606), at 58 vias against 52; 0 = off
+DST_STREET = int(os.environ.get('DST_STREET', '2' if PLAN_JUDGE == 'ends' else '0'))
 PLAN_JUDGE_RIDE = int(os.environ.get('PLAN_JUDGE_RIDE', '1') or 0)
 # PLAN_JUDGE_LEN: the length ESTIMATOR the judge prices at VIA_MM -- 'lane' (the
 # braid's planned polylines + berth runs; default) or 'ride' (the around-box
@@ -213,14 +218,15 @@ def plan_state(pcb, names, banned=frozenset()):
                                             layer)
         return cache[key]
 
-    def menu(pad, grid, nid, own_only=False, climb=0):
+    def menu(pad, grid, nid, own_only=False, climb=0, street=0, street_dirs=None):
         # (ends) the straight escape along the ball's own line too (escape_moves `straight`)
         return em.enumerate_moves(
             pad, grid, LAYERS,
             lambda p, q, L, _n=nid: obs(_n, L, own_only).seg_clear(p, q),
             lambda p, L, _n=nid: not (obs(_n, L, own_only).point_violation(
                 p, pad=(te.VIA_SIZE - te.TRACK) / 2) or [0])[0],
-            climb=climb, straight=(PLAN_JUDGE == 'ends'))
+            climb=climb, straight=(PLAN_JUDGE == 'ends'),
+            street=street, street_pitch=pe.sm._STACK_PITCH + 1e-4, street_dirs=street_dirs)
     dmenu, launch, src_pad, dst_pad = {}, {}, {}, {}
     dref = ends[names[0]][2]
     dgrid = em.grid_of(pcb.footprints[dref])
@@ -232,6 +238,7 @@ def plan_state(pcb, names, banned=frozenset()):
     _sc = [sum(ends[n][0][k] for n in names) / len(names) for k in (0, 1)]
     _dc = ((dboxes[0] + dboxes[2]) / 2, (dboxes[1] + dboxes[3]) / 2)
     far = max(em.DIRS, key=lambda d: em.DIRS[d][0] * (_dc[0] - _sc[0]) + em.DIRS[d][1] * (_dc[1] - _sc[1]))
+    toward = max(em.DIRS, key=lambda d: em.DIRS[d][0] * (_sc[0] - _dc[0]) + em.DIRS[d][1] * (_sc[1] - _dc[1]))
     _fax = 0 if em.DIRS[far][0] else 1
 
     def far_half(pad):
@@ -244,7 +251,8 @@ def plan_state(pcb, names, banned=frozenset()):
         pad = min(fp.pads, key=lambda p: (p.global_x - bx) ** 2
                   + (p.global_y - by) ** 2)
         dst_pad[nm] = pad
-        moves = dedupe_climbs(menu(pad, em.grid_of(fp), nid, climb=DST_CLIMB))
+        moves = dedupe_climbs(menu(pad, em.grid_of(fp), nid, climb=DST_CLIMB,
+                                   street=DST_STREET, street_dirs=(toward,)))
         if PLAN_JUDGE == 'ends' and not far_half(pad):
             moves = [m for m in moves if m.direction != far]
         dmenu[nm] = [m for m in moves if (nm, sr.move_sig(m)) not in banned]

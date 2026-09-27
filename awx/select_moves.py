@@ -68,11 +68,14 @@ def _lane_spans_compute(m: Move) -> List[Tuple[Tuple, float, float]]:
         # a move synthesized from copper the engine laid (replan.synth_move)
         # carries no legs: it occupies no lane the selector can price
         return []
-    if not getattr(m, 'climb', 0):
+    street = getattr(m, 'street', 0)
+    if not getattr(m, 'climb', 0) and not street:
         return [_lane_span(m)]
     out = []
     for (p, q, L) in m.legs:
-        if L != m.layer:
+        # (a STREET dog-bone's every layer: its stub runs on the pad's own layer down a line into the band and along
+        # a lane there, across the plain escapes' gaps; a climb's own-layer leg is a 45-degree one, which no lane holds)
+        if L != m.layer and not street:
             continue
         if abs(p[0] - q[0]) < 1e-6 and abs(p[1] - q[1]) > 1e-6:
             out.append((('col', round(p[0], 3), L), min(p[1], q[1]), max(p[1], q[1])))
@@ -596,7 +599,8 @@ def _conflict(m: Move, om: Move, tol: float = 0.16, strict: bool = True, stack: 
             # two stubs through one point
             if ok[0] != key[0] and ok[2] == key[2] and (
                     SEL_XING >= 2 or (SEL_XING and (
-                        getattr(m, 'climb', 0) or getattr(om, 'climb', 0)))):
+                        getattr(m, 'climb', 0) or getattr(om, 'climb', 0)
+                        or getattr(m, 'street', 0) or getattr(om, 'street', 0)))):
                 (rk, ra, rb), (ck, ca, cb) = ((key, a, b), (ok, oa, ob)) if key[0] == 'row' \
                     else ((ok, oa, ob), (key, a, b))
                 if ra - tol < ck[1] < rb + tol and ca - tol < rk[1] < cb + tol:

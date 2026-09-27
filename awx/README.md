@@ -167,9 +167,10 @@ nets on each board, the human's counted the same way:
 
 | | K15 | K28 | K35 |
 |---|---|---|---|
-| the whole route on our own ends | **12 v, 194 mm** | **34 v, 554 mm** | **52 v, 774 mm** |
+| the whole route on our own ends | **12 v, 187 mm** | **32 v, 540 mm** | **58 v, 745 mm** |
 | human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm |
 | rounds | one fanout | one fanout | one fanout |
+| fanout to checked route | 34 s | 166 s | 287 s |
 
 ## The pack (`pack_board.py`, opt-in)
 
@@ -853,7 +854,18 @@ with the whole route's own ends model.
   asked none of the 387 teeth on the source's north face), which halves
   each pass. A dog-bone whose via stands past its ball's diagonal cells goes
   to the engine with its stub as a walked `path`, the one way the engine
-  takes a caller's far site. Each state is scored once (the search asks a
+  takes a caller's far site. The destination's menu offers STREET berths
+  (`DST_STREET`, 2 under the ends, 0 = off; `escape_moves` street=): the
+  array's empty rows between two groups of balls -- DU1's 3.2 mm between
+  its north and south halves -- are lanes a track pitch apart, and a ball
+  beside them runs on its own layer into a lane of its half, dives at its
+  stub's line or a half pitch on toward the source, and leaves along the
+  lane on the other layer (the human stands 20 of its 30 signal vias at
+  DU1 in that band). The conflict test prices the stub's legs on its own
+  layer and a via within reach of a lane a track pitch away. They make the
+  braid far simpler: K35 132 crossings against 162, its solve 10 s
+  against 121 and the whole run 287 s against 606, at 58 vias against 52
+  (K28 32 against 34, K15 12 and 12). Each state is scored once (the search asks a
   third of them again) and each end's place round a grown box is cached:
   the same answer, twice as fast.
 - **The frame** (`whole_frame.py`). The whole route's own frame of a bench,
@@ -1147,11 +1159,9 @@ left). The human's meanders match lengths.*
 On our OWN ends -- the ends model's fanout on `fb_t2q_pairs` -- the plan
 passes and routes all at once, every lane in its band, every net connected,
 DRC-clean (the table in *Where it stands*): K15 (13 lanes) 12 vias against
-the human's 22, the loop and the route in 22 s; K28 (25 lanes) 32 against
-48, in a minute; K35 (32 lanes) 52 against 60 over two fanouts -- the first
-round's loop stopped at once at its crowded teeth (SA9 short of its pitch to
-SCK), the incremental fanout moved SCKN's tooth alone (10 s), and the loop
-passed in one round, the route about three minutes after the fanout. The
+the human's 22, K28 (25 lanes) 32 against 48, K35 (32 lanes) 58 against 60,
+each on its first fanout, the loop passing in one round. From the start of
+the fanout to the checked route: 34 s, 166 s and 287 s. The
 heaviest processes at K35 are the two snaps (the pairs' 515 MB, the
 singles' 435 MB); the pairs' snap, 97 s, is the longest stage.
 
@@ -1522,18 +1532,18 @@ First, the whole-route plan (`whole_*.py`):
   SDQS0's by 0.47 (0.01), SCK's by 0.32 (0.02). The crossover and the turns
   make the difference; a skew term in the snap's pair search, or a
   serpentine the geometry reserves, would bound it.
-- **Berths at the destination without long stubs through its balls.** The
-  ends model reaches DU1's inner balls with long F stubs between its ball
-  columns (K15: SDQ0, SDQM0 and SDQM1, 5-6 mm each; SDQS0 round the south
-  face, 17 mm a leg against the human's 13.4), where the human dives near
-  the ball and runs B inside the array -- at K35 its SCK up DU1's central
-  street and SDQS1 in it, where ours go round (and ours run F 538 mm to B
-  272, the human's 463 to 427). That needs destination climbs in
-  the whole route's menus (`DST_CLIMB` is 0, and building `Ends` does not
-  yet scale to them: conflicts only for the options a search asks), and
-  the array's empty rows offered as streets -- lanes at track pitch, F jogs
-  into them, via sites along them, sent to the engine as `path` hints (its
-  walked dogbone).
+- **Runs from a band via into the ball field.** A street berth
+  (`DST_STREET`, *The ends*) leaves only along its lane in DU1's empty
+  band, toward the source. The human stands 10 of K35's vias deep in that
+  band (0.5-1.6 mm from the ball rows; ours 4) and runs from many of them
+  on B into the ball field, between the other balls' vias, out of
+  whichever face it needs -- SRAS, SCAS, SWE, SA0, SA12 and SA9 from under
+  DU1's east end. Ours from there run F west along the band's half lines,
+  which the street berths' stubs cross: at K35 SWE and SA12 lost those
+  runs, left by the south face and crossed its bundle, 2 vias each.
+  Destination climbs are the other half of it (`DST_CLIMB` is 0, and
+  building `Ends` does not yet scale to them: conflicts only for the
+  options a search asks).
 
 - **awx in production.** The harness commands turn the caches on
   (`TAUT_MEMO`, `STAGE_CACHE`, `PROBE_MEMO`) and keep them under

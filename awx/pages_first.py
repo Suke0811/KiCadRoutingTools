@@ -208,6 +208,7 @@ def _conflicts(cands: Dict[str, List[Move]], strict: bool, stack: bool = False) 
     one layer closer than select_moves._STACK_PITCH do (select_moves.
     _conflict) -- so the exits are bucketed at that pitch."""
     buckets: Dict[tuple, List[Tuple[str, int]]] = {}
+    reach = any(getattr(m, 'street', 0) for ms in cands.values() for m in ms)
     for nm, ms in cands.items():
         for i, m in enumerate(ms):
             keys = set()
@@ -230,6 +231,11 @@ def _conflicts(cands: Dict[str, List[Move]], strict: bool, stack: bool = False) 
                         keys.add(('xc', key[2], cx))
                 else:
                     keys.add(('xc', key[2], int(math.floor(key[1]))))
+            # ...and within a via's reach of it (select_moves._site_in_lane) when a STREET move is offered: its lanes
+            # stand a track pitch apart, inside the reach and outside the lane cells' tolerance
+            for key, a_, b_ in (sm._lane_spans(m) if reach else ()):
+                for c in q(key[1], sm._VIA_REACH):
+                    keys.add(('reach', key[0], c, key[2]))
             if m.site is not None:
                 # a site in another move's lane: bucket the lane through the
                 # site by its line, on both layers (a via spans them all)
@@ -239,6 +245,9 @@ def _conflicts(cands: Dict[str, List[Move]], strict: bool, stack: bool = False) 
                     for c in cells:
                         for L in ('F.Cu', 'B.Cu'):
                             keys.add(('lane', axis, c, L))
+                    for c in (q(v, sm._VIA_REACH) if reach else ()):
+                        for L in ('F.Cu', 'B.Cu'):
+                            keys.add(('reach', axis, c, L))
             etol = max(sm._EXIT_TOL, sm._STACK_PITCH) if stack else sm._EXIT_TOL
             for cx in q(m.exit_pt[0], etol):
                 for cy in q(m.exit_pt[1], etol):
