@@ -102,7 +102,7 @@ class BriefError(fp.IntentError):
 
 _TOP_LEVEL_KEYS = {'schema', 'kind', 'board', 'units', 'min_reader',
                    'product', 'interfaces', 'keepouts', 'fixed', 'unknown',
-                   'proximity', 'context'}
+                   'proximity', 'context', 'arrays'}
 
 #: Keys refused BY NAME, with the reason, rather than as merely unknown.
 _REFUSED_TOP_LEVEL = {
@@ -132,7 +132,15 @@ _ENVELOPE_KEYS = {'depth', 'clear'}
 #: nowhere else to go. Both land in the compiled entry's `context`.
 _KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow', 'kind', 'why',
                  'note', 'context'}
-_FIXED_KEYS = {'ref', 'why', 'requirement', 'context'}
+_FIXED_KEYS = {'ref', 'why', 'requirement', 'context', 'pose'}
+#: #1054. The exact pose a `fixed[]` part is to be SEATED at. `rot` and
+#: `side` may be "unknown"; `x`/`y` may not -- a pose with no position is
+#: not a pose, and the row stays carried without one.
+_POSE_KEYS = {'x', 'y', 'rot', 'side'}
+#: #1051. One declared row of identical parts: the intent's `arrays[]` entry,
+#: plus the brief's own prose slot `requirement`. Validated by the intent's
+#: own loader, so the two documents cannot disagree about a row.
+_ARRAY_KEYS = (fp._ARRAY_KEYS - {'source'}) | {'requirement'}
 _BAND_KEYS = {'from', 'to'}
 _OVERHANG_KEYS = {'min', 'max'}
 
@@ -214,12 +222,14 @@ class Brief:
     proximity: Tuple[Dict[str, object], ...] = ()
     context: Dict[str, object] = field(default_factory=dict)
     source_path: str = ''
+    #: #1051. Declared rows. Defaulted, like `proximity`.
+    arrays: Tuple[Dict[str, object], ...] = ()
 
 
 def empty_brief(board: str = '') -> Brief:
     return Brief(schema=SCHEMA_VERSION, kind=KIND, board=board, units='mm',
                  product={}, interfaces=(), keepouts=(), fixed=(),
-                 unknown=(), proximity=(), context={})
+                 unknown=(), proximity=(), context={}, arrays=())
 
 
 # --------------------------------------------------------------------------
@@ -734,7 +744,16 @@ def _brief_from_dict(raw: Dict, source_path: str = '') -> Brief:
         fp._entry_context(f, where)
         if not f.get('ref'):
             raise BriefError(f"{where}: expected an object with a `ref`")
+        if 'pose' in f:
+            _fixed_pose(f, f"{where} ({f['ref']})", seen_refs)
         fixed.append(dict(f))
+    posed = [str(f['ref']) for f in fixed if 'pose' in f]
+    dup = sorted({r for r in posed if posed.count(r) > 1})
+    if dup:
+        raise BriefError(f"fixed: {', '.join(dup)} carries two poses -- one "
+                         f"part, one pose")
+
+    arrays = _array_rows(raw, interfaces, set(posed))
 
     unknown = fp._str_tuple(raw.get('unknown'), 'unknown')
     return Brief(schema=SCHEMA_VERSION, kind=KIND,
@@ -743,7 +762,58 @@ def _brief_from_dict(raw: Dict, source_path: str = '') -> Brief:
                  keepouts=tuple(keepouts), fixed=tuple(fixed),
                  unknown=unknown, proximity=tuple(proximity),
                  context=fp._obj(raw.get('context'), 'context'),
-                 source_path=source_path)
+                 source_path=source_path, arrays=tuple(arrays))
+
+
+def _fixed_pose(f: Dict, where: str, interface_refs) -> None:
+    """Validate one `fixed[].pose` (#1054). Refused BY NAME when the same ref
+    is a declared interface: an interface compiles to an `edge_connectors`
+    entry, which the seeder seats at its edge band, and a pose seats it
+    exactly -- two placements for one part, which the intent loader refuses
+    too. Refusing here sends the author to the brief they wrote."""
+    pose = f['pose']
+    if not isinstance(pose, dict):
+        raise BriefError(f"{where}.pose: expected {{x, y, rot, side}}, got "
+                         f"{pose!r}")
+    fp._reject_unknown(pose, _POSE_KEYS, f"{where}.pose")
+    for k in ('x', 'y'):
+        if k not in pose:
+            raise BriefError(f"{where}.pose: needs `{k}` -- a pose with no "
+                             f"position is not a pose; drop `pose` to carry "
+                             f"the part as fixed without one")
+        v = fp._number(pose[k], f"{where}.pose.{k}")
+        if not math.isfinite(v):
+            raise BriefError(f"{where}.pose.{k}: {pose[k]!r} is not a finite "
+                             f"coordinate")
+    rot = pose.get('rot')
+    if rot is not None and rot != UNKNOWN:
+        fp._rotation(rot, f"{where}.pose.rot")
+    _enum(pose.get('side'), _SIDES, f"{where}.pose.side")
+    if str(f['ref']) in interface_refs:
+        raise BriefError(
+            f"{where}.pose: {f['ref']} is also declared in interfaces[], "
+            f"which compiles to an edge_connectors entry the seeder seats at "
+            f"its edge band. A fixed pose seats it exactly -- keep one")
+
+
+def _array_rows(raw: Dict, interfaces, fixed_refs) -> List[Dict]:
+    """Validate the brief's `arrays[]` (#1051) with the INTENT's own loader,
+    so a row the brief accepts is a row the compiled intent loads.
+
+    `requirement` is the brief's prose slot and is set aside for the check;
+    the interfaces stand in for the `edge_connectors` they compile to."""
+    got = raw.get('arrays')
+    if got is None:
+        return []
+    if not isinstance(got, list):
+        raise BriefError(f"arrays: expected a list, got {type(got).__name__}")
+    for i, a in enumerate(got):
+        if isinstance(a, dict):
+            fp._reject_unknown(a, _ARRAY_KEYS, f"arrays[{i}]")
+    stripped = [({k: v for k, v in a.items() if k != 'requirement'}
+                 if isinstance(a, dict) else a) for a in got]
+    fp._array_entries({'arrays': stripped}, interfaces, (), fixed_refs)
+    return [dict(a) for a in got]
 
 
 # --------------------------------------------------------------------------
@@ -968,6 +1038,65 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
             declared.append(f"{claim}.max_mm")
             prox.append(entry)
 
+    # #1051. Compiled 1:1 into the intent's own `arrays[]`: the brief row IS
+    # the intent row (the intent loader validated it), plus provenance. Every
+    # key the author answered is `declared`, every "unknown" is reported as
+    # one, and an absent key is neither -- the three states this module keeps
+    # apart.
+    arrs: List[Dict[str, object]] = []
+    for i, a in enumerate(brief.arrays):
+        name = str(a['name'])
+        entry = {k: v for k, v in a.items()
+                 if k not in ('requirement', 'context')}
+        entry['source'] = 'brief'
+        ctx = dict(a.get('context') or {})
+        ctx['brief_row'] = i
+        if a.get('requirement'):
+            ctx['requirement'] = a['requirement']
+        entry['context'] = ctx
+        declared.append(f"arrays[{name}].members")
+        for key in ('serves', 'order', 'rotation', 'pitch_mm', 'axis'):
+            if key not in a:
+                continue
+            (unknown if a[key] == UNKNOWN else declared).append(
+                f"arrays[{name}].{key}")
+        for m in [str(x) for x in a['members']] + (
+                [str(a['serves'])] if _known(a.get('serves')) else []):
+            if refs_known and refset and m not in refset:
+                unmatched.append(m)
+        arrs.append(entry)
+
+    # #1054. A `fixed[]` row with a `pose` compiles to `fixed_poses[]`, basis
+    # `declared`, for the seeder to SEAT and the grade to anchor. A row with
+    # no pose is carried in `report['fixed']` as before -- never turned into
+    # `must_lock` (see the note on `fixed` below).
+    fposes: List[Dict[str, object]] = []
+    for f in brief.fixed:
+        pose = f.get('pose')
+        if not isinstance(pose, dict):
+            continue
+        ref = str(f['ref'])
+        row: Dict[str, object] = {'ref': ref, 'x': float(pose['x']),
+                                  'y': float(pose['y']),
+                                  'basis': 'declared'}
+        declared.append(f"fixed[{ref}].pose")
+        for key in ('rot', 'side'):
+            if key not in pose:
+                continue
+            row[key] = pose[key]
+            if pose[key] == UNKNOWN:
+                unknown.append(f"fixed[{ref}].{key}")
+        if f.get('why'):
+            row['why'] = str(f['why'])
+        ctx = dict(f.get('context') or {})
+        if f.get('requirement'):
+            ctx['requirement'] = f['requirement']
+        if ctx:
+            row['context'] = ctx
+        if refs_known and refset and ref not in refset:
+            unmatched.append(ref)
+        fposes.append(row)
+
     fragment: Dict[str, object] = {}
     if conns:
         fragment['edge_connectors'] = conns
@@ -975,6 +1104,10 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         fragment['keepouts'] = keeps
     if prox:
         fragment['proximity'] = prox
+    if arrs:
+        fragment['arrays'] = arrs
+    if fposes:
+        fragment['fixed_poses'] = fposes
     # A RUNNING MAX, not a literal, since #902: a brief carrying both an
     # along-edge claim and a proximity row needs the HIGHER of the two readers,
     # and writing whichever branch ran last would understate it. `min_reader`
@@ -989,6 +1122,9 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         # Same argument one version on: a reader that predates #902 must refuse
         # a document carrying `proximity[]` rather than grade it without.
         need_reader = max(need_reader, 4)
+    if arrs or fposes:
+        # #1051/#1054: reader 7 introduced both keys.
+        need_reader = max(need_reader, 7)
     if need_reader:
         fragment['min_reader'] = need_reader
 
@@ -1018,6 +1154,11 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
                        'proximity_claims': len(prox),
                        'proximity_expanded': expanded,
                        'proximity_dropped': dropped})
+    # Added only when declared, for `proximity`'s reason above.
+    if brief.arrays:
+        counts['arrays'] = len(brief.arrays)
+    if fposes:
+        counts['fixed_poses'] = len(fposes)
     report = {
         'path': brief.source_path,
         'declared': sorted(declared),
@@ -1034,9 +1175,10 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         'contradictions': [],
         'counts': counts,
         # #711 asks for `place_fixed` ops. There is no plan-op implementation
-        # in this tree -- `place_fixed` is named only in comments -- so a
-        # fixed pose is CARRIED and reported, never asserted, and never turned
-        # into `must_lock`: filling must_lock made `place_seed --repair` treat
+        # in this tree -- `place_fixed` is named only in comments. Since #1054
+        # a row carrying a `pose` compiles to `fixed_poses[]` (above); every
+        # row is still CARRIED here, and none is ever turned into
+        # `must_lock`: filling must_lock made `place_seed --repair` treat
         # those refs as seeder-owned and LIFT the user's locks (measured on
         # two run-7 boards, see emit_intent's own comment). It buys nothing
         # either, since `resolve_intent_gate` already freezes every edge claim
@@ -1409,7 +1551,37 @@ def merge_into_intent(emitted: Dict, fragment: Dict, report: Dict) -> Dict:
             base['class'] = 'edge_receptacle'
             merged_ctx['was_class'] = 'connector_affinity'
         by_ref[ref] = base
-    if by_ref:
+    # #1051/#1054: a part the brief puts in a row, or fixes at a pose, loses
+    # an edge entry the EMITTER inferred for it. The intent loader refuses a
+    # ref under both claims, the declared claim outranks the inference, and
+    # the drop is REPORTED -- the same resolution as a contradicting edge.
+    # (A brief-declared interface cannot collide: the brief refuses that.)
+    placed = {str(f['ref']): 'fixes its pose'
+              for f in (fragment.get('fixed_poses') or ())}
+    for a in (fragment.get('arrays') or ()):
+        for m in a.get('members') or ():
+            placed.setdefault(str(m), f"puts it in array {a.get('name')!r}")
+    for ref in [r for r in order if r in placed and r in by_ref]:
+        if by_ref[ref].get('source') == 'brief':
+            continue
+        report['contradictions'].append(
+            f"{ref}: the brief {placed[ref]}, the board observes an edge "
+            f"connector -- the brief wins, and the observed entry is dropped")
+        del by_ref[ref]
+        order = [r for r in order if r != ref]
+    if placed and out.get('must_lock'):
+        kept = []
+        for pat in out['must_lock']:
+            hit = sorted(r for r in placed if fnmatch.fnmatchcase(r, pat))
+            if hit:
+                report['contradictions'].append(
+                    f"must_lock {pat!r} names {', '.join(hit)}, which the "
+                    f"brief places -- the brief wins, and the pattern is "
+                    f"dropped")
+                continue
+            kept.append(pat)
+        out['must_lock'] = kept
+    if by_ref or emitted.get('edge_connectors'):
         out['edge_connectors'] = [by_ref[r] for r in sorted(set(order),
                                                             key=order.index)]
     if fragment.get('keepouts'):
@@ -1424,6 +1596,12 @@ def merge_into_intent(emitted: Dict, fragment: Dict, report: Dict) -> Dict:
     if fragment.get('proximity'):
         out['proximity'] = list(emitted.get('proximity') or []) \
             + list(fragment['proximity'])
+    # #1051/#1054. APPENDED, for proximity's reason: `emit_intent` writes no
+    # `arrays` and no `fixed_poses` by default, so there is no inference to
+    # outrank.
+    for key in ('arrays', 'fixed_poses'):
+        if fragment.get(key):
+            out[key] = list(emitted.get(key) or []) + list(fragment[key])
     if fragment.get('min_reader'):
         # A MAX here too, and for the same reason it is one inside the
         # fragment: an emitted document that already declares a reader must not
@@ -1634,6 +1812,50 @@ def drift_pairs(intent_doc: Dict, fragment: Dict) -> List[Tuple[str, str]]:
                     + ', the intent '
                     + (f"says {theirs!r}" if theirs is not None
                        else 'does not declare it')))
+    # #1051. Keyed on the array NAME; every field at its EFFECTIVE value, for
+    # proximity's reason above (an absent `pitch_mm` IS 'auto').
+    have_arr = {str(a.get('name')): a for a in (intent_doc.get('arrays')
+                                                or [])}
+    _adef = {'pitch_mm': 'auto', 'axis': 'auto', 'allow_mixed': False}
+    for a in (fragment.get('arrays') or []):
+        name = str(a.get('name'))
+        cur = have_arr.get(name)
+        if cur is None:
+            out.append((f"arrays[{name}].members",
+                        f"array {name!r}: the brief declares this row; the "
+                        f"intent has no array of that name"))
+            continue
+        for field_name in ('members', 'serves', 'order', 'rotation',
+                           'pitch_mm', 'axis', 'allow_mixed'):
+            mine = a.get(field_name, _adef.get(field_name))
+            theirs = cur.get(field_name, _adef.get(field_name))
+            if mine != theirs:
+                out.append((
+                    f"arrays[{name}]."
+                    f"{field_name if field_name != 'allow_mixed' else 'members'}",
+                    f"array {name!r}.{field_name}: brief "
+                    + (f"says {mine!r}" if mine is not None
+                       else 'declares none')
+                    + ', the intent '
+                    + (f"says {theirs!r}" if theirs is not None
+                       else 'does not declare it')))
+    # #1054. Keyed on the ref.
+    have_fp = {str(f.get('ref')): f for f in (intent_doc.get('fixed_poses')
+                                              or [])}
+    for f in (fragment.get('fixed_poses') or []):
+        ref = str(f.get('ref'))
+        cur = have_fp.get(ref)
+        if cur is None:
+            out.append((f"fixed[{ref}].pose",
+                        f"{ref}: the brief fixes its pose; the intent has no "
+                        f"fixed_poses entry for it"))
+            continue
+        for field_name in ('x', 'y', 'rot', 'side', 'basis'):
+            if f.get(field_name) != cur.get(field_name):
+                out.append((f"fixed[{ref}].pose",
+                            f"{ref}.pose.{field_name}: brief says "
+                            f"{f.get(field_name)!r}, the intent "
+                            f"{cur.get(field_name)!r}"))
     return out
 
 
@@ -1655,10 +1877,15 @@ def drifted_clause_ids(intent_doc: Dict, fragment: Dict) -> List[str]:
 # --------------------------------------------------------------------------
 
 #: Which rule grades a clause of each kind. `product` is graded by nothing and
-#: says so; `fixed` never reaches a rule at all (it is carried into `context`).
+#: says so. `fixed` (#1054) is a `fixed[REF].pose` clause: graded by the
+#: anchor `floorplan.fixed_pose_violations` compiles from the intent's
+#: `fixed_poses[]`, outside the RULES loop -- so its "rule" is the grader's
+#: name, and `_clause_state` does not ask `rules_run` about it.
 _CLAUSE_RULE = {'interfaces': 'edge_connector',
                 'keepouts': 'keepout',
                 'proximity': 'proximity',
+                'arrays': 'array_formation',
+                'fixed': 'fixed_pose',
                 'product': None}
 
 #: Interface keys that are CARRIED and graded by nothing, by design. They are
@@ -1667,7 +1894,7 @@ _CLAUSE_RULE = {'interfaces': 'edge_connector',
 _CLAUSE_CARRIED = {'mount_mode', 'cable_entry', 'cable_envelope_mm'}
 
 _CLAUSE_RE = re.compile(
-    r'^(?P<kind>interfaces|keepouts|proximity|product)'
+    r'^(?P<kind>interfaces|keepouts|proximity|arrays|fixed|product)'
     r'(?:\[(?P<inner>.*)\])?'
     r'(?:\.(?P<key>[a-z_]+))?$')
 
@@ -1815,6 +2042,19 @@ def _clause_state(rec, intent_doc, rules_run, abstained, cons=None):
                    for p in (intent_doc.get('proximity') or [])):
             return ('uncovered', f"the intent carries no proximity claim for "
                                  f"{ref} near {near}", rule)
+    elif kind == 'arrays':
+        if not any(str(a.get('name')) == ref
+                   for a in (intent_doc.get('arrays') or [])):
+            return ('uncovered', f"the intent carries no array named "
+                                 f"{ref!r}", rule)
+    elif kind == 'fixed':
+        # Graded by the grade itself whenever the intent carries the entry:
+        # `fixed_pose_violations` runs on every grade, armed by nothing.
+        if not any(str(f.get('ref')) == ref
+                   for f in (intent_doc.get('fixed_poses') or [])):
+            return ('uncovered', f"the intent carries no fixed_poses entry "
+                                 f"for {ref}", rule)
+        return 'graded', '', rule
     if rule not in rules_run:
         return ('uncovered', f"`{rule}` did not run on this grade", rule)
     for akey, why in sorted((abstained or {}).items()):
@@ -1838,6 +2078,9 @@ def _abstention_is_about(akey, kind, ref, near, intent_doc) -> bool:
     """
     if kind == 'interfaces':
         return akey.startswith(f"edge_connectors[{ref}].")
+    if kind == 'arrays':
+        return (akey == f"arrays[{ref}]"
+                or akey.startswith(f"arrays[{ref}]."))
     if kind != 'proximity':
         return False
     m = _ABSTAIN_PROX_RE.match(akey)
@@ -1995,7 +2238,11 @@ def format_report(report: Dict, *, path: str = '') -> str:
         bits.append(f"{c['proximity']} proximity row(s)"
                     + (f" -> {claims} claim(s)" if moved else ''))
     if c.get('fixed'):
-        bits.append(f"{c['fixed']} fixed pose(s), carried not asserted")
+        bits.append(f"{c['fixed']} fixed part(s)"
+                    + (f", {c['fixed_poses']} with a pose to seat"
+                       if c.get('fixed_poses') else ', carried not asserted'))
+    if c.get('arrays'):
+        bits.append(f"{c['arrays']} array(s)")
     if report.get('unknown'):
         bits.append(f"{len(report['unknown'])} declared UNKNOWN")
     if report.get('absent'):

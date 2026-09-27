@@ -312,17 +312,27 @@ def resolve_intent_gate_for_cli(intent, pcb_data, sources, path):
               file=sys.stderr)
     zoned = [z for z in bundle['zones'] if z['refs']]
     bound = len({r for z in zoned for r in z['refs']})
-    if not (zoned or bundle['keepouts'] or bundle['lock_refs']):
+    rigid = bundle.get('rigid_blocks') or {}
+    tethers = bundle.get('tethers') or {}
+    rotations = bundle.get('rotations') or {}
+    if not (zoned or bundle['keepouts'] or bundle['lock_refs'] or rigid
+            or tethers or rotations):
         # place_portfolio's --corridor-weight warning, same shape: an
         # intent-derived knob with nothing to bite on says so, rather than
         # reading as enforcement that happened to find nothing wrong.
         print(f"--intent {path} declares nothing this quench can gate on "
-              f"(no block with a resolved zone rect, no keep-out, no "
-              f"must_lock, no edge claim): the gate is inert", file=sys.stderr)
+              f"(no block with a resolved zone rect or a rotation, no "
+              f"keep-out, no must_lock, no edge claim, no array or rigid "
+              f"block, no tether limit at error): the gate is inert",
+              file=sys.stderr)
     else:
         print(f"intent: {len(zoned)} zoned block(s) over {bound} part(s), "
               f"{len(bundle['keepouts'])} keep-out(s), "
-              f"{len(bundle['lock_refs'])} locked ref(s); blocks resolved from "
+              f"{len(bundle['lock_refs'])} locked ref(s)"
+              + (f", {len(rigid)} rigid group(s)" if rigid else '')
+              + (f", tethers ({', '.join(sorted(tethers))})"
+                 if tethers else '')
+              + f"; blocks resolved from "
               f"{','.join(resolve_sources) or 'refs only'}")
     return bundle, problems
 

@@ -310,14 +310,12 @@ print('stacked at defaults:', len({{(round(f.x,3), round(f.y,3))
 ZONE PLAN {a.zone_plan}: all {plan['blocks']} footprint(s) accounted for.
 {plan['zoned']} zoned block(s) cover the other {plan['movable']} movable footprint(s); {plan['locked']} claimed
 by must_lock or pinned in the file ({plan['pinned']} pinned, the only kind the seeder
-cannot move); {plan['edge']} declared edge connector(s), {plan['seeded_edge']} of them the seeder's to
+cannot move); {plan['fixed']} at a fixed pose; {plan['edge']} declared edge connector(s), {plan['seeded_edge']} of them the seeder's to
 choose; {plan['padless']} pad-less, the seeder never moves them ({plan['padless_locked']} locked, {plan['padless_disposed']} dispositioned).
 
-THE SEEDER PLACES THE RESIDUE. It is a greedy first-fit that packs declared
-zones and drops everything else at its connectivity centroid, at the first
-rotation that fits -- so it is good at the many small parts and has no
-representation at all for a decision. Decide these YOURSELF, above, and lock
-them; what is left is what the seeder is for.
+THE SEEDER PLACES THE RESIDUE: a greedy first-fit that packs declared zones and
+drops everything else at its connectivity centroid, at the first rotation that
+fits. It seats only the decisions the plan DECLARES; decide the rest yourself.
 
 Walk the ladder in order and say which rung applies:
 
@@ -325,28 +323,31 @@ Walk the ladder in order and say which rung applies:
    placement (P4/P5).
 2. Otherwise: DECIDE, then seed the rest.
    a. Place and lock every part whose pose is a decision -- the connectors
-      (which edge, where along it, which way the mating face points), the
-      mechanically-fixed parts, anything a spec pins. P2 is the stage that
-      enumerates them; `place_pose set/rotate/lock` is the verb, and it
-      refuses a pose that makes the board's placement legality worse.
-   b. Seed the rest FROM THE PLAN, several seeds, and rank only the ones that
+      (which edge, where along it, which way the mating face points), anything
+      a spec pins. P2 enumerates them; `place_pose set/rotate/lock` is the verb.
+      A mechanically-fixed part may instead carry a plan `fixed_poses[]` entry:
+      the seeder's stage 0 seats it at exactly that pose and locks it.
+   b. Declare the ARRAYS -- rows of identical parts on one part's pins or rail:
+       python3 -X utf8 py_tools/check_floorplan.py {a.board} --suggest-arrays
+      Accept or decline EACH suggestion with a reason, into the plan's `arrays[]`
+      ("unknown" is a legal order or rotation). A bank bridging two big parts
+      comes back under `declined`: declare it by hand if it is one row. One row
+      per array (no multi-row blocks); a block with `rigid: true` moves as one.
+   c. Seed the rest FROM THE PLAN, several seeds, and rank only the ones that
       pass their own gate (exit 4 names the rule; none passing is the PLAN's
-      problem, not the seeder's -- run 26 had none pass and hand-placed
-      everything instead):
+      problem -- run 26 had none pass and hand-placed everything instead):
        python3 -X utf8 py_placer/compare_seeds.py {a.board} --intent {a.zone_plan} \\
            --seeds 0 1 2 --out-dir wk/seedcmp
-   c. Then FACE the rows. The seeder keeps the first rotation that fits, so
+   d. Then FACE the rows. The seeder keeps the first rotation that fits, so
       read `edge_facing` per part off the best seed and turn every part whose
       connected pads face the outline with nothing beyond (run 26's regulator:
-      3 of 3 pins 0.40 mm from the edge, and a review with no number wrote
-      PASS):
+      3 of 3 pins 0.40 mm from the edge, and a review wrote PASS):
        python3 -X utf8 py_placer/placement_score.py wk/seedcmp/seed_<best>.kicad_pcb \\
            --intent {a.zone_plan} --json wk/terms_seed.json
        python3 -X utf8 py_placer/place_pose.py wk/seedcmp/seed_<best>.kicad_pcb \\
            seed.kicad_pcb face <REF> <FACE> <PARTNER>
-3. No seed passes, on a rule the plan itself sets -> fix the plan and say so.
-   This toolchain does not invent a placement, and inventing mechanical
-   geometry is what every rule here forbids.
+3. No seed passes, on a rule the plan itself sets -> fix the plan and say so;
+   inventing mechanical geometry is what every rule here forbids.
 
 Next: P4 legalizes the seed, P6 declares the intent first. Both FOLLOW a move,
 so both refuse without the render of the seed against the board it came from:
@@ -1087,7 +1088,8 @@ def _guard_zone_plan(a):
     zoned or must_lock too) minus `must_lock` patterns (fnmatch, as the
     seeder resolves them) minus the intent's `edge_claims()` (exact refs,
     as the grader looks them up; a `connector_affinity` entry claims no
-    edge and IS seeded at its centroid, so it needs a zone). The COVERAGE
+    edge and IS seeded at its centroid, so it needs a zone) minus the
+    `fixed_poses[]` refs (#1054: stage 0 seats each exactly). The COVERAGE
     DENOMINATOR is every footprint block (#959): a PAD-LESS block is not
     the seeder's to move, so it is answered separately -- placed and locked
     by hand, or dispositioned in `dispositions.refs` -- rather than left
@@ -1177,7 +1179,12 @@ def _guard_zone_plan(a):
                                    for pat in intent.must_lock)}
     claimed = {str(c.get('ref')) for c in intent.edge_claims()}
     edge = {ref for ref in movable if ref in claimed}
-    left = sorted(movable - locked - edge - covered)
+    # #1054: a `fixed_poses[]` ref is placed by the plan -- stage 0 seats it
+    # at exactly that pose -- so it needs no zone. (The loader refuses one
+    # that is also must_lock or an edge connector, so the sets are disjoint.)
+    fixed = {str(f.get('ref')) for f in (getattr(intent, 'fixed_poses', ())
+                                         or ())} & movable
+    left = sorted(movable - locked - edge - fixed - covered)
     if left:
         return False, (
             f'{len(left)} movable footprint(s) sit in no zoned block: '
@@ -1185,7 +1192,7 @@ def _guard_zone_plan(a):
             'the seeder puts at its connectivity centroid, at the first '
             'rotation that fits -- the pose nobody decided. Add each to a '
             'block with a zone, or declare it must_lock / an edge connector '
-            'if that is what it is.')
+            '/ a fixed_poses entry if that is what it is.')
     # THE SEEDER PLACES THE RESIDUE, NOT THE DECISIONS (run 27).
     #
     # A declared edge connector states its EDGE and nothing else that matters:
@@ -1259,8 +1266,10 @@ def _guard_zone_plan(a):
     padless_locked = {r for r in padless
                       if getattr(pcb.footprints[r], 'locked', False)}
     return True, {'blocks': len(pcb.footprints),
-                  'zoned': len(zoned), 'movable': len(movable - locked - edge),
+                  'zoned': len(zoned),
+                  'movable': len(movable - locked - edge - fixed),
                   'locked': len(locked), 'pinned': len(file_locked),
+                  'fixed': len(fixed),
                   'edge': len(edge), 'seeded_edge': len(free_edge),
                   'padless': len(padless),
                   'padless_locked': len(padless_locked),
@@ -1492,7 +1501,9 @@ def _mechanical_owed(a, intent, plan, pcb, brief_fragment, brief_path,
        correct the source that is wrong. Run 29's brief put USB1 east while
        its mechanical declaration put it west, and nothing compared them.
     2. Every mechanical ref the grade anchors must be FILE-locked, and every
-       mechanical ref must sit AT its declared pose. The grade compiles the
+       mechanical ref must sit AT its declared pose -- unless the plan's
+       `fixed_poses[]` names an unlocked one at that pose, which the
+       seeder's stage 0 then seats and locks (#1054). The grade compiles the
        anchors from the file itself, whatever the plan says; this checks the
        board they will be graded on. Measured before this: run 29 moved and
        locked `Ref*` 25.9 mm off its declared pose and P1 passed, because it
@@ -1611,9 +1622,36 @@ def _mechanical_owed(a, intent, plan, pcb, brief_fragment, brief_path,
         and ref not in lost)
     drifted = {v.ref: v for v in (_fp.mechanical_drift(
         intent, pcb, mech, skip=sorted(lost)) if mech else ())}
+    # #1054: a zone-plan `fixed_poses[]` entry AT the declared pose is the
+    # other thing that holds one: the seeder's stage 0 seats an UNLOCKED part
+    # at exactly that pose, checked and never nudged, and stamps it
+    # `(locked yes)`. Such a ref owes no hand lock, drifted or not. A FILE-
+    # locked part off its pose still does -- stage 0 refuses to move a file
+    # lock -- and so does an entry at another pose, or one with no `rot` for
+    # a declared rotation (stage 0 would keep the part's current angle).
+    # An entry that does NOT qualify is named in the refusal with its
+    # reason (`rejected`: ref -> (code, entry pose)), so a reader who wrote
+    # one is told why it did not count rather than only "not locked".
+    _mposes = (mech or {}).get('poses', {})
+    seated = set()
+    rejected = {}
+    for _f in (getattr(intent, 'fixed_poses', ()) or ()):
+        _r = str(_f.get('ref'))
+        _m = _mposes.get(_r)
+        if _r not in anchored or _m is None:
+            continue
+        _t = _rc.fixed_pose_tuple(_f)
+        if getattr(pcb.footprints[_r], 'locked', False):
+            rejected[_r] = ('locked', _t)
+        elif _m.get('rot') is not None and _t[2] is None:
+            rejected[_r] = ('rot', _t)
+        elif not _rc.same_pose(_t, (_m['x'], _m['y'], _m.get('rot'))):
+            rejected[_r] = ('pose', _t)
+        else:
+            seated.add(_r)
     unlocked = [r for r in anchored
                 if not getattr(pcb.footprints[r], 'locked', False)]
-    owed_m = sorted(set(unlocked) | set(drifted))
+    owed_m = sorted((set(unlocked) | set(drifted)) - seated)
     if owed_m:
         # A board carrying copper refuses every pose write without
         # `--allow-routed` (orangecrab: 742 segments), so the printed
@@ -1625,14 +1663,26 @@ def _mechanical_owed(a, intent, plan, pcb, brief_fragment, brief_path,
             + '; '.join(
                 (drifted[r].message.split(' -- ')[0]
                  if r in drifted else f"{r} is not locked")
+                + (f" (its fixed_poses entry at {rejected[r][1]} does not "
+                   'count: ' + {
+                       'locked': 'the part is locked in the board file, and '
+                                 'stage 0 does not move a file-locked part',
+                       'rot': 'it has no `rot` and mechanical.json declares '
+                              'one, so stage 0 would keep the current angle',
+                       'pose': 'it is not the declared pose'}[rejected[r][0]]
+                   + ')' if r in rejected else '')
                 for r in owed_m)
             + '. A declared pose is a recorded fact: for a part with pads '
             'the grade compiles an anchor at exactly that pose from the file '
             'itself, whatever the plan says, and any part that drifted or '
-            'turned is an ERROR. Only a FILE lock keeps the seeder off a '
-            'part, and '
-            'measured, it cannot seat one at an exact pose. Put each where '
-            'the declaration says and lock it there:\n'
+            'turned is an ERROR. Two things hold one there: a FILE lock, or '
+            'a zone-plan `fixed_poses[]` entry AT the declared pose, which '
+            'the seeder\'s stage 0 seats exactly and locks -- for an '
+            'UNLOCKED part only; a file-locked part off its pose it refuses '
+            'to move. `check_floorplan --emit-intent` compiles such an entry '
+            'for each anchored ref no edge connector or must_lock already '
+            'claims. Name each in the plan\'s `fixed_poses[]` at that '
+            'pose (with its `rot` where the file declares one), or put it where the declaration says and lock it there:\n'
             # A part locked where it should not be takes TWO calls: one
             # call may not both unlock and lock a ref (place_pose refuses
             # that as ambiguous), and moving a locked part needs `unlock`
@@ -3034,13 +3084,15 @@ def _refusal_scenarios(tmp):
         os.path.join(tmp, 'logo_lk.kicad_pcb'), ('U1', 'U2', 'LOGO1'),
         padless=('LOGO1',), locked=('LOGO1',))
 
-    def mech_board(name, brief_edge=None, mech=None, brief_raw=None):
+    def mech_board(name, brief_edge=None, mech=None, brief_raw=None,
+                   locked=()):
         """A tiny board in its OWN directory, optionally with a sibling
         design brief declaring U2's edge (or `brief_raw` verbatim) and a
         `mechanical.json` (#959)."""
         d = os.path.join(tmp, 'mech_' + name)
         os.makedirs(d, exist_ok=True)
-        b = _tiny_board(os.path.join(d, 'board.kicad_pcb'), ('U1', 'U2'))
+        b = _tiny_board(os.path.join(d, 'board.kicad_pcb'), ('U1', 'U2'),
+                        locked=locked)
         if brief_raw is not None:
             with open(os.path.join(d, 'board.design-brief.json'), 'w',
                       encoding='utf-8') as fh:
@@ -3219,6 +3271,31 @@ def _refusal_scenarios(tmp):
              'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
                         'reason': 'the mounting datum'}]}),
           '--zone-plan', zp_ok] + damaged),
+        # #1054: a plan `fixed_poses[]` entry that does not count, each
+        # reason named -- at another pose (U1), no `rot` for a declared one
+        # (U2), and a part locked in the file off its pose (the second row).
+        ('fixed_poses entries at another pose and with no rot',
+         ['--board', mech_board('fixed_off', mech={
+             'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
+                        'reason': 'the datum'},
+                       {'ref': 'U2', 'x': 5.0, 'y': 2.0, 'rot': 0,
+                        'reason': 'the second datum'}]}),
+          '--zone-plan', wrote('zp_fixed_off.json', _zone_plan_doc(
+              [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
+                'note': 'both parts, one zone'}], min_reader=7,
+              fixed_poses=[{'ref': 'U1', 'x': 3.0, 'y': 2.0, 'rot': 0,
+                            'basis': 'mechanical'},
+                           {'ref': 'U2', 'x': 5.0, 'y': 2.0,
+                            'basis': 'mechanical'}]))] + damaged),
+        ('a fixed_poses entry for a part locked off its pose',
+         ['--board', mech_board('fixed_locked', mech={
+             'fixed': [{'ref': 'U1', 'x': 3.0, 'y': 2.0, 'rot': 0,
+                        'reason': 'the datum'}]}, locked=('U1',)),
+          '--zone-plan', wrote('zp_fixed_locked.json', _zone_plan_doc(
+              [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
+                'note': 'both parts, one zone'}], min_reader=7,
+              fixed_poses=[{'ref': 'U1', 'x': 3.0, 'y': 2.0, 'rot': 0,
+                            'basis': 'mechanical'}]))] + damaged),
         ('a mechanical.json that does not read',
          ['--board', mech_board('garbled', mech={'nonsense': 1}),
           '--zone-plan', zp_ok] + damaged),

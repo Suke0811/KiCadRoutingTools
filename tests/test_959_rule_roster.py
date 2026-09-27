@@ -74,6 +74,9 @@ ARM_WITH = {
     'must_lock': {'must_lock': ['U1']},
     'legality': {'legality_budget': {'oob_count': 0}},
     'pins_to_edge': {'edge_connectors': [{'ref': 'J1', 'edge': 'west'}]},
+    # #1051: a declared row arms its formation rule.
+    'array_formation': {'arrays': [{'name': 'row', 'members': ['R1', 'R2'],
+                                    'order': 'declared'}]},
 }
 
 

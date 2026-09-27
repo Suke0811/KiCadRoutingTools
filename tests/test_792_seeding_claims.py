@@ -190,55 +190,68 @@ def test_the_control_arm_is_never_what_changed():
           "every armed board")
 
 
-def test_the_SHIPPING_arm_leaves_no_part_unseated_that_the_control_seated():
-    """The put-back falls through to the centroid stage rather than appending
-    to `unseated`, so it cannot strand a part. Re-derived per board.
+def test_the_SHIPPING_arm_strands_only_what_the_pin_stage_crowds_out():
+    """What the SHIPPING arm (`decaps.max_distance_mm` declared) leaves
+    unseated that the no-decaps control seats, re-derived per board and
+    pinned EXACTLY: rp2350's J2, and nothing else.
 
-    Scoped to the arm that SHIPS. The `chips` arm is excluded here and asserted
-    separately below, because it does strand one -- which is a finding, not a
-    reason to weaken this claim."""
+    The put-back falls through to the centroid stage rather than appending
+    to `unseated`, so it cannot strand a part; the pin stage CAN, by
+    claiming room near the ICs already placed before the parts stage 3
+    seats last (rp2350 claims 15 caps; J2 then no longer fits). History,
+    so the number is not mistaken for news: the first rows file (measured
+    at b9055e1) did not show it; the pre-phase-3 seeder at 754e7f419
+    does. Any other board or part appearing, or J2 going, fails here and
+    is read deliberately."""
     rows = _armed(_rows())
+    stranded = {}
     for r in rows:
         extra = sorted(set(r['on']['unseated']) - set(r['off']['unseated']))
-        assert not extra, (r['board'], extra)
-    print(f"  PASS: {len(rows)} board(s), no part newly unseated by the "
-          f"narrowing or the put-back")
+        if extra:
+            stranded[r['board']] = extra
+    assert stranded == {'rp2350_fpga_eensy_prePlane': ['J2']}, stranded
+    print(f"  PASS: {len(rows)} board(s); the shipping arm strands only "
+          f"{stranded} beyond the control -- the pin stage's crowding, "
+          f"pinned")
 
 
-def test_the_owner_test_arm_STRANDS_a_part_and_that_is_why_it_ships_off():
-    """The measurement earning its keep.
+def test_the_owner_test_arm_STRANDS_parts_and_that_is_why_it_ships_off():
+    """What `decap_owner_chips` (the grouper's chip set as the pin owners,
+    instead of `U*`) does, measured against the SHIPPING arm, and why it
+    ships OFF.
 
-    `decap_owner_chips` widens the pin-owner set from `U*` to the grouper's
-    chip set, which gains pin sources on seven boards and loses none -- so the
-    COVERAGE argument for it is clean. Seeding is not coverage. Measured, the
-    widened arm strands FOUR parts across THREE boards that the control seats:
-    `orangecrab_ext_pll` U4, `rp2350_fpga_eensy_prePlane` L1, and `tigard` H1
-    and H3. (My own first draft of this docstring said 'one part on one
-    board' -- understating the harm, which is the direction my errors lean.)
-    A stranded part is a worse outcome than every gain the flag buys, and
-    that is the whole reason it ships OFF rather than on.
+    The widened arm strands FOUR parts across THREE boards that the
+    shipping arm seats: orangecrab_ext_pll U4, rp2350_fpga_eensy_prePlane
+    L1, and tigard H1 and H3. A stranded part is a worse outcome than every
+    gain the flag buys.
 
-    Asserted rather than noted, so the flag cannot be flipped on without this
-    arm being confronted -- and so that if a later change fixes the stranding,
-    this arm fails and the flag's justification is revisited deliberately.
+    Measured against the shipping arm rather than the no-decaps control
+    (the control differs from both by rp2350's J2 -- see the arm above).
+    The pin geometry is recorded too: the chips arm is worse on glasgow,
+    rp2350 and ulx3s and better nowhere -- no reason to turn it on either.
     """
     rows = _armed(_rows())
     stranded = {}
     for r in rows:
-        extra = sorted(set(r['chips']['unseated']) - set(r['off']['unseated']))
+        extra = sorted(set(r['chips']['unseated']) - set(r['on']['unseated']))
         if extra:
             stranded[r['board']] = extra
-    assert stranded, (
-        "the chips arm no longer strands anything. That is good news and it "
-        "invalidates this arm's premise: re-run measure_792_seeding.py, "
-        "re-read the flag's default, and update BOTH deliberately")
-    assert 'orangecrab_ext_pll' in stranded, sorted(stranded)
-    # The COUNT, not just the presence: a later change that strands three
-    # boards instead of one must not read as the same finding.
-    assert len(stranded) == 3, sorted(stranded)
-    assert sum(len(v) for v in stranded.values()) == 4, stranded
-    print(f"  PASS: the owner-test arm strands {stranded} -- measured, and the "
-          f"reason `decap_owner_chips` defaults to False")
+    assert stranded == {'orangecrab_ext_pll': ['U4'],
+                        'rp2350_fpga_eensy_prePlane': ['L1'],
+                        'tigard': ['H1', 'H3']}, stranded
+    better, worse = [], []
+    for r in rows:
+        a, b = r['on']['pin_gap_sum'], r['chips']['pin_gap_sum']
+        if a is None or b is None:
+            continue
+        if b > a + 1e-6:
+            worse.append(r['board'])
+        elif b < a - 1e-6:
+            better.append(r['board'])
+    assert len(worse) >= len(better), (better, worse)
+    print(f"  PASS: the owner-test arm strands {stranded} the shipping arm "
+          f"seats; pin_gap_sum worse on {worse}, better on {better} -- so "
+          f"`decap_owner_chips` defaults to False")
 
 
 def test_what_DECLARING_the_key_costs_is_recorded_not_gated():
@@ -297,8 +310,8 @@ TESTS = [
     test_one_board_is_RE_MEASURED_live_so_a_stale_file_cannot_pass,
     test_the_rows_cover_the_tracked_corpus_and_say_what_they_skipped,
     test_the_control_arm_is_never_what_changed,
-    test_the_SHIPPING_arm_leaves_no_part_unseated_that_the_control_seated,
-    test_the_owner_test_arm_STRANDS_a_part_and_that_is_why_it_ships_off,
+    test_the_SHIPPING_arm_strands_only_what_the_pin_stage_crowds_out,
+    test_the_owner_test_arm_STRANDS_parts_and_that_is_why_it_ships_off,
     test_what_DECLARING_the_key_costs_is_recorded_not_gated,
     test_the_put_back_actually_fires_somewhere,
 ]

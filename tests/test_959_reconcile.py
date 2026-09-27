@@ -414,6 +414,62 @@ def test_p1_refuses_a_contradiction_until_dispositioned():
           "once dispositioned, and --no-mechanical is the OFF arm")
 
 
+def test_p1_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction():
+    """#1051/#1054: mechanical.json pins U1 while the brief makes it a
+    member of a row. No plan can hold both -- the loader refuses a fixed
+    pose on an array member, and a FILE lock on one is an array_conflict --
+    so P1 used to demand exactly those two impossible remedies. It is now a
+    CONTRADICTION row (`U1:array`), refused by name until answered, and the
+    declared brief wins: once acknowledged the mechanical value has LOST,
+    is not anchored, and P1 owes no lock or fixed pose for it."""
+    sys.path.insert(0, os.path.dirname(DRIVER))
+    import importlib
+    drv = importlib.import_module('placement_driver')
+    with tempfile.TemporaryDirectory() as tmp:
+        d = os.path.join(tmp, 'b')
+        os.makedirs(d)
+        board = drv._tiny_board(os.path.join(d, 'board.kicad_pcb'),
+                                ('U1', 'U2', 'U3'))
+        row = {'name': 'pair', 'members': ['U1', 'U2'], 'order': 'declared',
+               'rotation': 'shared'}
+        with open(os.path.join(d, 'board.design-brief.json'), 'w',
+                  encoding='utf-8') as fh:
+            json.dump({'schema': 1, 'kind': 'design-brief', 'units': 'mm',
+                       'board': 'board.kicad_pcb', 'arrays': [row]}, fh)
+        with open(os.path.join(d, 'mechanical.json'), 'w',
+                  encoding='utf-8') as fh:
+            json.dump({'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
+                                  'reason': 'the datum'}]}, fh)
+
+        def plan(name, **extra):
+            p = os.path.join(tmp, name)
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(drv._zone_plan_doc(
+                    [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
+                      'note': 'one zone'}], min_reader=7,
+                    arrays=[dict(row, source='brief')], **extra), fh)
+            return p
+        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
+                '--board', board]
+        r = run_utils.check(argv + ['--zone-plan', plan('a.json')],
+                            refuse='contradiction(s) between DECLARED',
+                            code=4)
+        out = r.stdout + r.stderr
+        assert 'U1:array' in out and "moves with array 'pair'" in out, out
+        assert '-> brief wins' in out, out
+        # No remedy that cannot work: neither a lock nor a fixed pose.
+        assert "lock 'U1'" not in out and 'fixed_poses' not in out, out
+        disp = {'rules': {'envelope': 'fixture', 'legality': 'fixture'},
+                'contradictions': {'U1:array': 'the row holds; the pose '
+                                               'in the file was stale'}}
+        r = run_utils.check(argv + ['--zone-plan',
+                                    plan('b.json', dispositions=disp)],
+                            accept=True)
+        assert 'not held at their declared pose' not in r.stdout, r.stdout
+    print("  PASS: P1 refuses U1:array by name (brief wins), offers no lock or "
+          "fixed pose, and passes once acknowledged with nothing owed")
+
+
 def test_p1_refuses_an_unlocked_mechanical_ref():
     sys.path.insert(0, os.path.dirname(DRIVER))
     import importlib
@@ -440,6 +496,64 @@ def test_p1_refuses_an_unlocked_mechanical_ref():
                          'lock', 'U1'], accept=True)
         run_utils.check(argv, accept=True)
     print("  PASS: P1 refuses an unlocked mechanical ref, passes once locked")
+
+
+def test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats():
+    """#1054: stage 0 seats an UNLOCKED `fixed_poses[]` ref at exactly its
+    pose and locks it, so P1 owes no hand lock for one named AT the declared
+    pose -- and the zone coverage owes it no zone. Not for an entry that
+    leaves the declared rotation to the part's current angle, and never for
+    a FILE-locked part off its pose (stage 0 refuses to move a file lock)."""
+    sys.path.insert(0, os.path.dirname(DRIVER))
+    import importlib
+    drv = importlib.import_module('placement_driver')
+    with tempfile.TemporaryDirectory() as tmp:
+        board = drv._tiny_board(os.path.join(tmp, 'board.kicad_pcb'),
+                                ('U1', 'U2'))
+        with open(os.path.join(tmp, 'mechanical.json'), 'w',
+                  encoding='utf-8') as fh:
+            json.dump({'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
+                                  'reason': 'the datum'}]}, fh)
+
+        def plan(name, entry):
+            p = os.path.join(tmp, name)
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(drv._zone_plan_doc(
+                    [{'name': 'rest', 'refs': ['U2'], 'zone': [0, 0, 10, 10],
+                      'note': 'U1 is seated by its fixed pose'}],
+                    min_reader=7,
+                    fixed_poses=[dict({'ref': 'U1', 'basis': 'mechanical'},
+                                      **entry)]), fh)
+            return [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
+                    '--board', board, '--zone-plan', p]
+
+        r = run_utils.check(plan('at.json', {'x': 2.0, 'y': 2.0, 'rot': 0}),
+                            accept=True)
+        assert 'not held at their declared pose' not in r.stdout, r.stdout
+        assert '1 at a fixed pose' in r.stdout, r.stdout
+        # No `rot` for a declared rotation: stage 0 keeps the current angle.
+        r = run_utils.check(plan('norot.json', {'x': 2.0, 'y': 2.0}),
+                            refuse='U1 is not locked', code=4)
+        assert 'has no `rot` and mechanical.json declares one' in r.stdout, \
+            r.stdout
+        # Unlocked, the entry at a DIFFERENT pose: refused, and named.
+        r = run_utils.check(plan('off.json', {'x': 3.0, 'y': 2.0, 'rot': 0}),
+                            refuse='U1 is not locked', code=4)
+        assert ('fixed_poses entry at (3.0, 2.0, 0.0) does not count: it '
+                'is not the declared pose') in r.stdout, r.stdout
+        # ...and a rotation off by 90 is a different pose too.
+        run_utils.check(plan('turned.json', {'x': 2.0, 'y': 2.0, 'rot': 90}),
+                        refuse='it is not the declared pose', code=4)
+        # A FILE-locked part off its pose: stage 0 will not move it.
+        run_utils.check([sys.executable, '-X', 'utf8',
+                         run_utils.tool('place_pose.py'), board, board,
+                         'set', 'U1', '3', '2', 'lock', 'U1'], accept=True)
+        r = run_utils.check(plan('locked.json',
+                                 {'x': 2.0, 'y': 2.0, 'rot': 0}),
+                            refuse='U1 is 1.000mm from its declared', code=4)
+        assert 'the part is locked in the board file' in r.stdout, r.stdout
+    print("  PASS: P1 accepts an unlocked mechanical ref its fixed pose "
+          "seats; not rot-less, never a file-locked drift")
 
 
 
@@ -1327,12 +1441,19 @@ TESTS = [
     test_a_hypothesis_is_drift_not_a_contradiction,
     test_an_overhanging_mechanical_part_raises_no_envelope_error,
     test_p1_refuses_a_contradiction_until_dispositioned,
+    test_p1_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction,
     test_p1_refuses_an_unlocked_mechanical_ref,
+    test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats,
 ]
 
 
 if __name__ == '__main__':
+    # A name filter (substring), so a mutation battery can run one test;
+    # the battery checks each name it asked for printed its `---` line.
+    only = sys.argv[1:]
     for t in TESTS:
+        if only and not any(o in t.__name__ for o in only):
+            continue
         print(f"--- {t.__name__}")
         t()
     print("ALL PASS")

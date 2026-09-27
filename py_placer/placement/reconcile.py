@@ -445,6 +445,25 @@ def _edge_of(rect, bounds) -> Optional[str]:
     return _nearest_edge(rect, bounds)
 
 
+def same_pose(a, b) -> bool:
+    """Two `(x, y, rot)` poses within `POSE_TOL_MM` / `ROT_TOL_DEG`; a None
+    rotation constrains nothing. The one comparison the pose row and the
+    fixed-pose grade share."""
+    return (abs(a[0] - b[0]) <= POSE_TOL_MM
+            and abs(a[1] - b[1]) <= POSE_TOL_MM
+            and (a[2] is None or b[2] is None
+                 or min(abs(a[2] - b[2]) % 360.0,
+                        360.0 - abs(a[2] - b[2]) % 360.0) <= ROT_TOL_DEG))
+
+
+def fixed_pose_tuple(entry: Dict):
+    """An intent `fixed_poses[]` entry as `(x, y, rot)`, rot None when absent
+    or "unknown"."""
+    rot = entry.get('rot')
+    return (float(entry['x']), float(entry['y']),
+            None if rot is None or rot == 'unknown' else float(rot) % 360.0)
+
+
 def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
               brief_source: Optional[str] = None,
               mechanical: Optional[Dict] = None,
@@ -534,12 +553,12 @@ def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
              'the edge each channel puts this part on, read off the rect the '
              'edge-connector rule reads (`edge_seat_rect`)')
 
-    def _same_pose(a, b):
-        return (abs(a[0] - b[0]) <= POSE_TOL_MM
-                and abs(a[1] - b[1]) <= POSE_TOL_MM
-                and (a[2] is None or b[2] is None
-                     or min(abs(a[2] - b[2]) % 360.0,
-                            360.0 - abs(a[2] - b[2]) % 360.0) <= ROT_TOL_DEG))
+    _same_pose = same_pose
+    # #1054: a brief `fixed[].pose` is a THIRD channel on the pose row. A
+    # brief pose that disagrees with mechanical.json is a contradiction P1
+    # refuses, rather than a second anchor nobody reconciled.
+    brief_poses = {str(f.get('ref')): f for f in
+                   (brief_fragment or {}).get('fixed_poses') or ()}
 
     for ref, p in sorted((mech.get('poses') or {}).items()):
         fp = pcb.footprints.get(ref)
@@ -559,8 +578,26 @@ def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
                            'authority': mech_auth, 'source': mech_src},
             'board': {'value': cur, 'authority': board_auth,
                       'source': board_path}}
+        if ref in brief_poses:
+            values['brief'] = {'value': fixed_pose_tuple(brief_poses[ref]),
+                               'authority': brief_auth,
+                               'source': brief_source}
         _row(ref, 'pose', values, _same_pose,
              p.get('reason') or 'a declared mechanical pose')
+        # A brief pose that AGREES with mechanical.json corroborates it; it
+        # does not replace it. The pose is a physical fact recorded in the
+        # file, so the row keeps `mechanical` as its winner (and the ledger
+        # its basis) and names the brief as corroborating -- rather than
+        # letting the brief's higher authority rank relabel a recorded fact
+        # as a declaration (Phase-1 re-verifier). Only a DISAGREEING brief
+        # wins, as a contradiction.
+        if ('brief' in values and rows and rows[-1]['id'] == f'{ref}:pose'
+                and _same_pose(values['brief']['value'],
+                               values['mechanical']['value'])
+                and rows[-1]['winner'] == 'brief'):
+            rows[-1]['winner'] = 'mechanical'
+            rows[-1]['why'] = (f"{rows[-1]['why']} -- the design brief "
+                               f"declares the same pose, corroborating it")
         rect = geo.body_rect(ref, p['x'], p['y'], p['rot'])
         if rect is not None and bounds is not None and (
                 rect[2] < bounds[0] or rect[0] > bounds[2]
@@ -579,6 +616,37 @@ def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
                 'winner': 'outline',
                 'why': 'the declared pose puts the drawn body entirely '
                        'outside the board outline\'s bounding box'})
+
+    # #1051/#1054: a mechanical POSE for a part the brief declares an ARRAY
+    # member. The file pins the part; the brief says it moves with its row --
+    # and no plan can do both (the loader refuses a fixed pose on a member,
+    # and a FILE lock on a member is an array_conflict). So it is the same
+    # kind of disagreement as a brief edge against a mechanical edge: two
+    # declared/recorded values that disagree are a CONTRADICTION P1 refuses
+    # until answered, and the stronger source wins -- a declared brief over
+    # a recorded file, so the mechanical value LOSES, is not anchored
+    # (`lost_mechanical_refs`) and owes no lock. A brief the run wrote itself
+    # (hypothesis) loses to the recorded file instead: drift, which P1
+    # refuses with "correct the losing source" -- take the part out of the
+    # array. Either way the remedy is one that can be carried out.
+    members = {}
+    for a in (brief_fragment or {}).get('arrays') or ():
+        for m in a.get('members') or ():
+            members.setdefault(str(m), str(a.get('name')))
+    for ref, p in sorted((mech.get('poses') or {}).items()):
+        if ref not in members or ref not in pcb.footprints:
+            continue
+        values = {
+            'mechanical': {'value': f"fixed at ({p['x']:g}, {p['y']:g}"
+                                    + (f", {p['rot']:g}deg)"
+                                       if p.get('rot') is not None else ')'),
+                           'authority': mech_auth, 'source': mech_src},
+            'brief': {'value': f"moves with array {members[ref]!r}",
+                      'authority': brief_auth, 'source': brief_source}}
+        _row(ref, 'array', values, lambda a, b: a == b,
+             'the mechanical file pins this part at a pose, and the brief '
+             'declares it a member of a row that moves as one piece -- one '
+             'of the two has to give')
 
     knobs = ((mech.get('floors') or {}).get('knobs') or {})
     unavailable = (mech.get('floors') or {}).get('unavailable')
@@ -660,7 +728,8 @@ def format_rows(rows) -> List[str]:
 
 def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
                   lost: Sequence[str] = (), state=None,
-                  tolerance_mm: float = ANCHOR_TOL_MM):
+                  tolerance_mm: float = ANCHOR_TOL_MM,
+                  prefix: str = 'mech:', basis: str = 'mechanical'):
     """`(blocks, skipped)`: one grade-only anchor block per mechanical ref.
 
     Compiled by the GRADE from the file (`floorplan.mechanical_anchor_
@@ -675,17 +744,24 @@ def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
     may take when the declaration gives none. So a part sitting at its
     declared pose grades clean and one that moved does not.
 
-    Grade-only: P1 requires each anchored ref to be FILE-locked, so the
-    seeder treats it as placed and never seats it here -- measured before
-    this was built, the seeder cannot seat a part at an exact pose (a part
-    overhanging the outline has no admissible pose at all; edge claims are
-    seated before zones; a seat lands anywhere within the tolerance).
+    Grade-only: the anchor never seats anything. A part reaches its pose
+    either FILE-locked there (which P1 checks) or through an intent
+    `fixed_poses[]` entry, which the seeder's stage 0 seats exactly and
+    locks (#1054) -- a zone is no way to seat one: measured before this was
+    built, a part overhanging the outline has no admissible zone pose at
+    all, edge claims are seated before zones, and a seat lands anywhere
+    within the tolerance.
     No `rotation` key: rotation drift is graded by `mechanical_drift`, and a
     rotation DECISION on a block would collide with a plan's own claims.
 
     Skipped, with the reason: pad-less refs (the seeder never places them;
     they are reconciled only), refs the board does not have, and refs whose
     mechanical value lost a contradiction.
+
+    `prefix`/`basis` (#1054): the same anchor, compiled from an intent's
+    `fixed_poses[]` instead of the file -- `floorplan.fixed_pose_violations`
+    passes `fixed:` and the entry's own basis, so a brief-declared pose is
+    graded by exactly this geometry and never by a second copy of it.
     """
     from .legality import rotate_local_bounds
     blocks, skipped = [], {}
@@ -733,11 +809,44 @@ def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
                 math.ceil(max(r[2] for r in rects) * 1e4) / 1e4,
                 math.ceil(max(r[3] for r in rects) * 1e4) / 1e4]
         blocks.append({
-            'name': f'mech:{ref}', 'refs': [glob.escape(ref)], 'zone': zone,
+            'name': f'{prefix}{ref}', 'refs': [glob.escape(ref)], 'zone': zone,
             'tolerance_mm': tolerance_mm,
-            'note': ('mechanical.json: '
+            'note': (('mechanical.json: ' if basis == 'mechanical'
+                      else 'fixed_poses: ')
                      + (p.get('reason') or 'a declared mechanical pose')),
-            'context': {'basis': 'mechanical',
+            'context': {'basis': basis,
                         'mechanical_pose': [p['x'], p['y'], p['rot']],
                         'source': mechanical.get('path')}})
     return blocks, skipped
+
+
+def mechanical_fixed_poses(mechanical: Dict, anchored: Sequence[str], *,
+                           claimed: Dict[str, str] = None):
+    """`(entries, skipped)`: mechanical.json poses as intent `fixed_poses[]`
+    rows (#1054), so the seeder can SEAT what the grade anchors.
+
+    Only the refs `anchor_blocks` anchored: its skips (off the board,
+    pad-less, a lost contradiction) are the same reasons not to seat one,
+    and a second list of reasons would drift from the first. `claimed` is
+    `{ref: why}` for refs another claim of the same intent already places
+    (an edge connector, a must_lock pattern, a brief-declared pose): each is
+    skipped WITH that reason, because the intent loader refuses a ref under
+    two such claims and the grade anchors it from the file either way.
+    A declaration with no `rot` compiles with no `rot` -- position only.
+    """
+    claimed = claimed or {}
+    entries, skipped = [], {}
+    for ref in sorted(anchored):
+        p = (mechanical.get('poses') or {}).get(ref)
+        if p is None:
+            continue
+        if ref in claimed:
+            skipped[ref] = claimed[ref]
+            continue
+        row = {'ref': ref, 'x': p['x'], 'y': p['y'], 'basis': 'mechanical',
+               'why': ('mechanical.json: '
+                       + (p.get('reason') or 'a declared mechanical pose'))}
+        if p.get('rot') is not None:
+            row['rot'] = p['rot']
+        entries.append(row)
+    return entries, skipped

@@ -46,6 +46,7 @@ KRT_TOOL = {'scope': ['placement', 'combined'], 'kind': 'instrument'}
 import _path  # noqa: F401  (py_tools -> py_router/py_placer on sys.path)
 
 import argparse
+import fnmatch
 import json
 import os
 import sys
@@ -159,6 +160,20 @@ def build_parser():
                         'per-zone / per-edge / board area budgets, and the '
                         'rule roster. Needs no placed board; exits 4 on an '
                         'ERROR, which is a plan no arrangement can satisfy')
+    p.add_argument('--suggest-arrays', action='store_true',
+                   help='print the pose-blind array DETECTOR suggestions '
+                        '(#1051) as JSON and exit: rows of identical parts '
+                        'each on its own pin of one part (pin_run), caps on '
+                        'the rail pair of one chip (decap_row), or the '
+                        'repeated channel of one sheet (sheet_bank), each '
+                        'with its evidence. Suggestions only -- accept or '
+                        'decline each: an accepted suggestion\'s `row` is the '
+                        'paste-ready arrays[] entry (write your reason into '
+                        'its `why`). '
+                        'Stdout is the bare '
+                        'JSON document; with --json PATH the document goes '
+                        'there and stdout gets a short summary. Works on an '
+                        'unplaced board: it reads no pose')
     p.add_argument('--json', metavar='PATH',
                    help='write the full findings (every measurement) as JSON')
     p.add_argument('--group-by', default='auto', metavar='SOURCES',
@@ -313,12 +328,103 @@ def _plan_only(args, intent, pcb, sources, brief_fragment, brief_path,
     return 0
 
 
+#: The dests `--suggest-arrays` reads; any other flag set is refused by name.
+_SUGGEST_ARRAYS_OWN = ('help', 'board', 'suggest_arrays', 'json', 'quiet')
+
+
+def _suggest_arrays(args) -> int:
+    """`--suggest-arrays`: the detector's candidates, evidence included.
+
+    No placement gate: the detector reads no pose, so an unplaced board --
+    the from-scratch case it exists for -- is as good as a placed one. The
+    parser's and the libraries' own prints go to stderr while the document
+    is built, because a bare-JSON stdout is the contract of this mode.
+    """
+    import contextlib
+    from placement import arrays as arr
+    with contextlib.redirect_stdout(sys.stderr):
+        pcb = parse_kicad_pcb(args.board)
+        declined = []
+        cands = arr.suggest_arrays(pcb, declined=declined)
+    doc = {'board': args.board, 'pose_blind': True,
+           'criteria': list(arr.CRITERIA), 'min_members': arr.MIN_MEMBERS,
+           'count': len(cands), 'suggestions': cands, 'declined': declined}
+    text = json.dumps(doc, indent=1, sort_keys=True)
+    if not args.json:
+        print(text)
+        return 0
+    try:
+        with open(args.json, 'w', encoding='utf-8') as fh:
+            fh.write(text + '\n')
+    except OSError as exc:
+        print(f"ERROR: --json {args.json}: {exc}", file=sys.stderr)
+        return 2
+    if not args.quiet:
+        print(f"{len(cands)} array suggestion(s) on {args.board} -- "
+              f"pose-blind, SUGGESTIONS: accept or decline each; an "
+              f"accepted one's `row` is the arrays[] entry to paste "
+              f"(evidence in {args.json})")
+        for c in cands:
+            print(f"  {c['criterion']:10s} {c['name']}: "
+                  f"{', '.join(c['members'])}"
+                  + (f" -> {c['serves']}" if c['serves'] else '')
+                  + f" (order {c['order']})")
+    return 0
+
+
+def _bare_json_stdout(argv) -> bool:
+    """True when this invocation writes a bare JSON document to stdout,
+    where a `CMD:` banner line would be a JSONDecodeError at char 0."""
+    import contextlib
+    try:
+        # BOTH streams: `--help` prints its usage to STDOUT before the
+        # SystemExit, which put the usage ahead of the `CMD:` banner
+        # (test_run4_instruments' banner check).
+        with open(os.devnull, 'w') as null, \
+                contextlib.redirect_stderr(null), \
+                contextlib.redirect_stdout(null):
+            a = build_parser().parse_args(argv)
+    except SystemExit:
+        return False
+    return bool(a.suggest_arrays and not a.json)
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     parser_error = build_parser().error
 
+    if args.suggest_arrays:
+        if args.intent or args.emit_intent:
+            parser_error('--suggest-arrays runs alone: it suggests, and an '
+                         'intent is where a reader writes what it accepted')
+        # Every other flag the mode would silently IGNORE is refused by
+        # name: a `--brief` (even a missing file), `--plan-only` or
+        # `--group-by` that changed nothing reads as honoured otherwise.
+        ignored = []
+        _p = build_parser()
+        for act in _p._actions:
+            if act.dest in _SUGGEST_ARRAYS_OWN or not act.option_strings:
+                continue
+            # `get_default`, not `act.default`: the decap flags share one
+            # dest whose default is set once through `set_defaults`.
+            default = _p.get_default(act.dest)
+            if getattr(args, act.dest, default) != default:
+                ignored.append(act.option_strings[-1])
+        if ignored:
+            parser_error(f"--suggest-arrays does not use "
+                         f"{', '.join(sorted(set(ignored)))}: it reads only "
+                         f"the board's parts and nets (--json and --quiet "
+                         f"are its options)")
+        if not os.path.exists(args.board):
+            parser_error(f"{args.board}: no such file")
+        if args.json and not os.path.isdir(
+                os.path.dirname(os.path.abspath(args.json))):
+            parser_error(f"--json {args.json}: its directory does not "
+                         f"exist")
+        return _suggest_arrays(args)
     if not args.intent and not args.emit_intent:
-        parser_error('one of --intent or --emit-intent is required')
+        parser_error('one of --intent, --emit-intent or --suggest-arrays is '
+                     'required')
     if not os.path.exists(args.board):
         parser_error(f"{args.board}: no such file")
 
@@ -432,6 +538,41 @@ def main(argv=None):
                 'anchored': sorted(b['name'][len('mech:'):]
                                    for b in _anchors),
                 'skipped': _skipped}
+            # #1054: the anchored poses also compile into `fixed_poses[]`,
+            # so the seeder can SEAT what the grade anchors. The grade
+            # still anchors from the FILE, so a plan that drops a row
+            # drops the seat, never the grade. A ref another claim of
+            # this intent already places is skipped by name -- the
+            # loader refuses a ref under two such claims.
+            _claimed = {}
+            for _c in doc.get('edge_connectors') or ():
+                _claimed[str(_c.get('ref'))] = (
+                    'an edge_connectors entry already places it')
+            for _pat in doc.get('must_lock') or ():
+                for _r in _ctx['mechanical']['anchored']:
+                    if fnmatch.fnmatchcase(_r, _pat):
+                        _claimed.setdefault(_r, f"must_lock {_pat!r} "
+                                                f"already names it")
+            for _f in doc.get('fixed_poses') or ():
+                _claimed.setdefault(str(_f.get('ref')),
+                                    'the design brief fixes its pose')
+            # An ARRAY member moves with its row, and the loader refuses a
+            # member that also has a fixed pose -- so a mechanical pose for
+            # one is skipped, by name, rather than emitted into an intent
+            # this tool's own loader then refuses (review item 2).
+            for _a in doc.get('arrays') or ():
+                for _m in _a.get('members') or ():
+                    _claimed.setdefault(str(_m), f"a member of array "
+                                                 f"{_a.get('name')!r}")
+            _fixed, _fskip = _rc.mechanical_fixed_poses(
+                mech, _ctx['mechanical']['anchored'], claimed=_claimed)
+            _ctx['mechanical']['fixed_poses'] = sorted(
+                f['ref'] for f in _fixed)
+            _ctx['mechanical']['fixed_skipped'] = _fskip
+            if _fixed:
+                doc['fixed_poses'] = (list(doc.get('fixed_poses') or ())
+                                      + _fixed)
+                doc['min_reader'] = max(int(doc.get('min_reader') or 0), 7)
         if not args.quiet:
             for line in _rc.format_rows(_rows):
                 print(line)
@@ -442,8 +583,13 @@ def main(argv=None):
                 print(f"  {len(_m['anchored'])} mechanical ref(s) the "
                       f"grade anchors at their declared pose (compiled from "
                       f"the file at grade time; P1 requires each locked "
-                      f"there)"
+                      f"there, or seated by a fixed_poses entry)"
                       + (f"; skipped: {_sk}" if _sk else ''))
+                _fs = ', '.join(f"{k} ({v})" for k, v in
+                                sorted(_m['fixed_skipped'].items()))
+                print(f"  {len(_m['fixed_poses'])} of them compiled into "
+                      f"fixed_poses[] for the seeder to seat"
+                      + (f"; not compiled: {_fs}" if _fs else ''))
         if args.require_brief and not brief_fragment:
             print(f"  FAIL: --require-brief, but " + _brief_absence_reason(
                 args, brief)
@@ -757,5 +903,8 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    import cli_banner; cli_banner.install()  # CMD/EXIT self-echo (run-3 B1)
+    # No banner when stdout is a bare JSON document (`--suggest-arrays`
+    # without `--json`), the choice board_context / board_brief make too.
+    if not _bare_json_stdout(sys.argv[1:]):
+        import cli_banner; cli_banner.install()  # CMD/EXIT self-echo (run-3 B1)
     sys.exit(main())

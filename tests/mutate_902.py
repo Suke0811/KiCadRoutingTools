@@ -329,8 +329,11 @@ ROWS = [
      "        angle = math.radians(tilt)",
      (T961,), KILLED),
     ('seat-copper-tolerated-to-half-a-mm', 'sd',
-     "        if off > 1e-9:",
-     "        if off > 0.5:",
+     # Single-line and unique (#1051 phase 5): `if off > 1e-9:` now also
+     # sits in stage 0's fixed-pose check. Shifting the SEAT predicate's
+     # measured overhang by 0.5 is the same mutant as `off > 0.5` there.
+     "        off = pad_copper_outside(geometry, zero, part.ref, (x, y, part.rot))",
+     "        off = pad_copper_outside(geometry, zero, part.ref, (x, y, part.rot)) - 0.5",
      (T961,), KILLED),
     ('ev-shortfall-is-the-smallest', 'fp',
      "            'shortfall_mm': round(max((f['shortfall_mm'] for f in findings),",

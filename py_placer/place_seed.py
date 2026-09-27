@@ -20,7 +20,8 @@ place_portfolio.py to diversify and rank what this emits.
 Exit codes: 0 seeded and graded clean; 2 bad arguments; 3 the board cannot be
 seeded (no Edge.Cuts outline -- the outline is spec-owned and will not be
 invented -- or the board is already placed / carries copper); 4 the seed was
-written but parts could not be seated or the intent grade has errors ON
+written but parts could not be seated, a declared fixed pose was not
+honoured (`fixed_refused`, #1054), or the intent grade has errors ON
 PARTS THE SEED PLACED. A grade error on a part the seed was told not to move
 -- `(locked yes)` in the file, or matched by the intent's `must_lock` -- is
 printed and counted in `grade_errors_pinned`, and does not fail the gate:
@@ -190,6 +191,101 @@ def split_pad_pairs(worst, seeded, unseated):
         (against_unseated if (unseated & {w[0], w[1]}) - charged
          else mine).append(w)
     return mine, against_unseated
+
+
+def seed_structure_summary(result, graded, written):
+    """The #1051 / #1053 / #1054 keys, judged at the WRITTEN poses.
+
+    The seeder records what it did at the poses it SEEDED; the polish (and
+    the post-polish zone re-seat) can move those parts afterwards, so each
+    record is re-read against the board actually written, the way
+    `edge_floor_fallback` is. A row the seeder formed and the polish broke
+    must read broken:
+
+    * `arrays_formed[name].verdict` is the GRADER's reading on the written
+      board (`graded.array_measured`, the `array_formation` rule's own
+      measurement -- called, not mirrored); `verdict_at_seed` is the
+      seeder's self-check; `failed` is the written failure list.
+    * `fixed_seated[ref].at_written_pose` compares the written pose with
+      the seated one (a stamped part is frozen in the polish, so False
+      means something else moved it).
+    * `array_unseated`, `fixed_refused` and `decap_stage` are about what the
+      SEEDER did and are passed through.
+
+    Prints a `NOTE:` line for every row the seed formed that is not formed
+    as written, every fixed pose not at its written pose, and a one-line
+    tally of each key that is non-empty.
+    """
+    measured = {str(a.get('name')): a
+                for a in (getattr(graded, 'array_measured', None) or ())}
+    formed = {}
+    for name, rec in sorted((result.get('arrays_formed') or {}).items()):
+        m = measured.get(name) or {}
+        w = m.get('formed')
+        verdict = ('formed' if w else 'broken' if w is False
+                   else 'unmeasured')
+        formed[name] = dict(rec, verdict_at_seed=rec.get('verdict'),
+                            verdict=verdict,
+                            failed=list(m.get('failed') or ()))
+        if verdict != 'formed':
+            print(f"  NOTE: array {name} was seated as a row and is "
+                  f"{verdict.upper()} at the written poses"
+                  + (f" (failed: {', '.join(m.get('failed') or ())})"
+                     if m.get('failed') else '')
+                  + " -- the polish moved its members; place_seed "
+                    "--no-polish keeps the seeded row")
+    fixed = {}
+    for ref, rec in sorted((result.get('fixed_seated') or {}).items()):
+        f = written.get(ref)
+        at = (f is not None and abs(f.x - rec['x']) <= 1e-3
+              and abs(f.y - rec['y']) <= 1e-3
+              and abs(((f.rotation or 0.0) - rec['rot'] + 180.0) % 360.0
+                      - 180.0) <= 1e-6)
+        fixed[ref] = dict(rec, at_written_pose=at)
+        if not at:
+            print(f"  NOTE: fixed pose {ref} is NOT at its declared pose on "
+                  f"the written board")
+    unseated_rows = dict(result.get('array_unseated') or {})
+    refused = dict(result.get('fixed_refused') or {})
+    decap = result.get('decap_stage')
+    if formed or unseated_rows:
+        n_ok = sum(1 for r in formed.values() if r['verdict'] == 'formed')
+        print(f"  NOTE: arrays: {n_ok} formed at the written poses, "
+              f"{len(formed) - n_ok} seated but not formed as written, "
+              f"{len(unseated_rows)} not seated as rows"
+              + (f" ({', '.join(sorted(unseated_rows))})"
+                 if unseated_rows else ''))
+    if fixed or refused:
+        print(f"  NOTE: fixed poses: {len(fixed)} seated, {len(refused)} "
+              f"refused" + (f" ({', '.join(sorted(refused))})"
+                            if refused else ''))
+    if decap and decap.get('armed'):
+        print(f"  NOTE: decap stage: {decap.get('claimed')} of "
+              f"{decap.get('scope')} cap(s) claimed at a supply pin"
+              + (f" -- {decap['reason']}" if decap.get('reason') else ''))
+    return {'arrays_formed': formed, 'array_unseated': unseated_rows,
+            'fixed_seated': fixed, 'fixed_refused': refused,
+            'decap_stage': decap}
+
+
+def fixed_pose_reason(summary):
+    """The stderr line for a declared fixed pose this seed did NOT honour
+    (#1054), or None. Every `fixed_refused` entry, and every `fixed_seated`
+    one not at its written pose, fails the gate: a pose the intent declares
+    is a fact, and a seed that leaves it unmet is not the seed that intent
+    asked for. `gate_reason` already fires for a refusal the seeder counted
+    UNSEATED (an illegal pose); this is the rest -- a ref the board does not
+    have or that carries no pads, and a part locked in the FILE off its
+    declared pose, none of which is unseated (Phase-5 fact-check: those
+    exited 0)."""
+    bad = sorted(set(summary.get('fixed_refused') or ())
+                 | {r for r, rec in (summary.get('fixed_seated') or {}).items()
+                    if not rec.get('at_written_pose', True)})
+    if not bad:
+        return None
+    return (f"place_seed: {len(bad)} declared fixed pose(s) NOT honoured "
+            f"({', '.join(bad)}) -- see fixed_refused / fixed_seated in the "
+            f"JSON_SUMMARY. It was still written, for inspection.")
 
 
 def gate_reason(unseated, own, my_pads, hole_delta):
@@ -1231,11 +1327,18 @@ Examples:
     summary['edge_floor_fallback'] = seeder.floor_records_at_poses(
         summary['edge_floor_fallback'],
         {r: (f.x, f.y, f.rotation) for r, f in _written.items()})
+    summary.update(seed_structure_summary(result, graded, _written))
+    # #1043/#1051/#1052: what the polish's rigid groups and tethers did,
+    # each key only when the intent declared its channel.
+    from placement.quench import disclosure as _disclosure
+    summary.update(_disclosure(ratsnest))
     # #974: after the split above, from the lists gate_reason reads below.
     summary['connector_requirements'] = floorplan.connector_requirements(
         graded, own, pinned)
     print("JSON_SUMMARY: " + json.dumps(summary, sort_keys=True))
     _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta)
+    if _reason is None:
+        _reason = fixed_pose_reason(summary)
     if _reason is not None:
         print(_reason, file=sys.stderr)
         return 4
