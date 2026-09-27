@@ -19,7 +19,7 @@ pitch is the rules' track plus the pair gap.
 import math
 import os
 import re
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import rules as _rules
 
