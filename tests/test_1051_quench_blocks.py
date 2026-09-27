@@ -465,6 +465,47 @@ def test_a_released_member_rejoins_when_clean_and_in_its_slot():
           f"(moved 2mm alone) stays released")
 
 
+def test_a_rejoin_re_forms_a_two_member_row_with_its_sibling():
+    """A release that leaves ONE member held drops the block (one part is no
+    formation to translate); when the released member rejoins, the block is
+    rebuilt from every member still held. It used to be rebuilt from the
+    rejoining member alone: that member was then translated by itself, out
+    of the row it had just rejoined, and the sibling that stayed held was in
+    no block and never moved again."""
+    doc, _ip = _splitflap_intent()
+    seed, _formed = _seeded_no_polish()
+    pcb = parse_kicad_pcb(seed)
+    row = next(a['members'] for a in doc['arrays'] if a['name'] == 'U4:47k')
+    st = _quiet(q.QuenchState, pcb, seed, CLEARANCE, EDGE, 30.0, 0.5, 0.15,
+                2.0, 2.0, 2.0, 0.1, 0.3)
+    st.build_neighbor_lists(3.1)
+    name = 'array:U4:47k'
+    a, b, intruder = row[2], row[3], row[5]
+    info = {'groups': {name: [a, b]}, 'anchored': {}}
+    held = {a: name, b: name}
+    blocks = {name: [a, b]}
+    released, rejoined = [], []
+    assert q._clause_failing(st, a, exclude={a, b}) is None, "A starts dirty"
+    home = st.parts[intruder]
+    home = (home.x, home.y, home.rot)
+    pa = st.parts[a]
+    st.apply_move(intruder, pa.x, pa.y, pa.rot)     # dropped onto A
+    assert _quiet(q._update_releases, st, held, blocks, info, released,
+                  rejoined, 2, 0.3, 1.0, 0.1)
+    assert [r['ref'] for r in released] == [a], released
+    assert held == {b: name} and name not in blocks, (held, blocks)
+    st.apply_move(intruder, *home)                  # and taken off again
+    assert not _quiet(q._update_releases, st, held, blocks, info, released,
+                      rejoined, 3, 0.3, 1.0, 0.1)   # hysteresis
+    assert _quiet(q._update_releases, st, held, blocks, info, released,
+                  rejoined, 4, 0.3, 1.0, 0.1)
+    assert [r['ref'] for r in rejoined] == [a], rejoined
+    assert held == {a: name, b: name}, held
+    assert blocks == {name: [a, b]}, blocks
+    print(f"  PASS: {a} released from the 2-member row {a}+{b} drops the "
+          f"block; on rejoin the block is [{a}, {b}] again, not [{a}]")
+
+
 def test_release_and_rejoin_do_not_oscillate():
     """The re-verifier's osc.py: a released sibling that moved alone ONTO a
     member. Release and rejoin must judge that member with ONE exclusion set
@@ -1095,6 +1136,7 @@ TESTS = [
     test_route_loop_summary_carries_each_rounds_quench_disclosure,
     test_member_leaves_only_through_a_disclosed_release,
     test_a_released_member_rejoins_when_clean_and_in_its_slot,
+    test_a_rejoin_re_forms_a_two_member_row_with_its_sibling,
     test_release_and_rejoin_do_not_oscillate,
     test_rigid_true_block_moves_as_one,
     test_a_ref_in_two_groups_is_deduped_and_disclosed,

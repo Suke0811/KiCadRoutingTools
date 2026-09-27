@@ -3126,6 +3126,22 @@ def _formation(rigid_info, name, released) -> Set[str]:
     return set(rigid_info['groups'][name]) - out
 
 
+def _rebuild_block(blocks, held, rigid_info, name) -> None:
+    """`blocks[name]`: the group's members still `held`, in group order, when
+    at least two are -- one part is no formation to translate, and stays
+    still, holding its slot for a rejoin. An anchored group never has a
+    block. Rebuilt from `held` on every release and rejoin, so a member
+    rejoining a row that a release shrank to one part re-forms the block
+    with the sibling that stayed, not alone."""
+    if name in rigid_info['anchored']:
+        return
+    refs = [r for r in rigid_info['groups'][name] if held.get(r) == name]
+    if len(refs) >= 2:
+        blocks[name] = refs
+    else:
+        blocks.pop(name, None)
+
+
 def _update_releases(state, held, blocks, rigid_info, released, rejoined,
                      pass_num, max_disp, step, lattice) -> bool:
     """End-of-pass release and rejoin (see the call site). Mutates `held`,
@@ -3147,10 +3163,7 @@ def _update_releases(state, held, blocks, rigid_info, released, rejoined,
                          '_slot': (_slot_of(state, ref, anchor)
                                    if anchor else None)})
         del held[ref]
-        if name in blocks:
-            blocks[name] = [r for r in blocks[name] if r != ref]
-            if len(blocks[name]) < 2:
-                del blocks[name]
+        _rebuild_block(blocks, held, rigid_info, name)
         changed = True
         print(f"  NOTE: {ref} released from rigid group {name} ({clause}) "
               f"after pass {pass_num}: its pose still fails it after every "
@@ -3175,9 +3188,7 @@ def _update_releases(state, held, blocks, rigid_info, released, rejoined,
         released.remove(rec)
         rejoined.append(dict(rec, rejoined_after_pass=pass_num))
         held[ref] = name
-        if name not in rigid_info['anchored']:
-            blocks[name] = sorted(set(blocks.get(name, [])) | {ref},
-                                  key=rigid_info['groups'][name].index)
+        _rebuild_block(blocks, held, rigid_info, name)
         changed = True
         print(f"  NOTE: {ref} rejoins rigid group {name} after pass "
               f"{pass_num}: it is clean again and still in its slot")
