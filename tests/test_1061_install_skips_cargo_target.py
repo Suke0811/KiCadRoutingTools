@@ -11,6 +11,10 @@ package_pcm.py already strips `target`; the local installer did not.
      grid_router binary next to Cargo.toml, and the crate sources.
   C. Only the cargo build dir is skipped: a `target` directory elsewhere in
      the tree is copied as before.
+  D. Of .claude/, only skills/ (the routing skills) is installed -- by
+     copy_plugin() and by package_pcm's stage_plugins() alike. A dev checkout
+     also holds Claude Code's worktrees/ (whole repo copies, 1.9 GB on one
+     machine) and the user's settings.local.json, and both were copied.
 
 Run with:  python3 tests/test_1061_install_skips_cargo_target.py
 """
@@ -24,6 +28,7 @@ ROOT_DIR = os.path.dirname(TESTS_DIR)
 sys.path.insert(0, ROOT_DIR)
 
 import install_plugin  # noqa: E402
+import package_pcm  # noqa: E402
 
 RUN_ALL_FAST_OK = True
 
@@ -41,10 +46,8 @@ def _touch(path: Path, data: bytes = b'x'):
     path.write_bytes(data)
 
 
-def _install_fake_tree():
-    """Copy a minimal source tree the way install_plugin does; return the
-    installed root (the TemporaryDirectory is kept alive by the caller)."""
-    tmp = tempfile.TemporaryDirectory()
+def _fake_src(tmp):
+    """A minimal source tree under the TemporaryDirectory `tmp`."""
     src = Path(tmp.name) / 'src' / 'KiCadRoutingTools'
     _touch(src / '__init__.py')
     _touch(src / 'rust_router' / 'Cargo.toml')
@@ -53,6 +56,17 @@ def _install_fake_tree():
     _touch(src / 'rust_router' / 'target' / 'release' / 'grid_router.dll')
     _touch(src / 'rust_router' / 'target' / 'release' / 'deps' / 'numpy.rlib')
     _touch(src / 'py_router' / 'target' / 'keep.py')
+    _touch(src / '.claude' / 'skills' / 'plan-pcb-routing' / 'SKILL.md')
+    _touch(src / '.claude' / 'worktrees' / 'agent-1' / '__init__.py')
+    _touch(src / '.claude' / 'settings.local.json')
+    return src
+
+
+def _install_fake_tree():
+    """Copy a minimal source tree the way install_plugin does; return the
+    installed root (the TemporaryDirectory is kept alive by the caller)."""
+    tmp = tempfile.TemporaryDirectory()
+    src = _fake_src(tmp)
     dest = Path(tmp.name) / 'plugins' / 'KiCadRoutingTools'
     install_plugin.copy_plugin(src, dest)
     return tmp, dest
@@ -81,10 +95,40 @@ def test_other_target_dirs_copied():
               "a `target` directory outside rust_router/ was skipped too")
 
 
+def _check_claude_subset(dest, who):
+    check((dest / '.claude' / 'skills' / 'plan-pcb-routing' / 'SKILL.md')
+          .is_file(), f"{who}: .claude/skills/ is missing")
+    for rel in ('worktrees', 'settings.local.json'):
+        check(not (dest / '.claude' / rel).exists(),
+              f"{who}: .claude/{rel} was copied")
+
+
+def test_install_claude_skills_only():
+    tmp, dest = _install_fake_tree()
+    with tmp:
+        _check_claude_subset(dest, 'install_plugin')
+
+
+def test_pcm_claude_skills_only():
+    tmp = tempfile.TemporaryDirectory()
+    with tmp:
+        src = _fake_src(tmp)
+        stage = Path(tmp.name) / 'stage'
+        saved = package_pcm.SCRIPT_DIR
+        package_pcm.SCRIPT_DIR = src
+        try:
+            package_pcm.stage_plugins(stage)
+        finally:
+            package_pcm.SCRIPT_DIR = saved
+        _check_claude_subset(stage / 'plugins', 'package_pcm')
+
+
 def run():
     test_cargo_target_not_copied()
     test_router_binary_and_sources_copied()
     test_other_target_dirs_copied()
+    test_install_claude_skills_only()
+    test_pcm_claude_skills_only()
 
     if FAILS:
         for f in FAILS:
@@ -92,7 +136,7 @@ def run():
         print(f"\n{len(FAILS)} check(s) FAILED")
         return False
     print("PASS  #1061 install_plugin skips rust_router/target, keeps the "
-          "router binary and sources")
+          "router binary and sources; both installers ship only .claude/skills")
     return True
 
 

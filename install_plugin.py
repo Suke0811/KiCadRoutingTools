@@ -392,6 +392,13 @@ def copy_plugin(source_dir: Path, dest_dir: Path):
     def ignore_patterns(directory, files):
         ignored = []
         for f in files:
+            # Of .claude/, keep only skills/: a dev checkout also holds Claude
+            # Code's worktrees/ (whole repo copies) and the user's
+            # settings.local.json. package_pcm.py ships the same subset.
+            if os.path.basename(directory) == '.claude':
+                if f != 'skills':
+                    ignored.append(f)
+                continue
             # Keep .claude/ (routing skills) for use from the installed plugin.
             if f == '.claude':
                 continue
