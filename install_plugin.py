@@ -389,7 +389,7 @@ def copy_plugin(source_dir: Path, dest_dir: Path):
         shutil.rmtree(dest_dir)
 
     # Copy everything, excluding unnecessary files
-    def ignore_patterns(_directory, files):
+    def ignore_patterns(directory, files):
         ignored = []
         for f in files:
             # Keep .claude/ (routing skills) for use from the installed plugin.
@@ -403,6 +403,12 @@ def copy_plugin(source_dir: Path, dest_dir: Path):
                 ignored.append(f)
             # Skip kicad_files (sample PCBs)
             elif f == 'kicad_files':
+                ignored.append(f)
+            # Skip the cargo build dir a --from-source build leaves behind
+            # (#1061): >100 MB of intermediates, while the plugin loads only
+            # the grid_router binary build_router.py copies next to Cargo.toml.
+            # package_pcm.py strips it from the PCM zip the same way.
+            elif f == 'target' and os.path.basename(directory) == 'rust_router':
                 ignored.append(f)
         return ignored
 
