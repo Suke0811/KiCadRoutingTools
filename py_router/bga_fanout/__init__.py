@@ -673,6 +673,7 @@ def manage_vias(
     via_drill: float,
     clearance: float,
     track_width: float = 0.0,
+    hole_to_hole_clearance: Optional[float] = None,
 ) -> Tuple[List[Dict], List[Dict], List['FanoutRoute']]:
     """
     Manage vias for fanout routes.
@@ -846,7 +847,12 @@ def manage_vias(
     # for a board it had never read. `isdir` too, for a directory-shaped
     # path, which `splitext` leaves intact.
     _src_path = getattr(pcb_data, 'source_path', "") or ""
-    if not _src_path or os.path.isdir(_src_path):
+    if hole_to_hole_clearance is not None:
+        # #1070: the CALLER's floor (the route step's --hole-to-hole-clearance
+        # when its rescue runs this engine), never re-read from the board --
+        # still raised to the fab floor below.
+        _h2h_decl, _h2h_src = float(hole_to_hole_clearance), 'cli'
+    elif not _src_path or os.path.isdir(_src_path):
         _h2h_decl, _h2h_src = HOLE_TO_HOLE_CLEARANCE, 'fixed default'
     else:
         _h2h_decl, _h2h_src = _board_floor(_src_path, 'hole_to_hole', None,
@@ -2681,6 +2687,11 @@ def _generate_bga_fanout_core(footprint: Footprint,
                         # #581: > 0 forbids via-in-pad (underpad escapes run
                         # dog-bone); None auto-reads the .kicad_pro record.
                         same_net_pad_clearance: Optional[float] = None,
+                        # #1070: the drill hole-to-hole floor to space this
+                        # engine's vias at. None = the board's own
+                        # min_hole_to_hole (else the fixed default); either
+                        # way raised to the fab floor.
+                        hole_to_hole_clearance: Optional[float] = None,
                         # progress_callback(current, total, label): forwarded
                         # into every recursion (rotated frame, #129 passes,
                         # the underpad retry) and the underpad engine's
@@ -2922,6 +2933,7 @@ def _generate_bga_fanout_core(footprint: Footprint,
             grid_step=grid_step, layer_costs=layer_costs,
             escape_dir_hints=_hints,
             same_net_pad_clearance=same_net_pad_clearance,
+            hole_to_hole_clearance=hole_to_hole_clearance,
             cancel_check=cancel_check,
             progress_callback=progress_callback)
         back_transform_results(tracks, vias_to_add, vias_to_remove, back)
@@ -3039,6 +3051,7 @@ def _generate_bga_fanout_core(footprint: Footprint,
                 escape_method=escape_method, grid_step=grid_step,
                 layer_costs=layer_costs, escape_dir_hints=escape_dir_hints,
                 same_net_pad_clearance=same_net_pad_clearance,
+                hole_to_hole_clearance=hole_to_hole_clearance,
                 cancel_check=cancel_check,
                 progress_callback=progress_callback)
             # Coverage gate (issue #367): the legacy single pass runs FIRST.
@@ -3391,6 +3404,7 @@ def _generate_bga_fanout_core(footprint: Footprint,
             escape_dir_hints=escape_dir_hints,
             no_via_in_pad=(same_net_pad_clearance is not None
                            and same_net_pad_clearance > 0),  # #581
+            hole_to_hole_clearance=hole_to_hole_clearance,  # #1070
             # Rides _up_kw so the shrink rescue's re-run reports too.
             progress_callback=progress_callback,
             cancel_check=cancel_check,
@@ -3838,7 +3852,8 @@ def _generate_bga_fanout_core(footprint: Footprint,
         _prog("placing vias...")
         vias_to_add, vias_to_remove, via_blocked_routes = manage_vias(
             routes, pcb_data, layers[0], via_size, via_drill, clearance,
-            track_width=track_width
+            track_width=track_width,
+            hole_to_hole_clearance=hole_to_hole_clearance
         )
 
         # Routes whose required via-in-pad would hit an immovable foreign pad
@@ -3940,7 +3955,8 @@ def _generate_bga_fanout_core(footprint: Footprint,
         # post-repair tracks.
         vias_to_add, vias_to_remove, _reblocked = manage_vias(
             best_routes, pcb_data, layers[0], via_size, via_drill, clearance,
-            track_width=track_width)
+            track_width=track_width,
+            hole_to_hole_clearance=hole_to_hole_clearance)
         if _reblocked:
             from bga_fanout.reroute import _remove_route_tracks
             _rb_net_ids = {r.net_id for r in _reblocked}
@@ -4045,6 +4061,7 @@ def _generate_bga_fanout_core(footprint: Footprint,
                 _pad_filter=_pad_filter,
                 _ignore_prefanned=_ignore_prefanned, _single_pass=_single_pass,
                 same_net_pad_clearance=same_net_pad_clearance,
+                hole_to_hole_clearance=hole_to_hole_clearance,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check)
 
@@ -4217,7 +4234,8 @@ def generate_plane_drops(footprint: Footprint,
                          plane_min_pads: int = 6,
                          verbose: bool = True,
                          plane_net_layers: Optional[Dict[str, List[str]]] = None,
-                         no_via_in_pad: bool = False
+                         no_via_in_pad: bool = False,
+                         hole_to_hole_clearance: Optional[float] = None
                          ) -> Tuple[List[Dict], List[Dict], Dict]:
     """Drop a via for every plane-net ball of `footprint` (#424 D2).
 
@@ -4276,13 +4294,15 @@ def generate_plane_drops(footprint: Footprint,
         plane_min_pads=plane_min_pads, net_filter_fn=net_filter_fn,
         grid_step=grid_step, only_pad_keys=frozenset(),
         plane_drop_nets=drop_ids, plane_drop_report=rep, verbose=verbose,
-        plane_net_layers=plane_net_layers, no_via_in_pad=no_via_in_pad)
+        plane_net_layers=plane_net_layers, no_via_in_pad=no_via_in_pad,
+        hole_to_hole_clearance=hole_to_hole_clearance)
     return d_tracks, d_vias, rep
 
 
 def _plane_drop_pass(footprint, pcb_data, new_tracks, new_vias, net_filter,
                      layers, track_width, clearance, via_size, via_drill,
-                     grid_step, plane_net_layers=None, no_via_in_pad=False):
+                     grid_step, plane_net_layers=None, no_via_in_pad=False,
+                     hole_to_hole_clearance=None):
     """Plane-ball drops against the board PLUS this call's fresh copper.
 
     The signal escape's tracks/vias are only result dicts at this point, so
@@ -4342,7 +4362,8 @@ def _plane_drop_pass(footprint, pcb_data, new_tracks, new_vias, net_filter,
                 _rpf, rp, [], [], net_filter,
                 _lay_f, track_width, clearance, via_size, via_drill,
                 grid_step, plane_net_layers=_pnl_f,
-                no_via_in_pad=no_via_in_pad)
+                no_via_in_pad=no_via_in_pad,
+                hole_to_hole_clearance=hole_to_hole_clearance)
             flip_results(d_tracks, d_vias, [], back)
             return d_tracks, d_vias, rep
         from bga_fanout.rotate_frame import (needs_frame,
@@ -4355,7 +4376,8 @@ def _plane_drop_pass(footprint, pcb_data, new_tracks, new_vias, net_filter,
                 track_width=track_width, clearance=clearance,
                 via_size=via_size, via_drill=via_drill,
                 net_filter=net_filter, grid_step=grid_step,
-                plane_net_layers=plane_net_layers, no_via_in_pad=no_via_in_pad)
+                plane_net_layers=plane_net_layers, no_via_in_pad=no_via_in_pad,
+                hole_to_hole_clearance=hole_to_hole_clearance)
             back_transform_results(d_tracks, d_vias, [], back)
             return d_tracks, d_vias, rep
         return generate_plane_drops(
@@ -4363,7 +4385,8 @@ def _plane_drop_pass(footprint, pcb_data, new_tracks, new_vias, net_filter,
             track_width=track_width, clearance=clearance,
             via_size=via_size, via_drill=via_drill,
             net_filter=net_filter, grid_step=grid_step,
-            plane_net_layers=plane_net_layers, no_via_in_pad=no_via_in_pad)
+            plane_net_layers=plane_net_layers, no_via_in_pad=no_via_in_pad,
+            hole_to_hole_clearance=hole_to_hole_clearance)
     finally:
         del pcb_data.segments[n_seg0:]
         del pcb_data.vias[n_via0:]
@@ -4398,6 +4421,12 @@ def generate_bga_fanout(footprint: Footprint,
                         # #581: > 0 forbids via-in-pad (dog-bone escapes/
                         # drops only); None auto-reads the .kicad_pro record.
                         same_net_pad_clearance: Optional[float] = None,
+                        # #1070: drill hole-to-hole floor for every via this
+                        # call places. None = the board's own
+                        # min_hole_to_hole (the fanout CLI and GUI tab pass
+                        # None, so the two fronts agree); the route step's
+                        # rescue passes its --hole-to-hole-clearance.
+                        hole_to_hole_clearance: Optional[float] = None,
                         # progress_callback(current, total, label) -- the fanout
                         # tab used to pulse ONE static "Running BGA fanout..."
                         # for the whole run (minutes on a big BGA). Phase-level
@@ -4498,7 +4527,8 @@ def generate_bga_fanout(footprint: Footprint,
         progress_callback=progress_callback,
         _pad_filter=_pad_filter, _ignore_prefanned=_ignore_prefanned,
         _single_pass=_single_pass,
-        same_net_pad_clearance=same_net_pad_clearance)
+        same_net_pad_clearance=same_net_pad_clearance,
+        hole_to_hole_clearance=hole_to_hole_clearance)
 
     # #621 partial ledger, computed ONLY when a cancel actually fired (so an
     # ordinary run does not even build the sets). A candidate ball that carries
@@ -4557,7 +4587,8 @@ def generate_bga_fanout(footprint: Footprint,
             layers, track_width, clearance, via_size, via_drill, grid_step,
             plane_net_layers=plane_net_layers,
             no_via_in_pad=(same_net_pad_clearance is not None
-                           and same_net_pad_clearance > 0))
+                           and same_net_pad_clearance > 0),
+            hole_to_hole_clearance=hole_to_hole_clearance)
         tracks = tracks + d_tracks
         vias_to_add = vias_to_add + d_vias
         LAST_PLANE_DROP_REPORT.update(rep)

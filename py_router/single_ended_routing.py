@@ -4458,6 +4458,31 @@ def route_multipoint_taps(
                 pass
 
 
+def inprogress_via_ring_cells(v, net_id: int, config: GridRouteConfig,
+                              coord: GridCoord) -> List[Tuple[int, int]]:
+    """Via-block cells around an IN-PROGRESS via `v` of `net_id` (a via this
+    net's main route or an earlier tap edge just placed, not yet in pcb_data),
+    so a later edge of the same net cannot drop a second via too close to it.
+
+    The radius is ``obstacle_map.same_net_via_ring_mm``: the larger of the
+    copper via-via spacing and the drill hole-to-hole minimum (#1070 -- the
+    copper term alone is SMALLER on fine vias: 0.25/0.15, clearance 0.09,
+    h2h 0.3 gives 0.34 vs 0.45), grown by the via's sub-grid offset so the
+    spacing holds from its TRUE centre, not its rounded cell (#70). The via's
+    own cell is left out so a later edge can still REUSE the barrel."""
+    from obstacle_map import same_net_via_ring_mm
+    vgx, vgy = coord.to_grid(v.x, v.y)
+    off_cells = math.hypot(v.x - vgx * coord.grid_step,
+                           v.y - vgy * coord.grid_step) / coord.grid_step
+    radius = (same_net_via_ring_mm(config, net_id, getattr(v, 'drill', 0.0) or 0.0)
+              * coord.inv_step) + off_cells
+    rng = int(math.ceil(radius))
+    radius_sq = radius * radius
+    return [(vgx + ex, vgy + ey)
+            for ex in range(-rng, rng + 1) for ey in range(-rng, rng + 1)
+            if 0 < ex * ex + ey * ey <= radius_sq]
+
+
 def _route_multipoint_taps_impl(
     pcb_data: PCBData,
     net_id: int,
@@ -4531,8 +4556,7 @@ def _route_multipoint_taps_impl(
     # via when its path lands on the cell, and (2) cannot drop a SECOND via within
     # hole-to-hole of it. Without this, a later branch dropped a via a sub-mm away
     # -- the VTT multipoint junction double-via (hole_to_hole DRC). The ring skips
-    # the via's own cell so reuse stays open.
-    _vv_radius = (config.via_size + config.clearance) * coord.inv_step
+    # the via's own cell so reuse stays open (sized by inprogress_via_ring_cells).
 
     try:        # #568: armed once per tap run (see the ring mirror below)
         from obstacle_map import _rung_small_armed as _rsa, _per_net_rungs as _pnr
@@ -4545,33 +4569,21 @@ def _route_multipoint_taps_impl(
     def _register_inprogress_via(v):
         vgx, vgy = coord.to_grid(v.x, v.y)
         obstacles.add_free_via(vgx, vgy)
-        # Grow the ring by the via's sub-grid offset so a later same-net via keeps
-        # the full spacing from this via's TRUE centre, not its rounded cell --
-        # otherwise a fine-grid route drops a via a sub-cell too close (issue #70,
-        # mirroring add_same_net_via_clearance).
-        off_cells = math.hypot(v.x - vgx * coord.grid_step,
-                               v.y - vgy * coord.grid_step) / coord.grid_step
-        radius = _vv_radius + off_cells
-        rng = int(math.ceil(radius))
-        radius_sq = radius * radius
-        for ex in range(-rng, rng + 1):
-            for ey in range(-rng, rng + 1):
-                d = ex * ex + ey * ey
-                if 0 < d <= radius_sq:
-                    obstacles.add_blocked_via(vgx + ex, vgy + ey)
-                    # #568 MIRROR: a rung-1 tap search trusts ONLY the small
-                    # map for dynamic copper, so without this it could drop a
-                    # small via inside the ring of a via this very net just
-                    # placed -- a real same-net hole-to-hole violation. The
-                    # wrapper's finally removes both maps' cells (#309).
-                    if _small_rung_on:
-                        obstacles.add_blocked_via_small(vgx + ex, vgy + ey)
-                    for _r in _pn_rungs:   # #530 per-net rungs
-                        obstacles.add_blocked_via_rung(_r, vgx + ex, vgy + ey)
-                    # Ref-counted raw add: the wrapper removes these on exit so
-                    # they can't leak into a persistent working map (#309).
-                    if _ring_cells is not None:
-                        _ring_cells.append((vgx + ex, vgy + ey))
+        for cgx, cgy in inprogress_via_ring_cells(v, net_id, config, coord):
+            obstacles.add_blocked_via(cgx, cgy)
+            # #568 MIRROR: a rung-1 tap search trusts ONLY the small map for
+            # dynamic copper, so without this it could drop a small via inside
+            # the ring of a via this very net just placed -- a real same-net
+            # hole-to-hole violation. The wrapper's finally removes both maps'
+            # cells (#309).
+            if _small_rung_on:
+                obstacles.add_blocked_via_small(cgx, cgy)
+            for _r in _pn_rungs:   # #530 per-net rungs
+                obstacles.add_blocked_via_rung(_r, cgx, cgy)
+            # Ref-counted raw add: the wrapper removes these on exit so they
+            # can't leak into a persistent working map (#309).
+            if _ring_cells is not None:
+                _ring_cells.append((cgx, cgy))
 
     for _v in all_vias:
         _register_inprogress_via(_v)

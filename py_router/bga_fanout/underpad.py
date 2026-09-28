@@ -548,7 +548,14 @@ def generate_underpad_escape(footprint: Footprint,
                              # so each escape loop reports its count through
                              # here (GUI status line). None = silent (CLI).
                              progress_callback=None,
-                             cancel_check=None
+                             cancel_check=None,
+                             # #1070: the drill hole-to-hole floor to space
+                             # this engine's drills at. None = the board's own
+                             # min_hole_to_hole (else the fixed default); an
+                             # explicit value (the route step's rescue passes
+                             # its --hole-to-hole-clearance) is used as given.
+                             # Either way raised to the fab floor below.
+                             hole_to_hole_clearance: Optional[float] = None
                              ) -> Tuple[List[Dict], List[Dict], List[str]]:
     """Route BGA signal balls to the boundary under the pad field.
 
@@ -835,7 +842,7 @@ def generate_underpad_escape(footprint: Footprint,
     from list_nets import board_floor as _board_floor
     _h2h_decl, _h2h_src = _board_floor(
         getattr(pcb_data, 'source_path', "") or "", 'hole_to_hole',
-        None, HOLE_TO_HOLE_CLEARANCE)
+        hole_to_hole_clearance, HOLE_TO_HOLE_CLEARANCE)
     _h2h_fab = fab_floor_min(_copper).get('hole_to_hole', 0.0)
     _h2h = max(_h2h_decl, _h2h_fab)
     if _h2h_src == 'board constraint' and _h2h_decl > HOLE_TO_HOLE_CLEARANCE:
