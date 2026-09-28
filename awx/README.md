@@ -951,7 +951,12 @@ with the whole route's own ends model.
   lower-bound search (`SUBSOLVERS`): a plan's vias are proved from below, and
   the default four ran nothing that raises the bound (K51's first solve was
   unproved at 421 s, best 56 vias against a bound of 40; now proved in 22-37
-  s; K41 15-19 s, K35 4-6 s). A RE-SOLVE is floored by the ROOT's proof, the
+  s; K41 15-19 s, K35 4-6 s). When they cannot prove it -- K51 on the human's
+  fanout: best 2 nets over two and 38 vias against a bound of none and 32 --
+  the plan-finding workers they leave out run on (`FALLBACK`: quick restarts,
+  the search without the LP, and core-based search to close the proof),
+  from the first run's best plan and with its bound a constraint, and prove
+  it (68 s more). A RE-SOLVE is floored by the ROOT's proof, the
   bench's first solve with no geometry cuts: a re-solve only adds cuts to it
   and history below a via, so it can do no better, and a plan it finds at
   the root's nets over two and vias is proved at once (a K51 re-solve at the
@@ -1197,7 +1202,10 @@ ONCE, 48 of 48 in their bands, `check_connected` all 51 nets connected,
 `check_drc` clean at the route's clearance. Over the whole board on the 51
 nets: 86 vias against the human's 88, no net over two (the human has none
 either), and 1257 mm of copper against 1337 -- the human's includes its
-length-matching meanders, and this route matches no lengths.
+length-matching meanders, and this route matches no lengths. With the
+solve's fallback (2026-09-27) the same chain routes it again: 48 of 48
+lanes all at once, every net connected, DRC-clean, 88 vias against the
+human's 88 in 1262 mm against 1337.
 
 <img src="img/k51_whole_route.png" alt="K51 routed from the whole-route plan, beside the human's" width="900">
 

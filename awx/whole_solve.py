@@ -45,6 +45,9 @@ SOLVE_WORKERS = 4
 # lower-bound search. The default four ran nothing that raises the bound, and a plan's vias are proved from below: K51's
 # first solve stopped unproved at 421 s (best 56 vias, bound 40), with these it proves 42 in 141 s, K41 in 17 s (38)
 SUBSOLVERS = ['default_lp', 'max_lp', 'core', 'objective_lb_search']
+# ...and when they cannot prove it, the PLAN-FINDING workers the first four leave out, with core-based search to close
+# the proof from their plan (the finders alone found K51-on-the-human's-fanout's plan and left its bound where it was)
+FALLBACK = ['quick_restart', 'no_lp', 'core']
 FACE_ROOM = 2 * VNEED                  # the band along the source's near face: a change's room along its lane
 SOLVE_STALL = 3                        # the search's model reductions in a row with no progress: stalled
 
@@ -480,17 +483,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
             root = r_
             m.Add(W_OVER * sum(over.values()) + W_V * sum(tot.values()) >= W_OVER * r_['over'] + W_V * r_['vias'])
             print(f"   the root's proof as a floor: {r_['over']} via(s) over two, {r_['vias']} vias")
-    m.Minimize(W_OVER * sum(over.values()) + W_V * sum(tot.values()) + sum(cost))
-    sv = cp_model.CpSolver()
-    sv.parameters.num_workers = SOLVE_WORKERS
-    sv.parameters.subsolvers.extend(SUBSOLVERS)
-    # REPRODUCIBLE: stopped by a count of interleaved batches, the workers sharing no clauses. Measured on this model
-    # (OR-tools 9.15): bounded by deterministic time, four solves of one model gave four answers (36051281 .. 36051642);
-    # by batches with clause sharing on, two gave two; by batches with sharing off, two concurrent solves agree exactly
-    sv.parameters.interleave_search = True
-    sv.parameters.max_num_deterministic_batches = SOLVE_BATCHES
-    sv.parameters.share_glue_clauses = False
-    sv.parameters.share_binary_clauses = False
+    OBJ = W_OVER * sum(over.values()) + W_V * sum(tot.values()) + sum(cost)
+    m.Minimize(OBJ)
     # ...and STOPPED when it STALLS: once it has a plan, SOLVE_STALL of the search's own model reductions in a row with
     # no better plan and no better bound (its log's '#Model' against '#n' and '#Bound' lines, events of the
     # deterministic search, never a clock). K35: its one plan at 46 s, then 145 s with neither -- the budget spent on
@@ -500,32 +494,63 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
     # whole vias -- the nets over two and the vias settled, only the history's tie-break open (K35's re-solve: 167 s,
     # most of it on the tie-break). (A gap limit of a via would stop short of that proof: a plan of 24 vias against a
     # bound of 23 and half a via's history is within one via, and a 23-via plan may still exist.)
-    stall = {'n': 0, 'plan': False}
+    def run(subs):
+        s_ = cp_model.CpSolver()
+        s_.parameters.num_workers = SOLVE_WORKERS
+        s_.parameters.subsolvers.extend(subs)
+        # REPRODUCIBLE: stopped by a count of interleaved batches, the workers sharing no clauses. Measured on this
+        # model (OR-tools 9.15): bounded by deterministic time, four solves of one model gave four answers (36051281 ..
+        # 36051642); by batches with clause sharing on, two gave two; by batches with sharing off, two concurrent
+        # solves agree exactly
+        s_.parameters.interleave_search = True
+        s_.parameters.max_num_deterministic_batches = SOLVE_BATCHES
+        s_.parameters.share_glue_clauses = False
+        s_.parameters.share_binary_clauses = False
+        stall = {'n': 0, 'plan': False}
 
-    def _progress(line):
-        if line.startswith('#Bound') or re.match(r'#\d+\s', line):
-            stall['n'] = 0
-            stall['plan'] = stall['plan'] or not line.startswith('#Bound')
-            m_ = re.search(r'best:(\S+)\s+next:\[([^,\]]+)', line)
-            if m_ and float(m_.group(1)) < math.inf and \
-                    math.floor(float(m_.group(1)) / W_V) <= math.floor(float(m_.group(2)) / W_V):
-                sv.StopSearch()
-        elif line.startswith('#Model') and stall['plan']:
-            stall['n'] += 1
-            if stall['n'] >= SOLVE_STALL:
-                sv.StopSearch()
-    sv.parameters.log_search_progress = True
-    sv.parameters.log_to_stdout = False
-    sv.log_callback = _progress
-    st = sv.Solve(m)
+        def _progress(line):
+            if line.startswith('#Bound') or re.match(r'#\d+\s', line):
+                stall['n'] = 0
+                stall['plan'] = stall['plan'] or not line.startswith('#Bound')
+                m_ = re.search(r'best:(\S+)\s+next:\[([^,\]]+)', line)
+                if m_ and float(m_.group(1)) < math.inf and \
+                        math.floor(float(m_.group(1)) / W_V) <= math.floor(float(m_.group(2)) / W_V):
+                    s_.StopSearch()
+            elif line.startswith('#Model') and stall['plan']:
+                stall['n'] += 1
+                if stall['n'] >= SOLVE_STALL:
+                    s_.StopSearch()
+        s_.parameters.log_search_progress = True
+        s_.parameters.log_to_stdout = False
+        s_.log_callback = _progress
+        st_ = s_.Solve(m)
+        pr_ = st_ in (cp_model.OPTIMAL, cp_model.FEASIBLE) and \
+            math.floor(s_.ObjectiveValue() / W_V) <= math.floor(s_.BestObjectiveBound() / W_V)
+        return s_, st_, pr_
+    sv, st, proved = run(SUBSOLVERS)
+    if not proved:
+        # the FALLBACK: the bound-raising workers could not prove it (the plan they found was not good enough to meet
+        # their bound: K51 on the human's fanout, best 2 over two + 38 vias against 0 + 32, 124 s). The PLAN-FINDING
+        # workers run on from there -- its best plan as their start, and its bound, proved on this very model, a
+        # constraint (no worker proves it again)
+        print(f'   bound-raising workers: [{sv.StatusName(st)}] {sv.WallTime():.0f}s' +
+              (f', best {sv.ObjectiveValue():.0f}' if st in (cp_model.OPTIMAL, cp_model.FEASIBLE) else ', no plan') +
+              f', bound {sv.BestObjectiveBound():.0f} -- the plan-finding workers on from there')
+        if st in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            m.ClearHints()
+            for i_ in range(len(m.Proto().variables)):
+                v_ = m.GetIntVarFromProtoIndex(i_)
+                m.AddHint(v_, sv.Value(v_))
+        m.Add(OBJ >= int(math.ceil(sv.BestObjectiveBound() - 1e-6)))
+        t_first = sv.WallTime()
+        sv, st, proved = run(FALLBACK)
+        print(f'   plan-finding workers: [{sv.StatusName(st)}] {sv.WallTime():.0f}s (after {t_first:.0f}s)')
     print(f'whole_solve: {len(t)} crossings ({sum(1 for k in t if same(*k))} same-branch), {nt} triples, K<={KMAX}, '
           f'mover/stayer (stay {P_STAY}), stagger {STAGGER:.3f}, MARG {MARG}: [{sv.StatusName(st)}] {sv.WallTime():.0f}s', end=' ')
     # only a plan PROVED optimal in its vias -- the nets over two and the vias, whole multiples of W_V; the history
     # terms below one are congestion's tie-break -- goes on to the geometry: one the search could not prove is a plan
     # whose ends it found hard, and the geometry would be laid on a guess (K35's round 2: best and bound a thousandth
     # of a via apart, refused for the tie-break alone)
-    proved = st in (cp_model.OPTIMAL, cp_model.FEASIBLE) and \
-        math.floor(sv.ObjectiveValue() / W_V) <= math.floor(sv.BestObjectiveBound() / W_V)
     if not proved:
         print(('(not proved optimal: best ' + f'{sv.ObjectiveValue():.0f}, bound {sv.BestObjectiveBound():.0f} -- no plan)')
               if st == cp_model.FEASIBLE else '')
