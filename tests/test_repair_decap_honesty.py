@@ -310,7 +310,10 @@ def test_a_created_pin_error_is_charged_to_the_cap_that_moved():
     def plus_pin(self, *a, **kw):
         out = real(self, *a, **kw)
         calls['n'] += 1
-        if calls['n'] > 1 and not kw.get('poses') and not kw.get('exclude'):
+        # Every call after the census -- counterfactual ones included, so
+        # restoring C3 alone does not clear it: this arm pins the NAMES
+        # channel (the finding's measured `cap`), not the counterfactual.
+        if calls['n'] > 1:
             out = list(out) + [fp.Violation(
                 'decap_pin_distance', fp.ERROR, 'injected', ref='U1',
                 measured={'pad': '20', 'net': '/VCC', 'cap': 'C3',
@@ -330,6 +333,26 @@ def test_a_created_pin_error_is_charged_to_the_cap_that_moved():
         assert 'decap_pin_distance' in res['unresolved_claims'].get('C3', ()), \
             (res['unresolved_claims'], res['notes'])
     print("  PASS: U1's created pin error is charged to the moved cap C3")
+
+
+def test_a_second_finding_under_one_claim_is_new():
+    """`finding_key` separates findings a claim merges: an IC already past
+    its limit on pin 46 gains a stranded pin 20, SMALLER than pin 46's gap,
+    so neither the claim nor its size says anything changed. Unit-level,
+    because on a real board the 'worse' channel can hide the gap."""
+    def pin(pad, gap):
+        return fp.Violation('decap_pin_distance', fp.ERROR, 'x', ref='U4',
+                            measured={'pad': pad, 'net': '/+3V3',
+                                      'cap': 'C3', 'gap_mm': gap},
+                            expected={'max_pin_distance_mm': 2.5})
+    before = seeder.findings_of([pin('46', 5.0)])
+    got = seeder.new_or_worse(before, [pin('46', 5.0), pin('20', 3.0)])
+    assert [(v.measured['pad'], how) for v, how in got] == [('20', 'new')],         got
+    got = seeder.new_or_worse(before, [pin('46', 5.5)])
+    assert [(v.measured['pad'], how) for v, how in got] == [('46', 'worse')]
+    assert seeder.new_or_worse(before, [pin('46', 5.0005)]) == []
+    print("  PASS: pin 20 under U4's existing claim is NEW; pin 46 growing "
+          "0.5mm is WORSE; 0.5um is noise")
 
 
 def _watchy_repair(seed, td):
@@ -433,6 +456,7 @@ TESTS = [
     test_a_move_that_creates_a_decap_error_is_not_repaired,
     test_a_cap_pushed_past_the_decap_radius_is_not_cleared,
     test_a_created_pin_error_is_charged_to_the_cap_that_moved,
+    test_a_second_finding_under_one_claim_is_new,
     test_a_stranded_pin_is_charged_to_the_cap_that_left_it,
     test_a_move_that_makes_a_finding_worse_is_not_repaired,
     test_cli_writes_the_refs_and_the_repaired_set_is_honest,
