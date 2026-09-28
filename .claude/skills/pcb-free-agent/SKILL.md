@@ -135,10 +135,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     face, or `check_reachability --pad` says CAGED: placement. Re-place,
     strip, re-route. A finer grid alone never widens a gap: grid
     0.05 → 0.0125 cost 40 min and left the same three nets unrouted.
-- **A plain `route.py` output is not DONE.** `check_complete` refuses the
-  in-pad wiggles the router keeps on purpose (#1063). Budget for a cleanup,
-  and measure it with `check_weird`. One `check_weird` per candidate is too
-  slow above a few thousand segments, so batch the candidates.
+- **`route.py`'s cleanup removes what `check_weird` calls removable** (#1063).
+  Both grade by one predicate, so a plain `route.py` output carries no
+  `removable-segment` or `redundant-cycle` finding on the nets that run
+  cleaned. One that remains is copper the run did not own: a net outside its
+  `--nets`, or input copper kept by `--keep-input-copper`.
 - **`route.py`'s failure tally covers only the nets that step owns.** It
   re-grades the board it wrote over the nets its passes worked on or
   disturbed (#1069: the `JSON_REGRADE` line, merged into `JSON_SUMMARY_MIN`
@@ -151,9 +152,8 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 - **Widths are requests.** After each route, read
   `power_widths.<net>.under_mm`: one run asked for 0.3 mm on +3V3 and shipped
   34 % of it at 0.127 mm. Grade power widths with `board_score --net-min-widths`.
-- **The routing skill's tuned env knobs** (`KICAD_GLOBAL_PLAN_RIVER` and the
-  others) produced via hole-to-hole DRC on a 264-part board (#1070). Check DRC
-  after any env change.
+- **Check DRC after any env change**, such as the routing skill's tuned knobs
+  (`KICAD_GLOBAL_PLAN_RIVER` and the others).
 - **Around a 0.8 mm BGA, the router can run out of lanes.** Two changes that
   measured wins on a 264-part board:
   - finer tracks and vias (`--track-width 0.0762 --clearance 0.0889 --via-size 0.25 --via-drill 0.15`);

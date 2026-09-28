@@ -27,12 +27,20 @@ Categories:
   redundant-cycle    same-net loop edges whose removal leaves connectivity
                      identical (pcb_modification._prune_net_cycles machinery,
                      report-only; zoned nets skipped -- planes are meshes).
-  removable-segment  any segment whose individual removal keeps the net's
-                     (num_components, disconnected-pad count) unchanged
-                     (check_connected.analyze_conn_excluding). Superset of
-                     redundant-cycle. Nets with >500 segments are skipped
-                     unless --thorough; zoned and <2-pad nets are skipped
-                     (their connectivity result is trivially insensitive).
+                     On a net the removal model grades, only edges that
+                     removable-segment also reports.
+  removable-segment  copper route.py's own cleanup would delete: a segment,
+                     or an unbranched run of them, whose removal keeps every
+                     pad connected (strict and physical graphs), strands no
+                     island, and leaves no new dangling end, soft joint or
+                     dangling via. Graded by pcb_modification.
+                     StrictRemovalModel -- the SAME predicate
+                     collapse_strict_redundant removes by (#1063), so a
+                     finding here is always something the cleanup takes out.
+                     Nets over STRICT_REMOVAL_MAX_SEGS (500) segments are
+                     skipped unless --thorough; zoned and <2-pad nets are
+                     skipped (their connectivity result is trivially
+                     insensitive).
   stacked-copper     exactly-duplicate segments (same endpoints/layer/net
                      within ~1um) and coincident same-net vias (centers
                      within 0.01mm) -- the duplicate-emission bug class.
@@ -93,13 +101,17 @@ from check_drc import point_to_pad_distance
 from connectivity import (COINCIDENCE_TOL, endpoint_reaches_pad,
                           endpoint_reaches_via)
 from routing_constants import SOFT_JOINT_MIN_GAP
-from pcb_modification import _point_anchored, _prune_net_cycles, _pt_seg_dist
+from pcb_modification import (_point_anchored, _prune_net_cycles, _pt_seg_dist,
+                              _restore_soft_joint_bridges,
+                              StrictRemovalModel, strict_removable_segments,
+                              STRICT_REMOVAL_MAX_SEGS)
 
 CATEGORIES = ['dangling-end', 'soft-joint', 'redundant-cycle',
               'removable-segment', 'stacked-copper', 'unsupported-via',
               'dangling-via', 'orphan-island', 'narrow-pad-joint']
-# Cost cap for the per-segment removable scan (spec: skip unless --thorough).
-MAX_SEGS_PER_NET = 500
+# Cost cap for the removable scan (skip unless --thorough): the removal pass's
+# own cap (#1063), so the checker never grades a net the pass may not clean.
+MAX_SEGS_PER_NET = STRICT_REMOVAL_MAX_SEGS
 _CELL = 1.0  # spatial-grid cell (mm) fed to _point_anchored, as in the pruner
 _VIA_COINCIDENT_MM = 0.01  # stacked-via center distance
 _DUP_SEG_DECIMALS = 3      # ~1um endpoint quantization for exact duplicates
@@ -390,18 +402,37 @@ def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
 
 
 def _check_cycles(net_id, name, net_segs, net_vias, net_pads, has_zone,
-                  findings):
+                  findings, removable=None):
     """Report-only spanning-tree reduction (prune_redundant_cycles machinery).
     _prune_net_cycles internally validates every proposed removal against
-    check_net_connectivity, so reported edges are guaranteed redundant."""
+    check_net_connectivity, so reported edges are guaranteed redundant.
+
+    ``removable`` (#1063) is the net's StrictRemovalModel answer when the
+    removal pass grades this net: a loop edge is then reported only when that
+    pass would remove it, so a loop the pass must keep (closed only through a
+    soft joint, a via it may not drop, ...) is not a finding nobody can act
+    on. None -- a net the model does not grade (over the segment cap, fewer
+    than two pads, or strictly split) -- keeps the verdict of
+    prune_redundant_cycles, the pass that owns loops there."""
     if has_zone:
         return  # planes / pours are meshes, not trees (as the pruner)
     track_segs = [s for s in net_segs if not getattr(s, 'graphic', False)]
     if len(track_segs) < 3:
         return
     empty_fgrid = defaultdict(list)  # no grazing preference needed for a report
-    _, removed = _prune_net_cycles(net_id, track_segs, net_vias, net_pads,
-                                   empty_fgrid, _CELL, 0.0, 0.1)
+    kept, removed = _prune_net_cycles(net_id, track_segs, net_vias, net_pads,
+                                      empty_fgrid, _CELL, 0.0, 0.1)
+    if removable is not None:
+        keep = {id(net_segs[i]) for i in removable}
+        removed = [s for s in removed if id(s) in keep]
+    else:
+        # Not a net the removal model grades: mirror prune_redundant_cycles,
+        # the pass that owns loops there, which puts back any edge whose
+        # removal would open a soft joint (#319). A sub-cell loop edge on a
+        # fine-pitch net is usually exactly that, and reporting it named
+        # copper no pass will ever take out.
+        _k, removed = _restore_soft_joint_bridges(list(kept), list(removed),
+                                                  net_vias, net_pads)
     for s in removed:
         mx, my = (s.start_x + s.end_x) / 2.0, (s.start_y + s.end_y) / 2.0
         findings.append(_finding(
@@ -412,72 +443,52 @@ def _check_cycles(net_id, name, net_segs, net_vias, net_pads, has_zone,
             size=math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)))
 
 
-def _check_removable(net_id, name, net_segs, net_vias, net_pads, net_zones,
-                     has_zone, thorough, findings, skipped_nets):
-    """Segments whose individual exclusion keeps (num_components,
-    disconnected-pad count) unchanged, via analyze_conn_excluding on one
-    prebuilt graph (O(net + candidates), not O(net x candidates))."""
-    if has_zone:
-        return  # the zone-outline model over-credits connectivity on planes
-    if len(net_pads) < 2:
-        return  # a <2-pad net's connectivity result is trivially insensitive
-    track_idx = [i for i, s in enumerate(net_segs)
-                 if not getattr(s, 'graphic', False)]
-    if not track_idx:
-        return
+def _strict_removable(net_id, name, net_segs, net_vias, net_pads, has_zone,
+                      copper_layers, thorough, skipped_nets, web_floor=0.0):
+    """The removal pass's own verdict on this net (#1063): the segment indices
+    ``collapse_strict_redundant`` would remove from the board as it stands,
+    graded by the SAME StrictRemovalModel. None when the model does not grade
+    the net (zoned, fewer than two pads, over the shared segment cap -- then
+    named in ``skipped_nets`` -- or strictly split).
+
+    Three choices make "check_weird calls it removable" imply "the pass
+    removes it" on any board, whatever produced it:
+      * vias are graded non-droppable here: the pass drops only vias its own
+        run placed, and a finished board does not record which those were, so
+        a removal that would leave ANY via dangling is not reported;
+      * every unlocked, non-graphic segment is a candidate: provenance and
+        ``keep_input_copper`` (a chained step's read-only input) cannot be seen
+        on the shipped board, and the default pass removes input copper too;
+      * the segment cap is the pass's own, STRICT_REMOVAL_MAX_SEGS."""
+    if has_zone or len(net_pads) < 2:
+        return None
+    if not any(not getattr(s, 'graphic', False) for s in net_segs):
+        return None
     if len(net_segs) > MAX_SEGS_PER_NET and not thorough:
         skipped_nets.append((name, len(net_segs)))
-        return
-    # STRICT width-clamped graph (#322): the physical overlap model credits a
-    # one-grid-cell jog as removable because its neighbours' end caps overlap
-    # across the 0.07mm gap -- but removing it would SHIP that fragile
-    # cap-overlap joint (the class close_soft_joints exists to bridge). Grade
-    # removability on width-clamped twins so only copper whose removal leaves
-    # a genuinely coincident path counts (median 'removable' length on the
-    # 0708b sweep was exactly one 0.05-grid diagonal -- load-bearing jogs).
-    import copy as _copy
-    from connectivity import COINCIDENCE_TOL as _STRICT_W
-    clamped = []
-    for s in net_segs:
-        c = _copy.copy(s)
-        c.width = min(c.width, _STRICT_W)
-        clamped.append(c)
-    # Clamp via SIZES too: the checker's via->pad and via->endpoint credits
-    # scale with the via radius (barrel-overlap semantics, KiCad-true for
-    # GRADING), but the strict graph must keep its tight coincidence gate --
-    # an off-centre via-in-pad grazing the pad outline is a connection KiCad
-    # accepts, not one a removal pass may lean on (0708d lesson).
-    clamped_vias = []
-    for v in net_vias:
-        cv = _copy.copy(v)
-        cv.size = min(cv.size, _STRICT_W)
-        clamped_vias.append(cv)
-    r = check_net_connectivity(net_id, clamped, clamped_vias, net_pads,
-                               net_zones, return_graph=True)
-    graph = r.get('graph')
-    if not graph or not graph['pad_ids']:
-        return
-    base = analyze_conn_excluding(graph, ())
-    base_key = (base['num_components'], len(base['disconnected_pads']))
-    if base['num_components'] != 1 or base['disconnected_pads']:
-        # A strictly-split net (mid-path soft joint or a real open) makes
-        # 'key unchanged' meaningless: load-bearing copper on the broken
-        # side would grade as removable. Mirror the mutating twin
-        # (collapse_strict_redundant) and skip the net.
-        return
-    base_copper = base.get('num_copper_components', 1)
-    for i in track_idx:
-        t = analyze_conn_excluding(graph, (i,))
-        if (t['num_components'], len(t['disconnected_pads'])) == base_key \
-                and t.get('num_copper_components', 1) <= base_copper:
-            s = net_segs[i]
-            mx, my = (s.start_x + s.end_x) / 2.0, (s.start_y + s.end_y) / 2.0
-            findings.append(_finding(
-                'removable-segment', name, s.layer, mx, my,
-                f"segment ({s.start_x:.3f}, {s.start_y:.3f})-"
-                f"({s.end_x:.3f}, {s.end_y:.3f}) w{s.width:.3f}: removal "
-                f"does not change net connectivity",
-                size=math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)))
+        return None
+    model = StrictRemovalModel(net_id, net_segs, net_vias, net_pads,
+                               copper_layers, web_floor=web_floor)
+    if not model.valid:
+        return None
+    return strict_removable_segments(model)
+
+
+def _check_removable(net_id, name, net_segs, removable, findings):
+    """Segments the strict removal pass would delete (#217/#1063): alone, or
+    as part of an unbranched run that leaves whole. Graded by
+    StrictRemovalModel -- strict width-clamped graph (a via joins a pad only
+    by its centre), physical graph, no new dangling end, soft joint or
+    dangling via -- the predicate collapse_strict_redundant removes by."""
+    for i in sorted(removable or ()):
+        s = net_segs[i]
+        mx, my = (s.start_x + s.end_x) / 2.0, (s.start_y + s.end_y) / 2.0
+        findings.append(_finding(
+            'removable-segment', name, s.layer, mx, my,
+            f"segment ({s.start_x:.3f}, {s.start_y:.3f})-"
+            f"({s.end_x:.3f}, {s.end_y:.3f}) w{s.width:.3f}: removal "
+            f"does not change net connectivity",
+            size=math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)))
 
 
 def _check_stacked(net_id, name, net_segs, net_vias, findings):
@@ -537,64 +548,83 @@ def stacked_copper_over_model(segs_by_net, vias_by_net, net_name):
     return findings
 
 
+def via_support_parts(v, net_segs, net_pads, net_zones, copper_layers):
+    """WHICH copper reaches via ``v``'s barrel, split so a caller can re-derive
+    the support after removing segments (#1063: collapse_strict_redundant must
+    never leave a via this checker calls dangling, and it grades that without
+    re-running the whole scan per candidate).
+
+    Returns ``(span, fixed, by_seg)``: the via's copper-layer span, the layers
+    supported by pads and zones (``fixed``), and ``{segment index: layer}`` for
+    every segment whose copper reaches the barrel. The support
+    ``_check_unsupported_vias`` grades is ``fixed | set(by_seg.values())``.
+    Pad credit is barrel-overlap, not centre-containment (#695) -- see the note
+    at the pad loop below."""
+    span = _via_span(v, copper_layers)
+    r = (getattr(v, 'size', 0.6) or 0.6) / 2.0
+    # Collect WHICH layers support the barrel, not merely whether any does.
+    # A via exists to join layers, so one supported layer means it joins
+    # nothing -- that is KiCad's own `via_dangling` rule ("fewer than two
+    # layers connected"), and short-circuiting at the first hit could not
+    # express it: run 11 shipped a board KiCad flagged with 64 dangling
+    # vias while this check reported none, because every one of them had
+    # copper on exactly one end.
+    by_seg = {}
+    for i, s in enumerate(net_segs):
+        if s.layer not in span:
+            continue
+        if _pt_seg_dist(v.x, v.y, s.start_x, s.start_y,
+                        s.end_x, s.end_y) < r + s.width / 2 - 1e-6:
+            by_seg[i] = s.layer
+    fixed = set()
+    for p in net_pads:
+        if getattr(p, 'pad_type', '') == 'np_thru_hole':
+            continue  # NPTH pads have no copper
+        if p.drill and p.drill > 0:
+            on = set(span)  # plated barrel spans all copper layers
+        else:
+            pl = set(p.layers or [])
+            on = set(span) if any('*' in L for L in pl) else (span & pl)
+        # The barrel has a RADIUS against a track (above), so it has one
+        # against a pad too. `margin` inflates the EXACT pad outline, so
+        # this reads "the barrel copper overlaps the pad copper" -- the
+        # same GEOMETRY as check_connected.py's via-in-pad union and
+        # check_drc's via-in-edge-pad exemption, with COINCIDENCE_TOL kept
+        # as the floor exactly as it is there. Crediting the CENTRE only
+        # (COINCIDENCE_TOL, 0.02mm) made this checker contradict the
+        # authoritative connectivity model on copper KiCad grades joined,
+        # and check_weird's exit code is chain-blocking: an off-centre
+        # via-in-pad read as `dangling via` forced a reroute lap (#695).
+        #
+        # The LAYER model above is NOT the same, and this is only geometry
+        # parity: check_connected expands pad.layers (dropping *.Mask and
+        # friends) and unions only on a SHARED copper layer, while `on`
+        # here hands a drilled pad -- or one carrying any '*' layer -- the
+        # via's whole span. That predates #695 and no board in the corpus
+        # has a pad whose copper layers are a strict subset, but a plated
+        # pad declaring only F/B.Cu would let a buried via grazing its ring
+        # claim an inner layer. Left alone deliberately; fixing it is a
+        # different behaviour change from the one this comment describes.
+        if on and not on <= fixed and _point_in_pad(
+                v.x, v.y, p, margin=max(r - 1e-6, COINCIDENCE_TOL)):
+            fixed |= on
+    for z in net_zones:
+        if z.layer in span and z.layer not in fixed and point_in_polygon(
+                v.x, v.y, z.polygon):
+            fixed.add(z.layer)
+    return span, fixed, by_seg
+
+
 def _check_unsupported_vias(net_id, name, net_segs, net_vias, net_pads,
                             net_zones, copper_layers, findings):
     """Floating vias: no same-net track copper reaching the barrel, no
     same-net pad whose copper the barrel OVERLAPS, no same-net zone polygon
-    around it. Pad credit is barrel-overlap, not centre-containment (#695) --
-    see the note at the pad loop below."""
+    around it. The support model is ``via_support_parts``, which the removal
+    pass shares (#1063)."""
     for v in net_vias:
-        span = _via_span(v, copper_layers)
-        r = (getattr(v, 'size', 0.6) or 0.6) / 2.0
-        # Collect WHICH layers support the barrel, not merely whether any does.
-        # A via exists to join layers, so one supported layer means it joins
-        # nothing -- that is KiCad's own `via_dangling` rule ("fewer than two
-        # layers connected"), and short-circuiting at the first hit could not
-        # express it: run 11 shipped a board KiCad flagged with 64 dangling
-        # vias while this check reported none, because every one of them had
-        # copper on exactly one end.
-        sup = set()
-        for s in net_segs:
-            if s.layer not in span or s.layer in sup:
-                continue
-            if _pt_seg_dist(v.x, v.y, s.start_x, s.start_y,
-                            s.end_x, s.end_y) < r + s.width / 2 - 1e-6:
-                sup.add(s.layer)
-        for p in net_pads:
-            if getattr(p, 'pad_type', '') == 'np_thru_hole':
-                continue  # NPTH pads have no copper
-            if p.drill and p.drill > 0:
-                on = set(span)  # plated barrel spans all copper layers
-            else:
-                pl = set(p.layers or [])
-                on = set(span) if any('*' in L for L in pl) else (span & pl)
-            # The barrel has a RADIUS against a track (above), so it has one
-            # against a pad too. `margin` inflates the EXACT pad outline, so
-            # this reads "the barrel copper overlaps the pad copper" -- the
-            # same GEOMETRY as check_connected.py's via-in-pad union and
-            # check_drc's via-in-edge-pad exemption, with COINCIDENCE_TOL kept
-            # as the floor exactly as it is there. Crediting the CENTRE only
-            # (COINCIDENCE_TOL, 0.02mm) made this checker contradict the
-            # authoritative connectivity model on copper KiCad grades joined,
-            # and check_weird's exit code is chain-blocking: an off-centre
-            # via-in-pad read as `dangling via` forced a reroute lap (#695).
-            #
-            # The LAYER model above is NOT the same, and this is only geometry
-            # parity: check_connected expands pad.layers (dropping *.Mask and
-            # friends) and unions only on a SHARED copper layer, while `on`
-            # here hands a drilled pad -- or one carrying any '*' layer -- the
-            # via's whole span. That predates #695 and no board in the corpus
-            # has a pad whose copper layers are a strict subset, but a plated
-            # pad declaring only F/B.Cu would let a buried via grazing its ring
-            # claim an inner layer. Left alone deliberately; fixing it is a
-            # different behaviour change from the one this comment describes.
-            if on and not on <= sup and _point_in_pad(
-                    v.x, v.y, p, margin=max(r - 1e-6, COINCIDENCE_TOL)):
-                sup |= on
-        for z in net_zones:
-            if z.layer in span and z.layer not in sup and point_in_polygon(
-                    v.x, v.y, z.polygon):
-                sup.add(z.layer)
+        span, fixed, by_seg = via_support_parts(v, net_segs, net_pads,
+                                                net_zones, copper_layers)
+        sup = set(fixed) | set(by_seg.values())
         layer_str = ','.join(v.layers) if v.layers else '*.Cu'
         if not sup:
             findings.append(_finding(
@@ -786,10 +816,12 @@ def check_weird(pcb_data: PCBData, net_patterns: Optional[List[str]] = None,
                        soft_pts, findings, join_tol=tolerance or 0.0)
         _check_orphan_islands(net_id, name, net_segs, net_vias, net_pads,
                               net_zones, findings)
+        removable = _strict_removable(net_id, name, net_segs, net_vias,
+                                      net_pads, has_zone, copper_layers,
+                                      thorough, skipped_nets, min_track_w)
         _check_cycles(net_id, name, net_segs, net_vias, net_pads, has_zone,
-                      findings)
-        _check_removable(net_id, name, net_segs, net_vias, net_pads,
-                         net_zones, has_zone, thorough, findings, skipped_nets)
+                      findings, removable)
+        _check_removable(net_id, name, net_segs, removable, findings)
         _check_stacked(net_id, name, net_segs, net_vias, findings)
         _check_unsupported_vias(net_id, name, net_segs, net_vias, net_pads,
                                 net_zones, copper_layers, findings)
