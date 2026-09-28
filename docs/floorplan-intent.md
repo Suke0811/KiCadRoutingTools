@@ -146,7 +146,7 @@ source, suspect, suspect_reason
 | `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `why`, `context` |
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `note`, `context`, and the compiler-written `source` |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (#1051; see "Arrays" below; needs `min_reader` 7) |
-| `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"` or `"mechanical"`), `why`, `context` (#1054; see "Fixed poses" below; needs `min_reader` 7) |
+| `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"` or `"mechanical"`), `why`, `context`, `accept_courtyard_overlap` (a list of literal refs, #1060) (#1054; see "Fixed poses" below; needs `min_reader` 7) |
 | `legality_budget` | `overlap_area`, `oob_count`, `oob_amount` (`oob_area` refused — see below) |
 | `health` | `bus_corridors`, `classes`, `block_displacement_mm`, `ignore_net_ids`, `max_fanout`, `zoned_blocks`, `affinity_exempt_nets`, `affinity_exempt_net_ids`, `plane_layers` |
 | `health.bus_corridors[]` | `name`, `nets`, `width_mm` |
@@ -158,10 +158,11 @@ source, suspect, suspect_reason
 `severity` keys are checked too. The settable names are the fifteen rules —
 `envelope`, `zone_containment`, `zone_side`, `assembly_side`, `zone_exclusive`, `keepout`,
 `edge_connector`, `decap_distance`, `decap_ungraded`, `decap_pin_distance`,
-`proximity`, `must_lock`, `legality`, `pins_to_edge`, `array_formation` — plus the nine
+`proximity`, `must_lock`, `legality`, `pins_to_edge`, `array_formation` — plus the ten
 findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_zone_overlap`,
 `block_unresolved`, `intent_zone_in_keepout`, `keepout_allow_unresolved`,
 `array_unresolved`, `array_conflict` (#1051), `fixed_pose_unresolved` (#1054),
+`fixed_pose_overlap_waived` (#1060, **warn** by default),
 `mechanical_drift` (#959, raised only when a `mechanical.json` is read, and
 settable to `error` only -- `warn` is refused, since the pose is a recorded
 fact),
@@ -395,6 +396,31 @@ the polish treat it as an obstacle, and `place_seed --repair` never moves one.
 `place_seed`'s `JSON_SUMMARY` carries `fixed_seated` (with `at_written_pose`)
 and `fixed_refused`. An unlocked `mechanical.json` ref is accepted, instead
 of needing a hand lock, when the plan names it here at the declared pose.
+
+**A named courtyard waiver (#1060).** A human pose can overlap another part's
+courtyard and still be the design -- glasgow's U30 overlaps FID8 by
+1.15 x 1.15 mm, which kicad-cli's DRC reports as `courtyards_overlap` -- and
+stage 0 refuses it. `accept_courtyard_overlap: ["FID8"]` on the entry, with a
+`why` (required), waives exactly that: the COURTYARD overlap with the named
+refs, as an unordered pair, so FID8 declared as well does not refuse both
+halves. Pad clearance, pad shorts, hole clearance -- hole to copper, and hole
+to hole at the board's `min_hole_to_hole` (the courtyard check was the only one
+that caught two stacked drills) -- the keep-out band and the outline keep their
+absolute rules. The refs must be literal (a pattern is
+refused), must not name the entry's own ref, and must be on the board (else the
+pose is refused, and the grade raises `fixed_pose_unresolved`). The measured
+overlap is disclosed in `fixed_seated[ref].courtyard_waived`, in a stage-0 note,
+and in the grade as `fixed_pose_overlap_waived` (**warn**; a waiver that
+measures no overlap says so too). The waiver is read by stage 0 only
+(`Intent.courtyard_waiver_pairs`): it is NOT an `overlap_waivers[]` pair, whose
+consumers also exempt the drawn-body containment gate, so `check_assembly` and
+`render_placement` still judge the pair's bodies. Stage 0 does honour an
+`overlap_waivers[]` pair's courtyard the same way. Nor does it spend the
+overlap: the pair's area still counts in `legality.overlap_area` and in
+`plan_check`'s `plan_fixed_overlap` (a warn) and its budget, since the board
+carries exactly the finding KiCad's DRC reports -- declare the budget to fit
+it. A pose also overlapping a part the waiver does not name (U30 and
+TP2, once TP2 is placed or declared) is still refused.
 
 ### WHERE ALONG the edge: `center_on_edge` and `along_edge_band`
 
@@ -765,7 +791,8 @@ status from this list:
 | `array_formation` | a declared array is not ONE formed row: off a common axis, out of the expected order (either direction), at more than one rotation or not the declared one, or at uneven (or not the declared) pitch. A policy rule, dark when nothing is declared ([#1051](https://github.com/drandyhaas/KiCadRoutingTools/issues/1051)) | `arrays.formation` over the courtyard centres (`GradedPart.rect`) and board rotations; the order from `arrays.pin_order` |
 | `array_unresolved` | an array names a member, or a `serves` part, this board does not have | — |
 | `array_conflict` | an array cannot be formed as declared: a member locked in the file, mixed footprints without `allow_mixed`, a block rotation contradicting the row's, members split across zoned blocks | `rotations_for_ref`, `resolve_blocks` |
-| `fixed_pose_unresolved` | a `fixed_poses[]` ref is not on this board (**error**), or the anchor cannot grade it (**warn**, with the reason) ([#1054](https://github.com/drandyhaas/KiCadRoutingTools/issues/1054)); a part off its fixed pose is reported as `zone_containment` on the anchor block `fixed:<ref>` | `reconcile.anchor_blocks` |
+| `fixed_pose_unresolved` | a `fixed_poses[]` ref is not on this board (**error**), or the anchor cannot grade it (**warn**, with the reason) ([#1054](https://github.com/drandyhaas/KiCadRoutingTools/issues/1054)); a part off its fixed pose is reported as `zone_containment` on the anchor block `fixed:<ref>`. Also an `accept_courtyard_overlap` ref the board does not have (**error**, #1060) | `reconcile.anchor_blocks` |
+| `fixed_pose_overlap_waived` | a `fixed_poses[].accept_courtyard_overlap` pair, with its measured courtyard overlap on this board, or with none (a stale waiver) (**warn**, [#1060](https://github.com/drandyhaas/KiCadRoutingTools/issues/1060)) | `legality.pair_overlap_area` |
 
 Every one of them measures with the geometry the **optimizer itself gates on**.
 A grader with its own idea of what "legal" means grades the reimplementation
@@ -784,11 +811,25 @@ them is a decision, not an omission.
 
 There is a **third** consumer beside the two columns below, added by
 [#698](https://github.com/drandyhaas/KiCadRoutingTools/issues/698):
-`place_seed --reseat REF` measures the same three enforced rules *before and
-after* the pass, through the same `zone_escape` / `keepout_hit` /
-`rect_overlap_area` the grade calls, and uses them two ways — the per-term
-**vector** as a licence (no declared claim may get worse, termwise) and the
-breach **count** as one of the terms an explicit re-seat may be accepted *on*.
+`place_seed --reseat REF` measures the enforced rules *before and after* the
+pass -- the three zone/keep-out rules through the same `zone_escape` /
+`keepout_hit` / `rect_overlap_area` the grade calls, and (since #1068) the three
+tether rules `decap_distance`, `decap_pin_distance` and `proximity` through the
+same `tether_gate_spec` terms the quench gate holds (a claim whose refs are all
+locked still counts; each claim counted ONCE however many refs it binds). It
+uses them two ways — the per-term **vector** as a licence (no declared claim
+may get worse, termwise; a tether claim within its limit after the pass is no
+finding) and the breach **count** as one of the terms an explicit re-seat may
+be accepted *on*. The two read a tether term differently, on purpose: the count
+the way the GRADE does (`QuenchState.tether_graded_value`: a cap past the decap
+search radius is `decap_ungraded`, not a breach), the licence and prune the way
+the GATE does (`tether_gate_view_value`: still measured), so a cap walked out
+of the radius drops the count as the grade would and is still refused as the
+regression it is.
+`accept_basis.intent_rules` names the rules that count covers, and the printed
+basis reads `intent[decap_distance,...]`, so `intent 0->0` cannot pass for a
+measurement of the whole intent. Before #1068 it counted the zone rules only,
+and read `0 -> 0` beside four decap GRADE ERRORs on the refs re-seated.
 It is a measurement, not a per-pose gate: arming the monotone zone gate on that
 path would make the re-seat refuse its own target, which is why
 `pose_score.make_state` hands it keep-outs and withholds zones. `reseat_scope`

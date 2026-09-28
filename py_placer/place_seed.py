@@ -288,7 +288,7 @@ def fixed_pose_reason(summary):
             f"JSON_SUMMARY. It was still written, for inspection.")
 
 
-def gate_reason(unseated, own, my_pads, hole_delta):
+def gate_reason(unseated, own, my_pads, hole_delta, band=()):
     """The one stderr line that says WHY this seed did not pass its gate.
 
     Two failures reach exit 4 and they are not the same failure, so the line
@@ -303,7 +303,7 @@ def gate_reason(unseated, own, my_pads, hole_delta):
     named the wrong channel and pointed at output that is not printed in
     that case.
     """
-    if not (unseated or own or my_pads or hole_delta):
+    if not (unseated or own or my_pads or hole_delta or band):
         return None
     tail = " It was still written, for inspection."
     if unseated or own:
@@ -316,6 +316,9 @@ def gate_reason(unseated, own, my_pads, hole_delta):
     if hole_delta:
         ch.append(f"{hole_delta} hole conflict(s) the board did not come in "
                   f"with")
+    if band:
+        ch.append(f"pad copper in a rule-area keep-out band on "
+                  f"{', '.join(sorted(band))}, where no track can reach it")
     return ("place_seed: the seed satisfies its intent but leaves "
             + " and ".join(ch) + "." + tail)
 
@@ -424,6 +427,15 @@ Examples:
                         "legality move, worst first, each seated nearest its "
                         "current pose with an escalating displacement cap. "
                         "The opposite contract of --force")
+    p.add_argument("--repair-decaps", action="store_true",
+                   help="With --repair (#1066): also seat each cap a "
+                        "decap_distance / decap_pin_distance error charges "
+                        "at its IC's pin -- the nearest legal pose within the "
+                        "rule's limit of that pin (then twice it), kept only "
+                        "when that finding is gone, no finding is new or "
+                        "worse, and the move is proportionate. Off by "
+                        "default: without it a decap violator is not moved, "
+                        "and is reported unresolved")
     p.add_argument("--reseat", nargs="*", default=None, metavar="REF",
                    help="LIFT the named parts and re-seat them FROM SCRATCH "
                         "at their net centroids, holding every other part "
@@ -521,6 +533,8 @@ Examples:
         p.error("--repair/--reseat and --force are mutually exclusive (they "
                 "move only the parts that need it; force re-derives "
                 "everything)")
+    if args.repair_decaps and not args.repair:
+        p.error("--repair-decaps only applies to --repair")
     if args.dry_run and not (args.repair or args.reseat is not None):
         p.error("--dry-run only applies to --repair / --reseat")
     if args.reseat_min_gain and args.reseat is None:
@@ -759,10 +773,18 @@ Examples:
             # how this pass came to refuse on a term the operator never asked
             # about for a whole release.
             _ab = reseat.get('accept_basis') or {}
+            # #1068: `intent` is labelled with the rules it counts, so
+            # `intent 0->0` cannot read as a measurement of the WHOLE intent
+            # while the grade below prints errors of a rule the count never
+            # had.
+            _ir = ','.join(_ab.get('intent_rules') or ()) or 'none declared'
+
+            def _label(term):
+                return f"intent[{_ir}]" if term == 'intent' else term
             if _ab.get('fired'):
                 _t = next((t for t in _ab.get('terms') or []
                            if t['term'] == _ab['fired']), {})
-                print(f"  accepted on {_ab['fired']}: "
+                print(f"  accepted on {_label(_ab['fired'])}: "
                       f"{_t.get('before')} -> {_t.get('after')} "
                       f"({_t.get('units')}); {_ab.get('policy')}")
             elif _ab.get('policy') == 'explicit:one-term-strict':
@@ -774,7 +796,7 @@ Examples:
                                if t.get('first')), None)
                 print(("  refused despite " + _first + " improving: "
                        if _first else "  no basis improved: ") + ", ".join(
-                    f"{t['term']} {t['before']}->{t['after']}"
+                    f"{_label(t['term'])} {t['before']}->{t['after']}"
                     for t in (_ab.get('terms') or [])))
             summary.update({
                 'reseat': True,
@@ -834,7 +856,8 @@ Examples:
                 cur_pcb, cur, intent, group_sources=sources,
                 clearance=args.clearance,
                 board_edge_clearance=args.board_edge_clearance,
-                grid_step=args.grid_step)
+                grid_step=args.grid_step,
+                repair_decaps=args.repair_decaps)
             for note in result['notes']:
                 print(f"  NOTE: {note}")
             max_move = 0.0
@@ -848,8 +871,25 @@ Examples:
                   f"({len(result['moves'])} moved, max {max_move:.2f}mm), "
                   f"{len(result.get('unresolved') or [])} unresolved, "
                   f"{len(result['unrepairable'])} unrepairable")
+            # #1066: the refs behind every count. `unresolved` was printed and
+            # never written, so a caller reading JSON_SUMMARY could not tell
+            # a repaired violator from one still carrying its finding. An
+            # unresolved ref does NOT set exit 4 -- that code stays reserved
+            # for a violator this tool may not move (`unrepairable`).
+            _unres = list(result.get('unresolved') or [])
+            _by_rule: dict = {}
+            for _rules in (result.get('unresolved_claims') or {}).values():
+                for _rule in _rules:
+                    _by_rule[_rule] = _by_rule.get(_rule, 0) + 1
             summary.update({
+                'violators': len(result['violators']),
                 'repaired': len(result['repaired']),
+                'repaired_refs': list(result['repaired']),
+                'unresolved': len(_unres),
+                'unresolved_refs': _unres,
+                'unresolved_by_rule': _by_rule,
+                # #1066 (b): what the decap rung did per cap; {} when off.
+                'decap_rung': result.get('decap_rung') or {},
                 'unrepairable': len(result['unrepairable']),
                 'moved_refs': [m['reference'] for m in result['moves']],
                 'max_move_mm': round(max_move, 3),
@@ -1264,6 +1304,20 @@ Examples:
     if _hole_delta:
         print(f"  hole conflicts rose {_pads_in.get('hole_conflicts')} -> "
               f"{_pads_out.get('hole_conflicts')} across this seed")
+    # #1044: pad copper in a `(tracks not_allowed)` rule-area band that THIS
+    # seed put there -- a part it moved whose band reach grew past its input
+    # pose's. An inherited band pad (the part came in that way, or the seed
+    # never touched it) is reported, not charged, like an inherited short.
+    _band_in = {r: a for r, a in (_pads_in.get('oob_keepout_copper_refs')
+                                  or ())}
+    _band_out = [(r, a) for r, a in (_pads_out.get('oob_keepout_copper_refs')
+                                     or ())]
+    _band_seeded = [(r, a) for r, a in _band_out
+                    if r in _seeded and a > _band_in.get(r, 0.0) + 1e-6]
+    if _band_seeded:
+        print(f"  {len(_band_seeded)} part(s) this seed placed with pad copper "
+              f"in a rule-area keep-out band: "
+              + '; '.join(f"{r} ({a:.3f}mm)" for r, a in _band_seeded))
     after = ratsnest.get('after', {})
     summary = {'placed': len(result['placements']),
                'unseated': len(result['unseated']),
@@ -1316,6 +1370,10 @@ Examples:
                # publishes the same key from the same grade.
                'pad_conflicts_after': _pads_out.get('pad_conflicts') or 0,
                'hole_conflicts_added': _hole_delta,
+               # #1044: the band pads this seed caused, and the board total.
+               'keepout_copper_seeded': [[r, a] for r, a in _band_seeded],
+               'oob_keepout_copper_count':
+                   _pads_out.get('oob_keepout_copper_count') or 0,
                'grade_warnings': len(graded.warnings),
                'crossings': after.get('crossings'),
                'hpwl': (round(after['hpwl'], 3)
@@ -1336,7 +1394,8 @@ Examples:
     summary['connector_requirements'] = floorplan.connector_requirements(
         graded, own, pinned)
     print("JSON_SUMMARY: " + json.dumps(summary, sort_keys=True))
-    _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta)
+    _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta,
+                          band=[r for r, _a in _band_seeded])
     if _reason is None:
         _reason = fixed_pose_reason(summary)
     if _reason is not None:

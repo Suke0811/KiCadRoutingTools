@@ -1475,6 +1475,13 @@ def _body_band_correct(state, ref: str, edge: str, x: float, y: float,
                   and abs(target - row['body_outside_mm']) < 0.02)
 
 
+#: #1044: `edge_seat_ok`'s rule-area band conjunct. On in every production
+#: path; `tests/test_placement_ab.py` turns it off for its OFF arm only
+#: (`seed_from_intent(_edge_band_gate=False)`), which is why it is module
+#: state rather than a parameter threaded through every edge caller.
+_edge_band_gate = True
+
+
 def edge_seat_ok(state, part, x: float, y: float, edge: str,
                  lo: float, hi: float,
                  reasons: Optional[List[str]] = None) -> bool:
@@ -1504,6 +1511,9 @@ def edge_seat_ok(state, part, x: float, y: float, edge: str,
 
     An edge connector's BODY overhangs by design; its PADS do not. That
     asymmetry is what makes this checkable at all.
+
+    Five conjuncts in all: the band, pads on the board, and (below) a
+    declared keep-out, an exclusive zone and a rule-area band (#1044).
 
     A THIRD conjunct, since #701: a declared KEEP-OUT. An edge connector's
     body may leave the outline; it may not enter a region the intent
@@ -1575,6 +1585,25 @@ def edge_seat_ok(state, part, x: float, y: float, edge: str,
         if reasons is not None:
             reasons.extend(f"exclusive zone of block {n!r}" for n in _zblockers)
         return False
+    # A FIFTH conjunct (#1044), for the same reason as the fourth: this
+    # predicate bypasses `pose_ok`, and so bypassed `pads_ok`'s #1031 check
+    # of the board's rule-area keep-out bands. Stage 1 and `_seat_edge` could
+    # put an SMD connector's pad copper in a `(tracks not_allowed)` band --
+    # a pad no track can reach -- and the polish quench then took that pose
+    # as the seed's licence. ABSOLUTE, like `_fixed_pose_check`'s: an edge
+    # seat is chosen, not inherited, so a band pose has no incumbent to be
+    # "no worse than". The trade is the keep-out conjunct's: a connector
+    # whose whole band lies in the rule area is left to the later stages,
+    # named in `reasons`.
+    if _edge_band_gate:
+        ctx = getattr(state, 'legality_ctx', None)
+        if ctx is not None and getattr(ctx, 'keepouts', None) is not None:
+            ko = ctx.keepout_amount(part.ref, x, y, part.rot)
+            if ko > 1e-6:
+                if reasons is not None:
+                    reasons.append(f"pad copper {ko:.3f}mm into a rule-area "
+                                   f"keep-out band")
+                return False
     gate = state.edge_gate
     for px, py, _sz in part.pad_globals(x, y, part.rot):
         # A zero-size rect at the pad centre: "is this point on the board",
@@ -2901,10 +2930,7 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
             return True
         if refused:
             notes.append(f"{ref}: every position on the declared {edge} edge "
-                         f"band is refused by "
-                         + ', '.join(sorted(set(refused)))
-                         + " -- move the keep-out, or add this ref to its "
-                           "`allow`")
+                         f"band is refused by " + _edge_refusal_tail(refused))
         notes.append(
             f"{ref}: no seat exists on the declared {edge} edge at any "
             f"declared rotation ({', '.join(f'{r:g}' for r in ladder)}deg) "
@@ -2968,9 +2994,30 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
         # Sorted+deduped: the ladder tries up to 13 fractions and would
         # otherwise name the same keep-out 13 times.
         notes.append(f"{ref}: every position on the declared {edge} edge band "
-                     f"is refused by " + ', '.join(sorted(set(refused)))
-                     + " -- move the keep-out, or add this ref to its `allow`")
+                     f"is refused by " + _edge_refusal_tail(refused))
     return False
+
+
+def _edge_refusal_tail(refused) -> str:
+    """The reasons an edge band was refused, deduplicated, and the next move
+    each kind has. A declared keep-out has an `allow` list; a board rule-area
+    band (#1044) does not, so its advice differs -- and it is reported ONCE,
+    at its deepest, rather than once per ladder rung's depth."""
+    band = [r for r in refused if 'rule-area keep-out band' in r]
+    other = sorted(set(r for r in refused if r not in band))
+    parts = list(other)
+    if band:
+        depth = max(float(r.split('pad copper ')[1].split('mm')[0])
+                    for r in band)
+        parts.append(f"pad copper up to {depth:.3f}mm into a rule-area "
+                     f"keep-out band")
+    advice = []
+    if any(r.startswith('keep-out ') for r in other):
+        advice.append("move the keep-out, or add this ref to its `allow`")
+    if band:
+        advice.append("move the board's rule area, or the connector's "
+                      "declared edge / band")
+    return ', '.join(parts) + (" -- " + '; '.join(advice) if advice else '')
 
 
 def _partner_centroid(state, ref: str, placed: Set[str],
@@ -3440,7 +3487,63 @@ def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
     return area, w, h
 
 
-def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple]
+def _drill_conflict(state, a: str, pose_a, b: str, pose_b) -> Optional[str]:
+    """The closest pair of DRILL holes of `a` and `b` (plated or not) at their
+    poses, as a refusal, when they are closer than the board's own
+    `min_hole_to_hole` (else touching). None when clear.
+
+    The courtyard branch of `_fixed_pose_check` was the only thing that
+    caught two holes stacked on each other -- `pair_shortfall` checks a hole
+    against the other part's COPPER, never against its hole -- so a courtyard
+    waiver must re-ask it (#1060, phase-4 verifier: two coincident NPTH drills
+    seated under `accept_courtyard_overlap`)."""
+    from .legality import footprint_at_pose
+
+    def drills(ref, pose):
+        fp = (state.pcb_data.footprints or {}).get(ref)
+        if fp is None:
+            return []
+        out = []
+        for p in footprint_at_pose(fp, pose).pads:
+            d = max(float(getattr(p, 'drill', 0) or 0),
+                    float(getattr(p, 'drill_w', 0) or 0),
+                    float(getattr(p, 'drill_h', 0) or 0))
+            if d <= 0:
+                continue
+            hx = p.hole_x if getattr(p, 'hole_x', None) is not None \
+                else p.global_x
+            hy = p.hole_y if getattr(p, 'hole_y', None) is not None \
+                else p.global_y
+            out.append((hx, hy, d / 2.0, str(p.pad_number)))
+        return out
+    da, db = drills(a, pose_a), drills(b, pose_b)
+    if not da or not db:
+        return None
+    floor = 0.0
+    try:
+        from list_nets import board_constraint
+        floor = float(board_constraint(state.pcb_file, 'min_hole_to_hole')
+                      or 0.0)
+    except Exception:                                      # noqa: BLE001
+        floor = 0.0
+    worst = None
+    for ax, ay, ar, an in da:
+        for bx, by, br, bn in db:
+            gap = math.hypot(ax - bx, ay - by) - ar - br
+            if gap < floor - 1e-6 and (worst is None or gap < worst[0]):
+                worst = (gap, an, bn)
+    if worst is None:
+        return None
+    def name(ref, num):
+        return f"{ref}.{num}" if num else f"{ref}'s hole"
+    return (f"drill {name(a, worst[1])} is {worst[0]:.3f}mm from "
+            f"{name(b, worst[2])} (hole-to-hole floor {floor:g}mm; a negative "
+            f"gap is holes overlapping)")
+
+
+def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
+                      waived=frozenset(),
+                      waived_out: Optional[Dict[str, Dict]] = None
                       ) -> Tuple[Optional[str], List[str], Dict[str, str]]:
     """`(how, reasons, conflicts)` for seating `ref` EXACTLY at `pose`.
 
@@ -3472,6 +3575,14 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple]
     obstacle `legality_ctx.pair_shortfall`'s pad clearance, hole clearance,
     pad short and cross-part pad stack -- `pads_ok`'s conjuncts, called.
 
+    `waived` (#1060) is a set of unordered pairs `frozenset({a, b})` whose
+    COURTYARD overlap is declared -- `fixed_poses[].accept_courtyard_overlap`
+    and `overlap_waivers[]`. For such a pair the courtyard branch alone is
+    skipped, and the measurement is recorded in `waived_out[other]` instead
+    of refusing; pad clearance, pad shorts, hole clearance, the keep-out band
+    and the outline stay absolute, because a waiver is a claim about two
+    courtyards and nothing else.
+
     * `'contained'`: inside the outline, and nothing above fails.
     * `'overhang'`: the courtyard leaves the outline -- a connector or a
       mounting part may overhang by design, which is stage 1's exemption --
@@ -3501,8 +3612,18 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple]
         if ref not in containers and other not in containers:
             area, w, h = _courtyard_overlap(state, ref, pose, other, opose)
             if area > FIXED_OVERLAP_EPS_MM2:
-                conflicts[other] = (f"courtyard overlaps {other} by "
-                                    f"{w:.2f}x{h:.2f}mm ({area:.3f}mm2)")
+                if frozenset((ref, other)) in waived:
+                    if waived_out is not None:
+                        waived_out[other] = {'area_mm2': round(area, 4),
+                                             'w_mm': round(w, 3),
+                                             'h_mm': round(h, 3)}
+                    # The courtyard is waived; its holes are not.
+                    _dh = _drill_conflict(state, ref, pose, other, opose)
+                    if _dh:
+                        conflicts[other] = _dh
+                else:
+                    conflicts[other] = (f"courtyard overlaps {other} by "
+                                        f"{w:.2f}x{h:.2f}mm ({area:.3f}mm2)")
         if ctx is not None:
             sf = ctx.pair_shortfall(ref, other, pose_a=pose, pose_b=opose)
             # `pads_ok`'s conjuncts, ABSOLUTE rather than seed-relative: a
@@ -3591,6 +3712,16 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
         refused[ref] = {'reason': why, 'pose': [x, y, f.get('rot')]}
         notes.append(f"fixed pose {ref}: REFUSED -- {why}")
         return None
+    # #1060: a waiver of a part the board does not have waives nothing, and
+    # a typo there would read as a pose that seated clean.
+    absent = [o for o in (f.get('accept_courtyard_overlap') or ())
+              if o not in (pcb_data.footprints or {})]
+    if absent:
+        why = (f"accept_courtyard_overlap names {', '.join(absent)}, which "
+               f"{'is' if len(absent) == 1 else 'are'} not on this board")
+        refused[ref] = {'reason': why, 'pose': [x, y, f.get('rot')]}
+        notes.append(f"fixed pose {ref}: REFUSED -- {why}")
+        return None
     part = state.parts[ref]
     rot_decl = f.get('rot')
     rot_kept = rot_decl is None or rot_decl == 'unknown'
@@ -3601,6 +3732,8 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
     rec = {'x': x, 'y': y, 'rot': rot, 'side': side_now,
            'basis': f.get('basis'), 'rot_kept': rot_kept,
            'side_kept': side_kept}
+    if f.get('accept_courtyard_overlap'):
+        rec['waives'] = sorted(f['accept_courtyard_overlap'])
     if not side_kept and side_decl != side_now:
         held.add(ref)
         refused[ref] = dict(rec, reason=(
@@ -3636,7 +3769,8 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
 def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
                       unplaced: Set[str], held: Set[str],
                       seated: Dict[str, Dict], refused: Dict[str, Dict],
-                      lock: Set[str], notes: List[str]) -> None:
+                      lock: Set[str], notes: List[str],
+                      waived=frozenset()) -> None:
     """Stage 0 (#1054): every `fixed_poses[]` entry, judged as ONE batch.
 
     ORDER-INDEPENDENT. Each declared pose is checked against the parts
@@ -3651,6 +3785,10 @@ def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
     the author's statement of where a part IS -- so keeping one would pick
     a winner by reference name, and a refusal that names the pair is what
     the author needs to fix the one that is wrong.
+
+    `waived` (#1060): the declared courtyard waivers as unordered pairs, so
+    a waiver on EITHER entry of a pair covers both checks -- checked one way
+    only, FID8 declared beside U30 would still refuse both halves.
     """
     declared: Dict[str, Tuple] = {}
     recs: Dict[str, Dict] = {}
@@ -3665,11 +3803,14 @@ def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
                            state.parts[r].rot) for r in placed
                        if r in state.parts}
     verdicts = {}
+    waived_hits: Dict[str, Dict[str, Dict]] = {}
     for ref in sorted(declared):
         obstacles = dict(fixed_obstacles)
         obstacles.update({o: p for o, p in declared.items() if o != ref})
+        waived_hits[ref] = {}
         verdicts[ref] = _fixed_pose_check(state, ref, declared[ref],
-                                          obstacles)
+                                          obstacles, waived=waived,
+                                          waived_out=waived_hits[ref])
     for ref in sorted(declared):
         how, reasons, conflicts = verdicts[ref]
         x, y, rot = declared[ref]
@@ -3693,6 +3834,27 @@ def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
         unplaced.discard(ref)
         lock.add(ref)
         seated[ref] = dict(rec, how=how)
+        if waived_hits.get(ref):
+            # Disclosed, never silent: the measured overlap each waiver
+            # accepted, in the record `JSON_SUMMARY.fixed_seated` carries.
+            seated[ref]['courtyard_waived'] = waived_hits[ref]
+            notes.append(
+                f"fixed pose {ref}: courtyard overlap WAIVED with "
+                + ', '.join(f"{o} ({m['w_mm']:.2f}x{m['h_mm']:.2f}mm, "
+                            f"{m['area_mm2']:.3f}mm2)"
+                            for o, m in sorted(waived_hits[ref].items()))
+                + " -- declared by accept_courtyard_overlap / "
+                  "overlap_waivers; pads, holes, keep-outs and the outline "
+                  "were still checked")
+        unused = sorted(o for o in (recs[ref].get('waives') or ())
+                        if o not in waived_hits.get(ref, {}))
+        if unused:
+            notes.append(f"fixed pose {ref}: accept_courtyard_overlap names "
+                         f"{', '.join(unused)}, and stage 0 measured no "
+                         f"courtyard overlap with "
+                         f"{'it' if len(unused) == 1 else 'them'} (not yet "
+                         f"placed, or not overlapping: the grade reports "
+                         f"which)")
         notes.append(f"fixed pose {ref}: seated exactly at ({x:g}, {y:g}, "
                      f"{rot:g}deg)"
                      + (" overhanging the outline (pads on the board)"
@@ -3889,10 +4051,14 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     fixed_seated: Dict[str, Dict] = {}
     fixed_refused: Dict[str, Dict] = {}
     fixed_lock: Set[str] = set()
+    _waiver_pairs = getattr(intent, 'courtyard_waiver_pairs', None)
     _seat_fixed_poses(state, pcb_data,
                       getattr(intent, 'fixed_poses', ()) or (), placed,
                       unplaced, held, fixed_seated, fixed_refused,
-                      fixed_lock, notes)
+                      fixed_lock, notes,
+                      waived=frozenset(frozenset(p) for p in
+                                       (_waiver_pairs() if _waiver_pairs
+                                        else ())))
 
     # ---- 1. edge connectors: spec geometry, no legality gate ---------------
     # edge_claims(), not the raw key: a connector_affinity entry declares a
@@ -5356,6 +5522,260 @@ def stamp_unlocked(board_file: str, refs: Sequence[str]) -> int:
 CONTAINMENT_CHARGE_MM = 2.0
 
 REPAIR_CAPS_MM = (0.5, 1.0, 2.0, 5.0)
+
+#: The rules `--repair-decaps` (#1066) seats a cap FOR. Each names its cap and
+#: its IC (`decap_distance`: ref = the cap, measured `ic`;
+#: `decap_pin_distance`: ref = the IC, measured `cap` and `pad`).
+DECAP_RUNG_RULES = ('decap_distance', 'decap_pin_distance')
+
+
+def _decap_target(state, pcb_data, cap: str, ic: str, pad_number=None):
+    """`(x, y)` the decap rung seats `cap` toward: the IC's declared supply
+    pad (`decap_pin_distance`), or the IC pad on the cap's RAIL nearest the
+    cap (`decap_distance`) -- the rail being the cap's smallest multi-ref
+    net, stage 2.5's own choice (`rail_of`). That keeps the main ground
+    off the target, not every ground: on a split-ground board the smallest
+    net can be a local one (glasgow's C76 -> /GNDPLL0), and a non-decoupling
+    cap aims at a signal pad -- harmless, since the grade decides what is
+    kept. None when the IC carries no such pad."""
+    from .legality import footprint_at_pose
+    part, chip = state.parts[cap], state.parts[ic]
+    fp = footprint_at_pose(pcb_data.footprints[ic], (chip.x, chip.y, chip.rot))
+    if pad_number is not None:
+        pads = [p for p in fp.pads if str(p.pad_number) == str(pad_number)]
+    else:
+        rail = min((nid for nid in part.nets
+                    if len(state.net_refs.get(nid, ())) >= 2),
+                   key=lambda nid: (len(state.net_refs[nid]), nid),
+                   default=None)
+        pads = [p for p in fp.pads if rail is not None and p.net_id == rail]
+        if not pads:
+            # The cap's smallest net is not on this IC (watchy C14: its
+            # smallest net is an LED's, and it decouples U1 on +3V3): aim at
+            # the smallest net the two DO share -- the grade decides.
+            shared = sorted((len(state.net_refs.get(p.net_id, ())), p.net_id)
+                            for p in fp.pads if p.net_id in part.nets
+                            and len(state.net_refs.get(p.net_id, ())) >= 2)
+            if shared:
+                pads = [p for p in fp.pads if p.net_id == shared[0][1]]
+    if not pads:
+        return None
+    best = min(pads, key=lambda p: (math.hypot(p.global_x - part.x,
+                                               p.global_y - part.y),
+                                    str(p.pad_number)))
+    return best.global_x, best.global_y
+
+
+def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
+                       notes) -> Dict[str, Dict]:
+    """#1066 (b): seat each cap a decap rule charges at its IC's pin.
+
+    `repair_placement`'s ordinary seat is `_try_place` at the part's CURRENT
+    pose, which knows nothing of a decap target and accepts the pose it
+    stands at -- which is why a decap violator never moved. This is the
+    missing actor: for every `decap_distance` / `decap_pin_distance` error,
+    the CAP (never the IC, which carries every other claim on its pins) is
+    searched for the nearest legal pose within the rule's own limit of its
+    target pad (`_decap_target`), by the same `_try_place` every seat uses.
+
+    Accepted only when the grade says it is a fix: the charged claim is gone
+    AND no finding is new or worse (`new_or_worse`, per finding -- stricter
+    than `floorplan.grade_delta`, which counts claims) AND the placement's own
+    overlap / off-board numbers did not grow, taken on the whole board before
+    and after. Anything else is reverted, and said.
+    A claim an earlier seat already cleared is skipped. Opt-in
+    (`repair_decaps`), because it moves parts the repair did not move before.
+
+    Returns `{cap: {'moved': bool, 'tried': [row, ...]}}`."""
+    from placement import floorplan as _fp
+    from .legality import EPS as _eps
+    tasks = []
+    for v in graded.errors:
+        if v.rule not in DECAP_RUNG_RULES or not v.ref:
+            continue
+        m = v.measured or {}
+        if v.rule == 'decap_distance':
+            cap, ic, pad = v.ref, m.get('ic'), None
+        else:
+            cap, ic, pad = m.get('cap'), v.ref, m.get('pad')
+        if cap in state.parts and ic in state.parts:
+            amt = m.get('distance_mm', m.get('gap_mm'))
+            excess = (float(amt) - float(limits.get(v.rule, 0.0))
+                      if isinstance(amt, (int, float)) else 0.0)
+            # The FINDING, not the claim: every uncovered pin of one IC
+            # shares a claim, so asking the claim whether THIS pin is fixed
+            # read a cap that cleared pin 1 as failing while pin 6 was still
+            # charged -- two caps serving two pins of one IC reverted each
+            # other (phase-3 verifier: glasgow C14/C16 on U36, 11 such).
+            tasks.append((str(cap), str(ic), pad, finding_key(v),
+                          max(0.0, excess)))
+    out: Dict[str, Dict] = {}
+    for cap, ic, pad, claim, excess in sorted(
+            tasks, key=lambda t: (t[0], t[1], str(t[2]))):
+        rec = out.setdefault(cap, {'moved': False, 'tried': []})
+        row = {'rule': claim[0], 'ref': claim[1], 'ic': ic, 'pad': pad}
+        rec['tried'].append(row)
+        part = state.parts[cap]
+        if part.locked:
+            row['result'] = 'locked'
+            continue
+        try:
+            before = grader.violations()
+            leg0 = grader.legality_at()
+        except (_fp.UntrustworthyOutline, ValueError) as exc:
+            row['result'] = f'unavailable: {type(exc).__name__}'
+            notes.append(f"decap rung: the grade is unavailable "
+                         f"({type(exc).__name__}: {exc}) -- nothing seated")
+            break
+        if claim not in findings_of(before):
+            row['result'] = 'already_cleared'
+            continue
+        target = _decap_target(state, pcb_data, cap, ic, pad)
+        if target is None:
+            row['result'] = 'no_target_pad'
+            continue
+        ox, oy, orot = part.x, part.y, part.rot
+        # The rule measures to the chip's pad BOX (or the cap's own pads),
+        # not to the target pad's centre, so a pose farther than the limit
+        # from that centre can satisfy it: the search widens once, to twice
+        # the limit, and the grade below is what decides.
+        got = None
+        for disp in (float(limits[claim[0]]), 2.0 * float(limits[claim[0]])):
+            got = _try_place(state, cap, target[0], target[1], set(),
+                             max_disp=disp, rotations=rot_ladder(cap))
+            if got is not None:
+                break
+        if got is None:
+            row['result'] = 'no_legal_pose_within_limit'
+            continue
+        after = grader.violations()
+        leg1 = grader.legality_at()
+        # Per FINDING (`new_or_worse`), not per claim: `grade_delta` cannot
+        # see a second pin stranded under a claim its IC already carries, or
+        # a finding that only grew -- the two ways a cap moved TO one pin
+        # can hurt another.
+        added = sorted({f"{v.rule} on {v.ref}"
+                        + ('' if how == 'new' else ' (worse)')
+                        for v, how in new_or_worse(findings_of(before),
+                                                   after)})
+        for key in ('overlap_area', 'oob_amount', 'oob_count'):
+            was, now = leg0.get(key), leg1.get(key)
+            if (isinstance(was, (int, float)) and isinstance(now, (int, float))
+                    and now > was + (0 if isinstance(now, int) else _eps)):
+                added.append(f'legality.{key}')
+        # Past the decap search radius the finding is not cleared, it stops
+        # being GRADED: `decap_distance` (error) becomes `decap_ungraded`
+        # (warn), which `findings_of` does not read. Still open, as the
+        # honesty re-grade already says (round-2 verifier: tigard C18 moved
+        # 0.85mm to 5.21mm from U3 and read "cleared").
+        still = (claim in findings_of(after)
+                 or (claim[0] == 'decap_distance'
+                     and any(v.rule == 'decap_ungraded' and v.ref == cap
+                             for v in after)))
+        d = math.hypot(part.x - ox, part.y - oy)
+        # The ordinary repair's proportion rule, in the violation's own
+        # currency: a cap 0.125mm past its limit is not moved 9.9mm to fix
+        # it (esp_prog C3, measured) -- that is a different placement.
+        budget = max(DISPROPORTION_FLOOR_MM, DISPROPORTION_RATIO * excess)
+        if d > budget:
+            state.apply_move(cap, ox, oy, orot)
+            row['result'] = 'disproportionate'
+            row['moved_mm'] = round(d, 3)
+            notes.append(
+                f"{cap}: decap rung's only fixing pose is {d:.2f}mm away, "
+                f"disproportionate to the {excess:.3f}mm it is past its "
+                f"limit (budget {budget:.2f}mm) -- left in place")
+            continue
+        if added or still:
+            state.apply_move(cap, ox, oy, orot)
+            row['result'] = 'reverted'
+            row['added'] = added
+            row['still'] = still
+            notes.append(
+                f"{cap}: decap rung found a pose {d:.2f}mm away at {ic}"
+                + (f" pad {pad}" if pad is not None else '')
+                + " and REVERTED it -- "
+                + '; '.join(([f"it would add {', '.join(added)}"]
+                             if added else [])
+                            + ([f"{claim[0]} would remain"] if still
+                               else [])))
+            continue
+        rec['moved'] = True
+        row['result'] = 'seated'
+        row['moved_mm'] = round(d, 3)
+        notes.append(f"{cap}: decap rung seated it {d:.2f}mm from its pose, "
+                     f"toward {ic}" + (f" pad {pad}" if pad is not None
+                                       else '')
+                     + f" -- {claim[0]} cleared, nothing added")
+    return out
+
+#: The measured value a grade finding gets WORSE along, first key found
+#: (#1066). A distance or an escape: larger is worse.
+FINDING_AMOUNT_KEYS = ('gap_mm', 'distance_mm', 'outside_mm', 'area_mm2',
+                       'intrusion_mm2', 'overlap_mm2')
+
+#: A finding's amount must grow by more than this to be "worse": the grade
+#: rounds its measurements to 3-4 decimals.
+FINDING_WORSE_EPS_MM = 1e-3
+
+
+def finding_key(v) -> Tuple:
+    """One grade FINDING's identity: `floorplan.violation_claim` plus the
+    pad and net it is about. The claim alone is per (rule, ref, block), so
+    an IC with one supply pin already past its limit reads a SECOND pin
+    stranded by a move as the same claim -- a new finding, invisible (the
+    phase-1 round-2 verifier: watchy U4 pad 20, created by moving C5, hidden
+    behind U4 pad 46)."""
+    from placement import floorplan as _fp
+    m = v.measured or {}
+    return _fp.violation_claim(v) + (str(m.get('pad', '')),
+                                     str(m.get('net', '')))
+
+
+def finding_amount(v) -> Optional[float]:
+    m = v.measured or {}
+    for k in FINDING_AMOUNT_KEYS:
+        x = m.get(k)
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            return float(x)
+    return None
+
+
+def findings_of(violations) -> Dict[Tuple, Optional[float]]:
+    """{finding_key: amount} over the ERRORS in `violations` (the largest
+    amount when a key repeats)."""
+    from placement import floorplan as _fp
+    out: Dict[Tuple, Optional[float]] = {}
+    for v in violations:
+        if v.severity != _fp.ERROR:
+            continue
+        k, a = finding_key(v), finding_amount(v)
+        if k not in out or (a is not None and (out[k] is None or a > out[k])):
+            out[k] = a
+    return out
+
+
+def new_or_worse(before: Dict[Tuple, Optional[float]], after_violations
+                 ) -> List[Tuple[object, str]]:
+    """`[(violation, 'new' | 'worse')]`: every ERROR in `after_violations`
+    that `before` (a `findings_of`) does not have, or has with a smaller
+    amount. Stricter than `floorplan.grade_delta`, which counts claims and so
+    is blind to a second finding under one claim and to a finding that only
+    grew -- a cap moved further from the only IC it decouples (watchy C12,
+    U3 VBUS 7.78 -> 11.10mm) is a regression, not a repair."""
+    from placement import floorplan as _fp
+    out = []
+    for v in after_violations:
+        if v.severity != _fp.ERROR:
+            continue
+        k = finding_key(v)
+        if k not in before:
+            out.append((v, 'new'))
+            continue
+        a, b = finding_amount(v), before[k]
+        if a is not None and b is not None and a > b + FINDING_WORSE_EPS_MM:
+            out.append((v, 'worse'))
+    return out
 # A repair move must be PROPORTIONATE to the violation it clears. The cap
 # ladder escalates 0.5 -> 5.0mm hunting any legal seat, and on a board damaged
 # by ~1.2mm it relocated parts 4.3-5.8mm: those few parts carried the whole of
@@ -5373,7 +5793,8 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                      clearance: float = 0.25,
                      board_edge_clearance: float = 0.55,
                      grid_step: float = 0.1,
-                     caps: Sequence[float] = REPAIR_CAPS_MM) -> Dict:
+                     caps: Sequence[float] = REPAIR_CAPS_MM,
+                     repair_decaps: bool = False) -> Dict:
     """Violation-driven minimal-move repair of a PLACED board (#place_seed
     --repair). Everything clean freezes; only violators move, worst first,
     each seated by the seeder's own search targeted at its CURRENT pose with
@@ -5389,6 +5810,12 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     seating (the stamp in the file survives the positional rewrite, so no
     re-stamping is needed). A file-locked ref OUTSIDE must_lock is not this
     tool's to move: reported in `unrepairable`.
+
+    `repair_decaps` (#1066 b, `--repair-decaps`, off by default) adds the
+    decap rung, `_repair_decap_rung`: each cap a decap rule charges is seated
+    at its IC's pin, kept only when the grade calls it a fix. Without it a
+    decap violator is never moved (the ordinary seat has no decap target),
+    and the honesty re-grade reports it `unresolved`.
 
     NOTE this sweep has no internal bound -- its cost is violators x caps x 36
     ring sweeps x O(parts) per candidate, and on a 217-part board it ran 46
@@ -5542,6 +5969,10 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 state.parts[r].pin_count, r)
 
     graded = None
+    # #1066: every grade error a ref is CHARGED for, by `violation_claim`, so
+    # the honesty re-grade after the moves can ask whether THAT finding is
+    # still on the board -- not merely whether the part moved.
+    charged_claims: Dict[str, List[Tuple]] = {}
     if intent is not None:
         graded = floorplan.grade(intent, pcb_data, pcb_file,
                                  group_sources=group_sources,
@@ -5551,6 +5982,27 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             if v.ref:
                 _charge(v.ref, float((v.measured or {}).get('outside_mm', 1.0)
                                      or 1.0))
+                if v.ref in state.parts:
+                    charged_claims.setdefault(v.ref, []).append(
+                        floorplan.violation_claim(v))
+    # The claims the POSE grader reproduces at the input poses. A charged
+    # claim it does not reproduce comes from a part of `grade` outside the
+    # rules loop (intent validation, block resolution), which no move can
+    # clear -- so after the moves it is counted as still present. Measured
+    # before any move, while the state still holds the input poses; also the
+    # BASELINE a move's NEW finding is told apart by (see the re-grade).
+    claims_regradable = None
+    findings_before = None
+    regrade_error = None
+    if pose_grader is not None:
+        try:
+            _before = pose_grader.violations()
+            claims_regradable = {floorplan.violation_claim(v)
+                                 for v in _before
+                                 if v.severity == floorplan.ERROR}
+            findings_before = findings_of(_before)
+        except (floorplan.UntrustworthyOutline, ValueError) as exc:
+            regrade_error = exc
 
     # worst_n=0: the FULL pair census (run-4 F5). The default cap of 10
     # bounded one repair pass at 10 pair-movers on a 20-pair board -- the
@@ -5879,6 +6331,30 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             repaired.append(ref)
             zero_move.append(ref)
 
+    # #1066 (b): the decap rung, opt-in. After the ordinary seats, so it
+    # measures the board they left; before both re-grades, which then judge
+    # its seats like any other move.
+    decap_rung: Dict[str, Dict] = {}
+    if repair_decaps and graded is not None and pose_grader is not None:
+        _dc = dict(getattr(intent, 'decaps', None) or {})
+        _limits = {'decap_distance': _dc.get('max_distance_mm'),
+                   'decap_pin_distance': _dc.get('max_pin_distance_mm')}
+        decap_rung = _repair_decap_rung(
+            state, pcb_data, graded, pose_grader,
+            {k: v for k, v in _limits.items() if v is not None},
+            _rot_ladder, notes)
+        for cap, rec in sorted(decap_rung.items()):
+            if not rec['moved']:
+                continue
+            p = state.parts[cap]
+            moves[:] = [m for m in moves if m['reference'] != cap]
+            moves.append({'reference': cap, 'new_x': p.x, 'new_y': p.y,
+                          'new_rotation': p.rot})
+            zero_move[:] = [r for r in zero_move if r != cap]
+            failed[:] = [r for r in failed if r != cap]
+            if cap not in repaired:
+                repaired.append(cap)
+
     # Run-7 A2: honesty re-grade. A violator counts as repaired only if the
     # charged violation classes actually IMPROVED; zero-move violators on a
     # board whose pad/body census did not move are UNRESOLVED, so the fix
@@ -5929,16 +6405,157 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                     f"{ref}: UNRESOLVED -- pose is courtyard-legal but the "
                     f"charged pad/body violation persists (metric mismatch; "
                     f"was reported 'repaired' before run-7 A2)")
+
+    # #1066: the INTENT half of the same honesty re-grade. The loop above
+    # re-checks pads, holes and containment only, so a part charged for a
+    # grade error -- a decap too far from its IC, a part out of its zone --
+    # that `_try_place` left where it stood (it searches for the nearest
+    # LEGAL pose and has no intent target) was reported repaired while the
+    # finding stayed on the board: glasgow, 33 repaired, 0 moved, errors
+    # 46 -> 46. Every charged ref is re-graded, MOVED OR NOT: a cap moved
+    # 0.3mm and still too far from its IC is no more repaired than one that
+    # did not move. A ref is repaired only when every claim it was charged
+    # for is gone.
+    #
+    # And the move must not have MADE one. A cap charged for a pad conflict,
+    # moved off it and out of its decap limit, cleared its charge and read
+    # repaired while the board gained an error (phase-1 verifier: watchy
+    # 9 -> 19 errors, splitflap C8 re-seated 2.00mm to 3.29mm from U9). An
+    # error the input poses did not have is attributed to every MOVED ref it
+    # names -- its own ref, or the cap / IC / partner its measurement names,
+    # since `decap_pin_distance` is charged to the IC a moved cap stranded.
+    unresolved_claims: Dict[str, List[str]] = {}
+    moved_refs = {m['reference'] for m in moves}
+    check_refs = [r for r in dict.fromkeys(repaired)
+                  if r in charged_claims or r in moved_refs]
+    if check_refs and pose_grader is not None:
+        after = None
+        if regrade_error is None and claims_regradable is not None:
+            try:
+                after = pose_grader.violations()
+            except (floorplan.UntrustworthyOutline, ValueError) as exc:
+                regrade_error = exc
+        after_claims = ({floorplan.violation_claim(v) for v in after
+                         if v.severity == floorplan.ERROR}
+                        if after is not None else None)
+        # A cap pushed past the decap search radius does not clear its
+        # `decap_distance` charge, it stops being GRADED: the finding becomes
+        # `decap_ungraded` (warn) under a different claim key. Read as the
+        # charge persisting, or leaving the radius would be a way to be fixed.
+        ungraded = ({v.ref for v in after if v.rule == 'decap_ungraded'}
+                    if after is not None else set())
+        # A finding the input poses did not have, or had SMALLER, charged to
+        # the moved ref that caused it. The ref it NAMES is not enough: a pin
+        # a cap's move stranded names the IC and whichever cap is now
+        # nearest, never the cap that left (round-2 verifier: watchy C5). So
+        # a finding naming no moved ref is attributed by COUNTERFACTUAL --
+        # each moved ref restored alone to its input pose, the finding
+        # disappearing or shrinking back names the move that made it.
+        created: Dict[str, List[str]] = {}
+        unattributed: List[str] = []
+        restored: Dict[str, Dict[Tuple, Optional[float]]] = {}
+        for v, how in (new_or_worse(findings_before, after)
+                       if after is not None else ()):
+            label = v.rule if how == 'new' else f"{v.rule} (made worse)"
+            m = v.measured or {}
+            names = {v.ref} | {m.get(k) for k in ('cap', 'ic', 'near')}
+            who = sorted(names & moved_refs)
+            if not who:
+                k, amt = finding_key(v), finding_amount(v)
+                for r in sorted(moved_refs):
+                    if r not in restored:
+                        fp0 = pcb_data.footprints[r]
+                        try:
+                            restored[r] = findings_of(pose_grader.violations(
+                                poses={r: (fp0.x, fp0.y,
+                                           (fp0.rotation or 0.0) % 360.0)}))
+                        except (floorplan.UntrustworthyOutline,
+                                ValueError):
+                            restored[r] = None
+                    got = restored[r]
+                    if got is None:
+                        continue
+                    if k not in got or (
+                            amt is not None and got[k] is not None
+                            and got[k] < amt - FINDING_WORSE_EPS_MM):
+                        who.append(r)
+            if not who:
+                unattributed.append(f"{label} on {v.ref}")
+            for r in who:
+                created.setdefault(r, []).append(label)
+        if unattributed:
+            notes.append(
+                "repair: " + '; '.join(sorted(set(unattributed)))
+                + " -- not present before the repair, and no single move "
+                  "restored alone clears it (a joint effect of several)")
+        for ref in check_refs:
+            charged = charged_claims.get(ref, ())
+            made: List[str] = []
+            if after_claims is None:
+                if not charged:
+                    continue
+                still = sorted({c[0] for c in charged})
+                why = (f"the grade could not be re-run after the repair "
+                       f"({regrade_error.__class__.__name__}: "
+                       f"{regrade_error})" if regrade_error is not None
+                       else "the grade could not be re-run after the repair")
+            else:
+                still = sorted({c[0] for c in charged
+                                if c in after_claims
+                                or c not in claims_regradable
+                                or (c[0] == 'decap_distance'
+                                    and ref in ungraded)})
+                made = sorted(set(created.get(ref, ()))
+                              - {r for r in still})
+                why = None
+                if ('decap_distance' in still and ref in ungraded
+                        and ('decap_distance', ref) not in
+                        {(c[0], c[1]) for c in after_claims}):
+                    still = [r if r != 'decap_distance' else
+                             'decap_distance (moved past the decap search '
+                             'radius: now decap_ungraded, not cleared)'
+                             for r in still]
+            if not still and not made:
+                continue
+            repaired[:] = [r for r in repaired if r != ref]
+            if ref not in unresolved:
+                unresolved.append(ref)
+            unresolved_claims[ref] = sorted(
+                {r.split(' ')[0] for r in list(still) + list(made)})
+            said = []
+            if why:
+                said.append(f"{why}, so the charged {', '.join(still)} "
+                            f"cannot be shown cleared")
+            elif still:
+                said.append(f"still carries {', '.join(still)} after the "
+                            f"repair")
+            if made:
+                said.append(f"its move created {', '.join(made)}, which the "
+                            f"input poses did not have at that size")
+            notes.append(
+                f"{ref}: UNRESOLVED -- " + '; '.join(said)
+                + ((" (it moved, and the move did not clear it)" if still
+                    else " (it moved)") if ref in moved_refs
+                   else " (it did not move)")
+                + " -- NOT reported repaired")
     return {'moves': moves, 'repaired': repaired, 'unrepairable':
             unrepairable + failed, 'unresolved': unresolved,
             'violators': violators, 'notes': notes,
+            # #1066: {ref: [rule, ...]} -- the grade claims that kept each
+            # unresolved ref out of `repaired`: charged ones still present,
+            # and ones its move created. Refs the run-7 pad/body re-grade
+            # made unresolved are in `unresolved` but not here.
+            'unresolved_claims': unresolved_claims,
             'pad_report_before': {k: pads[k] for k in
                                   ('pad_conflicts', 'hole_conflicts',
                                    'oob_pad_count')},
             'grade_errors_before': len(graded.errors) if graded else None,
             # #975: edge seats kept short of the board-edge floor, by ref.
             'edge_floor_fallback': _floor_records_at_final_pose(
-                state, edge_floor_fallback)}
+                state, edge_floor_fallback),
+            # #1066 (b): {cap: {moved, tried: [...]}}; {} when the rung is
+            # off or nothing was charged to a decap rule.
+            'decap_rung': decap_rung}
 
 
 def eviction_licence_ok(before: Sequence[float],
@@ -6122,6 +6739,9 @@ def basis_skeleton(scope_source: str, *, policy: str,
         # does not run these leaves them None rather than reporting a clean
         # pass over nothing.
         'safety': None, 'intent_licence': None,
+        # #1068: the rules the `intent` basis counts -- what `intent 0->0`
+        # is a count OF. Empty where no probe ran.
+        'intent_rules': [],
     }
 
 
@@ -6630,7 +7250,14 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
         # gate term moves, and the pass is accepted having created the
         # violation it was run to remove. Only claim-bound refs get terms, so
         # on a board that declares nothing this is still empty.
-        probe = _q.IntentProbe(state, zones=_bundle['zones'])
+        #
+        # #1068: and the TETHER rules (decap_distance, decap_pin_distance,
+        # proximity) the quench's gate holds -- the same `_bundle['tethers']`.
+        # Without them the `intent` basis read 0 -> 0 on a board printing
+        # decap GRADE ERRORs on the very refs re-seated, and prune reverted a
+        # seat made for a decap reason as a pure hpwl loss.
+        probe = _q.IntentProbe(state, zones=_bundle['zones'],
+                               tethers=_bundle.get('tethers'))
 
     # ---- seat ---------------------------------------------------------------
     before = _recon.measure(state, gate_bands)
@@ -6723,6 +7350,8 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
         witnesses_before=witnesses_before, witnesses_after=witnesses_after,
         bases_before=bases_before, bases_after=bases_after,
         intent_risen=_risen, min_gain=min_gain)
+    if probe is not None:
+        accept_basis['intent_rules'] = list(probe.rules)
     if evicted and not eviction_licence_ok(before, after):
         accepted = False
         accept_basis['fired'] = None

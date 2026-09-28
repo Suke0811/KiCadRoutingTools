@@ -407,10 +407,10 @@ ROWS = [
      "    now = list(after)",
      (TS,), 'KILLED'),
     ('delta-reads-only-a-refd-claim', 'fp',
-     "        return (v.rule, v.ref or '', v.block or '',\n"
-     "                tuple(sorted((v.expected or {}).keys())))",
-     "        return (v.rule, v.ref or '', v.block or '',\n"
-     "                tuple(sorted((v.expected or {}).keys()))) if v.ref == 'J1' else ('',)",
+     "    return (v.rule, v.ref or '', v.block or '',\n"
+     "            tuple(sorted((v.expected or {}).keys())))",
+     "    return (v.rule, v.ref or '', v.block or '',\n"
+     "            tuple(sorted((v.expected or {}).keys()))) if v.ref == 'J1' else ('',)",
      (TS,), 'KILLED'),
     # Expected to SURVIVE since the pre-push review added the unconditional
     # legality comparison to `_grade_worse`: `_BUDGET_KEYS` is exactly
@@ -461,10 +461,10 @@ ROWS = [
      "        return (pose[0], pose[1], rot)",
      (TS,), 'KILLED'),
     ('delta-claim-drops-the-ref', 'fp',
-     "        return (v.rule, v.ref or '', v.block or '',\n"
-     "                tuple(sorted((v.expected or {}).keys())))",
-     "        return (v.rule, '', v.block or '',\n"
-     "                tuple(sorted((v.expected or {}).keys())))",
+     "    return (v.rule, v.ref or '', v.block or '',\n"
+     "            tuple(sorted((v.expected or {}).keys())))",
+     "    return (v.rule, '', v.block or '',\n"
+     "            tuple(sorted((v.expected or {}).keys())))",
      (TS,), 'KILLED'),
     # ---- the pre-push review: the grade only sees the rules the intent ARMS --
     ('legality-metrics-not-compared', 'sd',
@@ -472,7 +472,9 @@ ROWS = [
      "        moved = dict(memo['legality'])",
      (TS,), 'KILLED'),
     ('legality-metrics-overlap-not-read', 'sd',
+     "        said = {r.get('budget') for r in rows if r.get('rule') == 'legality'}\n"
      "        for key in ('overlap_area', 'oob_amount', 'oob_count'):",
+     "        said = {r.get('budget') for r in rows if r.get('rule') == 'legality'}\n"
      "        for key in ('oob_amount', 'oob_count'):",
      (TS,), 'KILLED'),
     ('ring-base-never-re-read', 'fp',
@@ -484,9 +486,9 @@ ROWS = [
      "                   key=lambda s: (s[1],))",
      (TS,), 'KILLED'),
     ('delta-claim-drops-the-expected-keys', 'fp',
-     "        return (v.rule, v.ref or '', v.block or '',\n"
-     "                tuple(sorted((v.expected or {}).keys())))",
-     "        return (v.rule, v.ref or '', v.block or '', ())",
+     "    return (v.rule, v.ref or '', v.block or '',\n"
+     "            tuple(sorted((v.expected or {}).keys())))",
+     "    return (v.rule, v.ref or '', v.block or '', ())",
      (TS,), 'KILLED'),
     ('unavailable-worded-as-a-verdict', 'sd',
      "                         if any('unavailable' in d\n"

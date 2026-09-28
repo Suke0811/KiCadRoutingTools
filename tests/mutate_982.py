@@ -195,9 +195,9 @@ ROWS = [
 
     # ---- the gate: an algebraic no-op, kept as a change detector ----------
     ('gate-charges-the-unseated-pairs', 'ps',
-     "    _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta)",
+     "    _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta,",
      "    _reason = gate_reason(result['unseated'], own,\n"
-     "                          _my_pads + _unseated_pads, _hole_delta)",
+     "                          _my_pads + _unseated_pads, _hole_delta,",
      (T982, T27S), 'SURVIVED'),
 
     # ---- the documentation gate: RETIRED ---------------------------------

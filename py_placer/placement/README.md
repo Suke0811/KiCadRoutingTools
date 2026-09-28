@@ -245,7 +245,7 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 | stage | what it seats |
 |---|---|
 | 0 | `fixed_poses[]` (#1054): EXACTLY at the declared pose, a check and never a search -- courtyards may abut (KiCad's rule) but not overlap, pads and holes keep their clearance, and every declared pose is judged against every other one, so a clashing pair is refused BOTH; an illegal pose is refused with its measurement and the part held out of every later stage. Seated parts are stamped `(locked yes)` |
-| 1 | edge connectors on their declared edge, inside the overhang band |
+| 1 | edge connectors on their declared edge, inside the overhang band. The edge seat bypasses `pose_ok` (it overhangs by design), so `edge_seat_ok` carries its own conjuncts -- band, pads on the board, keep-outs, exclusive zones and, since #1044, the board's rule-area `(tracks not_allowed)` bands, ABSOLUTE: a band pose is refused by name and the connector left to the later stages rather than seated where no track can reach its pad |
 | 1.5 | `must_lock` parts, at their current pose where it is legal |
 | 2 | zoned blocks, packed radially from the zone centre; a declared array whose members all sit in one zoned block is seated into it whole (stage 2.45) |
 | 2.4 | declared non-zoned arrays: each row's served part, then the row (stage 2.45), each row at its members' rank. A row member is never seated alone here. The order is disclosed in the seeder's `early_order` |
@@ -257,6 +257,11 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 `place_seed`'s `JSON_SUMMARY` carries what stages 0, 2.45 and 2.5 did, judged
 at the WRITTEN poses: `fixed_seated` / `fixed_refused`, `arrays_formed` (the
 grader's `array_formation` verdict) / `array_unseated`, and `decap_stage`.
+Its final gate also names rule-area band pads (#1044): `keepout_copper_seeded`
+is `[ref, mm]` for each part the seed MOVED whose pad copper went deeper into a
+`(tracks not_allowed)` band than at its input pose, and exits 4 on it;
+`oob_keepout_copper_count` is the written board's total, inherited ones
+included (reported, not charged).
 
 Every `JSON_SUMMARY` it prints (seed, `--repair`, `--reseat`) carries
 `connector_requirements` (#974): the declared edge connectors' graded
@@ -441,7 +446,9 @@ part could never be re-seated whatever the search found. So:
   longer required to *improve*, and that one asymmetry is the whole bug.
 - **A separate trigger.** At least one basis in `RESEAT_BASES` must strictly
   improve: the six hard gate terms, the scope's own HPWL, and the count of
-  breached declared claims. All are reported in `accept_basis` whether they
+  breached declared claims -- zone/keep-out AND, since #1068, the tether rules
+  (`decap_distance`, `decap_pin_distance`, `proximity`), each claim counted
+  once; `accept_basis.intent_rules` names which. All are reported in `accept_basis` whether they
   fired or not — a basis that measured nothing and a basis that measured no
   change must not look alike.
 - **The intent VECTOR is the guard; the intent COUNT is only the trigger.** A
@@ -453,7 +460,8 @@ part could never be re-seated whatever the search found. So:
   *first*. Its tuple has no intent term either, so a seat that cleared a
   keep-out reads as a pure hpwl loss and was undone before the gate ran. It now
   takes an `intent_probe` and refuses a revert that would re-break a
-  declaration — a conjunct rather than an `exempt` entry, so the sweep still
+  declaration (a tether term enters as its excess over its limit, so a revert
+  is refused only if it pushes a claim further past it) — a conjunct rather than an `exempt` entry, so the sweep still
   catches every mis-move it caught before and stays monotone, now on
   `(tuple, intent vector)` jointly. Kept moves are named in a `prune: KEPT …`
   note.
@@ -1496,7 +1504,28 @@ re-seating 85/92 while leaving its zone targets unmoved):
   violators move, worst first, escalating caps (0.5/1/2/5 mm), file-locked
   non-must_lock violators are reported, never moved. Zones smaller than a
   part's courtyard grade (and seat) on the anchor point — the spec-coordinate
-  pattern is satisfiable by construction now.
+  pattern is satisfiable by construction now. A violator is reported
+  `repaired` only when every grade error it was charged for is gone
+  (#1066): each charged ref, moved or not, is re-graded after the pass and
+  one still carrying its claim is `unresolved`, named in `JSON_SUMMARY`
+  (`repaired_refs`, `unresolved_refs`, `unresolved_by_rule`). So is a moved
+  ref whose move CREATED a finding the input poses did not have, or made one
+  WORSE (compared per finding -- rule, ref, pad, net -- not per claim; a
+  finding naming no moved ref is charged by counterfactual, each moved ref
+  restored alone), and a cap pushed past the
+  decap search radius (its `decap_distance` became `decap_ungraded`, which is
+  not a fix). `unresolved` sets no exit code of its own; exit 4 stays
+  `unrepairable`'s and the final grade's. `place_reconstruct`'s legalize
+  stage reports the same `unresolved` list.
+  `--repair-decaps` (#1066 b, opt-in) adds the missing actor: each cap a
+  `decap_distance` / `decap_pin_distance` error charges is seated toward its
+  IC's pin (the rail pad nearest it, or the declared supply pad) and KEPT
+  only when that finding is gone, no finding anywhere is new or worse, the
+  overlap / off-board numbers did not grow, and the move is proportionate
+  (the repair's own `DISPROPORTION_RATIO` / `_FLOOR_MM`, against how far the
+  cap is past its limit). Its record is `JSON_SUMMARY.decap_rung`. It stays
+  off by default: `tests/test_placement_ab.py`'s `repair-decaps-*` rows
+  improve two of five boards and regress none, short of the N-1 rule.
 - **`place_reconstruct.py`** (`placement/reconstruct.py`) — the structural
   ("puzzle") solver: tier classification (frame -> anchors -> smalls),
   corner-inset pattern fit (propose-only), rigid ±v vector detection, ONE

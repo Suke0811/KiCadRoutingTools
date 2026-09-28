@@ -918,9 +918,10 @@ def test_a_real_overlap_is_refused_with_its_measurement():
     print(f"  PASS: U30 refused -- {why}")
 
 
-def _pair_board(td, xb):
-    """Two 2 x 2mm courtyards on a 30 x 20 board, A at x=10, B at x=`xb`,
-    pads 0.6mm from centre (so abutting courtyards keep pad clearance)."""
+def _pair_board(td, xb, waive=None, why='the design', xa=10.0):
+    """Two 2 x 2mm courtyards on a 30 x 20 board, A at x=`xa`, B at x=`xb`,
+    pads 0.6mm from centre (so abutting courtyards keep pad clearance).
+    `waive`, when given, is A's `accept_courtyard_overlap` (#1060)."""
     part = """ (footprint "t:P" (layer "F.Cu") (uuid "fp-%(r)s") (at %(x)s 10)
   (property "Reference" "%(r)s" (at 0 0 0))
   (fp_rect (start -1 -1) (end 1 1) (layer "F.CrtYd") (uuid "c-%(r)s"))
@@ -937,9 +938,11 @@ def _pair_board(td, xb):
     path = os.path.join(td, f'pair_{xb}.kicad_pcb')
     with open(path, 'w', encoding='utf-8') as fh:
         fh.write(body)
+    a = {'ref': 'A', 'x': xa, 'y': 10.0, 'rot': 0, 'basis': 'declared'}
+    if waive is not None:
+        a.update(accept_courtyard_overlap=list(waive), why=why)
     doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm', 'fixed_poses': [
-        {'ref': 'A', 'x': 10.0, 'y': 10.0, 'rot': 0, 'basis': 'declared'},
-        {'ref': 'B', 'x': xb, 'y': 10.0, 'rot': 0, 'basis': 'declared'}]}
+        a, {'ref': 'B', 'x': xb, 'y': 10.0, 'rot': 0, 'basis': 'declared'}]}
     return seeder.seed_from_intent(
         parse_kicad_pcb(path), path, fp.intent_from_dict(doc, path),
         random.Random('0'), group_sources=(), clearance=0.2,
@@ -963,6 +966,165 @@ def test_abutting_fixed_poses_seat_and_overlapping_ones_both_refuse():
             assert rec['conflicts_with_declared'] == [b], rec
     print("  PASS: abutting courtyards seat; a 0.1mm overlap refuses both, "
           "each naming the other")
+
+
+def test_a_named_courtyard_waiver_seats_u30_exactly():
+    """#1060: U30 at its human pose overlaps FID8's courtyard 1.15 x 1.15mm,
+    and `accept_courtyard_overlap: ["FID8"]` (with its `why`) seats it
+    exactly, locked, with the measured overlap disclosed in its record. The
+    unwaived pose is still refused (the arm above)."""
+    with tempfile.TemporaryDirectory() as td:
+        pcb = parse_kicad_pcb(GLASGOW)
+        u = pcb.footprints['U30']
+        doc = fp.emit_intent(pcb, GLASGOW)
+        doc['fixed_poses'] = [{'ref': 'U30', 'x': u.x, 'y': u.y,
+                               'rot': u.rotation or 0, 'basis': 'declared',
+                               'why': 'the human pose, FID8 sits in its '
+                                      'courtyard by design',
+                               'accept_courtyard_overlap': ['FID8']}]
+        intent, _p = _intent(doc, td)
+        _pcb, res = _seed(GLASGOW, intent)
+        assert not res['fixed_refused'], res['fixed_refused']
+        rec = res['fixed_seated']['U30']
+        assert rec['how'] == 'contained', rec
+        cw = rec['courtyard_waived']['FID8']
+        assert (cw['w_mm'], cw['h_mm']) == (1.15, 1.15), cw
+        assert 'U30' in res['lock_refs'], res['lock_refs']
+        written = {p['reference']: p for p in res['placements']}
+        assert (written['U30']['new_x'], written['U30']['new_y']) == (
+            round(u.x, 3), round(u.y, 3))
+        out = _write(GLASGOW, res, td, 'u30.kicad_pcb')
+        g = fp.grade(intent, parse_kicad_pcb(out), out, group_sources=SOURCES,
+                     clearance=CLEARANCE)
+        w = [v for v in g.violations if v.rule == 'fixed_pose_overlap_waived']
+        assert [(v.ref, v.severity, v.measured['waives']) for v in w] == [
+            ('U30', 'warn', 'FID8')], w
+        assert w[0].measured['overlap_mm2'] > 1.3, w[0].measured
+    print(f"  PASS: U30 seated exactly; waived FID8 {cw}; graded "
+          f"{w[0].message}")
+
+
+def test_the_waiver_covers_courtyards_only_both_ways():
+    """Synthetic, so the answer is arithmetic. A waiver on A naming B:
+    * B at 11.9 overlaps A's courtyard only -> BOTH seat (the pair is
+      unordered, so B's own check against A is waived too), disclosed;
+    * B at 10.0 stacks its pads on A's -> BOTH still refused, naming the
+      pad short (the waiver is a claim about courtyards, not copper);
+    * A at x=0.3 puts its pad copper past the outline -> refused.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        ok = _pair_board(td, 11.9, waive=['B'])
+        assert set(ok['fixed_seated']) == {'A', 'B'}, ok['fixed_refused']
+        assert 'B' in ok['fixed_seated']['A']['courtyard_waived'], ok
+        assert 'A' in ok['fixed_seated']['B']['courtyard_waived'], ok
+        bad = _pair_board(td, 10.0, waive=['B'])
+        assert set(bad['fixed_refused']) == {'A', 'B'}, bad['fixed_seated']
+        why = bad['fixed_refused']['A']['reason']
+        assert 'pads' in why and 'courtyard' not in why, why
+        off = _pair_board(td, 25.0, waive=['B'], xa=0.3)
+        assert 'A' in off['fixed_refused'], off['fixed_seated']
+        assert 'past the outline' in off['fixed_refused']['A']['reason'], off
+    print(f"  PASS: courtyard-only waiver seats both; a pad stack still "
+          f"refuses ({why}); the outline still refuses")
+
+
+def _npth_pair(td, xb, waive=True):
+    """Two 2 x 2mm courtyards, each with ONE non-plated hole (drill 0.5) at
+    its origin, A at x=10 and B at x=`xb`; A waives B's courtyard."""
+    part = """ (footprint "t:H" (layer "F.Cu") (uuid "fp-%(r)s") (at %(x)s 10)
+  (property "Reference" "%(r)s" (at 0 0 0))
+  (fp_rect (start -1 -1) (end 1 1) (layer "F.CrtYd") (uuid "c-%(r)s"))
+  (pad "" np_thru_hole circle (at 0 0) (size 0.5 0.5) (drill 0.5) (layers "*.Cu" "*.Mask") (uuid "%(r)sh")))
+"""
+    body = ('(kicad_pcb\n (version 20241229)\n (net 0 "")\n'
+            ' (layers (0 "F.Cu" signal) (31 "B.Cu" signal))\n'
+            ' (gr_rect (start 0 0) (end 30 20) (layer "Edge.Cuts") '
+            '(uuid "e1"))\n'
+            + part % dict(r='A', x=5) + part % dict(r='B', x=25) + ')\n')
+    path = os.path.join(td, f'npth_{xb}.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(body)
+    a = {'ref': 'A', 'x': 10.0, 'y': 10.0, 'rot': 0, 'basis': 'declared'}
+    if waive:
+        a.update(accept_courtyard_overlap=['B'], why='the design')
+    doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm', 'fixed_poses': [
+        a, {'ref': 'B', 'x': xb, 'y': 10.0, 'rot': 0, 'basis': 'declared'}]}
+    return seeder.seed_from_intent(
+        parse_kicad_pcb(path), path, fp.intent_from_dict(doc, path),
+        random.Random('0'), group_sources=(), clearance=0.2,
+        board_edge_clearance=0.1)
+
+
+def test_the_waiver_does_not_waive_stacked_holes():
+    """The courtyard check was the only one that saw two holes on top of
+    each other (`pair_shortfall` checks a hole against COPPER), so a waived
+    pair re-asks it: coincident NPTH drills are refused even under the
+    waiver, holes 1.2mm apart (courtyards overlapping 0.8mm) seat."""
+    with tempfile.TemporaryDirectory() as td:
+        stacked = _npth_pair(td, 10.0)
+        assert set(stacked['fixed_refused']) == {'A', 'B'}, stacked
+        why = stacked['fixed_refused']['A']['reason']
+        assert "drill A's hole" in why and "from B's hole" in why, why
+        apart = _npth_pair(td, 11.2)
+        assert set(apart['fixed_seated']) == {'A', 'B'}, apart['fixed_refused']
+    print(f"  PASS: stacked holes refused under the waiver ({why}); apart "
+          f"they seat")
+
+
+def test_a_waiver_is_graded_even_where_the_mechanical_anchor_grades_the_pose():
+    """`fixed_pose_violations` skips an entry whose pose the mechanical
+    file's own anchor grades; its waiver must be graded anyway."""
+    pcb = parse_kicad_pcb(ESP)
+    r1 = pcb.footprints['R1']
+    doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+           'fixed_poses': [{'ref': 'R1', 'x': r1.x, 'y': r1.y,
+                            'rot': r1.rotation or 0, 'basis': 'declared',
+                            'why': 'w', 'accept_courtyard_overlap': ['NOPE']}]}
+    it = fp.intent_from_dict(doc)
+    mech = {'poses': {'R1': {'x': r1.x, 'y': r1.y, 'rot': r1.rotation or 0}}}
+    got = fp.fixed_pose_violations(it, pcb, ESP, mechanical=mech)
+    assert any(v.rule == 'fixed_pose_unresolved' and 'NOPE' in v.message
+               for v in got), [(v.rule, v.message) for v in got]
+    print("  PASS: the waiver is graded though the mechanical anchor "
+          "grades the pose")
+
+
+def test_a_waiver_the_board_cannot_honour_is_refused():
+    """A waiver naming a ref the board does not have refuses the pose at
+    stage 0 and is `fixed_pose_unresolved` (error) in the grade; the loader
+    refuses a malformed one outright."""
+    with tempfile.TemporaryDirectory() as td:
+        res = _pair_board(td, 25.0, waive=['NOPE'])
+        assert 'A' in res['fixed_refused'], res['fixed_seated']
+        assert 'NOPE' in res['fixed_refused']['A']['reason'], res
+        base = {'ref': 'A', 'x': 1.0, 'y': 1.0, 'basis': 'declared',
+                'why': 'w'}
+        for acc, why, frag in (('B', 'w', 'expected a list'),
+                               (['B*'], 'w', 'literal references'),
+                               (['A'], 'w', 'names A itself'),
+                               (['B', 'B'], 'w', 'repeats'),
+                               (['B'], '', 'needs a `why`')):
+            doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+                   'fixed_poses': [dict(base, why=why,
+                                        accept_courtyard_overlap=acc)]}
+            try:
+                fp.intent_from_dict(doc)
+            except fp.IntentError as exc:
+                assert frag in str(exc), (acc, str(exc))
+            else:
+                raise AssertionError(f"loader accepted {acc!r}")
+        pcb = parse_kicad_pcb(ESP)
+        doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+               'fixed_poses': [{'ref': 'R1', 'x': pcb.footprints['R1'].x,
+                                'y': pcb.footprints['R1'].y,
+                                'basis': 'declared', 'why': 'w',
+                                'accept_courtyard_overlap': ['NOPE']}]}
+        g = fp.grade(fp.intent_from_dict(doc), pcb, ESP)
+        hit = [v for v in g.errors if v.rule == 'fixed_pose_unresolved'
+               and 'NOPE' in v.message]
+        assert hit, [(v.rule, v.message) for v in g.violations]
+    print("  PASS: an absent waiver ref refuses the pose and errors the "
+          "grade; five malformed waivers refused at load")
 
 
 def test_fixed_pose_obeys_the_keepout_band_and_pad_stacks_absolutely():
@@ -1137,6 +1299,11 @@ TESTS = [
     test_human_glasgow_rows_seat_as_fixed_poses,
     test_a_real_overlap_is_refused_with_its_measurement,
     test_abutting_fixed_poses_seat_and_overlapping_ones_both_refuse,
+    test_a_named_courtyard_waiver_seats_u30_exactly,
+    test_the_waiver_covers_courtyards_only_both_ways,
+    test_a_waiver_the_board_cannot_honour_is_refused,
+    test_the_waiver_does_not_waive_stacked_holes,
+    test_a_waiver_is_graded_even_where_the_mechanical_anchor_grades_the_pose,
     test_fixed_pose_obeys_the_keepout_band_and_pad_stacks_absolutely,
     test_refused_fixed_pose_stays_unwritten_under_anchors_first,
     test_stage1_treats_a_stage0_part_as_an_obstacle,

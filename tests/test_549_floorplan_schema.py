@@ -180,7 +180,7 @@ KEY_SETS = {
                     'source', 'context'},
     # #1054: one exact pose to seat, and whose fact it is.
     '_FIXED_POSE_KEYS': {'ref', 'x', 'y', 'rot', 'side', 'basis', 'why',
-                         'context'},
+                         'context', 'accept_courtyard_overlap'},
 }
 
 
@@ -336,7 +336,9 @@ def test_an_intent_using_every_known_key_loads():
         # #1054. `basis` is whose fact the pose is.
         'fixed_poses': [{'ref': 'H1', 'x': 3.0, 'y': 4.0, 'rot': 90,
                          'side': 'F', 'basis': 'declared', 'why': 'w',
-                         'context': {'why': 'w'}}],
+                         'context': {'why': 'w'},
+                         # #1060: a named courtyard waiver, with its `why`.
+                         'accept_courtyard_overlap': ['H2']}],
     }
     # Every key of every set must appear above, or this proves less than it
     # claims -- the point is coverage of the vocabulary, not of a sample.
@@ -647,7 +649,9 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         'array_unresolved',
                                         'array_conflict',
                                         # #1054: fixed_pose_violations
-                                        'fixed_pose_unresolved'}
+                                        'fixed_pose_unresolved',
+                                        # #1060: its courtyard waiver
+                                        'fixed_pose_overlap_waived'}
     assert _SEVERITY_KEYS == expected, sorted(_SEVERITY_KEYS ^ expected)
     for name in sorted(expected):
         # Two names accept one direction only, and say so at load:

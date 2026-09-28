@@ -116,12 +116,16 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   both blocking pairs in 63 s, where whole-board sweeps ran over 10 min. For
   parts tens of mm off, use `--reseat`: `--repair` ran 5 min and attempted
   none of 11.
-- **The decap tools have holes:**
-  - `place_seed --repair` reports decap violators as "repaired" with 0 moved
-    (#1066);
+- **What the decap tools report:**
+  - `place_seed --repair` counts a violator `repaired` only once its
+    finding is gone; read `unresolved_refs` / `unresolved_by_rule` in its
+    `JSON_SUMMARY` for the rest (#1066). Add `--repair-decaps` to seat
+    charged caps at their IC's pin (opt-in; `decap_rung` says what it did);
   - `place_fanout_clearance` can move a cap past `decap_pin_distance`
     silently (#1067);
-  - `place_seed --reseat`'s intent basis ignores decap errors (#1068).
+  - `place_seed --reseat`'s intent basis counts only the rules it prints
+    (`intent[...]`, `accept_basis.intent_rules`) -- decap and proximity
+    included since #1068.
 
   Re-run `check_floorplan --intent` after each of these tools.
 - **Re-placing strands routed copper.** Strip the copper and re-route; do not

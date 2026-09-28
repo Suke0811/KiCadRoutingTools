@@ -8,12 +8,13 @@
       buffers written at their HUMAN pose (kicad_files/glasgow_revC.kicad_pcb)
       and stamped `(locked yes)` in the INPUT board, then the base intent
       seeds the rest (`stage_human_key_parts`)
-  cd  the same 29 RN/buffer poses DECLARED as intent `fixed_poses[]` (stage 0
-      seats them) instead of file-locked. U30 is file-locked at its human
-      pose exactly as in c: its human pose overlaps FID8 (itself file-locked
-      at the human pose in the input), so stage 0 refuses it by design, and
-      declaring FID8 too would change nothing. So c and cd differ ONLY in how
-      the 29 small parts are held.
+  cd  the same 30 key poses DECLARED as intent `fixed_poses[]` (stage 0
+      seats them) instead of file-locked. U30's human pose overlaps FID8's
+      courtyard (FID8 is file-locked at the human pose in the input), which
+      stage 0 refuses by design; since #1060 its entry carries
+      `accept_courtyard_overlap: ["FID8"]`, a named waiver of that courtyard
+      overlap only. Before #1060 U30 had to be file-locked in cd's input as in
+      c. So c and cd differ ONLY in how the 30 key parts are held.
 
 Each arm runs `place_seed` (polish ON, clearance 0.2) on seeds 0-4 and is
 graded by tools that are not the seeder:
@@ -126,8 +127,6 @@ def build_intents(src, work):
     assert len(keys) == 30, keys          # U30 + RN1-12 + 17 buffers
     fixed = []
     for ref in keys:
-        if ref == 'U30':
-            continue          # file-locked in cd's input; see the docstring
         fp = human.footprints[ref]
         assert unplaced.footprints[ref].footprint_name == fp.footprint_name
         fixed.append({'ref': ref, 'x': fp.x, 'y': fp.y,
@@ -136,12 +135,19 @@ def build_intents(src, work):
                       'basis': 'declared',
                       'why': 'arm cd: the human pose (glasgow_revC), '
                              'declared by the "AI" before the seed'})
-    assert len(fixed) == 29, len(fixed)
+        if ref == 'U30':
+            # #1060: the human U30 overlaps FID8's courtyard by 1.15 x 1.15mm
+            # (kicad-cli reports it too); waived by name, courtyard only.
+            fixed[-1]['accept_courtyard_overlap'] = ['FID8']
+            fixed[-1]['why'] += ('; FID8 sits inside its courtyard in the '
+                                 'human layout')
+    assert len(fixed) == 30, len(fixed)
 
     intents = {}
     # arm c seeds from the BASE intent on a board whose key parts already
     # stand, file-locked, at the human pose (`stage_human_key_parts`); arm
-    # cd declares 29 of them as `fixed_poses[]` instead (U30 file-locked).
+    # cd declares all 30 as `fixed_poses[]` instead (U30 with its #1060
+    # courtyard waiver), on the unplaced board itself.
     for arm, extra in (('a', {}), ('b', {'arrays': rows}), ('c', {}),
                        ('cd', {'fixed_poses': fixed})):
         doc = json.loads(json.dumps(base))
@@ -578,16 +584,13 @@ def main(argv=None):
     _copy_board(a.src, src)
     intents, nets, rows, keys = build_intents(src, work)
     src_c = os.path.join(work, 'glasgow_c_input.kicad_pcb')
-    src_cd = os.path.join(work, 'glasgow_cd_input.kicad_pcb')
     if 'c' in a.arms:
         n = stage_human_key_parts(src, keys, src_c)
         print(f"arm c input: {n} key part(s) at the human pose, locked",
               flush=True)
-    if 'cd' in a.arms:
-        n = stage_human_key_parts(src, ['U30'], src_cd)
-        print(f"arm cd input: {n} part (U30) at the human pose, locked",
-              flush=True)
-    inputs = {'a': src, 'b': src, 'c': src_c, 'cd': src_cd}
+    # #1060: cd seeds the UNPLACED board -- every key part, U30 included, is
+    # a declared pose now, so nothing is staged by hand.
+    inputs = {'a': src, 'b': src, 'c': src_c, 'cd': src}
     commit = _commit()
     src_sha = _sha256(src)
     with open(os.path.join(a.out, 'setup.json'), 'w') as fh:

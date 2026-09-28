@@ -530,6 +530,33 @@ def test_the_brief_compiles_arrays_and_fixed_poses():
           "unknown and absent reported apart")
 
 
+def test_the_brief_carries_a_courtyard_waiver_and_drift_sees_it():
+    """#1060: `fixed[].accept_courtyard_overlap` compiles through to the
+    intent entry as written, drift compares it, and a row with NO pose that
+    carries one is refused (there is no pose for it to waive at)."""
+    b = _brief(fixed=[{'ref': 'U4', 'why': 'datum', 'pose': {'x': 1.5,
+                                                             'y': 2.5},
+                       'accept_courtyard_overlap': ['R6']}])
+    frag, _rep = db.compile_brief(b, board_refs=sorted(_pcb().footprints))
+    assert frag['fixed_poses'][0]['accept_courtyard_overlap'] == ['R6'], frag
+    it = fp.intent_from_dict(_base(**frag))
+    assert ('U4', 'R6') in it.courtyard_waiver_pairs(), it
+    # A COURTYARD waiver only: it is not an overlap_waivers[] pair, whose
+    # consumers exempt the drawn-body containment gate too (phase-4 verifier).
+    assert ('U4', 'R6') not in it.waiver_pairs(), it.waiver_pairs()
+    doc = dict(_base(**frag))
+    doc['fixed_poses'] = [dict(frag['fixed_poses'][0],
+                               accept_courtyard_overlap=['R7'])]
+    lines = db.drift(doc, frag)
+    assert any('accept_courtyard_overlap' in ln for ln in lines), lines
+    _brief_rejects('declares none',
+                   fixed=[{'ref': 'H1', 'why': 'w',
+                           'accept_courtyard_overlap': ['R6']}])
+    print("  PASS: the waiver compiles 1:1, reaches courtyard_waiver_pairs "
+          "(not waiver_pairs), drifts, and "
+          "a pose-less row carrying one is refused")
+
+
 def test_the_brief_refuses_what_the_intent_refuses():
     _brief_rejects('member R8 is also in array',
                    arrays=[_row(), _row(name='b', members=['R8', 'R9'])])
@@ -1072,6 +1099,7 @@ TESTS = [
     test_the_gate_bundle_carries_the_new_data,
     test_every_fixed_pose_is_graded,
     test_the_brief_compiles_arrays_and_fixed_poses,
+    test_the_brief_carries_a_courtyard_waiver_and_drift_sees_it,
     test_the_brief_refuses_what_the_intent_refuses,
     test_merge_drift_and_coverage,
     test_emit_intent_writes_none_of_it_by_default,

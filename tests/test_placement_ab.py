@@ -92,8 +92,11 @@ GROUP_SOURCES = ('kicad', 'sheet')
 BASELINE_INT_KEYS = ('crossings', 'health_bus_foreign_crossings',
                      'inversions', 'body_blocking', 'body_advisory',
                      'intent_errors', 'intent_errors_enforced',
-                     'intent_errors_other', 'edge_facing_pads', 'unseated')
-BASELINE_FLOAT_KEYS = ('hpwl', 'health_block_displacement_max_mm')
+                     'intent_errors_other', 'edge_facing_pads', 'unseated',
+                     # #1044: parts with pad copper in a rule-area band.
+                     'oob_keepout_copper_count')
+BASELINE_FLOAT_KEYS = ('hpwl', 'health_block_displacement_max_mm',
+                       'oob_keepout_copper_amount')
 BASELINE_DICT_KEYS = ('intent_errors_by_rule',)
 
 # Recorded as EVIDENCE, deliberately not graded: `health_block_displacement_max_mm`
@@ -688,6 +691,71 @@ ROWS += [
          {'max_displacement': 10.0}))
 ]
 
+ROWS += [
+    {
+        # #1044: `edge_seat_ok`'s rule-area band conjunct, OFF in the OFF arm.
+        # The two committed boards with a tracks-forbidden band do not reach
+        # the edge path (glasgow's edge connectors are file-locked or
+        # through-hole; rp2350's band is an interior sliver), so these rows
+        # are a change detector for "the conjunct costs nothing where it has
+        # nothing to refuse" -- the refusal itself is measured on a
+        # semi-synthetic board in tests/test_1044_edge_seat_band.py.
+        'name': f'band-edge-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'engine': 'seed',
+        'corridors': [],
+        'seeder_flags': {'off': {'_edge_band_gate': False}, 'on': {}},
+        'ignore_nets': ign,
+        'signal': 'oob_keepout_copper_count',
+        'guard': ('crossings', 'hpwl', 'unseated', 'intent_errors_other'),
+        'expect': 'neutral',
+        'why': ('MECHANISM: an edge connector whose band pose puts pad '
+                'copper in a rule-area band is refused at the edge seat '
+                'and left to the later stages, instead of seated where no '
+                'track can reach the pad.'),
+    }
+    for b, ign in (('glasgow_revC.kicad_pcb', ['GND', '+3V3']),
+                   ('rp2350_fpga_eensy_prePlane.kicad_pcb', []))
+]
+ROWS += [
+    {
+        # #1066 (b): `place_seed --repair --repair-decaps`. Both arms repair
+        # ONE seed of the board from its own emitted intent, whose decap
+        # limits are the board's own worst tethers (`derive_decaps='auto'`),
+        # so the human board is clean and the seed is not.
+        'name': f'repair-decaps-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'engine': 'repair',
+        'corridors': [],
+        'derive_decaps': 'auto',
+        'repair_on': {'repair_decaps': True},
+        'ignore_nets': ign,
+        'signal': 'intent_errors_enforced',
+        'guard': ('crossings', 'hpwl', 'intent_errors_other',
+                  'body_blocking'),
+        # REJECTED as a default, rows kept (the flag stays opt-in): it
+        # improves the boards whose seed leaves a repairable decap error and
+        # regresses none, but three of five seeds leave nothing it may fix --
+        # none charged, or only a cap whose fixing pose is disproportionate
+        # -- so it fails "improve on N-1". `derive_decaps='strict'` measured
+        # identically on all five, so those rows were not kept.
+        'expect': ('improve' if b in ('watchy.kicad_pcb', 'tigard.kicad_pcb')
+                   else 'neutral'),
+        'rejected': True,
+        'why': ('MECHANISM: the ordinary repair seat is `_try_place` at '
+                'the part\'s CURRENT pose, which has no decap target, so '
+                'a decap violator is never moved; the ON arm seats each '
+                'charged cap toward its IC\'s pin and keeps the pose only '
+                'when the charged finding is gone, no finding is new or '
+                'worse, and the move is proportionate.'),
+    }
+    for b, ign in (('esp_prog.kicad_pcb', ['GND']),
+                   ('splitflap_driver.kicad_pcb', ['GND']),
+                   ('watchy.kicad_pcb', ['GND']),
+                   ('tigard.kicad_pcb', ['GND']),
+                   ('glasgow_revC.kicad_pcb', ['GND', '+3V3']))
+]
+
 QUENCH_BASE = dict(
     max_displacement=3.0, step=1.0, grid_step=0.1, clearance=0.2,
     board_edge_clearance=0.55, crossing_penalty=30.0, length_weight=0.3,
@@ -887,6 +955,17 @@ def _edge_facing(pcb_data, board_path, intent):
         return None
 
 
+def _keepout_copper(graded, out_path):
+    """#1044: `oob_keepout_copper_count` / `_amount` of the WRITTEN board --
+    the parts whose pad copper lies in a `(tracks not_allowed)` rule-area
+    band -- at QUENCH_BASE's clearance. 0 / 0.0 on a board with no band."""
+    from placement import legality
+    g = legality.board_keepout_findings(graded, QUENCH_BASE['clearance'],
+                                        out_path)
+    return {'oob_keepout_copper_count': g['oob_keepout_copper_count'],
+            'oob_keepout_copper_amount': g['oob_keepout_copper_amount']}
+
+
 def _ignore_ids(pcb, patterns):
     """Net ids whose name matches any of `patterns` (fnmatch), or None."""
     import fnmatch
@@ -912,9 +991,8 @@ def _run_seed(board_path, out_path, intent, seed_kw,
     """
     import random
     from kicad_parser import parse_kicad_pcb
-    from placement import floorplan, seeder
+    from placement import seeder
     from placement.writer import write_placed_output
-    import pose_score
 
     pcb = parse_kicad_pcb(board_path)
     t0 = time.time()
@@ -928,11 +1006,22 @@ def _run_seed(board_path, out_path, intent, seed_kw,
         src = os.path.splitext(board_path)[0] + ext
         if os.path.exists(src):
             shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
+    return _grade_row(out_path, grade_intent or intent, group_sources,
+                      ignore_nets, t0, len(res.get('unseated') or ()))
+
+
+def _grade_row(out_path, grade_intent, group_sources, ignore_nets, t0,
+               unseated):
+    """The measured row for a WRITTEN board -- the seed and repair engines'
+    shared independent grade (`_run` has its own, from the quench metrics)."""
+    from kicad_parser import parse_kicad_pcb
+    from placement import floorplan
+    import pose_score
     graded = parse_kicad_pcb(out_path)
     # #959 (#1002): the arms may SEED from different intents, and are then
     # graded against ONE -- otherwise each arm grades itself against the
     # claim it seeded to, and the comparison measures two rulers.
-    result = floorplan.grade(grade_intent or intent, graded, out_path,
+    result = floorplan.grade(grade_intent, graded, out_path,
                              with_health=True, group_sources=group_sources)
     summary = floorplan.summary(result)
     cost = pose_score.make_state(
@@ -945,6 +1034,7 @@ def _run_seed(board_path, out_path, intent, seed_kw,
     enforced = sum(n for r, n in by_rule.items() if r in INTENT_ENFORCED_RULES)
     _bb, _ba = _body_overlap(graded, out_path, QUENCH_BASE['clearance'])
     return {
+        **_keepout_copper(graded, out_path),
         'seconds': round(time.time() - t0, 1),
         'crossings': cost.get('crossings'),
         'hpwl': None if cost.get('hpwl') is None
@@ -968,10 +1058,54 @@ def _run_seed(board_path, out_path, intent, seed_kw,
         'intent_errors_sans_array':
             (summary.get('errors') or 0) - by_rule.get('array_formation', 0),
         'intent_gate_rejected': None,
-        'edge_facing_pads': _edge_facing(graded, out_path,
-                                         grade_intent or intent),
-        'unseated': len(res.get('unseated') or ()),
+        'edge_facing_pads': _edge_facing(graded, out_path, grade_intent),
+        'unseated': unseated,
     }
+
+
+def _seed_once(board_path, out_path, intent, group_sources=GROUP_SOURCES):
+    """The REPAIR engine's input: one seed of `board_path` from `intent`
+    (`random.Random('0')`, `QUENCH_BASE`'s floors), written once and shared
+    by both arms, so the arms differ only in the repair."""
+    import random
+    from kicad_parser import parse_kicad_pcb
+    from placement import seeder
+    from placement.writer import write_placed_output
+    if os.path.exists(out_path):
+        return out_path
+    res = seeder.seed_from_intent(
+        parse_kicad_pcb(board_path), board_path, intent, random.Random('0'),
+        group_sources=group_sources, clearance=QUENCH_BASE['clearance'],
+        board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
+        grid_step=QUENCH_BASE['grid_step'])
+    write_placed_output(board_path, out_path, res['placements'])
+    for ext in ('.kicad_pro', '.kicad_dru'):
+        src = os.path.splitext(board_path)[0] + ext
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
+    return out_path
+
+
+def _run_repair(seeded_path, out_path, intent, repair_kw,
+                group_sources=GROUP_SOURCES, ignore_nets=()):
+    """One `place_seed --repair` pass over the SEEDED board + write + the
+    seed engine's independent grade (#1066 b). `repair_kw` is the arm's
+    `repair_placement` kwarg set -- `{'repair_decaps': True}` on the ON arm."""
+    from kicad_parser import parse_kicad_pcb
+    from placement import seeder
+    from placement.writer import write_placed_output
+    t0 = time.time()
+    res = seeder.repair_placement(
+        parse_kicad_pcb(seeded_path), seeded_path, intent,
+        group_sources=group_sources, clearance=QUENCH_BASE['clearance'],
+        board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
+        grid_step=QUENCH_BASE['grid_step'], **repair_kw)
+    write_placed_output(seeded_path, out_path, res['moves'])
+    for ext in ('.kicad_pro', '.kicad_dru'):
+        src = os.path.splitext(seeded_path)[0] + ext
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
+    return _grade_row(out_path, intent, group_sources, ignore_nets, t0, 0)
 
 
 def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES,
@@ -1033,6 +1167,7 @@ def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES,
     gate = metrics.get('intent_gate')
     _bb, _ba = _body_overlap(graded, out_path, quench_kw.get('clearance', 0.2))
     return {
+        **_keepout_copper(graded, out_path),
         'seconds': round(time.time() - t0, 1),
         'crossings': after.get('crossings'),
         # NOT `or 0.0`: a key the optimizer stopped reporting would be recorded
@@ -1131,6 +1266,32 @@ def _verdict(off, on, row):
     return 'neutral', [f"{key} unchanged at {a}"]
 
 
+class _seeder_flags:
+    """Set `placement.seeder` module flags for one arm, and restore them.
+    For a behaviour the engine holds as module state rather than a kwarg --
+    #1044's `_edge_band_gate`, which every edge-seat caller reads -- so a row
+    can state its OFF arm without an engine parameter a CLI could reach."""
+
+    def __init__(self, flags):
+        self.flags = dict(flags or {})
+        self.saved = {}
+
+    def __enter__(self):
+        from placement import seeder
+        for k, v in self.flags.items():
+            if not hasattr(seeder, k):
+                raise AssertionError(f"seeder has no flag {k!r}")
+            self.saved[k] = getattr(seeder, k)
+            setattr(seeder, k, v)
+        return self
+
+    def __exit__(self, *exc):
+        from placement import seeder
+        for k, v in self.saved.items():
+            setattr(seeder, k, v)
+        return False
+
+
 def run_row(row, workdir):
     board = os.path.join(BOARDS, row['board'])
     if not os.path.exists(board):
@@ -1158,13 +1319,51 @@ def run_row(row, workdir):
                                  + '; '.join(probs))
         return i
 
+    if row.get('engine') == 'repair':
+        # The REPAIR engine (#1066 b): one seed of the board from its intent,
+        # shared, then `repair_placement` twice -- `repair_off` / `repair_on`
+        # kwargs -- each written and graded like a seed row.
+        if not row.get('repair_on') and not row.get('repair_off'):
+            raise AssertionError(f"{row['name']}: a repair row states "
+                                 f"neither repair_on nor repair_off")
+        _ign = list(row.get('ignore_nets') or ())
+        intent = _intent_for(board, row['corridors'], d,
+                             row.get('zone_flags'),
+                             derive_decaps=row.get('derive_decaps', 'off'),
+                             name='intent_repair.json')
+        seeded = _seed_once(board, os.path.join(d, 'seeded.kicad_pcb'),
+                            intent)
+        off = _run_repair(seeded, os.path.join(d, 'off.kicad_pcb'), intent,
+                          dict(row.get('repair_off') or {}),
+                          ignore_nets=_ign)
+        on = _run_repair(seeded, os.path.join(d, 'on.kicad_pcb'), intent,
+                         dict(row.get('repair_on') or {}), ignore_nets=_ign)
+        mark, notes = _verdict(off, on, row)
+        expected = row.get('expect')
+        tag = mark.upper()
+        if expected and mark == expected:
+            tag = f"{mark.upper()} (as measured)"
+        elif expected:
+            tag = f"{mark.upper()} != expected {expected.upper()}"
+        print(f"  {row['name']:<24} {tag:<32} "
+              f"({off['seconds']}s / {on['seconds']}s)  [repair engine]")
+        for k in ('crossings', 'hpwl', 'body_blocking', row['signal']):
+            print(f"      {k:<32} {off.get(k)!s:>12} -> {on.get(k)!s:>12}")
+        for n in notes:
+            print(f"      {n}")
+        if expected and mark != expected and row.get('why'):
+            print(f"      recorded reason: {row['why']}")
+        return mark, notes, off, on
+
     if row.get('engine') == 'seed':
         # The SEED engine: both arms re-seat every part from the intent; the
         # ON arm carries `seed_on` and the OFF arm `seed_off` (each a
         # `seed_from_intent` kwarg set). Same verdict rule, same independent
         # grade, same print.
         si = row.get('seed_intents')
-        if not row.get('seed_on') and not row.get('seed_off') and not si:
+        flags = row.get('seeder_flags') or {}
+        if (not row.get('seed_on') and not row.get('seed_off') and not si
+                and not flags):
             raise AssertionError(f"{row['name']}: a seed row states neither "
                                  f"seed_on/seed_off nor seed_intents -- it "
                                  f"would measure the same seed twice")
@@ -1173,12 +1372,14 @@ def run_row(row, workdir):
         if si:
             i_off, i_on = _mk(si['off'], 'off'), _mk(si['on'], 'on')
             i_grade = _mk(si['grade'], 'grade')
-        off = _run_seed(board, os.path.join(d, 'off.kicad_pcb'), i_off,
-                        dict(row.get('seed_off') or {}),
-                        ignore_nets=_ign, grade_intent=i_grade)
-        on = _run_seed(board, os.path.join(d, 'on.kicad_pcb'), i_on,
-                       dict(row.get('seed_on') or {}), ignore_nets=_ign,
-                       grade_intent=i_grade)
+        with _seeder_flags(flags.get('off')):
+            off = _run_seed(board, os.path.join(d, 'off.kicad_pcb'), i_off,
+                            dict(row.get('seed_off') or {}),
+                            ignore_nets=_ign, grade_intent=i_grade)
+        with _seeder_flags(flags.get('on')):
+            on = _run_seed(board, os.path.join(d, 'on.kicad_pcb'), i_on,
+                           dict(row.get('seed_on') or {}), ignore_nets=_ign,
+                           grade_intent=i_grade)
         mark, notes = _verdict(off, on, row)
         expected = row.get('expect')
         tag = mark.upper()
@@ -1605,7 +1806,8 @@ def _self_test():
             'inversions': 40, 'body_blocking': 2, 'body_advisory': 9,
             'intent_errors_enforced': 4, 'intent_errors_other': 10,
             'intent_gate_rejected': None, 'edge_facing_pads': 3,
-            'unseated': 0,
+            'unseated': 0, 'oob_keepout_copper_count': 0,
+            'oob_keepout_copper_amount': 0.0,
             'intent_errors_by_rule': {'block_unresolved': 10,
                                       'zone_containment': 4}}
     von = {'crossings': 90, 'hpwl': 9.0, 'corridor_cut': 800.0, 'seconds': 1,
@@ -1615,7 +1817,8 @@ def _self_test():
            'inversions': 38, 'body_blocking': 2, 'body_advisory': 7,
            'intent_errors_enforced': 7, 'intent_errors_other': 10,
            'intent_gate_rejected': None, 'edge_facing_pads': 2,
-           'unseated': 0,
+           'unseated': 0, 'oob_keepout_copper_count': 0,
+           'oob_keepout_copper_amount': 0.0,
            'intent_errors_by_rule': {'block_unresolved': 10,
                                      'zone_containment': 7}}
 
