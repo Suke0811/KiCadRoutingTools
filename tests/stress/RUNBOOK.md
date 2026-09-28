@@ -1126,10 +1126,12 @@ questions are cheap to ask up front and nobody was asking them.
 ### 0. You need UNROUTED candidates, and the corpus is nearly empty
 
 `boards_unrouted_set1/` currently holds exactly one board. Qualify against
-unrouted twins, not against `boards_set1/`: a routed board is refused by
-`placement_driver --stage P0`, and its copper encodes the original poses (run 14
-measured 301 of 569 pads sitting within 5 um of their own track endpoint, which
-`fence_audit` cannot see because it compares poses and never opens copper).
+unrouted twins, not against `boards_set1/`: a routed board is refused by the
+placement CLIs (`place_optimize`, `place_portfolio`, `place_route_loop` and
+`check_floorplan` without `--allow-routed`), and its copper encodes the original
+poses (run 14 measured 301 of 569 pads sitting within 5 um of their own track
+endpoint, which `fence_audit` cannot see because it compares poses and never
+opens copper).
 
 ```bash
 python3 -X utf8 tests/stress/strip_copper_only.py \

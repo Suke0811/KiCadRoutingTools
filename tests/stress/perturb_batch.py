@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """First-batch runner for the #411 perturbed-corpus rig.
 
-Walks the `plan-pcb-placement` skill's Step 0 ladder on a PERTURBED board and
-scores the result against the original, which is free ground truth.
+Walks the Step 0 ladder of the `plan-pcb-placement` skill on a PERTURBED
+board and scores the result against the original, which is free ground truth.
+That skill was retired for `/pcb-free-agent`. The ladder below is plain CLI
+calls, so the rig does not need the skill, and "the skill" in this file means
+that retired one.
 
     Step 0    decision table -- a perturbed board is the "rough / imported /
               auto-generated placement" row, so placement is warranted

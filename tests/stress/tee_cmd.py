@@ -2,14 +2,14 @@
 """Instrumentation ONLY: run a command, tee it, record start/end/exit.
 
 This exists because per-command timings are NOT recoverable after the fact.
-`loop_driver.log` writes its `t` AFTER the stage function returns, so it
-timestamps completions rather than start/end pairs -- and it logs only the
-driver's own advisory invocations, never the placement/routing tool
-subprocesses run in response to that advice. Without a record kept at call
-time, "the three slowest individual tool invocations with their commands" has
-no honest answer but "not recoverable". Run 21 hit exactly that and wrote this
-wrapper into its work dir mid-run; it is promoted here so the next run can
-just use it.
+The retired staged driver's `loop_driver.log` wrote its `t` AFTER the stage
+function returned, so it timestamped completions rather than start/end pairs
+-- and it logged only the driver's own advisory invocations, never the
+placement/routing tool subprocesses run in response to that advice. Without a
+record kept at call time, "the three slowest individual tool invocations with
+their commands" has no honest answer but "not recoverable". Run 21 hit exactly
+that and wrote this wrapper into its work dir mid-run; it is promoted here so
+the next run can just use it.
 
 The clock here is DESCRIPTIVE and nothing else: `wall_s` is written to the
 row and printed, and no code path in this repo compares it to a limit. There

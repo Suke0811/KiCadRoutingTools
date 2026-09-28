@@ -2,8 +2,10 @@
 """Remove ONLY copper from a .kicad_pcb, preserving everything else.
 
 Makes the unrouted twin of a routed corpus board, which is what a
-perturbed-corpus run needs as a subject: `placement_driver --stage P0`
-refuses a board carrying copper, and on a ROUTED board that copper also
+perturbed-corpus run needs as a subject: the placement CLIs refuse a board
+carrying copper (`place_optimize`, `place_portfolio`, `place_route_loop` and
+`check_floorplan` without `--allow-routed`; the pcb-free-agent skill's
+`make_unplaced.py` outright), and on a ROUTED board that copper also
 encodes the original poses (run 14 measured 301 of 569 pads within 5 um of
 their own track endpoint, which `fence_audit` cannot see because it
 compares poses and never opens copper).

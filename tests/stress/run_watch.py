@@ -241,9 +241,10 @@ def _scan_ledger(path, seen, rel):
         the boundary -- scores either side of it grade different boards.
 
     Measured on run 20's ledger: zero BLOCKING-UP, against one false positive
-    today. Deliberately NOT done by importing `loop_driver._cycle_index`: a
-    cross-tree import from tests/stress into .claude/skills/.../scripts would tie
-    a watcher to a driver that ships independently.
+    today. It was deliberately NOT done by importing the (since retired)
+    `loop_driver._cycle_index`: a cross-tree import from tests/stress into a
+    skill's scripts/ would have tied a watcher to a driver that shipped
+    independently.
     """
     out, prev = [], None
     try:
@@ -329,8 +330,11 @@ NET_SCOPED = ('route.py',)
 #: Fourth field: the tools on which the flag lowers a bar. Measured on run 20 --
 #: 683 raw substring hits, 24 once anchored to a real command line, 6 once
 #: scoped to the tools where the flag means what the `why` says.
-#: The two skill drivers. They install no cli_banner, so their invocations are
-#: only ever seen through a teed `cmd_timing.jsonl` row -- see _scan_ledger_argv.
+#: The two RETIRED skill drivers (removed for /pcb-free-agent). They installed
+#: no cli_banner, so their invocations are only ever seen through a teed
+#: `cmd_timing.jsonl` row -- see _scan_ledger_argv. Kept so a RECORDED run
+#: still replays with its driver flags reported; tests/test_run20_run_watch.py
+#: pins that exemption (`_REPLAY_ONLY`).
 DRIVERS = ('placement_driver.py', 'loop_driver.py')
 #: Every CLI that calls `fab_tiers.add_fab_tier_args`, which is what actually
 #: supplies `--fab-tier` / `--fab-overrides`. Scoped to GRADERS + ROUTERS
@@ -342,6 +346,9 @@ FAB_SCOPED = ROUTERS + GRADERS + (
 
 
 CHEAT_FLAGS = (
+    # The four `--accept-*` flags, `--waive` and `--no-delegate` belonged to the
+    # retired staged drivers. No current tool declares them, so they fire only
+    # when a recorded run is replayed, and they stay for exactly that.
     ('WAIVER', '--accept-residue', 'accepts placement residue the close-out '
                                    'refused', ()),
     ('WAIVER', '--accept-unclosed', 'closes a half that did not close', ()),
@@ -1167,8 +1174,9 @@ def watch_cheats(workdir, truthdir, done_path, poll, report_done=None,
 def _self_test():
     """Checkable in the field, where the harness runs and pytest does not.
 
-    Mirrors `loop_driver.py --self-test`. The full fixtures live in
-    tests/test_run20_run_watch.py; this is the subset that needs no files.
+    Modelled on the retired `loop_driver.py --self-test`. The full fixtures
+    live in tests/test_run20_run_watch.py; this is the subset that needs no
+    files.
     """
     bad = []
 
