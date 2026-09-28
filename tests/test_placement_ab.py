@@ -688,6 +688,45 @@ ROWS += [
          {'max_displacement': 10.0}))
 ]
 
+ROWS += [
+    {
+        # #1066 (b): `place_seed --repair --repair-decaps`. Both arms repair
+        # ONE seed of the board from its own emitted intent, whose decap
+        # limits are the board's own worst tethers (`derive_decaps='auto'`),
+        # so the human board is clean and the seed is not.
+        'name': f'repair-decaps-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'engine': 'repair',
+        'corridors': [],
+        'derive_decaps': 'auto',
+        'repair_on': {'repair_decaps': True},
+        'ignore_nets': ign,
+        'signal': 'intent_errors_enforced',
+        'guard': ('crossings', 'hpwl', 'intent_errors_other',
+                  'body_blocking'),
+        # REJECTED as a default, rows kept (the flag stays opt-in): it
+        # improves the boards whose seed leaves a repairable decap error and
+        # regresses none, but three of five seeds leave nothing it may fix --
+        # none charged, or only a cap whose fixing pose is disproportionate
+        # -- so it fails "improve on N-1". `derive_decaps='strict'` measured
+        # identically on all five, so those rows were not kept.
+        'expect': ('improve' if b in ('watchy.kicad_pcb', 'tigard.kicad_pcb')
+                   else 'neutral'),
+        'rejected': True,
+        'why': ('MECHANISM: the ordinary repair seat is `_try_place` at '
+                'the part\'s CURRENT pose, which has no decap target, so '
+                'a decap violator is never moved; the ON arm seats each '
+                'charged cap toward its IC\'s pin and keeps the pose only '
+                'when the charged finding is gone, no finding is new or '
+                'worse, and the move is proportionate.'),
+    }
+    for b, ign in (('esp_prog.kicad_pcb', ['GND']),
+                   ('splitflap_driver.kicad_pcb', ['GND']),
+                   ('watchy.kicad_pcb', ['GND']),
+                   ('tigard.kicad_pcb', ['GND']),
+                   ('glasgow_revC.kicad_pcb', ['GND', '+3V3']))
+]
+
 QUENCH_BASE = dict(
     max_displacement=3.0, step=1.0, grid_step=0.1, clearance=0.2,
     board_edge_clearance=0.55, crossing_penalty=30.0, length_weight=0.3,
@@ -912,9 +951,8 @@ def _run_seed(board_path, out_path, intent, seed_kw,
     """
     import random
     from kicad_parser import parse_kicad_pcb
-    from placement import floorplan, seeder
+    from placement import seeder
     from placement.writer import write_placed_output
-    import pose_score
 
     pcb = parse_kicad_pcb(board_path)
     t0 = time.time()
@@ -928,11 +966,22 @@ def _run_seed(board_path, out_path, intent, seed_kw,
         src = os.path.splitext(board_path)[0] + ext
         if os.path.exists(src):
             shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
+    return _grade_row(out_path, grade_intent or intent, group_sources,
+                      ignore_nets, t0, len(res.get('unseated') or ()))
+
+
+def _grade_row(out_path, grade_intent, group_sources, ignore_nets, t0,
+               unseated):
+    """The measured row for a WRITTEN board -- the seed and repair engines'
+    shared independent grade (`_run` has its own, from the quench metrics)."""
+    from kicad_parser import parse_kicad_pcb
+    from placement import floorplan
+    import pose_score
     graded = parse_kicad_pcb(out_path)
     # #959 (#1002): the arms may SEED from different intents, and are then
     # graded against ONE -- otherwise each arm grades itself against the
     # claim it seeded to, and the comparison measures two rulers.
-    result = floorplan.grade(grade_intent or intent, graded, out_path,
+    result = floorplan.grade(grade_intent, graded, out_path,
                              with_health=True, group_sources=group_sources)
     summary = floorplan.summary(result)
     cost = pose_score.make_state(
@@ -968,10 +1017,54 @@ def _run_seed(board_path, out_path, intent, seed_kw,
         'intent_errors_sans_array':
             (summary.get('errors') or 0) - by_rule.get('array_formation', 0),
         'intent_gate_rejected': None,
-        'edge_facing_pads': _edge_facing(graded, out_path,
-                                         grade_intent or intent),
-        'unseated': len(res.get('unseated') or ()),
+        'edge_facing_pads': _edge_facing(graded, out_path, grade_intent),
+        'unseated': unseated,
     }
+
+
+def _seed_once(board_path, out_path, intent, group_sources=GROUP_SOURCES):
+    """The REPAIR engine's input: one seed of `board_path` from `intent`
+    (`random.Random('0')`, `QUENCH_BASE`'s floors), written once and shared
+    by both arms, so the arms differ only in the repair."""
+    import random
+    from kicad_parser import parse_kicad_pcb
+    from placement import seeder
+    from placement.writer import write_placed_output
+    if os.path.exists(out_path):
+        return out_path
+    res = seeder.seed_from_intent(
+        parse_kicad_pcb(board_path), board_path, intent, random.Random('0'),
+        group_sources=group_sources, clearance=QUENCH_BASE['clearance'],
+        board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
+        grid_step=QUENCH_BASE['grid_step'])
+    write_placed_output(board_path, out_path, res['placements'])
+    for ext in ('.kicad_pro', '.kicad_dru'):
+        src = os.path.splitext(board_path)[0] + ext
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
+    return out_path
+
+
+def _run_repair(seeded_path, out_path, intent, repair_kw,
+                group_sources=GROUP_SOURCES, ignore_nets=()):
+    """One `place_seed --repair` pass over the SEEDED board + write + the
+    seed engine's independent grade (#1066 b). `repair_kw` is the arm's
+    `repair_placement` kwarg set -- `{'repair_decaps': True}` on the ON arm."""
+    from kicad_parser import parse_kicad_pcb
+    from placement import seeder
+    from placement.writer import write_placed_output
+    t0 = time.time()
+    res = seeder.repair_placement(
+        parse_kicad_pcb(seeded_path), seeded_path, intent,
+        group_sources=group_sources, clearance=QUENCH_BASE['clearance'],
+        board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
+        grid_step=QUENCH_BASE['grid_step'], **repair_kw)
+    write_placed_output(seeded_path, out_path, res['moves'])
+    for ext in ('.kicad_pro', '.kicad_dru'):
+        src = os.path.splitext(seeded_path)[0] + ext
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
+    return _grade_row(out_path, intent, group_sources, ignore_nets, t0, 0)
 
 
 def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES,
@@ -1157,6 +1250,42 @@ def run_row(row, workdir):
             raise AssertionError(f"{row['name']} ({tag} intent): "
                                  + '; '.join(probs))
         return i
+
+    if row.get('engine') == 'repair':
+        # The REPAIR engine (#1066 b): one seed of the board from its intent,
+        # shared, then `repair_placement` twice -- `repair_off` / `repair_on`
+        # kwargs -- each written and graded like a seed row.
+        if not row.get('repair_on') and not row.get('repair_off'):
+            raise AssertionError(f"{row['name']}: a repair row states "
+                                 f"neither repair_on nor repair_off")
+        _ign = list(row.get('ignore_nets') or ())
+        intent = _intent_for(board, row['corridors'], d,
+                             row.get('zone_flags'),
+                             derive_decaps=row.get('derive_decaps', 'off'),
+                             name='intent_repair.json')
+        seeded = _seed_once(board, os.path.join(d, 'seeded.kicad_pcb'),
+                            intent)
+        off = _run_repair(seeded, os.path.join(d, 'off.kicad_pcb'), intent,
+                          dict(row.get('repair_off') or {}),
+                          ignore_nets=_ign)
+        on = _run_repair(seeded, os.path.join(d, 'on.kicad_pcb'), intent,
+                         dict(row.get('repair_on') or {}), ignore_nets=_ign)
+        mark, notes = _verdict(off, on, row)
+        expected = row.get('expect')
+        tag = mark.upper()
+        if expected and mark == expected:
+            tag = f"{mark.upper()} (as measured)"
+        elif expected:
+            tag = f"{mark.upper()} != expected {expected.upper()}"
+        print(f"  {row['name']:<24} {tag:<32} "
+              f"({off['seconds']}s / {on['seconds']}s)  [repair engine]")
+        for k in ('crossings', 'hpwl', 'body_blocking', row['signal']):
+            print(f"      {k:<32} {off.get(k)!s:>12} -> {on.get(k)!s:>12}")
+        for n in notes:
+            print(f"      {n}")
+        if expected and mark != expected and row.get('why'):
+            print(f"      recorded reason: {row['why']}")
+        return mark, notes, off, on
 
     if row.get('engine') == 'seed':
         # The SEED engine: both arms re-seat every part from the intent; the

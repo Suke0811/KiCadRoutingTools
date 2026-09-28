@@ -5357,6 +5357,169 @@ CONTAINMENT_CHARGE_MM = 2.0
 
 REPAIR_CAPS_MM = (0.5, 1.0, 2.0, 5.0)
 
+#: The rules `--repair-decaps` (#1066) seats a cap FOR. Each names its cap and
+#: its IC (`decap_distance`: ref = the cap, measured `ic`;
+#: `decap_pin_distance`: ref = the IC, measured `cap` and `pad`).
+DECAP_RUNG_RULES = ('decap_distance', 'decap_pin_distance')
+
+
+def _decap_target(state, pcb_data, cap: str, ic: str, pad_number=None):
+    """`(x, y)` the decap rung seats `cap` toward: the IC's declared supply
+    pad (`decap_pin_distance`), or the IC pad on the cap's RAIL nearest the
+    cap (`decap_distance`) -- the rail being the cap's smallest multi-ref
+    net, stage 2.5's own choice (`rail_of`), so a GND pad is never the
+    target. None when the IC carries no such pad."""
+    from .legality import footprint_at_pose
+    part, chip = state.parts[cap], state.parts[ic]
+    fp = footprint_at_pose(pcb_data.footprints[ic], (chip.x, chip.y, chip.rot))
+    if pad_number is not None:
+        pads = [p for p in fp.pads if str(p.pad_number) == str(pad_number)]
+    else:
+        rail = min((nid for nid in part.nets
+                    if len(state.net_refs.get(nid, ())) >= 2),
+                   key=lambda nid: (len(state.net_refs[nid]), nid),
+                   default=None)
+        pads = [p for p in fp.pads if rail is not None and p.net_id == rail]
+    if not pads:
+        return None
+    best = min(pads, key=lambda p: (math.hypot(p.global_x - part.x,
+                                               p.global_y - part.y),
+                                    str(p.pad_number)))
+    return best.global_x, best.global_y
+
+
+def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
+                       notes) -> Dict[str, Dict]:
+    """#1066 (b): seat each cap a decap rule charges at its IC's pin.
+
+    `repair_placement`'s ordinary seat is `_try_place` at the part's CURRENT
+    pose, which knows nothing of a decap target and accepts the pose it
+    stands at -- which is why a decap violator never moved. This is the
+    missing actor: for every `decap_distance` / `decap_pin_distance` error,
+    the CAP (never the IC, which carries every other claim on its pins) is
+    searched for the nearest legal pose within the rule's own limit of its
+    target pad (`_decap_target`), by the same `_try_place` every seat uses.
+
+    Accepted only when the grade says it is a fix: the charged claim is gone
+    AND no finding is new or worse (`new_or_worse`, per finding -- stricter
+    than `floorplan.grade_delta`, which counts claims) AND the placement's own
+    overlap / off-board numbers did not grow, taken on the whole board before
+    and after. Anything else is reverted, and said.
+    A claim an earlier seat already cleared is skipped. Opt-in
+    (`repair_decaps`), because it moves parts the repair did not move before.
+
+    Returns `{cap: {'moved': bool, 'tried': [row, ...]}}`."""
+    from placement import floorplan as _fp
+    from .legality import EPS as _eps
+    tasks = []
+    for v in graded.errors:
+        if v.rule not in DECAP_RUNG_RULES or not v.ref:
+            continue
+        m = v.measured or {}
+        if v.rule == 'decap_distance':
+            cap, ic, pad = v.ref, m.get('ic'), None
+        else:
+            cap, ic, pad = m.get('cap'), v.ref, m.get('pad')
+        if cap in state.parts and ic in state.parts:
+            amt = m.get('distance_mm', m.get('gap_mm'))
+            excess = (float(amt) - float(limits.get(v.rule, 0.0))
+                      if isinstance(amt, (int, float)) else 0.0)
+            tasks.append((str(cap), str(ic), pad, _fp.violation_claim(v),
+                          max(0.0, excess)))
+    out: Dict[str, Dict] = {}
+    for cap, ic, pad, claim, excess in sorted(
+            tasks, key=lambda t: (t[0], t[1], str(t[2]))):
+        rec = out.setdefault(cap, {'moved': False, 'tried': []})
+        row = {'rule': claim[0], 'ref': claim[1], 'ic': ic, 'pad': pad}
+        rec['tried'].append(row)
+        part = state.parts[cap]
+        if part.locked:
+            row['result'] = 'locked'
+            continue
+        try:
+            before = grader.violations()
+            leg0 = grader.legality_at()
+        except (_fp.UntrustworthyOutline, ValueError) as exc:
+            row['result'] = f'unavailable: {type(exc).__name__}'
+            notes.append(f"decap rung: the grade is unavailable "
+                         f"({type(exc).__name__}: {exc}) -- nothing seated")
+            break
+        if claim not in {_fp.violation_claim(v) for v in before
+                         if v.severity == _fp.ERROR}:
+            row['result'] = 'already_cleared'
+            continue
+        target = _decap_target(state, pcb_data, cap, ic, pad)
+        if target is None:
+            row['result'] = 'no_target_pad'
+            continue
+        ox, oy, orot = part.x, part.y, part.rot
+        # The rule measures to the chip's pad BOX (or the cap's own pads),
+        # not to the target pad's centre, so a pose farther than the limit
+        # from that centre can satisfy it: the search widens once, to twice
+        # the limit, and the grade below is what decides.
+        got = None
+        for disp in (float(limits[claim[0]]), 2.0 * float(limits[claim[0]])):
+            got = _try_place(state, cap, target[0], target[1], set(),
+                             max_disp=disp, rotations=rot_ladder(cap))
+            if got is not None:
+                break
+        if got is None:
+            row['result'] = 'no_legal_pose_within_limit'
+            continue
+        after = grader.violations()
+        leg1 = grader.legality_at()
+        # Per FINDING (`new_or_worse`), not per claim: `grade_delta` cannot
+        # see a second pin stranded under a claim its IC already carries, or
+        # a finding that only grew -- the two ways a cap moved TO one pin
+        # can hurt another.
+        added = sorted({f"{v.rule} on {v.ref}"
+                        + ('' if how == 'new' else ' (worse)')
+                        for v, how in new_or_worse(findings_of(before),
+                                                   after)})
+        for key in ('overlap_area', 'oob_amount', 'oob_count'):
+            was, now = leg0.get(key), leg1.get(key)
+            if (isinstance(was, (int, float)) and isinstance(now, (int, float))
+                    and now > was + (0 if isinstance(now, int) else _eps)):
+                added.append(f'legality.{key}')
+        still = claim in {_fp.violation_claim(v) for v in after
+                          if v.severity == _fp.ERROR}
+        d = math.hypot(part.x - ox, part.y - oy)
+        # The ordinary repair's proportion rule, in the violation's own
+        # currency: a cap 0.125mm past its limit is not moved 9.9mm to fix
+        # it (esp_prog C3, measured) -- that is a different placement.
+        budget = max(DISPROPORTION_FLOOR_MM, DISPROPORTION_RATIO * excess)
+        if d > budget:
+            state.apply_move(cap, ox, oy, orot)
+            row['result'] = 'disproportionate'
+            row['moved_mm'] = round(d, 3)
+            notes.append(
+                f"{cap}: decap rung's only fixing pose is {d:.2f}mm away, "
+                f"disproportionate to the {excess:.3f}mm it is past its "
+                f"limit (budget {budget:.2f}mm) -- left in place")
+            continue
+        if added or still:
+            state.apply_move(cap, ox, oy, orot)
+            row['result'] = 'reverted'
+            row['added'] = added
+            row['still'] = still
+            notes.append(
+                f"{cap}: decap rung found a pose {d:.2f}mm away at {ic}"
+                + (f" pad {pad}" if pad is not None else '')
+                + " and REVERTED it -- "
+                + '; '.join(([f"it would add {', '.join(added)}"]
+                             if added else [])
+                            + ([f"{claim[0]} would remain"] if still
+                               else [])))
+            continue
+        rec['moved'] = True
+        row['result'] = 'seated'
+        row['moved_mm'] = round(d, 3)
+        notes.append(f"{cap}: decap rung seated it {d:.2f}mm from its pose, "
+                     f"toward {ic}" + (f" pad {pad}" if pad is not None
+                                       else '')
+                     + f" -- {claim[0]} cleared, nothing added")
+    return out
+
 #: The measured value a grade finding gets WORSE along, first key found
 #: (#1066). A distance or an escape: larger is worse.
 FINDING_AMOUNT_KEYS = ('gap_mm', 'distance_mm', 'outside_mm', 'area_mm2',
@@ -5441,7 +5604,8 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                      clearance: float = 0.25,
                      board_edge_clearance: float = 0.55,
                      grid_step: float = 0.1,
-                     caps: Sequence[float] = REPAIR_CAPS_MM) -> Dict:
+                     caps: Sequence[float] = REPAIR_CAPS_MM,
+                     repair_decaps: bool = False) -> Dict:
     """Violation-driven minimal-move repair of a PLACED board (#place_seed
     --repair). Everything clean freezes; only violators move, worst first,
     each seated by the seeder's own search targeted at its CURRENT pose with
@@ -5457,6 +5621,12 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     seating (the stamp in the file survives the positional rewrite, so no
     re-stamping is needed). A file-locked ref OUTSIDE must_lock is not this
     tool's to move: reported in `unrepairable`.
+
+    `repair_decaps` (#1066 b, `--repair-decaps`, off by default) adds the
+    decap rung, `_repair_decap_rung`: each cap a decap rule charges is seated
+    at its IC's pin, kept only when the grade calls it a fix. Without it a
+    decap violator is never moved (the ordinary seat has no decap target),
+    and the honesty re-grade reports it `unresolved`.
 
     NOTE this sweep has no internal bound -- its cost is violators x caps x 36
     ring sweeps x O(parts) per candidate, and on a 217-part board it ran 46
@@ -5972,6 +6142,30 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             repaired.append(ref)
             zero_move.append(ref)
 
+    # #1066 (b): the decap rung, opt-in. After the ordinary seats, so it
+    # measures the board they left; before both re-grades, which then judge
+    # its seats like any other move.
+    decap_rung: Dict[str, Dict] = {}
+    if repair_decaps and graded is not None and pose_grader is not None:
+        _dc = dict(getattr(intent, 'decaps', None) or {})
+        _limits = {'decap_distance': _dc.get('max_distance_mm'),
+                   'decap_pin_distance': _dc.get('max_pin_distance_mm')}
+        decap_rung = _repair_decap_rung(
+            state, pcb_data, graded, pose_grader,
+            {k: v for k, v in _limits.items() if v is not None},
+            _rot_ladder, notes)
+        for cap, rec in sorted(decap_rung.items()):
+            if not rec['moved']:
+                continue
+            p = state.parts[cap]
+            moves[:] = [m for m in moves if m['reference'] != cap]
+            moves.append({'reference': cap, 'new_x': p.x, 'new_y': p.y,
+                          'new_rotation': p.rot})
+            zero_move[:] = [r for r in zero_move if r != cap]
+            failed[:] = [r for r in failed if r != cap]
+            if cap not in repaired:
+                repaired.append(cap)
+
     # Run-7 A2: honesty re-grade. A violator counts as repaired only if the
     # charged violation classes actually IMPROVED; zero-move violators on a
     # board whose pad/body census did not move are UNRESOLVED, so the fix
@@ -6169,7 +6363,10 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             'grade_errors_before': len(graded.errors) if graded else None,
             # #975: edge seats kept short of the board-edge floor, by ref.
             'edge_floor_fallback': _floor_records_at_final_pose(
-                state, edge_floor_fallback)}
+                state, edge_floor_fallback),
+            # #1066 (b): {cap: {moved, tried: [...]}}; {} when the rung is
+            # off or nothing was charged to a decap rule.
+            'decap_rung': decap_rung}
 
 
 def eviction_licence_ok(before: Sequence[float],

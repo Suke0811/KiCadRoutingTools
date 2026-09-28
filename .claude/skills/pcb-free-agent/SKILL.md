@@ -119,7 +119,8 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 - **What the decap tools report:**
   - `place_seed --repair` counts a violator `repaired` only once its
     finding is gone; read `unresolved_refs` / `unresolved_by_rule` in its
-    `JSON_SUMMARY` for the rest (#1066);
+    `JSON_SUMMARY` for the rest (#1066). Add `--repair-decaps` to seat
+    charged caps at their IC's pin (opt-in; `decap_rung` says what it did);
   - `place_fanout_clearance` can move a cap past `decap_pin_distance`
     silently (#1067);
   - `place_seed --reseat`'s intent basis counts only the rules it prints

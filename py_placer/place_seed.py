@@ -424,6 +424,14 @@ Examples:
                         "legality move, worst first, each seated nearest its "
                         "current pose with an escalating displacement cap. "
                         "The opposite contract of --force")
+    p.add_argument("--repair-decaps", action="store_true",
+                   help="With --repair (#1066): also seat each cap a "
+                        "decap_distance / decap_pin_distance error charges "
+                        "at its IC's pin -- the nearest legal pose within the "
+                        "rule's limit of that pin, kept only when the charged "
+                        "error is gone and the grade adds nothing. Off by "
+                        "default: without it a decap violator is not moved, "
+                        "and is reported unresolved")
     p.add_argument("--reseat", nargs="*", default=None, metavar="REF",
                    help="LIFT the named parts and re-seat them FROM SCRATCH "
                         "at their net centroids, holding every other part "
@@ -521,6 +529,8 @@ Examples:
         p.error("--repair/--reseat and --force are mutually exclusive (they "
                 "move only the parts that need it; force re-derives "
                 "everything)")
+    if args.repair_decaps and not args.repair:
+        p.error("--repair-decaps only applies to --repair")
     if args.dry_run and not (args.repair or args.reseat is not None):
         p.error("--dry-run only applies to --repair / --reseat")
     if args.reseat_min_gain and args.reseat is None:
@@ -842,7 +852,8 @@ Examples:
                 cur_pcb, cur, intent, group_sources=sources,
                 clearance=args.clearance,
                 board_edge_clearance=args.board_edge_clearance,
-                grid_step=args.grid_step)
+                grid_step=args.grid_step,
+                repair_decaps=args.repair_decaps)
             for note in result['notes']:
                 print(f"  NOTE: {note}")
             max_move = 0.0
@@ -873,6 +884,8 @@ Examples:
                 'unresolved': len(_unres),
                 'unresolved_refs': _unres,
                 'unresolved_by_rule': _by_rule,
+                # #1066 (b): what the decap rung did per cap; {} when off.
+                'decap_rung': result.get('decap_rung') or {},
                 'unrepairable': len(result['unrepairable']),
                 'moved_refs': [m['reference'] for m in result['moves']],
                 'max_move_mm': round(max_move, 3),

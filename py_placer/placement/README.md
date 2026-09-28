@@ -1512,6 +1512,15 @@ re-seating 85/92 while leaving its zone targets unmoved):
   not a fix). `unresolved` sets no exit code of its own; exit 4 stays
   `unrepairable`'s and the final grade's. `place_reconstruct`'s legalize
   stage reports the same `unresolved` list.
+  `--repair-decaps` (#1066 b, opt-in) adds the missing actor: each cap a
+  `decap_distance` / `decap_pin_distance` error charges is seated toward its
+  IC's pin (the rail pad nearest it, or the declared supply pad) and KEPT
+  only when that finding is gone, no finding anywhere is new or worse, the
+  overlap / off-board numbers did not grow, and the move is proportionate
+  (the repair's own `DISPROPORTION_RATIO` / `_FLOOR_MM`, against how far the
+  cap is past its limit). Its record is `JSON_SUMMARY.decap_rung`. It stays
+  off by default: `tests/test_placement_ab.py`'s `repair-decaps-*` rows
+  improve two of five boards and regress none, short of the N-1 rule.
 - **`place_reconstruct.py`** (`placement/reconstruct.py`) — the structural
   ("puzzle") solver: tier classification (frame -> anchors -> smalls),
   corner-inset pattern fit (propose-only), rigid ±v vector detection, ONE

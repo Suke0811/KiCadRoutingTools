@@ -41,6 +41,11 @@ C3 alone at the human pose: 2.125mm from U1):
   reports repaired share no member with the refs a FRESH `floorplan.grade` of
   the written board still charges a decap error to.
 
+#1066 (b), the opt-in decap rung (`repair_decaps` / `--repair-decaps`):
+splitflap seed 3 -- C2 is seated at its IC and fixed, C8's only fixing pose is
+disproportionate and refused; a fixing pose that adds a finding elsewhere is
+reverted; the flag needs `--repair` and its record reaches JSON_SUMMARY.
+
     python3 tests/test_repair_decap_honesty.py
 """
 import json
@@ -407,6 +412,102 @@ def test_a_move_that_makes_a_finding_worse_is_not_repaired():
     print(f"  PASS: {note[0]}")
 
 
+def _splitflap3(td):
+    """splitflap, decaps 2.5/2.5, 12 parts displaced up to 4mm (seed 3):
+    the repair's charged decap violators are C2 and C8."""
+    board = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
+    doc = fp.emit_intent(parse_kicad_pcb(board), board)
+    doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=2.5,
+                         max_pin_distance_mm=2.5)
+    ipath = os.path.join(td, 'sf3.json')
+    with open(ipath, 'w', encoding='utf-8') as fh:
+        json.dump(doc, fh)
+    return fp.load_intent(ipath), _perturbed(board, td, seed='3')
+
+
+def test_the_decap_rung_seats_a_cap_and_refuses_a_disproportionate_move():
+    """#1066 (b), `repair_decaps=True`: C2 is seated toward its IC and its
+    decap error is gone from a fresh grade of the written board; C8's only
+    fixing pose is farther than the proportion budget allows, so it is left
+    where it stands and says so. Without the flag neither moves (control)."""
+    with tempfile.TemporaryDirectory() as td:
+        intent, src = _splitflap3(td)
+        off = _repair(src, intent)
+        on = seeder.repair_placement(
+            parse_kicad_pcb(src), src, intent, group_sources=SOURCES,
+            clearance=CLEARANCE, repair_decaps=True)
+        assert off['decap_rung'] == {}, off['decap_rung']
+        still_off = _decap_refs_after(src, off, intent, td, 'off.kicad_pcb')
+        still_on = _decap_refs_after(src, on, intent, td, 'on.kicad_pcb')
+        assert {'C2', 'C8'} <= still_off, still_off
+        rung = {c: [x['result'] for x in r['tried']]
+                for c, r in on['decap_rung'].items()}
+        assert rung.get('C2') == ['seated'], rung
+        assert rung.get('C8') == ['disproportionate'], rung
+        assert 'C2' not in still_on and 'C8' in still_on, still_on
+        assert 'C2' in on['repaired'] and 'C8' in on['unresolved'], on
+        assert not set(on['repaired']) & still_on, (on['repaired'], still_on)
+        note = [n for n in on['notes'] if n.startswith('C8: decap rung')]
+        assert note and 'disproportionate' in note[0], on['notes']
+    print(f"  PASS: C2 seated and fixed; {note[0]}")
+
+
+def test_the_decap_rung_reverts_a_seat_that_adds_a_finding():
+    """A fixing pose that makes ANY other finding new or worse is reverted.
+    Injected: while C2 sits anywhere but its input pose, the grade carries
+    one more error on U2 -- the rung must put C2 back and name it."""
+    real = fp.PoseGrader.violations
+    with tempfile.TemporaryDirectory() as td:
+        intent, src = _splitflap3(td)
+        home = parse_kicad_pcb(src).footprints['C2']
+
+        def plus_if_c2_moved(self, *a, **kw):
+            out = real(self, *a, **kw)
+            p = (kw.get('poses') or {}).get('C2')
+            here = p or (self.state.parts['C2'].x, self.state.parts['C2'].y)
+            if abs(here[0] - home.x) + abs(here[1] - home.y) > 1e-6:
+                out = list(out) + [fp.Violation(
+                    'synthetic_new', fp.ERROR, 'injected', ref='U2')]
+            return out
+        fp.PoseGrader.violations = plus_if_c2_moved
+        try:
+            on = seeder.repair_placement(
+                parse_kicad_pcb(src), src, intent, group_sources=SOURCES,
+                clearance=CLEARANCE, repair_decaps=True)
+        finally:
+            fp.PoseGrader.violations = real
+        row = on['decap_rung']['C2']['tried'][0]
+        assert row['result'] == 'reverted', row
+        assert any('synthetic_new' in a for a in row['added']), row
+        assert 'C2' not in {m['reference'] for m in on['moves']}, on['moves']
+    print(f"  PASS: C2 reverted -- would add {row['added']}")
+
+
+def test_cli_repair_decaps_needs_repair_and_reports_the_rung():
+    from placement.portfolio import copy_siblings
+    with tempfile.TemporaryDirectory() as td:
+        intent, src0 = _splitflap3(td)
+        board = os.path.join(td, 'sf3_in.kicad_pcb')
+        write_placed_output(src0, board, [])
+        copy_siblings(src0, board)
+        ipath = os.path.join(td, 'sf3.json')
+        out = os.path.join(td, 'sf3_out.kicad_pcb')
+        check([sys.executable, '-X', 'utf8', PLACE_SEED, board, out,
+               '--intent', ipath, '--repair-decaps'],
+              refuse='--repair-decaps only applies to --repair', code=2,
+              allow=('error: argument',), timeout=RUN_ALL_TIMEOUT)
+        r = check([sys.executable, '-X', 'utf8', PLACE_SEED, board, out,
+                   '--intent', ipath, '--repair', '--repair-decaps',
+                   '--clearance', str(CLEARANCE)],
+                  refuse='GRADE ERROR', code=4, timeout=RUN_ALL_TIMEOUT)
+        s = _summary(r)
+        assert [x['result'] for x in s['decap_rung']['C2']['tried']] == [
+            'seated'], s['decap_rung']
+        assert 'C2' in s['repaired_refs'], s
+    print("  PASS: --repair-decaps alone is refused; with --repair the "
+          "summary carries the rung")
+
+
 def _summary(r):
     m = re.search(r'^JSON_SUMMARY: (.*)$', r.stdout, re.M)
     assert m, r.stdout[-1500:]
@@ -460,6 +561,9 @@ TESTS = [
     test_a_stranded_pin_is_charged_to_the_cap_that_left_it,
     test_a_move_that_makes_a_finding_worse_is_not_repaired,
     test_cli_writes_the_refs_and_the_repaired_set_is_honest,
+    test_the_decap_rung_seats_a_cap_and_refuses_a_disproportionate_move,
+    test_the_decap_rung_reverts_a_seat_that_adds_a_finding,
+    test_cli_repair_decaps_needs_repair_and_reports_the_rung,
 ]
 
 
