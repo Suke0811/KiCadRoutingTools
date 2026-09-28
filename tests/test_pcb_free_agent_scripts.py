@@ -91,7 +91,10 @@ def test_measure_splits_waiting_from_work_and_counts_bad_lines():
             _row('2026-09-27T06:10:10Z', 'm2',
                  ('k', 'Bash', {'command': 'python3 -X utf8 py_router/route.py a.kicad_pcb b.kicad_pcb'})),
             _row('2026-09-27T06:11:10Z', 'u2', results=['k']),
-            _row('2026-09-27T06:11:20Z', 'm2'),     # same id: usage counted once
+            # the same message id again: its usage must be counted once
+            {'type': 'assistant', 'timestamp': '2026-09-27T06:11:20Z',
+             'message': {'id': 'm2', 'usage': {'output_tokens': 5},
+                         'content': [{'type': 'text', 'text': 'done'}]}},
         ]
         p = _transcript(td, rows)
         with open(p, 'a', encoding='utf-8') as fh:
@@ -99,9 +102,33 @@ def test_measure_splits_waiting_from_work_and_counts_bad_lines():
         out = measure.measure(p)['main']
         assert out['waiting_on_jobs_seconds'] == 600.0, out
         assert out['other_tool_seconds'] == 60.0, out
+        assert out['model_seconds'] == 20.0, out     # 06:10->06:10:10, 06:11:10->:20
         assert out['unparsed_lines'] == 1, out
         assert out['tokens'].get('output_tokens') == 10, out   # m1 + m2, not m2 twice
     print("  PASS: 10 min of polling reads as waiting, 1 min as work; torn line counted")
+
+
+def test_measure_counts_idling_on_a_background_job_as_waiting():
+    """The first cut counted only foreground polls as waiting, so an agent
+    idle on its own background job read as model time: run 33 reported 211
+    min of model time where the model spent 19 and waited 193."""
+    with tempfile.TemporaryDirectory() as td:
+        notif = {'type': 'user', 'timestamp': '2026-09-27T06:30:01Z',
+                 'message': {'content': '<task-notification> <task-id>x</task-id> '
+                                        'completed </task-notification>'}}
+        rows = [
+            _row('2026-09-27T06:00:00Z', 'm1',
+                 ('bg', 'Bash', {'command': 'python3 search.py', 'run_in_background': True})),
+            _row('2026-09-27T06:00:01Z', 'u1', results=['bg']),   # launch returns at once
+            notif,                                                # 30 min idle, then this
+            {'type': 'assistant', 'timestamp': '2026-09-27T06:30:31Z',   # the model
+             'message': {'id': 'm2', 'content': [{'type': 'text', 'text': 'ok'}]}},  # answers: 30 s
+        ]
+        out = measure.measure(_transcript(td, rows))['main']
+        assert out['waiting_on_jobs_seconds'] == 1800.0, out
+        assert out['model_seconds'] == 30.0, out
+        assert out['other_tool_seconds'] == 1.0, out
+    print("  PASS: 30 min idle until a background job reports back reads as waiting")
 
 
 def test_measure_cli_exits_1_on_a_forbidden_use_and_0_without():
