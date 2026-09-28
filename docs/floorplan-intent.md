@@ -625,7 +625,7 @@ claim that abstained), which declarations `--reseat` set aside ungraded
 split, so an error it answers for is never reported beside exit 0. `complete`
 there means everything declared was measured, not that it passed. The report
 never withholds the board and never changes the exit code; the key-by-key
-reading is section I of the placement skill's `references/evidence-map.md`.
+reading is `floorplan.connector_requirements`'s docstring.
 
 ### `refs` is the primitive, not `group`
 

@@ -264,9 +264,8 @@ evidence, the requirements that were NOT measured, declarations `--reseat`
 dropped, and the connector errors split own / pinned exactly as the exit code
 split them; a dry run carries only `{complete: false, reason: 'dry-run'}`. It
 reports only -- it never withholds the board or moves the exit code.
-`floorplan.connector_requirements` builds it; the keys are read per
-`.claude/skills/plan-pcb-placement-and-routing/references/evidence-map.md`
-section I.
+`floorplan.connector_requirements` builds it, and its docstring is the
+key-by-key reading.
 
 Before anything is written, the PLAN is checked against itself and the board
 (`floorplan.plan_check`, #959). An area bound no arrangement can meet within

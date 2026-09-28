@@ -158,6 +158,7 @@ Other useful skills:
 > /recommend-stackup kicad_files/my_board.kicad_pcb          # Stackup advice for impedance/time-matching accuracy
 > /diagnose-routing-failures my_board.kicad_pcb /tmp/route_output.txt  # Root-cause failed routes, get a retry command
 > /review-routed-board my_board_routed.kicad_pcb             # Post-route QA: DRC, connectivity, length match, GND vias
+> /pcb-free-agent full kicad_files/my_board.kicad_pcb        # Place and route end to end; the agent picks its steps
 ```
 
 See [Claude Skills](docs/claude-skills.md) for what each skill does and how they fit together.
@@ -619,7 +620,7 @@ See [tests/README.md](tests/README.md) for detailed documentation of all test sc
 | [QFN Fanout](py_router/qfn_fanout/README.md) | QFN/QFP escape routing generator |
 | [Rust Router](rust_router/README.md) | Building and using the Rust A* module |
 | [Power Net Analysis](docs/power-nets.md) | Power net detection, AI analysis, track width guidelines |
-| [Claude Skills](docs/claude-skills.md) | All nine AI skills: routing plans, power/high-speed/diff-pair analysis, stackup, plane mappings, failure diagnosis, board review |
+| [Claude Skills](docs/claude-skills.md) | All ten AI skills: placement and routing end to end, routing plans, power/high-speed/diff-pair analysis, stackup, plane mappings, failure diagnosis, board review |
 | [Placement](py_placer/placement/README.md) | Placement optimization for routability |
 | [Integration Tests](tests/README.md) | Test scripts and performance benchmarks |
 | [Release Pipeline](docs/release-pipeline.md) | How to tag a release and submit it to the KiCad PCM (maintainers) |
@@ -735,6 +736,7 @@ KiCadRoutingTools/
     ├── recommend-stackup/    # Stackup review/recommendation skill
     ├── recommend-plane-mappings/  # Net-to-plane-layer assignment skill
     ├── diagnose-routing-failures/  # Failure root-cause and retry skill
+    ├── pcb-free-agent/       # Agent-driven place and/or route, one verifier, film + report
     ├── review-routed-board/  # Post-route QA and sign-off skill
     └── stress-test-router/   # Batch stress-test on real-world boards + issue filing (dev/QA)
 ```

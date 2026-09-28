@@ -98,13 +98,9 @@ Validate routed boards against the *real* spec, with the right checker — most
   to the real argparse, every quoted DEFAULT to the real default (read from
   `--help` where the parser is built under `if __name__ == '__main__'` and
   cannot be imported), and every `exits N` annotation to whether that flag can
-  reach `gate_or_exit` at all. It reads a driver through BOTH dumps:
-  `--dump-all` shows the instructions with every guard satisfied, and
-  **`--dump-refusals` shows the other branch** -- the commands a STUCK reader
-  is handed, which were unscanned until it existed (one of them exited 2).
-  `--dump-refusals` audits itself: refusal sites come from the driver's own
-  AST, and every string literal of 12+ characters a refusal can print must
-  appear in the dump, so an unrendered ARM of a four-arm refusal fails too.
+  reach `gate_or_exit` at all. (The staged placement and combined drivers it
+  also read through `--dump-all` / `--dump-refusals` were retired with their
+  skills in favour of `/pcb-free-agent`, which prescribes no stages.)
   `tests/test_923_output_key_claims.py` is the third: it RUNS `board_context`,
   `check_pockets`, `check_floorplan`, `render_placement`, `board_score` and
   `place_seed` on a tracked fixture and resolves every cited key against what

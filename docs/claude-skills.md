@@ -49,6 +49,7 @@ controls):
 | AI tab | **Plan Routing** | `/plan-pcb-routing` | Fills parameters across the tabs and loads a checkable step list; **Run Selected Steps** executes them in-process |
 | AI tab | **Review Routed Board** | `/review-routed-board` | QA report in the transcript with a PASS/FAIL verdict |
 | AI tab | **Diagnose Routing Failures** | `/diagnose-routing-failures` | Root-cause report from the board + the Log tab content |
+| AI tab (Placement) | **Place (AI)** / **Place + Route (AI)** | `/pcb-free-agent place` / `full` | A headless run into a `krt_placement/` folder beside the board: final board, film, REPORT.md; progress from the milestone ledger |
 | Route tab (Layers) | **Check Stackup (Claude)** | `/recommend-stackup` | Stackup report; recommended layer count logged |
 | Route tab (Options) | **Ask AI** (Power Nets) | `/analyze-power-nets` | Fills the Power Nets / Power Widths fields |
 | Differential tab | **Ask AI** | `/identify-diff-pairs` | Checks confirmed pairs, unchecks name-matching false positives; unconventional pairs reported in the log |
@@ -124,6 +125,7 @@ what runs here is what the buttons run.
 
 | Skill | Purpose | Main output |
 |-------|---------|-------------|
+| [`/pcb-free-agent`](#pcb-free-agent) | Place and/or route a board end to end, the agent choosing its steps (modes `full` / `place` / `route`) | The best board it reached, a film, and REPORT.md, checked by one independent verifier |
 | [`/plan-pcb-routing`](#plan-pcb-routing) | Full board analysis and step-by-step routing plan | Ordered routing commands, executed on approval |
 | [`/analyze-power-nets`](#analyze-power-nets) | Identify power nets and track widths via datasheets | `--power-nets` / `--power-nets-widths` arguments |
 | [`/find-high-speed-nets`](#find-high-speed-nets) | Classify nets by speed tier via datasheets | `--gnd-via-distance` recommendation |
@@ -133,6 +135,10 @@ what runs here is what the buttons run.
 | [`/diagnose-routing-failures`](#diagnose-routing-failures) | Root-cause failed routes from logs + board | Targeted retry command for the failed nets |
 | [`/review-routed-board`](#review-routed-board) | Post-route QA and sign-off | Pass/fail report with next actions |
 | [`/stress-test-router`](#stress-test-router) | Batch-test the router on real-world open-source boards | Completion/DRC summary table + GitHub issues for findings |
+
+### /pcb-free-agent
+
+The placement-and-routing entry point. It gives the agent a goal per mode, the repo's CLIs as a toolbox, stop rules and the traps real runs hit, and asks for one independent verifier at the end instead of prescribing stages. It hands back the board, a light 4:3 film from its milestone ledger, and a REPORT.md with a timeline. `scripts/grade.py` and `scripts/measure.py` grade the board and split the wall clock independently of the agent's own claims, and `scripts/make_unplaced.py` builds an all-off-the-board input for from-scratch runs. Measured basis: esp_prog was DONE in 12 min (6 vias), against 3h54m (39 vias) for the staged loop it replaced; glasgow_revC reached blocking 15 in 7h56m, against 35 in ~32 h.
 
 ### /plan-pcb-routing
 
@@ -175,6 +181,10 @@ A development/QA skill rather than a board-design skill: batch-tests the router 
 ## How They Fit Together
 
 ```
+Placement (or the whole job):
+  /pcb-free-agent place|full|route - agent-driven, one verifier, film + report
+        |
+        v
 Before routing:
   /recommend-stackup        - fix the stackup before impedance work
   /identify-diff-pairs      - confirm pairs, get gap/impedance
