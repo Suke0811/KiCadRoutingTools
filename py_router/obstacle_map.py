@@ -3014,12 +3014,95 @@ def same_net_pad_via_keepout_cells(pcb_data: PCBData, net_id: int,
     return np.concatenate(chunks)
 
 
+def same_net_new_via_drill(config: GridRouteConfig, net_id: int) -> float:
+    """Drill of a NEW via a search for `net_id` may drop (#1070): the run's
+    via, or the net's own #530 geometry (``config.net_via_sizes``) when that is
+    larger. The larger of the two, because one same-net ring is stamped and
+    then read at every rung the net searches at -- its own rung, rung 0 when
+    that rung is unpopulated, and the smaller #568 fab rung -- so sizing it
+    for the biggest drill it guards is exact for that drill and conservative
+    (never under-blocking) for the others."""
+    drill = config.via_drill
+    sizes = getattr(config, 'net_via_sizes', None)
+    if sizes:
+        own = sizes.get(net_id)
+        if own:
+            drill = max(drill, float(own[1]))
+    return drill
+
+
+def same_net_via_ring_mm(config: GridRouteConfig, net_id: int,
+                         existing_drill: float) -> float:
+    """Centre-to-centre distance (mm) a NEW via of `net_id` must keep from an
+    EXISTING via of the same net whose drill is `existing_drill` (#1070).
+
+    Two rules, and the larger binds:
+      * copper: ``via_size + clearance`` -- the same-net via-via spacing every
+        same-net ring has always kept, left exactly as it was;
+      * drill:  ``(existing_drill + new_drill) / 2 + hole_to_hole`` -- the
+        fab's drill-to-drill minimum, which KiCad applies to every pair of
+        holes whatever their nets.
+    On standard vias the copper rule is the larger (0.5/0.3, clearance 0.2,
+    h2h 0.25: 0.70 vs 0.55), so the rings are unchanged there. On fine vias
+    it is not (0.25/0.15, clearance 0.09, h2h 0.3: 0.34 vs 0.45).
+    """
+    ring = config.via_size + config.clearance
+    h2h = getattr(config, 'hole_to_hole_clearance', 0.0) or 0.0
+    if h2h > 0 and (existing_drill or 0.0) > 0:
+        ring = max(ring, (existing_drill + same_net_new_via_drill(config, net_id)) / 2.0
+                   + h2h)
+    return ring
+
+
+def same_net_via_ring_cells(vias, net_id: int, config: GridRouteConfig,
+                            coord: Optional[GridCoord] = None) -> np.ndarray:
+    """(N, 2) int32 via-block cells keeping a NEW via of `net_id` off every
+    via of that net in `vias` by ``same_net_via_ring_mm`` (#1070), measured
+    from each via's TRUE centre: the ring grows by the via's sub-grid offset
+    (issue #70 -- otherwise a route via lands a sub-cell too close to an
+    off-grid BGA fanout via-in-pad). A cell is blocked when its distance is
+    <= the radius, centre included. Rows repeat across overlapping vias on
+    purpose: callers stamp them ref-counted, one count per via."""
+    if coord is None:
+        coord = GridCoord(config.grid_step)
+    chunks = []
+    for via in vias:
+        if via.net_id != net_id:
+            continue
+        gx, gy = coord.to_grid(via.x, via.y)
+        ring_mm = same_net_via_ring_mm(config, net_id,
+                                       getattr(via, 'drill', 0.0) or 0.0)
+        expansion = max(1.0, ring_mm * coord.inv_step)
+        off_cells = math.hypot(via.x - gx * coord.grid_step,
+                               via.y - gy * coord.grid_step) / coord.grid_step
+        radius = expansion + off_cells
+        rng = int(math.ceil(radius))
+        radius_sq = radius * radius
+        # Sweep item 3 (#625): integer-mask disc, one array per via instead
+        # of one FFI call per cell.
+        ax = np.arange(-rng, rng + 1, dtype=np.int32)
+        EX, EY = np.meshgrid(ax, ax, indexing='ij')
+        m = EX * EX + EY * EY <= radius_sq
+        if m.any():
+            chunks.append(np.column_stack([EX[m] + gx, EY[m] + gy])
+                          .astype(np.int32))
+    if not chunks:
+        return np.empty((0, 2), dtype=np.int32)
+    return chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
+
+
 def add_same_net_via_clearance(obstacles: GridObstacleMap, pcb_data: PCBData,
                                 net_id: int, config: GridRouteConfig):
-    """Add via-via clearance blocking for same-net vias.
+    """Block via placement (never track routing) near the net's own existing
+    vias, at the larger of the copper via-via spacing and the drill
+    hole-to-hole minimum (#1070, see same_net_via_ring_mm).
 
-    This blocks only via placement (not track routing) near existing vias on the same net,
-    enforcing DRC via-via clearance even within a single net.
+    The ring is stamped into the run's via map and MIRRORED into every
+    POPULATED rung map (the #568 small rung, the #530 per-net rungs; see
+    populated_via_rungs): a search at another rung reads only that rung's map
+    for dynamic copper, so without the mirror a net routed at its own via
+    class saw no same-net ring at all. Callers stamp CLONED per-route maps, so
+    nothing has to be removed afterwards.
     """
     coord = GridCoord(config.grid_step)
 
@@ -3040,35 +3123,39 @@ def add_same_net_via_clearance(obstacles: GridObstacleMap, pcb_data: PCBData,
         except (AttributeError, NameError):
             pass
 
-    # Via-via clearance: center-to-center distance must be >= via_size + clearance
-    # So we block via placement within this radius of existing vias
-    via_via_expansion_grid = max(1.0, (config.via_size + config.clearance) * coord.inv_step)
+    # Same-net via spacing: only via placement is blocked (tracks may pass
+    # through same-net vias).
+    ring = same_net_via_ring_cells(pcb_data.vias, net_id, config, coord)
+    if len(ring):
+        obstacles.add_blocked_vias_batch(ring)
+        for r in populated_via_rungs(obstacles):
+            obstacles.add_blocked_vias_rung_batch(r, ring)
 
-    for via in pcb_data.vias:
-        if via.net_id != net_id:
-            continue
-        gx, gy = coord.to_grid(via.x, via.y)
-        # Grow the ring by the via's sub-grid offset so an off-grid via-in-pad keeps
-        # a NEW same-net via the full hole-to-hole distance from its TRUE centre, not
-        # its rounded cell (issue #70 -- otherwise a route via lands a sub-cell too
-        # close to a BGA fanout via-in-pad). Mirror of the via-obstacle rasterizers.
-        off_cells = math.hypot(via.x - gx * coord.grid_step,
-                               via.y - gy * coord.grid_step) / coord.grid_step
-        radius = via_via_expansion_grid + off_cells
-        rng = int(math.ceil(radius))
-        radius_sq = radius * radius
-        # Only block via placement, not track routing (tracks can pass through
-        # same-net vias). Sweep item 3 (#625): mask over the integer offset
-        # grid + one batch call instead of one FFI call per cell (this runs
-        # per net per prepare, re-run every rip round); integer ex*ex+ey*ey
-        # against the same scalar threshold blocks the identical cell set,
-        # and the batch increments refcounts exactly like the per-cell add.
-        ax = np.arange(-rng, rng + 1, dtype=np.int32)
-        EX, EY = np.meshgrid(ax, ax, indexing='ij')
-        m = EX * EX + EY * EY <= radius_sq
-        if m.any():
-            obstacles.add_blocked_vias_batch(
-                np.column_stack([EX[m] + gx, EY[m] + gy]))
+
+def populated_via_rungs(obstacles) -> List[int]:
+    """The via-legality rungs >= 1 (the #568 small rung and the #530 per-net
+    rungs) whose maps are POPULATED -- the only ones a same-net keep-out may
+    be mirrored into (#1070).
+
+    An unpopulated rung map is not "nothing blocked": is_via_blocked_rung
+    falls back to rung 0 for it. Stamping a keep-out into one populates it
+    with that keep-out ALONE, and a search at that rung then stops seeing every
+    other via block the map carries (the net rescue's clone maps, for one,
+    carry no small rung at all). A populated rung already carries the board's
+    copper at its own via size, so the keep-out is added beside it. [] on a
+    binary without the rung API (the rings then stay in rung 0 only)."""
+    try:
+        n = int(obstacles.rung_count())
+    except Exception:                                          # noqa: BLE001
+        return []
+    out = []
+    for r in range(1, n):
+        try:
+            if obstacles.rung_len(r) > 0:
+                out.append(r)
+        except Exception:                                      # noqa: BLE001
+            pass
+    return out
 
 
 def add_same_net_pad_drill_via_clearance(obstacles: GridObstacleMap, pcb_data: PCBData,
@@ -3087,6 +3174,9 @@ def add_same_net_pad_drill_via_clearance(obstacles: GridObstacleMap, pcb_data: P
         return
 
     coord = GridCoord(config.grid_step)
+    # #1070: the drill of the via this net's searches may drop (its own #530
+    # geometry when larger than the run's), as the via ring above uses.
+    new_drill = same_net_new_via_drill(config, net_id)
 
     pads = pcb_data.pads_by_net.get(net_id, [])
     for pad in pads:
@@ -3099,7 +3189,7 @@ def add_same_net_pad_drill_via_clearance(obstacles: GridObstacleMap, pcb_data: P
         # floored cells) so a via cannot land a sub-cell inside the hole-to-hole
         # minimum (issue #70 / #125). Round drills degenerate to the old centre test.
         (p1x, p1y), (p2x, p2y), prad = pad_drill_capsule(pad)
-        required_dist = prad + config.via_drill / 2 + config.hole_to_hole_clearance
+        required_dist = prad + new_drill / 2 + config.hole_to_hole_clearance
         gx, gy = coord.to_grid(pad.global_x, pad.global_y)  # pad centre = capsule midpoint
         step = config.grid_step
         half_len = math.hypot(p2x - p1x, p2y - p1y) / 2.0

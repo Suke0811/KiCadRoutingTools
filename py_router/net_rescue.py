@@ -196,6 +196,21 @@ def _via_site_clear(pcb_data: "PCBData", x: float, y: float, config,
     return True
 
 
+def _drills_too_close(vias, hole_to_hole: float) -> bool:
+    """True if any two of `vias` sit inside the drill hole-to-hole minimum
+    of each other (#1070). Net-blind like the rule: every pair of holes."""
+    h2h = hole_to_hole or 0.0
+    if h2h <= 0:
+        return False
+    for i in range(len(vias)):
+        a = vias[i]
+        for b in vias[i + 1:]:
+            if (math.hypot(a.x - b.x, a.y - b.y)
+                    < ((a.drill or 0.0) + (b.drill or 0.0)) / 2.0 + h2h):
+                return True
+    return False
+
+
 def _net_component_info(pcb_data, net_id):
     """Connected components of a net's pads+copper on the REAL board.
 
@@ -958,7 +973,11 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                                     layer_costs=getattr(config,
                                                         'layer_costs',
                                                         None),
-                                    plane_drop='off')
+                                    plane_drop='off',
+                                    # #1070: THIS run's drill floor, not
+                                    # the board's min_hole_to_hole.
+                                    hole_to_hole_clearance=(
+                                        config.hole_to_hole_clearance))
                             finally:
                                 pcb_data._fanout_all_foreign_immovable = \
                                     False
@@ -994,7 +1013,9 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                                     escape_method='dogbone',
                                     layer_costs=getattr(
                                         config, 'layer_costs', None),
-                                    plane_drop='off')
+                                    plane_drop='off',
+                                    hole_to_hole_clearance=(
+                                        config.hole_to_hole_clearance))
                             except Exception:
                                 _ft, _fv = [], []
                             if _ft or _fv:
@@ -1122,6 +1143,12 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                                           config, net_id):
                                 _short666 = 'via'
                                 break
+                    # ...and against EACH OTHER (#1070): _via_site_clear sees
+                    # only the board's vias, and this escape's own drills are
+                    # not on it yet.
+                    if _short666 is None and _drills_too_close(
+                            _gvias, config.hole_to_hole_clearance):
+                        _short666 = 'via'
                     if _short666 is not None:
                         print(f"    bare-ball escape: "
                               f"{_pad.component_ref}.{_pad.pad_number} "

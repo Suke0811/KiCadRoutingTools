@@ -634,38 +634,26 @@ def prepare_obstacles_inplace(
     coord = GridCoord(config.grid_step)
     same_net_via_cells = []
 
-    # Via-via clearance
-    via_via_expansion_grid = max(1.0, (config.via_size + config.clearance) * coord.inv_step)
-    for via in pcb_data.vias:
-        if via.net_id != net_id:
-            continue
-        gx, gy = coord.to_grid(via.x, via.y)
-        # Grow by the via's sub-grid offset so an off-grid via-in-pad keeps a NEW
-        # same-net via the full clearance from its TRUE centre (issue #70; mirror of
-        # add_same_net_via_clearance and the via-obstacle rasterizers).
-        off_cells = math.hypot(via.x - gx * coord.grid_step,
-                               via.y - gy * coord.grid_step) / coord.grid_step
-        radius = via_via_expansion_grid + off_cells
-        rng = int(math.ceil(radius))
-        radius_sq = radius * radius
-        # Sweep item 3 (#625): integer-mask disc, identical cell set (the
-        # threshold scalar is unchanged; runs per net per prepare).
-        _ax = np.arange(-rng, rng + 1, dtype=np.int64)
-        _EX, _EY = np.meshgrid(_ax, _ax, indexing='ij')
-        _m = _EX * _EX + _EY * _EY <= radius_sq
-        same_net_via_cells.extend(
-            zip((_EX[_m] + gx).tolist(), (_EY[_m] + gy).tolist()))
+    # Same-net via spacing: the larger of the copper via-via spacing and the
+    # drill hole-to-hole minimum (#1070), from each via's TRUE centre (#70).
+    # The one ring add_same_net_via_clearance stamps -- shared, so the in-place
+    # path and the clone builders cannot drift apart again.
+    from obstacle_map import same_net_via_ring_cells, same_net_new_via_drill
+    _ring = same_net_via_ring_cells(pcb_data.vias, net_id, config, coord)
+    if len(_ring):
+        same_net_via_cells.extend(map(tuple, _ring.tolist()))
 
     # Pad drill hole clearance
     # Skip the pad center - the router can use existing through-holes for layer transitions
     if config.hole_to_hole_clearance > 0:
+        _new_drill = same_net_new_via_drill(config, net_id)
         for pad in pcb_data.pads_by_net.get(net_id, []):
             if pad.drill and pad.drill > 0:
                 # Include pad drill radius in clearance calculation. Float radius +
                 # ceil bound (not the flooring to_grid_dist) so this circular hole-to-
                 # hole keep-out reserves the full clearance instead of ~1 cell short
                 # (same grid-quantization fix as the via-via keep-out above / #154).
-                required_dist = pad.drill / 2 + config.via_drill / 2 + config.hole_to_hole_clearance
+                required_dist = pad.drill / 2 + _new_drill / 2 + config.hole_to_hole_clearance
                 radius = required_dist * coord.inv_step
                 expand = int(math.ceil(radius))
                 radius_sq = radius * radius
@@ -706,6 +694,25 @@ def prepare_obstacles_inplace(
                 working_obstacles.add_blocked_vias_small_batch(same_net_via_arr)
         except (AttributeError, ImportError):
             pass
+        # #530 per-net rungs, the same mirror (#1070): a net searched at its
+        # own via class reads only its rung's map, so it saw none of these.
+        # POPULATED rungs only (see populated_via_rungs). The rungs stamped
+        # are RECORDED, and the restore removes from exactly those: a rung
+        # populated between prepare and restore must not lose a count it
+        # never received.
+        try:
+            from obstacle_map import _per_net_rungs, populated_via_rungs
+            _pn = set(_per_net_rungs(working_obstacles))
+            _rungs = tuple(r for r in populated_via_rungs(working_obstacles)
+                           if r in _pn)
+            if _rungs:
+                for _r in _rungs:
+                    working_obstacles.add_blocked_vias_rung_batch(
+                        _r, same_net_via_arr)
+                _lift_record(_SAME_NET_RUNG_MIRROR, working_obstacles, net_id,
+                             (_rungs, same_net_via_arr))
+        except (AttributeError, ImportError):
+            pass
     else:
         same_net_via_arr = np.empty((0, 2), dtype=np.int32)
 
@@ -734,6 +741,10 @@ _TIE_LIFTED: Dict[tuple, tuple] = {}
 #: #908 own-pad lift, same lifetime, keying and pin as _TIE_LIFTED.
 _OWNPAD_LIFTED: Dict[tuple, tuple] = {}
 _OWNPAD_VIA_LIFTED: Dict[tuple, tuple] = {}
+#: #1070 same-net via keep-outs mirrored into #530 per-net rungs by prepare:
+#: (rungs stamped, cells), removed by the matching restore. Same lifetime,
+#: keying and pin as _TIE_LIFTED.
+_SAME_NET_RUNG_MIRROR: Dict[tuple, tuple] = {}
 
 
 def _lift_record(registry, obstacles, net_id, rows):
@@ -782,6 +793,12 @@ def restore_obstacles_inplace(
                     same_net_via_cells)
         except (AttributeError, ImportError):
             pass
+    # #1070: the per-net rung mirror, from exactly the rungs prepare stamped.
+    _mir = _lift_take(_SAME_NET_RUNG_MIRROR, working_obstacles, net_id)
+    if _mir is not None:
+        _rungs, _cells = _mir
+        for _r in _rungs:
+            working_obstacles.remove_blocked_vias_rung_batch(_r, _cells)
 
     # Re-add the net-tie corridor stamps lifted by prepare (see there).
     _lifted = _lift_take(_TIE_LIFTED, working_obstacles, net_id)
