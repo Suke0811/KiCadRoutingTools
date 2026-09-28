@@ -28,6 +28,8 @@ What each case pins:
   before equals the grade's errors over `accept_basis.intent_rules`, the
   printed basis is labelled `intent[decap_distance]`, and the pass is ACCEPTED
   on `intent` 1 -> 0 with C3's error gone from the written board.
+* PRUNE sees them: re-seating C4 under 0.8mm limits reduces its breach at
+  an hpwl cost, and prune KEEPS the move (it reverted it on the tuple before).
 * THE CONTROL for that: the same re-seat with the probe's tethers withheld is
   REFUSED at `intent 0->0` and C3's error stays -- so the acceptance above is
   the tether terms' doing, not the board's.
@@ -259,6 +261,28 @@ def test_control_without_the_tether_terms_the_same_reseat_is_refused():
           "fixed; without them it reads intent 0->0 and is refused")
 
 
+def test_prune_keeps_a_move_that_reduces_a_decap_breach():
+    """`IntentProbe.terms(ref)` is what prune samples either side of a
+    revert. esp_prog under 0.8mm limits: re-seating C4 moves it closer to its
+    IC -- still past the limit, so the count does not move and the pass is
+    refused, but the move REDUCED the breach at an hpwl cost (46.5 ->
+    49.2mm). Prune must keep it on the claim, not revert it on the tuple:
+    with the tether terms out of `terms()` it reverts."""
+    with tempfile.TemporaryDirectory() as td:
+        intent, _p = _intent(td, {'decaps': {'max_distance_mm': 0.8,
+                                             'max_pin_distance_mm': 0.8}})
+        res = seeder.reseat_scope(
+            parse_kicad_pcb(ESP), ESP, intent, refs=['C4'],
+            group_sources=(), clearance=CLEARANCE,
+            board_edge_clearance=0.5, grid_step=0.1, seed=0)
+        kept = [n for n in res['notes']
+                if n.startswith('prune: KEPT') and 'C4' in n]
+        reverted = [n for n in res['notes']
+                    if n.startswith('prune: reverted') and 'C4' in n]
+        assert kept and not reverted, res['notes']
+    print(f"  PASS: {kept[0]}")
+
+
 TESTS = [
     test_parity_decap_distance_esp_prog,
     test_parity_proximity_esp_prog,
@@ -266,6 +290,7 @@ TESTS = [
     test_a_term_whose_refs_are_all_locked_still_counts,
     test_the_issue_recipe_through_the_cli,
     test_control_without_the_tether_terms_the_same_reseat_is_refused,
+    test_prune_keeps_a_move_that_reduces_a_decap_breach,
 ]
 
 
