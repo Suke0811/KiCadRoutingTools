@@ -1504,8 +1504,10 @@ re-seating 85/92 while leaving its zone targets unmoved):
   (#1066): each charged ref, moved or not, is re-graded after the pass and
   one still carrying its claim is `unresolved`, named in `JSON_SUMMARY`
   (`repaired_refs`, `unresolved_refs`, `unresolved_by_rule`). So is a moved
-  ref whose move CREATED an error the input poses did not have (a cap moved
-  off a pad conflict and out of its decap limit), and a cap pushed past the
+  ref whose move CREATED a finding the input poses did not have, or made one
+  WORSE (compared per finding -- rule, ref, pad, net -- not per claim; a
+  finding naming no moved ref is charged by counterfactual, each moved ref
+  restored alone), and a cap pushed past the
   decap search radius (its `decap_distance` became `decap_ungraded`, which is
   not a fix). `unresolved` sets no exit code of its own; exit 4 stays
   `unrepairable`'s and the final grade's. `place_reconstruct`'s legalize

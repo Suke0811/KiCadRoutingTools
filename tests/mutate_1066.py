@@ -76,15 +76,17 @@ ROWS = [
     # The phase-1 verifier's counterexample: only the CHARGED claims are
     # asked about, so an error the move itself created goes unseen.
     ('a-move-that-creates-an-error-reads-repaired', 's',
-     "            for r in names & moved_refs:\n",
-     "            for r in set():\n",
+     "            for r in who:\n"
+     "                created.setdefault(r, []).append(label)\n",
+     "            for r in ():\n"
+     "                created.setdefault(r, []).append(label)\n",
      (T1066,), 'KILLED'),
 
     # A created error is attributed to its own ref only, so a cap that
     # stranded its IC's supply pin (the error names the IC) reads repaired.
     ('a-created-pin-error-attributed-to-the-ic-only', 's',
-     "            names = {v.ref} | {m.get(k) for k in ('cap', 'ic', 'near',\n",
-     "            names = {v.ref} | {m.get(k) for k in ('ic', 'near',\n",
+     "            names = {v.ref} | {m.get(k) for k in ('cap', 'ic', 'near')}\n",
+     "            names = {v.ref} | {m.get(k) for k in ('ic', 'near')}\n",
      (T1066,), 'KILLED'),
 
     # Leaving the decap search radius reads as the charge cleared.
