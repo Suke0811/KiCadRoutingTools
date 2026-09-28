@@ -415,7 +415,11 @@ measures no overlap says so too). The waiver is read by stage 0 only
 (`Intent.courtyard_waiver_pairs`): it is NOT an `overlap_waivers[]` pair, whose
 consumers also exempt the drawn-body containment gate, so `check_assembly` and
 `render_placement` still judge the pair's bodies. Stage 0 does honour an
-`overlap_waivers[]` pair's courtyard the same way. A pose also overlapping a part the waiver does not name (U30 and
+`overlap_waivers[]` pair's courtyard the same way. Nor does it spend the
+overlap: the pair's area still counts in `legality.overlap_area` and in
+`plan_check`'s `plan_fixed_overlap` (a warn) and its budget, since the board
+carries exactly the finding KiCad's DRC reports -- declare the budget to fit
+it. A pose also overlapping a part the waiver does not name (U30 and
 TP2, once TP2 is placed or declared) is still refused.
 
 ### WHERE ALONG the edge: `center_on_edge` and `along_edge_band`
