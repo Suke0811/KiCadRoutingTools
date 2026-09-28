@@ -432,6 +432,7 @@ def pair_end_cands(n, end, W, esc):
 PLACED = []          # (n, layer, P, Q)  lane centreline segments
 LEGS = []            # (n, layer, P, Q)  a placed PAIR's two legs as the audit draws them (mitred at its corners)
 PVIAS = []           # (n, x, y): every placed via's barrels (a pair's two)
+EXACT = set()        # ...those laid AS DRAWN (a pair's end legs, its crossover's legs and barrels): no half step off grid
 PDIVE = []           # (n, x, y): every placed PAIR dive's cells the pair router tests (its centre, and SPC cells either
                      # way along its arriving heading's integer perpendicular), where it will look for the dive
 
@@ -527,7 +528,7 @@ def build(n):
     # placed copper: a single lane's centreline; a pair's two LEGS (its corners' mitres are wider than its pitch); every
     # placed via as its barrels (a pair's two, across the way it arrived)
     placed = [(e_[0], e_[1], e_[2], e_[3], hw[e_[0]], OFFG[e_[0]]) for e_ in PLACED if e_[0] not in prs] + \
-             [(e_[0], e_[1], e_[2], e_[3], 0.0, 1) for e_ in LEGS]
+             [(e_[0], e_[1], e_[2], e_[3], 0.0, 0 if e_ in EXACT else 1) for e_ in LEGS]
     for (m, L, p_, q_, hm, om) in placed:
         mark(bad[L], box(p_, q_), TW + CL + hw[n] + hm + g / 2 * (OFFG[n] + om), seg_d(p_, q_))
     # a placed via keeps n's track cells out of its RING (pairs.via_ring: the via-to-track clearance rounded up to
@@ -570,9 +571,10 @@ def build(n):
         vb = np.zeros(X.shape, bool)
         # a via stands outside the RING of every other lane's track (pairs.via_ring about the grid point the via
         # rounds to: the single's round a single's line, the pair's round a pair's centreline) -- whichever routes
-        # later meets it that way; a barrel off the grid by its own offset, twice (the router rings its rounded point);
+        # later meets it that way; a barrel off the grid by its own offset (a ring round the rounded point is met a
+        # barrel's offset beyond the barrel, as the audit bars it: twice held 6-16 um more);
         # a placed piece OFF the grid (a join onto an off-grid terminal) half a step more, as the audit bars it
-        boff = 2 * math.hypot(ox - round(ox / g) * g, oy - round(oy / g) * g)
+        boff = math.hypot(ox - round(ox / g) * g, oy - round(oy / g) * g)
         for (m, L, p_, q_) in PLACED:
             mark(vb, box(p_, q_), (RING_PAIR if m in prs else RING) + boff + (0 if on_grid(p_, q_) else g / 2),
                  seg_d(p_, q_), ox, oy)
@@ -582,7 +584,8 @@ def build(n):
         for (m, L, p_, q_) in LEGS:
             mark(vb, box(p_, q_), RING + boff + (0 if on_grid(p_, q_) else g / 2), seg_d(p_, q_), ox, oy)
         for (m, bx_, by_) in PVIAS:
-            mark(vb, (bx_, by_, bx_, by_), VVB + g / 2 * (OFFG[n] + OFFG[m]), pt_d(bx_, by_), ox, oy)
+            mark(vb, (bx_, by_, bx_, by_), VVB + g / 2 * (OFFG[n] + (0 if (m, bx_, by_) in EXACT else OFFG[m])),
+                 pt_d(bx_, by_), ox, oy)
         # ...and a single's via off the cells the pair router tests a placed pair's dive at, as it prices a via there
         if n not in prs:
             for (m, tx_, ty_) in PDIVE:
@@ -737,8 +740,15 @@ def route(n, strict=True):
     s_ = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(P, axis=0).T))])
     w0 = P[min(int(np.searchsorted(s_, W_SCALE)), len(P) - 1)] - P[0]            # the lane's own way at each end,
     w1 = P[-1] - P[max(int(np.searchsorted(s_, s_[-1] - W_SCALE)) - 1, 0)]      # over the audit's scale for a turn
-    si, sj = term_cell(tuple(P[0]), a_out, w0, True, n, L_s, free_(L_s, tuple(P[0])))
-    ei, ej = term_cell(tuple(P[-1]), a_in, w1, False, n, L_e, free_(L_e, tuple(P[-1])))
+    # a SINGLE starts and ends where the ROUTER does -- the grid point nearest its terminal (connect; the audit grades
+    # the same join, plan_audit's pieces: terminal, that point, the plan's next) -- wherever a track fits there: a
+    # grid point of the snap's own choosing was a start the router never made (K51 SA5: planned from the cell east of
+    # its tooth, laid from the one 7 um west of it, 0.230 from SA2's diagonal where the bar is 0.232, and SA2 refused)
+    rS = (int(round(P[0][0] / g)), int(round(P[0][1] / g)))
+    rE = (int(round(P[-1][0] / g)), int(round(P[-1][1] / g)))
+    fS, fE = free_(L_s, tuple(P[0])), free_(L_e, tuple(P[-1]))
+    si, sj = rS if n not in prs and fS(*rS) else term_cell(tuple(P[0]), a_out, w0, True, n, L_s, fS)
+    ei, ej = rE if n not in prs and fE(*rE) else term_cell(tuple(P[-1]), a_in, w1, False, n, L_e, fE)
     d0, dN = dir_index(a_out), dir_index(a_in)
     lays = [LANE[n]['L0']]
     for _v in LANE[n]['vias']:
@@ -756,9 +766,11 @@ def route(n, strict=True):
         return None, 'terminal outside the window'
     jS = ((S[0] + i0) * g - P[0][0], (S[1] + j0) * g - P[0][1])           # the join out of the tooth
     jE = (P[-1][0] - (E[0] + i0) * g, P[-1][1] - (E[1] + j0) * g)         # the join into the berth
-    if math.hypot(*jS) < 1e-9:
+    # (a join within the grid's own rounding -- the router's, from the terminal to its nearest grid point -- is no way
+    # of the lane's: the stub's way stands for it, whichever side of the terminal that point fell)
+    if math.hypot(*jS) <= g / math.sqrt(2) + 1e-9:
         jS = a_out
-    if math.hypot(*jE) < 1e-9:
+    if math.hypot(*jE) <= g / math.sqrt(2) + 1e-9:
         jE = a_in
     # a PAIR moves as the pair router does (pose_router.rs), its two counters in the state: straight steps still owed
     # and straight steps taken. After a 45-degree turn RT straight steps before the next (its turning radius); a via
@@ -1025,6 +1037,16 @@ def route(n, strict=True):
         if a_ != b_:
             pieces.append((a_, b_, lays[kb]))
     pieces.append((pts[-1][0], tuple(P[-1]), lays[K]))
+    # a SINGLE's join within the router's own rounding (its terminal to the grid point nearest it, where the router
+    # starts, whichever side of the terminal that point fell) is drawn straight on to the lane's next grid point: the
+    # router lays terminal, that point, the next (as the audit grades it), and a join 7 um back from a tooth drawn as
+    # its own piece read as a 180-degree reversal of the lane (K51: 65 of them)
+    if n not in prs:
+        near_ = lambda a_, b_: math.hypot(a_[0] - b_[0], a_[1] - b_[1]) <= g / math.sqrt(2) + 1e-9
+        if len(pieces) > 2 and near_(P[0], pts[0][0]) and pieces[1][0] == pts[0][0] and pieces[1][2] == lays[0]:
+            pieces[0:2] = [(tuple(P[0]), pieces[1][1], lays[0])]          # (the second piece: the first grid step)
+        if len(pieces) > 2 and near_(P[-1], pts[-1][0]) and pieces[-2][1] == pts[-1][0] and pieces[-2][2] == lays[K]:
+            pieces[-2:] = [(pieces[-2][0], tuple(P[-1]), lays[K])]
     merged = []
     for q_, (a_, b_, L) in enumerate(pieces):
         if math.hypot(b_[0] - a_[0], b_[1] - a_[1]) < 1e-12:
@@ -1068,14 +1090,17 @@ def place(n, out):
             for pts in e_['legs']:
                 for a_, b_ in zip(pts, pts[1:]):
                     LEGS.append((n, e_['layer'], tuple(map(float, a_)), tuple(map(float, b_))))
+                    EXACT.add(LEGS[-1])
         for k_, v_ in ((cross or {}).get('legs') or {}).items():
             for pts, L in v_:
                 for a_, b_ in zip(pts, pts[1:]):
                     LEGS.append((n, L, tuple(map(float, a_)), tuple(map(float, b_))))
+                    EXACT.add(LEGS[-1])
     others = vias
     if cross:
         for (x_, y_, _k) in cross['vias']:
             PVIAS.append((n, x_, y_))
+            EXACT.add(PVIAS[-1])
         # its other dives (a crossed pair with more than one change) are plain dives, two barrels each
         others = [v for v in vias if math.hypot(v[0] - cross['at'][0], v[1] - cross['at'][1]) > 1e-6]
     for v in others:

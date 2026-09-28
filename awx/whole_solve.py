@@ -21,7 +21,7 @@ the same answer on every run, later on a slower machine (WHOLE_SOLVE_BATCHES set
 the vias are proved (the plan's vias no more than the bound's whole vias) or, once it has a plan, when it STALLS
 (SOLVE_STALL of its own model reductions in a row with no better plan or bound: events of the search, never a clock). Only a plan PROVED optimal in its vias is written;
 one the search could not prove is no plan."""
-import sys, os, re, itertools, collections, json, math
+import sys, os, re, itertools, collections, json, math, hashlib
 import whole_ctx
 import whole_frame
 from ortools.sat.python import cp_model
@@ -31,7 +31,8 @@ import pairs as _pairs
 TRK, CLR, VIA, VNEED, PITCH = bd.TRACK, bd.CLEAR, bd.VIA_SIZE, bd.VIA_NEED, bd.LANE_MIN
 LEGROOM = PITCH                        # a peeling leg crosses, then still runs a pitch to its berth
 VR_STAY = 1.1                          # a change's room from a stayer's crossing: its via is passed at an angle
-KMAX = 4                               # layer changes per lane at most
+KMAX = 3                               # layer changes per lane at most (every proved plan K15-K51 has 2 at most: a
+                                       # fourth only widened the model -- K51 proved in 37 s at 3 with SUBSOLVERS)
 G = PITCH / 5                          # the solve's time grid: a fifth of the lane pitch
 MARG = CLR                             # a crossing starts a clearance past both lanes' terminals (a lane leaving its tooth may cross at once)
 # a crossing's room along each lane: a STAYER's crossings a pitch apart, a MOVER's (a sweep crossing a bundle nearly
@@ -40,6 +41,10 @@ K_SWEEP = 4.0
 W_V = 10 ** 6                          # per via: vias first (an integer: the objective stays CP-SAT's exact one)
 SOLVE_BATCHES = int(os.environ.get('WHOLE_SOLVE_BATCHES', '100'))  # CP-SAT interleaved batches: the work budget
 SOLVE_WORKERS = 4
+# ...running these: two LP workers (the default and the strongest relaxation), core-based search and the objective's
+# lower-bound search. The default four ran nothing that raises the bound, and a plan's vias are proved from below: K51's
+# first solve stopped unproved at 421 s (best 56 vias, bound 40), with these it proves 42 in 141 s, K41 in 17 s (38)
+SUBSOLVERS = ['default_lp', 'max_lp', 'core', 'objective_lb_search']
 FACE_ROOM = 2 * VNEED                  # the band along the source's near face: a change's room along its lane
 SOLVE_STALL = 3                        # the search's model reductions in a row with no progress: stalled
 
@@ -458,9 +463,27 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
     for n in M:
         m.Add(over[n] >= SV[n] + tot[n] - VIA_PREF)
     W_OVER = W_V * (KMAX * len(M) + 1)        # one via over two outweighs every via the plan could save
+    # ---- the ROOT's proof, a floor for every re-solve of the bench: the first solve (no geometry cuts) proved the least
+    # nets over two and vias there are; a re-solve only adds cuts to it (a flip drops only an island cut a re-solve
+    # added) and history below a via, so it can do no better -- and a plan it finds AT the root's is proved at once. A
+    # re-solve left short of that proof ran out its budget on the proof alone (K51: best 1 over two and 42 vias, the
+    # root's own, bound 36, 193 s unproved, and the loop stopped). The root is carried in each solve's JSON and read from
+    # the warm start's, and taken only for the same model: its lanes, their orders, end layers, stub vias, KMAX and the
+    # built-in cuts (the bench's own), by a signature
+    sig = hashlib.sha1(json.dumps([sorted(M), list(Ln), list(Fn), [(n, tl[n], dl[n], SV[n]) for n in sorted(M)], KMAX,
+                                   VIA_PREF, [(c_['lane'], round(c_['u'], 4), round(c_['w'], 4)) for c_ in VCUTS[NVC0:]]],
+                                  sort_keys=True).encode()).hexdigest()
+    root = None
+    if hint:
+        r_ = json.load(open(hint)).get('root')
+        if r_ and r_.get('sig') == sig:
+            root = r_
+            m.Add(W_OVER * sum(over.values()) + W_V * sum(tot.values()) >= W_OVER * r_['over'] + W_V * r_['vias'])
+            print(f"   the root's proof as a floor: {r_['over']} via(s) over two, {r_['vias']} vias")
     m.Minimize(W_OVER * sum(over.values()) + W_V * sum(tot.values()) + sum(cost))
     sv = cp_model.CpSolver()
     sv.parameters.num_workers = SOLVE_WORKERS
+    sv.parameters.subsolvers.extend(SUBSOLVERS)
     # REPRODUCIBLE: stopped by a count of interleaved batches, the workers sharing no clauses. Measured on this model
     # (OR-tools 9.15): bounded by deterministic time, four solves of one model gave four answers (36051281 .. 36051642);
     # by batches with clause sharing on, two gave two; by batches with sharing off, two concurrent solves agree exactly
@@ -522,6 +545,10 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
     for n in M:
         cs_, act = chg[n]
         J['changes'][n] = [sv.Value(x) * G for x, a_ in zip(cs_, act) if sv.Value(a_)]
+    # (the root: this solve's own proof when it has no geometry cuts, else the one it was floored by)
+    J['root'] = root if root is not None else \
+        ({'over': int(sum(sv.Value(over[n]) for n in M)), 'vias': int(sum(per.values())), 'sig': sig}
+         if not CUTS and NVC0 == 0 else None)
     return J
 
 

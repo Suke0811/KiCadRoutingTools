@@ -34,6 +34,11 @@ def chord_dir(pcs, fwd, L):
     """the direction from the lane's end to the point L along it (fwd: from the tooth; else from the berth)"""
     seq = pcs if fwd else [(p[2], p[3], p[0], p[1], p[4]) for p in reversed(pcs)]
     left, (x0, y0) = L, (seq[0][0], seq[0][1])
+    # (from the ROUTER's start where the terminal is within its rounding of it: the grid point nearest the terminal,
+    # where the router starts and ends a lane -- the join between is inside the track's own end, no fold of it)
+    rx, ry = round(x0 / g) * g, round(y0 / g) * g
+    if math.hypot(rx - x0, ry - y0) <= g / math.sqrt(2) + 1e-9:
+        x0, y0 = rx, ry
     for p in seq:
         l_ = ln(p)
         if l_ >= left:

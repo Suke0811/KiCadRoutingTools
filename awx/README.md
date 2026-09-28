@@ -165,12 +165,22 @@ braid planner, no human ends. Every lane in its band at once, every net
 connected, DRC-clean; counted as every via and millimetre of the run's
 nets on each board, the human's counted the same way:
 
-| | K15 | K28 | K35 | K41 |
-|---|---|---|---|---|
-| the whole route on our own ends | **10 v, 199 mm** | **30 v, 580 mm** | **58 v, 779 mm** | **70 v, 972 mm** |
-| human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm | 70 v, 1081 mm |
-| rounds | one fanout | one fanout | one fanout | two fanouts |
-| fanout to checked route | 37 s | 133 s | 237 s | 1043 s |
+| | K15 | K28 | K35 | K41 | K51 |
+|---|---|---|---|---|---|
+| the whole route on our own ends | **10 v, 199 mm** | **30 v, 589 mm** | **58 v, 779 mm** | **70 v, 1039 mm** | **78 v, 1207 mm** |
+| human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm | 70 v, 1081 mm | 88 v, 1337 mm |
+| rounds | one fanout | one fanout | one fanout | one fanout | one fanout |
+| fanout to checked route, wall | 45 s | 160 s | 278 s | 596 s | 1248 s |
+| ... CPU (user + system) | 41 s | 150 s | 269 s | 620 s | 1398 s |
+| its largest process | 310 MB | 417 MB | 494 MB | 549 MB | 593 MB |
+
+The five rungs ran side by side on one 8-core laptop, so each wall time
+includes waiting on the others; CPU is every process of the chain (`/usr/bin/time`:
+CP-SAT's four workers each, so a rung whose solve is long runs over its wall
+time). K51's first solve proved in 22 s; its fanout was 844 s of the 1248,
+most of it the ends model's exact routes. Packed afterwards (`pack_board.py
+--fanout`, the pairs held), K51's lanes shorten 872 -> 856.5 mm, the board
+78 v, 1191 mm.
 
 ## The pack (`pack_board.py`, opt-in)
 
@@ -180,6 +190,11 @@ pulls every lane of a FINISHED board taut against its neighbours, after
 the fact, without moving a via:
 
     python3 pack_board.py BOARD.kicad_pcb --fanout BOARD_fo.kicad_pcb --nets NET,NET,... --src U1 --passes 4 [--out STEM]
+
+A diff pair's two legs among `--nets` are held as laid: the pack pulls one
+lane taut on its own, and a leg pulled alone would leave its partner (K51:
+92% of every leg already at the pair's pitch, the rest at the balls' own
+spacing, its dives and its corners). They stay in the DRC gate's scope.
 
 <img src="img/pack_zynq_k44.png" alt="The zynq K44 record before and after the pack" width="900">
 
@@ -901,7 +916,7 @@ with the whole route's own ends model.
   pair whose launch and berth orders disagree crosses once; the braid rule
   holds over every triple; a lane's crossings keep a pitch along a stayer
   and less along a mover's sweep, a pair's two crossings of opposite ways
-  its turning run apart; up to four layer changes per lane, each a via's
+  its turning run apart; up to three layer changes per lane, each a via's
   room from its own crossings -- the room of both lanes there, a pair
   crossing the via's lane the wider by its second leg -- a single's a
   change's room from both its ends, and along the route far enough from a neighbouring lane's (a
@@ -931,7 +946,19 @@ with the whole route's own ends model.
   the route within a via's room of it priced by how many audits found it so
   -- a crossing there a lane pitch square of copper, a change a via's patch.
   Only those places carry terms, so the first solve prices nothing and is
-  proven optimal in seconds (K51: 17 s). Bounded in work, not time: a count of CP-SAT's interleaved
+  proven optimal in seconds. Its four workers are two LP searches (the default
+  and the strongest relaxation), core-based search and the objective's
+  lower-bound search (`SUBSOLVERS`): a plan's vias are proved from below, and
+  the default four ran nothing that raises the bound (K51's first solve was
+  unproved at 421 s, best 56 vias against a bound of 40; now proved in 22-37
+  s; K41 15-19 s, K35 4-6 s). A RE-SOLVE is floored by the ROOT's proof, the
+  bench's first solve with no geometry cuts: a re-solve only adds cuts to it
+  and history below a via, so it can do no better, and a plan it finds at
+  the root's nets over two and vias is proved at once (a K51 re-solve at the
+  root's 42 vias, bound 36, stopped unproved at 193 s; floored, proved in 73
+  s). The root rides in each solve's JSON to the next, taken only where its
+  signature -- the lanes, their orders and end layers, stub vias, the change
+  limit and the built-in cuts -- is the re-solve's. Bounded in work, not time: a count of CP-SAT's interleaved
   batches, the workers sharing no clauses (`WHOLE_SOLVE_BATCHES`) -- bounded
   by deterministic time, or sharing clauses, one model gave a different
   answer on every run. It stops sooner once the vias are PROVED (the plan's
@@ -1009,7 +1036,16 @@ with the whole route's own ends model.
   straight run either side of it -- going where it needs to, but each step
   inside a single's share of a gap costing its length again, so it takes a
   single's room only where its turns and dives need it -- and then HELD:
-  the polish fits the singles round them, and the snap lays the singles. A pair's two ends are
+  the polish fits the singles round them, and the snap lays the singles. A
+  SINGLE starts and ends where the router does: at the grid point nearest
+  its tooth and berth (the join the audit grades), wherever a track fits
+  there, the join within that rounding drawn on to the lane's next grid
+  point -- a grid point of the snap's own choosing was a start the router
+  never made (K51 SA5: planned a cell east of its tooth, laid from the one 7
+  um west of it, 0.230 from SA2 where the bar is 0.232, and SA2 refused).
+  Copper laid as drawn -- a pair's end legs, its crossover's legs and
+  barrels -- carries no half grid step of its own, and a barrel's offset
+  off its grid point is counted once. A pair's two ends are
   END CONNECTORS (`pairs.end_legs`): two legs from its tips to a POSE on the
   grid, on a router heading, turning 45 degrees at most -- at each end the
   shortest whose legs clear everything. The pair step lays them as drawn
@@ -1093,7 +1129,9 @@ with the whole route's own ends model.
   outside it read to the micron and every lane's band joining its tooth to
   its berth.
   `whole_lint.py` checks what the snap promises: grid points, 0/45/90
-  pieces, continuity, no reversal, a via at every layer change, a pair's
+  pieces, continuity, no reversal, no fold where a lane meets its stub (its
+  way measured from the router's own start or end, the terminal's nearest
+  grid point), a via at every layer change, a pair's
   turns and dives as the pair router makes them, its end connectors, and an
   opposite-hands pair's crossover (both poses on the grid, each leg changing
   layer at its own barrel, the legs swapping sides). `whole_loop.sh` sends
@@ -1172,11 +1210,10 @@ On our OWN ends -- the ends model's fanout on `fb_t2q_pairs` -- the plan
 passes and routes all at once, every lane in its band, every net connected,
 DRC-clean (the table in *Where it stands*): K15 (13 lanes) 10 vias against
 the human's 22, K28 (25 lanes) 30 against 48, K35 (32 lanes) 58 against 60,
-each on its first fanout, the loop passing in one round; K41 (38 lanes) 70
-against 70, in 972 mm against the human's 1081, on its second fanout (the
-first round's loop stopped not converging, and the feedback's incremental
-round passed). From the start of the fanout to the checked route: 37 s,
-133 s, 237 s and 1043 s. The
+K41 (38 lanes) 70 against 70 in 1039 mm against 1081, and K51 (48 lanes) 78
+against 88 in 1207 mm against 1337 -- each on its first fanout. From the
+start of the fanout to the checked route: 45 s, 160 s, 278 s, 596 s and
+1248 s, the five side by side. The
 heaviest processes at K35 are the two snaps (the pairs' 515 MB, the
 singles' 435 MB); the pairs' snap, 97 s, is the longest stage.
 
@@ -1521,9 +1558,19 @@ abandoned with a measurement. Untried ideas live here and nowhere else.
 
 First, the whole-route plan (`whole_*.py`):
 
-- **The crossover in the pose router** (#1055): an opposite-hands pair
-  swapping its legs at any dive the pose search finds room for, not only
-  where a plan puts it.
+- **Tune the policy weights.** The ends model's price of a crossing on the
+  trunk (`whole_ends.X_TRUNK`, a fifth of a via) is one comparison: a
+  twentieth stalled K41's solves, a fifth passed K15-K41, nothing between
+  or above was tried. It could follow a property of the board instead --
+  the solve's own size (its crossings on the trunk, its triples) held where a
+  solve proves within a minute. The other policies to sweep the same way:
+  the ends' congestion (`W_CONG`, `LOAD_OK`), the feedback's prices
+  (`FB_AVOID`, `FB_PAIR`), its search effort (`ILS_ROUNDS`, `ILS_KICK`,
+  `ILS_PATIENCE`, `EXACT_TOP`), the solve's budget and stall
+  (`WHOLE_SOLVE_BATCHES`, `SOLVE_STALL`), the geometry's comfort pitch
+  (`P_COMF` and its weights), the loop's `PATIENCE` and the street sites
+  (`DST_STREET`). One at a time, over K28-K51 and synthetic buses
+  (`synth_bus.py`), judged on passes, then vias, then time.
 - **Units.** `rules.py`'s margins on `via_need`, `lane_min` and `end_keep`
   (a "cell" of 0.03 and 0.02 / 0.05 mm, rather than the grid), the braid's
   planning distances the whole route starts from (`BLOCK_GAP`, `ROW_O`,
