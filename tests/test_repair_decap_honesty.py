@@ -483,6 +483,98 @@ def test_the_decap_rung_reverts_a_seat_that_adds_a_finding():
     print(f"  PASS: C2 reverted -- would add {row['added']}")
 
 
+def test_the_decap_rung_skips_a_locked_cap_and_reverts_a_growing_overlap():
+    """Two of the rung's own refusals. A cap the caller locks is never
+    moved (its row says `locked`). And a fixing pose that grows the
+    placement's courtyard overlap is reverted even when the grade adds no
+    error -- injected: `legality_at` reads 1mm2 more while C2 is away from
+    its input pose."""
+    real = fp.PoseGrader.legality_at
+    with tempfile.TemporaryDirectory() as td:
+        intent, src = _splitflap3(td)
+        locked = seeder.repair_placement(
+            parse_kicad_pcb(src), src, intent, group_sources=SOURCES,
+            clearance=CLEARANCE, repair_decaps=True, lock_globs=['C2'])
+        assert [x['result'] for x in
+                locked['decap_rung']['C2']['tried']] == ['locked'], locked
+        home = parse_kicad_pcb(src).footprints['C2']
+
+        def grows(self, *a, **kw):
+            got = dict(real(self, *a, **kw))
+            p = self.state.parts['C2']
+            if abs(p.x - home.x) + abs(p.y - home.y) > 1e-6:
+                got['overlap_area'] = float(got.get('overlap_area') or 0) + 1
+            return got
+        fp.PoseGrader.legality_at = grows
+        try:
+            on = seeder.repair_placement(
+                parse_kicad_pcb(src), src, intent, group_sources=SOURCES,
+                clearance=CLEARANCE, repair_decaps=True)
+        finally:
+            fp.PoseGrader.legality_at = real
+        row = on['decap_rung']['C2']['tried'][0]
+        assert row['result'] == 'reverted', row
+        assert 'legality.overlap_area' in row['added'], row
+    print("  PASS: a locked C2 is skipped; a C2 seat that grows the overlap "
+          "is reverted")
+
+
+def test_two_caps_on_two_pins_of_one_ic_do_not_block_each_other():
+    """Every uncovered pin of one IC shares ONE claim, so the rung must ask
+    about the FINDING (its pin), or a cap that clears pin 1 reads as failing
+    while pin 6 is still charged and is reverted (phase-3 verifier: 11 such
+    on glasgow). watchy, piled and seeded (seed 0), decaps 2.5/2.5: U4 has
+    several pins charged, and a cap is seated for one of them while another
+    is still open."""
+    import random
+    from placement.parser import extract_locked_refs
+    from placement.portfolio import copy_siblings
+    board = os.path.join(ROOT, 'kicad_files', 'watchy.kicad_pcb')
+    with tempfile.TemporaryDirectory() as td:
+        pcb = parse_kicad_pcb(board)
+        doc = fp.emit_intent(pcb, board)
+        doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=2.5,
+                             max_pin_distance_mm=2.5)
+        ipath = os.path.join(td, 'w.json')
+        with open(ipath, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh)
+        intent = fp.load_intent(ipath)
+        locked = extract_locked_refs(board)
+        bb = pcb.board_info.board_bounds
+        cx, cy = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
+        pile = os.path.join(td, 'pile.kicad_pcb')
+        write_placed_output(board, pile, [
+            {'reference': r, 'new_x': cx, 'new_y': cy,
+             'new_rotation': f.rotation or 0.0}
+            for r, f in pcb.footprints.items() if r not in locked])
+        copy_siblings(board, pile)
+        res = seeder.seed_from_intent(
+            parse_kicad_pcb(pile), pile, intent, random.Random('0'),
+            group_sources=SOURCES, clearance=CLEARANCE,
+            board_edge_clearance=0.55, grid_step=0.1)
+        seeded = os.path.join(td, 's0.kicad_pcb')
+        write_placed_output(pile, seeded, res['placements'])
+        copy_siblings(board, seeded)
+        before = fp.grade(intent, parse_kicad_pcb(seeded), seeded,
+                          group_sources=SOURCES, clearance=CLEARANCE)
+        on = seeder.repair_placement(
+            parse_kicad_pcb(seeded), seeded, intent, group_sources=SOURCES,
+            clearance=CLEARANCE, repair_decaps=True)
+        pins = {}
+        for v in before.errors:
+            if v.rule == 'decap_pin_distance':
+                pins.setdefault(v.ref, set()).add(str(v.measured.get('pad')))
+        multi = {ic for ic, p in pins.items() if len(p) >= 2}
+        seated = [(c, x['ic'], x['pad']) for c, r in on['decap_rung'].items()
+                  for x in r['tried'] if x['rule'] == 'decap_pin_distance'
+                  and x['ic'] in multi and x['result'] == 'seated']
+        assert seated, (multi, on['decap_rung'])
+        still = _decap_refs_after(seeded, on, intent, td, 'w_on.kicad_pcb')
+        assert not set(on['repaired']) & still, (on['repaired'], still)
+    print(f"  PASS: {len(seated)} pin seat(s) on multi-pin ICs kept, e.g. "
+          f"{seated[0]}")
+
+
 def test_cli_repair_decaps_needs_repair_and_reports_the_rung():
     from placement.portfolio import copy_siblings
     with tempfile.TemporaryDirectory() as td:
@@ -563,6 +655,8 @@ TESTS = [
     test_cli_writes_the_refs_and_the_repaired_set_is_honest,
     test_the_decap_rung_seats_a_cap_and_refuses_a_disproportionate_move,
     test_the_decap_rung_reverts_a_seat_that_adds_a_finding,
+    test_the_decap_rung_skips_a_locked_cap_and_reverts_a_growing_overlap,
+    test_two_caps_on_two_pins_of_one_ic_do_not_block_each_other,
     test_cli_repair_decaps_needs_repair_and_reports_the_rung,
 ]
 

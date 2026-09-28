@@ -5367,8 +5367,11 @@ def _decap_target(state, pcb_data, cap: str, ic: str, pad_number=None):
     """`(x, y)` the decap rung seats `cap` toward: the IC's declared supply
     pad (`decap_pin_distance`), or the IC pad on the cap's RAIL nearest the
     cap (`decap_distance`) -- the rail being the cap's smallest multi-ref
-    net, stage 2.5's own choice (`rail_of`), so a GND pad is never the
-    target. None when the IC carries no such pad."""
+    net, stage 2.5's own choice (`rail_of`). That keeps the main ground
+    off the target, not every ground: on a split-ground board the smallest
+    net can be a local one (glasgow's C76 -> /GNDPLL0), and a non-decoupling
+    cap aims at a signal pad -- harmless, since the grade decides what is
+    kept. None when the IC carries no such pad."""
     from .legality import footprint_at_pose
     part, chip = state.parts[cap], state.parts[ic]
     fp = footprint_at_pose(pcb_data.footprints[ic], (chip.x, chip.y, chip.rot))
@@ -5424,7 +5427,12 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
             amt = m.get('distance_mm', m.get('gap_mm'))
             excess = (float(amt) - float(limits.get(v.rule, 0.0))
                       if isinstance(amt, (int, float)) else 0.0)
-            tasks.append((str(cap), str(ic), pad, _fp.violation_claim(v),
+            # The FINDING, not the claim: every uncovered pin of one IC
+            # shares a claim, so asking the claim whether THIS pin is fixed
+            # read a cap that cleared pin 1 as failing while pin 6 was still
+            # charged -- two caps serving two pins of one IC reverted each
+            # other (phase-3 verifier: glasgow C14/C16 on U36, 11 such).
+            tasks.append((str(cap), str(ic), pad, finding_key(v),
                           max(0.0, excess)))
     out: Dict[str, Dict] = {}
     for cap, ic, pad, claim, excess in sorted(
@@ -5444,8 +5452,7 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
             notes.append(f"decap rung: the grade is unavailable "
                          f"({type(exc).__name__}: {exc}) -- nothing seated")
             break
-        if claim not in {_fp.violation_claim(v) for v in before
-                         if v.severity == _fp.ERROR}:
+        if claim not in findings_of(before):
             row['result'] = 'already_cleared'
             continue
         target = _decap_target(state, pcb_data, cap, ic, pad)
@@ -5481,8 +5488,7 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
             if (isinstance(was, (int, float)) and isinstance(now, (int, float))
                     and now > was + (0 if isinstance(now, int) else _eps)):
                 added.append(f'legality.{key}')
-        still = claim in {_fp.violation_claim(v) for v in after
-                          if v.severity == _fp.ERROR}
+        still = claim in findings_of(after)
         d = math.hypot(part.x - ox, part.y - oy)
         # The ordinary repair's proportion rule, in the violation's own
         # currency: a cap 0.125mm past its limit is not moved 9.9mm to fix

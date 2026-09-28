@@ -428,8 +428,9 @@ Examples:
                    help="With --repair (#1066): also seat each cap a "
                         "decap_distance / decap_pin_distance error charges "
                         "at its IC's pin -- the nearest legal pose within the "
-                        "rule's limit of that pin, kept only when the charged "
-                        "error is gone and the grade adds nothing. Off by "
+                        "rule's limit of that pin (then twice it), kept only "
+                        "when that finding is gone, no finding is new or "
+                        "worse, and the move is proportionate. Off by "
                         "default: without it a decap violator is not moved, "
                         "and is reported unresolved")
     p.add_argument("--reseat", nargs="*", default=None, metavar="REF",

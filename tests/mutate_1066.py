@@ -146,6 +146,27 @@ ROWS = [
      "            state.apply_move(cap, ox, oy, orot)\n",
      (T1066,), 'KILLED'),
 
+    # The rung asks the CLAIM whether its pin is fixed: two caps on two pins
+    # of one IC revert each other.
+    ('the-rung-asks-the-claim-not-the-pin', 's',
+     "            tasks.append((str(cap), str(ic), pad, finding_key(v),\n",
+     "            tasks.append((str(cap), str(ic), pad, _fp.violation_claim(v) + ('', ''),\n",
+     (T1066,), 'KILLED'),
+
+    # A seat that grows the courtyard overlap is kept.
+    ('the-rung-ignores-legality-growth', 's',
+     "                added.append(f'legality.{key}')\n",
+     "                pass\n",
+     (T1066,), 'KILLED'),
+
+    # A locked cap is searched like any other.
+    ('the-rung-moves-a-locked-cap', 's',
+     "        if part.locked:\n"
+     "            row['result'] = 'locked'\n",
+     "        if False:\n"
+     "            row['result'] = 'locked'\n",
+     (T1066,), 'KILLED'),
+
     # The refs behind the count never reach JSON_SUMMARY.
     ('unresolved-refs-not-written', 'p',
      "                'unresolved_refs': _unres,\n",
