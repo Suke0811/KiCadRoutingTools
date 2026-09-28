@@ -40,6 +40,7 @@ each got, and where it stopped).
               each layer is legal, and the nearest obstacles.
   --viacheck  each routed via's distance to the reservations and copper.
 """
+KRT_TOOL = {'scope': [], 'kind': 'conditional'}   # #937: a research tool (awx), catalogued, shown at no door
 import argparse
 import contextlib
 import io

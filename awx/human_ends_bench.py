@@ -33,6 +33,7 @@ The bench gets the chain's DRC floor in its .kicad_pro. Never give a chain TAG
 that collides with the bench's name up to case (macOS paths are case-blind,
 and chain_k.sh removes its outputs before it writes them).
 """
+KRT_TOOL = {'scope': [], 'kind': 'actor'}   # #937: a research tool (awx), catalogued, shown at no door
 import argparse
 import collections
 import contextlib

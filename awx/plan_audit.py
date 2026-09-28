@@ -57,6 +57,7 @@ step away. Static copper stays where it is.
 
 --png OUT (pitch: a file; bands: a directory) draws the finding over the plan.
 """
+KRT_TOOL = {'scope': [], 'kind': 'instrument'}   # #937: a research tool (awx), catalogued, shown at no door
 import argparse
 import collections
 import contextlib

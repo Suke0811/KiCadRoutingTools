@@ -130,7 +130,10 @@ image = (
     .pip_install_from_requirements(str(_repo_root / "requirements.txt"))
     # No pytest: run_all.py runs every test as a plain script, and
     # test_718_static_test_hygiene refuses a test file that needs pytest.
-    .apt_install("git", "procps", "curl")
+    .apt_install("git", "procps", "curl", "build-essential")
+    # a toolchain for the case with no prebuilt to download: a branch whose rust_router/Cargo.toml is
+    # ahead of the latest release (build_router.py then builds from source, and without cargo it fails)
+    .run_commands("curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal")
     .env({"KICAD_SWEEP_GIT": GIT_SHA, "PYTHONUNBUFFERED": "1"})
     .add_local_dir(_src_dir, REPO, copy=True, ignore=[
         "**/.git/**", "**/__pycache__/**", "**/target/**",
@@ -162,7 +165,8 @@ image = (
         f"want={_N_BOARDS}; print('corpus boards visible to git:', n, 'want', want); "
         f"sys.exit(0 if n == want else "
         f"f'image is not a faithful checkout: {{n}} of {{want}} boards')\"",
-        f"cd {REPO} && python3 build_router.py",
+        f"cd {REPO} && (python3 build_router.py"
+        f" || (. $HOME/.cargo/env && python3 build_router.py --from-source))",
         # Prove the extension imports IN A FRESH PROCESS before any shard runs.
         # A broken .so would otherwise surface as 594 identical import errors
         # spread over 50 containers.
