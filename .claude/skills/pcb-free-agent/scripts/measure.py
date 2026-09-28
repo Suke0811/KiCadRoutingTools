@@ -12,8 +12,9 @@ Reports:
 - wall clock;
 - tool calls by tool;
 - repo scripts run;
-- how long the agent spent WAITING on its own jobs (`until`/`sleep` polls and
-  Monitor calls) versus other tool time versus model time;
+- how long the agent spent WAITING on its own jobs (polls, Monitor calls, and
+  idling until a background job reported back) versus other tool time versus
+  model time -- each gap between transcript rows goes to what ended it;
 - tokens, de-duplicated by message id (a streamed message repeats its usage
   per content block);
 - any use of a forbidden entry point: the retired staged drivers. Every
@@ -70,6 +71,44 @@ def read(path):
     return rows, bad
 
 
+def _split(rows, uses):
+    """(waiting, tool, model) seconds: every gap between consecutive rows is
+    attributed to WHAT ENDED IT.
+
+    - an assistant row: the model was generating -> model;
+    - a tool_result: a foreground command ran -> tool, unless that command
+      was a poll (`until`/`sleep`, or Monitor) -> waiting;
+    - anything else (a background job's <task-notification>, queue rows):
+      the agent sat idle until its own job reported back -> waiting.
+
+    The first cut counted only foreground polls as waiting, so an agent idle
+    on background jobs read as "model time": run 33 reported 211 min of
+    model time where the model spent 19 and waited 193.
+    """
+    polls = {k for k, (_t, name, inp) in uses.items()
+             if name == 'Monitor'
+             or (name in SHELLS and WAIT_RE.search(str(inp.get('command', ''))))}
+    timed = sorted((r for r in rows if r.get('timestamp')),
+                   key=lambda r: _ts(r['timestamp']))
+    wait = work = model = 0.0
+    for prev, cur in zip(timed, timed[1:]):
+        gap = (_ts(cur['timestamp']) - _ts(prev['timestamp'])).total_seconds()
+        content = (cur.get('message') or {}).get('content')
+        ended_by = ({b.get('tool_use_id') for b in content
+                     if isinstance(b, dict) and b.get('type') == 'tool_result'}
+                    if isinstance(content, list) else set())
+        if cur.get('type') == 'assistant':
+            model += gap
+        elif ended_by:
+            if ended_by & polls:
+                wait += gap
+            else:
+                work += gap
+        else:
+            wait += gap
+    return wait, work, model
+
+
 def tally(rows):
     tools, scripts, tokens = (collections.Counter() for _ in range(3))
     forbidden, seen, uses, results = [], set(), {}, {}
@@ -110,22 +149,13 @@ def tally(rows):
                     forbidden.append({'hit': f, 'command': cmd[:300]})
                 if 'converge.py' in hits:
                     verbs.update(CONVERGE_VERB_RE.findall(cmd))
-    wait = work = 0.0
-    for k, (t0, name, inp) in uses.items():
-        if not (t0 and results.get(k)):
-            continue
-        d = (_ts(results[k]) - _ts(t0)).total_seconds()
-        cmd = str(inp.get('command', ''))
-        if name == 'Monitor' or (name in SHELLS and WAIT_RE.search(cmd)):
-            wait += d
-        else:
-            work += d
+    wait, work, model = _split(rows, uses)
     wall = (last - first).total_seconds() if first else 0.0
     return {'wall_clock': str(last - first) if first else None,
             'wall_seconds': wall,
             'waiting_on_jobs_seconds': round(wait, 1),
             'other_tool_seconds': round(work, 1),
-            'model_and_idle_seconds': round(max(0.0, wall - wait - work), 1),
+            'model_seconds': round(model, 1),
             'assistant_turns': turns, 'tool_calls': sum(tools.values()),
             'tools': dict(tools.most_common()),
             'repo_scripts': dict(scripts.most_common()),
