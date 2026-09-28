@@ -1047,7 +1047,15 @@ with the whole route's own ends model.
   turns, a turning radius's straight run after each, a via only on a
   straight run either side of it -- going where it needs to, but each step
   inside a single's share of a gap costing its length again, so it takes a
-  single's room only where its turns and dives need it -- and then HELD:
+  single's room only where its turns and dives need it -- and KEEPING TO ITS
+  LINE: a slanted line is laid as a staircase of runs on the two router
+  headings either side, each at least the turning radius long, so a pair
+  cannot keep nearer it than half the smallest such staircase
+  (`stair_spread`: nothing on a router heading, 0.12 mm apart across a line
+  19 degrees off one); beyond that and a grid step it pays `W_KEEP` per mm
+  of length per mm (K51's SDQS0 took 1.5-2.3 mm runs rather than a bend and
+  strayed 0.21 mm into SDQ7's room, and SDQ7 fitted beside it on one
+  machine and not on the other) -- and then HELD:
   the polish fits the singles round them, and the snap lays the singles. A
   SINGLE starts and ends where the router does: at the grid point nearest
   its tooth and berth (the join the audit grades), wherever a track fits
@@ -1654,8 +1662,8 @@ First, the whole-route plan (`whole_*.py`):
   (`FB_AVOID`, `FB_PAIR`), its search effort (`ILS_ROUNDS`, `ILS_KICK`,
   `ILS_PATIENCE`, `EXACT_TOP`), the solve's budget and stall
   (`WHOLE_SOLVE_BATCHES`, `SOLVE_STALL`), the geometry's comfort pitch
-  (`P_COMF` and its weights), the loop's `PATIENCE` and the street sites
-  (`DST_STREET`). One at a time, over K28-K51 and synthetic buses
+  (`P_COMF` and its weights), the snap's pair keep (`W_KEEP`), the loop's
+  `PATIENCE` and the street sites (`DST_STREET`). One at a time, over K28-K51 and synthetic buses
   (`synth_bus.py`), judged on passes, then vias, then time.
 - **Units.** `rules.py`'s margins on `via_need`, `lane_min` and `end_keep`
   (a "cell" of 0.03 and 0.02 / 0.05 mm, rather than the grid), the braid's

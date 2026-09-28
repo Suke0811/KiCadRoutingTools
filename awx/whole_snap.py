@@ -81,6 +81,7 @@ RVIA = 2 * bd.LANE_MIN                                     # how far a via may m
 W_BEND = 4 * g                                             # a 45-degree bend, in mm of length
 W_DEV = 0.5                                                # per mm of length, per mm from the smooth line
 W_SHARE = 1.0                                              # a pair laid first: a step in a single's share costs its length again
+W_KEEP = float(os.environ.get('SNAP_W_KEEP', 20.0))       # a pair, per mm of length, per mm beyond its staircase (stair_spread)
 SWEEPS = 2                                                 # clean-up sweeps against the others' real copper
 W_VIA = 1.0                                                # per mm a via stands from the plan's
 POSE_TRIES = 4                                             # a pair's pose combinations tried before one search asks if any can
@@ -440,6 +441,24 @@ PDIVE = []           # (n, x, y): every placed PAIR dive's cells the pair router
                      # way along its arriving heading's integer perpendicular), where it will look for the dive
 
 
+def stair_spread(dx, dy):
+    """how far the corners of the SMALLEST staircase the pair router can lay along the heading (dx, dy) stand apart
+    across it: runs on the two octilinear headings either side, each at least pairs.turn_straight_steps long (the
+    router's turning radius) -- 0 on an octilinear heading. A pair planned at a slant cannot keep nearer its line than
+    half this (K51: 19.4 degrees off, 0.122 apart); it strayed 0.21 to one side for want of a bend, into a single's room"""
+    a = math.atan2(abs(dy), abs(dx)) % (math.pi / 4)
+    if a < 1e-9 or math.pi / 4 - a < 1e-9:
+        return 0.0
+    # in the frame of the lower octilinear heading: a flat run H, then a diagonal run D (D across, D along)
+    t = math.tan(a)                      # the line's slope in that frame: D / (H + D)
+    R = _pairs.turn_straight_steps(cfg) * g
+    if t <= 0.5:
+        D = R; H = D * (1 - t) / t
+    else:
+        H = R; D = H * t / (1 - t)
+    return H * D / (H + D) * math.cos(a)
+
+
 def lane_bar(n, m):
     return TW + CL + hw[n] + hw[m] + g / 2 * (OFFG[n] + OFFG[m])
 
@@ -457,6 +476,9 @@ def build(n):
     # distance to the smooth line and arc position of the nearest point
     dist = np.full(X.shape, np.inf)
     arc = np.zeros(X.shape)
+    # a pair: how far it may stand from its line before the steep price -- half the smallest staircase the router
+    # lays along the nearest segment's heading, and a grid step
+    tol = np.zeros(X.shape) if n in prs else None
     s0 = 0.0
     for a_, b_ in zip(P, P[1:]):
         d_ = seg_pts_dist(a_, b_, X, Y)
@@ -465,6 +487,8 @@ def build(n):
         better = d_ < dist
         dist[better] = d_[better]
         arc[better] = s0 + t_[better] * L_
+        if tol is not None:
+            tol[better] = stair_spread(b_[0] - a_[0], b_[1] - a_[1]) / 2 + g
         s0 += L_
     band = dist <= BAND
     bad = {L: np.zeros(X.shape, bool) for L in ('F.Cu', 'B.Cu')}
@@ -698,7 +722,8 @@ def build(n):
                 if KEEP and min(math.hypot(kx - c_[0], ky - c_[1]) for (kx, ky) in KEEP for c_ in (p_, q_)) \
                         < 3 * bd.LANE_MIN + math.hypot(q_[0] - p_[0], q_[1] - p_[1]):
                     mark(bad[L], box(p_, q_), lane_bar(n, m), seg_d(p_, q_))
-    return dict(i0=i0, j0=j0, xs=xs, ys=ys, dist=dist, arc=arc, band=band, bad=bad, vbad=vbad, xroom=xroom, soft=soft)
+    return dict(i0=i0, j0=j0, xs=xs, ys=ys, dist=dist, arc=arc, band=band, bad=bad, vbad=vbad, xroom=xroom, soft=soft,
+                tol=tol)
 
 
 def via_arcs(n):
@@ -819,6 +844,7 @@ def route(n, strict=True):
     ROOM1 = [_pairs.dive_room(cfg, ctx.pair_ends[n][1], unit(d)) if no90 else 0.0 for d in range(8)]
     # the search reads its maps as plain lists: the same values, without numpy's cost per element
     bandL, arcL, distL = band.tolist(), arc.tolist(), dist.tolist()
+    tolL = W['tol'].tolist() if W.get('tol') is not None else None
     badL = {L_: m_.tolist() for L_, m_ in bad.items()}
     vbadL = [m_.tolist() for m_ in vbad]
     BENDT = [[min(abs(nd - d), 8 - abs(nd - d)) for nd in range(8)] for d in range(8)]     # 45-degree steps of a turn
@@ -924,6 +950,8 @@ def route(n, strict=True):
                     continue
                 step = STEPT[nd]
                 nc = c_ + step * (1 + W_DEV * distL[ni][nj]) + W_BEND * bend
+                if tolL is not None and distL[ni][nj] > tolL[ni][nj]:
+                    nc += step * W_KEEP * (distL[ni][nj] - tolL[ni][nj])
                 if softL is not None and softL[L][ni][nj]:
                     nc += W_SHARE * step
                 if not multi and (ni, nj) == E:
