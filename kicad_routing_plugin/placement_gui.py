@@ -1,8 +1,8 @@
 """
 KiCad Routing Tools - Placement sub-tab (AI tab notebook).
 
-Two Claude-Code-driven actions ("Place" via /plan-pcb-placement, "Place +
-Route" via /plan-pcb-placement-and-routing) plus the non-AI "Beautify Labels"
+Two Claude-Code-driven actions ("Place" via /pcb-free-agent place, "Place +
+Route" via /pcb-free-agent full) plus the non-AI "Beautify Labels"
 action (issue #481). The AI runs are headless, write into a persistent
 workdir (placement_run.create_workdir), take minutes to hours, and are
 observed from outside: a 1 s monitor timer merges the stream-json transcript,
@@ -550,7 +550,7 @@ class PlacementTab(wx.Panel):
 
         self.place_btn = wx.Button(sw, label="Place (AI)")
         self.place_btn.SetToolTip(
-            "Claude Code runs the /plan-pcb-placement skill headless on a "
+            "Claude Code runs /pcb-free-agent place headless on a "
             "snapshot of this board. Runs minutes to hours; artifacts land "
             "in a krt_placement folder next to the board file, which keeps "
             f"this board's newest {KEEP_RUNS} runs.")
@@ -558,8 +558,8 @@ class PlacementTab(wx.Panel):
                      wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         self.place_route_btn = wx.Button(sw, label="Place + Route (AI)")
         self.place_route_btn.SetToolTip(
-            "Claude Code runs the /plan-pcb-placement-and-routing skill "
-            "headless (place, then route, looping on the outcome). Runs "
+            "Claude Code runs /pcb-free-agent full headless (it places "
+            "and routes, choosing its own steps). Runs "
             "minutes to hours; artifacts land in a krt_placement folder "
             f"next to the board file, which keeps this board's newest "
             f"{KEEP_RUNS} runs.")
