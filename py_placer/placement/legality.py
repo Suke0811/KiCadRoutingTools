@@ -4065,13 +4065,13 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
         # and 0.17mm) no pad crosses the real outline at all.
         #
         # BOTH TRAVEL; neither replaces the other. The coarse one keeps its
-        # meaning and its consumers: loop_driver's L2 gate is justified over
-        # 119 graded rows, where it refuses 24 boards of which 12 are refusals
-        # `blocking` does not make, and the two censuses are disjoint by
-        # construction -- a part off the outline collides with nothing. What
-        # this one adds is WHICH PADS, so a refusal is actionable and a coarse
-        # hit with an empty precise list reads as the artifact it is instead
-        # of as a silent defect.
+        # meaning and its consumers: the retired loop_driver's L2 gate was
+        # justified over 119 graded rows, where it refused 24 boards of which
+        # 12 are refusals `blocking` does not make, and the two censuses are
+        # disjoint by construction -- a part off the outline collides with
+        # nothing. What this one adds is WHICH PADS, so a refusal is
+        # actionable and a coarse hit with an empty precise list reads as the
+        # artifact it is instead of as a silent defect.
         pad_gate = BoardOutlineGate(board_info, 0.0)
         for ref, pp in parts.items():
             fp = fps[ref]
@@ -4139,7 +4139,7 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             # board plus six perturbations that did not move it, where SW1..SW4
             # sit 0.1696mm inside the inflated outline and no pad crosses the
             # real one. The number is not wrong; it is a different question,
-            # and it is the one loop_driver's L2 gate refuses on.
+            # and it is the one the retired loop_driver's L2 gate refused on.
             'oob_pad_basis': ('part pad AABB vs outline inflated by the '
                               'grading clearance (NOT the per-pad outline '
                               'measure; see render_placement '

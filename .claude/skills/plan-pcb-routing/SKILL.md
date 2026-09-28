@@ -2505,9 +2505,10 @@ suffices — its in-run finalize welds and verifies against KiCad's fill).
 ### Retrying a failed net
 
 Re-enter at the FAILING STEP rather than re-running the chain, and read the
-router's hint before choosing a lever: the `diagnose-routing-failures` skill
-reads both the hint and the blocker report. Two things it does not say, and
-that cost a lap each:
+router's `Hint:` line before choosing a lever: it names the flag and the
+nets, and it is usually right. For the blocker report,
+`diagnose-routing-failures` classifies the failure modes. Two things neither
+says, and that cost a lap each:
 
 **A scoped `--nets` retry on a net that is ALREADY CONNECTED is a no-op.** The
 router has nothing to improve there: the escalation ladder never fires and the

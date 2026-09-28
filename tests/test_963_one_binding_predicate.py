@@ -101,7 +101,7 @@ def _is_sha_call(node):
     file: `sha256_file(p)` under any import alias, `hashlib.sha256(...)`, and
     `....hexdigest()`. The hashlib pair is not hypothetical -- it is exactly
     how `py_tools/render_placement.py` and
-    `.claude/skills/.../scripts/board_score.py` already spell it, so a copy
+    `py_tools/board_score.py` already spell it, so a copy
     pasted from either would have walked straight past a scan that only knew
     `sha256_file`.
     """

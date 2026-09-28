@@ -605,11 +605,12 @@ complete. Any later change to a rank key or a gate should cite the rule it is
 discharging, not a number chosen afterwards.*
 
 1. **`portfolio.rank_key` leads with `crossings`, and `rule1_check` bars a
-   candidate on it, while `loop_driver.py` and the placement skill say in
-   capitals never to gate on crossings.** Both cannot be right. **Neither is
-   changed by this study**: `crossings` passes in one arm and fails in the
-   other, so the evidence does not license a reorder in either direction. The
-   contradiction is disclosed at both code sites and stays disclosed.
+   candidate on it, while the retired `loop_driver.py` and placement skill
+   said in capitals never to gate on crossings.** Both cannot be right.
+   **Neither is changed by this study**: `crossings` passes in one arm and
+   fails in the other, so the evidence does not license a reorder in either
+   direction. The contradiction is disclosed at both code sites and stays
+   disclosed.
 2. If a future run finds ≥ 1 board on which a rule-1 violator routed to strictly
    lower `blocking` than the baseline, the `crossings` clause of `rule1_check`
    is withdrawn — and the withdrawal keeps its row, with its measured direction,
