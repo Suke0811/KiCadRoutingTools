@@ -245,7 +245,7 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 | stage | what it seats |
 |---|---|
 | 0 | `fixed_poses[]` (#1054): EXACTLY at the declared pose, a check and never a search -- courtyards may abut (KiCad's rule) but not overlap, pads and holes keep their clearance, and every declared pose is judged against every other one, so a clashing pair is refused BOTH; an illegal pose is refused with its measurement and the part held out of every later stage. Seated parts are stamped `(locked yes)` |
-| 1 | edge connectors on their declared edge, inside the overhang band |
+| 1 | edge connectors on their declared edge, inside the overhang band. The edge seat bypasses `pose_ok` (it overhangs by design), so `edge_seat_ok` carries its own conjuncts -- band, pads on the board, keep-outs, exclusive zones and, since #1044, the board's rule-area `(tracks not_allowed)` bands, ABSOLUTE: a band pose is refused by name and the connector left to the later stages rather than seated where no track can reach its pad |
 | 1.5 | `must_lock` parts, at their current pose where it is legal |
 | 2 | zoned blocks, packed radially from the zone centre; a declared array whose members all sit in one zoned block is seated into it whole (stage 2.45) |
 | 2.4 | declared non-zoned arrays: each row's served part, then the row (stage 2.45), each row at its members' rank. A row member is never seated alone here. The order is disclosed in the seeder's `early_order` |
@@ -257,6 +257,11 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 `place_seed`'s `JSON_SUMMARY` carries what stages 0, 2.45 and 2.5 did, judged
 at the WRITTEN poses: `fixed_seated` / `fixed_refused`, `arrays_formed` (the
 grader's `array_formation` verdict) / `array_unseated`, and `decap_stage`.
+Its final gate also names rule-area band pads (#1044): `keepout_copper_seeded`
+is `[ref, mm]` for each part the seed MOVED whose pad copper went deeper into a
+`(tracks not_allowed)` band than at its input pose, and exits 4 on it;
+`oob_keepout_copper_count` is the written board's total, inherited ones
+included (reported, not charged).
 
 Every `JSON_SUMMARY` it prints (seed, `--repair`, `--reseat`) carries
 `connector_requirements` (#974): the declared edge connectors' graded

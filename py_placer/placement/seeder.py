@@ -1475,6 +1475,13 @@ def _body_band_correct(state, ref: str, edge: str, x: float, y: float,
                   and abs(target - row['body_outside_mm']) < 0.02)
 
 
+#: #1044: `edge_seat_ok`'s rule-area band conjunct. On in every production
+#: path; `tests/test_placement_ab.py` turns it off for its OFF arm only
+#: (`seed_from_intent(_edge_band_gate=False)`), which is why it is module
+#: state rather than a parameter threaded through every edge caller.
+_edge_band_gate = True
+
+
 def edge_seat_ok(state, part, x: float, y: float, edge: str,
                  lo: float, hi: float,
                  reasons: Optional[List[str]] = None) -> bool:
@@ -1575,6 +1582,25 @@ def edge_seat_ok(state, part, x: float, y: float, edge: str,
         if reasons is not None:
             reasons.extend(f"exclusive zone of block {n!r}" for n in _zblockers)
         return False
+    # A FIFTH conjunct (#1044), for the same reason as the fourth: this
+    # predicate bypasses `pose_ok`, and so bypassed `pads_ok`'s #1031 check
+    # of the board's rule-area keep-out bands. Stage 1 and `_seat_edge` could
+    # put an SMD connector's pad copper in a `(tracks not_allowed)` band --
+    # a pad no track can reach -- and the polish quench then took that pose
+    # as the seed's licence. ABSOLUTE, like `_fixed_pose_check`'s: an edge
+    # seat is chosen, not inherited, so a band pose has no incumbent to be
+    # "no worse than". The trade is the keep-out conjunct's: a connector
+    # whose whole band lies in the rule area is left to the later stages,
+    # named in `reasons`.
+    if _edge_band_gate:
+        ctx = getattr(state, 'legality_ctx', None)
+        if ctx is not None and getattr(ctx, 'keepouts', None) is not None:
+            ko = ctx.keepout_amount(part.ref, x, y, part.rot)
+            if ko > 1e-6:
+                if reasons is not None:
+                    reasons.append(f"pad copper {ko:.3f}mm into a rule-area "
+                                   f"keep-out band")
+                return False
     gate = state.edge_gate
     for px, py, _sz in part.pad_globals(x, y, part.rot):
         # A zero-size rect at the pad centre: "is this point on the board",

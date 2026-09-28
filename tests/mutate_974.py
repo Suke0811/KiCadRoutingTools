@@ -329,10 +329,10 @@ ROWS = [
      "        else:\n",
      (T974C,), 'KILLED'),
     ('fresh-exit-code-follows-the-report', 'ps',
-     "    _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta)",
+     "    _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta,",
      "    _reason = gate_reason(result['unseated'] or not "
      "summary['connector_requirements']['complete'], own, _my_pads, "
-     "_hole_delta)",
+     "_hole_delta,",
      (T974C,), 'KILLED'),
 
     # ---- the documentation gate: RETIRED ---------------------------------

@@ -288,7 +288,7 @@ def fixed_pose_reason(summary):
             f"JSON_SUMMARY. It was still written, for inspection.")
 
 
-def gate_reason(unseated, own, my_pads, hole_delta):
+def gate_reason(unseated, own, my_pads, hole_delta, band=()):
     """The one stderr line that says WHY this seed did not pass its gate.
 
     Two failures reach exit 4 and they are not the same failure, so the line
@@ -303,7 +303,7 @@ def gate_reason(unseated, own, my_pads, hole_delta):
     named the wrong channel and pointed at output that is not printed in
     that case.
     """
-    if not (unseated or own or my_pads or hole_delta):
+    if not (unseated or own or my_pads or hole_delta or band):
         return None
     tail = " It was still written, for inspection."
     if unseated or own:
@@ -316,6 +316,9 @@ def gate_reason(unseated, own, my_pads, hole_delta):
     if hole_delta:
         ch.append(f"{hole_delta} hole conflict(s) the board did not come in "
                   f"with")
+    if band:
+        ch.append(f"pad copper in a rule-area keep-out band on "
+                  f"{', '.join(sorted(band))}, where no track can reach it")
     return ("place_seed: the seed satisfies its intent but leaves "
             + " and ".join(ch) + "." + tail)
 
@@ -1301,6 +1304,20 @@ Examples:
     if _hole_delta:
         print(f"  hole conflicts rose {_pads_in.get('hole_conflicts')} -> "
               f"{_pads_out.get('hole_conflicts')} across this seed")
+    # #1044: pad copper in a `(tracks not_allowed)` rule-area band that THIS
+    # seed put there -- a part it moved whose band reach grew past its input
+    # pose's. An inherited band pad (the part came in that way, or the seed
+    # never touched it) is reported, not charged, like an inherited short.
+    _band_in = {r: a for r, a in (_pads_in.get('oob_keepout_copper_refs')
+                                  or ())}
+    _band_out = [(r, a) for r, a in (_pads_out.get('oob_keepout_copper_refs')
+                                     or ())]
+    _band_seeded = [(r, a) for r, a in _band_out
+                    if r in _seeded and a > _band_in.get(r, 0.0) + 1e-6]
+    if _band_seeded:
+        print(f"  {len(_band_seeded)} part(s) this seed placed with pad copper "
+              f"in a rule-area keep-out band: "
+              + '; '.join(f"{r} ({a:.3f}mm)" for r, a in _band_seeded))
     after = ratsnest.get('after', {})
     summary = {'placed': len(result['placements']),
                'unseated': len(result['unseated']),
@@ -1353,6 +1370,10 @@ Examples:
                # publishes the same key from the same grade.
                'pad_conflicts_after': _pads_out.get('pad_conflicts') or 0,
                'hole_conflicts_added': _hole_delta,
+               # #1044: the band pads this seed caused, and the board total.
+               'keepout_copper_seeded': [[r, a] for r, a in _band_seeded],
+               'oob_keepout_copper_count':
+                   _pads_out.get('oob_keepout_copper_count') or 0,
                'grade_warnings': len(graded.warnings),
                'crossings': after.get('crossings'),
                'hpwl': (round(after['hpwl'], 3)
@@ -1373,7 +1394,8 @@ Examples:
     summary['connector_requirements'] = floorplan.connector_requirements(
         graded, own, pinned)
     print("JSON_SUMMARY: " + json.dumps(summary, sort_keys=True))
-    _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta)
+    _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta,
+                          band=[r for r, _a in _band_seeded])
     if _reason is None:
         _reason = fixed_pose_reason(summary)
     if _reason is not None:
