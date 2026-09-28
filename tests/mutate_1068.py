@@ -83,6 +83,48 @@ ROWS = [
      "        if idx:\n",
      (TPAR,), 'KILLED'),
 
+    # The count reads a pair past the radius as the GATE does: a cap walked
+    # out of the radius still counts, where the grade calls it ungraded.
+    ('the-count-ignores-the-grades-radius', 'q',
+     "        return self._tether_measure(t, None, None, grade_view=True)\n",
+     "        return self._tether_measure(t, None, None, grade_view=False)\n",
+     (TPAR,), 'KILLED'),
+
+    # The licence reads the GRADE's view: leaving the radius is a fix.
+    ('the-licence-reads-the-grades-view', 'q',
+     "        return tuple(self.state.tether_gate_view_value(t)\n"
+     "                     for t in self.tethers)\n",
+     "        return tuple(self.state.tether_graded_value(t)\n"
+     "                     for t in self.tethers)\n",
+     (TPAR,), 'KILLED'),
+
+    # The licence never checks a tether term at all.
+    ('the-licence-skips-the-tethers', 'q',
+     "                if a > t.threshold + legality.EPS and a > b + legality.EPS:\n",
+     "                if False:\n",
+     (TPAR,), 'KILLED'),
+
+    # A term growing inside its limit is a rise.
+    ('growing-inside-the-limit-is-a-rise', 'q',
+     "                if a > t.threshold + legality.EPS and a > b + legality.EPS:\n",
+     "                if a > b + legality.EPS:\n",
+     (TPAR,), 'KILLED'),
+
+    # Prune's vector carries the raw distance, not the excess over the limit.
+    ('prune-sees-raw-distance', 'q',
+     "                max(0.0, self.state.tether_gate_view_value(self.tethers[i])\n"
+     "                    - self.tethers[i].threshold - legality.EPS)\n",
+     "                max(0.0, self.state.tether_gate_view_value(self.tethers[i]))\n",
+     (TPAR,), 'KILLED'),
+
+    # The count's limit is slackened below the grade's tolerance.
+    ('the-count-limit-is-slack', 'q',
+     "            if v > t.threshold + legality.EPS:\n"
+     "                count += 1\n",
+     "            if v >= t.threshold - 0.05:\n"
+     "                count += 1\n",
+     (TPAR,), 'KILLED'),
+
     # The printed basis goes back to a bare `intent`.
     ('the-printed-basis-is-unlabelled', 'p',
      "                return f\"intent[{_ir}]\" if term == 'intent' else term\n",

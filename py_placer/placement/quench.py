@@ -399,7 +399,18 @@ class IntentProbe:
         return tuple(r for r in INTENT_ENFORCED_RULES if r in got)
 
     def _tether_values(self) -> Tuple[float, ...]:
+        """The COUNT's view: as the grade reads each term."""
         return tuple(self.state.tether_graded_value(t) for t in self.tethers)
+
+    def _tether_guard_values(self) -> Tuple[float, ...]:
+        """The LICENCE's view: as the gate reads each term. They differ for a
+        decap pair past the search radius -- the grade stops grading it
+        (`decap_ungraded`, warn), so the count drops; the gate keeps
+        measuring it, so the licence sees a cap that walked further from its
+        IC as the regression it is, not as a fix (phase-2 verifier: esp_prog
+        C3, radius 2.2, moved 1mm out, read `1 -> 0` and licensed)."""
+        return tuple(self.state.tether_gate_view_value(t)
+                     for t in self.tethers)
 
     def terms(self, ref) -> Tuple[float, ...]:
         """`ref`'s claim vector at its CURRENT pose: its zone/keep-out terms,
@@ -424,7 +435,7 @@ class IntentProbe:
         idx = self._tethers_of.get(ref, ())
         if idx:
             out = tuple(out) + tuple(
-                max(0.0, self.state.tether_graded_value(self.tethers[i])
+                max(0.0, self.state.tether_gate_view_value(self.tethers[i])
                     - self.tethers[i].threshold - legality.EPS)
                 for i in idx)
         return out
@@ -461,7 +472,7 @@ class IntentProbe:
                 count += 1
                 by_rule[t.rule] = by_rule.get(t.rule, 0) + 1
         return {'count': count, 'by_rule': by_rule, 'terms': vecs,
-                'tethers': tvals}
+                'tethers': self._tether_guard_values()}
 
     def licence(self, before: Dict, after: Dict) -> Tuple[bool, List[Tuple]]:
         """(ok, risen) -- no declared term binding a probed ref may RISE.
@@ -2261,6 +2272,14 @@ class QuenchState:
         elected at build -- the gate deliberately keeps measuring that pair,
         which is stricter than the grade and therefore not a count of it."""
         return self._tether_measure(t, None, None, grade_view=True)
+
+    def tether_gate_view_value(self, t: _TetherTerm) -> float:
+        """Term `t` at the LIVE poses, exactly, as the GATE reads it: a pair
+        graded at build stays measured past the search radius, because
+        leaving the radius is not how a cap may stop being too far (#1043).
+        What `IntentProbe`'s LICENCE and prune vector read (#1068); its COUNT
+        reads `tether_graded_value`. No cache is read or written."""
+        return self._tether_measure(t, None, None, grade_view=False)
 
     def _tether_measure(self, t: _TetherTerm, i: Optional[int],
                         override=None, grade_view: bool = False) -> float:

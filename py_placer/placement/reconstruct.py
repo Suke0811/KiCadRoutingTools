@@ -1007,9 +1007,11 @@ def prune_assignment(state, old: Dict[str, Tuple[float, float, float]],
     `(tuple, intent vector)` jointly, which is the property the paragraph above
     claims.
 
-    Sampling `ref`'s vector mid-sweep is safe while OTHER parts are moving, and
-    `_incumbent_intent`'s docstring is why: the intent terms are
-    part-vs-DECLARED-GEOMETRY, never part-vs-part.
+    Sampling `ref`'s vector mid-sweep is safe while OTHER parts are moving,
+    because the two samples bracket a restore of `ref` ALONE: nothing else
+    moves between them, so any rise is `ref`'s doing. That holds for the
+    zone/keep-out terms (part-vs-declared-geometry) and, since #1068, for the
+    tether terms too, which are part-vs-part (see `quench.IntentProbe.terms`).
 
     With `intent_probe=None` both vectors are `()`, `zip` is empty, `any(())`
     is False, and the expression is character-for-character the original -- so

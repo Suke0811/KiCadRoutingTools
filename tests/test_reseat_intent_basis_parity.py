@@ -30,6 +30,11 @@ What each case pins:
   on `intent` 1 -> 0 with C3's error gone from the written board.
 * PRUNE sees them: re-seating C4 under 0.8mm limits reduces its breach at
   an hpwl cost, and prune KEEPS the move (it reverted it on the tuple before).
+* TWO VIEWS: the count reads a decap pair the grade's way (past the search
+  radius it is `decap_ungraded`, not counted); the licence and prune read it
+  the gate's way (still measured), so walking out of the radius is a rise,
+  not a fix. A term growing inside its limit is no finding, and the count's
+  limit is exclusive at the grade's own tolerance.
 * THE CONTROL for that: the same re-seat with the probe's tethers withheld is
   REFUSED at `intent 0->0` and C3's error stays -- so the acceptance above is
   the tether terms' doing, not the board's.
@@ -185,6 +190,75 @@ def test_a_term_whose_refs_are_all_locked_still_counts():
           f"grade 1 == probe 1")
 
 
+def _esp_probe(td, decaps):
+    intent, _p = _intent(td, {'decaps': decaps}, name='esp.json')
+    pcb = parse_kicad_pcb(ESP)
+    pr, st = _probe(pcb, ESP, intent)
+    return intent, pcb, pr, st
+
+
+def test_leaving_the_radius_is_counted_as_the_grade_does_but_not_licensed():
+    """The COUNT reads a decap pair the way the grade does, so a cap walked
+    past the search radius stops counting (it is `decap_ungraded`, warn).
+    The LICENCE reads it the way the gate does -- still measured -- so the
+    same move is a RISE, not a fix (phase-2 verifier: esp_prog C3, radius
+    2.2, 1mm further from U1, read `1 -> 0` and was licensed)."""
+    with tempfile.TemporaryDirectory() as td:
+        intent, pcb, pr, st = _esp_probe(
+            td, {'max_distance_mm': 2.0, 'search_radius_mm': 2.2})
+        c3 = st.parts['C3']
+        before = pr.snapshot()
+        assert before['count'] == 1, before
+        st.apply_move('C3', c3.x + 1.0, c3.y, c3.rot)
+        after = pr.snapshot()
+        out = os.path.join(td, 'c3_out.kicad_pcb')
+        write_placed_output(ESP, out, [{'reference': 'C3', 'new_x': c3.x,
+                                        'new_y': c3.y,
+                                        'new_rotation': c3.rot}])
+        g = fp.grade(intent, parse_kicad_pcb(out), out,
+                     group_sources=SOURCES, clearance=CLEARANCE)
+        assert [v.rule for v in g.violations if v.ref == 'C3'] == [
+            'decap_ungraded'], g.violations
+        assert after['count'] == 0, after
+        ok, risen = pr.licence(before, after)
+        assert not ok and [r[1] for r in risen] == ['decap_distance'], risen
+        assert pr.terms('C3')[-1] > 0.9, pr.terms('C3')
+    print(f"  PASS: count 1 -> 0 as the grade has it, licence refuses "
+          f"{risen[0][2]} {risen[0][3]:.3f} -> {risen[0][4]:.3f}")
+
+
+def test_growing_inside_the_limit_is_no_finding():
+    """A tether term that grows but stays WITHIN its limit is not risen, and
+    prune's vector carries its EXCESS over the limit (0 here), not the raw
+    distance -- a revert moving a compliant cap is no claim's business."""
+    with tempfile.TemporaryDirectory() as td:
+        _i, _pcb, pr, st = _esp_probe(td, {'max_distance_mm': 3.0})
+        c3 = st.parts['C3']
+        before = pr.snapshot()
+        assert pr.terms('C3') == (0.0,), pr.terms('C3')
+        st.apply_move('C3', c3.x + 0.5, c3.y, c3.rot)
+        after = pr.snapshot()
+        i = next(k for k, t in enumerate(pr.tethers)
+                 if t.data.get('cap') == 'C3')
+        assert after['tethers'][i] > before['tethers'][i] + 0.1, (before,
+                                                                   after)
+        assert after['count'] == 0 and pr.licence(before, after) == (True,
+                                                                     []), after
+        assert pr.terms('C3') == (0.0,), pr.terms('C3')
+    print("  PASS: 2.125 -> ~2.6mm under a 3mm limit: no count, no rise, "
+          "prune vector (0.0,)")
+
+
+def test_the_limit_is_exclusive_at_its_tolerance():
+    """At a limit 0.025mm above C3's 2.125mm the grade reports nothing; so
+    must the count (the grade's `> limit + EPS`, not a slackened compare)."""
+    with tempfile.TemporaryDirectory() as td:
+        intent, pcb, pr, _st = _esp_probe(td, {'max_distance_mm': 2.15})
+        assert pr.snapshot()['count'] == 0 == _grade_count(
+            intent, pcb, ESP, ('decap_distance',))
+    print("  PASS: 2.125mm under a 2.15mm limit counts 0, as graded")
+
+
 def _summary(r):
     m = re.search(r'^JSON_SUMMARY: (.*)$', r.stdout, re.M)
     assert m, r.stdout[-1500:]
@@ -291,6 +365,9 @@ TESTS = [
     test_the_issue_recipe_through_the_cli,
     test_control_without_the_tether_terms_the_same_reseat_is_refused,
     test_prune_keeps_a_move_that_reduces_a_decap_breach,
+    test_leaving_the_radius_is_counted_as_the_grade_does_but_not_licensed,
+    test_growing_inside_the_limit_is_no_finding,
+    test_the_limit_is_exclusive_at_its_tolerance,
 ]
 
 
