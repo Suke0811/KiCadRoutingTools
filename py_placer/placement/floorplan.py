@@ -6254,6 +6254,16 @@ class PoseGrader:
         return found
 
 
+def violation_claim(v: Violation) -> Tuple:
+    """The identity `grade_delta` counts a violation by: `(rule, ref, block,
+    expected keys)`. The message and the measured numbers are left out, so
+    one finding moved by a millimetre is still the same claim. Module-level
+    because `seeder.repair_placement` asks the same question per ref (#1066):
+    is the violation a part was charged for still on the board?"""
+    return (v.rule, v.ref or '', v.block or '',
+            tuple(sorted((v.expected or {}).keys())))
+
+
 def grade_delta(before: Sequence[Violation],
                 after: Sequence[Violation]) -> List[Dict[str, object]]:
     """What `after` adds to `before`, in the exit gate's currency: ERRORS only.
@@ -6272,9 +6282,7 @@ def grade_delta(before: Sequence[Violation],
     where one error is all there ever is."""
     from collections import Counter
 
-    def claim(v):
-        return (v.rule, v.ref or '', v.block or '',
-                tuple(sorted((v.expected or {}).keys())))
+    claim = violation_claim
     was = [v for v in before if v.severity == ERROR]
     now = [v for v in after if v.severity == ERROR]
     out: List[Dict[str, object]] = [

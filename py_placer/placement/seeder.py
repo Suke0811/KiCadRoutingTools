@@ -5542,6 +5542,10 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 state.parts[r].pin_count, r)
 
     graded = None
+    # #1066: every grade error a ref is CHARGED for, by `violation_claim`, so
+    # the honesty re-grade after the moves can ask whether THAT finding is
+    # still on the board -- not merely whether the part moved.
+    charged_claims: Dict[str, List[Tuple]] = {}
     if intent is not None:
         graded = floorplan.grade(intent, pcb_data, pcb_file,
                                  group_sources=group_sources,
@@ -5551,6 +5555,24 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             if v.ref:
                 _charge(v.ref, float((v.measured or {}).get('outside_mm', 1.0)
                                      or 1.0))
+                if v.ref in state.parts:
+                    charged_claims.setdefault(v.ref, []).append(
+                        floorplan.violation_claim(v))
+    # The claims the POSE grader reproduces at the input poses. A charged
+    # claim it does not reproduce comes from a part of `grade` outside the
+    # rules loop (intent validation, block resolution), which no move can
+    # clear -- so after the moves it is counted as still present. Measured
+    # before any move, while the state still holds the input poses.
+    claims_regradable = None
+    regrade_error = None
+    if charged_claims and pose_grader is not None:
+        try:
+            claims_regradable = {
+                floorplan.violation_claim(v)
+                for v in pose_grader.violations()
+                if v.severity == floorplan.ERROR}
+        except (floorplan.UntrustworthyOutline, ValueError) as exc:
+            regrade_error = exc
 
     # worst_n=0: the FULL pair census (run-4 F5). The default cap of 10
     # bounded one repair pass at 10 pair-movers on a 20-pair board -- the
@@ -5929,9 +5951,61 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                     f"{ref}: UNRESOLVED -- pose is courtyard-legal but the "
                     f"charged pad/body violation persists (metric mismatch; "
                     f"was reported 'repaired' before run-7 A2)")
+
+    # #1066: the INTENT half of the same honesty re-grade. The loop above
+    # re-checks pads, holes and containment only, so a part charged for a
+    # grade error -- a decap too far from its IC, a part out of its zone --
+    # that `_try_place` left where it stood (it searches for the nearest
+    # LEGAL pose and has no intent target) was reported repaired while the
+    # finding stayed on the board: glasgow, 33 repaired, 0 moved, errors
+    # 46 -> 46. Every charged ref is re-graded, MOVED OR NOT: a cap moved
+    # 0.3mm and still too far from its IC is no more repaired than one that
+    # did not move. A ref is repaired only when every claim it was charged
+    # for is gone.
+    unresolved_claims: Dict[str, List[str]] = {}
+    charged_repaired = [r for r in repaired if r in charged_claims]
+    if charged_repaired:
+        after_claims = None
+        if regrade_error is None and claims_regradable is not None:
+            try:
+                after_claims = {
+                    floorplan.violation_claim(v)
+                    for v in pose_grader.violations()
+                    if v.severity == floorplan.ERROR}
+            except (floorplan.UntrustworthyOutline, ValueError) as exc:
+                regrade_error = exc
+        moved_refs = {m['reference'] for m in moves}
+        for ref in charged_repaired:
+            if after_claims is None:
+                still = sorted({c[0] for c in charged_claims[ref]})
+                why = (f"the grade could not be re-run after the repair "
+                       f"({regrade_error.__class__.__name__}: "
+                       f"{regrade_error})" if regrade_error is not None
+                       else "the grade could not be re-run after the repair")
+            else:
+                still = sorted({c[0] for c in charged_claims[ref]
+                                if c in after_claims
+                                or c not in claims_regradable})
+                why = None
+            if not still:
+                continue
+            repaired.remove(ref)
+            unresolved.append(ref)
+            unresolved_claims[ref] = still
+            notes.append(
+                f"{ref}: UNRESOLVED -- "
+                + (f"{why}, so the charged {', '.join(still)} "
+                   f"cannot be shown cleared" if why else
+                   f"still carries {', '.join(still)} after the repair")
+                + (" (it moved, and the move did not clear it)"
+                   if ref in moved_refs else " (it did not move)")
+                + " -- NOT reported repaired")
     return {'moves': moves, 'repaired': repaired, 'unrepairable':
             unrepairable + failed, 'unresolved': unresolved,
             'violators': violators, 'notes': notes,
+            # #1066: {ref: [rule, ...]} -- the charged grade claims that
+            # kept each unresolved ref out of `repaired`.
+            'unresolved_claims': unresolved_claims,
             'pad_report_before': {k: pads[k] for k in
                                   ('pad_conflicts', 'hole_conflicts',
                                    'oob_pad_count')},

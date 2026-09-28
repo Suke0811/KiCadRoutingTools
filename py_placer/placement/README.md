@@ -1496,7 +1496,13 @@ re-seating 85/92 while leaving its zone targets unmoved):
   violators move, worst first, escalating caps (0.5/1/2/5 mm), file-locked
   non-must_lock violators are reported, never moved. Zones smaller than a
   part's courtyard grade (and seat) on the anchor point — the spec-coordinate
-  pattern is satisfiable by construction now.
+  pattern is satisfiable by construction now. A violator is reported
+  `repaired` only when every grade error it was charged for is gone
+  (#1066): each charged ref, moved or not, is re-graded after the pass and
+  one still carrying its claim is `unresolved`, named in `JSON_SUMMARY`
+  (`repaired_refs`, `unresolved_refs`, `unresolved_by_rule`). `unresolved`
+  sets no exit code of its own; exit 4 stays `unrepairable`'s and the final
+  grade's.
 - **`place_reconstruct.py`** (`placement/reconstruct.py`) — the structural
   ("puzzle") solver: tier classification (frame -> anchors -> smalls),
   corner-inset pattern fit (propose-only), rigid ±v vector detection, ONE

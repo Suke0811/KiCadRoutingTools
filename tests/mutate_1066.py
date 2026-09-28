@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""The #1066 mutation battery: `repair_placement`'s intent honesty re-grade.
+
+`tests/test_repair_decap_honesty.py` pins that a violator is reported
+repaired only when the grade error it was CHARGED for is gone. Each row below
+is a plausible half-fix of that re-grade; each must be KILLED by that file.
+
+NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
+the engine in place. One writer per tree -- do not run it while a suite, an A/B
+replay or a review is reading the same checkout. It refuses to start on a dirty
+engine, because restoring would write the COMMITTED text back over uncommitted
+work.
+
+    python3 tests/mutate_1066.py
+    python3 tests/mutate_1066.py --row regrade-only-zero-move
+    python3 tests/mutate_1066.py --list
+
+A row is KILLED by a FAILURE **or an ERROR**. An anchor that does not match
+EXACTLY ONCE is reported as BROKEN rather than skipped. Python `str.replace`,
+never `sed`.
+"""
+from __future__ import annotations
+
+import argparse
+import io
+import os
+import subprocess
+import sys
+
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_TESTS)
+
+SEEDER = os.path.join(_ROOT, 'py_placer', 'placement', 'seeder.py')
+PLACE_SEED = os.path.join(_ROOT, 'py_placer', 'place_seed.py')
+TARGETS = {'s': SEEDER, 'p': PLACE_SEED}
+
+T1066 = os.path.join(_TESTS, 'test_repair_decap_honesty.py')
+
+ROWS = [
+    # The obvious half-fix: re-grade only the parts that did not move. A cap
+    # moved off a pad conflict and still too far from its IC reads repaired.
+    ('regrade-only-zero-move', 's',
+     "    charged_repaired = [r for r in repaired if r in charged_claims]\n",
+     "    charged_repaired = [r for r in repaired if r in charged_claims\n"
+     "                        and r in zero_move]\n",
+     (T1066,), 'KILLED'),
+
+    # A charged claim the pose grader never produces (it comes from `grade`
+    # outside the rules loop) read as cleared because it is absent after.
+    ('invariant-claims-read-as-cleared', 's',
+     "                                if c in after_claims\n"
+     "                                or c not in claims_regradable})\n",
+     "                                if c in after_claims})\n",
+     (T1066,), 'KILLED'),
+
+    # A re-grade that raises treated as "nothing left", i.e. repaired.
+    ('a-raising-regrade-reads-as-clear', 's',
+     "            except (floorplan.UntrustworthyOutline, ValueError) as exc:\n"
+     "                regrade_error = exc\n"
+     "        moved_refs =",
+     "            except (floorplan.UntrustworthyOutline, ValueError) as exc:\n"
+     "                after_claims = set()\n"
+     "        moved_refs =",
+     (T1066,), 'KILLED'),
+
+    # The census stops recording what each ref was charged for.
+    ('charged-claims-not-recorded', 's',
+     "                if v.ref in state.parts:\n"
+     "                    charged_claims.setdefault(v.ref, []).append(\n",
+     "                if False:\n"
+     "                    charged_claims.setdefault(v.ref, []).append(\n",
+     (T1066,), 'KILLED'),
+
+    # The refs behind the count never reach JSON_SUMMARY.
+    ('unresolved-refs-not-written', 'p',
+     "                'unresolved_refs': _unres,\n",
+     "",
+     (T1066,), 'KILLED'),
+]
+
+# Every anchor must match its target exactly once BEFORE anything is
+# rewritten. A stale anchor otherwise reports BROKEN mid-run, after the
+# witnesses have been paid for; this is the one second (#877).
+from mutation_anchors import preflight   # noqa: E402
+preflight(__file__)
+
+
+def _git_clean(paths):
+    r = subprocess.run(['git', 'diff', '--quiet', '--'] + list(paths),
+                       cwd=_ROOT)
+    return r.returncode == 0
+
+
+def _run(tests):
+    for t in tests:
+        r = subprocess.run([sys.executable, '-X', 'utf8', t],
+                           cwd=_ROOT, capture_output=True, text=True,
+                           encoding='utf-8', errors='replace')
+        if r.returncode != 0:
+            return True, f"{os.path.basename(t)} exit {r.returncode}"
+    return False, "all named tests passed"
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--row', action='append', default=None)
+    ap.add_argument('--list', action='store_true')
+    a = ap.parse_args()
+
+    if a.list:
+        for name, tgt, _o, _n, tests, exp in ROWS:
+            print(f"  {exp:9} {name}  [{tgt}] "
+                  f"-> {', '.join(os.path.basename(t) for t in tests)}")
+        return 0
+
+    rows = ROWS
+    if a.row:
+        unknown = [n for n in a.row if n not in {r[0] for r in ROWS}]
+        if unknown:
+            print(f"no such row: {', '.join(unknown)}; try --list",
+                  file=sys.stderr)
+            return 2
+        rows = [r for r in ROWS if r[0] in set(a.row)]
+
+    if not _git_clean(TARGETS.values()):
+        print("REFUSED: the engine files are dirty. Restoring would write the "
+              "COMMITTED text back over uncommitted work.", file=sys.stderr)
+        return 2
+
+    originals = {k: io.open(p, encoding='utf-8').read()
+                 for k, p in TARGETS.items()}
+    verdicts = []
+    try:
+        for name, tgt, old, new, tests, expect in rows:
+            src = originals[tgt]
+            n = src.count(old)
+            if n != 1:
+                verdicts.append((name, 'BROKEN', f"anchor matched {n} times"))
+                print(f"  BROKEN   {name} -- anchor matched {n} times")
+                continue
+            io.open(TARGETS[tgt], 'w', encoding='utf-8', newline='').write(
+                src.replace(old, new, 1))
+            killed, why = _run(tests)
+            io.open(TARGETS[tgt], 'w', encoding='utf-8',
+                    newline='').write(src)
+            got = 'KILLED' if killed else 'SURVIVED'
+            mark = 'ok' if got == expect else 'WRONG'
+            verdicts.append((name, got, why))
+            print(f"  {got:9}{'' if mark == 'ok' else ' WRONG'} {name} -- {why}")
+    finally:
+        for k, p in TARGETS.items():
+            io.open(p, 'w', encoding='utf-8', newline='').write(originals[k])
+
+    wrong = [v for v, (name, got, _w) in zip(rows, verdicts)
+             if got != v[5]]
+    broken = [n for n, g, _w in verdicts if g == 'BROKEN']
+    print(f"\n{len(verdicts)} row(s): "
+          f"{sum(1 for _n, g, _w in verdicts if g == 'KILLED')} killed, "
+          f"{sum(1 for _n, g, _w in verdicts if g == 'SURVIVED')} survived, "
+          f"{len(broken)} broken, {len(wrong)} disagreeing with expectation")
+    return 1 if (wrong or broken) else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

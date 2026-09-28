@@ -848,8 +848,23 @@ Examples:
                   f"({len(result['moves'])} moved, max {max_move:.2f}mm), "
                   f"{len(result.get('unresolved') or [])} unresolved, "
                   f"{len(result['unrepairable'])} unrepairable")
+            # #1066: the refs behind every count. `unresolved` was printed and
+            # never written, so a caller reading JSON_SUMMARY could not tell
+            # a repaired violator from one still carrying its finding. An
+            # unresolved ref does NOT set exit 4 -- that code stays reserved
+            # for a violator this tool may not move (`unrepairable`).
+            _unres = list(result.get('unresolved') or [])
+            _by_rule: dict = {}
+            for _rules in (result.get('unresolved_claims') or {}).values():
+                for _rule in _rules:
+                    _by_rule[_rule] = _by_rule.get(_rule, 0) + 1
             summary.update({
+                'violators': len(result['violators']),
                 'repaired': len(result['repaired']),
+                'repaired_refs': list(result['repaired']),
+                'unresolved': len(_unres),
+                'unresolved_refs': _unres,
+                'unresolved_by_rule': _by_rule,
                 'unrepairable': len(result['unrepairable']),
                 'moved_refs': [m['reference'] for m in result['moves']],
                 'max_move_mm': round(max_move, 3),
