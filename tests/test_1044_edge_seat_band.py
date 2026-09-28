@@ -262,11 +262,19 @@ def test_place_seed_charges_a_band_pad_it_placed_and_not_one_it_inherited():
             fh.write(_strip_copper(open(RP, encoding='utf-8',
                                         newline='').read()))
         _siblings(RP, src2)
+        # File-locked, so the seed does not touch it and it stays in the band
+        # on the written board -- an inherited band pad in the output, which
+        # the gate must report and not charge.
+        seeder.stamp_locked(src2, ['C6'])
         out2 = os.path.join(td, 'rp_out.kicad_pcb')
         _rc2, s2, _e2 = _place_seed_in_process(
             [src2, out2, '--intent', ip2, '--clearance', CLEARANCE,
              '--force'])
         assert s2['keepout_copper_seeded'] == [], s2['keepout_copper_seeded']
+        out_band = dict(legality.board_keepout_findings(
+            parse_kicad_pcb(out2), CLEARANCE, out2)['oob_keepout_copper_refs'])
+        assert out_band.get('C6', 0) > 0.1, out_band
+        assert s2['oob_keepout_copper_count'] >= 1, s2
         inherited = legality.board_keepout_findings(
             parse_kicad_pcb(src2), CLEARANCE, src2)['oob_keepout_copper_refs']
         assert dict(inherited).get('C6', 0) > 0.1, inherited
