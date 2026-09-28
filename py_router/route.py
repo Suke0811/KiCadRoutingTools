@@ -276,11 +276,15 @@ def _empty_results_data() -> dict:
     }
 
 
-# --json-out collects every JSON_SUMMARY this process emits -- the first pass
-# and, when it fires, the reconciliation sub-run's -- so the file carries ONE
-# merged tally instead of whichever emission a reader happened to scrape.
-_SUMMARY_SINK: List[dict] = []
-_RECONCILE_RAISED = [False]
+# --json-out collects every JSON_SUMMARY this process emits -- the first pass,
+# the plane finalize's repair sub-runs and the reconciliation laps -- so the
+# file carries ONE merged tally instead of whichever emission a reader
+# happened to scrape. The lists LIVE in route_summary (#1069): this file is
+# `__main__` on the CLI while repair_planes imports it as `route`, and a sink
+# defined here was two sinks. Aliases only; mutate in place, never rebind.
+from route_summary import (SUMMARY_SINK as _SUMMARY_SINK,          # noqa: E402
+                           RECONCILE_RAISED as _RECONCILE_RAISED,
+                           FINAL_REGRADE as _FINAL_REGRADE)
 
 # #562 finalize re-entry guard. batch_route's plane finalize calls
 # repair_planes, whose own rip-casualty / pad-repair sub-runs call batch_route
@@ -317,7 +321,7 @@ def _emit_summary_min(gate_report: Optional[dict] = None,
     """
     try:
         from route_summary import merge_summaries as _ms, summary_min
-        _m = _ms(list(_SUMMARY_SINK), _RECONCILE_RAISED[0])
+        _m = _ms(list(_SUMMARY_SINK), _RECONCILE_RAISED[0], _FINAL_REGRADE[0])
         if _m is None and status is not None:
             # The early returns fire before any summary is built, so there is
             # nothing in the sink to merge: synthesize the empty tally rather
@@ -342,6 +346,137 @@ def _emit_summary_min(gate_report: Optional[dict] = None,
         print("JSON_SUMMARY_MIN: " + json.dumps(_min, sort_keys=True))
     except Exception as _e:                                     # noqa: BLE001
         print(f"  WARNING: could not emit JSON_SUMMARY_MIN: {_e}")
+
+
+def _final_regrade(pcb_data, output_file: str, return_results: bool,
+                   results_data: Optional[dict], write_model,
+                   routing_scope: List[str], input_signature,
+                   orig_seg_by_net: Dict[int, list],
+                   orig_via_by_net: Dict[int, list]) -> Optional[dict]:
+    """Grade the board this run SHIPS over every net it owns (#1069).
+
+    The merged tally used to be the LAST summary's failure state, and each
+    summary grades only its own scope at its own moment -- pass 1 before the
+    plane finalize, a finalize repair sub-run its casualties, a reconciliation
+    lap its retry set. A net one of them left broken that no later one looked
+    at vanished from --json-out and JSON_SUMMARY_MIN (glasgow run34: 19
+    reported, 40 disconnected on disk). This is the single end-of-run reading
+    that covers all of them.
+
+    The board is the one the run ships, on both fronts: the WRITTEN file on the
+    CLI, the write model the GUI applier will produce (`write_model`, shared
+    with the improvement gate and the power-width disclosure). The nets are
+    every net any of the run's summaries names (route_summary.named_nets) plus
+    every net whose copper the run changed; the latter are charged only when
+    they grade WORSE than on the input board, so a scoped step is never billed
+    for another step's open nets, and never for the whole board.
+
+    Prints the record as `JSON_REGRADE:` (merge_route_summaries reads it from
+    the log), stores it for --json-out and JSON_SUMMARY_MIN, prints a
+    whole-run headline, and returns it. Returns None when there is no board
+    to read.
+    """
+    import time as _t1069
+    from route_summary import named_nets, regrade_record
+    from improvement_gate import grade_nets, copper_signature
+    _t0 = _t1069.time()
+    if return_results:
+        board = pcb_data
+        segs_by_net, vias_by_net = write_model(results_data or {})
+        final_segs = [s for _l in segs_by_net.values() for s in _l]
+        final_vias = [v for _l in vias_by_net.values() for v in _l]
+        label = 'write_model'
+    else:
+        if not (output_file and os.path.isfile(output_file)):
+            return None
+        from kicad_parser import parse_kicad_pcb as _pk1069
+        board = _pk1069(output_file)
+        segs_by_net = vias_by_net = None
+        final_segs, final_vias = board.segments, board.vias
+        label = 'file'
+    name_of = {nid: n.name for nid, n in board.nets.items()}
+    id_of = {n: nid for nid, n in name_of.items()}
+    named = named_nets(list(_SUMMARY_SINK))
+    changed = set()
+    if input_signature is not None:
+        final_sig = copper_signature(final_segs, final_vias, name_of.get)
+        changed = {n for n in set(input_signature) | set(final_sig)
+                   if input_signature.get(n) != final_sig.get(n)}
+    extra = sorted(changed - set(named))
+    graded = grade_nets(board, [id_of[n] for n in list(named) + extra
+                                if n in id_of],
+                        segs_by_net=segs_by_net, vias_by_net=vias_by_net)
+    grades = {name_of[nid]: g for nid, g in graded.items()}
+    # A net graded only because its copper changed is the run's failure only
+    # if the run made it worse: broken now and connected before, or more pads
+    # off than before. Graded on the input copper snapshot.
+    _in_id = {n.name: nid for nid, n in pcb_data.nets.items()}
+    _worse: List[str] = []
+    for n in extra:
+        g = grades.get(n)
+        if not g or not g['broken']:
+            grades.pop(n, None)
+            continue
+        _pid = _in_id.get(n)
+        _before = (grade_nets(pcb_data, [_pid], segs_by_net=orig_seg_by_net,
+                              vias_by_net=orig_via_by_net).get(_pid)
+                   if _pid is not None else None)
+        if (_before and _before['broken']
+                and len(_before['failed_pads']) >= len(g['failed_pads'])):
+            grades.pop(n)
+            continue
+        _worse.append(n)
+    record = regrade_record(list(_SUMMARY_SINK), grades, routing_scope,
+                            board=label, seconds=_t1069.time() - _t0,
+                            disturbed_only=_worse)
+    record['graded_nets'] = len(graded)
+    # Round-trip so the in-process document equals what the log parses back.
+    record = json.loads(json.dumps(record))
+    print(f"JSON_REGRADE: {json.dumps(record)}")
+    _FINAL_REGRADE[0] = record
+
+    fs, osn = record['failed_single'], record['open_single']
+    _scope_set = set(routing_scope)
+    _bits = []
+    _fs_in = [n for n in fs if n in _scope_set]
+    _os_in = [n for n in osn if n in _scope_set]
+    if _fs_in:
+        _bits.append(f"{len(_fs_in)} FAILED")
+    if _os_in:
+        _bits.append(f"{len(_os_in)} OPEN")
+    _where = 'the written board' if label == 'file' else \
+        'the board the GUI will apply'
+    print("\n" + "=" * 60)
+    print(f"Run complete -- whole run, re-graded on {_where} "
+          f"({record['graded_nets']} net(s), {record['seconds']:.1f}s)")
+    print("=" * 60)
+    _col = RED if (_bits or record['failed_multipoint']) else ''
+    _end = RESET if _col else ''
+    if routing_scope:
+        print(f"  {_col}Single-ended:  {record['successful']}/"
+              f"{len(routing_scope)} routed"
+              + (f" ({', '.join(_bits)})" if _bits else '') + _end)
+    _mt = record['multipoint_pads_total']
+    _mc = record['multipoint_pads_connected']
+    if _mt:
+        print(f"  {RED if _mt > _mc else ''}Multi-point:   {_mc}/{_mt} pads "
+              f"connected" + (f" ({_mt - _mc} FAILED){RESET}"
+                              if _mt > _mc else ''))
+    _out_scope = sorted({n for n in fs + osn
+                         + [d['net_name'] for d in record['failed_multipoint']]
+                         if n not in _scope_set})
+    if _out_scope:
+        print(f"  {RED}Broken outside the routing scope: "
+              f"{', '.join(_out_scope[:12])}"
+              + (f" (+{len(_out_scope) - 12} more)"
+                 if len(_out_scope) > 12 else '') + RESET)
+    if record['unowned_broken']:
+        print(f"  {RED}In no summary's bucket (found by the re-grade): "
+              f"{', '.join(record['unowned_broken'][:12])}{RESET}")
+    if record['recovered']:
+        print(f"  Recovered after a summary reported them failing: "
+              f"{len(record['recovered'])}")
+    return record
 
 
 def _write_summary_min_file(json_out: Optional[str], status: str) -> None:
@@ -760,15 +895,20 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # click would merge the next run's JSON_SUMMARY_MIN onto the previous
     # run's summaries (effort keys summed, pad-pair attribution from the
     # old run) and stamp its summaries 'reconciliation-subset'. Nested
-    # sub-runs pass final_reconcile=False and so keep the live sink.
+    # sub-runs -- the reconciliation laps and the plane finalize's repair
+    # sub-runs, which reach this function through `from route import
+    # batch_route` -- pass final_reconcile=False and so keep the live sink,
+    # which since #1069 is ONE list shared by both module copies.
     if json_out or final_reconcile:
-        _SUMMARY_SINK.clear()
-        _RECONCILE_RAISED[0] = False
+        from route_summary import reset_run_state as _reset_run1069
+        _reset_run1069()
     if not _SUMMARY_SINK:
         # First (outermost) entry of this process's run: start the
-        # protected-net refusal record clean. The reconciliation sub-run
-        # re-enters here with the sink non-empty and must NOT reset it --
-        # its own refusals are part of the same run's report.
+        # protected-net refusal record clean. The nested sub-runs re-enter
+        # here with the sink non-empty and must NOT reset it -- their own
+        # refusals are part of the same run's report. (Before #1069 the
+        # finalize's sub-runs saw the second module copy's EMPTY sink and did
+        # reset it, dropping the outer run's refusals.)
         try:
             from protected_nets import clear_skipped
             clear_skipped()
@@ -1004,6 +1144,16 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     _orig_via_by_net: Dict[int, list] = {}
     for _v in pcb_data.vias:
         _orig_via_by_net.setdefault(_v.net_id, []).append(_v)
+    # #1069: the input copper as VALUES, so the end-of-run re-grade can tell
+    # which nets this run changed (objects move in place; see copper_signature).
+    # Outermost run only -- nested sub-runs do not re-grade.
+    _input_sig1069 = None
+    if final_reconcile:
+        from improvement_gate import copper_signature as _csig1069
+        _input_sig1069 = _csig1069(
+            pcb_data.segments, pcb_data.vias,
+            lambda _nid: (pcb_data.nets[_nid].name
+                          if _nid in pcb_data.nets else None))
     # #962: the input's vias as VALUES (net, x, y, size), not object references
     # (a nudge moves the objects). The ship-time Type VII stamp uses it to tell
     # a via this run ADDED from one the board already had.
@@ -4323,8 +4473,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # `121` and the wrong arm looked catastrophic.
     #
     # Derived from the sink rather than a new kwarg, because the sink's own
-    # contract already IS this distinction: "the first pass and, when it fires,
-    # the reconciliation sub-run's".
+    # contract already IS this distinction: "the first pass, then every nested
+    # sub-run's". Every nested summary (a reconciliation lap, a plane-finalize
+    # repair sub-run) is 'reconciliation-subset'; the MERGED document says
+    # 'merged' (route_summary.merge_summaries).
     summary['scope'] = 'run' if not _SUMMARY_SINK else 'reconciliation-subset'
     if summary['scope'] != 'run':
         # These are recomputed over the WHOLE board even in the subset pass, so
@@ -6012,10 +6164,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                           f"board")
             print("Note: the JSON_SUMMARY above covers only the "
                   "reconciliation subset (it carries scope="
-                  "\"reconciliation-subset\"); the run's full tally is the "
-                  "earlier JSON_SUMMARY, the one with scope=\"run\", plus "
-                  "these recoveries. Never scrape the LAST JSON_SUMMARY of a "
-                  "route log -- count them, or read the scope.")
+                  "\"reconciliation-subset\"). The run's tally is the final "
+                  "re-grade of the shipped board (JSON_REGRADE, folded into "
+                  "JSON_SUMMARY_MIN and --json-out). Never scrape the LAST "
+                  "JSON_SUMMARY of a route log.")
             if _rok:
                 successful += _rok
                 failed = max(0, failed - _rok)
@@ -6305,13 +6457,39 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         except Exception as _pwe:                               # noqa: BLE001
             print(f"  (power-width disclosure skipped: {_pwe})")
 
+    # ---- FINAL RE-GRADE (#1069) --------------------------------------------
+    # After the last pass that changes copper (the laps, the #589/#678 welds,
+    # the late orphan sweep) and before anything reports a tally, grade the
+    # board this run ships over every net it owns. --json-out and
+    # JSON_SUMMARY_MIN both merge it in, so their failure state -- and the
+    # returned successful/failed the GUI shows -- describe the whole run
+    # rather than the last reconciliation lap. Outermost run only, both
+    # fronts; a re-grade that raises leaves the summary-only merge in place.
+    if final_reconcile and not _ckpt_stop and _SUMMARY_SINK:
+        try:
+            _rg1069 = _final_regrade(
+                pcb_data, output_file, return_results,
+                locals().get('results_data'), _gui_write_model,
+                [_n for _n, _i in single_ended_nets], _input_sig1069,
+                _orig_seg_by_net, _orig_via_by_net)
+            if _rg1069 is not None:
+                successful = _rg1069['successful']
+                failed = _rg1069['failed']
+                if return_results and results_data is not None:
+                    results_data['regrade'] = _rg1069
+        except Exception as _rge:                               # noqa: BLE001
+            print(f"  WARNING: final re-grade skipped "
+                  f"({type(_rge).__name__}: {_rge}); the tally falls back to "
+                  f"the summaries alone")
+
     # Per-net story dump (KICAD_NET_STORY=1): the complete journey of every
     # net -- bus membership, ordering, failures with named blockers, rips,
     # rescues, Phase-3 tap order, costs -- assembled from state.
     if json_out:
         try:
             from route_summary import merge_summaries, write_summary_file
-            _merged = merge_summaries(list(_SUMMARY_SINK), _RECONCILE_RAISED[0])
+            _merged = merge_summaries(list(_SUMMARY_SINK), _RECONCILE_RAISED[0],
+                                      _FINAL_REGRADE[0])
             # #962: set on the MERGED document. The printed JSON_SUMMARY
             # predates the finalize, so it cannot carry this.
             if _merged is not None and _via_in_pad962 is not None:

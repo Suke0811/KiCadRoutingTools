@@ -83,32 +83,112 @@ def net_connectivity_map(pcb_data, tolerance: float = 0.02,
     *_by_net overrides to measure a WRITE MODEL (the copper a run is about
     to emit) instead of what is currently in pcb_data.
     """
-    from check_connected import check_net_connectivity, net_break_within_outlines
-
-    if segs_by_net is None:
-        segs_by_net = {}
-        for s in pcb_data.segments:
-            segs_by_net.setdefault(s.net_id, []).append(s)
-    if vias_by_net is None:
-        vias_by_net = {}
-        for v in pcb_data.vias:
-            vias_by_net.setdefault(v.net_id, []).append(v)
-    if zones_by_net is None:
-        zones_by_net = {}
-        for z in (getattr(pcb_data, 'zones', None) or []):
-            zones_by_net.setdefault(z.net_id, []).append(z)
-
+    segs_by_net, vias_by_net, zones_by_net = _copper_by_net(
+        pcb_data, segs_by_net, vias_by_net, zones_by_net)
     out: Dict[int, Tuple[bool, int]] = {}
     for net_id, pads in (pcb_data.pads_by_net or {}).items():
         if not net_id or len(pads or []) < 2:
             continue          # net 0 pseudo-net / trivially connected
-        r = check_net_connectivity(
-            net_id, segs_by_net.get(net_id, []), vias_by_net.get(net_id, []),
-            pads, zones_by_net.get(net_id, []), tolerance=tolerance,
-            pcb_data=pcb_data)
-        # #479 multi-board: only a break WITHIN one outline is a real break.
-        broken, dis_pads = net_break_within_outlines(pcb_data, r)
-        out[net_id] = (not broken, len(dis_pads or []) if broken else 0)
+        broken, dis_pads = _grade_net(
+            pcb_data, net_id, pads, segs_by_net.get(net_id, []),
+            vias_by_net.get(net_id, []), zones_by_net.get(net_id, []),
+            tolerance)
+        out[net_id] = (not broken, len(dis_pads) if broken else 0)
+    return out
+
+
+def copper_signature(segments, vias, net_name) -> Dict[str, object]:
+    """{net name: multiset of its copper} for "did this run change the net's
+    copper?" -- the one question a per-net diff has to answer (#1069).
+
+    Values, not object identity (a nudge moves a via object in place), keyed
+    by NAME (two parses of one board may number nets differently), rounded to
+    0.1 um so the writer's nm quantisation does not read as a change. A
+    segment is direction-free. Net 0 is skipped.
+    """
+    from collections import Counter
+
+    def r(v):
+        return round(float(v), 4)
+
+    out: Dict[str, Counter] = {}
+    for s in segments:
+        name = net_name(s.net_id) if s.net_id else None
+        if not name:
+            continue
+        a = (r(s.start_x), r(s.start_y))
+        b = (r(s.end_x), r(s.end_y))
+        out.setdefault(name, Counter())[
+            ('s', s.layer, min(a, b), max(a, b), r(s.width))] += 1
+    for v in vias:
+        name = net_name(v.net_id) if v.net_id else None
+        if not name:
+            continue
+        out.setdefault(name, Counter())[
+            ('v', r(v.x), r(v.y), r(v.size), r(v.drill),
+             tuple(v.layers or ()))] += 1
+    return out
+
+
+def _copper_by_net(pcb_data, segs_by_net, vias_by_net, zones_by_net):
+    """Fill in whichever per-net copper maps the caller did not pass."""
+    def _by_net(items):
+        d: Dict[int, list] = {}
+        for it in items:
+            d.setdefault(it.net_id, []).append(it)
+        return d
+
+    if segs_by_net is None:
+        segs_by_net = _by_net(pcb_data.segments)
+    if vias_by_net is None:
+        vias_by_net = _by_net(pcb_data.vias)
+    if zones_by_net is None:
+        zones_by_net = _by_net(getattr(pcb_data, 'zones', None) or [])
+    return segs_by_net, vias_by_net, zones_by_net
+
+
+def _grade_net(pcb_data, net_id, pads, segs, vias, zones, tolerance):
+    """(broken, disconnected_pad_locations) for one net: the zone/fill-aware
+    union-find route.py's own sweeps grade with, multi-board aware."""
+    from check_connected import check_net_connectivity, net_break_within_outlines
+    r = check_net_connectivity(net_id, segs, vias, pads, zones,
+                               tolerance=tolerance, pcb_data=pcb_data)
+    # #479 multi-board: only a break WITHIN one outline is a real break.
+    broken, dis_pads = net_break_within_outlines(pcb_data, r)
+    return bool(broken), (list(dis_pads or []) if broken else [])
+
+
+def grade_nets(pcb_data, net_ids, tolerance: float = 0.02,
+               segs_by_net: Optional[Dict[int, list]] = None,
+               vias_by_net: Optional[Dict[int, list]] = None,
+               zones_by_net: Optional[Dict[int, list]] = None
+               ) -> Dict[int, Dict]:
+    """Per-net detail for `net_ids` ONLY, on `net_connectivity_map`'s grade:
+    {net_id: {'pads', 'broken', 'copper', 'failed_pads'}}, `failed_pads`
+    shaped like route.py's failed_multipoint entries. Nets with fewer than two
+    pads are skipped (trivially connected). route.py's final re-grade (#1069)
+    uses it because it must grade the nets the run OWNS, never the whole
+    board: a scoped step would otherwise report other steps' nets."""
+    segs_by_net, vias_by_net, zones_by_net = _copper_by_net(
+        pcb_data, segs_by_net, vias_by_net, zones_by_net)
+    out: Dict[int, Dict] = {}
+    for net_id in net_ids:
+        pads = (pcb_data.pads_by_net or {}).get(net_id) or []
+        if not net_id or len(pads) < 2:
+            continue
+        segs = segs_by_net.get(net_id, [])
+        vias = vias_by_net.get(net_id, [])
+        broken, dis = _grade_net(pcb_data, net_id, pads, segs, vias,
+                                 zones_by_net.get(net_id, []), tolerance)
+        out[net_id] = {
+            'pads': len(pads),
+            'broken': broken,
+            'copper': bool(segs or vias),
+            'failed_pads': [
+                {'x': round(float(p[0]), 4), 'y': round(float(p[1]), 4),
+                 'component_ref': p[3] if len(p) > 3 else '?',
+                 'pad_number': '?'} for p in dis],
+        }
     return out
 
 
