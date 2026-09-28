@@ -189,6 +189,7 @@ def test_grade_route_mode_names_every_moved_part_and_is_not_done():
                         accept=True)
         r = run_utils.check(PY + [os.path.join(SCRIPTS, 'grade.py'), pile,
                                   '--baseline', ESP, '--mode', 'route',
+                                  '--spec', 'min-via-diameter=0.6',
                                   '--out-dir', td], code=4, refuse='moved_parts')
         doc = json.loads(r.stdout.splitlines()[0])
         assert doc['done'] is False, doc
@@ -199,6 +200,12 @@ def test_grade_route_mode_names_every_moved_part_and_is_not_done():
         # used to leave place mode's hpwl tie-break out of every grade)
         assert isinstance(full.get('hpwl'), (int, float)), sorted(full)
         assert isinstance(full.get('crossings'), int), sorted(full)
+        # the declared spec reached the graders, and is on the record
+        assert full['spec'] == [['--min-via-diameter', '0.6']], full['spec']
+        run_utils.check(PY + [os.path.join(SCRIPTS, 'grade.py'), pile,
+                              '--baseline', ESP, '--spec', 'no-equals-sign'],
+                        refuse='expected NAME=VALUE', code=2,
+                        allow=('usage:',))
         # control: a byte copy of the input moves nothing, through the same
         # pose reader the route-mode check uses
         import shutil

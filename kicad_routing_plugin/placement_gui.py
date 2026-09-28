@@ -520,7 +520,7 @@ class PlacementTab(wx.Panel):
             sw, choices=[BACKENDS[bid].label for bid in BACKEND_IDS])
         self.backend_choice.SetSelection(BACKEND_IDS.index(self.backend.id))
         self.backend_choice.SetToolTip(
-            "Harness that drives the placement skills. Only Claude Code is "
+            "Harness that runs the /pcb-free-agent skill. Only Claude Code is "
             "supported today (placement runs must WRITE, and the other "
             "harnesses' agents deny edits); more harnesses later.")
         self.backend_choice.Bind(wx.EVT_CHOICE, self._on_backend_choice)

@@ -51,7 +51,11 @@ def _poses(board):
             for k, f in pcb.footprints.items() if f.pads}
 
 
-def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None):
+def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None,
+          spec=()):
+    """`spec`: [(flag, value), ...] the board declares (e.g. --net-min-widths
+    FILE), passed to board_score and check_complete so DONE is measured
+    against the spec, not against the fab floor."""
     # Absolute BEFORE anything runs: every checker runs with cwd=ROOT, so a
     # path relative to the caller's directory would name a missing file.
     board, baseline = os.path.abspath(board), os.path.abspath(baseline)
@@ -71,6 +75,8 @@ def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None):
            'intent': intent,
            'has_kicad_pro': os.path.isfile(os.path.splitext(board)[0] + '.kicad_pro')}
     iflag = ['--intent', intent] if intent else []
+    spec_args = [x for pair in spec for x in pair]
+    out['spec'] = [list(p) for p in spec]
 
     aj = os.path.join(tmp, 'assembly.json')
     out['check_assembly_rc'], _ = _run(['py_tools/check_assembly.py', board,
@@ -101,6 +107,8 @@ def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None):
     off = ((_load(rj) or {}).get('checklist') or {}).get('a_off_outline') or {}
     out['off_outline_pad_copper'] = off.get('pad_copper')
     out['off_outline_graphic_copper'] = off.get('graphic_copper')
+    # a pad in a (keepout (tracks not_allowed)) band cannot be routed (#1031)
+    out['keepout_copper'] = off.get('keepout_copper')
     metrics = (_load(rj) or {}).get('metrics') or {}
     for k in ('hpwl', 'crossings'):          # render_placement's own keys
         if k in metrics:
@@ -108,16 +116,19 @@ def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None):
 
     done = out['buildable'] and not out['off_outline_pad_copper'] \
         and not out['off_outline_graphic_copper'] \
+        and not out['keepout_copper'] \
         and (not intent or out.get('floorplan_errors') == 0)
 
     if mode in ('full', 'route'):
         sj = os.path.join(tmp, 'score.json')
         out['board_score_rc'], _ = _run(['py_tools/board_score.py', board,
-                                         *iflag, '--baseline', baseline,
+                                         *iflag, *spec_args, '--baseline', baseline,
                                          '--json', sj, '--quiet'])
         s = _load(sj) or {}
         c = s.get('components') or {}
         out.update(blocking=s.get('blocking'),
+                   blocking_by=s.get('blocking_by'),
+                   ungraded=s.get('ungraded'),
                    unrouted=(c.get('unrouted') or {}).get('count'),
                    broken=(c.get('broken') or {}).get('count'),
                    drc=(c.get('drc') or {}).get('count'),
@@ -126,14 +137,15 @@ def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None):
                            ('check_complete_authored', ['--authored-from', baseline])):
             cj = os.path.join(tmp, f'{key}.json')
             out[key + '_rc'], _ = _run(['check_complete.py', board, *iflag,
-                                        *extra, '--json', cj])
+                                        *spec_args, *extra, '--json', cj])
             out[key] = (_load(cj) or {}).get('verdict')
         rc, log = _run(['py_router/check_connected.py', board])
         out['check_connected_rc'] = rc
         rc, log = _run(['py_router/check_drc.py', board, '--baseline', baseline,
                         '--clearance-margin', '0.1'])
         out['check_drc_rc'] = rc
-        done = done and out['blocking'] == 0 and out['check_complete'] == 'DONE'
+        done = done and out['blocking'] == 0 and out['check_complete'] == 'DONE' \
+            and out['check_connected_rc'] == 0 and out['check_drc_rc'] == 0
 
     if mode == 'route':
         before, after = _poses(baseline), _poses(board)
@@ -158,8 +170,19 @@ def main(argv=None):
     ap.add_argument('--label', default=None)
     ap.add_argument('--out-dir', default=None,
                     help="default: the board's own directory")
+    ap.add_argument('--spec', action='append', default=[], metavar='NAME=VALUE',
+                    help='a spec flag the board declares, without its leading '
+                         'dashes, passed to board_score and check_complete; '
+                         'repeatable, e.g. --spec net-min-widths=widths.json')
     a = ap.parse_args(argv)
-    out, dst = grade(a.board, a.baseline, a.intent, a.mode, a.label, a.out_dir)
+    spec = []
+    for s in a.spec:
+        name, sep, value = s.partition('=')
+        if not sep or not name.strip():
+            ap.error(f'--spec {s!r}: expected NAME=VALUE')
+        spec.append(('--' + name.strip().lstrip('-'), value))
+    out, dst = grade(a.board, a.baseline, a.intent, a.mode, a.label, a.out_dir,
+                     spec)
     keys = ('done', 'blocking', 'unrouted', 'broken', 'drc', 'vias',
             'copper_mm', 'segments', 'check_complete', 'check_complete_authored',
             'assembly_verdict', 'floorplan_errors', 'moved_parts')

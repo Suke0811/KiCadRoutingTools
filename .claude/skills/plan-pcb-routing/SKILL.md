@@ -13,13 +13,11 @@ When this skill is invoked with a KiCad PCB file, perform a comprehensive analys
 emits the plan as an executable artifact and then PROVES it, with a checker
 that refuses by name rather than a paragraph you are trusted to have read.
 
-There is no driver here, and that is deliberate. The placement half stages its
-work behind one because the AI is deciding there and a refusal is what keeps a
-decision honest. Routing's failure mode is different -- the CHAIN being wrong,
-not a judgement being wrong -- so what this half needs is a checker over the
-plan, and it gets one. Placement stages encode a decision order over levers
-and are stable; routing stages encode the copper chain, which the engine moves
-underneath them.
+There is no driver here, and that is deliberate (the staged placement drivers
+were retired too, for `/pcb-free-agent`). Routing's failure mode is the CHAIN
+being wrong, not a judgement being wrong, so what this half needs is a checker
+over the plan, and it gets one: routing stages encode the copper chain, which
+the engine moves underneath them.
 
 ### Who is in the seat here
 
@@ -28,8 +26,8 @@ chain, the nets and the parameters, and you read the failures; `route.py` and
 its siblings lay the copper. You do not hand-place copper, and you do not work
 around a checker that refuses.
 
-That is the opposite of the placement half, where YOU DECIDE -- which parts
-move, where, and why -- and the scripts legalize and measure. The test for
+That is the opposite of placement (`/pcb-free-agent place`), where YOU DECIDE
+-- which parts move, where, and why -- and the scripts legalize and measure. The test for
 which mode you are in: **if the work replays from a recorded command list
 without judgement, it is script work.** Routing passes it, which is why every
 run here leaves a `redo_commands.sh` that replays with no model in the loop.

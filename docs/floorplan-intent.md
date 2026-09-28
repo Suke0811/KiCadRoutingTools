@@ -1037,8 +1037,8 @@ Nothing bounds its overlap, so no area bound is sound.
 the enclosure fixes, with the board's floors. Before #959 nothing read it. It
 said USB1 was west, the brief said east, and `contradictions` was `[]`.
 
-`check_floorplan`, `board_brief` and the placement driver now discover it beside
-the board. `--mechanical PATH` names another file, and `--no-mechanical` is the
+`check_floorplan` and `board_brief` (and so `/pcb-free-agent`, through
+`--emit-intent`) now discover it beside the board. `--mechanical PATH` names another file, and `--no-mechanical` is the
 OFF arm. Two shapes are read, stage_unaided's `refs` map and the declaration
 form `{interfaces, fixed, project}`. Anything else exits 2.
 
@@ -1410,8 +1410,8 @@ both arms against one auto intent. It improved no board. The three flat boards
 were unchanged, because no zone packing exists for the limit to pull caps out
 of. The three zoned boards (ulx3s, orangecrab_ext_pll, glasgow_revC) all
 regressed: more decap errors, or worse guards. The rows stay as `rejected`
-change detectors. The placement skill does not print a decap flag in its
-emits. The rule roster (`check_floorplan --plan-only`) asks the question instead: an applicable dark
+change detectors. Neither `check_floorplan --emit-intent` nor `/pcb-free-agent`
+adds a decap flag. The rule roster (`check_floorplan --plan-only`) asks the question instead: an applicable dark
 `decap_distance` is answered by a limit from a requirement, or by a written
 disposition.
 

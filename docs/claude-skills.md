@@ -182,7 +182,8 @@ A development/QA skill rather than a board-design skill: batch-tests the router 
 
 ```
 Placement (or the whole job):
-  /pcb-free-agent place|full|route - agent-driven, one verifier, film + report
+  /pcb-free-agent place         - then continue below
+  /pcb-free-agent full|route    - routes itself --> /review-routed-board
         |
         v
 Before routing:
@@ -198,6 +199,7 @@ Before routing:
   routing runs (route.py, route_diff.py, route_planes.py)
         |
         +-- failures? --> /diagnose-routing-failures --> targeted retry
+        |                   (placement-shaped? --> /pcb-free-agent full)
         |
         v
   /review-routed-board      - final sign-off
