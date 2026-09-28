@@ -590,7 +590,7 @@ def read_lens_file(path):
         f"no line beginning 'VERDICT=' in {path} ({n} line(s) scanned). The "
         f"token is case-sensitive, and the verifier's own reply format is "
         f"`VERDICT=(PASS|FAIL):lens=<lens>` on a line of its own "
-        f"(references/verifier-prompts.md). A boundary-verification verdict "
+        f"(the verifier brief, .claude/skills/pcb-free-agent/references/verifier.md). A boundary-verification verdict "
         f"spells `check=<1-5>` instead of `lens=<name>` and is not a lens: "
         f"cite it in the report, not here.")
 
@@ -1416,11 +1416,12 @@ def cmd_record(a):
             # fragments it is still correct for a human and invisible to any
             # grep -- including the cited-path guard this repo runs, whose
             # citation pattern needs a '/' inside a single token.
-            _ref = ('.claude/skills/plan-pcb-placement-and-routing/references/verifier-prompts.md')
+            _ref = ('.claude/skills/pcb-free-agent/references/verifier.md')
             print(f"record: --final needs the routed-board lenses and is "
-                  f"missing {', '.join(_miss)}. Dispatch them -- {_ref}, "
-                  f"'The nine lenses' 7-9 -- and pass each VERDICT= line as "
-                  f"--lens-file. `blocking == 0` is not `every lens passes`. "
+                  f"missing {', '.join(_miss)}. Have an independent verifier "
+                  f"({_ref}) write one `VERDICT=PASS|FAIL:lens=<name>` line "
+                  f"per lens to a file, and pass each file as --lens-file. "
+                  f"`blocking == 0` is not `every lens passes`. "
                   f"Nothing was written.", file=sys.stderr)
             return 2
     # ...and each routed-board lens on ANY --final row must have a FILE behind
@@ -1454,7 +1455,7 @@ def cmd_record(a):
                   f"A close-out is this run's terminal record and nothing "
                   f"reopens a ledger, so every verdict in it needs an artifact "
                   f"a later reader can open -- not a line retyped from a "
-                  f"reply. references/verifier-prompts.md already requires "
+                  f"reply. The verifier brief (pcb-free-agent references/verifier.md) requires "
                   f"every verifier to write its VERDICT= line to disk; pass "
                   f"that file and the row stores its path and sha256:\n"
                   f"    --lens-file <the verifier's file for that lens>\n\n"
@@ -2926,7 +2927,7 @@ def build_parser():
                         'sha256 in entry["lens_source"]. Repeatable, one per '
                         'lens. Prefer this: a retyped line is a claim about '
                         'the run, a file is a claim about a file, and '
-                        'references/verifier-prompts.md already requires the '
+                        'the pcb-free-agent verifier brief requires the '
                         'copy on disk. --final --kind completion REQUIRES it '
                         'for connectivity, drc and spec. Combines with --lens '
                         '(bare verdicts first, then files, each in the order '
