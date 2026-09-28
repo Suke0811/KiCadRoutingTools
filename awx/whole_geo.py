@@ -83,6 +83,9 @@ P_MIN = max(P_MIN, TW + CL + 2 * GRID2)      # two planned lines: each lands up 
 # all the squeeze
 P_MID = (P_MIN + P_COMF) / 2
 W_COMF_TIGHT = 3 * W_COMF
+# GEO_PAIR_ROOM=1 (opt-in; off by default): an island split that leaves a side holding a PAIR with less than a lane's
+# pitch to spare is taken only when every split that fits does the same (static_sides)
+PAIR_ROOM = os.environ.get('GEO_PAIR_ROOM', '0') not in ('', '0')
 from fab_tiers import min_via_center_distance
 VIA_VV = min_via_center_distance(bd.VIA_SIZE, CL, ctx.cfg.via_drill, getattr(ctx.cfg, 'hole_to_hole_clearance', 0.0) or 0.0)
 VIA_VV += 2 * GRID2; VIA_ST += GRID2; LANE_ST += GRID2     # planned vs planned a whole step, vs static half
@@ -952,13 +955,13 @@ def static_sides(sol):
                             p_ = -1 if ot_ < (oa + ob) / 2 else 1
                     pin.append(p_)
 
-                def holds(side, ls):
-                    """do lanes `ls` (nearest the island first) fit at pitch in the room on `side`"""
+                def spare(side, ls):
+                    """the room lanes `ls` (nearest the island first) leave on `side` at pitch: below 0, they do not fit"""
                     used, prev_ = 0.0, None
                     for n in ls:
                         used += (LANE_ST + hw[n]) if prev_ is None else (P_MIN + hw[prev_] + hw[n])
                         prev_ = n
-                    return used <= room[side] + 1e-9
+                    return room[side] - used
                 forced = ROOMLESS.get((f, ii))
                 best = None
                 for j in range(len(lanes) + 1):
@@ -967,8 +970,16 @@ def static_sides(sol):
                     if any(pin[i] == 1 for i in range(j)) or any(pin[i] == -1 for i in range(j, len(lanes))):
                         continue
                     cst = sum(cost_below[:j]) + sum(cost_above[j:])
-                    if not holds(-1, list(reversed(lanes[:j]))) or not holds(1, lanes[j:]):
+                    sp_b, sp_a = spare(-1, list(reversed(lanes[:j]))), spare(1, lanes[j:])
+                    if sp_b < -1e-9 or sp_a < -1e-9:
                         cst += 1e6                              # over capacity: only if no split fits
+                    elif PAIR_ROOM and ((sp_b < P_MIN and any(n in prs for n in lanes[:j]))
+                                        or (sp_a < P_MIN and any(n in prs for n in lanes[j:]))):
+                        # FULL beside a PAIR: its lanes fit at their bare pitch and leave less than another lane's. A
+                        # single is laid within the half step its bar allows; a pair turns at its own radius and is laid
+                        # up to a pitch off its line, taking its neighbours' room (K51: SDQS0, SDQ7 and SDQ6 between
+                        # DU1's south face and C12, 0.056 spare). Taken only when every split that fits is as full
+                        cst += 1e3
                     if best is None or cst < best[0]:
                         best = (cst, j)
                 if best is None:

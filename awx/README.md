@@ -1665,6 +1665,11 @@ First, the whole-route plan (`whole_*.py`):
   (`P_COMF` and its weights), the snap's pair keep (`W_KEEP`), the loop's
   `PATIENCE` and the street sites (`DST_STREET`). One at a time, over K28-K51 and synthetic buses
   (`synth_bus.py`), judged on passes, then vias, then time.
+- **Room beside a pair at an island** (`GEO_PAIR_ROOM=1`, opt-in, off by
+  default): the geometry's island split takes a side that holds a pair with
+  less than a lane's pitch to spare only when every split that fits does the
+  same. To try where a pair's pinch beside a part fails (the larger zynq
+  rungs).
 - **Units.** `rules.py`'s margins on `via_need`, `lane_min` and `end_keep`
   (a "cell" of 0.03 and 0.02 / 0.05 mm, rather than the grid), the braid's
   planning distances the whole route starts from (`BLOCK_GAP`, `ROW_O`,
