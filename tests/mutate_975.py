@@ -472,7 +472,9 @@ ROWS = [
      "        moved = dict(memo['legality'])",
      (TS,), 'KILLED'),
     ('legality-metrics-overlap-not-read', 'sd',
+     "        said = {r.get('budget') for r in rows if r.get('rule') == 'legality'}\n"
      "        for key in ('overlap_area', 'oob_amount', 'oob_count'):",
+     "        said = {r.get('budget') for r in rows if r.get('rule') == 'legality'}\n"
      "        for key in ('oob_amount', 'oob_count'):",
      (TS,), 'KILLED'),
     ('ring-base-never-re-read', 'fp',
