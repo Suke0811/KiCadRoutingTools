@@ -1512,6 +1512,9 @@ def edge_seat_ok(state, part, x: float, y: float, edge: str,
     An edge connector's BODY overhangs by design; its PADS do not. That
     asymmetry is what makes this checkable at all.
 
+    Five conjuncts in all: the band, pads on the board, and (below) a
+    declared keep-out, an exclusive zone and a rule-area band (#1044).
+
     A THIRD conjunct, since #701: a declared KEEP-OUT. An edge connector's
     body may leave the outline; it may not enter a region the intent
     reserved, and neither of the other two conjuncts can see that -- a
@@ -2927,10 +2930,7 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
             return True
         if refused:
             notes.append(f"{ref}: every position on the declared {edge} edge "
-                         f"band is refused by "
-                         + ', '.join(sorted(set(refused)))
-                         + " -- move the keep-out, or add this ref to its "
-                           "`allow`")
+                         f"band is refused by " + _edge_refusal_tail(refused))
         notes.append(
             f"{ref}: no seat exists on the declared {edge} edge at any "
             f"declared rotation ({', '.join(f'{r:g}' for r in ladder)}deg) "
@@ -2994,9 +2994,30 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
         # Sorted+deduped: the ladder tries up to 13 fractions and would
         # otherwise name the same keep-out 13 times.
         notes.append(f"{ref}: every position on the declared {edge} edge band "
-                     f"is refused by " + ', '.join(sorted(set(refused)))
-                     + " -- move the keep-out, or add this ref to its `allow`")
+                     f"is refused by " + _edge_refusal_tail(refused))
     return False
+
+
+def _edge_refusal_tail(refused) -> str:
+    """The reasons an edge band was refused, deduplicated, and the next move
+    each kind has. A declared keep-out has an `allow` list; a board rule-area
+    band (#1044) does not, so its advice differs -- and it is reported ONCE,
+    at its deepest, rather than once per ladder rung's depth."""
+    band = [r for r in refused if 'rule-area keep-out band' in r]
+    other = sorted(set(r for r in refused if r not in band))
+    parts = list(other)
+    if band:
+        depth = max(float(r.split('pad copper ')[1].split('mm')[0])
+                    for r in band)
+        parts.append(f"pad copper up to {depth:.3f}mm into a rule-area "
+                     f"keep-out band")
+    advice = []
+    if any(r.startswith('keep-out ') for r in other):
+        advice.append("move the keep-out, or add this ref to its `allow`")
+    if band:
+        advice.append("move the board's rule area, or the connector's "
+                      "declared edge / band")
+    return ', '.join(parts) + (" -- " + '; '.join(advice) if advice else '')
 
 
 def _partner_centroid(state, ref: str, placed: Set[str],

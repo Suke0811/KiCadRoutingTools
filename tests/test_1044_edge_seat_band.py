@@ -282,6 +282,31 @@ def test_place_seed_charges_a_band_pad_it_placed_and_not_one_it_inherited():
           f"({dict(inherited)['C6']}mm, inherited) is not")
 
 
+def test_repair_names_the_band_and_its_real_next_move():
+    """`--repair` of the gate-on seed tries to put J3 back on its north edge
+    through `_seat_edge`, finds every position in the band, and says so
+    ONCE, at its deepest -- with the move a board rule area has (move it, or
+    the connector's declaration), never the declared keep-out's `allow`."""
+    with tempfile.TemporaryDirectory() as td:
+        board, intent, _ip = band_board(td)
+        with band_gate(True):
+            res, _band = _seed_band(board, intent, td)
+        seeded = os.path.join(td, 'seed0.kicad_pcb')
+        rep = seeder.repair_placement(
+            parse_kicad_pcb(seeded), seeded, intent, group_sources=SOURCES,
+            clearance=CLEARANCE)
+        note = [n for n in rep['notes'] if n.startswith('J3: every position')]
+        assert note, [n for n in rep['notes'] if n.startswith('J3')]
+        assert 'rule-area keep-out band' in note[0], note
+        assert note[0].count('rule-area keep-out band') == 1, note
+        assert '`allow`' not in note[0] and 'rule area' in note[0], note
+        assert 'J3' not in {m['reference'] for m in rep['moves']} or \
+            'J3' not in dict(legality.board_keepout_findings(
+                parse_kicad_pcb(seeded), CLEARANCE, seeded)[
+                    'oob_keepout_copper_refs']), rep['moves']
+    print(f"  PASS: {note[0]}")
+
+
 def test_gate_reason_names_the_band():
     import place_seed
     why = place_seed.gate_reason([], [], [], 0, band=['J3'])
@@ -294,6 +319,7 @@ TESTS = [
     test_edge_seat_ok_refuses_a_band_pose_and_names_it,
     test_a_seed_puts_no_edge_connector_pad_in_the_band,
     test_place_seed_charges_a_band_pad_it_placed_and_not_one_it_inherited,
+    test_repair_names_the_band_and_its_real_next_move,
     test_gate_reason_names_the_band,
 ]
 

@@ -229,6 +229,18 @@ def main():
               "COMMITTED text back over uncommitted work.", file=sys.stderr)
         return 2
 
+    # The killers, UNMUTATED, must pass first: `_run` counts any non-zero
+    # exit as KILLED, so a broken fixture or an ImportError would otherwise
+    # score every row killed (mutate_974's gate, and its reason).
+    killers = sorted({t for r in rows for t in r[4]})
+    red, why = _run(killers)
+    if red:
+        print(f"REFUSED: the killer tests fail UNMUTATED ({why}) -- every row "
+              f"would read KILLED for a reason unrelated to its mutation.",
+              file=sys.stderr)
+        return 2
+    for t in killers:
+        print(f"  unmutated {os.path.basename(t):40} passes")
     originals = {k: io.open(p, encoding='utf-8').read()
                  for k, p in TARGETS.items()}
     verdicts = []
