@@ -139,10 +139,15 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   in-pad wiggles the router keeps on purpose (#1063). Budget for a cleanup,
   and measure it with `check_weird`. One `check_weird` per candidate is too
   slow above a few thousand segments, so batch the candidates.
-- **`route.py`'s own failure tally undercounts** after reconciliation laps
-  (#1069). Count open nets with `check_connected` or `board_score`. A broken
-  POURED net is `repair_planes.py`'s job (`components.broken.nets[].handler`),
-  not `route.py`'s.
+- **`route.py`'s failure tally covers only the nets that step owns.** It
+  re-grades the board it wrote over the nets its passes worked on or
+  disturbed (#1069: the `JSON_REGRADE` line, merged into `JSON_SUMMARY_MIN`
+  and `--json-out`), so reconciliation laps no longer hide broken nets. It
+  does not grade the rest of the board, and it uses the router's fill model
+  rather than KiCad's refill. Count the board's open nets with
+  `check_connected` or `board_score`. A broken POURED net is
+  `repair_planes.py`'s job (`components.broken.nets[].handler`), not
+  `route.py`'s.
 - **Widths are requests.** After each route, read
   `power_widths.<net>.under_mm`: one run asked for 0.3 mm on +3V3 and shipped
   34 % of it at 0.127 mm. Grade power widths with `board_score --net-min-widths`.

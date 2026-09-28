@@ -2270,10 +2270,14 @@ The JSON_SUMMARY line contains structured data including:
 one per outermost run, printed last, and it carries the MERGED tally in under a
 kilobyte: `routed`, `failed`, `failed_single`, `open_single`,
 `multipoint_deficit`, `pad_pairs_open`, `terminal_restores_broken`,
-`min_clearance_used`, `vias`, `main_loop_time_s`, and `finalize_excluded_nets`
-when the finalize declined plane nets by plan. The big `JSON_SUMMARY` lines are
-several kB each and run-scope rather than merged — they are forensics, not your
-read. Four things about it that are easy to get wrong:
+`min_clearance_used`, `vias`, `main_loop_time_s`, `regraded_nets`, and
+`finalize_excluded_nets` when the finalize declined plane nets by plan. Its
+failure state comes from a re-grade of the board the run wrote, over every net
+the run's passes worked on or disturbed (#1069, the `JSON_REGRADE` line), so a
+net an earlier reconciliation lap or finalize sub-run left broken stays
+counted. The big `JSON_SUMMARY` lines are several kB each and cover one pass
+each — they are forensics, not your read. Four things about it that are easy
+to get wrong:
 
 - **It says NOTHING about whether the DRC floors held.** The `.kicad_pro`
   writeback runs AFTER this line prints and reports on its own (in one measured
