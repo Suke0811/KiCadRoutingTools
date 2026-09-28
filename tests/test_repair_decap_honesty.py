@@ -30,7 +30,11 @@ C3 alone at the human pose: 2.125mm from U1):
 * Leaving the decap search radius is not a fix: C3 pushed past 5mm from U1
   becomes `decap_ungraded` (warn), and stays unresolved.
 * A created `decap_pin_distance` (it names the IC) is charged to the CAP
-  whose move stranded the pin, through its measured `cap`.
+  whose move stranded the pin, through its measured `cap` -- and, when the
+  finding names no moved ref at all, by COUNTERFACTUAL: watchy seed 2's C5
+  strands U4 pin 20 under a claim U4 already carried, naming only U4 and C3.
+* A finding that only GREW is not "no change": watchy seed 1's C12 move grows
+  U3's VBUS pin error 7.78 -> 11.10mm, and C12 is not repaired.
 * CLI: `place_seed --repair` writes `violators`, `repaired_refs`,
   `unresolved_refs`, `unresolved_by_rule` (its exit 4 is the final grade's,
   as before), and -- the issue's own regression property -- the refs it
@@ -58,7 +62,7 @@ from placement import seeder                       # noqa: E402
 from placement.writer import write_placed_output   # noqa: E402
 from run_utils import check, evidence              # noqa: E402
 
-RUN_ALL_TIMEOUT = 600
+RUN_ALL_TIMEOUT = 1200
 
 ESP = os.path.join(ROOT, 'kicad_files', 'esp_prog.kicad_pcb')
 PLACE_SEED = os.path.join(ROOT, 'py_placer', 'place_seed.py')
@@ -328,6 +332,58 @@ def test_a_created_pin_error_is_charged_to_the_cap_that_moved():
     print("  PASS: U1's created pin error is charged to the moved cap C3")
 
 
+def _watchy_repair(seed, td):
+    board = os.path.join(ROOT, 'kicad_files', 'watchy.kicad_pcb')
+    doc = fp.emit_intent(parse_kicad_pcb(board), board)
+    doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=2.5,
+                         max_pin_distance_mm=2.5)
+    ipath = os.path.join(td, f'intent{seed}.json')
+    with open(ipath, 'w', encoding='utf-8') as fh:
+        json.dump(doc, fh)
+    intent = fp.load_intent(ipath)
+    sub = os.path.join(td, f's{seed}')
+    os.makedirs(sub)
+    src = _perturbed(board, sub, seed=str(seed))
+    return intent, src, _repair(src, intent)
+
+
+def test_a_stranded_pin_is_charged_to_the_cap_that_left_it():
+    """The round-2 verifier's counterexample, which neither the claim key nor
+    the names in the finding can see. watchy, 12 parts displaced (seed 2):
+    the repair moves C5 1.95mm, which strands U4's pin 20 -- a NEW finding,
+    but under a claim U4 already carried (pin 46), and naming U4 and the
+    now-nearest cap C3, neither of which moved. Only restoring C5 alone
+    clears it, so C5 is charged and is not repaired."""
+    with tempfile.TemporaryDirectory() as td:
+        intent, src, res = _watchy_repair(2, td)
+        assert 'C5' in {m['reference'] for m in res['moves']}, res['moves']
+        assert 'C5' not in res['repaired'], res['repaired']
+        note = [n for n in res['notes'] if n.startswith('C5: UNRESOLVED')]
+        assert note and 'created decap_pin_distance' in note[0], note
+        after = os.path.join(td, 'w2.kicad_pcb')
+        write_placed_output(src, after, res['moves'])
+        pins = [v for v in fp.grade(intent, parse_kicad_pcb(after), after,
+                                    group_sources=SOURCES,
+                                    clearance=CLEARANCE).errors
+                if v.rule == 'decap_pin_distance' and v.ref == 'U4'
+                and str((v.measured or {}).get('pad')) == '20']
+        assert pins and pins[0].measured.get('cap') != 'C5', pins
+    print(f"  PASS: {note[0]}")
+
+
+def test_a_move_that_makes_a_finding_worse_is_not_repaired():
+    """`grade_delta` counts claims, so an error that only GREW is 'no
+    change'. watchy seed 1: the repair re-seats C12 4.24mm and U3's VBUS pin
+    error grows 7.78 -> 11.10mm -- a regression, not a repair."""
+    with tempfile.TemporaryDirectory() as td:
+        _intent_, _src, res = _watchy_repair(1, td)
+        assert 'C12' in {m['reference'] for m in res['moves']}
+        assert 'C12' not in res['repaired'], res['repaired']
+        note = [n for n in res['notes'] if n.startswith('C12: UNRESOLVED')]
+        assert note and '(made worse)' in note[0], note
+    print(f"  PASS: {note[0]}")
+
+
 def _summary(r):
     m = re.search(r'^JSON_SUMMARY: (.*)$', r.stdout, re.M)
     assert m, r.stdout[-1500:]
@@ -377,6 +433,8 @@ TESTS = [
     test_a_move_that_creates_a_decap_error_is_not_repaired,
     test_a_cap_pushed_past_the_decap_radius_is_not_cleared,
     test_a_created_pin_error_is_charged_to_the_cap_that_moved,
+    test_a_stranded_pin_is_charged_to_the_cap_that_left_it,
+    test_a_move_that_makes_a_finding_worse_is_not_repaired,
     test_cli_writes_the_refs_and_the_repaired_set_is_honest,
 ]
 

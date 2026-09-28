@@ -5356,6 +5356,74 @@ def stamp_unlocked(board_file: str, refs: Sequence[str]) -> int:
 CONTAINMENT_CHARGE_MM = 2.0
 
 REPAIR_CAPS_MM = (0.5, 1.0, 2.0, 5.0)
+
+#: The measured value a grade finding gets WORSE along, first key found
+#: (#1066). A distance or an escape: larger is worse.
+FINDING_AMOUNT_KEYS = ('gap_mm', 'distance_mm', 'outside_mm', 'area_mm2',
+                       'intrusion_mm2', 'overlap_mm2')
+
+#: A finding's amount must grow by more than this to be "worse": the grade
+#: rounds its measurements to 3-4 decimals.
+FINDING_WORSE_EPS_MM = 1e-3
+
+
+def finding_key(v) -> Tuple:
+    """One grade FINDING's identity: `floorplan.violation_claim` plus the
+    pad and net it is about. The claim alone is per (rule, ref, block), so
+    an IC with one supply pin already past its limit reads a SECOND pin
+    stranded by a move as the same claim -- a new finding, invisible (the
+    phase-1 round-2 verifier: watchy U4 pad 20, created by moving C5, hidden
+    behind U4 pad 46)."""
+    from placement import floorplan as _fp
+    m = v.measured or {}
+    return _fp.violation_claim(v) + (str(m.get('pad', '')),
+                                     str(m.get('net', '')))
+
+
+def finding_amount(v) -> Optional[float]:
+    m = v.measured or {}
+    for k in FINDING_AMOUNT_KEYS:
+        x = m.get(k)
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            return float(x)
+    return None
+
+
+def findings_of(violations) -> Dict[Tuple, Optional[float]]:
+    """{finding_key: amount} over the ERRORS in `violations` (the largest
+    amount when a key repeats)."""
+    from placement import floorplan as _fp
+    out: Dict[Tuple, Optional[float]] = {}
+    for v in violations:
+        if v.severity != _fp.ERROR:
+            continue
+        k, a = finding_key(v), finding_amount(v)
+        if k not in out or (a is not None and (out[k] is None or a > out[k])):
+            out[k] = a
+    return out
+
+
+def new_or_worse(before: Dict[Tuple, Optional[float]], after_violations
+                 ) -> List[Tuple[object, str]]:
+    """`[(violation, 'new' | 'worse')]`: every ERROR in `after_violations`
+    that `before` (a `findings_of`) does not have, or has with a smaller
+    amount. Stricter than `floorplan.grade_delta`, which counts claims and so
+    is blind to a second finding under one claim and to a finding that only
+    grew -- a cap moved further from the only IC it decouples (watchy C12,
+    U3 VBUS 7.78 -> 11.10mm) is a regression, not a repair."""
+    from placement import floorplan as _fp
+    out = []
+    for v in after_violations:
+        if v.severity != _fp.ERROR:
+            continue
+        k = finding_key(v)
+        if k not in before:
+            out.append((v, 'new'))
+            continue
+        a, b = finding_amount(v), before[k]
+        if a is not None and b is not None and a > b + FINDING_WORSE_EPS_MM:
+            out.append((v, 'worse'))
+    return out
 # A repair move must be PROPORTIONATE to the violation it clears. The cap
 # ladder escalates 0.5 -> 5.0mm hunting any legal seat, and on a board damaged
 # by ~1.2mm it relocated parts 4.3-5.8mm: those few parts carried the whole of
@@ -5565,13 +5633,15 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     # before any move, while the state still holds the input poses; also the
     # BASELINE a move's NEW finding is told apart by (see the re-grade).
     claims_regradable = None
+    findings_before = None
     regrade_error = None
     if pose_grader is not None:
         try:
-            claims_regradable = {
-                floorplan.violation_claim(v)
-                for v in pose_grader.violations()
-                if v.severity == floorplan.ERROR}
+            _before = pose_grader.violations()
+            claims_regradable = {floorplan.violation_claim(v)
+                                 for v in _before
+                                 if v.severity == floorplan.ERROR}
+            findings_before = findings_of(_before)
         except (floorplan.UntrustworthyOutline, ValueError) as exc:
             regrade_error = exc
 
@@ -5991,16 +6061,50 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         # charge persisting, or leaving the radius would be a way to be fixed.
         ungraded = ({v.ref for v in after if v.rule == 'decap_ungraded'}
                     if after is not None else set())
+        # A finding the input poses did not have, or had SMALLER, charged to
+        # the moved ref that caused it. The ref it NAMES is not enough: a pin
+        # a cap's move stranded names the IC and whichever cap is now
+        # nearest, never the cap that left (round-2 verifier: watchy C5). So
+        # a finding naming no moved ref is attributed by COUNTERFACTUAL --
+        # each moved ref restored alone to its input pose, the finding
+        # disappearing or shrinking back names the move that made it.
         created: Dict[str, List[str]] = {}
-        for v in (after or ()):
-            if (v.severity != floorplan.ERROR
-                    or floorplan.violation_claim(v) in claims_regradable):
-                continue
+        unattributed: List[str] = []
+        restored: Dict[str, Dict[Tuple, Optional[float]]] = {}
+        for v, how in (new_or_worse(findings_before, after)
+                       if after is not None else ()):
+            label = v.rule if how == 'new' else f"{v.rule} (made worse)"
             m = v.measured or {}
-            names = {v.ref} | {m.get(k) for k in ('cap', 'ic', 'near',
-                                                  'partner')}
-            for r in names & moved_refs:
-                created.setdefault(r, []).append(v.rule)
+            names = {v.ref} | {m.get(k) for k in ('cap', 'ic', 'near')}
+            who = sorted(names & moved_refs)
+            if not who:
+                k, amt = finding_key(v), finding_amount(v)
+                for r in sorted(moved_refs):
+                    if r not in restored:
+                        fp0 = pcb_data.footprints[r]
+                        try:
+                            restored[r] = findings_of(pose_grader.violations(
+                                poses={r: (fp0.x, fp0.y,
+                                           (fp0.rotation or 0.0) % 360.0)}))
+                        except (floorplan.UntrustworthyOutline,
+                                ValueError):
+                            restored[r] = None
+                    got = restored[r]
+                    if got is None:
+                        continue
+                    if k not in got or (
+                            amt is not None and got[k] is not None
+                            and got[k] < amt - FINDING_WORSE_EPS_MM):
+                        who.append(r)
+            if not who:
+                unattributed.append(f"{label} on {v.ref}")
+            for r in who:
+                created.setdefault(r, []).append(label)
+        if unattributed:
+            notes.append(
+                "repair: " + '; '.join(sorted(set(unattributed)))
+                + " -- not present before the repair, and no single move "
+                  "restored alone clears it (a joint effect of several)")
         for ref in check_refs:
             charged = charged_claims.get(ref, ())
             made: List[str] = []
@@ -6018,7 +6122,8 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                                 or c not in claims_regradable
                                 or (c[0] == 'decap_distance'
                                     and ref in ungraded)})
-                made = sorted(set(created.get(ref, ())) - set(still))
+                made = sorted(set(created.get(ref, ()))
+                              - {r for r in still})
                 why = None
                 if ('decap_distance' in still and ref in ungraded
                         and ('decap_distance', ref) not in
@@ -6033,7 +6138,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             if ref not in unresolved:
                 unresolved.append(ref)
             unresolved_claims[ref] = sorted(
-                {r.split(' ')[0] for r in still} | set(made))
+                {r.split(' ')[0] for r in list(still) + list(made)})
             said = []
             if why:
                 said.append(f"{why}, so the charged {', '.join(still)} "
@@ -6043,7 +6148,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                             f"repair")
             if made:
                 said.append(f"its move created {', '.join(made)}, which the "
-                            f"input poses did not have")
+                            f"input poses did not have at that size")
             notes.append(
                 f"{ref}: UNRESOLVED -- " + '; '.join(said)
                 + ((" (it moved, and the move did not clear it)" if still

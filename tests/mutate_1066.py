@@ -94,6 +94,29 @@ ROWS = [
      "                                or False})\n",
      (T1066,), 'KILLED'),
 
+    # Round 2: a finding naming no moved ref is left unattributed -- the
+    # counterfactual (restore each moved ref alone) is gone.
+    ('no-counterfactual-attribution', 's',
+     "            if not who:\n"
+     "                k, amt = finding_key(v), finding_amount(v)\n",
+     "            if False:\n"
+     "                k, amt = finding_key(v), finding_amount(v)\n",
+     (T1066,), 'KILLED'),
+
+    # A finding that only GREW reads as no change.
+    ('a-worse-finding-reads-unchanged', 's',
+     "        if a is not None and b is not None and a > b + FINDING_WORSE_EPS_MM:\n",
+     "        if False:\n",
+     (T1066,), 'KILLED'),
+
+    # The finding is identified by its claim alone: a second stranded pin
+    # under a claim the IC already carried is invisible.
+    ('a-finding-is-only-its-claim', 's',
+     "    return _fp.violation_claim(v) + (str(m.get('pad', '')),\n"
+     "                                     str(m.get('net', '')))\n",
+     "    return _fp.violation_claim(v) + ('', '')\n",
+     (T1066,), 'KILLED'),
+
     # The refs behind the count never reach JSON_SUMMARY.
     ('unresolved-refs-not-written', 'p',
      "                'unresolved_refs': _unres,\n",
