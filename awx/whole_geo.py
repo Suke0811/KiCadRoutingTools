@@ -394,9 +394,10 @@ for n in M:
 
 
 S0C = {f: RS[f] for f in SB0}             # the solve's ring origin: ahead of every lane's trunk end (no step back at the seam)
-for (f, n), v in PIECE.items():
-    if f != 'T':
-        v['k0'] = int(round(S0C[f] / G))                    # every lane of a ring enters it at ONE column
+# each lane of a ring enters it where its trunk ends (sb0, its own column): started at the ring's one origin column
+# instead, the stretch from its trunk end to there was in no column -- no pitch, static or via row -- and the output
+# joined the two pieces across it straight, through whatever stood there (zynq K42: DQ10 across C98's pad at U2's
+# corner, 2.4 mm of ring laid by nothing). The ring's u still starts at its origin, as the solve measures it
 for f in S0C:                                               # ... and the ring's u starts THERE
     FR[f]['u'] = (lambda s, f=f: HK[f] + (s - S0C[f]))
     FR[f]['s'] = (lambda u, f=f: S0C[f] + (u - HK[f]))
@@ -990,7 +991,9 @@ def static_sides(sol):
         v = PIECE[(f, n)]
         s_ = k * G
         lay = layers_at(n, FR[f]['u'](s_))
-        at_end = k - v['k0'] < 2 or v['k1'] - k < 2
+        # (a lane's own terminal, its tooth or its berth -- not the handoff between its trunk and ring pieces, whose free
+        # end was left unchecked against the islands: zynq K32's DQ3 ended its trunk 0.15 from C98's pad)
+        at_end = (k - v['k0'] < 2 and v['o0'] is not None) or (v['k1'] - k < 2 and v['o1'] is not None)
         for ii, (sa, sb, oa, ob, Ls, lab, own) in enumerate(boxes[f]):
             if own == n or oa - WIN > o_ or o_ > ob + WIN:
                 continue
@@ -1022,12 +1025,13 @@ def static_sides(sol):
                 if forced and (f, ii) not in SPLIT and not pinned:
                     side = forced             # never against the lane's own fixed end
                 out.append((f, n, k, oa - g, ob + g, side, lab))
-            g2 = VIA_ST + hw[n]
+            # (a pair's via is two barrels VX either side of its centreline -- its half width hw is less: 74 um short)
+            g2 = VIA_ST + max(hw[n], VX[n])
             if k in vcol[(f, n)] and sa - g2 <= s_ <= sb + g2:
                 out.append((f, n, k, oa - g2, ob + g2, -1 if o_ < (oa + ob) / 2 else 1, 'via ' + lab))
         if k in vcol[(f, n)]:
             for (sa, sb, oa, ob, Ls, lab, own) in vboxes[f]:
-                g2 = VIA_ST + hw[n]
+                g2 = VIA_ST + max(hw[n], VX[n])
                 if own != n and sa - g2 <= s_ <= sb + g2 and oa - WIN <= o_ <= ob + WIN:
                     out.append((f, n, k, oa - g2, ob + g2, -1 if o_ < (oa + ob) / 2 else 1, 'via ' + lab))
     return out
@@ -1038,6 +1042,21 @@ sol = build_and_solve([])
 if sol is None:
     sys.exit('whole_geo: the first pass LP failed (its status above)')
 log('pass 2 (static sides)')
+# each ring piece starts where its trunk ENDS, as the pass before laid it: the handoff join ties the two pieces'
+# offsets, not where along the ring the trunk's end lies, and a trunk end the pass moved off its planned offset lies
+# elsewhere along the ring -- the lane then jumped from one to the other across whatever stood between (zynq K32:
+# DQ3's trunk end 0.79 mm from its ring start, across C98's corner). The join is linearised about that offset too
+def reanchor(sol_):
+    for n in M:
+        if n in cls and ('T', n, PIECE[('T', n)]['k1']) in sol_['o']:
+            vR = PIECE[(cls[n], n)]
+            oT = sol_['o'][('T', n, PIECE[('T', n)]['k1'])]
+            sb_, _ob = ring_sp[cls[n]].project_pt(Fr.spine.xy(HK[cls[n]], oT))
+            vR['k0'] = min(max(int(round(sb_ / G)), 0), vR['k1'] - 2)
+            vR['o_h'] = oT
+
+
+reanchor(sol)
 SIDES2 = static_sides(sol)
 sol = build_and_solve(SIDES2, prev=sol['o'])
 if sol is None:          # every rule is elastic: a failure is the solver's, and pass 1 has no static sides or flips

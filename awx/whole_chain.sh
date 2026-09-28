@@ -22,6 +22,10 @@ for r in $(seq 1 $R); do
   echo "  fanout exit $? at $(( $(date +%s) - t0 )) s"
   grep -E "plan model" $d/fo.log | cut -c1-220
   [ -f $d/fo.kicad_pcb ] || exit 1
+  # the same ends as the round before (feedback it priced but did not follow): the rest of the round would be the same
+  if [ -n "$prev" ] && python3 -c "import json, sys; sys.exit(0 if json.load(open(sys.argv[1])) == json.load(open(sys.argv[2])) else 1)" $d/fo.plan.json $prev/fo.plan.json; then
+    echo "=== fanout round $r laid round $((r - 1))'s ends again"; r=$((r - 1)); break
+  fi
   export BENCH=$d/fo.kicad_pcb NETS DEST
   python3 whole_solve.py $d/solve.json > $d/solve.log 2>&1
   grep -E "whole_solve:|workers:" $d/solve.log | cut -c1-200
@@ -56,9 +60,13 @@ print(sum(1 for v in p.vias if nm.get(v.net_id) in nets),
   hots=()
   for a in $d/loop/p*.audit(N) $d/loop/q*.audit(N); do j=${a%.audit}.json; h=${a%.audit}.fbhot.json
     python3 whole_gate.py $j $a --hot $h > /dev/null 2>&1; hots+=($h); done
-  python3 whole_feedback.py $d/fo.plan.json $FB $hots
+  hots+=($d/loop/hs*.json(N))                # the snapped plans' places (whole_loop: the audit's and the lint's)
+  fbl=$(python3 whole_feedback.py $d/fo.plan.json $FB $hots); echo "$fbl"
+  # nothing new for the fanout: the next round would lay the same ends from the same feedback (zynq K42's three
+  # rounds, and K38's second and third, were the same run again)
+  [[ $fbl == *"whole_feedback: 0 new"* ]] && { echo "=== the feedback adds nothing new: another fanout lays the same ends"; break; }
   sb=$(grep -oE 'source board: [^,]+' $d/fo.log | tail -1 | sed 's/source board: //')
   prev=$d; [ -f $d/$sb ] && BASE=$d/$sb
 done
-echo "WHOLE K=$K round=$R lanes=0/0 vias=0 copper=0mm connected=0 drc=0 secs=$(( $(date +%s) - t0 ))"
+echo "WHOLE K=$K round=$r lanes=0/0 vias=0 copper=0mm connected=0 drc=0 secs=$(( $(date +%s) - t0 ))"
 exit 3

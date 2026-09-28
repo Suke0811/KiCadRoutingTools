@@ -23,12 +23,12 @@ if '--hot' in sys.argv:
     hot = []
     for line in aud:
         k = line.split(' ', 1)[0]
-        m = re.search(rf'\(\s*{NUM_},\s*{NUM_}\)', line) if k in ('DIVE', 'PITCH', 'STATIC', 'SHAPE') else None
+        m = re.search(rf'\(\s*{NUM_},\s*{NUM_}\)', line) if k in ('DIVE', 'PITCH', 'STATIC', 'SHAPE', 'LINT') else None
         if m:
             w = line.split()
             # the lanes it names: PITCH two; STATIC its lane and a run net's copper it runs against; SHAPE its lane;
             # DIVE its lane and the lane it stands too near
-            ln = w[1:3] if k == 'PITCH' else w[1:2]
+            ln = w[1:3] if k == 'PITCH' else w[2:3] if k == 'LINT' else w[1:2]      # (LINT: its kind, then the lane)
             if k == 'STATIC' and 'copper' in w:
                 ln = ln + w[w.index('copper') + 1:w.index('copper') + 2]
             if k == 'DIVE':

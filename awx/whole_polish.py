@@ -76,6 +76,8 @@ EPS = 1e-4                       # met with this much to spare (the audit compar
 # from it, and its legs off the grid: a pair's bars here carry both, so every gap the snap splits keeps a grid row
 # of slack (a single's already do: BLOCK is its on-grid bar plus a step)
 HALF_SNAP = HALF / math.cos(math.pi / 8)
+DIAG = (math.sqrt(0.5), math.sqrt(0.5))   # a diagonal heading, as a UNIT vector (via_straight and the crossover's runs
+                                         # read u's length: (1, 1) gave the axis run, 0.225 where the diagonal's is 0.318)
 # the pair router tests a dive at three cells, the centre and SPC grid steps either way across its heading, on the
 # pair's map: each a via's half, a track's half, the clearance and half the pair's pitch from another lane's line, a
 # via and the clearance from its via site (whole_snap.pfield)
@@ -638,6 +640,11 @@ def gather():
             for L in ('F.Cu', 'B.Cu'):
                 for dd, q, lab in static_near(B, L, OWN[n], pair=n in prs):
                     need = NEED_VST + vx
+                    if lab.endswith((' end leg', ' crossover leg')):
+                        # a held pair's leg is a TRACK, off the grid: the router keeps the via's ring (pairs.via_ring,
+                        # rounded up to whole cells) and half a step from it, as the audit and the snap bar it -- the
+                        # via-to-track clearance alone stood 0.306 where they ask 0.319
+                        need = RING - TW / 2 + g2 + vx
                     if dd >= need + MARGIN:
                         continue
                     if q is None:
@@ -710,10 +717,28 @@ def gather():
     # static: each lane SEGMENT vs other nets' copper on its layer, at the exact nearest points
     for n, ln in LANES.items():
         X, Ls = ln['X'], ln['L']
+        # (a pair not yet laid: its centreline's first and last stretch, from its tips' midpoint onto its pose, is its
+        # END CONNECTOR, no copper -- its legs converge there from the tips, either side of what stands between them,
+        # and the audit measures them. Measured as a line with a rounded end on the midpoint, every pair's end read
+        # 0.113 short of the ball between its tips (SDQS0 and DU1.F1, its legs 0.27 clear), a row no move could meet)
+        cu = None
+        if n in prs and n not in HELD and not geo['lanes'][n].get('ends'):
+            s_ = arclen(X)
+            cu = (_pairs.end_connector(cfg, ctx.pair_ends[n][0]), s_[-1] - _pairs.end_connector(cfg, ctx.pair_ends[n][1]))
         for i in range(len(X) - 1):
             if i in ln['NC']:
                 continue
-            for dd, s, q, lab in static_seg(X[i], X[i + 1], Ls[i], OWN[n], cut=NEED_ST + hw[n] + MARGIN, pair=n in prs):
+            t0, t1 = 0.0, 1.0
+            if cu is not None:
+                if s_[i + 1] <= cu[0] + 1e-9 or s_[i] >= cu[1] - 1e-9:
+                    continue
+                sl_ = s_[i + 1] - s_[i]
+                t0, t1 = max(0.0, (cu[0] - s_[i]) / sl_), min(1.0, (cu[1] - s_[i]) / sl_)
+                if t1 <= t0:                     # (a lane no longer than its two connectors: nothing between them)
+                    continue
+            A_, B_ = X[i] + (X[i + 1] - X[i]) * t0, X[i] + (X[i + 1] - X[i]) * t1
+            for dd, s, q, lab in static_seg(A_, B_, Ls[i], OWN[n], cut=NEED_ST + hw[n] + MARGIN, pair=n in prs):
+                s = t0 + s * (t1 - t0)
                 need = NEED_ST + hw[n]
                 if dd >= need + MARGIN:
                     continue
@@ -872,9 +897,9 @@ def pair_approaches():
             # nearest the way to the via, the via moved onto it (laid apart, SDQS1 folded 122 degrees between them)
             # (a dive inside the end run as well: the end run is short, a grid step or two past the connector's pose,
             # and the dive is moved out along the line to where the router can make it)
-            Lst = _pairs.via_straight(cfg, (1.0, 1.0)) + cfg.grid_step
+            Lst = _pairs.via_straight(cfg, DIAG) + cfg.grid_step
             if _pairs.opposite_hands(ctx, n):
-                Lst = max(Lst, max(xo_runs((1.0, 1.0))))               # (its first dive a crossover)
+                Lst = max(Lst, max(xo_runs(DIAG)))               # (its first dive a crossover)
             vn = sorted(v for v in vs if v > 1)
             joined = None
             if u is not None and vn and s[vn[0]] - Lst <= sb + Lst:
@@ -942,7 +967,7 @@ def pair_dive_straights():
         ln = LANES[n]
         for v in via_idx(n):
             X, s = ln['X'], arclen(ln['X'])
-            reach = _pairs.via_straight(cfg, (1.0, 1.0)) + cfg.grid_step          # the longer (diagonal) run
+            reach = _pairs.via_straight(cfg, DIAG) + cfg.grid_step          # the longer (diagonal) run
             at = lambda u_: np.array([np.interp(u_, s, X[:, 0]), np.interp(u_, s, X[:, 1])])
             joined = (n, v) in DIVE_U
             u = DIVE_U.get((n, v), octi(at(s[v] + reach) - at(s[v] - reach)))

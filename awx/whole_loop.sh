@@ -65,13 +65,21 @@ addhot() {
 # answered since (the flip puts that lane on the island's other side; the cut would keep holding it off the island)
 resolve() {
   local s2=$out/s$((i + 1)).json
-  python3 - "$cuts" "$flips" "$out/cuts$((i + 1)).json" <<'PY'
-import json, sys
-flipped = {tuple(x) for f in sys.argv[2].split(',') if f for x in json.load(open(f)).get('flips', [])}
+  python3 - "$cuts" "$flips" "$out/cuts$((i + 1)).json" "$out" "${SEED_FLIPS:-}" <<'PY'
+import json, os, re, sys
+fl = lambda fs: {tuple(x[:2]) for f in fs if f and os.path.isfile(f) for x in json.load(open(f)).get('flips', [])}
+flipped = fl(sys.argv[2].split(','))
 cuts, vcuts = [], []
 for f in [f for f in sys.argv[1].split(',') if f]:
     c = json.load(open(f))
-    cuts += [x for x in c.get('cuts', []) if (x['lane'], x['island']) not in flipped]
+    # a cut from the geometry of round k whose flip that geometry had ALREADY been given (a polish of an earlier round
+    # found it, or the seed): both sides of the island failed -- the solve hears of it. Only a cut the flip answers,
+    # one from before it, is dropped (zynq K42: DQ10's cut at C98, made again after its flip, never reached the solve)
+    m = re.search(r'/c(\d+)\.json$', f)
+    k = int(m.group(1)) if m else 0
+    given = fl(sys.argv[5].split(',') + [os.path.join(sys.argv[4], f'{nm}{j}.json') for j in range(1, k)
+                                          for nm in ('p', 'q', 'qk')])
+    cuts += [x for x in c.get('cuts', []) if (x['lane'], x['island']) not in flipped or (x['lane'], x['island']) in given]
     vcuts += c.get('vcuts', [])
 json.dump({'cuts': cuts, 'vcuts': vcuts}, open(sys.argv[3], 'w'))
 PY
@@ -83,7 +91,8 @@ PY
 PATIENCE=2                                 # rounds in a row without a new best
 best=-1; best_i=0; stall=0
 progress() {
-  if [ $best -lt 0 ] || [ $1 -lt $best ]; then best=$1; best_i=$i; stall=0; else stall=$((stall + 1)); fi
+  # (fresh: the round found side flips it has not tried -- not a stall, whatever its score)
+  if [ $best -lt 0 ] || [ $1 -lt $best ]; then best=$1; best_i=$i; stall=0; elif [ "$2" != fresh ]; then stall=$((stall + 1)); fi
   if [ $stall -ge $PATIENCE ]; then
     echo "=== round $i: NOT CONVERGING -- score $1, the best $best at round $best_i, $PATIENCE rounds without a better one"
     exit 3
@@ -133,7 +142,7 @@ PY
     exit 4
   fi
   if [ "$after" -gt "$before" ]; then
-    progress $((2000 + f))
+    progress $((2000 + f)) fresh
     flips=$out/p$i.json                    # the polish output carries every flip so far
     if [ "$n" = "0" ]; then
       echo "=== round $i: $((after - before)) new side flip(s) -> the geometry again on the same solve"
@@ -188,8 +197,12 @@ PY
       fi
     fi
     if [ $q = $out/q$i.json ] && ! python3 whole_gate.py $out/q$i.json $out/q$i.audit > /dev/null; then
-      # the singles do not fit round the pairs: where they are short goes to the solve as history
-      progress $((1000 + $(findings "$gq")))
+      # the singles do not fit round the pairs: where they are short goes to the solve as history -- and the side
+      # flips the polish found with the pairs held go to the next geometry, as a smooth polish's do (they were dropped)
+      qf=$out/q$i.json; [ -f $out/qk$i.json ] && qf=$out/qk$i.json
+      nq=$(python3 -c "import json, sys; o = {tuple(x) for f in sys.argv[1].split(',') if f for x in json.load(open(f)).get('flips', [])}; print(len({tuple(x) for x in json.load(open(sys.argv[2])).get('flips', [])} - o))" "$flips" $qf)
+      if [ "$nq" != "0" ]; then flips="${flips:+$flips,}$qf"; echo "  pairs held: $nq new side flip(s) for the next geometry"; fi
+      progress $((1000 + $(findings "$gq"))) $([ "$nq" != "0" ] && echo fresh)
       addhot $out/q$i.json $out/q$i.audit $out/hq$i.json || { echo "=== round $i: the singles do not fit round the pairs"; exit 1; }
       echo "=== round $i: the singles do not fit round the pairs -> the solve again, their places priced"
       resolve
@@ -204,12 +217,14 @@ PY
     $ST -- whole_audit.py $out/plan.json > $out/plan.audit 2>&1 || { tail -3 $out/plan.audit; exit 1; }
     gs=$(python3 whole_gate.py $out/plan.json $out/plan.audit)
     echo "$gs" | sed 's/^/  snapped: /'
-    lint=$(python3 whole_lint.py $out/plan.json | tail -1)
+    python3 whole_lint.py $out/plan.json > $out/plan.lint 2>&1; lint=$(tail -1 $out/plan.lint)
     echo "  snapped: $lint"
     python3 whole_gate.py $out/plan.json $out/plan.audit > /dev/null && [ "$lint" = "LINT clean" ] && { echo "=== the plan passes: $out/plan.json"; exit 0; }
-    # the snapped plan is short: where goes to the solve as history (a lint finding has no place: that stops)
-    progress $(findings "$gs")
-    addhot $out/plan.json $out/plan.audit $out/hs$i.json || { echo "=== round $i: the snapped plan does not pass"; exit 1; }
+    # the snapped plan is short: where goes to the solve as history -- the audit's places and the lint's (a lane folded
+    # at its end: the end it folds at), a finding with no place stops
+    progress $(( $(findings "$gs") + $(grep -E '^LINT \S+ \S+ ' $out/plan.lint | grep -cvE '^LINT( [a-z-]+ [0-9]+,?)+$') ))
+    cat $out/plan.audit $out/plan.lint > $out/plan.found
+    addhot $out/plan.json $out/plan.found $out/hs$i.json || { echo "=== round $i: the snapped plan does not pass"; exit 1; }
     echo "=== round $i: the snapped plan does not pass -> the solve again, its places priced"
     resolve
     continue

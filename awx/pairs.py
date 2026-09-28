@@ -132,7 +132,7 @@ def turn_straight_steps(cfg) -> int:
 
 def stair_spread(cfg, dx: float, dy: float) -> float:
     """How far apart, across the heading (dx, dy), the corners of the SMALLEST staircase the pair router can lay along
-    it stand: runs on the two router headings either side, each at least turn_straight_steps grid steps long (a
+    it stand: runs on the two router headings either side, each at least turn_straight_steps + 1 grid steps long (a
     diagonal step a cell each way) -- 0 on a router heading. A pair planned at a slant cannot keep nearer its line than
     half this. The router's rules are the same under the board's mirrors and under x and y swapped, so the heading
     folds to within 45 degrees of an axis: a line 10 degrees off vertical is one 10 degrees off horizontal."""
@@ -141,7 +141,9 @@ def stair_spread(cfg, dx: float, dy: float) -> float:
     if a < 1e-9 or math.pi / 4 - a < 1e-9:
         return 0.0
     t = math.tan(a)                                 # the line's slope off that axis: D / (H + D)
-    R = turn_straight_steps(cfg) * cfg.grid_step
+    # a run between two turns: the turn's own step onto the new heading and the turning radius's straight steps after it
+    # (pose_router.rs: a turn sets straight_remaining to ceil(min_radius_grid))
+    R = (turn_straight_steps(cfg) + 1) * cfg.grid_step
     if t <= 0.5:                                    # a run along the axis H, then a diagonal D across and D along
         D = R; H = D * (1 - t) / t
     else:
@@ -170,24 +172,30 @@ def pose_probe_steps(cfg) -> int:
 
 
 def pose_turn_units(cfg) -> int:
-    """How far a pair may turn over any stretch of its path, in 45-degree units: the pair router's max_turn_angle (180
-    degrees). Past it a path between two poses curls back onto itself, and a pair's two legs a pitch apart cannot cross
-    their own copper: zynq K26's DQS1 was planned a 450-degree hook round its berth's dive, and the router found no way
-    through it. Every pair the ladder and the human's K51 route turns through 180 degrees at most (SCK's crossover)"""
-    return max(int(cfg.max_turn_angle / 45.0 + 0.5), 1)
+    """How far the pair router lets a pair turn, in 45-degree units, as the whole route runs it: connect gives it both
+    end directions, and a pair with a forced end direction may wrap round its end (diff_pair_routing: `wrapping`), so
+    its limit is max_turn_angle or a full turn, whichever is more. Past it a path curls round onto itself: zynq K26's
+    DQS1 was planned a 450-degree hook round its berth's dive, and the router found no way through it. (A 180-degree
+    limit, what the ladder's pairs happened to turn, refused paths the router lays: zynq K38's DQS0, round its berth.)"""
+    return max(int(cfg.max_turn_angle / 45.0 + 0.5), 8)
 
 
 def pose_turn_over(moves, units):
     """The index of the first step of `moves` -- from one pose to the other, the signed 45-degree turn of each grid step
-    (0: straight) or 'v' (a via) -- at which the path has turned through more than `units` over some stretch, or None"""
-    run = lo = hi = 0
+    (0: straight) or 'v' (a via) -- that the pair router refuses, or None. Its own counters (pose_router.rs): two signed
+    sums of the turns, each restarted by a turn on its own step count (every 100 steps, the second 50 later), a turn
+    taking either past `units` refused; a via starts a fresh pose, both at 0"""
+    steps = t1 = t2 = 0
     for i, m in enumerate(moves):
         if m == 'v':
+            t1 = t2 = 0
             continue
-        run += m
-        lo, hi = min(lo, run), max(hi, run)
-        if hi - lo > units:
-            return i
+        steps += 1
+        if m:
+            t1 = m if steps % 100 == 0 else t1 + m
+            t2 = m if steps % 100 == 50 else t2 + m
+            if abs(t1) > units or abs(t2) > units:
+                return i
     return None
 
 

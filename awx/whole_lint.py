@@ -94,8 +94,12 @@ for n, L in geo['lanes'].items():
             if not fwd:
                 d = (-d[0], -d[1])
             if dd > EPS and (d[0] * e[0] + d[1] * e[1]) / dd < -1e-6:     # more than 90 degrees off: a fold
+                # ...at the end it folds at: a place the loop can send on (whole_gate --hot: the solve's history, and the
+                # fanout's ends to avoid) -- with none, a fold stopped the loop with nothing to try (zynq K42's DDR3_A6)
+                ex_, ey_ = (pcs[0][0], pcs[0][1]) if fwd else (pcs[-1][2], pcs[-1][3])
                 bad['stub'].append((n, 'tooth' if fwd else 'berth',
-                                    round(math.degrees(math.acos(max(-1, min(1, (d[0] * e[0] + d[1] * e[1]) / dd))))), 'deg off'))
+                                    round(math.degrees(math.acos(max(-1, min(1, (d[0] * e[0] + d[1] * e[1]) / dd))))), 'deg off',
+                                    f'at ({ex_:.2f}, {ey_:.2f})'))
 PAIRS = set(geo.get('pairs', []))
 RT, ST = RU.get('pair_turn_steps', 0), RU.get('pair_via_steps', 0)
 for n in [n for n in geo['lanes'] if n in PAIRS]:

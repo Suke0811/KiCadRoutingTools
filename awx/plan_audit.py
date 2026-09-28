@@ -441,6 +441,18 @@ def _arc_at(pieces, s):
     return best[1]
 
 
+def _arriving(pieces, s):
+    """the heading lane pieces [(p, q, layer)] arrive at point s in (else leave it in), to the nearest of the router's
+    eight, as an integer step (ix, iy); None if no piece meets s"""
+    for end in (1, 0):
+        for (p, q, _L) in pieces:
+            a_, b_ = (p, q) if end else (q, p)
+            if math.hypot(b_[0] - s[0], b_[1] - s[1]) < 1e-6 and math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-9:
+                k = int(round(math.atan2(q[1] - p[1], q[0] - p[0]) / (math.pi / 4))) % 8
+                return [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)][k]
+    return None
+
+
 def check_dives(ctx, corridors, show_all=False):
     cfg = ctx.cfg
     VR, CL, TW = cfg.via_size / 2, cfg.clearance, cfg.track_width
@@ -453,6 +465,10 @@ def check_dives(ctx, corridors, show_all=False):
     c2c = min_via_center_distance(cfg.via_size, CL, cfg.via_drill, h2h)
     pairs = getattr(ctx, 'pairs', {}) or {}
     off = _pairs.dive_offset(cfg, _pairs.pitch(TW) / 2) if pairs else 0.0
+    # the pair router's test of a dive's cells (see below): how many steps out, and the bars on its map
+    cell_n = _pairs.pose_via_cells(cfg, _pairs.pitch(TW) / 2)
+    r_line = VR + TW / 2 + CL + _pairs.pitch(TW) / 2
+    r_via = 2 * VR + CL
     name = lambda i: (ctx.pcb.nets[i].name.split('/')[-1] if i in ctx.pcb.nets else str(i))
     pads = [(fp.reference, pd) for fp in ctx.pcb.footprints.values() for pd in fp.pads
             if pd.pad_type != 'np_thru_hole' and any(L.endswith('.Cu') for L in pd.layers)]
@@ -571,6 +587,27 @@ def check_dives(ctx, corridors, show_all=False):
                     if vv[0] < vv[1] - 1e-6:
                         hits.append(f'via {vv[0]:.3f}/{vv[1]:.3f} ({vv[2]})')
                         fail['via'] += 1
+                if nm in pairs and s not in exact_b[nm] and (nm, s) not in xsite:
+                    # ...and the three CELLS the pair router tests for the dive, on the pair's map: the centre, and
+                    # pairs.pose_via_cells grid steps either way along its arriving heading's integer perpendicular.
+                    # Each stands a via's half, a track's half, the clearance and half the pair's pitch off another
+                    # lane's line, and a via and the clearance off its via site (whole_snap pfield, whole_polish
+                    # pose_cells). Barred at its barrels only, a lane 0.22-0.43 mm ahead of a dive passed here, and
+                    # the snap could not seat it (SDQS0 and SA4, 0.068 short)
+                    u8 = _arriving(centre([nm]), s)
+                    if u8 is not None:
+                        o_ = (-u8[1] * cell_n * g, u8[0] * cell_n * g)
+                        cl_ = min([(dseg(cx_, cy_, p, q), r_line + g2 * (0 if _on_grid(p, q, g) else 1), f'{om} {L[0]}')
+                                   for (cx_, cy_) in ((s[0], s[1]), (s[0] + o_[0], s[1] + o_[1]), (s[0] - o_[0], s[1] - o_[1]))
+                                   for om in M if om != nm for (p, q, L) in lines[om]]
+                                  + [(math.hypot(sv[0] - cx_, sv[1] - cy_), r_via + g2 * (0 if _pt_on_grid(sv[0], sv[1], g) else 1),
+                                      f'{om} via')
+                                     for (cx_, cy_) in ((s[0], s[1]), (s[0] + o_[0], s[1] + o_[1]), (s[0] - o_[0], s[1] - o_[1]))
+                                     for om in M if om != nm for sv in sites[om]],
+                                  key=lambda r: r[0] - r[1], default=(9, 0, ''))
+                        if cl_[0] < cl_[1] - 1e-6:
+                            hits.append(f'cell {cl_[0]:.3f}/{cl_[1]:.3f} ({cl_[2]})')
+                            fail['cell'] += 1
                 if nm in pairs:
                     # the pair router dives straight: one heading through the via, and that many grid steps of it on
                     # each side (pairs.via_straight_steps) -- a plan that turns at its dive is one it cannot follow

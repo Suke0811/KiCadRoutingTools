@@ -19,7 +19,8 @@ room). HIST=HOT.json,.. prices the places earlier audits found short (whole_gate
 not time: a count of CP-SAT's interleaved batches, its workers pinned and sharing no clauses, so the same model gives
 the same answer on every run, later on a slower machine (WHOLE_SOLVE_BATCHES sets the budget). It stops sooner when
 the vias are proved (the plan's vias no more than the bound's whole vias) or, once it has a plan, when it STALLS
-(SOLVE_STALL of its own model reductions in a row with no better plan or bound: events of the search, never a clock). Only a plan PROVED optimal in its vias is written;
+(SOLVE_STALL of its own model reductions in a row with no better plan or bound: events of the search, never a clock)
+-- all but the fallback, the plan-finding workers' last try, which runs its whole budget. Only a plan PROVED optimal in its vias is written;
 one the search could not prove is no plan."""
 import sys, os, re, itertools, collections, json, math, hashlib
 import detmath
@@ -519,7 +520,10 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
                 if m_ and float(m_.group(1)) < math.inf and \
                         math.floor(float(m_.group(1)) / W_V) <= math.floor(float(m_.group(2)) / W_V):
                     s_.StopSearch()
-            elif line.startswith('#Model') and stall['plan']:
+            # (not the FALLBACK's: started from the first run's plan, it has one from its first line, and a stall there is
+            # the last chance lost -- K51 on the human's fanout on Linux stopped so, unproved, holding the plan it proves
+            # optimal when it runs on, and the bench had no plan)
+            elif line.startswith('#Model') and stall['plan'] and subs is not FALLBACK:
                 stall['n'] += 1
                 if stall['n'] >= SOLVE_STALL:
                     s_.StopSearch()

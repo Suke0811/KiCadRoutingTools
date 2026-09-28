@@ -2,13 +2,14 @@
 """#622 `awx/pairs.py` stair_spread: how far a pair laid along a slanted line must stray from it.
 
 The pair router turns 45 degrees at a time and runs straight at least its turning radius after each turn
-(turn_straight_steps), so a line off the router's eight headings is laid as a staircase of runs on the two headings
-either side. The snap (whole_snap) holds a pair within half the smallest such staircase of its planned line, and prices
+(turn_straight_steps, after the turn's own step), so a line off the router's eight headings is laid as a staircase
+of runs on the two headings either side. The snap (whole_snap) holds a pair within half the smallest such staircase of its planned line, and prices
 straying past it. What this asserts:
 
 1. On a router heading there is no staircase: the spread is 0.
 2. The spread has the values worked out by hand: at a slope of 1:2 both runs are the minimum run R, and the corners
-   stand R / 2 * cos(a) apart (0.0894 at R = 0.2); at 19.4 degrees off an axis, 0.122 (the K51 pinch beside C12).
+   stand R / 2 * cos(a) apart (0.1006 at R = 0.225, nine steps of 0.025: the turn's step and eight straight); at
+   19.4 degrees off an axis, 0.1373 (the K51 pinch beside C12).
 3. It is the same under the board's mirrors and under x and y swapped -- the router's rules are -- so a line 10 degrees
    off vertical spreads as one 10 degrees off horizontal. (The first version folded the heading by 45 degrees and
    gave a line 80 degrees off horizontal the spread of one at 35.)
@@ -25,8 +26,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'awx'))
 import pairs  # noqa: E402
 
 FAIL = []
-CFG = SimpleNamespace(min_turning_radius=0.2, grid_step=0.025)      # K51's rules: an 8-step run, 0.2 mm
-R = pairs.turn_straight_steps(CFG) * CFG.grid_step
+CFG = SimpleNamespace(min_turning_radius=0.2, grid_step=0.025)      # K51's rules: a 9-step run, 0.225 mm
+R = (pairs.turn_straight_steps(CFG) + 1) * CFG.grid_step         # a run: the turn's step and the straight after it
 
 
 def check(cond, what):
@@ -39,7 +40,7 @@ def at(deg, length=1.0):
     return pairs.stair_spread(CFG, length * math.cos(r), length * math.sin(r))
 
 
-check(pairs.turn_straight_steps(CFG) == 8 and abs(R - 0.2) < 1e-12, f'the fixture: 8 steps of 0.025 (got R {R})')
+check(pairs.turn_straight_steps(CFG) == 8 and abs(R - 0.225) < 1e-12, f'the fixture: 1 + 8 steps of 0.025 (got R {R})')
 
 # 1. the router's own headings
 for deg in range(0, 360, 45):
@@ -48,7 +49,7 @@ for deg in range(0, 360, 45):
 # 2. worked values
 a = math.atan(0.5)
 check(abs(at(math.degrees(a)) - R / 2 * math.cos(a)) < 1e-12, f'slope 1:2: {at(math.degrees(a))} != {R / 2 * math.cos(a)}')
-check(abs(at(19.4) - 0.122) < 5e-4, f'19.4 degrees: {at(19.4):.4f} != 0.122')
+check(abs(at(19.4) - 0.1373) < 5e-4, f'19.4 degrees: {at(19.4):.4f} != 0.1373')
 
 # 3. the mirrors and the swap of x and y
 for deg in (2, 10, 19.4, 26.565, 35, 40, 44):

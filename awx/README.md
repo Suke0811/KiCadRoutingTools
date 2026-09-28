@@ -153,36 +153,57 @@ each general:
 (48 lanes, three of them pairs) a plan that decides every lane's whole path
 before anything is routed -- crossings, layer changes, geometry, octilinear
 on the router's grid -- passes the plan audit on every check, and routes:
-all 48 lanes in their bands at once, all 51 nets connected, DRC-clean, 86
-vias on the board against the human's 88, and no net over two. The braid planner changes it was made on
+all 48 lanes in their bands at once, all 51 nets connected, DRC-clean, 88
+vias on the board against the human's 88 in 1263 mm against 1337
+(2026-09-28: on a Mac in 651 s, and on Linux in 857 s, 1261 mm). The braid
+planner changes it was made on
 (berth rows, the rings' order and dips, directional pair floors, leg costs)
 are in `braid.py` and change the braid's default routing; the tables above
 predate them, and were run with the portfolio chain
 (`CHAIN_FANOUT_AB=1 CHAIN_BRAID_AB=1`), which is no longer the default.
 
-**On our own ends** (2026-09-27, below). The fanout chooses every net's
+**On our own ends** (2026-09-28, below). The fanout chooses every net's
 tooth and berth with the whole route's own ends model (`whole_ends.py`,
 `PLAN_JUDGE=ends`), and the whole route plans and routes on them -- no
-braid planner, no human ends. Every lane in its band at once, every net
-connected, DRC-clean; counted as every via and millimetre of the run's
-nets on each board, the human's counted the same way:
+braid planner, no human ends (`whole_chain.sh`). Every lane in its band at
+once, every net connected, DRC-clean, on a Mac and on Linux (Modal);
+counted as every via and millimetre of the run's nets on each board, the
+human's counted the same way:
 
 | | K15 | K28 | K35 | K41 | K51 |
 |---|---|---|---|---|---|
-| the whole route on our own ends | **10 v, 199 mm** | **30 v, 589 mm** | **58 v, 779 mm** | **70 v, 1039 mm** | **78 v, 1207 mm** |
+| the whole route, Mac | **10 v, 199 mm** | **30 v, 589 mm** | **58 v, 779 mm** | **70 v, 1040 mm** | **80 v, 1220 mm** |
+| the whole route, Linux | 10 v, 199 mm | 30 v, 589 mm | 58 v, 779 mm | 70 v, 981 mm | 78 v, 1260 mm |
 | human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm | 70 v, 1081 mm | 88 v, 1337 mm |
-| rounds | one fanout | one fanout | one fanout | one fanout | one fanout |
-| fanout to checked route, wall | 45 s | 160 s | 278 s | 596 s | 1248 s |
-| ... CPU (user + system) | 41 s | 150 s | 269 s | 620 s | 1398 s |
-| its largest process | 310 MB | 417 MB | 494 MB | 549 MB | 593 MB |
+| fanout rounds | 1 | 1 | 1 | 1 | 1 |
+| Mac: wall / CPU | 39 / 36 s | 169 / 156 s | 341 / 324 s | 595 / 633 s | 1295 / 1557 s |
+| Mac: largest process | 241 MB | 436 MB | 434 MB | 593 MB | 720 MB |
+| Linux: wall | 79 s | 238 s | 470 s | 1514 s | 3586 s |
 
-The five rungs ran side by side on one 8-core laptop, so each wall time
-includes waiting on the others; CPU is every process of the chain (`/usr/bin/time`:
-CP-SAT's four workers each, so a rung whose solve is long runs over its wall
-time). K51's first solve proved in 22 s; its fanout was 844 s of the 1248,
-most of it the ends model's exact routes. Packed afterwards (`pack_board.py
---fanout`, the pairs held), K51's lanes shorten 872 -> 856.5 mm, the board
-78 v, 1191 mm.
+The zynq article (`BASE=tmp/zynq/zynqF.kicad_pcb DEST=U2`) the same way;
+the human's copper there carries its length-matching meanders:
+
+| | K18 | K26 | K32 | K38 | K42 | K44 |
+|---|---|---|---|---|---|---|
+| the whole route, Mac and Linux | **12 v, 466 mm** | **30 v, 732 mm** | **46 v, 940 mm** | **54 v, 1121 mm** | **62 v, 1263 mm** | **58 v, 1347 mm** |
+| human | 45 v, 662 mm | 57 v, 923 mm | 74 v, 1166 mm | 86 v, 1373 mm | 97 v, 1534 mm | 103 v, 1617 mm |
+| fanout rounds | 2 | 1 | 2 | 2 | 2 | 2 |
+| Mac: wall / CPU | 139 / 128 s | 412 / 390 s | 475 / 474 s | 428 / 432 s | 1892 / 1921 s | 767 / 798 s |
+| Mac: largest process | 404 MB | 464 MB | 693 MB | 671 MB | 842 MB | 769 MB |
+| Linux: wall | 243 s | 400 s | 502 s | 1055 s | 2577 s | 1779 s |
+
+The Mac ran four chains side by side on its 8 cores, so each wall time
+includes waiting on the others; CPU is every process of the chain
+(`/usr/bin/time`: CP-SAT's four workers each, so a rung whose solve is long
+runs over its wall time). The Linux runs are a container each, on shared
+cores. The two machines give the same vias and copper at every zynq rung and
+up to K35; at K41 and K51 each keeps its own plan among the solve's equal
+optima (*Every machine, and the same answer on each*, below) -- at K51 both
+prove 42 layer changes, the Mac's with the pair SDQS0 diving twice (four
+barrels on the board), Linux's with the single SDQ4 (two vias). A second
+fanout round is the feedback's (*Feedback*, below): the first round's ends
+crowded, the next fanout moved them. K51's first solve proves in 25 s; its
+fanout is 829 s of the 1295, most of it the ends model's exact routes.
 
 ## The pack (`pack_board.py`, opt-in)
 
@@ -911,7 +932,11 @@ with the whole route's own ends model.
   running -- once the round has no side flip left to try. The next fanout
   is INCREMENTAL, as `replan.py`'s rounds were: from the previous round's
   source board, only the teeth the feedback names free, every other berth
-  held, the run's nets the previous round's.
+  held, the run's nets the previous round's. The chain stops rather than
+  pay for a round it has had: when the feedback adds nothing new, or the
+  fanout lays the previous round's ends again (feedback priced, not
+  followed) -- zynq K42's three rounds were one run three times, and K38's
+  second and third one run twice.
 - **The solve** (`whole_solve.py`, CP-SAT). Every lane's route is one
   coordinate: the trunk from its tooth, then its ring round the destination
   (the pad box unrolled from a cut between the branches) to its berth. Every
@@ -1000,7 +1025,17 @@ with the whole route's own ends model.
   router's straight run either side of each dive, and where a dive falls
   within reach of its fixed end, straight from the end right through it --
   its sideways shift onto its terminal comes before the dive, never between
-  the two (elastic, as the other rules). What it had to pay becomes CUTS for
+  the two (elastic, as the other rules). Each lane of a ring enters it where
+  its trunk ENDS, re-anchored after the first pass from where that pass laid
+  the trunk's end: the join ties the two pieces' offsets, not where along
+  the ring the trunk's end lies. Started at one origin column for every
+  lane, each lane's stretch from its trunk end to it was in no column at
+  all -- no pitch, static or via row -- and the output joined the pieces
+  across it straight (zynq K42: DQ10 across C98's pad at U2's corner). The
+  island rows hold a lane over its whole piece but its own tooth and berth
+  (a trunk's free end at the handoff included: zynq K32's DQ3 ended its
+  trunk 0.15 mm from C98's pad), and a pair's via is held off an island by
+  its barrels' reach, not its half width. What it had to pay becomes CUTS for
   the solve: an island a lane could not be kept off, a change it could not
   give its room, a pair's dive it could not lay straight. The LP goes to
   SciPy's HiGHS as its DUAL -- a row per column, every elastic slack a plain
@@ -1039,7 +1074,16 @@ with the whole route's own ends model.
   without folding the lane, and a change the rounds cannot give its room,
   go to the solve as VIA CUTS, with the geometry's. A held pair's crossover
   barrels are kept off the other lanes as its dive barrels are -- the
-  router's ring round each, not a via's copper alone.
+  router's ring round each, not a via's copper alone -- and a single's via
+  off a held pair's end legs and crossover legs the same way: the router's
+  ring and the half step of a leg off the grid (0.319, as the audit and the
+  snap ask), not the via-to-track clearance (0.306). A pair not yet laid is
+  held off static copper from its POSES on: the stretch from its tips'
+  midpoint to each pose is its end connector, whose legs converge from the
+  tips either side of whatever stands between them (the audit measures
+  those legs) -- measured as a line with a rounded end on the midpoint,
+  every pair's end read 0.113 mm short of the ball between its tips (legs
+  0.27 clear of it), a row no move could meet, paid in every round.
 - **The snap** (`whole_snap.py`). The smooth plan made octilinear on the
   router's grid, one lane at a time: a grid search in a band round each
   lane's smooth line (length, bends, distance from the line). The PAIRS
@@ -1051,7 +1095,7 @@ with the whole route's own ends model.
   LINE: a slanted line is laid as a staircase of runs on the two router
   headings either side, each at least the turning radius long, so a pair
   cannot keep nearer it than half the smallest such staircase
-  (`pairs.stair_spread`: nothing on a router heading, 0.12 mm apart across a line
+  (`pairs.stair_spread`: nothing on a router heading, 0.14 mm apart across a line
   19 degrees off one); beyond that and a grid step it pays `W_KEEP` per mm
   of length per mm (K51's SDQS0 took 1.5-2.3 mm runs rather than a bend and
   strayed 0.21 mm into SDQ7's room, and SDQ7 fitted beside it on one
@@ -1073,13 +1117,16 @@ with the whole route's own ends model.
   (`pairs.handover_setback`; `diff_pair_setback_floor` 0, no ladder), so the
   plan and the router share one end, and the snap's search runs pose to
   pose, owing the router's probe past each pose (`pairs.pose_probe_steps`),
-  and turning through the pair router's `max_turn_angle` (180 degrees) at
-  most over any stretch (`pairs.pose_turn_over`): past it a path curls back
-  onto itself, and a pair's legs cannot cross their own copper -- zynq
-  K26's DQS1 was laid a 450-degree hook round a dive 0.57 mm from its
-  berth, which the router refused (its own turn counts restart every
-  hundred steps and let the hook by; every pair the ladder routes turns
-  180 degrees at most). A pair the step cannot lay sends its change
+  and turning as the pair router lets it (`pairs.pose_turn_over`, the
+  router's own counters: two signed sums of the turns, one restarted every
+  hundred steps and the other fifty steps after it, a via starting a fresh
+  pose, and a full turn either way at most -- connect gives the router both
+  end directions, and a pair may then wrap round its end). Past it a path
+  curls back onto itself: zynq K26's DQS1 was laid a 450-degree hook round
+  a dive 0.57 mm from its berth, which the router refused. (Held to 180
+  degrees over any stretch -- what the ladder's pairs happened to turn --
+  the snap refused paths the router lays: zynq K38's DQS0, round its
+  berth.) A pair the step cannot lay sends its change
   nearest where it got stuck back to the solve as a via cut, a jog's room
   wide (`pairs.jog_room`: the router's straight from the via and a
   45-degree jog out and back), and the loop solves again.
@@ -1150,6 +1197,13 @@ with the whole route's own ends model.
   grid step at a free end off it, linear between; a pair's end connectors
   and crossover as its exact copper, the crossover's barrels one each; a
   pair's dive also for its straight runs and its room from both ends, and
+  at the three cells the pair router tests for it (the centre and
+  `pairs.pose_via_cells` grid steps either way across its arriving
+  heading, on the pair's map: a via, a track, the clearance and half the
+  pair's pitch from another lane's line, a via and the clearance from its
+  via site -- as the polish and the snap keep them; barred at its barrels
+  alone, a lane 0.04 mm short of a dive's cell passed and the snap could
+  not seat the dive), and
   every pose for the straight the router probes past it; bands sampled on
   the router's grid, pose to pose; a via against a pair's own legs (a
   track's ring) as well as its centreline, against unplated holes by the
@@ -1161,7 +1215,9 @@ with the whole route's own ends model.
   `whole_lint.py` checks what the snap promises: grid points, 0/45/90
   pieces, continuity, no reversal, no fold where a lane meets its stub (its
   way measured from the router's own start or end, the terminal's nearest
-  grid point), a via at every layer change, a pair's
+  grid point; a fold named with its place, which the loop sends on as it
+  does the audit's -- with none, zynq K42's A6 folded at its berth and the
+  loop stopped with nothing to try), a via at every layer change, a pair's
   turns and dives as the pair router makes them, its end connectors, and an
   opposite-hands pair's crossover (both poses on the grid, each leg changing
   layer at its own barrel, the legs swapping sides). `whole_loop.sh` sends
@@ -1172,10 +1228,14 @@ with the whole route's own ends model.
   names: `whole_gate --hot`);
   it stops a loop that is NOT CONVERGING: two rounds that do not beat the
   best score so far (how far the plan got -- smooth, the pairs held,
-  snapped -- then its findings there). A round with new side flips and cuts
+  snapped -- then its findings there, a folded lane among them), a round
+  with new side flips to try not counted. A round with new side flips and cuts
   or findings takes both at once -- the solve with them, then the geometry
-  with the flips (an island cut a flip has since answered dropped from the
-  solve, whichever round made it). The polish's
+  with the flips (an island cut is dropped from the solve only where its
+  flip was already given to the geometry that made it: made again after
+  the flip, both sides failed, and the solve gets it -- zynq K42's C98 cut
+  was dropped for good once, and the solve never saw it). The flips the
+  polish finds with the pairs held are tried as the smooth plan's are. The polish's
   rounds stop once a round moves no vertex further than a nanometre
   (KiCad's own unit). Every expensive stage runs through `stage_cache.py`:
   a stage whose script, arguments, environment (the agent's and the
@@ -1230,30 +1290,36 @@ either), and 1257 mm of copper against 1337 -- the human's includes its
 length-matching meanders, and this route matches no lengths. With the
 solve's fallback (2026-09-27) the same chain routes it again: 48 of 48
 lanes all at once, every net connected, DRC-clean, 88 vias against the
-human's 88 in 1262 mm against 1337.
+human's 88 in 1262 mm against 1337. On the code of 2026-09-28 it routes on
+both machines, 88 vias in 1263 mm on the Mac and 1261 on Linux, where the
+fallback had stopped unproved on Linux before it ran its whole budget.
 
 <img src="img/k51_whole_route.png" alt="K51 routed from the whole-route plan, beside the human's" width="900">
 
 *K51 on the human's fanout, one frame: left, the whole-route plan routed
-all at once (86 vias); right, the human (88). The three pairs are yellow.
-SCK's legs swap sides at a crossover just past its tooth end (lower
-left). The human's meanders match lengths.*
+all at once (88 vias, 1263 mm); right, the human (88, 1337 mm). The three
+pairs are yellow. The human's meanders match lengths.*
 
-On our OWN ends -- the ends model's fanout on `fb_t2q_pairs` -- the plan
-passes and routes all at once, every lane in its band, every net connected,
-DRC-clean (the table in *Where it stands*): K15 (13 lanes) 10 vias against
-the human's 22, K28 (25 lanes) 30 against 48, K35 (32 lanes) 58 against 60,
-K41 (38 lanes) 70 against 70 in 1039 mm against 1081, and K51 (48 lanes) 78
-against 88 in 1207 mm against 1337 -- each on its first fanout. From the
-start of the fanout to the checked route: 45 s, 160 s, 278 s, 596 s and
-1248 s, the five side by side. The
-heaviest processes at K35 are the two snaps (the pairs' 515 MB, the
-singles' 435 MB); the pairs' snap, 97 s, is the longest stage.
+On our OWN ends -- the ends model's fanout on `fb_t2q_pairs`, and the zynq
+article's -- the plan passes and routes all at once at every rung of both
+ladders, on both machines, every lane in its band, every net connected,
+DRC-clean: the tables in *Where it stands*. At K51 80 vias against the
+human's 88 in 1220 mm against 1337 (Linux 78 in 1260); at the zynq's K44 58
+against 103 in 1347 mm against 1617, the same on both. The heaviest process
+of any rung is zynq K42's, 842 MB.
 
-On the zynq article's ends (`BASE=tmp/zynq/zynqF.kicad_pcb DEST=U2`,
-`whole_chain.sh`) the whole route passes K18 (18 lanes, 12 vias, 466 mm),
-K26 (25, 30, 731 -- the pair turn and the dive cut) and K32 (31, 46, 940),
-every net connected, DRC-clean, K26 the same copper on both machines.
+<img src="img/k51_own_ends.png" alt="K51 routed on our own ends, beside the human's" width="900">
+
+*K51 on our own ends (the Mac's board), the frame of the render above: left,
+our fanout's ends and the whole route on them, 80 vias; right, the human's
+board, 88. The pairs are yellow.*
+
+<img src="img/zynq_k44_whole.png" alt="zynq K44 routed on our own ends, beside the human's" width="900">
+
+*The zynq article at K44, 42 lanes (both DQS pairs yellow), in our frame (the
+human's board turned the same quarter turn): left, the whole route on our
+own ends, 58 vias, 1347 mm; right, the human, 103 vias and 1617 mm, much of
+it length-matching meanders, over a plane.*
 
 **Every machine, and the same answer on each** (`detmath.py`). The
 standard: every rung routes on every machine, no solve hangs, as fast as it
@@ -1262,7 +1328,9 @@ box (Modal, `modal_whole.py::stage` running `whole_chain.sh`) go further up
 to K35 -- the same bits stage by stage (fanout, solve, geometry, polish,
 snaps, route) and the same board, digest for digest, cold with every cache
 off -- once two causes of difference were fixed at the root; past it, a
-third remains, by choice (below).
+third remains, by choice (below). (Every rung of the zynq article gives the
+same vias and copper on both, 2026-09-28; those boards were not compared
+digest for digest.)
 
 - *The C libraries round differently.* Apple's libm and glibc disagree in
   the last bit on sin, cos, tan, atan2, asin, acos, exp, log and pow --
@@ -1652,6 +1720,13 @@ abandoned with a measurement. Untried ideas live here and nowhere else.
 
 First, the whole-route plan (`whole_*.py`):
 
+- **A pair's change, as the board counts it.** The solve counts a lane's
+  layer change as one via; a pair's lays a barrel on each leg, two on the
+  board (the ends model counts it so). Among its equal plans the two
+  machines keep different ones at K51: the Mac's dives the pair SDQS0 twice
+  (four barrels, 80 vias), Linux's the single SDQ4 (two, 78). A tie-break
+  below a via toward the single's change -- in the terms under the vias,
+  where the proof of the vias does not look -- is untried.
 - **Tune the policy weights.** The ends model's price of a crossing on the
   trunk (`whole_ends.X_TRUNK`, a fifth of a via) is one comparison: a
   twentieth stalled K41's solves, a fifth passed K15-K41, nothing between
@@ -1680,6 +1755,27 @@ First, the whole-route plan (`whole_*.py`):
   less than a lane's pitch to spare only when every split that fits does the
   same. To try where a pair's pinch beside a part fails (the larger zynq
   rungs).
+- **A review's open findings.** A read of every stage for rules one stage
+  keeps and another does not left these untried, most valuable first: an
+  island's room is measured alone -- its neighbours' pads aside, and on a
+  tilted frame its box inflated (a 2x2 block of 0402s with 0.41 mm slots
+  shows no slot at all); a lane paid across another lane's end, stub or stub
+  via is never fed back, though those are the largest payments (0.6-0.8 mm);
+  history prices every lane's crossings where a finding names two, and
+  cannot buy a via -- a hard LAYER cut (off the island's layer over its
+  span) for a static that survives its flip could; a pair's pose or
+  crossover shortfall, and a pair the snap cannot lay, carry no place for
+  the loop to send on; the snap reserves a crossover's dive room where the
+  audit asks its crossover room; with the pairs laid first, a pair's dive
+  barrels do not see the singles' lines; a crossover's two barrels ignore
+  the hole-to-hole rule; the snap rounds to the grid as `round(x / g)`, the
+  router as `round(x * inv_step)`; the geometry's slope correction leaves
+  its flat cut unscaled (up to 4% under); a via is placed where its column
+  was not checked (up to 50 um at 45 degrees); end holds run along the
+  spine, not the stub. And the smooth plan's pairs turn up to 100 degrees
+  within one turning run where the pair router turns 45 -- the snap lays
+  the real pair, and nothing fails on it yet; the polish, the later stage,
+  could hold a pair to its turns.
 - **Units.** `rules.py`'s margins on `via_need`, `lane_min` and `end_keep`
   (a "cell" of 0.03 and 0.02 / 0.05 mm, rather than the grid), the braid's
   planning distances the whole route starts from (`BLOCK_GAP`, `ROW_O`,
