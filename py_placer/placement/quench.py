@@ -346,9 +346,26 @@ class IntentProbe:
     before/after comparison of two vectors of DIFFERENT LENGTH is not a
     comparison at all, and a lift landing between the two snapshots would
     produce one silently.
+
+    THE TETHER RULES (#1068), `decap_distance`, `decap_pin_distance` and
+    `proximity`, from `tethers` (`floorplan.tether_gate_spec`, the same
+    spec the quench's gate holds). Before this the probe measured the three
+    zone/keep-out rules only, so the re-seat's `intent` basis read `0 -> 0`
+    on a board printing four decap GRADE ERRORs on the very refs re-seated,
+    and prune reverted a seat made for a decap reason as a pure hpwl loss.
+    They are part-vs-PART, so they are held apart from `spec`: ONE list,
+    each term counted ONCE however many refs it binds (a cap and every chip
+    on its rail) -- appended per ref, a shared cap would count once per IC.
+    Built by `QuenchState.tether_terms_for(keep_locked=True)` (the grade
+    counts a claim whose refs are all locked; the gate drops it because it
+    cannot refuse anything) and measured by `tether_graded_value`, which
+    reads and writes none of the gate's caches. Nothing here assigns
+    `state._tether_terms`, `state._tether_active` or `state.tethers`, so
+    `_tether_gate` stays exactly as armed as it was.
     """
 
-    def __init__(self, state, zones: Sequence[Dict] = (), refs=None) -> None:
+    def __init__(self, state, zones: Sequence[Dict] = (), refs=None,
+                 tethers: Optional[Dict] = None) -> None:
         self.state = state
         rs = (sorted(state.parts) if refs is None
               else sorted(r for r in refs if r in state.parts))
@@ -359,24 +376,58 @@ class IntentProbe:
             if s:
                 self.spec[r] = s
         self.refs: Tuple[str, ...] = tuple(rs)
+        want = set(rs)
+        self.tethers: Tuple[_TetherTerm, ...] = tuple(
+            t for t in (state.tether_terms_for(tethers, keep_locked=True)
+                        if tethers else ())
+            if want & set(t.refs))
+        self._tethers_of: Dict[str, Tuple[int, ...]] = {}
+        for i, t in enumerate(self.tethers):
+            for r in set(t.refs):
+                self._tethers_of[r] = self._tethers_of.get(r, ()) + (i,)
 
     @property
     def active(self) -> bool:
-        return bool(self.spec)
+        return bool(self.spec) or bool(self.tethers)
+
+    @property
+    def rules(self) -> Tuple[str, ...]:
+        """The rules this probe measures -- what its `count` is a count OF.
+        A consumer printing the count prints these beside it."""
+        got = {t.rule for ts in self.spec.values() for t in ts}
+        got |= {t.rule for t in self.tethers}
+        return tuple(r for r in INTENT_ENFORCED_RULES if r in got)
+
+    def _tether_values(self) -> Tuple[float, ...]:
+        return tuple(self.state.tether_graded_value(t) for t in self.tethers)
 
     def terms(self, ref) -> Tuple[float, ...]:
-        """`ref`'s claim vector at its CURRENT pose.
+        """`ref`'s claim vector at its CURRENT pose: its zone/keep-out terms,
+        then every tether term that binds it.
 
-        Safe to call in the middle of a sweep that is moving OTHER parts, and
-        `_incumbent_intent`'s docstring is why: the intent terms are
-        part-vs-DECLARED-GEOMETRY, never part-vs-part, so nothing another part
-        does can change them. That is what makes this legal to hand to
-        `reconstruct.prune_assignment` as a per-ref callable.
+        The zone terms are part-vs-DECLARED-GEOMETRY, so nothing another part
+        does changes them. The tether terms are part-vs-PART, so another
+        part's move DOES change them -- which is still legal to hand to
+        `reconstruct.prune_assignment` as a per-ref callable, because prune
+        samples it either side of restoring `ref` ALONE: nothing else moves
+        between the two samples, so a rise is `ref`'s doing.
+
+        A tether term enters as its EXCESS over its limit, never its raw
+        distance: prune refuses a revert on any rise, and a cap moving from
+        1.0 to 1.5mm under a 2mm limit is no finding -- only a revert that
+        leaves a term further past its limit is. That is `tether_ok`'s rule
+        (within the limit, or no worse), in the vector prune compares.
         """
         s = self.spec.get(ref)
-        if not s:
-            return ()
-        return intent_term_values(s, self.state.parts[ref].rects())
+        out = intent_term_values(s, self.state.parts[ref].rects()) if s \
+            else ()
+        idx = self._tethers_of.get(ref, ())
+        if idx:
+            out = tuple(out) + tuple(
+                max(0.0, self.state.tether_graded_value(self.tethers[i])
+                    - self.tethers[i].threshold - legality.EPS)
+                for i in idx)
+        return out
 
     def snapshot(self) -> Dict:
         """Every bound ref's vector, plus the BREACH COUNT and its by-rule split.
@@ -391,7 +442,9 @@ class IntentProbe:
         into keep-out B reads `1 -> 1`, which a monotone rule would admit. The
         guard is `licence()` below, on the VECTORS.
         """
-        vecs = {r: self.terms(r) for r in sorted(self.spec)}
+        vecs = {r: intent_term_values(self.spec[r],
+                                      self.state.parts[r].rects())
+                for r in sorted(self.spec)}
         count = 0
         by_rule: Dict[str, int] = {}
         for r, vals in vecs.items():
@@ -399,7 +452,16 @@ class IntentProbe:
                 if v > t.threshold:
                     count += 1
                     by_rule[t.rule] = by_rule.get(t.rule, 0) + 1
-        return {'count': count, 'by_rule': by_rule, 'terms': vecs}
+        # The grade's own comparison for these rules: past the limit by more
+        # than EPS (`rule_decap_distance`, `rule_decap_pin_distance`,
+        # `rule_proximity`), the same one `tether_failures` makes.
+        tvals = self._tether_values()
+        for v, t in zip(tvals, self.tethers):
+            if v > t.threshold + legality.EPS:
+                count += 1
+                by_rule[t.rule] = by_rule.get(t.rule, 0) + 1
+        return {'count': count, 'by_rule': by_rule, 'terms': vecs,
+                'tethers': tvals}
 
     def licence(self, before: Dict, after: Dict) -> Tuple[bool, List[Tuple]]:
         """(ok, risen) -- no declared term binding a probed ref may RISE.
@@ -422,6 +484,17 @@ class IntentProbe:
             for t, b, a in zip(self.spec[ref], bv, av):
                 if a > b + legality.EPS:
                     risen.append((ref, t.rule, t.name, b, a))
+        bt, at = before.get('tethers', ()), after.get('tethers', ())
+        if len(bt) != len(at):
+            risen.append(('*', 'spec', 'tethers-length-changed', len(bt),
+                          len(at)))
+        else:
+            # Per TERM, like the gate's `tether_ok`: a term within its limit
+            # after the pass is no finding, however it moved; one past it
+            # must not have got worse.
+            for t, b, a in zip(self.tethers, bt, at):
+                if a > t.threshold + legality.EPS and a > b + legality.EPS:
+                    risen.append((','.join(t.refs[:2]), t.rule, t.name, b, a))
         return (not risen), risen
 
 
@@ -2070,21 +2143,39 @@ class QuenchState:
     # ----- #1043 tethers ----------------------------------------------------
 
     def _build_tethers(self) -> None:
-        """Elect the pairings once and freeze them as `_TetherTerm`s.
+        """Elect the pairings once and freeze them as the GATE's
+        `_TetherTerm`s (`tether_terms_for`, with locked terms dropped)."""
+        terms = self.tether_terms_for(self.tethers, keep_locked=False)
+        by_ref: Dict[str, List[int]] = {}
+        for i, t in enumerate(terms):
+            for r in set(t.refs):
+                by_ref.setdefault(r, []).append(i)
+        self._tether_terms = terms
+        self._tethers_of = {r: tuple(v) for r, v in by_ref.items()}
 
-        A term none of whose refs can move is dropped: no move of this
-        engine changes it, so it cannot refuse anything. A proximity term
-        is expanded to one per REACH the rule reports (per declared subject
-        pad, or one for the pair), counted on the board as it stands.
+    def tether_terms_for(self, tethers: Dict, *, keep_locked: bool
+                         ) -> List[_TetherTerm]:
+        """The `_TetherTerm`s `tethers` (`floorplan.tether_gate_spec`) elects
+        on the board as it stands. Assigns NOTHING on the state, so a
+        measurement-only caller (`IntentProbe`, #1068) can build them without
+        arming `_tether_gate`.
+
+        `keep_locked=False` is the gate's choice: a term none of whose refs
+        can move is dropped, since no move of this engine changes it and it
+        cannot refuse anything. A MEASUREMENT keeps it (`True`), because the
+        grade still counts it. A proximity term is expanded to one per REACH
+        the rule reports (per declared subject pad, or one for the pair),
+        counted on the board as it stands.
         """
         from . import floorplan as _fp
-        rows = _fp.tether_pairings(self.tethers, self.pcb_data)
+        rows = _fp.tether_pairings(tethers, self.pcb_data)
         nets = {n.name: nid for nid, n in (self.pcb_data.nets or {}).items()}
         terms: List[_TetherTerm] = []
         for row in rows:
             refs = tuple(row['refs'])
-            if not any(r in self.parts and not self.parts[r].locked
-                       for r in refs):
+            if not keep_locked and not any(
+                    r in self.parts and not self.parts[r].locked
+                    for r in refs):
                 continue
             rule, name, lim = row['rule'], row['name'], float(row['limit'])
             if rule == 'decap_distance':
@@ -2110,12 +2201,7 @@ class QuenchState:
                     terms.append(_TetherTerm(
                         rule, f"{name}#{k}" if n > 1 else name, refs, lim,
                         'prox_pad', {'claim': row['claim'], 'slot': k}))
-        by_ref: Dict[str, List[int]] = {}
-        for i, t in enumerate(terms):
-            for r in set(t.refs):
-                by_ref.setdefault(r, []).append(i)
-        self._tether_terms = terms
-        self._tethers_of = {r: tuple(v) for r, v in by_ref.items()}
+        return terms
 
     def _pose_of(self, ref, override=None):
         if override and ref in override:
@@ -2164,9 +2250,23 @@ class QuenchState:
         move either is the same answer for every candidate of the one that
         does, and the minimum of two minima is the minimum.
         """
+        return self._tether_measure(self._tether_terms[i], i, override)
+
+    def tether_graded_value(self, t: _TetherTerm) -> float:
+        """Term `t` at the LIVE poses, exactly, as the GRADE reads it (#1068):
+        the measurement `IntentProbe` counts, never the gate's. No cache is
+        read or written (the gate's caches are keyed by ITS term index), and
+        a decap pair the live election puts beyond the search radius reads 0,
+        because the grade calls it `decap_ungraded` (warn) however it was
+        elected at build -- the gate deliberately keeps measuring that pair,
+        which is stricter than the grade and therefore not a count of it."""
+        return self._tether_measure(t, None, None, grade_view=True)
+
+    def _tether_measure(self, t: _TetherTerm, i: Optional[int],
+                        override=None, grade_view: bool = False) -> float:
+        """`_tether_value`'s body, for term `t`. `i` None: no cache."""
         from . import floorplan as _fp
         from . import groups as _groups
-        t = self._tether_terms[i]
         # `override` is one or two refs on every path but a group move, so
         # membership is asked of IT, never by walking a term's (long) rail.
         moving = override or {}
@@ -2177,7 +2277,8 @@ class QuenchState:
             # (run 32: C26, 7.20mm from U15, walked to 3.07mm from U36), and
             # a frozen pair would read that move as clean.
             cap, rail = t.data['cap'], t.data['rail']
-            if cap not in moving and moving and not self._exact_tethers:
+            if (cap not in moving and moving and not self._exact_tethers
+                    and i is not None):
                 # The cap stays: the chips that do not move are one fixed
                 # minimum. If it is within the limit already, no chip's move
                 # can take the election past it (same bound as the pin term).
@@ -2192,7 +2293,7 @@ class QuenchState:
                     self._tgap[key] = static
                 if static is not None and static <= t.threshold + legality.EPS:
                     return static
-            if any(r in t.data['rail_set'] for r in moving):
+            if any(r in t.data['rail_set'] for r in moving) or i is None:
                 cands = [(r, self._chip_bounds(r, override)) for r in rail]
             else:
                 # No chip on the rail moves: their live bounds are the same
@@ -2204,7 +2305,8 @@ class QuenchState:
             _ic, d = _groups.elect_live(self._posed_fp(cap, override), cands)
             if d is None:
                 return 0.0
-            if not t.data['graded'] and d > t.data['radius'] + legality.EPS:
+            if ((grade_view or not t.data['graded'])
+                    and d > t.data['radius'] + legality.EPS):
                 # Outside the radius the grade calls it `decap_ungraded`
                 # (warn): not a finding this term counts. INSIDE it is graded,
                 # so a pair elected beyond the radius may not walk in past
@@ -2222,12 +2324,13 @@ class QuenchState:
                 return got[0] if got is not None else 0.0
             live = tuple(sorted(c for c in moving if c in t.data['caps_set']))
             key = (i, live)
-            static = self._tgap.get(key)
+            static = self._tgap.get(key) if i is not None else None
             if static is None:
                 pin = self._posed_fp(ic).pads[t.data['pad_index']]
                 static = _fp.nearest_rail_cap(
                     pin, [self._posed_fp(c) for c in caps if c not in moving])
-                self._tgap[key] = static
+                if i is not None:
+                    self._tgap[key] = static
             best = static[0] if static is not None else None
             if (best is not None and best <= t.threshold + legality.EPS
                     and not self._exact_tethers):

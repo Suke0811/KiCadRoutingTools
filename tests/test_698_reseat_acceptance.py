@@ -513,8 +513,8 @@ def arm_H_seat_gate_stays_disarmed(wd):
     seen = {}
     real = q.IntentProbe.__init__
 
-    def spy(self, state, zones=(), refs=None):
-        real(self, state, zones=zones, refs=refs)
+    def spy(self, state, zones=(), refs=None, tethers=None):
+        real(self, state, zones=zones, refs=refs, tethers=tethers)
         seen['state_spec'] = dict(state._intent_spec)
         seen['probe_spec'] = {r: len(v) for r, v in self.spec.items()}
         seen['state_obj'] = state
@@ -593,6 +593,37 @@ def arm_H_seat_gate_stays_disarmed(wd):
     check("IntentProbe assigns to neither _intent_spec nor _intent_active",
           ('_intent_spec =' not in body and '_intent_active =' not in body),
           f"{len(body.splitlines())} lines scanned")
+    # #1068: the probe now measures the TETHER rules too, through the
+    # state's `tether_terms_for` / `tether_graded_value`. It must not arm
+    # `_tether_gate` on the way: asserted on the AST of the class body --
+    # no attribute assignment (plain, augmented or annotated) to a
+    # tether-gate field on anything but `self`.
+    gate_fields = {'_tether_terms', '_tether_active', 'tethers',
+                   '_tethers_of', '_inc_tval', '_tgap'}
+    tree = ast.parse(qsrc)
+    probe_cls = next(n for n in ast.walk(tree)
+                     if isinstance(n, ast.ClassDef) and n.name == 'IntentProbe')
+    armed = []
+    for node in ast.walk(probe_cls):
+        targets = (node.targets if isinstance(node, ast.Assign)
+                   else [node.target] if isinstance(node, (ast.AugAssign,
+                                                           ast.AnnAssign))
+                   else [])
+        for t in targets:
+            if (isinstance(t, ast.Attribute) and t.attr in gate_fields
+                    and not (isinstance(t.value, ast.Name)
+                             and t.value.id == 'self')):
+                armed.append((t.attr, node.lineno))
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == 'setattr'):
+            armed.append(('setattr', node.lineno))
+    check("IntentProbe assigns no tether-gate field on the state",
+          not armed, f"offenders: {armed or 'none'}")
+    check("and it reaches the tethers only through the measurement API",
+          'tether_terms_for(' in ast.get_source_segment(qsrc, probe_cls)
+          and 'tether_graded_value(' in ast.get_source_segment(qsrc,
+                                                               probe_cls),
+          "tether_terms_for + tether_graded_value")
     del cls
 
 
@@ -745,10 +776,10 @@ def arm_N_enforced_rules_covered(wd):
     """Every rule the engine claims to enforce is exercised here, and the
     vocabulary is read FROM the engine so a new rule cannot be forgotten."""
     print("--- N: the enforced-rule vocabulary is pinned both ways")
-    # #1043 made it six: the three tether rules joined the quench's gate.
-    # The re-seat's IntentProbe still measures the three zone/keep-out rules
-    # only, so arm L's probe-vs-grade comparison runs on a fixture that
-    # declares no tether (its intent has no decaps and no proximity).
+    # #1043 made it six: the three tether rules joined the quench's gate,
+    # and #1068 gave the re-seat's IntentProbe all six. Arm L's lattice runs
+    # on a keep-out fixture; the tether half of probe-vs-grade parity is
+    # `tests/test_reseat_intent_basis_parity.py`.
     check("INTENT_ENFORCED_RULES is the expected six",
           set(INTENT_ENFORCED_RULES) == {'zone_containment', 'zone_exclusive',
                                          'keepout', 'decap_distance',
@@ -1110,8 +1141,8 @@ def arm_S_review_findings(wd):
     seen6 = {}
     real6 = q.IntentProbe.__init__
 
-    def spy6(self, state, zones=(), refs=None):
-        real6(self, state, zones=zones, refs=refs)
+    def spy6(self, state, zones=(), refs=None, tethers=None):
+        real6(self, state, zones=zones, refs=refs, tethers=tethers)
         seen6['refs_arg'] = refs
         seen6['covered'] = set(self.refs)
         seen6['parts'] = set(state.parts)
@@ -1164,8 +1195,9 @@ def arm_S_review_findings(wd):
         wide = reseat(b6, it6, ['U1'], evict_depth=1)
         real_probe_init = q.IntentProbe.__init__
 
-        def narrow_init(self, state, zones=(), refs=None):
-            real_probe_init(self, state, zones=zones, refs={'U1'})
+        def narrow_init(self, state, zones=(), refs=None, tethers=None):
+            real_probe_init(self, state, zones=zones, refs={'U1'},
+                            tethers=tethers)
 
         q.IntentProbe.__init__ = narrow_init
         try:

@@ -6248,6 +6248,9 @@ def basis_skeleton(scope_source: str, *, policy: str,
         # does not run these leaves them None rather than reporting a clean
         # pass over nothing.
         'safety': None, 'intent_licence': None,
+        # #1068: the rules the `intent` basis counts -- what `intent 0->0`
+        # is a count OF. Empty where no probe ran.
+        'intent_rules': [],
     }
 
 
@@ -6756,7 +6759,14 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
         # gate term moves, and the pass is accepted having created the
         # violation it was run to remove. Only claim-bound refs get terms, so
         # on a board that declares nothing this is still empty.
-        probe = _q.IntentProbe(state, zones=_bundle['zones'])
+        #
+        # #1068: and the TETHER rules (decap_distance, decap_pin_distance,
+        # proximity) the quench's gate holds -- the same `_bundle['tethers']`.
+        # Without them the `intent` basis read 0 -> 0 on a board printing
+        # decap GRADE ERRORs on the very refs re-seated, and prune reverted a
+        # seat made for a decap reason as a pure hpwl loss.
+        probe = _q.IntentProbe(state, zones=_bundle['zones'],
+                               tethers=_bundle.get('tethers'))
 
     # ---- seat ---------------------------------------------------------------
     before = _recon.measure(state, gate_bands)
@@ -6849,6 +6859,8 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
         witnesses_before=witnesses_before, witnesses_after=witnesses_after,
         bases_before=bases_before, bases_after=bases_after,
         intent_risen=_risen, min_gain=min_gain)
+    if probe is not None:
+        accept_basis['intent_rules'] = list(probe.rules)
     if evicted and not eviction_licence_ok(before, after):
         accepted = False
         accept_basis['fired'] = None

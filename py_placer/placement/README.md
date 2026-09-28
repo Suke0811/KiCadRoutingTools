@@ -441,7 +441,9 @@ part could never be re-seated whatever the search found. So:
   longer required to *improve*, and that one asymmetry is the whole bug.
 - **A separate trigger.** At least one basis in `RESEAT_BASES` must strictly
   improve: the six hard gate terms, the scope's own HPWL, and the count of
-  breached declared claims. All are reported in `accept_basis` whether they
+  breached declared claims -- zone/keep-out AND, since #1068, the tether rules
+  (`decap_distance`, `decap_pin_distance`, `proximity`), each claim counted
+  once; `accept_basis.intent_rules` names which. All are reported in `accept_basis` whether they
   fired or not — a basis that measured nothing and a basis that measured no
   change must not look alike.
 - **The intent VECTOR is the guard; the intent COUNT is only the trigger.** A
@@ -453,7 +455,8 @@ part could never be re-seated whatever the search found. So:
   *first*. Its tuple has no intent term either, so a seat that cleared a
   keep-out reads as a pure hpwl loss and was undone before the gate ran. It now
   takes an `intent_probe` and refuses a revert that would re-break a
-  declaration — a conjunct rather than an `exempt` entry, so the sweep still
+  declaration (a tether term enters as its excess over its limit, so a revert
+  is refused only if it pushes a claim further past it) — a conjunct rather than an `exempt` entry, so the sweep still
   catches every mis-move it caught before and stays monotone, now on
   `(tuple, intent vector)` jointly. Kept moves are named in a `prune: KEPT …`
   note.

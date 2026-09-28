@@ -815,8 +815,9 @@ ROWS = [
      (T_QB + '::test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics',),
      'KILLED'),
     ('tether-ungraded-pair-never-counts', 'qu',
-     "            if not t.data['graded'] and d > t.data['radius'] + legality.EPS:",
-     "            if d > t.data['radius'] + legality.EPS:",
+     "            if ((grade_view or not t.data['graded'])\n"
+     "                    and d > t.data['radius'] + legality.EPS):",
+     "            if (d > t.data['radius'] + legality.EPS):",
      (T_QB + '::test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics',
       T_QB + '::test_tether_terms_equal_the_grader_on_every_pair'), 'KILLED'),
     ('tether-group-move-partners-at-home', 'qu',

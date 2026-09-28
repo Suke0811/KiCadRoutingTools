@@ -759,10 +759,18 @@ Examples:
             # how this pass came to refuse on a term the operator never asked
             # about for a whole release.
             _ab = reseat.get('accept_basis') or {}
+            # #1068: `intent` is labelled with the rules it counts, so
+            # `intent 0->0` cannot read as a measurement of the WHOLE intent
+            # while the grade below prints errors of a rule the count never
+            # had.
+            _ir = ','.join(_ab.get('intent_rules') or ()) or 'none declared'
+
+            def _label(term):
+                return f"intent[{_ir}]" if term == 'intent' else term
             if _ab.get('fired'):
                 _t = next((t for t in _ab.get('terms') or []
                            if t['term'] == _ab['fired']), {})
-                print(f"  accepted on {_ab['fired']}: "
+                print(f"  accepted on {_label(_ab['fired'])}: "
                       f"{_t.get('before')} -> {_t.get('after')} "
                       f"({_t.get('units')}); {_ab.get('policy')}")
             elif _ab.get('policy') == 'explicit:one-term-strict':
@@ -774,7 +782,7 @@ Examples:
                                if t.get('first')), None)
                 print(("  refused despite " + _first + " improving: "
                        if _first else "  no basis improved: ") + ", ".join(
-                    f"{t['term']} {t['before']}->{t['after']}"
+                    f"{_label(t['term'])} {t['before']}->{t['after']}"
                     for t in (_ab.get('terms') or [])))
             summary.update({
                 'reseat': True,

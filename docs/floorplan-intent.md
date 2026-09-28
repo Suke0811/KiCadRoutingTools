@@ -784,11 +784,21 @@ them is a decision, not an omission.
 
 There is a **third** consumer beside the two columns below, added by
 [#698](https://github.com/drandyhaas/KiCadRoutingTools/issues/698):
-`place_seed --reseat REF` measures the same three enforced rules *before and
-after* the pass, through the same `zone_escape` / `keepout_hit` /
-`rect_overlap_area` the grade calls, and uses them two ways — the per-term
-**vector** as a licence (no declared claim may get worse, termwise) and the
-breach **count** as one of the terms an explicit re-seat may be accepted *on*.
+`place_seed --reseat REF` measures the enforced rules *before and after* the
+pass -- the three zone/keep-out rules through the same `zone_escape` /
+`keepout_hit` / `rect_overlap_area` the grade calls, and (since #1068) the three
+tether rules `decap_distance`, `decap_pin_distance` and `proximity` through the
+same `tether_gate_spec` terms the quench gate holds, measured the way the grade
+reads them (`QuenchState.tether_graded_value`: a cap past the decap radius is
+`decap_ungraded`, not a breach; a claim whose refs are all locked still counts;
+each claim counted ONCE however many refs it binds). It uses them two ways —
+the per-term **vector** as a licence (no declared claim may get worse, termwise;
+a tether claim within its limit after the pass is no finding) and the breach
+**count** as one of the terms an explicit re-seat may be accepted *on*.
+`accept_basis.intent_rules` names the rules that count covers, and the printed
+basis reads `intent[decap_distance,...]`, so `intent 0->0` cannot pass for a
+measurement of the whole intent. Before #1068 it counted the zone rules only,
+and read `0 -> 0` beside four decap GRADE ERRORs on the refs re-seated.
 It is a measurement, not a per-pose gate: arming the monotone zone gate on that
 path would make the re-seat refuse its own target, which is why
 `pose_score.make_state` hands it keep-outs and withholds zones. `reseat_scope`
