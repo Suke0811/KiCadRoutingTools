@@ -1051,7 +1051,7 @@ with the whole route's own ends model.
   LINE: a slanted line is laid as a staircase of runs on the two router
   headings either side, each at least the turning radius long, so a pair
   cannot keep nearer it than half the smallest such staircase
-  (`stair_spread`: nothing on a router heading, 0.12 mm apart across a line
+  (`pairs.stair_spread`: nothing on a router heading, 0.12 mm apart across a line
   19 degrees off one); beyond that and a grid step it pays `W_KEEP` per mm
   of length per mm (K51's SDQS0 took 1.5-2.3 mm runs rather than a bend and
   strayed 0.21 mm into SDQ7's room, and SDQ7 fitted beside it on one
@@ -1663,8 +1663,18 @@ First, the whole-route plan (`whole_*.py`):
   `ILS_PATIENCE`, `EXACT_TOP`), the solve's budget and stall
   (`WHOLE_SOLVE_BATCHES`, `SOLVE_STALL`), the geometry's comfort pitch
   (`P_COMF` and its weights), the snap's pair keep (`W_KEEP`), the loop's
-  `PATIENCE` and the street sites (`DST_STREET`). One at a time, over K28-K51 and synthetic buses
-  (`synth_bus.py`), judged on passes, then vias, then time.
+  `PATIENCE` and the street sites (`DST_STREET`). One at a time, over K28-K51, the zynq rungs and synthetic
+  buses (`synth_bus.py`), judged on passes on every machine (a Mac and Linux), then vias, then time.
+- **Round 1 passing: the side of a small part.** The geometry chooses which
+  side of each island (a capacitor's or resistor's pads) a lane passes from
+  its room estimate (`whole_geo.static_sides`), and the LP then cannot hold
+  some of those sides: the lane is paid through the pads, the polish finds
+  it inside them, and the side flips only in the next round, a solve and a
+  geometry later. On K51 every one of three tied plans failed round 1 so
+  (SA4 through R4+R5, SA11 through C3 and C4, SDQ15 through C9); with those
+  sides given up front one plan's smooth plan passed at once. A side the
+  first geometry pays for could be flipped and the geometry run again
+  within the round, or the room estimate made the LP's own.
 - **Room beside a pair at an island** (`GEO_PAIR_ROOM=1`, opt-in, off by
   default): the geometry's island split takes a side that holds a pair with
   less than a lane's pitch to spare only when every split that fits does the

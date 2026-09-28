@@ -81,7 +81,7 @@ RVIA = 2 * bd.LANE_MIN                                     # how far a via may m
 W_BEND = 4 * g                                             # a 45-degree bend, in mm of length
 W_DEV = 0.5                                                # per mm of length, per mm from the smooth line
 W_SHARE = 1.0                                              # a pair laid first: a step in a single's share costs its length again
-W_KEEP = float(os.environ.get('SNAP_W_KEEP', 20.0))       # a pair, per mm of length, per mm beyond its staircase (stair_spread)
+W_KEEP = float(os.environ.get('SNAP_W_KEEP', 20.0))       # a pair, per mm of length, per mm beyond its staircase (pairs.stair_spread)
 SWEEPS = 2                                                 # clean-up sweeps against the others' real copper
 W_VIA = 1.0                                                # per mm a via stands from the plan's
 POSE_TRIES = 4                                             # a pair's pose combinations tried before one search asks if any can
@@ -441,24 +441,6 @@ PDIVE = []           # (n, x, y): every placed PAIR dive's cells the pair router
                      # way along its arriving heading's integer perpendicular), where it will look for the dive
 
 
-def stair_spread(dx, dy):
-    """how far the corners of the SMALLEST staircase the pair router can lay along the heading (dx, dy) stand apart
-    across it: runs on the two octilinear headings either side, each at least pairs.turn_straight_steps long (the
-    router's turning radius) -- 0 on an octilinear heading. A pair planned at a slant cannot keep nearer its line than
-    half this (K51: 19.4 degrees off, 0.122 apart); it strayed 0.21 to one side for want of a bend, into a single's room"""
-    a = math.atan2(abs(dy), abs(dx)) % (math.pi / 4)
-    if a < 1e-9 or math.pi / 4 - a < 1e-9:
-        return 0.0
-    # in the frame of the lower octilinear heading: a flat run H, then a diagonal run D (D across, D along)
-    t = math.tan(a)                      # the line's slope in that frame: D / (H + D)
-    R = _pairs.turn_straight_steps(cfg) * g
-    if t <= 0.5:
-        D = R; H = D * (1 - t) / t
-    else:
-        H = R; D = H * t / (1 - t)
-    return H * D / (H + D) * math.cos(a)
-
-
 def lane_bar(n, m):
     return TW + CL + hw[n] + hw[m] + g / 2 * (OFFG[n] + OFFG[m])
 
@@ -488,7 +470,7 @@ def build(n):
         dist[better] = d_[better]
         arc[better] = s0 + t_[better] * L_
         if tol is not None:
-            tol[better] = stair_spread(b_[0] - a_[0], b_[1] - a_[1]) / 2 + g
+            tol[better] = _pairs.stair_spread(cfg, b_[0] - a_[0], b_[1] - a_[1]) / 2 + g
         s0 += L_
     band = dist <= BAND
     bad = {L: np.zeros(X.shape, bool) for L in ('F.Cu', 'B.Cu')}

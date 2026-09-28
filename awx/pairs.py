@@ -130,6 +130,25 @@ def turn_straight_steps(cfg) -> int:
     return int(math.ceil(cfg.min_turning_radius / cfg.grid_step))
 
 
+def stair_spread(cfg, dx: float, dy: float) -> float:
+    """How far apart, across the heading (dx, dy), the corners of the SMALLEST staircase the pair router can lay along
+    it stand: runs on the two router headings either side, each at least turn_straight_steps grid steps long (a
+    diagonal step a cell each way) -- 0 on a router heading. A pair planned at a slant cannot keep nearer its line than
+    half this. The router's rules are the same under the board's mirrors and under x and y swapped, so the heading
+    folds to within 45 degrees of an axis: a line 10 degrees off vertical is one 10 degrees off horizontal."""
+    a = math.atan2(abs(dy), abs(dx))                # 0 .. 90 degrees
+    a = min(a, math.pi / 2 - a)                     # 0 .. 45: off the nearer axis
+    if a < 1e-9 or math.pi / 4 - a < 1e-9:
+        return 0.0
+    t = math.tan(a)                                 # the line's slope off that axis: D / (H + D)
+    R = turn_straight_steps(cfg) * cfg.grid_step
+    if t <= 0.5:                                    # a run along the axis H, then a diagonal D across and D along
+        D = R; H = D * (1 - t) / t
+    else:
+        H = R; D = H * t / (1 - t)
+    return H * D / (H + D) * math.cos(a)
+
+
 def via_straight(cfg, u) -> float:
     """The straight run (mm) via_straight_steps asks for along the direction u: a step is a grid cell along
     the axis u runs nearest, so its length is the grid step over max(|ux|, |uy|)."""
