@@ -519,6 +519,38 @@ def test_the_decap_rung_skips_a_locked_cap_and_reverts_a_growing_overlap():
           "is reverted")
 
 
+def test_the_decap_rung_does_not_call_leaving_the_radius_a_fix():
+    """Past the decap search radius `decap_distance` (error) becomes
+    `decap_ungraded` (warn); the rung must read that as still open, not as
+    cleared (round-2 verifier: tigard C18). Injected: while C2 is away from
+    its input pose, the grade reports it ungraded instead of too far."""
+    real = fp.PoseGrader.violations
+    with tempfile.TemporaryDirectory() as td:
+        intent, src = _splitflap3(td)
+        home = parse_kicad_pcb(src).footprints['C2']
+
+        def ungraded_when_moved(self, *a, **kw):
+            out = real(self, *a, **kw)
+            p = (kw.get('poses') or {}).get('C2')
+            here = p or (self.state.parts['C2'].x, self.state.parts['C2'].y)
+            if abs(here[0] - home.x) + abs(here[1] - home.y) <= 1e-6:
+                return out
+            out = [v for v in out
+                   if not (v.rule == 'decap_distance' and v.ref == 'C2')]
+            return out + [fp.Violation('decap_ungraded', fp.WARN,
+                                       'injected', ref='C2')]
+        fp.PoseGrader.violations = ungraded_when_moved
+        try:
+            on = seeder.repair_placement(
+                parse_kicad_pcb(src), src, intent, group_sources=SOURCES,
+                clearance=CLEARANCE, repair_decaps=True)
+        finally:
+            fp.PoseGrader.violations = real
+        row = on['decap_rung']['C2']['tried'][0]
+        assert row['result'] == 'reverted' and row['still'], row
+    print("  PASS: C2 walked out of the radius is reverted, not 'seated'")
+
+
 def test_two_caps_on_two_pins_of_one_ic_do_not_block_each_other():
     """Every uncovered pin of one IC shares ONE claim, so the rung must ask
     about the FINDING (its pin), or a cap that clears pin 1 reads as failing
@@ -656,6 +688,7 @@ TESTS = [
     test_the_decap_rung_seats_a_cap_and_refuses_a_disproportionate_move,
     test_the_decap_rung_reverts_a_seat_that_adds_a_finding,
     test_the_decap_rung_skips_a_locked_cap_and_reverts_a_growing_overlap,
+    test_the_decap_rung_does_not_call_leaving_the_radius_a_fix,
     test_two_caps_on_two_pins_of_one_ic_do_not_block_each_other,
     test_cli_repair_decaps_needs_repair_and_reports_the_rung,
 ]

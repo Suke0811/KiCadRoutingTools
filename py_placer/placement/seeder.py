@@ -5528,6 +5528,15 @@ def _decap_target(state, pcb_data, cap: str, ic: str, pad_number=None):
                    key=lambda nid: (len(state.net_refs[nid]), nid),
                    default=None)
         pads = [p for p in fp.pads if rail is not None and p.net_id == rail]
+        if not pads:
+            # The cap's smallest net is not on this IC (watchy C14: its
+            # smallest net is an LED's, and it decouples U1 on +3V3): aim at
+            # the smallest net the two DO share -- the grade decides.
+            shared = sorted((len(state.net_refs.get(p.net_id, ())), p.net_id)
+                            for p in fp.pads if p.net_id in part.nets
+                            and len(state.net_refs.get(p.net_id, ())) >= 2)
+            if shared:
+                pads = [p for p in fp.pads if p.net_id == shared[0][1]]
     if not pads:
         return None
     best = min(pads, key=lambda p: (math.hypot(p.global_x - part.x,
@@ -5633,7 +5642,15 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
             if (isinstance(was, (int, float)) and isinstance(now, (int, float))
                     and now > was + (0 if isinstance(now, int) else _eps)):
                 added.append(f'legality.{key}')
-        still = claim in findings_of(after)
+        # Past the decap search radius the finding is not cleared, it stops
+        # being GRADED: `decap_distance` (error) becomes `decap_ungraded`
+        # (warn), which `findings_of` does not read. Still open, as the
+        # honesty re-grade already says (round-2 verifier: tigard C18 moved
+        # 0.85mm to 5.21mm from U3 and read "cleared").
+        still = (claim in findings_of(after)
+                 or (claim[0] == 'decap_distance'
+                     and any(v.rule == 'decap_ungraded' and v.ref == cap
+                             for v in after)))
         d = math.hypot(part.x - ox, part.y - oy)
         # The ordinary repair's proportion rule, in the violation's own
         # currency: a cap 0.125mm past its limit is not moved 9.9mm to fix

@@ -149,8 +149,14 @@ ROWS = [
     # The rung asks the CLAIM whether its pin is fixed: two caps on two pins
     # of one IC revert each other.
     ('the-rung-asks-the-claim-not-the-pin', 's',
-     "            tasks.append((str(cap), str(ic), pad, finding_key(v),\n",
-     "            tasks.append((str(cap), str(ic), pad, _fp.violation_claim(v) + ('', ''),\n",
+     "        still = (claim in findings_of(after)\n",
+     "        still = (claim[:4] in {k[:4] for k in findings_of(after)}\n",
+     (T1066,), 'KILLED'),
+
+    # Leaving the decap search radius reads as the rung's fix.
+    ('the-rung-calls-leaving-the-radius-a-fix', 's',
+     "                 or (claim[0] == 'decap_distance'\n",
+     "                 or (False\n",
      (T1066,), 'KILLED'),
 
     # A seat that grows the courtyard overlap is kept.
