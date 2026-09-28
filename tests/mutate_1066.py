@@ -119,6 +119,33 @@ ROWS = [
      "    return _fp.violation_claim(v) + ('', '')\n",
      (T1066,), 'KILLED'),
 
+    # ---- (b) the decap rung, opt-in ----------------------------------------
+    # On by default.
+    ('the-rung-defaults-on', 's',
+     "                     repair_decaps: bool = False) -> Dict:\n",
+     "                     repair_decaps: bool = True) -> Dict:\n",
+     (T1066,), 'KILLED'),
+
+    # The rung moves the IC, not the cap.
+    ('the-rung-moves-the-ic', 's',
+     "            cap, ic, pad = v.ref, m.get('ic'), None\n",
+     "            cap, ic, pad = m.get('ic'), v.ref, None\n",
+     (T1066,), 'KILLED'),
+
+    # A fixing pose that adds a finding elsewhere is kept.
+    ('the-rung-ignores-what-it-adds', 's',
+     "        if added or still:\n",
+     "        if still:\n",
+     (T1066,), 'KILLED'),
+
+    # No proportion budget: a cap 0.96mm past its limit moves 12.9mm.
+    ('the-rung-has-no-proportion', 's',
+     "        if d > budget:\n"
+     "            state.apply_move(cap, ox, oy, orot)\n",
+     "        if False:\n"
+     "            state.apply_move(cap, ox, oy, orot)\n",
+     (T1066,), 'KILLED'),
+
     # The refs behind the count never reach JSON_SUMMARY.
     ('unresolved-refs-not-written', 'p',
      "                'unresolved_refs': _unres,\n",
