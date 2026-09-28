@@ -25,6 +25,9 @@ import numpy as np
 from scipy.optimize import linprog
 from scipy.sparse import coo_matrix, csr_matrix, hstack
 from types import SimpleNamespace
+import detmath
+if __name__ == '__main__':
+    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 import whole_ctx
 import whole_frame
 import braid as bd
@@ -49,7 +52,7 @@ LEN_T = [0.5, -0.5, 1.0, -1.0, 2.0, -2.0, 4.0, -4.0]   # the slopes a column's a
 # the tangent cuts under-state sqrt(1 + k^2) between their tangent points: the SLOPED ones are scaled by the set's own
 # worst ratio (the flat cut stays exact, so a flat pair is not over-held)
 _kk = np.linspace(0.0, K_MAX, 4001)
-TSCALE = float(1.0 / min(np.max([(1 + t_ * _kk) / math.sqrt(1 + t_ * t_) for t_ in TANG], axis=0) / np.sqrt(1 + _kk ** 2)))
+TSCALE = float(1.0 / min(np.max([(1 + t_ * _kk) / math.sqrt(1 + t_ * t_) for t_ in TANG], axis=0) / np.sqrt(1 + _kk * _kk)))
 F = lambda x: 1 if x == 'B.Cu' else 0
 LNAME = ('F.Cu', 'B.Cu')
 log = lambda *a: print(*a, flush=True)
@@ -497,7 +500,7 @@ def build_and_solve(sides, prev=None):
                             combos.append([x for x in (sa_[min(i_, len(sa_) - 1)] if sa_ else None,
                                                        sb_[min(i_, len(sb_) - 1)] if sb_ else None) if x])
                     for t0_ in (TANG if prev is not None else [0.0]):
-                        al, be = 1 / math.sqrt(1 + t0_ ** 2), t0_ / math.sqrt(1 + t0_ ** 2)
+                        al, be = 1 / math.sqrt(1 + t0_ * t0_), t0_ / math.sqrt(1 + t0_ * t0_)
                         if t0_:
                             al, be = al * TSCALE, be * TSCALE
                         for sl in (combos if be else [[]]):
@@ -581,7 +584,7 @@ def build_and_solve(sides, prev=None):
                     le([(jb_, sg), (jm, -sg)], -need, ('via', f, k, n, nb))
                     for (j1, j0) in segs_:
                         for t0_, sc_ in tangents([(j1, j0)]):
-                            al, be = sc_ / math.sqrt(1 + t0_ ** 2), sc_ * t0_ / math.sqrt(1 + t0_ ** 2)
+                            al, be = sc_ / math.sqrt(1 + t0_ * t0_), sc_ * t0_ / math.sqrt(1 + t0_ * t0_)
                             terms = [(jb_, sg), (jm, -sg), (j1, sg * need * be / G), (j0, -sg * need * be / G)]
                             le(terms, -need * al, ('via', f, k, n, nb))
     for i, (f, n, cu, kc) in enumerate(vias):
@@ -589,7 +592,7 @@ def build_and_solve(sides, prev=None):
             ds = abs(FR[f]['s'](cu) - FR[f2]['s'](cu2)) if f2 == f else math.inf
             if f2 != f or m_ == n or ds >= VIA_VV:
                 continue
-            h = math.sqrt(VIA_VV ** 2 - ds ** 2) + VX[n] + VX[m_]     # a pair's barrels stand VX across
+            h = math.sqrt(VIA_VV * VIA_VV - ds * ds) + VX[n] + VX[m_]     # a pair's barrels stand VX across
             km = (kc + kc2) // 2
             od = orders.get((f, km), [])
             if n not in od or m_ not in od:
@@ -753,6 +756,7 @@ def build_and_solve(sides, prev=None):
             le([(j, -1.0), (e, -1.0)], -(hi_ + CL))
     ncol = nv + len(extra)
     cost = np.zeros(ncol); cost[nv:] = extra
+    cost += detmath.lp_tie_break(ncol)             # one optimum, not a face: the same plan on every machine
     Aub = coo_matrix((vals, (rows, cols)), shape=(len(rhs), ncol)).tocsr()
     bnd = [(-2 * _SPAN, 2 * _SPAN)] * nv + [(0.0, None)] * len(extra)
     for j, b in bounds.items():
@@ -798,7 +802,8 @@ def lp_by_dual(c, A, b, bnd):
     if res.status == 0:
         x[plain] = -res.ineqlin.marginals
         x[bj] = -res.eqlin.marginals
-    return SimpleNamespace(status=res.status, message=res.message, x=x, fun=float(c @ x))
+    x = detmath.lp_round(x)
+    return SimpleNamespace(status=res.status, message=res.message, x=x, fun=math.fsum(c * x))
 
 
 ROOMLESS = {}

@@ -2510,7 +2510,7 @@ class Corridor:
             out = np.full(len(S), -np.inf)
             n = int(R / ds)
             for t in range(-n, n + 1):
-                lift = math.sqrt(max(R * R - (t * ds) ** 2, 0.0))
+                lift = math.sqrt(max(R * R - (t * ds) * (t * ds), 0.0))
                 sh = np.full(len(S), np.nan)
                 if t >= 0:
                     sh[:len(S) - t] = uj[t:]
@@ -6725,7 +6725,7 @@ def setup(board, names, dest, log, plan=None, pairs=False):
     ctx.pair_ends = {}
     for _b, (_pn, _nn) in list(_pairs_here.items()):
         (sp_, tp_, _), (sn_, tn_, _) = ends[_pn], ends[_nn]
-        _ds, _dt = ts.d2(sp_, sn_) ** 0.5, ts.d2(tp_, tn_) ** 0.5
+        _ds, _dt = math.sqrt(ts.d2(sp_, sn_)), math.sqrt(ts.d2(tp_, tn_))
         # the limit: two lane pitches, or 1.3 of the destination's ball
         # pitch -- a harmonised pair's tips stand one ball apart
         _dg = em.grid_of(pcb.footprints[dest])
@@ -7110,7 +7110,7 @@ def _write_layer_jumps(board_path, names):
         for (x, y), lays in pts.items():
             if len(lays) < 2:
                 continue
-            if not any((hx - x) ** 2 + (hy - y) ** 2 < 0.04 for hx, hy in holes.get(n, ())):
+            if not any((hx - x) * (hx - x) + (hy - y) * (hy - y) < 0.04 for hx, hy in holes.get(n, ())):
                 out.append((n, x, y))
     return out
 

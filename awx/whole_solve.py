@@ -22,6 +22,9 @@ the vias are proved (the plan's vias no more than the bound's whole vias) or, on
 (SOLVE_STALL of its own model reductions in a row with no better plan or bound: events of the search, never a clock). Only a plan PROVED optimal in its vias is written;
 one the search could not prove is no plan."""
 import sys, os, re, itertools, collections, json, math, hashlib
+import detmath
+if __name__ == '__main__':
+    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 import whole_ctx
 import whole_frame
 from ortools.sat.python import cp_model
@@ -256,7 +259,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
     # (the mover / stayer model) every crossing has a MOVER (the steep lane, crossing over) and a STAYER; along a stayer
     # its crossings are P_STAY apart in s, along a mover PITCH / sqrt(1 + K_SWEEP^2) (a sweep): the mover chosen by the solve
     ivs_of = collections.defaultdict(list)
-    w_move, w_stay = max(1, QU(PITCH / math.sqrt(1 + K_SWEEP ** 2))), max(1, QU(P_STAY))
+    w_move, w_stay = max(1, QU(PITCH / math.sqrt(1 + K_SWEEP * K_SWEEP))), max(1, QU(P_STAY))
     for key in t:
         a, b = key
         mv = m.NewBoolVar('')                           # True: a moves, b stays
@@ -379,7 +382,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
     LB = 2 * PITCH                         # a history bin: two lane pitches of route
     R_HOT = 2 * VNEED                      # a finding marks the bins within a via's room of it
     SC = 1000.0                            # objective units per mm^2 of copper area
-    A_V, A_X = 2 * (2 * VNEED) ** 2, PITCH * PITCH
+    A_V, A_X = 2 * (2 * VNEED) * (2 * VNEED), PITCH * PITCH
     # a frame's bins from its own origin: the trunk's from H0, a ring's from where it leaves the trunk (Hk)
     origin = lambda fr: H0 if fr == 'T' else Hk[fr]
     kof = lambda fr, u: int(math.floor((u - origin(fr)) / LB + 1e-9))

@@ -29,6 +29,10 @@ import shutil
 import subprocess
 import sys
 
+import detmath
+if __name__ == '__main__':
+    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'py_router'))
 sys.path.insert(0, HERE)
@@ -248,8 +252,8 @@ def plan_state(pcb, names, banned=frozenset()):
         nid, net = byname[nm]
         fp = pcb.footprints[ends[nm][2]]
         bx, by = ends[nm][1]
-        pad = min(fp.pads, key=lambda p: (p.global_x - bx) ** 2
-                  + (p.global_y - by) ** 2)
+        pad = min(fp.pads, key=lambda p: (p.global_x - bx) * (p.global_x - bx)
+                  + (p.global_y - by) * (p.global_y - by))
         dst_pad[nm] = pad
         moves = dedupe_climbs(menu(pad, em.grid_of(fp), nid, climb=DST_CLIMB,
                                    street=DST_STREET, street_dirs=(toward,)))

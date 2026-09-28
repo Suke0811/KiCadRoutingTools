@@ -34,6 +34,9 @@ import sys, json, math, collections
 import numpy as np
 from scipy.optimize import linprog
 
+import detmath
+if __name__ == '__main__':
+    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 import whole_ctx
 import plan_audit as pa
 import pairs as _pairs
@@ -382,7 +385,7 @@ def static_seg(p0, p1, L, own, cut=math.inf, pair=False):
     box stands further than cut (and a pad's buffer) from the segment's is further still, and left out"""
     out = []
     sx0, sy0, sx1, sy1 = min(p0[0], p1[0]), min(p0[1], p1[1]), max(p0[0], p1[0]), max(p0[1], p1[1])
-    cut2 = (cut + 1e-9) ** 2
+    cut2 = (cut + 1e-9) * (cut + 1e-9)
 
     def far(bx0, by0, bx1, by1, grow):
         gx, gy = max(0.0, bx0 - grow - sx1, sx0 - bx1 - grow), max(0.0, by0 - grow - sy1, sy0 - by1 - grow)
@@ -582,7 +585,7 @@ def gather():
                 need = BLOCK + MIT[n][i] + MIT[m][j]
                 bx0, by0, bx1, by1 = BOX[m][j]
                 gx, gy = max(0.0, bx0 - ax1, ax0 - bx1), max(0.0, by0 - ay1, ay0 - by1)
-                if gx * gx + gy * gy > (need + MARGIN + 1e-9) ** 2:
+                if gx * gx + gy * gy > (need + MARGIN + 1e-9) * (need + MARGIN + 1e-9):
                     continue
                 Y = LANES[m]['X']
                 d, s, t = seg_seg(X[i], X[i + 1], Y[j], Y[j + 1])
@@ -810,11 +813,12 @@ def solve_round(rows, trust):
             ri.append(r_); ci.append(c); vv.append(v)
         b.append(rhs)
     Aub = coo_matrix((vv, (ri, ci)), shape=(len(rowsA), cols)).tocsr()
-    res = linprog(np.array(cost), A_ub=Aub, b_ub=np.array(b), bounds=bounds, method='highs')
+    # one optimum, not a face, and without the solver's last bits: the same polish on every machine (detmath)
+    res = linprog(np.array(cost) + detmath.lp_tie_break(len(cost)), A_ub=Aub, b_ub=np.array(b), bounds=bounds, method='highs')
     if res.status != 0:
         log(f'  LP status {res.status}: {res.message}')
         return None
-    x = res.x
+    x = detmath.lp_round(res.x)
     for (n, i), k in idx.items():
         LANES[n]['X'][i] += np.array([x[2 * k], x[2 * k + 1]])
     paid = [(float(x[sl]), kind, lab) for sl, kind, lab in slack_of if x[sl] > 1e-5]

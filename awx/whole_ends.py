@@ -550,7 +550,8 @@ class Ends:
         cong = X_TRUNK * sum(xT.values()) / 2
         for l_ in lanes:
             load = (xT[l_] * _LANE_PITCH + (chg[l_] if dcls[l_] == 'W' else 0) * _CHG_ROOM) / gT
-            cong += npair[l_] * W_CONG * max(0.0, load - LOAD_OK) ** 2
+            over_ = max(0.0, load - LOAD_OK)
+            cong += npair[l_] * W_CONG * over_ * over_
         if exact:
             # the route EXACT on the orders (Ends.exact_route): what the estimate above approximates
             xr = self.exact_route(state, lanes, kp, kd, tl, dl, sv, xo, npair)

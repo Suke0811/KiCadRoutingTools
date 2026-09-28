@@ -50,6 +50,9 @@ import shutil
 import sys
 
 import numpy as np
+import detmath
+if __name__ == '__main__':
+    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -73,7 +76,7 @@ def along(w, P):
     at = np.zeros(len(P))
     for i in range(len(seg)):
         t = np.clip(((P[:, 0] - w[i, 0]) * seg[i, 0] + (P[:, 1] - w[i, 1]) * seg[i, 1])
-                    / max(L[i] ** 2, 1e-12), 0, 1)
+                    / max(L[i] * L[i], 1e-12), 0, 1)
         d = np.hypot(w[i, 0] + t * seg[i, 0] - P[:, 0], w[i, 1] + t * seg[i, 1] - P[:, 1])
         m = d < best
         best[m] = d[m]

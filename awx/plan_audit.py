@@ -185,7 +185,7 @@ def _dist_allow(P, segs, L):
     for i in range(0, len(A_), 256):
         a, b = A_[i:i + 256], B_[i:i + 256]
         d = b - a
-        l2 = np.maximum((d ** 2).sum(1), 1e-12)
+        l2 = np.maximum((d * d).sum(1), 1e-12)
         t = np.clip(((P[:, None, :] - a[None]) * d[None]).sum(2) / l2[None], 0, 1)
         dist = np.hypot(*(P[:, None, :] - (a[None] + t[..., None] * d[None])).transpose(2, 0, 1))
         al = a0_[i:i + 256][None] + (a1_[i:i + 256] - a0_[i:i + 256])[None] * t
@@ -209,7 +209,7 @@ def _dist_to_segs(P, segs, L):
     for i in range(0, len(A_), 256):
         a, b = A_[i:i + 256], B_[i:i + 256]
         d = b - a
-        l2 = np.maximum((d ** 2).sum(1), 1e-12)
+        l2 = np.maximum((d * d).sum(1), 1e-12)
         t = np.clip(((P[:, None, :] - a[None]) * d[None]).sum(2) / l2[None], 0, 1)
         proj = a[None] + t[..., None] * d[None]
         best = np.minimum(best, np.hypot(*(P[:, None, :] - proj).transpose(2, 0, 1)).min(1))
@@ -432,7 +432,7 @@ def _arc_at(pieces, s):
     acc, best = 0.0, (math.inf, 0.0)
     for p, q, _L in pieces:
         ln = math.hypot(q[0] - p[0], q[1] - p[1])
-        t = 0.0 if ln < 1e-12 else max(0.0, min(1.0, ((s[0] - p[0]) * (q[0] - p[0]) + (s[1] - p[1]) * (q[1] - p[1])) / ln ** 2))
+        t = 0.0 if ln < 1e-12 else max(0.0, min(1.0, ((s[0] - p[0]) * (q[0] - p[0]) + (s[1] - p[1]) * (q[1] - p[1])) / (ln * ln)))
         d = math.hypot(p[0] + t * (q[0] - p[0]) - s[0], p[1] + t * (q[1] - p[1]) - s[1])
         if d < best[0]:
             best = (d, acc + t * ln)

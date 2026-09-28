@@ -201,8 +201,8 @@ def full_move(m):
 
 def snap_dir(dx, dy):
     h = math.hypot(dx, dy) or 1.0
-    return min(DIRS, key=lambda k: (DIRS[k][0] - dx / h) ** 2
-               + (DIRS[k][1] - dy / h) ** 2)
+    return min(DIRS, key=lambda k: (DIRS[k][0] - dx / h) * (DIRS[k][0] - dx / h)
+               + (DIRS[k][1] - dy / h) * (DIRS[k][1] - dy / h))
 
 
 def measure_tooth(pcb, nm, pad, byname, dest_ref=None, which=None):

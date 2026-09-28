@@ -302,7 +302,8 @@ def _segs_hit(A0, A1, caps, tol=EPS):
                     np.minimum(_pt_seg_d2_pairs(b0, a0, a1)[0], _pt_seg_d2_pairs(b1, a0, a1)[0]))
     x = ((_orient(a0, a1, b0) * _orient(a0, a1, b1) < 0)
          & (_orient(b0, b1, a0) * _orient(b0, b1, a1) < 0))
-    hit[i[x | (d2 < (M[j, 4] - tol) ** 2)]] = True
+    r_ = M[j, 4] - tol
+    hit[i[x | (d2 < r_ * r_)]] = True
     return hit
 
 

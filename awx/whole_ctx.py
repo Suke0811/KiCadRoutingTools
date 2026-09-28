@@ -148,7 +148,9 @@ def plan(quiet=True):
     import stage_cache as sc
     if not sc.enabled():
         return _guard(_plan(board, nets, dest, quiet), nets, dest)
-    key = hashlib.sha256(json.dumps({'py': [sys.version, sys.executable], 'env': sc.env_key(STAGE_VARS)},
+    import detmath
+    key = hashlib.sha256(json.dumps({'py': [sys.version, sys.executable], 'env': sc.env_key(STAGE_VARS),
+                                     'det': detmath.MEMO_TAG if detmath.installed() else ''},
                                     sort_keys=True).encode()).hexdigest()[:24]
     pk, mt = os.path.join(CTX_CACHE, key + '.pkl'), os.path.join(CTX_CACHE, key + '.json')
     if os.path.isfile(mt) and os.path.isfile(pk) and sc.still(json.load(open(mt))):

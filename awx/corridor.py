@@ -380,7 +380,7 @@ class Spine:
             tc = np.clip(t, 0.0, Lk)
             fx = px + tc * dx
             fy = py + tc * dy
-            d2 = (X - fx) ** 2 + (Y - fy) ** 2
+            d2 = (X - fx) * (X - fx) + (Y - fy) * (Y - fy)
             o = (X - px) * nx + (Y - py) * ny
             better = d2 < best_d2 - 1e-12
             best_d2 = np.where(better, d2, best_d2)

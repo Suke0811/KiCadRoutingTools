@@ -46,7 +46,7 @@ def violations(pts, obs, freeze=ts.FREEZE):
     a0, b0 = pts[0], pts[-1]
 
     def frozen(p):
-        return ts.d2(p, a0) < freeze ** 2 or ts.d2(p, b0) < freeze ** 2
+        return ts.d2(p, a0) < freeze * freeze or ts.d2(p, b0) < freeze * freeze
     for i in range(len(pts) - 1):
         a, b = pts[i], pts[i + 1]
         L = math.hypot(b[0] - a[0], b[1] - a[1])
@@ -100,7 +100,7 @@ def classify(pts, obs, viol):
     for q, dq in viol:
         if dq <= TOL:
             out['shallow'] += 1
-        elif ts.d2(q, a0) < END_ZONE ** 2 or ts.d2(q, b0) < END_ZONE ** 2:
+        elif ts.d2(q, a0) < END_ZONE * END_ZONE or ts.d2(q, b0) < END_ZONE * END_ZONE:
             out['end_zone'] += 1
         else:
             w = offender(obs, q)

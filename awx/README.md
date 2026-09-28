@@ -113,7 +113,9 @@ in jumps); the CP-SAT plan cannot use them, the route-judged descent can.
 different measurement from local ones.** CP-SAT stops the plan solve at
 platform-dependent feasible points, so a chain on Modal starts from a
 different plan than the same chain here. Compare cloud to cloud, local
-to local.
+to local. (This is the braid's plan solve. The whole route is the same on both
+machines up to K35, and each machine repeats itself past it: *Every machine,
+and the same answer on each*, under the whole-route plan.)
 
 **The source stub trim and the served-under-the-part rule** (2026-09-19,
 the second pass over the zynq article). Two things the article asked for,
@@ -1225,6 +1227,52 @@ start of the fanout to the checked route: 45 s, 160 s, 278 s, 596 s and
 heaviest processes at K35 are the two snaps (the pairs' 515 MB, the
 singles' 435 MB); the pairs' snap, 97 s, is the longest stage.
 
+**Every machine, and the same answer on each** (`detmath.py`). The
+standard: every rung routes on every machine, no solve hangs, as fast as it
+can, and a machine type gives the same board on every run. A Mac and a Linux
+box (Modal, `modal_whole.py::stage` running `whole_chain.sh`) go further up
+to K35 -- the same bits stage by stage (fanout, solve, geometry, polish,
+snaps, route) and the same board, digest for digest, cold with every cache
+off -- once two causes of difference were fixed at the root; past it, a
+third remains, by choice (below).
+
+- *The C libraries round differently.* Apple's libm and glibc disagree in
+  the last bit on sin, cos, tan, atan2, asin, acos, exp, log and pow --
+  including `x ** 2` on a Python float, which is the C library's pow -- and
+  so do `np.hypot`, numpy's transcendental loops, `np.interp`, long dot
+  products (Accelerate against OpenBLAS) and `np.linalg`. `+ - * / sqrt`,
+  `math.hypot`, numpy's arithmetic and sums agree. `detmath` computes the
+  transcendental functions from those alone (fdlibm's algorithms, the ones
+  Java's StrictMath uses for this), within 1-3 ulp of the platform's, and
+  every chain stage run as a script calls `detmath.install()` before it
+  imports the chain -- math's and numpy's functions are detmath's for the
+  process -- and the chain writes `x * x`. At K28 the first difference was
+  the trunk's length, one bit, through `np.hypot`, which the chain calls on
+  1.4 billion elements a run (now `sqrt(a*a + b*b)`, vectorised); the
+  transcendental functions are called 200 thousand times, in pure Python.
+  A cold K28 took 122 s on this laptop before and after.
+- *An LP with a face of optima.* Given the same model to the bit, HiGHS on
+  the two machines returned different optima (its own arithmetic rounds
+  differently): the geometry's pass-1 LP has many, and pass 2 is built from
+  pass 1. Both LPs (the geometry, the polish) now carry `lp_tie_break` -- a
+  fixed cost per column, 1e-4 times 0.5..1.5, below any real cost's step and
+  above the solver's tolerances -- so the optimum is one point, and
+  `lp_round` takes the solver's last bits off (a 2^-24 grid). The same
+  change ended a stall: zynq K18's pass-2 LP ran for half an hour in the
+  interior point without terminating on its face of optima; it now solves
+  in 11 s, and the rung routes (18 of 18, connected, DRC-clean).
+
+The caches key on it: the taut memo and the planned bench (`whole_ctx`)
+add detmath's version to their keys, so a string made with the platform's
+functions is never served to a run with detmath's (the probe memo and the
+stage cache key on the code already). The third is CP-SAT's, and the
+standard accepts it: on a byte-identical model both machines prove the same
+optimum (K41: 36 vias) but keep different plans among the many at it (30 of
+38 lanes in another order), each the same run to run on its own machine.
+`tests/test_622_detmath.py` records the functions' bits as one digest,
+checked wherever the suite runs, and holds every stage the drivers run to
+installing first and every module the chain loads to no float power.
+
 ## The chain's other pieces
 
 **The pages-first planner** (`pages_first.py`, `PLAN_PAGES=1`). One CP-SAT
@@ -1289,6 +1337,14 @@ shared and are not.
 - **A single K is not a result.** Judge on K28, K35, K41 and K51
   together; run-to-run spread on one board is 2-3 vias.
 - **Quote the arm with the number.**
+- **A rung that routes on one machine and not on another is a defect**,
+  and so is a run that does not repeat itself on its own machine. The
+  copper may differ between machines past K35 (CP-SAT's choice among
+  equal plans); below it the digests agree, and a difference there is a
+  stage that did not install `detmath`, a float raised to a power or an LP
+  without its tie-break -- found by comparing the stages' outputs
+  (`modal_whole.py` brings every one back) in the order the chain writes
+  them: the first that differs names the stage.
 - **There are no clocks.** Every budget is in work; a clock budget makes
   a slower machine answer differently, not later (two identical cloud
   runs of one baseline came back 72 and 58 vias).
@@ -1408,6 +1464,7 @@ is byte-inert on the H3 bench (K28: 34 vias, 786 segments, as recorded).*
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a whole-route plan installed and audited, gated (complete and clean), linted, drawn; the bench they share |
 | `whole_frame.py`, `whole_ends.py`, `whole_feedback.py` | the whole route's own frame of a bench; its own choice of ends (the fanout's `PLAN_JUDGE=ends`); the audits' findings at the ends, back to the fanout |
 | `stage_cache.py` | a whole-route stage run, or restored when its script, arguments, environment and every file it read are unchanged |
+| `detmath.py` | the same bits on every machine: fdlibm's functions, installed by every chain stage; the LPs' tie-break and rounding |
 | `whole_chain.sh`, `modal_whole.py` | one rung of the whole route end to end on our own ends -- fanout, solve, loop, route, checks, and the feedback rounds -- graded in one line (`WHOLE K=..`); the ladder in the cloud, one container per rung, and one command replayed there on the laptop's files at their own paths (`modal_whole.py::stage`) |
 | `wall_probe.py`, `pinch_gate.py`, `judge_gate.py`, `floor_survey.py`, `ledger_cal.py`, `cut_ledger.py`, `rule_table.py`, `solve_curve.py`, `modal_curve.py` | probes and gates: a lane's walls, the braid's refusals, the plan judge, the floor per net, a corridor's cut, the length rule over arms, the CP-SAT's convergence |
 | `modal_k.py`, `arms.example.json`, `arms.rec51.json` | cloud arms, one container per (arm, K); `return_board`, `return_files` bring artifacts back |

@@ -9,6 +9,10 @@ this one."""
 import os
 import sys
 
+import detmath
+if __name__ == '__main__':
+    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 BENCH = os.path.join(HERE, 'fb_t2q_fresh.kicad_pcb')
 

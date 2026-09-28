@@ -42,7 +42,8 @@ STEP = 0.12                          # densify step (mm)
 
 
 def d2(a, b):
-    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+    dx, dy = a[0] - b[0], a[1] - b[1]
+    return dx * dx + dy * dy
 
 
 def seg_pt_dist(a, b, p):
@@ -386,7 +387,7 @@ def relax(src, dst, obs, rounds=400):
         moved = 0.0
         for i in range(1, len(pts) - 1):
             p = pts[i]
-            if d2(p, ends[0]) < FREEZE ** 2 or d2(p, ends[1]) < FREEZE ** 2:
+            if d2(p, ends[0]) < FREEZE * FREEZE or d2(p, ends[1]) < FREEZE * FREEZE:
                 continue
             q = (0.5 * p[0] + 0.25 * pts[i - 1][0] + 0.25 * pts[i + 1][0],
                  0.5 * p[1] + 0.25 * pts[i - 1][1] + 0.25 * pts[i + 1][1])

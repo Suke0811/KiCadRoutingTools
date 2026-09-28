@@ -290,6 +290,7 @@ def taut_paths(nets: Sequence[str],
                log=None) -> Dict[str, List[Pt]]:
     """One taut string per net, tooth -> ball, avoiding static copper."""
     import taut_clean as tc
+    import detmath
     out = {}
     dirty = False
     # The batched, convergent relaxation (taut_fast) is the default since
@@ -301,6 +302,7 @@ def taut_paths(nets: Sequence[str],
     # per-string relaxation reachable for comparison.
     fast = os.environ.get('TAUT_FAST', '1') != '0'
     tag = '#fast' if fast else ''
+    tag += detmath.MEMO_TAG if detmath.installed() else ''     # detmath's strings are not the platform's
     if fast:
         import taut_fast as tf
         todo = []

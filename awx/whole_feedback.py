@@ -22,9 +22,13 @@ from the board beside the sidecar). A lane is named as whole_ends names it: a pa
 never by a leg."""
 import itertools
 import json
+import math
 import os
 import sys
 
+import detmath
+if __name__ == '__main__':
+    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 import braid as bd
 import pairs as _pairs
 
@@ -91,7 +95,7 @@ def near(k, x, y):
     dy = max(b[1] - y, 0.0, y - b[3])
     if dx == 0.0 and dy > 0.0:
         return dy <= side_reach(k, 'N' if y < b[1] else 'S')
-    return (dx * dx + dy * dy) ** 0.5 <= FRONT
+    return math.sqrt(dx * dx + dy * dy) <= FRONT
 
 
 def end_of(lane, k):
