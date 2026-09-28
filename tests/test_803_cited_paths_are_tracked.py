@@ -46,7 +46,8 @@ issue rather than to #803's:
     authority for its p-values -- the same defect, still shipping;
   * `py_tools/board_brief.py` cites `.claude/skills/plan-pcb-routing/
     references/evidence-map.md`, a directory that does not exist (the file
-    lives under `plan-pcb-placement-and-routing/`).
+    lived under `plan-pcb-placement-and-routing/`, a skill since RETIRED for
+    `pcb-free-agent`, so the citation now resolves nowhere at all).
 
 A citation counts as resolved if it is tracked when read relative to the repo
 root, relative to the CITING FILE's directory (`../tests/stress/RUNBOOK.md`
@@ -71,8 +72,8 @@ RUN_ALL_FAST_OK = True
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: Where an AUTHORITY citation lives: the skills (SKILL.md, references, and the
-#: two drivers) and the docs they point at.
+#: Where an AUTHORITY citation lives: the skills (SKILL.md, references and
+#: scripts) and the docs they point at.
 SEARCH_DIRS = ('.claude/skills', 'docs')
 SEARCH_EXT = ('.md', '.py')
 SKIP_PARTS = ('.claude/worktrees', '__pycache__', 'wk/')
@@ -113,9 +114,10 @@ UNTRACKED_OK = {
 }
 
 #: Below this, the scanner has stopped matching and is reporting a clean tree
-#: indistinguishably from a clean tree. 55 resolve at the commit that added
-#: this gate.
-MIN_RESOLVED = 40
+#: indistinguishably from a clean tree. 55 resolved at the commit that added
+#: this gate; 36 after the staged placement skills (and their reference pages
+#: and drivers, which carried ~20 citations) were retired for pcb-free-agent.
+MIN_RESOLVED = 32
 
 FAILURES = []
 

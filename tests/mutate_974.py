@@ -53,14 +53,10 @@ _ROOT = os.path.dirname(_TESTS)
 
 FLOORPLAN = os.path.join(_ROOT, 'py_placer', 'placement', 'floorplan.py')
 PLACE_SEED = os.path.join(_ROOT, 'py_placer', 'place_seed.py')
-EVIDENCE_MAP = os.path.join(_ROOT, '.claude', 'skills',
-                            'plan-pcb-placement-and-routing', 'references',
-                            'evidence-map.md')
-TARGETS = {'fp': FLOORPLAN, 'ps': PLACE_SEED, 'em': EVIDENCE_MAP}
+TARGETS = {'fp': FLOORPLAN, 'ps': PLACE_SEED}
 
 T974U = os.path.join(_TESTS, 'test_974_connector_requirements.py')
 T974C = os.path.join(_TESTS, 'test_974_place_seed_connector_requirements.py')
-T923 = os.path.join(_TESTS, 'test_923_output_key_claims.py')
 
 #: (name, target, old, new, tests, expect)
 ROWS = [
@@ -255,7 +251,7 @@ ROWS = [
     ('evidence-drops-the-basis', 'fp',
      "_EVIDENCE_ROW_KEYS = ('ref', 'edge', 'overhang_mm', 'overhang_basis',",
      "_EVIDENCE_ROW_KEYS = ('ref', 'edge', 'overhang_mm',",
-     (T974U, T923), 'KILLED'),
+     (T974U,), 'KILLED'),
     ('evidence-row-is-the-whole-grade-row', 'fp',
      "        slim = {key: row.get(key) for key in _EVIDENCE_ROW_KEYS}",
      "        slim = dict(row)",
@@ -339,11 +335,12 @@ ROWS = [
      "_hole_delta)",
      (T974C,), 'KILLED'),
 
-    # ---- the documentation gate --------------------------------------------
-    ('evidence-map-key-misspelt', 'em',
-     "| `connector_requirements.declared_refs` |",
-     "| `connector_requirements.declared_ref` |",
-     (T923,), 'KILLED'),
+    # ---- the documentation gate: RETIRED ---------------------------------
+    # `evidence-map-key-misspelt` mutated the staged combined skill's
+    # references/evidence-map.md, killed by test_923's evidence-map channel.
+    # The page, the channel and test_923's place_seed runs were retired with
+    # that skill for pcb-free-agent; nothing in the remaining skills quotes a
+    # place_seed key, so no doc row can be re-aimed here.
 ]
 
 # Every anchor must match its target exactly once BEFORE anything is

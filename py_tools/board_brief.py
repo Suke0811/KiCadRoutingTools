@@ -16,8 +16,7 @@ answers "where does a W x H part fit at all", the question
 `wk/run19/urchin/probe_space.py` was hand-written to answer and whose output
 became that run's X0 = 46.0.
 
-Two rules inherited from the evidence map
-(.claude/skills/plan-pcb-routing/references/evidence-map.md):
+Two rules inherited from the retired evidence map:
 
     never read a picture on its own -- every render is paired with a number
     that either confirms or contradicts it, and the number wins

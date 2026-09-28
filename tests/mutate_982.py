@@ -68,14 +68,10 @@ _TESTS = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_TESTS)
 
 PLACE_SEED = os.path.join(_ROOT, 'py_placer', 'place_seed.py')
-EVIDENCE_MAP = os.path.join(_ROOT, '.claude', 'skills',
-                            'plan-pcb-placement-and-routing', 'references',
-                            'evidence-map.md')
-TARGETS = {'ps': PLACE_SEED, 'em': EVIDENCE_MAP}
+TARGETS = {'ps': PLACE_SEED}
 
 T982 = os.path.join(_TESTS, 'test_982_unseated_written_pose.py')
 T27S = os.path.join(_TESTS, 'test_run27_seed_gate_shorts.py')
-T923 = os.path.join(_TESTS, 'test_923_output_key_claims.py')
 
 #: (name, target, old, new, tests, expect)
 ROWS = [
@@ -204,11 +200,12 @@ ROWS = [
      "                          _my_pads + _unseated_pads, _hole_delta)",
      (T982, T27S), 'SURVIVED'),
 
-    # ---- the documentation gate ------------------------------------------
-    ('evidence-map-key-misspelt', 'em',
-     "| `pad_conflicts_unseated` / `pad_conflicts_unseated_pairs` |",
-     "| `pad_conflicts_unseated` / `pad_conflicts_unseated_pair` |",
-     (T923,), 'KILLED'),
+    # ---- the documentation gate: RETIRED ---------------------------------
+    # `evidence-map-key-misspelt` mutated the staged combined skill's
+    # references/evidence-map.md, killed by test_923's evidence-map channel.
+    # The page, the channel and test_923's place_seed runs were retired with
+    # that skill for pcb-free-agent; nothing in the remaining skills quotes a
+    # place_seed key, so no doc row can be re-aimed here.
 ]
 
 # Every anchor must match its target exactly once BEFORE anything is

@@ -32,8 +32,10 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS = os.path.join(ROOT, '.claude', 'skills')
-OWNED = ('plan-pcb-placement', 'plan-pcb-routing',
-         'plan-pcb-placement-and-routing')
+#: The staged placement and combined skills were retired for pcb-free-agent,
+#: which inherits the lint: a frequency word standing in for a measurement is
+#: the same defect whichever skill spells it.
+OWNED = ('plan-pcb-routing', 'pcb-free-agent')
 
 FAILURES = []
 
@@ -156,18 +158,8 @@ def main():
     check('no hedging phrase turns an instruction into a suggestion',
           not hedged, '\n        '.join(hedged[:8]))
 
-    print('the gate itself is stated as mandatory')
-    place = open(os.path.join(SKILLS, 'plan-pcb-placement', 'SKILL.md'),
-                 encoding='utf-8').read()
-    route = open(os.path.join(SKILLS, 'plan-pcb-routing', 'SKILL.md'),
-                 encoding='utf-8').read()
-    check('the placement gate says measure first',
-          'measure first, then decide' in (place + route).lower())
-    check('...and says NOT looking is never an answer',
-          'never an answer is not looking' in place.lower()
-          or 'never skip the assessment' in place.lower(), place[:0])
-    check('...and both outcomes are named as outcomes',
-          'measures clean' in place.lower() or 'both clean' in place.lower())
+    # The "measure first, then decide" placement-gate wording was the
+    # retired placement skill's; its checks left with it.
 
     print('and the frontmatter does not pre-decide it')
     for name in OWNED:

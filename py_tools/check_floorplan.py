@@ -883,11 +883,12 @@ def main(argv=None):
     # still has not measured what was never measured.
     if not result.complete:
         # #713 item 5: an ungraded DECLARED channel is not a pass, and the exit
-        # code is what most callers actually branch on -- board_score,
-        # placement_driver and loop_driver all read `errors` or the exit
-        # status, none reads GradeResult.passed. Measured on the tracked
-        # corpus: 5 of 22 boards reported pass:true and exit 0 in the default
-        # emit-then-grade round trip while `overlap_area` was never graded.
+        # code is what most callers actually branch on -- board_score (and
+        # check_complete through it) reads `errors` or the exit status, as the
+        # retired staged drivers did, and none reads GradeResult.passed.
+        # Measured on the tracked corpus: 5 of 22 boards reported pass:true
+        # and exit 0 in the default emit-then-grade round trip while
+        # `overlap_area` was never graded.
         # `--exit-zero` still suppresses the code without lying about `pass`,
         # exactly as it does for violations.
         print(f"  NOT FULLY GRADED: "

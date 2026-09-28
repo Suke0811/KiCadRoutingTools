@@ -35,9 +35,10 @@ one the graders noticed. A row whose anchor does not match EXACTLY ONCE is
 BROKEN, not skipped: an anchor that silently matches nothing reports every
 mutation as killed and is the most flattering possible bug.
 
-PER-ROW TEST LISTS. `test_431_skill_commands.py` is the only gate that can see
-a missing `--quiet` in an emitted command, and it costs ~850 s, so it is named
-by the three rows that need it rather than by every row in its battery.
+PER-ROW TEST LISTS. A row may name its own killers instead of its battery's
+(`None` means the battery's list). The three rows that named
+`test_431_skill_commands.py` for a driver-emitted `--quiet` left with the
+loop driver when the staged skills were retired for pcb-free-agent.
 
 BYTECODE. Each row rewrites a file and restores it within the same second, so
 the runner drops `__pycache__` and runs every test with `-B`; without that a
@@ -57,9 +58,6 @@ _ROOT = os.path.dirname(_TESTS)
 sys.path.insert(0, _TESTS)
 
 CONVERGE = os.path.join(_ROOT, 'py_placer', 'converge.py')
-DRIVER = os.path.join(_ROOT, '.claude', 'skills',
-                      'plan-pcb-placement-and-routing', 'scripts',
-                      'loop_driver.py')
 RENDER = os.path.join(_ROOT, 'py_tools', 'render_placement.py')
 WATCHER = os.path.join(_ROOT, 'tests', 'stress', 'run_watch.py')
 
@@ -69,9 +67,7 @@ T_BIND = os.path.join(_TESTS, 'test_963_one_binding_predicate.py')
 T_TEMPL = os.path.join(_TESTS, 'test_963_render_templates.py')
 T_MARK = os.path.join(_TESTS, 'test_963_report_marker.py')
 T_LAP = os.path.join(_TESTS, 'test_904_not_a_lap.py')
-T_ORDER = os.path.join(_TESTS, 'test_904_closeout_order.py')
 T_898 = os.path.join(_TESTS, 'test_898_review_sheet_without_json.py')
-T_431 = os.path.join(_TESTS, 'test_431_skill_commands.py')
 
 # --- converge: the record's own gates -------------------------------------
 CONVERGE_ROWS = [
@@ -185,159 +181,11 @@ CONVERGE_ROWS = [
      [T_EXH]),
 ]
 
-# --- the loop driver: the gates the stages apply --------------------------
-DRIVER_ROWS = [
-    # THE headline. Deleting the call is the defect restated.
-    ('l5-continue-gate-deleted',
-     "        _u = _unclassified_retry(a, doc)\n        if _u:\n            return _u",
-     "        _u = None\n        if _u:\n            return _u",
-     None),
-    # The plausible "reuse the existing knob" simplification. --flat is 5 and
-    # means something else.
-    ('l5-threshold-reuses-flat',
-     "    if since <= _LAPS_PER_CLASSIFICATION:",
-     "    if since <= (getattr(a, 'flat', 5) or 5):",
-     None),
-    # Run 29 recorded ZERO classification rows, so "laps since the last one"
-    # is vacuously false there. Without this arm the gate cannot catch the
-    # case it was written for.
-    ('no-classification-arm-deleted',
-     "    if _cls is None:\n        since, _where = (doc.get('routing') or {}).get('laps') or 0, None",
-     "    if _cls is None:\n        return None",
-     None),
-    # L3 at blocking == 0 refuses to classify, so a polishing run cannot
-    # produce the row the gate wants.
-    ('blocking-zero-conjunct-deleted',
-     "    if doc.get('blocking') in (0, None):\n        return None",
-     "    if False:\n        return None",
-     None),
-    # A placement lap after shape=placement is the decision being acted on.
-    ('gate-counts-placement-laps-too',
-     "        since = ((_cls.get('laps_since') or {}).get('routing')) or 0",
-     "        since = sum((_cls.get('laps_since') or {}).values())",
-     None),
-    # The pin that keeps this evidence-bound rather than topology-bound.
-    ('refusal-names-the-stage-again',
-     "This is not a demand that a particular stage ran",
-     "Run --stage L3 first. This is not a demand that a particular stage ran",
-     None),
-    # A whitespace reason waived the gate and recorded nothing.
-    ('waiver-accepts-whitespace',
-     "    if (getattr(a, 'accept_unclassified', None) or '').strip():",
-     "    if getattr(a, 'accept_unclassified', None) is not None:",
-     None),
-    # #904 made "is this row a lap" ONE predicate; l4 asking a kind tuple was
-    # a fourth reader, and the `routing` half of it was dead.
-    ('l4-back-to-the-dead-kind-tuple',
-     "    routed = [r for r in rows if _cv_is_lap(r, 'routing')]",
-     "    routed = [r for r in rows\n"
-     "              if (r.get('kind') or '') in ('completion', 'routing')]",
-     None),
-    # One unimportable module must not switch five gates off in silence.
-    # `None and (...)` and not `None or (...)`: the first draft was the second,
-    # which leaves the implicit concatenation truthy and only renames the
-    # sentence -- a mutant that is not the defect, reported SURVIVED because
-    # nothing was broken. The whole row is whether the note still FIRES.
-    ('binding-import-failure-goes-silent',
-     "            _BINDING_BLIND = ('the board could not be hashed from here -- '",
-     "            _BINDING_BLIND = None and ('unused -- '",
-     None),
-    # Guarding the import and not the attribute turns an older converge into
-    # a traceback on a path whose contract is that it degrades to a refusal.
-    ('converge-attribute-unchecked',
-     "    return converge if all(hasattr(converge, n) for n in attrs) else None",
-     "    return converge",
-     None),
-    # Discovery is the claim the whole of item C rests on.
-    ('discovery-deleted',
-     "    a._discovered_verdicts, a._absent_verdicts = _discover_verdicts(a)",
-     "    a._discovered_verdicts, a._absent_verdicts = [], []",
-     [T_ORDER]),
-    # A glob fires on eight files nobody passed, measured on run 29's disk.
-    ('discovery-globs-the-work-dir',
-     "    for lens in _DISCOVER_LENSES:\n        p = P.get(f'verdict_{lens}.txt')",
-     "    import glob as _g\n"
-     "    for _p in _g.glob(os.path.join(_work(a), 'verdict_*.txt')):\n"
-     "        rows.append({'lens': None, 'path': _p, 'line': '', 'lineno': 1,\n"
-     "                     'error': None, 'expected': None})\n"
-     "    for lens in ():\n        p = P.get(f'verdict_{lens}.txt')",
-     [T_ORDER]),
-    # Naming a file claims its verdict is recorded; finding one is evidence
-    # the record is not written yet. Refusing the second refuses the remedy.
-    ('discovered-disagreement-refuses-again',
-     "                _notes.append(\n"
-     "                    f'{_base}: says {_dline.split(\";\")[0]} and iteration '",
-     "                vpairs.append((_base, _dline, 'mutant'))\n"
-     "                _notes.append(\n"
-     "                    f'{_base}: says {_dline.split(\";\")[0]} and iteration '",
-     [T_ORDER]),
-    # A row quoting turn1/verdict_drc.txt is not this cycle's file.
-    ('freshness-matches-basename-only',
-     "                _ap = str(_src.get('abspath') or '')",
-     "                _ap = ''",
-     [T_ORDER]),
-    # The hand-off renders' own text sends the reader to a stdout block that
-    # is in neither the JSON nor the sheet.
-    # ...AND THE OTHER WAY ROUND, which is the polarity this row had first.
-    # A first cut of #963 quieted the two L2 hand-offs; a round-2 verifier
-    # measured that at 7,178 characters over 34 lines at a boundary SKILL.md
-    # prescribes --quiet for, and the fix was to keep --quiet and REPOINT the
-    # sentence at the sheet and the document. So the mutation is dropping the
-    # flag again -- and the gate that kills it is the same one, because the
-    # prose no longer buys the command its stdout back.
-    ('handoff-render-loud-again',
-     "      --review-sheet {_hos} --json-out {_hoj} -o {_hop} --quiet\n\n"
-     "That sheet is what routing is being given.",
-     "      --review-sheet {_hos} --json-out {_hoj} -o {_hop}\n\n"
-     "That sheet is what routing is being given.",
-     [T_431]),
-    # The prose arm of the same gate: an exemption is now a PROHIBITION, so a
-    # sentence sending the reader to a stdout block beside a quieted command
-    # must fail rather than excuse it.
-    ('handoff-prose-points-at-stdout-again',
-     "That sheet is what routing is being given. LOOK at it and write what you see",
-     "Its WHAT THIS PANEL SHOWS block is what routing is being given. LOOK at it",
-     [T_431]),
-    # The boundary whose text says FIRST, LOOK wrote its PNG beside the board.
-    ('close-sheet-loses-its-o',
-     "      -o wk/close_sheet_panels.png --quiet",
-     "      --quiet",
-     [T_431]),
-    # ROUND 2. Ten guards in the previous commit survived a verifier's own
-    # battery; these are the loop_driver half of them.
-    #
-    # `_cv_is_lap` asks for the module once per ROW, so the dedup is what
-    # keeps a ledger walk from leaving one copy of ROOT on sys.path per ROW.
-    ('lazy-import-reinserts-per-row',
-     "        if ROOT not in sys.path:\n"
-     "            sys.path.insert(0, ROOT)",
-     "        sys.path.insert(0, ROOT)",
-     [T_BIND]),
-    # The report the measured run would actually have seen.
-    ('report-terminal-only-again',
-     "        _creport = _verdict_report(a, _paths(a)[0], terminal=False)",
-     "        _creport = ''",
-     [T_ORDER]),
-    # A header with no notes is a report that found nothing to say.
-    ('vreport-drops-the-notes',
-     "        + (''.join(f'  NOTE {n}\\n' for n in _notes) if _notes else ''))",
-     "        + '')",
-     [T_ORDER]),
-    # ROUND 3 (pre-push review). The shipped-sha check had NO PRODUCER: the
-    # L5 close-out said `echo done > DONE`, so on every real run it reported,
-    # correctly and uselessly, that the marker named no digest -- an
-    # instrument with no production caller. Putting the sha in the close-out
-    # text is the fix; taking it out again is this row.
-    ('closeout-DONE-names-no-board',
-     '  echo "done: board {a.board} sha256 <that result_sha>" > {work}/DONE',
-     '  echo done > {work}/DONE',
-     [T_MARK]),
-    # `expected` was stored by discovery and read by nobody until #963.
-    ('expected-lens-unread',
-     "        if _d.get('expected') and _dln != _d['expected']:",
-     "        if False and _d.get('expected') and _dln != _d['expected']:",
-     [T_ORDER]),
-]
+# --- the loop driver: RETIRED ---------------------------------------------
+# Its 21 rows (the L5 continue gate, verdict discovery, the hand-off renders'
+# --quiet/-o, the close-out DONE marker) mutated loop_driver.py, which was
+# retired with the combined skill for pcb-free-agent, as were its killers
+# test_904_closeout_order and test_431's driver-render arm.
 
 # --- render_placement: the document must survive a sheet failure ----------
 RENDER_ROWS = [
@@ -399,7 +247,6 @@ ARM_REPORT = os.path.join(_ROOT, 'tests', 'stress', 'arm_report.py')
 
 BATTERIES = {
     'converge': (CONVERGE, [T_CLASS, T_EXH, T_LAP, T_BIND], CONVERGE_ROWS),
-    'driver': (DRIVER, [T_CLASS, T_ORDER, T_BIND], DRIVER_ROWS),
     'render': (RENDER, [T_TEMPL, T_898], RENDER_ROWS),
     'watcher': (WATCHER, [T_MARK], WATCHER_ROWS),
     'armreport': (ARM_REPORT, [T_MARK], ARM_ROWS),

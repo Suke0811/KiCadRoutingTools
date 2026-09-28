@@ -19,12 +19,10 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-# #522 reorg + skill merge: the engine moved to py_router/, the placer to
-# py_placer/, and board_score.py into the placement-and-routing skill. Tests
-# that shell out to or import them need those roots on sys.path.
-for _p in ('py_router', 'py_placer',
-           os.path.join('.claude', 'skills', 'plan-pcb-placement-and-routing',
-                        'scripts')):
+# #522 reorg: the engine moved to py_router/, the placer to py_placer/, and
+# board_score.py lives in py_tools/. Tests that shell out to or import them
+# need those roots on sys.path.
+for _p in ('py_router', 'py_placer', 'py_tools'):
     _d = os.path.join(ROOT, _p)
     if _d not in sys.path:
         sys.path.insert(0, _d)
@@ -52,7 +50,7 @@ def _lens_files(td, **verdicts):
     reopens a ledger, and a line retyped from a reply is a claim about the run
     where the row could carry a claim about a file. So every close-out arm in
     this file writes the verdict where the verifier is already required to
-    write it (references/verifier-prompts.md) and passes the path.
+    write it (the pcb-free-agent verifier brief) and passes the path.
 
     Defaults to a clean PASS for all three; name a lens to override, e.g.
     `_lens_files(td, drc='VERDICT=FAIL:lens=drc;finding=short;evidence=x')`.
@@ -460,8 +458,8 @@ def test_a_score_that_measured_nothing_is_reported_not_raised():
 
     `'DONE' not in stdout` would be a tautology (a null `blocking` can never
     satisfy `elif blocking == 0`), so the assertion below is on the verdict
-    NAME, which is the thing a caller reads -- loop_driver's L5 branches on it
-    and discards the exit code entirely.
+    NAME, which is the thing a caller reads (the retired loop_driver's L5
+    branched on it and discarded the exit code entirely).
 
     _score_key returns None for three distinct documents. Each gets its own
     sentence, and the "a component could not answer" cause is asserted only
@@ -975,8 +973,7 @@ def test_board_score_emits_board_sha():
     from board_store import sha256_file
     r = subprocess.run(
         [sys.executable, '-X', 'utf8',
-         os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing',
-                      'scripts', 'board_score.py'), BOARD, '-q'],
+         os.path.join(ROOT, 'py_tools', 'board_score.py'), BOARD, '-q'],
         capture_output=True, text=True, encoding='utf-8', errors='replace',
         cwd=ROOT)
     line = [l for l in r.stdout.splitlines() if l.startswith('SCORE_JSON=')]
@@ -987,18 +984,13 @@ def test_board_score_emits_board_sha():
     print("  PASS: board_score embeds board_sha")
 
 
-def test_l5_printed_final_command_runs_as_printed():
-    """D1: the run-closing command L5 prints must be ACCEPTED by converge,
-    verbatim, for every terminal verdict. The refusal-driven executor recovers
-    from a refused command, but a driver whose doctrine is "paste these exact
-    commands" may not print one its own tool refuses: the STUCK/BUDGET paths
-    carry a FAIL lens as the normal case, and DONE-EXHAUSTED must never sit
-    beside one."""
-    import shlex
-    sys.path.insert(0, os.path.join(
-        ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts'))
-    from loop_driver import final_record_command
-
+def test_a_final_close_out_is_accepted_for_every_terminal_verdict():
+    """D1: a run-closing `record --final` with three --lens-file slots is
+    ACCEPTED for every terminal verdict. The STUCK/BUDGET paths carry a FAIL
+    lens as the normal case, and DONE-EXHAUSTED must never sit beside one.
+    (This used to execute the retired loop_driver's printed L5 command; the
+    command is now built here in the same shape, since converge's contract
+    is what remains.)"""
     _PASS = {'connectivity': 'VERDICT=PASS:lens=connectivity',
              'drc': 'VERDICT=PASS:lens=drc',
              'spec': 'VERDICT=PASS:lens=spec'}
@@ -1009,52 +1001,27 @@ def test_l5_printed_final_command_runs_as_printed():
     _DIRTY = {'blocking': 3, 'blocking_by':
               {'unrouted': 0, 'broken': 0, 'drc': 3, 'undersized': 0}}
 
-    def run_as_printed(name, lens_by_name, score_doc, led):
+    def close_out(name, lens_by_name, score_doc, led):
         work = os.path.dirname(led)
         score = os.path.join(work, 'score.json')
         with open(score, 'w', encoding='utf-8') as f:
             json.dump(score_doc, f)
-        # The paths the driver would resolve from --ledger, passed in the same
-        # shape `l5` passes them, so this test executes the command the stage
-        # really prints rather than a reconstruction of it.
-        verdicts = {f'verdict_{lens}.txt':
-                    os.path.join(work, f'verdict_{lens}.txt').replace('\\', '/')
-                    for lens in lens_by_name}
-        text = final_record_command(led.replace('\\', '/'),
-                                    BOARD.replace('\\', '/'),
-                                    score.replace('\\', '/'), name,
-                                    verdicts)
-        toks = shlex.split(text.replace('\\\n', ' '))
-        assert toks[0] == 'python3' and toks[3] == 'py_placer/converge.py', \
-            toks[:4]
-        toks[0] = sys.executable
-        # The three slots must be present AND be the paths the driver named --
-        # if its wording drifts, fail here rather than silently testing a
-        # different command than the one printed. #904: these are --lens-file
-        # slots now, so the verdict is WRITTEN where the printed command says
-        # the verifier put it, and converge reads it from there.
-        hit = 0
-        for i, t in enumerate(toks):
-            if t == '--lens-file':
-                path = toks[i + 1]
-                lens = os.path.basename(path)[len('verdict_'):-len('.txt')]
-                assert lens in lens_by_name, (lens, path)
-                with open(path, 'w', encoding='utf-8') as f:
-                    f.write(lens_by_name[lens] + '\n')
-                hit += 1
-        assert hit == 3, f'expected 3 --lens-file slots, found {hit}: {toks}'
-        assert '--lens' not in toks, (
-            'a bare --lens on a close-out is refused by converge; the printed '
-            'command must not offer one')
-        ia = toks.index('--argv')
-        toks = toks[:ia + 1] + [sys.executable, '-c', 'pass']
-        return subprocess.run(toks, capture_output=True, text=True,
-                              encoding='utf-8', errors='replace', cwd=ROOT)
+        slots = []
+        for lens in ('connectivity', 'drc', 'spec'):
+            path = os.path.join(work, f'verdict_{lens}.txt')
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(lens_by_name[lens] + '\n')
+            slots += ['--lens-file', path]
+        return _cv(['record', '--ledger', led, '--board', BOARD,
+                    '--kind', 'completion', '--final',
+                    '--stop-condition', name] + slots
+                   + ['--lever', f'close-out: {name}', '--score-file', score,
+                      '--argv', sys.executable, '-c', 'pass'])
 
     with tempfile.TemporaryDirectory() as td:
         # DONE-EXHAUSTED: every lens passes, clean score.
-        r = run_as_printed('DONE-EXHAUSTED', _PASS, _CLEAN,
-                           os.path.join(td, 'done.jsonl'))
+        r = close_out('DONE-EXHAUSTED', _PASS, _CLEAN,
+                      os.path.join(td, 'done.jsonl'))
         assert r.returncode == 0, r.stderr
         e = json.loads(r.stdout)
         assert e.get('final') is True and \
@@ -1062,20 +1029,20 @@ def test_l5_printed_final_command_runs_as_printed():
         # STUCK and BUDGET: a FAIL lens is the NORMAL case, not a refusal.
         for name in ('STUCK', 'BUDGET'):
             lenses = dict(_PASS, drc=_FAIL_DRC)
-            r = run_as_printed(name, lenses, _DIRTY,
-                               os.path.join(td, name + '.jsonl'))
+            r = close_out(name, lenses, _DIRTY,
+                          os.path.join(td, name + '.jsonl'))
             assert r.returncode == 0, f'{name}: {r.stderr}'
             e = json.loads(r.stdout)
             assert e.get('stop_condition') == name
             assert any(v.startswith('VERDICT=FAIL') for v in e['lenses'])
         # DONE-EXHAUSTED beside a FAIL lens is the one contradiction.
         led = os.path.join(td, 'contra.jsonl')
-        r = run_as_printed('DONE-EXHAUSTED', dict(_PASS, drc=_FAIL_DRC),
-                           _DIRTY, led)
+        r = close_out('DONE-EXHAUSTED', dict(_PASS, drc=_FAIL_DRC),
+                      _DIRTY, led)
         assert r.returncode == 2 and 'contradiction' in r.stderr, r.stderr
         assert not os.path.exists(led), "nothing may be written on refusal"
-    print("  PASS: L5's printed --final command runs as printed, "
-          "all three verdicts")
+    print("  PASS: a --final close-out is accepted for all three verdicts, "
+          "and DONE-EXHAUSTED beside a FAIL lens is refused")
 
 
 if __name__ == '__main__':

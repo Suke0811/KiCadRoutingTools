@@ -49,15 +49,12 @@ RUN_ALL_TIMEOUT = 900
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tests'))
-sys.path.insert(0, os.path.join(
-    ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts'))
+sys.path.insert(0, os.path.join(ROOT, 'py_tools'))
 import run_utils                                              # noqa: E402
 import board_score                                            # noqa: E402
 
 FIXTURE = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
-SCORE = os.path.join(ROOT, '.claude', 'skills',
-                     'plan-pcb-placement-and-routing', 'scripts',
-                     'board_score.py')
+SCORE = os.path.join(ROOT, 'py_tools', 'board_score.py')
 CHECK_ASSEMBLY = os.path.join(ROOT, 'py_tools', 'check_assembly.py')
 
 #: C1's pose in the tracked board, and C3's -- the same two literals

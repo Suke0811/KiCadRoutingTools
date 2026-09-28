@@ -61,21 +61,11 @@ for _pkg in ('py_router', 'py_tools', 'py_placer'):
     _d = os.path.join(ROOT, _pkg)
     if os.path.isdir(_d):
         sys.path.insert(0, _d)
-# The scripts moved when plan-pcb-routing and plan-pcb-placement merged into
-# plan-pcb-placement-and-routing. Pointing at the old directory made every run
-# report "board_score produced no score" -- an INCOMPLETE verdict caused by a
-# missing file rather than by the board. Resolve the new home, falling back to
-# the old one so a checkout that still has it keeps working.
-def _skill_scripts():
-    for skill in ('plan-pcb-placement-and-routing', 'plan-pcb-routing'):
-        d = os.path.join(ROOT, '.claude', 'skills', skill, 'scripts')
-        if os.path.isfile(os.path.join(d, 'board_score.py')):
-            return d
-    return os.path.join(ROOT, '.claude', 'skills',
-                        'plan-pcb-placement-and-routing', 'scripts')
-
-
-SKILL_SCRIPTS = _skill_scripts()
+# board_score is a repo instrument, in py_tools/ with the checkers it runs. It
+# used to live inside a skill's scripts/ dir, and every time that skill moved
+# this lookup broke with "board_score produced no score" -- an INCOMPLETE
+# verdict caused by a missing file rather than by the board.
+SKILL_SCRIPTS = os.path.join(ROOT, 'py_tools')
 PY = [sys.executable, '-X', 'utf8']
 
 DONE, USAGE, BOARD_STATE, INCOMPLETE, UNSOUND = 0, 2, 3, 4, 5

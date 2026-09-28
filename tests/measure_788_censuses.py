@@ -6,7 +6,7 @@ NOT a test, and deliberately not named `test_*` so `run_all.py` never collects
 it: it needs the #703 study tree, which is gitignored (`wk/`), and it spends a
 few minutes of `check_assembly` subprocesses. It regenerates every number
 `docs/placement-predictors.md` states about the two censuses, and the numbers
-`loop_driver.py`'s #788 comment states about what a graze/hole gate would
+the retired `loop_driver.py`'s #788 comment stated about what a graze/hole gate would
 refuse. `tests/test_788_marginal_literals.py` is the committed, clean-clone
 change detector for a declared subset of the same rows.
 

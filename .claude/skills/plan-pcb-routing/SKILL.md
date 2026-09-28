@@ -13,13 +13,11 @@ When this skill is invoked with a KiCad PCB file, perform a comprehensive analys
 emits the plan as an executable artifact and then PROVES it, with a checker
 that refuses by name rather than a paragraph you are trusted to have read.
 
-There is no driver here, and that is deliberate. The placement half stages its
-work behind one because the AI is deciding there and a refusal is what keeps a
-decision honest. Routing's failure mode is different -- the CHAIN being wrong,
-not a judgement being wrong -- so what this half needs is a checker over the
-plan, and it gets one. Placement stages encode a decision order over levers
-and are stable; routing stages encode the copper chain, which the engine moves
-underneath them.
+There is no driver here, and that is deliberate (the staged placement drivers
+were retired too, for `/pcb-free-agent`). Routing's failure mode is the CHAIN
+being wrong, not a judgement being wrong, so what this half needs is a checker
+over the plan, and it gets one: routing stages encode the copper chain, which
+the engine moves underneath them.
 
 ### Who is in the seat here
 
@@ -28,8 +26,8 @@ chain, the nets and the parameters, and you read the failures; `route.py` and
 its siblings lay the copper. You do not hand-place copper, and you do not work
 around a checker that refuses.
 
-That is the opposite of the placement half, where YOU DECIDE -- which parts
-move, where, and why -- and the scripts legalize and measure. The test for
+That is the opposite of placement (`/pcb-free-agent place`), where YOU DECIDE
+-- which parts move, where, and why -- and the scripts legalize and measure. The test for
 which mode you are in: **if the work replays from a recorded command list
 without judgement, it is script work.** Routing passes it, which is why every
 run here leaves a `redo_commands.sh` that replays with no model in the loop.
@@ -68,7 +66,7 @@ because its nets cannot be routed at all.
 ```bash
 mkdir -p wk        # neither tool creates it, and both write into it
 python3 -X utf8 py_tools/check_assembly.py board.kicad_pcb --json wk/assembly0.json
-python3 -X utf8 .claude/skills/plan-pcb-placement-and-routing/scripts/board_score.py board.kicad_pcb --json wk/score0.json --quiet
+python3 -X utf8 py_tools/board_score.py board.kicad_pcb --json wk/score0.json --quiet
 ```
 
 **What each one is for.** `check_assembly` decides this gate: read its
@@ -82,17 +80,14 @@ the end of the chain.
 Classify from the JSON fields, not from exit status: `check_assembly` exits 4
 for any of its five conjuncts and its VERDICT line already says which one.
 
-- **NOT BUILDABLE** -> stop. This is placement work. Use `/plan-pcb-placement`
-  for the placement half alone, or `/plan-pcb-placement-and-routing` when the
-  board needs both.
+- **NOT BUILDABLE** -> stop. This is placement work. Use `/pcb-free-agent place`
+  for the placement alone, or `/pcb-free-agent full` when the board needs both.
 - **buildable** -> go to Step 1.
 
-**Run both commands every time.** They cost seconds. When you arrive from
-`/plan-pcb-placement-and-routing`, its L2 stage has already run these same two
-instruments before handing the board over — so ALSO quote that placement
-close-out beside your own reading, and the gate is shown satisfied twice rather
-than assumed once. Never skip the commands on the grounds that the loop must
-have run them.
+**Run both commands every time.** They cost seconds. A board handed over by a
+placement run may come with that run's own grade; quote it beside your reading
+so the gate is shown satisfied twice rather than assumed once. Never skip the
+commands on the grounds that the placement run must have run them.
 
 ## Step 1: Load and Analyze PCB Structure
 
@@ -1531,8 +1526,8 @@ about 190 scoped laps, and most of the waste traced to these:
 5. **Never expand a recorded argv unquoted.** Use a bash array or `set -f`, so
    `--nets *` is not globbed into file names, and read the recorded argv back.
 
-`.claude/skills/plan-pcb-placement-and-routing/SKILL.md` §9.3a, §9.3c rule 1,
-§9.4 and stop condition 3 carry the measurements behind each.
+Each rule above was measured in a recorded run; the stop rules they feed are
+`.claude/skills/pcb-free-agent/SKILL.md` §5.
 
 #### Octolinear smoothing is ON by default -- leave it alone
 
@@ -2310,11 +2305,10 @@ read. Four things about it that are easy to get wrong:
 
 **A note on vocabulary, because this section imports it.** `blocking`,
 `quality`, `unrouted` and `broken` are keys of
-`.claude/skills/plan-pcb-placement-and-routing/scripts/board_score.py`, not of
+`py_tools/board_score.py`, not of
 `route.py` — `board_score` grades a written board, `route.py` reports on its own
 run, and the classification table below reads BOTH. The *ledger* and the
-*verifier lens* belong to `py_placer/converge.py` and are the combined
-placement-and-routing loop's machinery; this skill only needs to know that
+*verifier lens* belong to `py_placer/converge.py`; this skill only needs to know that
 `blocking == 0` is not by itself a stop condition.
 
 - **`failed_single` is HALF the answer — read `failed_multipoint` too, and read
@@ -2429,10 +2423,9 @@ placement-and-routing loop's machinery; this skill only needs to know that
      gone. Prefer `--score-file` over `--score "$(cat …)"`.
 
   When a step you launched is genuinely long, do not sit on it: the delegation
-  half of this rule — hand back with LOG, MARKER and NEXT rather than blocking
-  on a detached process — is orchestration doctrine and lives in
-  `.claude/skills/plan-pcb-placement-and-routing/scripts/loop_driver.py`, which
-  is the thing that has teammates to hand back to.
+  half of this rule — never leave a background job unwatched for long, and kill
+  a search that stopped improving — is `.claude/skills/pcb-free-agent/SKILL.md`
+  §5's "watch long jobs" stop rule.
 
 ### Tune mode (issue #153) — opt-in per-board feedback loop
 
@@ -2512,9 +2505,10 @@ suffices — its in-run finalize welds and verifies against KiCad's fill).
 ### Retrying a failed net
 
 Re-enter at the FAILING STEP rather than re-running the chain, and read the
-router's hint before choosing a lever: both are set out in `.claude/skills/plan-pcb-placement-and-routing/SKILL.md`
-(9.3a and 9.3b). Two things that section does not yet say, and that cost a lap
-each:
+router's `Hint:` line before choosing a lever: it names the flag and the
+nets, and it is usually right. For the blocker report,
+`diagnose-routing-failures` classifies the failure modes. Two things neither
+says, and that cost a lap each:
 
 **A scoped `--nets` retry on a net that is ALREADY CONNECTED is a no-op.** The
 router has nothing to improve there: the escalation ladder never fires and the
@@ -2743,25 +2737,23 @@ Example cleanup prompt:
 >
 > Would you like me to delete the intermediate files?"
 
-### The box-in row needs one qualification
+### A boxed-in net: parameters, until the geometry is at the floor
 
-The blocker-classification table — which evidence means floorplan, which means
-placement detail, which means parameters — is in `.claude/skills/plan-pcb-placement-and-routing/SKILL.md`
-(9.3d), and it is the same table for both skills. Follow it, with ONE
-qualification to the boxed-in row.
+When a failed net's `blockers` list is empty and the log says it was boxed in
+by static obstacles, the default reading is PARAMETERS: stay in routing and
+change the grid, the ripup budget or the width, because placement is not the
+lever. (`diagnose-routing-failures` classifies the other failure modes.)
 
-That row reads *"`blockers` empty; the log says boxed in by static obstacles |
-parameters | stay here — grid, ripup budget, width. Placement is not the
-lever."* That is right only while the geometry still has somewhere to go, and
-the row does not say how to tell. **Read `boxed_in[].geometry` first**: it
+That is right only while the geometry still has somewhere to go, and the
+rule does not say how to tell. **Read `boxed_in[].geometry` first**: it
 carries the grid, clearance, track width and via diameter the run was actually
 using. Compare those against the board's own floor — its `.kicad_dru` rules and
 the fab minimums — yourself, because no summary key makes that comparison for
 you.
 
-- **Geometry still above the floor:** the row applies. Shrink it, and pair a
+- **Geometry still above the floor:** the parameters reading holds. Shrink it, and pair a
   finer grid **with** the shrink rather than spending the grid alone.
-- **Geometry already at the floor:** the row's advice is exhausted, and this is
+- **Geometry already at the floor:** the parameters reading is exhausted, and this is
   a placement question after all. A finer grid resolves the same obstacles more
   precisely; it does not make a gap wider, and there is nothing left to pair it
   with. Measured (run 20): `0.05 -> 0.025 -> 0.0125`, about 40 minutes, left
@@ -2835,14 +2827,13 @@ without reading a plan.
 
 ### Stop conditions
 
-There are four, they are listed in `.claude/skills/plan-pcb-placement-and-routing/SKILL.md`
-(9.5), and the rule is to say which one fired. Two of them bite in a
-routing-only run: `blocking == 0` **plus** the repo's own spec checker **plus**
-every verifier lens (`board_score` exits 0 at `blocking == 0` even on a board
-with ten HARD clauses violated, because a repo checker's clauses are not
-`board_score` components), and a blocker that is geometrically unsatisfiable,
-which is a finding about the REQUIREMENT and needs the measurement that proves
-it.
+Say which one fired. **DONE** is `blocking == 0` **plus** `check_complete.py`
+DONE **plus** an independent verifier's PASS (`board_score` exits 0 at
+`blocking == 0` even on a board with ten HARD clauses violated, because a repo
+checker's clauses are not `board_score` components). A blocker that is
+geometrically unsatisfiable is a finding about the REQUIREMENT and needs the
+measurement that proves it. The plateau, "no approach left" and time-cap rules
+are `.claude/skills/pcb-free-agent/SKILL.md` §5.
 
 "This is taking a long time" is not one of them, for the reason given under
 the budget doctrine above.

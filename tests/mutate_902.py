@@ -26,9 +26,10 @@ courtyard-vs-body read.
 
 Four MORE such branches exist and are deliberately NOT rows here -- the bool
 check, longest-match waiver resolution, the `+ ':'` suffix guard and the whole
-DRIFTED arm all live in `.claude/skills/plan-pcb-placement/scripts/
-placement_driver.py`, which this battery does not target, and they are killed
-by that driver's own `--self-test`. Saying "nine rows" would have credited this
+DRIFTED arm all lived in the staged placement driver
+(`plan-pcb-placement/scripts/placement_driver.py`), which this battery never
+targeted; they were killed by that driver's own `--self-test`, and left the
+tree with it when the skill was retired for pcb-free-agent. Saying "nine rows" would have credited this
 file with four kills it does not perform, which is the kind of arithmetic a
 reader has no way to check without opening TARGETS.
 """

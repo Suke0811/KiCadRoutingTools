@@ -208,8 +208,7 @@ def main():
               and any('Unmeasured graphic copper' in d for d in diffs)
               and not any('Unmeasured' in d for d in compare_pcb_data(oc, oc)), str(diffs[:3]))
         import importlib.util as _ilu
-        _sp = _ilu.spec_from_file_location('bs962', os.path.join(
-            ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts', 'board_score.py'))
+        _sp = _ilu.spec_from_file_location('bs962', os.path.join(ROOT, 'py_tools', 'board_score.py'))
         bs = _ilu.module_from_spec(_sp)
         _sp.loader.exec_module(bs)
         # the line check_drc prints (the watchy form)

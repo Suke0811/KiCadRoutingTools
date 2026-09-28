@@ -554,9 +554,10 @@ def main():
 
     # A FOURTH conjunct, and `g['blocking']` is deliberately NOT touched.
     # `blocking` means "pad intersections" to board_score, to the seeder's
-    # repair census, and -- with INVERTED polarity -- to placement_driver's
-    # _guard_damage, which refuses to run the repair stages when `not
-    # blocking`. Folding containment into that count would change all three.
+    # repair census, and -- with INVERTED polarity -- to the retired
+    # placement_driver's _guard_damage, which refused to run the repair stages
+    # when `not blocking`. Folding containment into that count would have
+    # changed all three.
     # This is the same shape the coincident-origin channel used.
     # `courtyard_gating` is the FIFTH conjunct (run-23): the moved-vs-baseline
     # subset of the courtyard census -- see the currency comment above for
@@ -643,17 +644,17 @@ def main():
             'hole_conflicts': leg['hole_conflicts'],
             'oob_pad_count': leg['oob_pad_count'],
             'oob_pad_amount': leg['oob_pad_amount'],
-            # The MACHINE path, which is the one that matters here: this doc is
-            # what loop_driver's L2 gate reads, and that gate refuses with "N
+            # The MACHINE path, which is the one that matters here: this doc
+            # is what the retired loop_driver's L2 gate read, refusing with "N
             # part(s) carry pad copper OFF the board -- their nets cannot be
             # routed at all". It could not name the part, and the count it
             # gates on moves with --clearance, so a clearance-band graze reads
             # as copper in the air. Both facts now travel with the number.
             'oob_pad_refs': leg.get('oob_pad_refs') or [],
             'oob_pad_basis': leg.get('oob_pad_basis'),
-            # The PER-PAD channel beside the AABB one (#937). The gate in
-            # loop_driver's L2 reads `oob_pad_count` and is right to -- it is
-            # justified over 119 graded rows -- but a consumer holding only
+            # The PER-PAD channel beside the AABB one (#937). The retired
+            # loop_driver's L2 gate read `oob_pad_count` and was right to -- it
+            # was justified over 119 graded rows -- but a consumer holding only
             # this document could not tell a real off-outline pad from the
             # bounding box of an edge part, and the refusal it writes says
             # "their nets cannot be routed at all", which is true of one and

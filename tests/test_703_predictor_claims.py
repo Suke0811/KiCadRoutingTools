@@ -91,11 +91,8 @@ WINDOW = 420
 #: unregistered file carrying one FAILS, and a registered file that no longer
 #: carries one is reported as stale.
 REGISTERED = {
-    '.claude/skills/plan-pcb-placement/SKILL.md',
-    '.claude/skills/plan-pcb-placement/scripts/placement_driver.py',
-    '.claude/skills/plan-pcb-placement-and-routing/references/evidence-map.md',
-    '.claude/skills/plan-pcb-placement-and-routing/references/verifier-prompts.md',
-    '.claude/skills/plan-pcb-placement-and-routing/scripts/loop_driver.py',
+    # The retired placement skills' sites (and the SKILL.md every other site
+    # cited) left with them; docs/placement-predictors.md is the record now.
     'py_placer/placement/reconstruct.py',
     'py_placer/placement/routability.py',
     # #553's mover ranking, which quotes the legality rows in order to say
@@ -231,27 +228,9 @@ def t_no_false_positive_on_completion_points():
               f'IS a correlation, matched: {sample!r}')
 
 
-def t_the_canonical_site_is_corrected():
-    """The one site every other one cites. If it regresses, the rest follow."""
-    p = os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement',
-                     'SKILL.md')
-    s = io.open(p, encoding='utf-8').read().replace('\r\n', '\n')
-    check('r(crossings) = +0.780' in s,
-          'the measurement is KEPT -- annotate, never delete')
-    i = s.index('r(crossings) = +0.780')
-    ctx = s[i:i + WINDOW]
-    check('NOT against\n   routed `blocking`' in ctx or
-          'NOT against routed `blocking`' in ctx.replace('\n   ', ' '),
-          'and it says NOT against routed blocking, in as many words')
-    check('placement-predictors.md' in ctx,
-          'and points at the file that records what HAS been measured')
-
-
 def main():
     print('t_no_false_positive_on_completion_points:')
     t_no_false_positive_on_completion_points()
-    print('t_the_canonical_site_is_corrected:')
-    t_the_canonical_site_is_corrected()
     print('t_every_numeral_is_scoped:')
     carrying = t_every_numeral_is_scoped()
     print('t_registration_holds_both_ways:')

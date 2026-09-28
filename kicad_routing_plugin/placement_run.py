@@ -1,8 +1,8 @@
 """
 KiCad Routing Tools - headless placement-run contracts (Placement tab).
 
-The Placement tab drives Claude Code headless with the /plan-pcb-placement or
-/plan-pcb-placement-and-routing skill. Unlike the "Ask AI" analysis skills,
+The Placement tab drives Claude Code headless with the /pcb-free-agent skill,
+in its `place` or `full` mode. Unlike the "Ask AI" analysis skills,
 those runs WRITE (lap boards, a converge ledger, REPORT.md, the movie), take
 minutes to hours, and must be observable from the outside while they run.
 
@@ -33,8 +33,12 @@ import time
 # permission rule matches the canonical name only. This line has said `Task`
 # alone since #633; on 2.1.251 the dispatch event carries `"name":"Agent"`, so
 # the close-out verification this comment claims may never have been granted.
+#
+# Monitor, because /pcb-free-agent's stop rules require watching long jobs
+# (never unwatched for more than 20 minutes); without it a headless run can
+# only poll with Bash.
 PLACEMENT_ALLOWED_TOOLS = (
-    "Bash,Read,Glob,Grep,Write,Edit,WebSearch,Agent,Task,TodoWrite")
+    "Bash,Read,Glob,Grep,Write,Edit,WebSearch,Agent,Task,TodoWrite,Monitor")
 
 # The machine-readable completion contract, appended to the instructions.
 # Same last-RESULT=-line convention as ai_plan.PLAN_RESULT_SCHEMA, parsed by
@@ -48,9 +52,15 @@ PLACEMENT_RESULT_SCHEMA = (
     '"blocking": <final board_score blocking count as an integer, or null>, '
     '"summary": "<one line>"}')
 
+# Tab mode -> (skill, the skill's own mode argument). Both tab modes run the
+# one free-agent skill; the keys also name the run folders (_RUN_DIR_RE).
 PLACEMENT_SKILLS = {
-    "place": "plan-pcb-placement",
-    "place_route": "plan-pcb-placement-and-routing",
+    "place": "pcb-free-agent",
+    "place_route": "pcb-free-agent",
+}
+PLACEMENT_SKILL_MODES = {
+    "place": "place",
+    "place_route": "full",
 }
 
 # Backends that can drive a placement run today. The tab shows ALL backends
@@ -59,38 +69,6 @@ PLACEMENT_SKILLS = {
 # pcb-analysis agent denies edits. Growing this tuple (plus per-backend
 # allowlist handling in build_cmd) is the whole cost of adding a harness.
 PLACEMENT_SUPPORTED_BACKENDS = ("claude",)
-
-# Driver stage ids -> human progress text ("which type of work"), from the two
-# skills' driver --list output (placement_driver.py P*, loop_driver.py L*).
-STAGE_LABELS = {
-    "P-brief": "P-brief: what the board is FOR",
-    "P0": "P0 gate: should placement be touched",
-    "P1": "P1 seeding an unplaced board",
-    "P2": "P2 locking mechanical parts",
-    "P3": "P3 reconstructing the placement",
-    "P4": "P4 fix loop: measure/change/verify",
-    "P5": "P5 arrangement slate",
-    "P6": "P6 floorplan intent",
-    "P-close": "P-close: close-out + film",
-    "L1": "L1 placing",
-    "L2": "L2 freeze + route",
-    "L3": "L3 classifying the failure",
-    "L4": "L4 re-entering at the named point",
-    "L5": "L5 close-out",
-}
-
-# Tolerates --stage P4 / --stage=P4 / --stage "P4" spellings.
-#
-# EVERY id the two drivers register, or the GUI reports "working..." for a
-# stage that is running. P-brief was missing here for the same reason it was
-# missing from placement_driver --list (#936 C2): it is the one id that is
-# neither P<digit> nor P-close, so a hand-written tuple and this pattern
-# skipped it alike -- and it is the stage that records the declared design
-# brief (#711). tests/test_placement_run.py derives the expected set by
-# importing both drivers, so a new stage id fails there rather than degrading
-# to "working..." in the GUI.
-_STAGE_RE = re.compile(
-    r"--stage[=\s]+[\"']?(P-brief|P-close|P[0-6]|L[1-5])\b")
 
 # The folder beside the board that holds one directory per run (#1057).
 RUNS_DIRNAME = "krt_placement"
@@ -397,10 +375,11 @@ def build_placement_instructions(workdir, mode, extra=""):
         "If a gate refuses (for example the board already carries routed "
         'copper), stop and report status "refused" instead of stripping '
         "copper.",
+        # The GUI's progress line is the newest ledger row, so the skill's
+        # milestone rows are what the user sees while the run works.
+        "Record every milestone board in that ledger as you go (the skill's "
+        "`converge.py record` step): it is the only progress this GUI shows.",
     ]
-    if mode == "place_route":
-        lines.append("Run every loop_driver.py stage with --no-delegate "
-                     "(single process; this is a headless run).")
     if extra and extra.strip():
         lines.append(extra.strip())
     lines.append("After the report, end your reply with exactly one line of "
@@ -411,7 +390,8 @@ def build_placement_instructions(workdir, mode, extra=""):
 def build_placement_prompt(backend, workdir, staged_board, mode, extra=""):
     """The full skill prompt for a placement run (via backend.skill_prompt)."""
     return backend.skill_prompt(
-        PLACEMENT_SKILLS[mode], _fwd(staged_board),
+        PLACEMENT_SKILLS[mode],
+        f"{PLACEMENT_SKILL_MODES[mode]} {_fwd(staged_board)}",
         build_placement_instructions(workdir, mode, extra))
 
 
@@ -579,14 +559,11 @@ def _row_label(row):
 def derive_stage(transcript_tail, ledger_row, newest_artifact_name):
     """Best human answer to "what is it doing right now".
 
-    Priority: the last driver --stage the agent invoked (the drivers are the
-    skills' tape heads, so this is authoritative when present) -> the newest
-    converge ledger row -> artifact-name heuristics -> a generic fallback.
+    Priority: the newest converge ledger row (the skill records a row per
+    milestone) -> artifact-name heuristics -> a generic fallback.
+    `transcript_tail` is kept in the signature for the caller; there is no
+    staged driver whose `--stage` ids it could name any more.
     """
-    for line in reversed(list(transcript_tail or ())):
-        m = _STAGE_RE.search(line)
-        if m:
-            return STAGE_LABELS.get(m.group(1), m.group(1))
     if ledger_row:
         lap = ledger_row.get("iteration")
         kind = ledger_row.get("kind") or "?"

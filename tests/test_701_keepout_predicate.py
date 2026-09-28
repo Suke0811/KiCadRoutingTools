@@ -453,12 +453,10 @@ def test_the_grader_builds_a_state_that_carries_no_keepouts():
 # 5. the vocabulary is documented -- a static change detector
 # --------------------------------------------------------------------------
 
-#: Every reader-facing table of the verdict vocabulary. BOTH of them: the
-#: skill's table was written independently and had fallen a verdict behind
-#: while the README was current, because only the README was guarded.
+#: Every reader-facing table of the verdict vocabulary. The placement
+#: skill's copy went with that skill (#1009); the README is the one left.
 _VERDICT_DOCS = (
     os.path.join(REPO, 'py_placer', 'placement', 'README.md'),
-    os.path.join(REPO, '.claude', 'skills', 'plan-pcb-placement', 'SKILL.md'),
 )
 
 
@@ -472,8 +470,7 @@ def test_every_no_pose_verdict_has_a_row_in_EVERY_table():
         text = io.open(doc, encoding='utf-8').read()
         missing = [v for v in seeder.NO_POSE_VERDICTS if f"`{v}`" not in text]
         assert not missing, f"{rel}: verdict(s) with no row: {missing}"
-    # The census keys, for the same reason -- README only, since the skill
-    # table documents verdicts rather than the census.
+    # The census keys, for the same reason.
     keys = sorted(seeder._empty_census())
     readme = io.open(_VERDICT_DOCS[0], encoding='utf-8').read()
     missing_k = [k for k in keys if f"`{k}`" not in readme]

@@ -41,15 +41,11 @@ _ROOT = os.path.dirname(_TESTS)
 sys.path.insert(0, _TESTS)
 
 CONVERGE = os.path.join(_ROOT, 'py_placer', 'converge.py')
-DRIVER = os.path.join(_ROOT, '.claude', 'skills',
-                      'plan-pcb-placement-and-routing', 'scripts',
-                      'loop_driver.py')
 GUI = os.path.join(_ROOT, 'kicad_routing_plugin', 'placement_run.py')
 
 LENS_TEST = os.path.join(_TESTS, 'test_904_lens_file_binding.py')
 LAP_TEST = os.path.join(_TESTS, 'test_904_not_a_lap.py')
 COVER_TEST = os.path.join(_TESTS, 'test_904_lens_components_cover_blocking.py')
-ORDER_TEST = os.path.join(_TESTS, 'test_904_closeout_order.py')
 
 # --- converge: the arithmetic and the binding -----------------------------
 CONVERGE_ROWS = [
@@ -144,63 +140,10 @@ CONVERGE_ROWS = [
      "    dec = None"),
 ]
 
-# --- loop_driver: the order and the paths ---------------------------------
-DRIVER_ROWS = [
-    # the printed command reverted to the placeholder form converge refuses
-    ('lens-file-slots-back-to-bare-lens',
-     "    slots = ''.join(f\"      --lens-file {verdicts[f'verdict_{lens}.txt']} \\\\\\n\"\n"
-     "                    for lens in ('connectivity', 'drc', 'spec'))",
-     "    slots = ''.join(f\"      --lens '<the {lens} VERDICT= line, verbatim>' \\\\\\n\"\n"
-     "                    for lens in ('connectivity', 'drc', 'spec'))"),
-    # a silent fallback to paths outside the run
-    ('required-verdict-paths-made-optional',
-     """    if missing:
-        raise ValueError(""",
-     """    if False:
-        raise ValueError("""),
-    # the close-out row goes back to being the one row every lap-renderer
-    # prints as a blank
-    ('close-out-lever-deleted',
-     "        f'      --lever \"L5 close-out: {name}\" \\\\\\n'\n",
-     ''),
-    # the verdict files stop following the ledger and stop cycling
-    ('verdict-artifacts-unregistered',
-     "              'verdict_connectivity.txt', 'verdict_drc.txt',\n"
-     "              'verdict_spec.txt', 'verdict_record.txt')",
-     "              'handoff.png2')"),
-    # one blanket waiver again: clearing a spurious check_complete pair also
-    # clears the verifier
-    ('waiver-buckets-merged',
-     """    if _accept_close(a, 'agreement'):
-        pairs = []
-    if _accept_close(a, 'verifier'):
-        vpairs = []""",
-     """    if _accept_close(a, 'agreement'):
-        pairs = []
-        vpairs = []"""),
-    # the verifier's file stops being compared with the ledger at all
-    ('verifier-verdict-comparison-deleted',
-     "    for _p in (getattr(a, 'verifier_verdict', None) or []):",
-     "    for _p in []:"),
-    # the CONTINUE header asserts "still improving" about every half again
-    ('continue-header-asserts-improving',
-     """        elif _una:
-            _head = (f'whether {", ".join(_una)} plateaued is NOT ANSWERABLE '
-                     f'-- which is not the same as "it is still improving"')""",
-     """        elif _una:
-            _head = f'{", ".join(_una)} is still improving'"""),
-    # the freeze row becomes a placement lap again and retracts the
-    # declaration before it
-    ('freeze-row-back-to-kind-placement',
-     "      --board {_frozen} --kind systemic \\\\",
-     "      --board {_frozen} --kind placement \\\\"),
-    # the stage text stops being archived beside its hash
-    ('stage-text-archive-deleted',
-     "                    with open(_fp, 'x', encoding='utf-8') as _fh:\n"
-     "                        _fh.write(out or '')",
-     "                    with open(_fp, 'x', encoding='utf-8') as _fh:\n"
-     "                        pass"),
-]
+# --- loop_driver: RETIRED -------------------------------------------------
+# Its nine rows (the close-out order, the lens-file slots, the verdict paths)
+# left with loop_driver.py and its killer test_904_closeout_order.py when the
+# combined skill was retired for pcb-free-agent.
 
 # --- the GUI copy of the label ladder -------------------------------------
 GUI_ROWS = [
@@ -216,7 +159,6 @@ GUI_ROWS = [
 
 BATTERIES = {
     'converge': (CONVERGE, [LENS_TEST, LAP_TEST, COVER_TEST], CONVERGE_ROWS),
-    'driver': (DRIVER, [ORDER_TEST, LENS_TEST], DRIVER_ROWS),
     'gui': (GUI, [LENS_TEST], GUI_ROWS),
 }
 
@@ -286,7 +228,7 @@ def run(which, only=None):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('battery', nargs='?', choices=sorted(BATTERIES),
-                    help='default: all three')
+                    help='default: all of them')
     ap.add_argument('--row', help='run a single row by name')
     a = ap.parse_args()
     rc = 0

@@ -6,7 +6,9 @@ run printed each rule's skip reason -- "the intent declares no ..." -- and
 nothing required anyone to act on it. The roster makes that a decision: a
 rule that applies to this board, fails the grade when it fires, and that the
 plan neither arms nor excuses is refused at P1, by name, with the key that
-arms it.
+arms it. (P1 itself lived in the retired placement_driver; the tests that
+drove it now ask `rule_roster` / `roster_refusal_lines` directly, and the
+ones about P1's own precedence and wording left with it.)
 
 Measured before this was built (#959 Phase 0, P4): refusing EVERY dark ERROR
 rule refused 22 of 22 corpus boards with 90 dispositions, most of them the
@@ -49,8 +51,6 @@ BRIEF_711 = os.path.join(REPO, 'tests', 'fixtures', '711',
                          'esp_prog.design-brief.json')
 FIX = os.path.join(REPO, 'tests', 'fixtures', '959')
 PILE = os.path.join(FIX, 'run29_pile.kicad_pcb')
-DRIVER = os.path.join(REPO, '.claude', 'skills', 'plan-pcb-placement',
-                      'scripts', 'placement_driver.py')
 
 #: The smallest raw intent fragment that ARMS each rule. The test asserts the
 #: fragment arms `_wants` and that `_ARMING_KEY` names its first segment, so a
@@ -452,105 +452,98 @@ def test_a_grade_without_the_roster_says_so():
     print("  PASS: no roster reads as None, never as 'nothing owed'")
 
 
-def test_p1_refuses_by_name_and_passes_once_answered():
-    """The driver's own tiny board declares no envelope and no legality
-    budget; both apply to any outlined board and both are gating."""
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    drv = importlib.import_module('placement_driver')
+def test_the_roster_refuses_by_name_and_clears_once_answered():
+    """The tiny board declares no envelope and no legality budget; both
+    apply to any outlined board and both are gating, so the roster's refusal
+    lines name each arming key -- and a written disposition clears them."""
     with tempfile.TemporaryDirectory() as tmp:
-        board = drv._tiny_board(os.path.join(tmp, 'b.kicad_pcb'),
-                                ('U1', 'U2'))
-        blocks = [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
-                   'note': 'both parts, one zone'}]
-        bare = os.path.join(tmp, 'bare.json')
-        with open(bare, 'w', encoding='utf-8') as fh:
-            json.dump(drv._zone_plan_doc(blocks, dispositions={}), fh)
-        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                '--board', board, '--zone-plan', bare]
-        r = run_utils.check(argv, refuse='dispositions.rules.envelope',
-                            code=4)
-        assert '`legality_budget`' in r.stdout, r.stdout
-        answered = os.path.join(tmp, 'ok.json')
-        with open(answered, 'w', encoding='utf-8') as fh:
-            json.dump(drv._zone_plan_doc(blocks), fh)
-        r = run_utils.check(argv[:-1] + [answered], accept=True)
-        assert '<stage_instructions' in r.stdout, r.stdout[:400]
-    print("  PASS: P1 refuses naming the arming key, and passes once "
+        board = _tiny_board(os.path.join(tmp, 'b.kicad_pcb'), ('U1', 'U2'))
+        pcb = parse_kicad_pcb(board)
+
+        def lines(doc):
+            rows = fp.rule_roster(fp.intent_from_dict(doc, ''), pcb, board)
+            return '\n'.join(fp.roster_refusal_lines(rows))
+        bare = lines(_zone_plan_doc(BLOCKS, dispositions={}))
+        assert 'dispositions.rules.envelope' in bare, bare
+        assert '`legality_budget`' in bare, bare
+        answered = lines(_zone_plan_doc(BLOCKS))
+        assert answered == '', answered
+    print("  PASS: the roster refuses naming the arming key, and clears once "
           "answered")
 
 
 
 
-def _driver():
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    return importlib.import_module('placement_driver')
+def _tiny_board(path, refs):
+    """An outline and one part per ref, each with one connected pad.
+    (Was placement_driver._tiny_board, retired with that driver.)"""
+    fps = ''.join(
+        f'  (footprint "test:FP" (layer "F.Cu") (uuid "fp-{r}") '
+        f'(at {2 + 3 * i} 2)\n'
+        f'    (property "Reference" "{r}" (at 0 0))\n'
+        f'    (pad "1" smd rect (at 0 0) (size 0.6 0.8) (layers "F.Cu") '
+        f'(net 1 "/A") (uuid "p1-{r}"))\n'
+        '  )\n' for i, r in enumerate(refs))
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write('(kicad_pcb (version 20241229) (generator "test")\n'
+                 '  (net 0 "")\n  (net 1 "/A")\n'
+                 '  (gr_rect (start 0 0) (end 20 10) (layer "Edge.Cuts") '
+                 '(uuid "e1"))\n' + fps + ')\n')
+    return path
 
 
-def _tiny_with_brief(tmp, brief, name='b', **board_kw):
-    drv = _driver()
+def _zone_plan_doc(blocks, **extra):
+    """An intent carrying `blocks`, plus the two dispositions the tiny
+    board's roster owes (no envelope, no legality budget) unless `extra`
+    overrides them. (Was placement_driver._zone_plan_doc.)"""
+    doc = {'schema': 1, 'kind': 'floorplan-intent', 'units': 'mm',
+           'blocks': blocks,
+           'dispositions': {'rules': {
+               'envelope': 'the fixture board is its own envelope',
+               'legality': 'the fixture grades placement, not legality'}}}
+    doc.update(extra)
+    if not doc['dispositions'] or doc['dispositions'] == {'rules': {}}:
+        del doc['dispositions']
+    return doc
+
+
+def _tiny_with_brief(tmp, brief, name='b'):
     d = os.path.join(tmp, name)
     os.makedirs(d, exist_ok=True)
-    board = drv._tiny_board(os.path.join(d, 'board.kicad_pcb'),
-                            ('U1', 'U2'), **board_kw)
+    board = _tiny_board(os.path.join(d, 'board.kicad_pcb'), ('U1', 'U2'))
     if brief is not None:
         with open(os.path.join(d, 'board.design-brief.json'), 'w',
                   encoding='utf-8') as fh:
             json.dump(dict({'schema': 1, 'kind': 'design-brief',
                             'units': 'mm', 'board': 'board.kicad_pcb'},
                            **brief), fh)
-    return drv, board
-
-
-def _p1(board, plan_doc, tmp, *extra, name='p.json'):
-    p = os.path.join(tmp, name)
-    with open(p, 'w', encoding='utf-8') as fh:
-        json.dump(plan_doc, fh)
-    return [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-            '--board', board, '--zone-plan', p] + list(extra)
+    return board
 
 
 BLOCKS = [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
            'note': 'both parts, one zone'}]
 
 
-def test_a_plan_that_drops_brief_declarations_is_refused_at_p1():
-    """Phase-1 verifier B1: a plan with `proximity: []` passed P1 against a
-    brief declaring proximity claims, and one with no edge entries passed
-    against a brief claiming edges -- the roster called both "only a
-    declaration can arm it" / "nothing has an edge to claim". Now P1's
-    brief-clause check refuses each dropped clause by id (the coverage
-    P-close grades), and the roster names the brief instead of asking for a
-    second answer to the same question."""
+def test_the_roster_names_the_brief_for_dropped_declarations():
+    """Phase-1 verifier B1: against a brief declaring proximity claims and
+    an edge, a plan carrying neither had the roster say "only a declaration
+    can arm it" / "nothing has an edge to claim". The roster now names the
+    brief instead of asking for a second answer to the same question, and
+    the ledger still reads the rule as uncovered. (P1's own brief-clause
+    refusal was the retired placement_driver's.)"""
     with tempfile.TemporaryDirectory() as tmp:
-        drv, board = _tiny_with_brief(tmp, {
+        board = _tiny_with_brief(tmp, {
             'interfaces': [{'ref': 'U2', 'edge': 'east',
                             'user_facing': True}],
             'proximity': [{'ref': 'U1', 'near': 'U2', 'max_mm': 5.0,
-                           'requirement': 'R1', 'why': 'test'}]},
-            locked=('U2',))
-        r = run_utils.check(_p1(board, drv._zone_plan_doc(BLOCKS), tmp),
-                            refuse='drops or contradicts', code=4)
-        assert 'interfaces[U2]' in r.stdout, r.stdout
-        assert 'proximity[' in r.stdout, r.stdout
-        # Carrying both clauses answers it.
-        full = drv._zone_plan_doc(
-            BLOCKS, edge_connectors=[{'ref': 'U2', 'edge': 'east',
-                                      'class': 'edge_receptacle'}],
-            proximity=[{'ref': 'U1', 'near': 'U2', 'max_mm': 5.0}])
-        r = subprocess.run(_p1(board, full, tmp, name='full.json'),
-                           capture_output=True, text=True, encoding='utf-8',
-                           errors='replace', cwd=REPO, timeout=900)
-        assert 'drops or contradicts' not in r.stdout, r.stdout
-        # The roster: named, applicable, answered at the clause gate.
+                           'requirement': 'R1', 'why': 'test'}]})
         from placement import design_brief as db
         pcb = parse_kicad_pcb(board)
         bp = os.path.join(os.path.dirname(board), 'board.design-brief.json')
         frag, _ = db.compile_brief(db.load_brief(bp),
                                    board_refs=sorted(pcb.footprints))
         rows = {r_['rule']: r_ for r_ in fp.rule_roster(
-            fp.intent_from_dict(drv._zone_plan_doc(BLOCKS), ''), pcb,
+            fp.intent_from_dict(_zone_plan_doc(BLOCKS), ''), pcb,
             board, brief_fragment=frag)}
         for name in ('proximity', 'edge_connector'):
             row = rows[name]
@@ -558,19 +551,11 @@ def test_a_plan_that_drops_brief_declarations_is_refused_at_p1():
             assert not row['policy'] and not row['needs_disposition'], row
             assert 'design brief declares' in row['applicability_reason']
         led = {x['id']: x for x in fp.declaration_ledger(
-            fp.intent_from_dict(drv._zone_plan_doc(BLOCKS), ''),
+            fp.intent_from_dict(_zone_plan_doc(BLOCKS), ''),
             list(rows.values()))}
         assert led['rule:proximity']['status'] == 'uncovered', led
-    print("  PASS: dropped brief proximity and edge clauses are refused at "
-          "P1 by id; carried, they pass; the roster names the brief")
-
-
-def test_a_malformed_brief_refuses_p1():
-    with tempfile.TemporaryDirectory() as tmp:
-        drv, board = _tiny_with_brief(tmp, {'bogus_key': 1})
-        run_utils.check(_p1(board, drv._zone_plan_doc(BLOCKS), tmp),
-                        refuse='cannot be read', code=4)
-    print("  PASS: a brief check_floorplan refuses is refused at P1 too")
+    print("  PASS: the roster names the brief for dropped proximity and "
+          "edge clauses, and the ledger reads them uncovered")
 
 
 def test_the_withheld_debt_is_read_off_the_budget():
@@ -674,39 +659,6 @@ def test_ledger_statuses_say_what_the_roster_says():
           "advisory / inapplicable each where the roster says")
 
 
-def test_a_stale_only_plan_opens_with_the_true_sentence():
-    """Phase-1 verifier S4: a plan whose only debt is a stale disposition
-    opened "0 rule(s) this plan leaves dark ... nothing answers for them"."""
-    with tempfile.TemporaryDirectory() as tmp:
-        drv, board = _tiny_with_brief(tmp, None)
-        doc = drv._zone_plan_doc(BLOCKS, dispositions={
-            'rules': {'envelope': 'fixture', 'legality': 'fixture'},
-            'withheld': {'overlap_area': 'nothing withholds this'}})
-        r = run_utils.check(_p1(board, doc, tmp),
-                            refuse='answers something that is not asked',
-                            code=4)
-        assert '0 rule(s)' not in r.stdout, r.stdout
-        assert 'STALE dispositions.withheld.overlap_area' in r.stdout
-    print("  PASS: a stale-only plan is refused with the stale header")
-
-
-def test_the_roster_runs_last_at_p1():
-    """Phase-1 verifier S6/D02: the older P1 refusals keep precedence. A plan
-    with an unzoned movable part AND a dark gating rule is refused for the
-    unzoned part."""
-    with tempfile.TemporaryDirectory() as tmp:
-        drv = _driver()
-        board = drv._tiny_board(os.path.join(tmp, 'b.kicad_pcb'),
-                                ('U1', 'U2'))
-        doc = drv._zone_plan_doc(
-            [{'name': 'one', 'refs': ['U1'], 'zone': [0, 0, 10, 10],
-              'note': 'U1 only'}], dispositions={})
-        r = run_utils.check(_p1(board, doc, tmp),
-                            refuse='sit in no zoned block', code=4)
-        assert 'dispositions.rules.envelope' not in r.stdout, r.stdout
-    print("  PASS: the unzoned-part refusal comes before the roster's")
-
-
 def test_gating_and_applicability_predicates():
     """Phase-1 verifier S5: the pin-distance gating arms, the edge-claim
     classes, a two-faced board's zone_side, and `_arm_decap_pins`."""
@@ -735,8 +687,7 @@ def test_gating_and_applicability_predicates():
     assert roster(ul)['zone_side']['applicable'] is True
     assert roster(ESP)['zone_side']['applicable'] is False
     with tempfile.TemporaryDirectory() as tmp:
-        tiny = _driver()._tiny_board(os.path.join(tmp, 't.kicad_pcb'),
-                                     ('U1', 'U2'))
+        tiny = _tiny_board(os.path.join(tmp, 't.kicad_pcb'), ('U1', 'U2'))
         t = roster(tiny)
         assert t['edge_connector']['applicable'] is False, t['edge_connector']
         assert t['decap_pin_distance']['applicable'] is False, t[
@@ -782,13 +733,10 @@ def test_the_cli_carries_the_roster_everywhere_it_says():
 
 
 TESTS = [
-    test_a_plan_that_drops_brief_declarations_is_refused_at_p1,
-    test_a_malformed_brief_refuses_p1,
+    test_the_roster_names_the_brief_for_dropped_declarations,
     test_the_withheld_debt_is_read_off_the_budget,
     test_a_suspect_overhang_records_why_oob_count_is_withheld,
     test_ledger_statuses_say_what_the_roster_says,
-    test_a_stale_only_plan_opens_with_the_true_sentence,
-    test_the_roster_runs_last_at_p1,
     test_gating_and_applicability_predicates,
     test_the_cli_carries_the_roster_everywhere_it_says,
     test_every_rule_has_its_table_entries,
@@ -806,7 +754,7 @@ TESTS = [
     test_a_board_with_only_orphan_caps_is_not_applicable,
     test_the_cli_prints_the_roster_and_the_carried_facts,
     test_a_grade_without_the_roster_says_so,
-    test_p1_refuses_by_name_and_passes_once_answered,
+    test_the_roster_refuses_by_name_and_clears_once_answered,
 ]
 
 

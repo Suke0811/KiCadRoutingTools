@@ -242,7 +242,7 @@ For each differential pair (from `list_nets.py --diff-pairs`):
 routing skill loops on:
 
 ```bash
-python3 -X utf8 .claude/skills/plan-pcb-placement-and-routing/scripts/board_score.py \
+python3 -X utf8 py_tools/board_score.py \
     board.kicad_pcb --intent wk/floorplan.json \
     --min-track-width <spec> --min-via-diameter <spec> --min-via-drill <spec>
 ```
@@ -284,4 +284,4 @@ UNGRADED (not scored, not passed): impedance, length
 2. Re-run route_planes.py --add-gnd-vias for the 3 uncovered signal vias
 ```
 
-When connectivity or routing failures are found, recommend `/diagnose-routing-failures` as the follow-up rather than diagnosing inline here.
+When connectivity or routing failures are found, recommend `/diagnose-routing-failures` as the follow-up rather than diagnosing inline here. If they trace to part positions (pad copper off the outline, unreachable pads, `check_assembly` not buildable), recommend `/pcb-free-agent full` instead of a router retry.

@@ -31,8 +31,7 @@ import tempfile
 RUN_ALL_FAST_OK = True
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(
-    ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts'))
+sys.path.insert(0, os.path.join(ROOT, 'py_tools'))
 import board_score  # noqa: E402
 
 SIZE = (24.0, 20.0)

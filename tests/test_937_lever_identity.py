@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """#937: which LEVER a ledger row pulled, derived rather than guessed.
 
-`loop_driver.py:4-9` records the one documented reason the two drivers are
-separate: "placement accepts a lap when the named finding it aimed at is gone,
+The retired `loop_driver.py:4-9` recorded the one documented reason the two
+drivers were separate: "placement accepts a lap when the named finding it aimed at is gone,
 routing accepts an iteration when `blocking` strictly decreased... The driver
 never emits both." That argues for an accept rule stated PER LEVER rather than
 per half -- and the first thing such a rule needs is to know which lever a row

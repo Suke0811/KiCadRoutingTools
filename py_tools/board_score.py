@@ -119,9 +119,9 @@ def krt_dir() -> str:
             raise SystemExit(f"PCB_KICADROUTINGTOOLS={env!r} has no check_drc.py "
                              f"-- not a KiCadRoutingTools clone")
         return env
-    # <krt>/.claude/skills/plan-pcb-placement-and-routing/scripts/board_score.py -> four up
+    # <krt>/py_tools/board_score.py -> one up
     here = os.path.dirname(os.path.abspath(__file__))
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(here))))
+    root = os.path.dirname(here)
     if _is_clone(root):
         return root
     raise SystemExit(

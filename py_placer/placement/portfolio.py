@@ -879,9 +879,9 @@ def rank_key(cand: Candidate, q: int = 0) -> RankKey:
 
       crossings      the first-class pre-route judge (raw count).
                      UNRESOLVED, AND DISCLOSED: this slot ranks on crossings
-                     while the placement skill's non-negotiable 4 and
-                     evidence-map.md say to report crossings and NEVER gate on
-                     it. Both cannot be right. The evidence behind
+                     while the retired placement skill's non-negotiable 4
+                     and evidence-map.md said to report crossings and NEVER
+                     gate on it. Both cannot be right. The evidence behind
                      non-negotiable 4 is r = +0.780 against DISTANCE-TO-TRUTH,
                      which is not a routability measurement; the evidence for
                      this slot is that crossings is near-injective over a real

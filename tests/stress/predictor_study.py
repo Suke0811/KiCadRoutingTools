@@ -101,9 +101,7 @@ from harvest_predictor_rows import (METRIC_KEYS, PREDICTOR_KEYS,  # noqa: E402
                                     TRUTH_BY_KEYS, sha256_file, git_describe)
 
 SCHEMA = 1
-BOARD_SCORE = os.path.join(
-    ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts',
-    'board_score.py')
+BOARD_SCORE = os.path.join(ROOT, 'py_tools', 'board_score.py')
 ROUTE_PY = os.path.join(ROOT, 'py_router', 'route.py')
 
 #: THE BOARD SET, fixed in source before any number was seen.

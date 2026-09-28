@@ -20,9 +20,9 @@ import (importing board_score pulls in the routing engine).
 
 `assembly` is the one deliberate exemption, and it is declared here with its
 reason rather than silently skipped: assembly is graded at the PLACEMENT
-boundaries by the boundary verifier's check 5 (references/verifier-prompts.md,
-"Check 5 addendum"), which answers `VERDICT=...:check=<1-5>` -- a grammar
-`_LENS_RE` refuses on purpose. The routed-board lenses are 7-9 and none of them
+boundaries by the pcb-free-agent verifier (references/verifier.md runs
+check_assembly), which answers a bare `VERDICT=PASS|FAIL` with no `lens=` --
+a grammar `_LENS_RE` refuses on purpose. The routed-board lenses are 7-9 and none of them
 was ever asked to run check_assembly.
 
 Also pinned here, because it is the same claim from the other side: the
@@ -41,16 +41,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'py_placer'))
 import converge                                               # noqa: E402
 
-BOARD_SCORE = os.path.join(
-    ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts',
-    'board_score.py')
+BOARD_SCORE = os.path.join(ROOT, 'py_tools', 'board_score.py')
 
 #: Graded somewhere other than a routed-board lens, with WHERE. Not a bare
 #: skip-list: an exemption with no reason is how a real gap gets filed under
 #: "known".
 EXEMPT = {
-    'assembly': ('boundary verifier check 5 (verifier-prompts.md, "Check 5 '
-                 'addendum"), whose VERDICT= line carries check=<1-5> and not '
+    'assembly': ('the pcb-free-agent verifier (references/verifier.md runs '
+                 'check_assembly), whose VERDICT= line carries no '
                  'lens=<name>'),
 }
 

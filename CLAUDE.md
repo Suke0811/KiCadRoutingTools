@@ -98,17 +98,12 @@ Validate routed boards against the *real* spec, with the right checker — most
   to the real argparse, every quoted DEFAULT to the real default (read from
   `--help` where the parser is built under `if __name__ == '__main__'` and
   cannot be imported), and every `exits N` annotation to whether that flag can
-  reach `gate_or_exit` at all. It reads a driver through BOTH dumps:
-  `--dump-all` shows the instructions with every guard satisfied, and
-  **`--dump-refusals` shows the other branch** -- the commands a STUCK reader
-  is handed, which were unscanned until it existed (one of them exited 2).
-  `--dump-refusals` audits itself: refusal sites come from the driver's own
-  AST, and every string literal of 12+ characters a refusal can print must
-  appear in the dump, so an unrendered ARM of a four-arm refusal fails too.
-  `tests/test_923_output_key_claims.py` is the third: it RUNS `board_context`,
-  `check_pockets`, `check_floorplan`, `render_placement`, `board_score` and
-  `place_seed` on a tracked fixture and resolves every cited key against what
-  they really wrote (`hot[].ratio` was never an emitted key;
+  reach `gate_or_exit` at all. (The staged placement and combined drivers it
+  also read through `--dump-all` / `--dump-refusals` were retired with their
+  skills in favour of `/pcb-free-agent`, which prescribes no stages.)
+  `tests/test_923_output_key_claims.py` is the third: it RUNS the instruments
+  the skills quote (`check_floorplan`, `render_placement`, `board_score`) on a
+  tracked fixture and resolves every cited key against what they really wrote (`hot[].ratio` was never an emitted key;
   `broken.poured_nets_meaning` is written under `components.`). A claim about a
   tool it does not run, or one in prose naming no instrument, is still
   invisible -- both files say so.
@@ -218,8 +213,8 @@ Validate routed boards against the *real* spec, with the right checker — most
   in the placement stack measures z, so a declared height limit would grade
   nothing at all. See `docs/design-brief.md`.
   **Since #959 the connector declarations COMPILE** (`design_brief.
-  compile_with_consequences`, which `check_floorplan`, `board_brief` and the
-  placement skill's P1 call, so emit, grade and drift see the same clauses).
+  compile_with_consequences`, which `check_floorplan` and `board_brief` call,
+  so emit, grade and drift see the same clauses).
   `edge_mount` / `through_edge` compile to a 0.75 mm setback, read on the drawn
   body for an edge-mount part or an edge receptacle (a class `user_facing`,
   the emitter or a declared edge assigns) and on the courtyard otherwise. A vertical mount is exempt from the receptacle seat.
@@ -229,7 +224,7 @@ Validate routed boards against the *real* spec, with the right checker — most
   passed off as a declaration. `mechanical.json` beside the board is read the
   same way (`--mechanical` / `--no-mechanical`): reconciled against the brief
   and the outline, value by value with an authority, and compiled into
-  grade-only anchors, whose refs P1 requires to be locked -- or named, unlocked,
+  grade-only anchors, whose refs must be locked -- or named, unlocked,
   by a plan `fixed_poses[]` entry at the declared pose (with its `rot` where the
   file has one), which the seeder's stage 0 seats and locks (#1054).
   `docs/floorplan-intent.md` has the authority table.
