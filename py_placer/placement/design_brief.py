@@ -132,7 +132,8 @@ _ENVELOPE_KEYS = {'depth', 'clear'}
 #: nowhere else to go. Both land in the compiled entry's `context`.
 _KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow', 'kind', 'why',
                  'note', 'context'}
-_FIXED_KEYS = {'ref', 'why', 'requirement', 'context', 'pose'}
+_FIXED_KEYS = {'ref', 'why', 'requirement', 'context', 'pose',
+               'accept_courtyard_overlap'}
 #: #1054. The exact pose a `fixed[]` part is to be SEATED at. `rot` and
 #: `side` may be "unknown"; `x`/`y` may not -- a pose with no position is
 #: not a pose, and the row stays carried without one.
@@ -746,6 +747,10 @@ def _brief_from_dict(raw: Dict, source_path: str = '') -> Brief:
             raise BriefError(f"{where}: expected an object with a `ref`")
         if 'pose' in f:
             _fixed_pose(f, f"{where} ({f['ref']})", seen_refs)
+        elif f.get('accept_courtyard_overlap') is not None:
+            raise BriefError(
+                f"{where} ({f['ref']}): accept_courtyard_overlap waives an "
+                f"overlap at a declared POSE, and this row declares none")
         fixed.append(dict(f))
     posed = [str(f['ref']) for f in fixed if 'pose' in f]
     dup = sorted({r for r in posed if posed.count(r) > 1})
@@ -1088,6 +1093,11 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
                 unknown.append(f"fixed[{ref}].{key}")
         if f.get('why'):
             row['why'] = str(f['why'])
+        if f.get('accept_courtyard_overlap') is not None:
+            # #1060: passed through as written; the intent loader validates
+            # it (literal refs, not the entry's own, a `why`) and the seeder
+            # refuses a ref the board does not have.
+            row['accept_courtyard_overlap'] = f['accept_courtyard_overlap']
         ctx = dict(f.get('context') or {})
         if f.get('requirement'):
             ctx['requirement'] = f['requirement']
@@ -1850,7 +1860,8 @@ def drift_pairs(intent_doc: Dict, fragment: Dict) -> List[Tuple[str, str]]:
                         f"{ref}: the brief fixes its pose; the intent has no "
                         f"fixed_poses entry for it"))
             continue
-        for field_name in ('x', 'y', 'rot', 'side', 'basis'):
+        for field_name in ('x', 'y', 'rot', 'side', 'basis',
+                           'accept_courtyard_overlap'):
             if f.get(field_name) != cur.get(field_name):
                 out.append((f"fixed[{ref}].pose",
                             f"{ref}.pose.{field_name}: brief says "

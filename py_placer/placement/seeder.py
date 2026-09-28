@@ -3440,7 +3440,9 @@ def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
     return area, w, h
 
 
-def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple]
+def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
+                      waived=frozenset(),
+                      waived_out: Optional[Dict[str, Dict]] = None
                       ) -> Tuple[Optional[str], List[str], Dict[str, str]]:
     """`(how, reasons, conflicts)` for seating `ref` EXACTLY at `pose`.
 
@@ -3472,6 +3474,14 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple]
     obstacle `legality_ctx.pair_shortfall`'s pad clearance, hole clearance,
     pad short and cross-part pad stack -- `pads_ok`'s conjuncts, called.
 
+    `waived` (#1060) is a set of unordered pairs `frozenset({a, b})` whose
+    COURTYARD overlap is declared -- `fixed_poses[].accept_courtyard_overlap`
+    and `overlap_waivers[]`. For such a pair the courtyard branch alone is
+    skipped, and the measurement is recorded in `waived_out[other]` instead
+    of refusing; pad clearance, pad shorts, hole clearance, the keep-out band
+    and the outline stay absolute, because a waiver is a claim about two
+    courtyards and nothing else.
+
     * `'contained'`: inside the outline, and nothing above fails.
     * `'overhang'`: the courtyard leaves the outline -- a connector or a
       mounting part may overhang by design, which is stage 1's exemption --
@@ -3501,8 +3511,14 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple]
         if ref not in containers and other not in containers:
             area, w, h = _courtyard_overlap(state, ref, pose, other, opose)
             if area > FIXED_OVERLAP_EPS_MM2:
-                conflicts[other] = (f"courtyard overlaps {other} by "
-                                    f"{w:.2f}x{h:.2f}mm ({area:.3f}mm2)")
+                if frozenset((ref, other)) in waived:
+                    if waived_out is not None:
+                        waived_out[other] = {'area_mm2': round(area, 4),
+                                             'w_mm': round(w, 3),
+                                             'h_mm': round(h, 3)}
+                else:
+                    conflicts[other] = (f"courtyard overlaps {other} by "
+                                        f"{w:.2f}x{h:.2f}mm ({area:.3f}mm2)")
         if ctx is not None:
             sf = ctx.pair_shortfall(ref, other, pose_a=pose, pose_b=opose)
             # `pads_ok`'s conjuncts, ABSOLUTE rather than seed-relative: a
@@ -3591,6 +3607,16 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
         refused[ref] = {'reason': why, 'pose': [x, y, f.get('rot')]}
         notes.append(f"fixed pose {ref}: REFUSED -- {why}")
         return None
+    # #1060: a waiver of a part the board does not have waives nothing, and
+    # a typo there would read as a pose that seated clean.
+    absent = [o for o in (f.get('accept_courtyard_overlap') or ())
+              if o not in (pcb_data.footprints or {})]
+    if absent:
+        why = (f"accept_courtyard_overlap names {', '.join(absent)}, which "
+               f"{'is' if len(absent) == 1 else 'are'} not on this board")
+        refused[ref] = {'reason': why, 'pose': [x, y, f.get('rot')]}
+        notes.append(f"fixed pose {ref}: REFUSED -- {why}")
+        return None
     part = state.parts[ref]
     rot_decl = f.get('rot')
     rot_kept = rot_decl is None or rot_decl == 'unknown'
@@ -3601,6 +3627,8 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
     rec = {'x': x, 'y': y, 'rot': rot, 'side': side_now,
            'basis': f.get('basis'), 'rot_kept': rot_kept,
            'side_kept': side_kept}
+    if f.get('accept_courtyard_overlap'):
+        rec['waives'] = sorted(f['accept_courtyard_overlap'])
     if not side_kept and side_decl != side_now:
         held.add(ref)
         refused[ref] = dict(rec, reason=(
@@ -3636,7 +3664,8 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
 def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
                       unplaced: Set[str], held: Set[str],
                       seated: Dict[str, Dict], refused: Dict[str, Dict],
-                      lock: Set[str], notes: List[str]) -> None:
+                      lock: Set[str], notes: List[str],
+                      waived=frozenset()) -> None:
     """Stage 0 (#1054): every `fixed_poses[]` entry, judged as ONE batch.
 
     ORDER-INDEPENDENT. Each declared pose is checked against the parts
@@ -3651,6 +3680,10 @@ def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
     the author's statement of where a part IS -- so keeping one would pick
     a winner by reference name, and a refusal that names the pair is what
     the author needs to fix the one that is wrong.
+
+    `waived` (#1060): the declared courtyard waivers as unordered pairs, so
+    a waiver on EITHER entry of a pair covers both checks -- checked one way
+    only, FID8 declared beside U30 would still refuse both halves.
     """
     declared: Dict[str, Tuple] = {}
     recs: Dict[str, Dict] = {}
@@ -3665,11 +3698,14 @@ def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
                            state.parts[r].rot) for r in placed
                        if r in state.parts}
     verdicts = {}
+    waived_hits: Dict[str, Dict[str, Dict]] = {}
     for ref in sorted(declared):
         obstacles = dict(fixed_obstacles)
         obstacles.update({o: p for o, p in declared.items() if o != ref})
+        waived_hits[ref] = {}
         verdicts[ref] = _fixed_pose_check(state, ref, declared[ref],
-                                          obstacles)
+                                          obstacles, waived=waived,
+                                          waived_out=waived_hits[ref])
     for ref in sorted(declared):
         how, reasons, conflicts = verdicts[ref]
         x, y, rot = declared[ref]
@@ -3693,6 +3729,27 @@ def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
         unplaced.discard(ref)
         lock.add(ref)
         seated[ref] = dict(rec, how=how)
+        if waived_hits.get(ref):
+            # Disclosed, never silent: the measured overlap each waiver
+            # accepted, in the record `JSON_SUMMARY.fixed_seated` carries.
+            seated[ref]['courtyard_waived'] = waived_hits[ref]
+            notes.append(
+                f"fixed pose {ref}: courtyard overlap WAIVED with "
+                + ', '.join(f"{o} ({m['w_mm']:.2f}x{m['h_mm']:.2f}mm, "
+                            f"{m['area_mm2']:.3f}mm2)"
+                            for o, m in sorted(waived_hits[ref].items()))
+                + " -- declared by accept_courtyard_overlap / "
+                  "overlap_waivers; pads, holes, keep-outs and the outline "
+                  "were still checked")
+        unused = sorted(o for o in (recs[ref].get('waives') or ())
+                        if o not in waived_hits.get(ref, {}))
+        if unused:
+            notes.append(f"fixed pose {ref}: accept_courtyard_overlap names "
+                         f"{', '.join(unused)}, and stage 0 measured no "
+                         f"courtyard overlap with "
+                         f"{'it' if len(unused) == 1 else 'them'} (not yet "
+                         f"placed, or not overlapping: the grade reports "
+                         f"which)")
         notes.append(f"fixed pose {ref}: seated exactly at ({x:g}, {y:g}, "
                      f"{rot:g}deg)"
                      + (" overhanging the outline (pads on the board)"
@@ -3889,10 +3946,14 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     fixed_seated: Dict[str, Dict] = {}
     fixed_refused: Dict[str, Dict] = {}
     fixed_lock: Set[str] = set()
+    _waiver_pairs = getattr(intent, 'waiver_pairs', None)
     _seat_fixed_poses(state, pcb_data,
                       getattr(intent, 'fixed_poses', ()) or (), placed,
                       unplaced, held, fixed_seated, fixed_refused,
-                      fixed_lock, notes)
+                      fixed_lock, notes,
+                      waived=frozenset(frozenset(p) for p in
+                                       (_waiver_pairs() if _waiver_pairs
+                                        else ())))
 
     # ---- 1. edge connectors: spec geometry, no legality gate ---------------
     # edge_claims(), not the raw key: a connector_affinity entry declares a

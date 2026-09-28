@@ -189,8 +189,10 @@ _ARRAY_KEYS = {'name', 'members', 'serves', 'order', 'rotation', 'pitch_mm',
 #: #1054. An exact pose a part is to be seated at. `basis` says whose fact it
 #: is: `declared` (the design brief) or `mechanical` (mechanical.json).
 #: `rot`/`side` may be `"unknown"`; absent means nobody said.
+#: `accept_courtyard_overlap` (#1060): the refs whose COURTYARD this pose may
+#: overlap -- a named waiver, carrying its `why`, of courtyard overlap only.
 _FIXED_POSE_KEYS = {'ref', 'x', 'y', 'rot', 'side', 'basis', 'why',
-                    'context'}
+                    'context', 'accept_courtyard_overlap'}
 _FIXED_POSE_BASES = ('declared', 'mechanical')
 #: #837. The board-level assembly policy: which faces the fab will populate.
 #: `blocks[].side` is a claim about ONE subsystem; this is a claim about the
@@ -465,11 +467,18 @@ class Intent:
                      if c.get('class') != 'connector_affinity')
 
     def waiver_pairs(self) -> Tuple[Tuple[str, str], ...]:
+        """Every declared courtyard-overlap waiver: `overlap_waivers[]`
+        and, since #1060, each `fixed_poses[].accept_courtyard_overlap` ref
+        paired with its entry's ref -- one declaration, read by the stage-0
+        check, the body-overlap report and the plan check alike."""
         out = []
         for w in self.overlap_waivers:
             pair = w.get('pair') or ()
             if len(pair) == 2:
                 out.append((str(pair[0]), str(pair[1])))
+        for f in self.fixed_poses:
+            for other in f.get('accept_courtyard_overlap') or ():
+                out.append((str(f['ref']), str(other)))
         return tuple(out)
 
     def severity_of(self, rule: str, default: str = ERROR) -> str:
@@ -865,6 +874,35 @@ def _fixed_pose_entries(raw: Dict, conns, must_lock) -> List[Dict]:
                 f"pose is decides what a contradiction means")
         if f.get('why') is not None and not isinstance(f['why'], str):
             raise IntentError(f"{where}.why: expected a string")
+        # #1060: a NAMED courtyard waiver. Literal refs (a glob would waive
+        # parts nobody looked at), never the entry's own ref, no repeats, and
+        # a `why` -- a waiver is a claim the author must be able to defend.
+        # Whether each ref is ON the board is a board question, answered by
+        # the seeder (refused) and the grade (`fixed_pose_unresolved`).
+        acc = f.get('accept_courtyard_overlap')
+        if acc is not None:
+            if not isinstance(acc, list) or not all(
+                    isinstance(r, str) and r for r in acc):
+                raise IntentError(
+                    f"{where}.accept_courtyard_overlap: expected a list of "
+                    f"references")
+            bad = [r for r in acc if any(c in r for c in '*?[')]
+            if bad:
+                raise IntentError(
+                    f"{where}.accept_courtyard_overlap: {bad} -- literal "
+                    f"references only; a pattern would waive parts nobody "
+                    f"looked at")
+            if ref in acc:
+                raise IntentError(
+                    f"{where}.accept_courtyard_overlap names {ref} itself")
+            if len(set(acc)) != len(acc):
+                raise IntentError(
+                    f"{where}.accept_courtyard_overlap repeats a reference")
+            if acc and not str(f.get('why') or '').strip():
+                raise IntentError(
+                    f"{where}: accept_courtyard_overlap needs a `why` -- it "
+                    f"accepts a finding KiCad's DRC reports, so it must say "
+                    f"why the overlap is the design")
         if ref in edge_refs:
             raise IntentError(
                 f"{where}: {ref} is also an `edge_connectors` entry. Stage 1 "
@@ -1636,6 +1674,68 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
     out.extend(mechanical_anchor_violations(
         pcb_data, pcb_file, pseudo, state=state, locked=locked,
         outline=outline, prefix=FIXED_POSE_ANCHOR_PREFIX, basis='fixed_pose'))
+    out.extend(_fixed_pose_waiver_findings(intent, pcb_data, pcb_file,
+                                           state=state))
+    return out
+
+
+def _fixed_pose_waiver_findings(intent: Intent, pcb_data, pcb_file: str, *,
+                                state=None) -> List['Violation']:
+    """#1060: every `fixed_poses[].accept_courtyard_overlap` ref, graded.
+
+    A ref the board does not have is an ERROR (`fixed_pose_unresolved`), as a
+    pose for a missing part is: a waiver of nothing reads as a clean grade. A
+    waived pair whose courtyards DO overlap on this board is a WARN
+    (`fixed_pose_overlap_waived`), with the measured overlap -- the board
+    carries exactly the finding KiCad's DRC reports, disclosed rather than
+    silently accepted. A waiver that measures no overlap is said too (WARN
+    with `overlap_mm2: 0`), since a stale waiver is how a real overlap is
+    later waved through."""
+    out: List[Violation] = []
+    todo = [(str(f['ref']), str(o), str(f.get('why') or ''))
+            for f in intent.fixed_poses
+            for o in (f.get('accept_courtyard_overlap') or ())]
+    if not todo:
+        return out
+    fps = pcb_data.footprints or {}
+    live = []
+    for ref, other, why in todo:
+        missing = [r for r in (ref, other) if r not in fps]
+        if missing:
+            if ref in fps:
+                out.append(Violation(
+                    rule='fixed_pose_unresolved',
+                    severity=intent.severity_of('fixed_pose_unresolved'),
+                    ref=ref,
+                    message=(f"fixed_poses[{ref}].accept_courtyard_overlap "
+                             f"names {other}, which is not on this board -- "
+                             f"a waiver of a part that does not exist grades "
+                             f"clean, so this is an error"),
+                    measured={'found': False, 'waiver': other}))
+            continue
+        live.append((ref, other, why))
+    if not live:
+        return out
+    if state is None:
+        import pose_score
+        state = pose_score.make_state(pcb_data, pcb_file)
+    for ref, other, why in live:
+        pa, pb = state.parts.get(ref), state.parts.get(other)
+        if pa is None or pb is None:
+            continue
+        area = legality.pair_overlap_area(
+            pa.sides, pa.side, pa.rect(), pa.tht_rect(),
+            pb.sides, pb.side, pb.rect(), pb.tht_rect())
+        out.append(Violation(
+            rule='fixed_pose_overlap_waived',
+            severity=intent.severity_of('fixed_pose_overlap_waived', WARN),
+            ref=ref,
+            message=((f"{ref}'s courtyard overlaps {other}'s by "
+                      f"{area:.3f}mm2, waived by its fixed pose ({why})")
+                     if area > 1e-6 else
+                     (f"{ref}'s fixed pose waives courtyard overlap with "
+                      f"{other}, and none is measured -- a stale waiver")),
+            measured={'waives': other, 'overlap_mm2': round(area, 4)}))
     return out
 
 
@@ -5302,7 +5402,9 @@ _NON_RULE_SEVERITIES = frozenset({
     'array_unresolved', 'array_conflict',
     # #1054. Raised by `fixed_pose_violations`: a fixed pose for a ref the
     # board does not have (ERROR), or one the anchor cannot grade (WARN).
-    'fixed_pose_unresolved'})
+    'fixed_pose_unresolved',
+    # #1060: a declared courtyard waiver, disclosed (WARN by default).
+    'fixed_pose_overlap_waived'})
 
 #: Every rule name an intent may set a severity for. Derived from `RULES`, so a
 #: new rule is settable the moment it is registered -- a hand-listed set would

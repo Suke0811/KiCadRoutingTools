@@ -358,7 +358,12 @@ never nudged when the pose is illegal, and stamped `(locked yes)`. Its
 clause id is `fixed[REF].pose`, graded by that anchor. A ref with a pose that
 is also a declared `interfaces[]` row is refused by name: the interface
 compiles to an edge connector the seeder seats at its band, and a pose seats it
-exactly. A pose never becomes `must_lock`; merging over an emitted intent drops
+exactly. A row with a pose may also carry `accept_courtyard_overlap: [refs]`
+(#1060), passed through to the intent entry as written -- a named waiver of
+COURTYARD overlap only, with a required `why`, for a human pose that overlaps a
+part it is designed to (see the fixed-poses section of
+[floorplan-intent.md](floorplan-intent.md)); on a row with no pose it is
+refused. A pose never becomes `must_lock`; merging over an emitted intent drops
 an edge entry the EMITTER inferred for the same ref, and says so under
 `context.brief.contradictions`.
 

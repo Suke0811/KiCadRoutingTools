@@ -22,14 +22,16 @@ JSON results are committed. The boards are regenerable and are not
 | a | nothing: the current seeder |
 | b | every `check_floorplan --suggest-arrays` row declared as `arrays[]` (20 rows, accepted wholesale), then seed + quench |
 | c | "the AI places the key parts": U30, RN1-RN12 and the 17 SN74LVC1T45 buffers written at their **human** pose (`kicad_files/glasgow_revC.kicad_pcb`) and stamped `(locked yes)` in the input board, then the rest seeded |
-| cd | the same 29 RN/buffer poses **declared** as intent `fixed_poses[]` (stage 0 seats them); U30 file-locked at its human pose exactly as in c |
+| cd | the same 30 key poses **declared** as intent `fixed_poses[]` (stage 0 seats them), U30's carrying `accept_courtyard_overlap: ["FID8"]` (#1060); nothing is file-locked by hand |
 
-**Why U30 is file-locked in cd.** U30's human pose overlaps FID8 by
-1.15 x 1.15 mm. FID8 is itself file-locked at its human pose in the input, so
-stage 0 refuses a U30 declaration by design, and declaring FID8 as well would
-change nothing. Leaving U30 to the seeder would make cd differ from c in two
-ways at once. With U30 locked, c and cd differ ONLY in how the 29 small parts
-are held: a file lock versus a declaration.
+**U30 and FID8.** U30's human pose overlaps FID8 by 1.15 x 1.15 mm (kicad-cli
+reports it). FID8 is itself file-locked at its human pose in the input, so
+stage 0 refused a plain U30 declaration by design, and the recordings below
+were made with U30 file-locked in cd's input as in c. Since #1060 the entry
+names the overlap it accepts, courtyard only, and cd needs no hand lock.
+Re-run after #1060 (seeds 0 and 1, `--probe-arms` none): cd writes the SAME
+placement as c -- `pose_identity` empty on both seeds, crossings 2486 / 2367,
+hpwl 4461.76 / 4393.56, 17 base errors each.
 
 **What the detector suggests here** (the 20 rows in `setup.json`):
 - Four 2-member RN rows: RN1/RN2 and RN7/RN8 serving U30, RN3/RN4 serving J3,
@@ -200,6 +202,7 @@ changes.
    - Declaring the 29 RN/buffer poses as `fixed_poses[]` seats all 29.
    - The result is the SAME placement as the file-locked arm, seed for seed,
      and routes identically on the three probed seeds.
-   - One exception: U30. Its human pose overlaps FID8 by 1.15 x 1.15 mm, so
-     stage 0 refuses it as a declaration. It stays file-locked here, and a
-     brief or intent cannot place it where the human did.
+   - U30 was the one exception when this was recorded: its human pose
+     overlaps FID8 by 1.15 x 1.15 mm, so stage 0 refused it as a
+     declaration. #1060 closed that: `accept_courtyard_overlap: ["FID8"]`
+     seats it, and cd needs no file lock at all (see the U30 note above).
