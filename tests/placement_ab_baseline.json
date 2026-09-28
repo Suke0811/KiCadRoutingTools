@@ -18,6 +18,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 20,
    "inversions": 1643,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -35,6 +37,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
    "inversions": 1693,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -56,6 +60,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 13,
    "inversions": 1299,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -73,6 +79,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 1341,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -95,6 +103,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 5,
    "inversions": 194,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -112,6 +122,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
    "inversions": 186,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -133,6 +145,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 29,
    "inversions": 825,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 2
   },
   "on": {
@@ -150,7 +164,93 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 767,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 2
+  }
+ },
+ "band-edge-glasgow_revC": {
+  "board": "glasgow_revC.kicad_pcb",
+  "mark": "neutral",
+  "off": {
+   "body_advisory": 3,
+   "body_blocking": 0,
+   "crossings": 3113,
+   "edge_facing_pads": 8,
+   "health_block_displacement_max_mm": 24.4481,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 4905.75,
+   "intent_errors": 1,
+   "intent_errors_by_rule": {
+    "edge_connector": 1
+   },
+   "intent_errors_enforced": 0,
+   "intent_errors_other": 1,
+   "inversions": 1643,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
+   "unseated": 0
+  },
+  "on": {
+   "body_advisory": 3,
+   "body_blocking": 0,
+   "crossings": 3113,
+   "edge_facing_pads": 8,
+   "health_block_displacement_max_mm": 24.4481,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 4905.75,
+   "intent_errors": 1,
+   "intent_errors_by_rule": {
+    "edge_connector": 1
+   },
+   "intent_errors_enforced": 0,
+   "intent_errors_other": 1,
+   "inversions": 1643,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
+   "unseated": 0
+  }
+ },
+ "band-edge-rp2350_fpga_eensy_prePlane": {
+  "board": "rp2350_fpga_eensy_prePlane.kicad_pcb",
+  "mark": "neutral",
+  "off": {
+   "body_advisory": 31,
+   "body_blocking": 15,
+   "crossings": 741,
+   "edge_facing_pads": 0,
+   "health_block_displacement_max_mm": 10.0283,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 1021.4,
+   "intent_errors": 1,
+   "intent_errors_by_rule": {
+    "zone_containment": 1
+   },
+   "intent_errors_enforced": 1,
+   "intent_errors_other": 0,
+   "inversions": 378,
+   "oob_keepout_copper_amount": 0.1049,
+   "oob_keepout_copper_count": 1,
+   "unseated": 1
+  },
+  "on": {
+   "body_advisory": 31,
+   "body_blocking": 15,
+   "crossings": 741,
+   "edge_facing_pads": 0,
+   "health_block_displacement_max_mm": 10.0283,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 1021.4,
+   "intent_errors": 1,
+   "intent_errors_by_rule": {
+    "zone_containment": 1
+   },
+   "intent_errors_enforced": 1,
+   "intent_errors_other": 0,
+   "inversions": 378,
+   "oob_keepout_copper_amount": 0.1049,
+   "oob_keepout_copper_count": 1,
+   "unseated": 1
   }
  },
  "body-esp_prog": {
@@ -169,6 +269,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 10,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -184,6 +286,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 8,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -205,6 +309,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 626,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -220,6 +326,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 637,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -241,6 +349,8 @@
    "intent_errors_enforced": 3,
    "intent_errors_other": 0,
    "inversions": 722,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -258,6 +368,8 @@
    "intent_errors_enforced": 4,
    "intent_errors_other": 0,
    "inversions": 718,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -277,6 +389,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 77,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -292,6 +406,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 82,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -311,6 +427,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 1392,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -326,6 +444,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 1390,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -347,6 +467,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 626,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -364,6 +486,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 638,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -385,6 +509,8 @@
    "intent_errors_enforced": 3,
    "intent_errors_other": 0,
    "inversions": 722,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -402,6 +528,8 @@
    "intent_errors_enforced": 3,
    "intent_errors_other": 0,
    "inversions": 717,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -423,6 +551,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 15,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -440,6 +570,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 15,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -462,6 +594,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 1,
    "inversions": 1643,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -480,6 +614,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 1,
    "inversions": 1750,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -501,6 +637,8 @@
    "intent_errors_enforced": 6,
    "intent_errors_other": 0,
    "inversions": 653,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 4
   },
   "on": {
@@ -518,6 +656,8 @@
    "intent_errors_enforced": 5,
    "intent_errors_other": 0,
    "inversions": 670,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 4
   }
  },
@@ -539,6 +679,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
    "inversions": 194,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -556,6 +698,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
    "inversions": 194,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -577,6 +721,8 @@
    "intent_errors_enforced": 4,
    "intent_errors_other": 0,
    "inversions": 211,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 2
   },
   "on": {
@@ -594,6 +740,8 @@
    "intent_errors_enforced": 4,
    "intent_errors_other": 0,
    "inversions": 211,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 2
   }
  },
@@ -613,6 +761,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 825,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 2
   },
   "on": {
@@ -630,6 +780,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 815,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 2
   }
  },
@@ -649,6 +801,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 15,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -664,6 +818,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 18,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -685,6 +841,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
    "inversions": 194,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -702,6 +860,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
    "inversions": 198,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -721,6 +881,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 211,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 2
   },
   "on": {
@@ -736,6 +898,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 211,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 2
   }
  },
@@ -757,6 +921,8 @@
    "intent_errors_enforced": 5,
    "intent_errors_other": 0,
    "inversions": 1392,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -774,6 +940,8 @@
    "intent_errors_enforced": 6,
    "intent_errors_other": 0,
    "inversions": 1392,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -795,6 +963,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 626,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -810,6 +980,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 651,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -831,6 +1003,8 @@
    "intent_errors_enforced": 3,
    "intent_errors_other": 0,
    "inversions": 355,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -848,6 +1022,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 347,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -869,6 +1045,8 @@
    "intent_errors_enforced": 3,
    "intent_errors_other": 0,
    "inversions": 722,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -884,6 +1062,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 721,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -905,6 +1085,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 15,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -922,6 +1104,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 15,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -944,6 +1128,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 1,
    "inversions": 1750,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -962,6 +1148,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 1,
    "inversions": 1750,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -983,6 +1171,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
    "inversions": 194,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -1000,6 +1190,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
    "inversions": 194,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -1021,6 +1213,8 @@
    "intent_errors_enforced": 4,
    "intent_errors_other": 0,
    "inversions": 211,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -1038,6 +1232,8 @@
    "intent_errors_enforced": 2,
    "intent_errors_other": 0,
    "inversions": 210,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -1060,6 +1256,8 @@
    "intent_errors_enforced": 4,
    "intent_errors_other": 10,
    "inversions": 77,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   },
   "on": {
@@ -1078,6 +1276,8 @@
    "intent_errors_enforced": 3,
    "intent_errors_other": 10,
    "inversions": 77,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": 0
   }
  },
@@ -1097,6 +1297,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 1393,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -1112,6 +1314,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 1357,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -1131,6 +1335,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 651,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -1146,6 +1352,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 644,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -1167,6 +1375,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 347,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -1184,6 +1394,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 352,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -1203,6 +1415,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 721,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -1218,6 +1432,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 789,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -1239,6 +1455,8 @@
    "intent_errors_enforced": 1,
    "intent_errors_other": 0,
    "inversions": 209,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -1254,6 +1472,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 190,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -1273,6 +1493,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 202,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -1288,6 +1510,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 201,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -1309,6 +1533,8 @@
    "intent_errors_enforced": 6,
    "intent_errors_other": 0,
    "inversions": 721,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -1324,6 +1550,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 721,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  },
@@ -1345,6 +1573,8 @@
    "intent_errors_enforced": 2,
    "intent_errors_other": 0,
    "inversions": 83,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   },
   "on": {
@@ -1360,6 +1590,8 @@
    "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 81,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
    "unseated": null
   }
  }
