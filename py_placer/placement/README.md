@@ -1500,9 +1500,13 @@ re-seating 85/92 while leaving its zone targets unmoved):
   `repaired` only when every grade error it was charged for is gone
   (#1066): each charged ref, moved or not, is re-graded after the pass and
   one still carrying its claim is `unresolved`, named in `JSON_SUMMARY`
-  (`repaired_refs`, `unresolved_refs`, `unresolved_by_rule`). `unresolved`
-  sets no exit code of its own; exit 4 stays `unrepairable`'s and the final
-  grade's.
+  (`repaired_refs`, `unresolved_refs`, `unresolved_by_rule`). So is a moved
+  ref whose move CREATED an error the input poses did not have (a cap moved
+  off a pad conflict and out of its decap limit), and a cap pushed past the
+  decap search radius (its `decap_distance` became `decap_ungraded`, which is
+  not a fix). `unresolved` sets no exit code of its own; exit 4 stays
+  `unrepairable`'s and the final grade's. `place_reconstruct`'s legalize
+  stage reports the same `unresolved` list.
 - **`place_reconstruct.py`** (`placement/reconstruct.py`) — the structural
   ("puzzle") solver: tier classification (frame -> anchors -> smalls),
   corner-inset pattern fit (propose-only), rigid ±v vector detection, ONE

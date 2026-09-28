@@ -24,6 +24,13 @@ C3 alone at the human pose: 2.125mm from U1):
 * A charged claim the POSE grader cannot reproduce (it comes from `grade`
   outside the rules loop, so no move can clear it) stays UNRESOLVED.
 * A re-grade that RAISES is not a pass: the ref is unresolved and says why.
+* A move that CREATES an error is not a repair (the phase-1 verifier's
+  counterexample): splitflap with 12 parts displaced, C8 and C12 are moved
+  off pad conflicts and out of their decap limits -- unresolved, "created".
+* Leaving the decap search radius is not a fix: C3 pushed past 5mm from U1
+  becomes `decap_ungraded` (warn), and stays unresolved.
+* A created `decap_pin_distance` (it names the IC) is charged to the CAP
+  whose move stranded the pin, through its measured `cap`.
 * CLI: `place_seed --repair` writes `violators`, `repaired_refs`,
   `unresolved_refs`, `unresolved_by_rule` (its exit 4 is the final grade's,
   as before), and -- the issue's own regression property -- the refs it
@@ -198,6 +205,129 @@ def test_a_regrade_that_raises_is_not_a_pass():
     print(f"  PASS: {note[0]}")
 
 
+def _perturbed(board, td, n=12, mm=4.0, seed='1'):
+    """`n` random unlocked parts of `board` displaced up to `mm` on each
+    axis, deterministically (the phase-1 verifier's generator)."""
+    import random
+    from placement.parser import extract_locked_refs
+    from placement.portfolio import copy_siblings
+    pcb = parse_kicad_pcb(board)
+    rng = random.Random(seed)
+    locked = extract_locked_refs(board)
+    refs = sorted(r for r in pcb.footprints if r not in locked
+                  and '~' not in r and not r.startswith('#'))
+    moves = []
+    for r in rng.sample(refs, min(n, len(refs))):
+        f = pcb.footprints[r]
+        moves.append({'reference': r,
+                      'new_x': f.x + rng.uniform(-1, 1) * mm,
+                      'new_y': f.y + rng.uniform(-1, 1) * mm,
+                      'new_rotation': f.rotation or 0.0})
+    src = os.path.join(td, 'perturbed.kicad_pcb')
+    write_placed_output(board, src, moves)
+    copy_siblings(board, src)
+    return src
+
+
+def test_a_move_that_creates_a_decap_error_is_not_repaired():
+    """The phase-1 verifier's counterexample: charged claims alone are not
+    enough, because a cap charged for a PAD conflict and moved off it can
+    land outside its decap limit -- the charge clears, the board gains an
+    error, and the cap read repaired. splitflap, 12 parts displaced up to
+    4mm (seed 1): C8 and C12 were reported repaired with a decap_distance
+    error only the repair's move had created."""
+    board = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
+    with tempfile.TemporaryDirectory() as td:
+        doc = fp.emit_intent(parse_kicad_pcb(board), board)
+        doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=2.5,
+                             max_pin_distance_mm=2.5)
+        ipath = os.path.join(td, 'intent.json')
+        with open(ipath, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh)
+        intent = fp.load_intent(ipath)
+        src = _perturbed(board, td)
+        before = {v.ref for v in fp.grade(
+            intent, parse_kicad_pcb(src), src, group_sources=SOURCES,
+            clearance=CLEARANCE).errors if v.rule in DECAP_RULES}
+        res = _repair(src, intent)
+        still = _decap_refs_after(src, res, intent, td, 'c.kicad_pcb')
+        created = sorted(still - before)
+        assert created, ("no move created a decap error on this fixture, "
+                         "so the arm is vacuous", before, still)
+        for r in created:
+            note = [n for n in res['notes']
+                    if n.startswith(f'{r}: UNRESOLVED')]
+            assert note and 'created decap_distance' in note[0], (
+                r, res['notes'])
+            assert r in res['unresolved'], (r, res['unresolved'])
+        assert not set(res['repaired']) & still, (res['repaired'], still)
+    print(f"  PASS: {created} gained a decap error from their own move and "
+          f"are unresolved; repaired {sorted(res['repaired'])} carry none")
+
+
+def test_a_cap_pushed_past_the_decap_radius_is_not_cleared():
+    """`decap_distance` stops being graded past the search radius (it becomes
+    `decap_ungraded`, warn): leaving the radius must not read as the charge
+    cleared. esp_prog, C3 6mm out from its pose (4.58mm from U1, on top of
+    its neighbours), which the repair pushes 0.5mm further -- past 5mm."""
+    import math
+    pcb = parse_kicad_pcb(ESP)
+    c = pcb.footprints['C3']
+    a = 2 * math.pi * 13 / 16
+    with tempfile.TemporaryDirectory() as td:
+        intent, _p = _intent(td)
+        board = _board(td, 'far.kicad_pcb',
+                       [('C3', c.x + 6.0 * math.cos(a),
+                         c.y + 6.0 * math.sin(a))])
+        res = _repair(board, intent)
+        out = os.path.join(td, 'far_out.kicad_pcb')
+        write_placed_output(board, out, res['moves'])
+        g = fp.grade(intent, parse_kicad_pcb(out), out,
+                     group_sources=SOURCES, clearance=CLEARANCE)
+        assert [v.rule for v in g.violations if v.ref == 'C3'] == [
+            'decap_ungraded'], [(v.rule, v.measured) for v in g.violations
+                                if v.ref == 'C3']
+        assert 'C3' in res['unresolved'], (res['repaired'], res['notes'])
+        note = [n for n in res['notes'] if n.startswith('C3: UNRESOLVED')]
+        assert note and 'decap_ungraded' in note[0], res['notes']
+    print(f"  PASS: {note[0]}")
+
+
+def test_a_created_pin_error_is_charged_to_the_cap_that_moved():
+    """`decap_pin_distance` names the IC, not the cap whose move stranded its
+    pin, so a created one must be attributed through its measured `cap`.
+    Injected: the re-grade adds U1's pin error naming C3, which the repair
+    moved off Y1; U1 did not move."""
+    pcb = parse_kicad_pcb(ESP)
+    y1 = pcb.footprints['Y1']
+    real = fp.PoseGrader.violations
+    calls = {'n': 0}
+
+    def plus_pin(self, *a, **kw):
+        out = real(self, *a, **kw)
+        calls['n'] += 1
+        if calls['n'] > 1 and not kw.get('poses') and not kw.get('exclude'):
+            out = list(out) + [fp.Violation(
+                'decap_pin_distance', fp.ERROR, 'injected', ref='U1',
+                measured={'pad': '20', 'net': '/VCC', 'cap': 'C3',
+                          'gap_mm': 9.0},
+                expected={'max_pin_distance_mm': 2.0})]
+        return out
+    with tempfile.TemporaryDirectory() as td:
+        intent, _p = _intent(td)
+        board = _board(td, 'pin.kicad_pcb', [('C3', y1.x, y1.y)])
+        fp.PoseGrader.violations = plus_pin
+        try:
+            res = _repair(board, intent)
+        finally:
+            fp.PoseGrader.violations = real
+        moved = {m['reference'] for m in res['moves']}
+        assert 'C3' in moved and 'U1' not in moved, moved
+        assert 'decap_pin_distance' in res['unresolved_claims'].get('C3', ()), \
+            (res['unresolved_claims'], res['notes'])
+    print("  PASS: U1's created pin error is charged to the moved cap C3")
+
+
 def _summary(r):
     m = re.search(r'^JSON_SUMMARY: (.*)$', r.stdout, re.M)
     assert m, r.stdout[-1500:]
@@ -244,6 +374,9 @@ TESTS = [
     test_a_moved_violator_still_failing_is_unresolved_and_a_real_fix_is_not,
     test_a_claim_the_pose_grader_cannot_reproduce_stays_unresolved,
     test_a_regrade_that_raises_is_not_a_pass,
+    test_a_move_that_creates_a_decap_error_is_not_repaired,
+    test_a_cap_pushed_past_the_decap_radius_is_not_cleared,
+    test_a_created_pin_error_is_charged_to_the_cap_that_moved,
     test_cli_writes_the_refs_and_the_repaired_set_is_honest,
 ]
 

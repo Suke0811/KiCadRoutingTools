@@ -40,27 +40,29 @@ ROWS = [
     # The obvious half-fix: re-grade only the parts that did not move. A cap
     # moved off a pad conflict and still too far from its IC reads repaired.
     ('regrade-only-zero-move', 's',
-     "    charged_repaired = [r for r in repaired if r in charged_claims]\n",
-     "    charged_repaired = [r for r in repaired if r in charged_claims\n"
-     "                        and r in zero_move]\n",
+     "    check_refs = [r for r in dict.fromkeys(repaired)\n"
+     "                  if r in charged_claims or r in moved_refs]\n",
+     "    check_refs = [r for r in dict.fromkeys(repaired)\n"
+     "                  if (r in charged_claims or r in moved_refs)\n"
+     "                  and r in zero_move]\n",
      (T1066,), 'KILLED'),
 
     # A charged claim the pose grader never produces (it comes from `grade`
     # outside the rules loop) read as cleared because it is absent after.
     ('invariant-claims-read-as-cleared', 's',
      "                                if c in after_claims\n"
-     "                                or c not in claims_regradable})\n",
-     "                                if c in after_claims})\n",
+     "                                or c not in claims_regradable\n",
+     "                                if c in after_claims\n",
      (T1066,), 'KILLED'),
 
     # A re-grade that raises treated as "nothing left", i.e. repaired.
     ('a-raising-regrade-reads-as-clear', 's',
      "            except (floorplan.UntrustworthyOutline, ValueError) as exc:\n"
      "                regrade_error = exc\n"
-     "        moved_refs =",
+     "        after_claims = ({floorplan.violation_claim(v) for v in after\n",
      "            except (floorplan.UntrustworthyOutline, ValueError) as exc:\n"
-     "                after_claims = set()\n"
-     "        moved_refs =",
+     "                after = []\n"
+     "        after_claims = ({floorplan.violation_claim(v) for v in after\n",
      (T1066,), 'KILLED'),
 
     # The census stops recording what each ref was charged for.
@@ -69,6 +71,27 @@ ROWS = [
      "                    charged_claims.setdefault(v.ref, []).append(\n",
      "                if False:\n"
      "                    charged_claims.setdefault(v.ref, []).append(\n",
+     (T1066,), 'KILLED'),
+
+    # The phase-1 verifier's counterexample: only the CHARGED claims are
+    # asked about, so an error the move itself created goes unseen.
+    ('a-move-that-creates-an-error-reads-repaired', 's',
+     "            for r in names & moved_refs:\n",
+     "            for r in set():\n",
+     (T1066,), 'KILLED'),
+
+    # A created error is attributed to its own ref only, so a cap that
+    # stranded its IC's supply pin (the error names the IC) reads repaired.
+    ('a-created-pin-error-attributed-to-the-ic-only', 's',
+     "            names = {v.ref} | {m.get(k) for k in ('cap', 'ic', 'near',\n",
+     "            names = {v.ref} | {m.get(k) for k in ('ic', 'near',\n",
+     (T1066,), 'KILLED'),
+
+    # Leaving the decap search radius reads as the charge cleared.
+    ('leaving-the-radius-clears-the-charge', 's',
+     "                                or (c[0] == 'decap_distance'\n"
+     "                                    and ref in ungraded)})\n",
+     "                                or False})\n",
      (T1066,), 'KILLED'),
 
     # The refs behind the count never reach JSON_SUMMARY.
