@@ -3440,6 +3440,60 @@ def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
     return area, w, h
 
 
+def _drill_conflict(state, a: str, pose_a, b: str, pose_b) -> Optional[str]:
+    """The closest pair of DRILL holes of `a` and `b` (plated or not) at their
+    poses, as a refusal, when they are closer than the board's own
+    `min_hole_to_hole` (else touching). None when clear.
+
+    The courtyard branch of `_fixed_pose_check` was the only thing that
+    caught two holes stacked on each other -- `pair_shortfall` checks a hole
+    against the other part's COPPER, never against its hole -- so a courtyard
+    waiver must re-ask it (#1060, phase-4 verifier: two coincident NPTH drills
+    seated under `accept_courtyard_overlap`)."""
+    from .legality import footprint_at_pose
+
+    def drills(ref, pose):
+        fp = (state.pcb_data.footprints or {}).get(ref)
+        if fp is None:
+            return []
+        out = []
+        for p in footprint_at_pose(fp, pose).pads:
+            d = max(float(getattr(p, 'drill', 0) or 0),
+                    float(getattr(p, 'drill_w', 0) or 0),
+                    float(getattr(p, 'drill_h', 0) or 0))
+            if d <= 0:
+                continue
+            hx = p.hole_x if getattr(p, 'hole_x', None) is not None \
+                else p.global_x
+            hy = p.hole_y if getattr(p, 'hole_y', None) is not None \
+                else p.global_y
+            out.append((hx, hy, d / 2.0, str(p.pad_number)))
+        return out
+    da, db = drills(a, pose_a), drills(b, pose_b)
+    if not da or not db:
+        return None
+    floor = 0.0
+    try:
+        from list_nets import board_constraint
+        floor = float(board_constraint(state.pcb_file, 'min_hole_to_hole')
+                      or 0.0)
+    except Exception:                                      # noqa: BLE001
+        floor = 0.0
+    worst = None
+    for ax, ay, ar, an in da:
+        for bx, by, br, bn in db:
+            gap = math.hypot(ax - bx, ay - by) - ar - br
+            if gap < floor - 1e-6 and (worst is None or gap < worst[0]):
+                worst = (gap, an, bn)
+    if worst is None:
+        return None
+    def name(ref, num):
+        return f"{ref}.{num}" if num else f"{ref}'s hole"
+    return (f"drill {name(a, worst[1])} is {worst[0]:.3f}mm from "
+            f"{name(b, worst[2])} (hole-to-hole floor {floor:g}mm; a negative "
+            f"gap is holes overlapping)")
+
+
 def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
                       waived=frozenset(),
                       waived_out: Optional[Dict[str, Dict]] = None
@@ -3516,6 +3570,10 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
                         waived_out[other] = {'area_mm2': round(area, 4),
                                              'w_mm': round(w, 3),
                                              'h_mm': round(h, 3)}
+                    # The courtyard is waived; its holes are not.
+                    _dh = _drill_conflict(state, ref, pose, other, opose)
+                    if _dh:
+                        conflicts[other] = _dh
                 else:
                     conflicts[other] = (f"courtyard overlaps {other} by "
                                         f"{w:.2f}x{h:.2f}mm ({area:.3f}mm2)")
@@ -3946,7 +4004,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     fixed_seated: Dict[str, Dict] = {}
     fixed_refused: Dict[str, Dict] = {}
     fixed_lock: Set[str] = set()
-    _waiver_pairs = getattr(intent, 'waiver_pairs', None)
+    _waiver_pairs = getattr(intent, 'courtyard_waiver_pairs', None)
     _seat_fixed_poses(state, pcb_data,
                       getattr(intent, 'fixed_poses', ()) or (), placed,
                       unplaced, held, fixed_seated, fixed_refused,

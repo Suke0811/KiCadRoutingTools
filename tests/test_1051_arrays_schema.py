@@ -540,7 +540,10 @@ def test_the_brief_carries_a_courtyard_waiver_and_drift_sees_it():
     frag, _rep = db.compile_brief(b, board_refs=sorted(_pcb().footprints))
     assert frag['fixed_poses'][0]['accept_courtyard_overlap'] == ['R6'], frag
     it = fp.intent_from_dict(_base(**frag))
-    assert ('U4', 'R6') in it.waiver_pairs(), it.waiver_pairs()
+    assert ('U4', 'R6') in it.courtyard_waiver_pairs(), it
+    # A COURTYARD waiver only: it is not an overlap_waivers[] pair, whose
+    # consumers exempt the drawn-body containment gate too (phase-4 verifier).
+    assert ('U4', 'R6') not in it.waiver_pairs(), it.waiver_pairs()
     doc = dict(_base(**frag))
     doc['fixed_poses'] = [dict(frag['fixed_poses'][0],
                                accept_courtyard_overlap=['R7'])]
@@ -549,7 +552,8 @@ def test_the_brief_carries_a_courtyard_waiver_and_drift_sees_it():
     _brief_rejects('declares none',
                    fixed=[{'ref': 'H1', 'why': 'w',
                            'accept_courtyard_overlap': ['R6']}])
-    print("  PASS: the waiver compiles 1:1, reaches waiver_pairs, drifts, and "
+    print("  PASS: the waiver compiles 1:1, reaches courtyard_waiver_pairs "
+          "(not waiver_pairs), drifts, and "
           "a pose-less row carrying one is refused")
 
 

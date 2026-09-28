@@ -467,15 +467,22 @@ class Intent:
                      if c.get('class') != 'connector_affinity')
 
     def waiver_pairs(self) -> Tuple[Tuple[str, str], ...]:
-        """Every declared courtyard-overlap waiver: `overlap_waivers[]`
-        and, since #1060, each `fixed_poses[].accept_courtyard_overlap` ref
-        paired with its entry's ref -- one declaration, read by the stage-0
-        check, the body-overlap report and the plan check alike."""
         out = []
         for w in self.overlap_waivers:
             pair = w.get('pair') or ()
             if len(pair) == 2:
                 out.append((str(pair[0]), str(pair[1])))
+        return tuple(out)
+
+    def courtyard_waiver_pairs(self) -> Tuple[Tuple[str, str], ...]:
+        """The pairs whose COURTYARD overlap a declared pose may carry
+        (#1060): `overlap_waivers[]` plus each `fixed_poses[].
+        accept_courtyard_overlap` ref paired with its entry's ref. Read by
+        stage 0 only. Deliberately NOT folded into `waiver_pairs`, whose
+        consumers (`grade_body_overlap`) exempt a pair from the drawn-BODY
+        containment gate too -- a courtyard waiver must not license one part
+        sitting wholly inside another's body (phase-4 verifier)."""
+        out = list(self.waiver_pairs())
         for f in self.fixed_poses:
             for other in f.get('accept_courtyard_overlap') or ():
                 out.append((str(f['ref']), str(other)))
@@ -1614,7 +1621,11 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
     file_poses = (mechanical or {}).get('poses') or {}
     lost = set(mechanical_skip or ())
     poses: Dict[str, Dict] = {}
-    out: List[Violation] = []
+    # #1060: the waivers first, and whatever happens below -- an entry whose
+    # pose the mechanical file's anchor grades is skipped further down, and
+    # its waiver must not be skipped with it (phase-4 verifier).
+    out: List[Violation] = list(_fixed_pose_waiver_findings(
+        intent, pcb_data, pcb_file, state=state))
     for f in intent.fixed_poses:
         ref = str(f['ref'])
         fp_ = file_poses.get(ref)
@@ -1674,8 +1685,6 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
     out.extend(mechanical_anchor_violations(
         pcb_data, pcb_file, pseudo, state=state, locked=locked,
         outline=outline, prefix=FIXED_POSE_ANCHOR_PREFIX, basis='fixed_pose'))
-    out.extend(_fixed_pose_waiver_findings(intent, pcb_data, pcb_file,
-                                           state=state))
     return out
 
 

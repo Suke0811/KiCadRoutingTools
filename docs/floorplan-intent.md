@@ -158,7 +158,7 @@ source, suspect, suspect_reason
 `severity` keys are checked too. The settable names are the fifteen rules —
 `envelope`, `zone_containment`, `zone_side`, `assembly_side`, `zone_exclusive`, `keepout`,
 `edge_connector`, `decap_distance`, `decap_ungraded`, `decap_pin_distance`,
-`proximity`, `must_lock`, `legality`, `pins_to_edge`, `array_formation` — plus the nine
+`proximity`, `must_lock`, `legality`, `pins_to_edge`, `array_formation` — plus the ten
 findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_zone_overlap`,
 `block_unresolved`, `intent_zone_in_keepout`, `keepout_allow_unresolved`,
 `array_unresolved`, `array_conflict` (#1051), `fixed_pose_unresolved` (#1054),
@@ -403,16 +403,19 @@ courtyard and still be the design -- glasgow's U30 overlaps FID8 by
 stage 0 refuses it. `accept_courtyard_overlap: ["FID8"]` on the entry, with a
 `why` (required), waives exactly that: the COURTYARD overlap with the named
 refs, as an unordered pair, so FID8 declared as well does not refuse both
-halves. Pad clearance, pad shorts, hole clearance, the keep-out band and the
-outline keep their absolute rules. The refs must be literal (a pattern is
+halves. Pad clearance, pad shorts, hole clearance -- hole to copper, and hole
+to hole at the board's `min_hole_to_hole` (the courtyard check was the only one
+that caught two stacked drills) -- the keep-out band and the outline keep their
+absolute rules. The refs must be literal (a pattern is
 refused), must not name the entry's own ref, and must be on the board (else the
 pose is refused, and the grade raises `fixed_pose_unresolved`). The measured
 overlap is disclosed in `fixed_seated[ref].courtyard_waived`, in a stage-0 note,
 and in the grade as `fixed_pose_overlap_waived` (**warn**; a waiver that
-measures no overlap says so too). The same pairs reach `waiver_pairs()`, so
-`check_assembly`, `render_placement` and the plan check read them like an
-`overlap_waivers[]` pair -- and stage 0 honours an `overlap_waivers[]` pair the
-same way. A pose also overlapping a part the waiver does not name (U30 and
+measures no overlap says so too). The waiver is read by stage 0 only
+(`Intent.courtyard_waiver_pairs`): it is NOT an `overlap_waivers[]` pair, whose
+consumers also exempt the drawn-body containment gate, so `check_assembly` and
+`render_placement` still judge the pair's bodies. Stage 0 does honour an
+`overlap_waivers[]` pair's courtyard the same way. A pose also overlapping a part the waiver does not name (U30 and
 TP2, once TP2 is placed or declared) is still refused.
 
 ### WHERE ALONG the edge: `center_on_edge` and `along_edge_band`

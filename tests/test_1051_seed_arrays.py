@@ -1028,6 +1028,67 @@ def test_the_waiver_covers_courtyards_only_both_ways():
           f"refuses ({why}); the outline still refuses")
 
 
+def _npth_pair(td, xb, waive=True):
+    """Two 2 x 2mm courtyards, each with ONE non-plated hole (drill 0.5) at
+    its origin, A at x=10 and B at x=`xb`; A waives B's courtyard."""
+    part = """ (footprint "t:H" (layer "F.Cu") (uuid "fp-%(r)s") (at %(x)s 10)
+  (property "Reference" "%(r)s" (at 0 0 0))
+  (fp_rect (start -1 -1) (end 1 1) (layer "F.CrtYd") (uuid "c-%(r)s"))
+  (pad "" np_thru_hole circle (at 0 0) (size 0.5 0.5) (drill 0.5) (layers "*.Cu" "*.Mask") (uuid "%(r)sh")))
+"""
+    body = ('(kicad_pcb\n (version 20241229)\n (net 0 "")\n'
+            ' (layers (0 "F.Cu" signal) (31 "B.Cu" signal))\n'
+            ' (gr_rect (start 0 0) (end 30 20) (layer "Edge.Cuts") '
+            '(uuid "e1"))\n'
+            + part % dict(r='A', x=5) + part % dict(r='B', x=25) + ')\n')
+    path = os.path.join(td, f'npth_{xb}.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(body)
+    a = {'ref': 'A', 'x': 10.0, 'y': 10.0, 'rot': 0, 'basis': 'declared'}
+    if waive:
+        a.update(accept_courtyard_overlap=['B'], why='the design')
+    doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm', 'fixed_poses': [
+        a, {'ref': 'B', 'x': xb, 'y': 10.0, 'rot': 0, 'basis': 'declared'}]}
+    return seeder.seed_from_intent(
+        parse_kicad_pcb(path), path, fp.intent_from_dict(doc, path),
+        random.Random('0'), group_sources=(), clearance=0.2,
+        board_edge_clearance=0.1)
+
+
+def test_the_waiver_does_not_waive_stacked_holes():
+    """The courtyard check was the only one that saw two holes on top of
+    each other (`pair_shortfall` checks a hole against COPPER), so a waived
+    pair re-asks it: coincident NPTH drills are refused even under the
+    waiver, holes 1.2mm apart (courtyards overlapping 0.8mm) seat."""
+    with tempfile.TemporaryDirectory() as td:
+        stacked = _npth_pair(td, 10.0)
+        assert set(stacked['fixed_refused']) == {'A', 'B'}, stacked
+        why = stacked['fixed_refused']['A']['reason']
+        assert "drill A's hole" in why and "from B's hole" in why, why
+        apart = _npth_pair(td, 11.2)
+        assert set(apart['fixed_seated']) == {'A', 'B'}, apart['fixed_refused']
+    print(f"  PASS: stacked holes refused under the waiver ({why}); apart "
+          f"they seat")
+
+
+def test_a_waiver_is_graded_even_where_the_mechanical_anchor_grades_the_pose():
+    """`fixed_pose_violations` skips an entry whose pose the mechanical
+    file's own anchor grades; its waiver must be graded anyway."""
+    pcb = parse_kicad_pcb(ESP)
+    r1 = pcb.footprints['R1']
+    doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+           'fixed_poses': [{'ref': 'R1', 'x': r1.x, 'y': r1.y,
+                            'rot': r1.rotation or 0, 'basis': 'declared',
+                            'why': 'w', 'accept_courtyard_overlap': ['NOPE']}]}
+    it = fp.intent_from_dict(doc)
+    mech = {'poses': {'R1': {'x': r1.x, 'y': r1.y, 'rot': r1.rotation or 0}}}
+    got = fp.fixed_pose_violations(it, pcb, ESP, mechanical=mech)
+    assert any(v.rule == 'fixed_pose_unresolved' and 'NOPE' in v.message
+               for v in got), [(v.rule, v.message) for v in got]
+    print("  PASS: the waiver is graded though the mechanical anchor "
+          "grades the pose")
+
+
 def test_a_waiver_the_board_cannot_honour_is_refused():
     """A waiver naming a ref the board does not have refuses the pose at
     stage 0 and is `fixed_pose_unresolved` (error) in the grade; the loader
@@ -1241,6 +1302,8 @@ TESTS = [
     test_a_named_courtyard_waiver_seats_u30_exactly,
     test_the_waiver_covers_courtyards_only_both_ways,
     test_a_waiver_the_board_cannot_honour_is_refused,
+    test_the_waiver_does_not_waive_stacked_holes,
+    test_a_waiver_is_graded_even_where_the_mechanical_anchor_grades_the_pose,
     test_fixed_pose_obeys_the_keepout_band_and_pad_stacks_absolutely,
     test_refused_fixed_pose_stays_unwritten_under_anchors_first,
     test_stage1_treats_a_stage0_part_as_an_obstacle,
