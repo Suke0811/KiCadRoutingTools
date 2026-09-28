@@ -995,7 +995,8 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
                            return_graph: bool = False,
                            zone_credit_validator=None,
                            pcb_data=None,
-                           strict_fragments: bool = False) -> Dict:
+                           strict_fragments: bool = False,
+                           via_in_pad_margin: Optional[float] = None) -> Dict:
     """Check connectivity for a single net.
 
     Args:
@@ -1019,6 +1020,12 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
             COINCIDENCE_TOL-clamped removal twin: the removal twin would
             split the soft joints test_component_multipoint pins as one
             component.
+        via_in_pad_margin: overrides the via-in-pad credit's margin (default:
+            the via's own radius -- the barrel overlapping the pad outline is
+            a joint, KiCad-true for grading). The strict removal model (#1063)
+            passes COINCIDENCE_TOL: an off-centre via-in-pad grazing the pad
+            outline is a joint KiCad accepts but not one a removal may lean
+            on, while a track ending inside the barrel stays joined.
 
     Returns dict with:
         - connected: bool - whether all pads are connected
@@ -1139,6 +1146,7 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
 
     # Add vias - they connect all layers at one location
     via_repr_id = {}        # via_idx -> a representative point id (layers all unioned)
+    via_point_ids = {}      # via_idx -> every point id of the via (one per layer)
     via_copper_layers = {}  # via_idx -> set of copper layers the via spans
     for via_idx, via in enumerate(vias):
         if via.layers:
@@ -1161,6 +1169,7 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
             _union(via_ids[0], vid)
         if via_ids:
             via_repr_id[via_idx] = via_ids[0]
+            via_point_ids[via_idx] = list(via_ids)
             via_copper_layers[via_idx] = {l for l in via_layers if l.endswith('.Cu')}
 
     # Add pads (use a reasonable default size for pads)
@@ -1378,7 +1387,9 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
                     pad.global_x, pad.global_y, '_via', reach):
                 if not (via_copper_layers[via_idx] & pad_copper_layers[pad_idx]):
                     continue
-                _m = max(vsize / 2 - 1e-6, tolerance)
+                _m = (max(vsize / 2 - 1e-6, tolerance)
+                      if via_in_pad_margin is None
+                      else max(via_in_pad_margin, tolerance))
                 if _point_in_pad(vx, vy, pad, margin=_m):
                     _union(pad_repr_id[pad_idx], via_repr_id[via_idx])
 
@@ -1527,6 +1538,7 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
               'pad_locations': list(pad_locations), 'edges': edges,
               'pad_index_repr': dict(pad_repr_id),
               'via_index_repr': dict(via_repr_id),
+              'via_point_ids': dict(via_point_ids),
               'zone_index_repr': dict(zone_repr_id),
               'num_segments': len(segments),
               'strict_fragments': strict_fragments,
@@ -1613,7 +1625,8 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     }
 
 
-def analyze_conn_excluding(graph: Dict, excluded_seg_indices=()) -> Dict:
+def analyze_conn_excluding(graph: Dict, excluded_seg_indices=(),
+                           excluded_via_indices=()) -> Dict:
     """Re-evaluate net connectivity from a prebuilt graph (check_net_connectivity
     with return_graph=True) with some segments EXCLUDED, WITHOUT rebuilding the
     expensive spatial graph (#263).
@@ -1622,8 +1635,12 @@ def analyze_conn_excluding(graph: Dict, excluded_seg_indices=()) -> Dict:
     endpoint points are ids 2i, 2i+1; excluding it drops every edge that touches
     them (its own start<->end union and any adjacency/T-junction/pad union to its
     endpoints), leaving those points isolated -- harmless, since only PAD roots
-    decide connectivity. Returns {connected, num_components, disconnected_pads},
-    matching check_net_connectivity on the reduced segment set.
+    decide connectivity. excluded_via_indices (#1063) does the same for vias,
+    by index into the ORIGINAL vias list: every per-layer point of the via drops
+    out, so a removal pass can grade "these segments AND the vias they leave
+    dangling" in one evaluation. Returns {connected, num_components,
+    disconnected_pads, num_copper_components}, matching check_net_connectivity
+    on the reduced copper.
 
     Caveat: this reuses the point set / copper-layer set built from the FULL
     segment list, so it diverges from a true recompute only if excluding a
@@ -1635,6 +1652,14 @@ def analyze_conn_excluding(graph: Dict, excluded_seg_indices=()) -> Dict:
     for i in excluded_seg_indices:
         excl.add(2 * i)
         excl.add(2 * i + 1)
+    excluded_vias = set(excluded_via_indices)
+    if excluded_vias:
+        vpids = graph.get('via_point_ids')
+        if vpids is None:
+            raise ValueError('analyze_conn_excluding: this graph records no '
+                             'via point ids, so a via cannot be excluded')
+        for j in excluded_vias:
+            excl.update(vpids.get(j, ()))
     uf = UnionFind()
     for a, b in graph['edges']:
         if a in excl or b in excl:
@@ -1643,31 +1668,23 @@ def analyze_conn_excluding(graph: Dict, excluded_seg_indices=()) -> Dict:
     pad_ids = graph['pad_ids']
     pad_locations = graph['pad_locations']
     if not pad_ids:
-        return {'connected': True, 'num_components': 0, 'disconnected_pads': []}
+        return {'connected': True, 'num_components': 0, 'disconnected_pads': [],
+                'num_copper_components': 0}
     pad_roots = [uf.find(pid) for pid in pad_ids]
     unique_roots = set(pad_roots)
     # Copper components over ALL points (pads + vias + non-excluded segment
     # endpoints): 'num_components' below is PAD components only, which lets
     # a removal strand a pad-less sliver unnoticed (castor POLLUX_SUB_IN's
     # 28um dangle, 0708d). Consumers that must not create islands or stubs
-    # gate on this count instead.
+    # gate on this count instead. (#1063: this was computed here from 0708d
+    # on, but never RETURNED -- so the island gate in collapse_strict_redundant
+    # and check_weird compared the .get() default 1 against itself and could
+    # never fire.)
     excluded = set(excluded_seg_indices)
     copper_roots = set(unique_roots)
-    for vid in graph.get('via_index_repr', {}).values():
-        copper_roots.add(uf.find(vid))
-    n_segs_total = graph.get('num_segments', 0)
-    for i_ in range(n_segs_total):
-        if i_ in excluded:
+    for j, vid in graph.get('via_index_repr', {}).items():
+        if j in excluded_vias:
             continue
-        copper_roots.add(uf.find(2 * i_))
-    # Copper components over ALL points (pads + vias + non-excluded segment
-    # endpoints): 'num_components' below is PAD components only, which lets
-    # a removal strand a pad-less sliver unnoticed (castor POLLUX_SUB_IN's
-    # 28um dangle, 0708d). Consumers that must not create islands or stubs
-    # gate on this count instead.
-    excluded = set(excluded_seg_indices)
-    copper_roots = set(unique_roots)
-    for vid in graph.get('via_index_repr', {}).values():
         copper_roots.add(uf.find(vid))
     n_segs_total = graph.get('num_segments', 0)
     for i_ in range(n_segs_total):
@@ -1688,7 +1705,8 @@ def analyze_conn_excluding(graph: Dict, excluded_seg_indices=()) -> Dict:
                 disconnected.append(loc)
     return {'connected': len(unique_roots) == 1,
             'num_components': len(unique_roots),
-            'disconnected_pads': disconnected}
+            'disconnected_pads': disconnected,
+            'num_copper_components': len(copper_roots)}
 
 
 def find_gap_between_components(debug_info: Dict, tolerance: float) -> Optional[Dict]:

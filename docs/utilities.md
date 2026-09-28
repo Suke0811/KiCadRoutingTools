@@ -1146,6 +1146,14 @@ disconnecting the net), **stacked** duplicate copper, and **floating** vias
 (vias touching no copper on any layer). It never modifies the board — use it as
 a triage pass before or after the other checkers.
 
+**Removable** is graded by the same predicate route.py's post-route cleanup
+removes by (`pcb_modification.StrictRemovalModel`, #1063): a segment, or an
+unbranched run of them, whose removal keeps every pad connected and leaves no
+new dangling end, soft joint, copper island or dangling via. So a plain
+`route.py` output carries no removable segment on the nets it cleaned; one that
+remains is copper that run did not own (a net outside its `--nets`, or input
+copper kept by `--keep-input-copper`).
+
 ### Usage
 
 ```bash

@@ -16,10 +16,11 @@ The contract -- uniform, with NO exceptions:
     ``CleanupOutcome.input_strip_segments`` for the writer to delete from its
     verbatim copy of the input;
   * subtractive passes must not manufacture soft joints (they run with the
-    ``_restore_soft_joint_bridges`` guard), and ``close_soft_joints`` runs
-    LAST so no later pass can re-delete the bridges it adds. The
-    ``no_more_copper_removal`` flag makes that ordering an enforced invariant
-    instead of a comment.
+    ``_restore_soft_joint_bridges`` guard), and ``close_soft_joints`` is the
+    last pass that ADDS copper. The one subtractive pass after it, the final
+    strict collapse (#1063), never removes the soft-joint bridges and web
+    connectors close lays and refuses any removal that would make a soft
+    joint, so no joint close firmed is ever reopened.
 
 ``KICAD_BOARD_LEDGER=1`` audits the contract at the end of a run (see
 ``verify_board_file_parity``): per in-scope net, the copper in ``pcb_data``
@@ -50,9 +51,27 @@ from pcb_modification import (
     smooth_octolinear_chains,
     close_soft_joints,
     merge_collinear_segments,
+    CLOSE_SOFT_JOINT_KINDS,
 )
 
 from terminal_colors import RED, RESET
+
+
+def _net_copper_signature(pcb_data, scope_net_ids):
+    """{net_id: frozenset of segment object ids} over the scope -- identity,
+    not geometry: every pass that changes a net's copper replaces, adds or
+    drops Segment objects."""
+    sig = {}
+    for s in pcb_data.segments:
+        if scope_net_ids is None or s.net_id in scope_net_ids:
+            sig.setdefault(s.net_id, set()).add(id(s))
+    return {k: frozenset(v) for k, v in sig.items()}
+
+
+def _changed_nets(before, after):
+    """Net ids whose segment set differs between two signatures."""
+    return {n for n in set(before) | set(after)
+            if before.get(n) != after.get(n)}
 
 
 def _smooth_skip_net_ids(pcb_data):
@@ -119,7 +138,10 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
       4. nudge_grazing_octolinear / 5. nudge_grazing_microshift /
       6. nudge_grazing_vias    -- re-bend / micro-shift load-bearing grazes the
                                   prune must keep (#224/#276/#280).
-      7. prune_redundant_cycles -- per-net tree invariant (RAM_A9 loops).
+      7. prune_redundant_cycles -- per-net tree invariant (RAM_A9 loops),
+         then collapse_strict_redundant (#217/#1063: strictly redundant
+         copper, incl. in-pad / in-via wiggles, and the vias it frees) and
+         remove_orphan_islands.
       8. sweep_dead_ends       -- trim dead-end spurs and unsupported vias.
       9. neck_wide_segments_grazing_pads -- width-only fix for wide power
                                   trunks overlapping a fine-pitch foreign pad.
@@ -131,12 +153,20 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
                                   shape pass, still before close (it removes
                                   copper); skips protected / impedance nets
                                   (_smooth_skip_net_ids).
-     10. close_soft_joints     -- LAST copper step (#319 ordering): bridge any
-                                  remaining same-net soft joint. The
-                                  subtractive passes above run with the
+     10. close_soft_joints     -- LAST ADDITIVE copper step (#319 ordering):
+                                  bridge any remaining same-net soft joint.
+                                  The subtractive passes above run with the
                                   _restore_soft_joint_bridges guard, so every
                                   joint close sees is router-born, never one a
                                   cleanup pass manufactured.
+     10b. collapse_strict_redundant again (#1063) -- only on nets changed
+                                  since step 7's collapse: smoothing and
+                                  close's via->pad bridge add copper that the
+                                  strict model (and check_weird) call
+                                  redundant. It never removes close's
+                                  soft-joint bridges or web connectors and
+                                  refuses any removal that makes a soft
+                                  joint, so every joint close firmed stands.
      11. merge_collinear_segments -- #811: join collinear same-net/layer/width
                                   pieces into one track. Runs AFTER close on
                                   purpose, and is the only pass allowed to:
@@ -364,18 +394,29 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
             print(f"{label}Cycle prune: removed {_cy_segs} redundant loop "
                   f"segment(s) across {_cy_nets} net(s)")
 
-    # Strict-redundant collapse (#217 classes 1-2): superseded parallel
-    # chains and pad/via-buried tails that are redundant under the strict
-    # width-clamped graph. Before the sweep so freed this-run vias drop.
+    # Strict-redundant collapse (#217 classes 1-2, #1063): superseded
+    # parallel chains, pad/via-buried tails and in-pad/in-via wiggles that
+    # are redundant under the strict removability model (the one check_weird
+    # grades with). Before the sweep so its freed this-run vias drop too.
     _prog("strict-redundant collapse")
+    _sc_stats = {}
     _sc_n, _sc_strip = collapse_strict_redundant(results, pcb_data, _sub_scope,
-                                                 keep_input_copper=keep_input_copper)
+                                                 keep_input_copper=keep_input_copper,
+                                                 stats=_sc_stats)
     counts['strict_collapsed'] = _sc_n
+    counts['strict_collapse_vias'] = _sc_stats.get('vias', 0)
     _trace('strict_collapse')
     strip.extend(_sc_strip)
     if _sc_n:
-        print(f"{label}Strict collapse: removed {_sc_n} redundant segment(s) "
-              f"(superseded parallel/buried copper)")
+        print(f"{label}Strict collapse: removed {_sc_n} redundant segment(s)"
+              + (f" and {_sc_stats['vias']} via(s) they freed"
+                 if _sc_stats.get('vias') else "")
+              + " (superseded parallel/buried/in-pad copper)")
+    # What each net looked like when the collapse finished: the final
+    # collapse below revisits only the nets a later pass changed. The object
+    # list is held so no id in the signature can be recycled meanwhile.
+    _after_collapse = _net_copper_signature(pcb_data, _sub_scope)
+    _after_collapse_refs = list(pcb_data.segments)  # noqa: F841 (keeps ids live)
 
     # Orphan islands (#217): track-copper components reaching NO pad of
     # their net -- rip/reroute leftovers connected to nothing. Runs before
@@ -496,6 +537,40 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
         if _bridged:
             print(f"{label}Bridged {_bridged} same-net soft joint(s) with a tiny "
                   f"connector")
+
+    # Final strict collapse (#1063). Two passes above ADD the copper
+    # check_weird counts as removable, after the collapse has run: octolinear
+    # smoothing ends a shortcut inside the pad it lands on (an in-pad wiggle),
+    # and close_soft_joints' via->pad bridge (#470) closes a loop through the
+    # via it firms (esp_prog /D_N: a direct F.Cu path beside a B.Cu detour
+    # through two vias). Re-collapse only the nets that changed since
+    # the collapse, never touching the soft-joint bridges and web connectors
+    # close laid (CLOSE_SOFT_JOINT_KINDS): that, plus the model's
+    # no-new-soft-joint guard, keeps the #319 contract that no later pass
+    # reopens a joint close firmed. The model leaves no dangle, island or
+    # dangling via behind, so no sweep has to follow it.
+    _changed = _changed_nets(_after_collapse,
+                             _net_copper_signature(pcb_data, _sub_scope))
+    if _changed:
+        _prog("final strict collapse")
+        _close_ids = {id(s) for r in results
+                      if r.get('cleanup') in CLOSE_SOFT_JOINT_KINDS
+                      for s in (r.get('new_segments') or [])}
+        _fc_stats = {}
+        _fc_n, _fc_strip = collapse_strict_redundant(
+            results, pcb_data, _changed, keep_input_copper=keep_input_copper,
+            protect_segment_ids=_close_ids, stats=_fc_stats)
+        counts['strict_collapsed_final'] = _fc_n
+        counts['strict_collapse_vias'] = (counts.get('strict_collapse_vias', 0)
+                                          + _fc_stats.get('vias', 0))
+        _trace('final_strict_collapse')
+        strip.extend(_fc_strip)
+        if _fc_n:
+            print(f"{label}Final strict collapse: removed {_fc_n} redundant "
+                  f"segment(s)"
+                  + (f" and {_fc_stats['vias']} via(s) they freed"
+                     if _fc_stats.get('vias') else "")
+                  + " left by smoothing / joint bridging")
 
     # #811 FINAL pass. Geometry-preserving by construction (see the pass
     # docstring), which is what lets it run after close_soft_joints and what

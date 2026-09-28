@@ -135,10 +135,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     face, or `check_reachability --pad` says CAGED: placement. Re-place,
     strip, re-route. A finer grid alone never widens a gap: grid
     0.05 → 0.0125 cost 40 min and left the same three nets unrouted.
-- **A plain `route.py` output is not DONE.** `check_complete` refuses the
-  in-pad wiggles the router keeps on purpose (#1063). Budget for a cleanup,
-  and measure it with `check_weird`. One `check_weird` per candidate is too
-  slow above a few thousand segments, so batch the candidates.
+- **`route.py`'s cleanup removes what `check_weird` calls removable** (#1063).
+  Both grade by one predicate, so a plain `route.py` output carries no
+  `removable-segment` or `redundant-cycle` finding on the nets that run
+  cleaned. One that remains is copper the run did not own: a net outside its
+  `--nets`, or input copper kept by `--keep-input-copper`.
 - **`route.py`'s own failure tally undercounts** after reconciliation laps
   (#1069). Count open nets with `check_connected` or `board_score`. A broken
   POURED net is `repair_planes.py`'s job (`components.broken.nets[].handler`),
