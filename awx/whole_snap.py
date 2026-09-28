@@ -943,6 +943,18 @@ def route(n, strict=True):
             path.append(prev[path[-1]])
         return [unpack(s_) for s_ in path[::-1]], npop
 
+    TURN_UNITS = _pairs.pose_turn_units(cfg)
+
+    def turned_over(path):
+        """where a pair's path (pose to pose) has turned through more than the pair router's max_turn_angle over some
+        stretch (pairs.pose_turn_over): a path that curls back onto itself, which the pair router cannot lay -- or None"""
+        moves, cells = [], []
+        for (i, j, d, _k, _s), (i2, j2, d2, _k2, _s2) in zip(path, path[1:]):
+            moves.append('v' if (i, j) == (i2, j2) else (d2 - d + 4) % 8 - 4)
+            cells.append((i2, j2))
+        q = _pairs.pose_turn_over(moves, TURN_UNITS)
+        return None if q is None else ((cells[q][0] + i0) * g, (cells[q][1] + j0) * g)
+
     def search_native():
         """search(S, d0, E, dN) for a single, by grid_router.lane_search: the same search, the same path. What it
         cannot form exactly itself -- a via's distance from the plan's via site, math.hypot of two non-integers -- is
@@ -984,15 +996,18 @@ def route(n, strict=True):
         combos = sorted(((rank(c0) + rank(c1), x0, x1)
                          for x0, c0 in enumerate(cands[0]) for x1, c1 in enumerate(cands[1])))
         path = None
-        tried, stuck = 0, ''
+        tried, stuck, turned = 0, '', None
         for _tot, x0, x1 in combos:
             c0, c1 = cands[0][x0], cands[1][x1]
             path, npop = search((c0[1][0] - i0, c0[1][1] - j0), c0[2], (c1[1][0] - i0, c1[1][1] - j0), (c1[2] + 4) % 8,
                                 poses=True)
             tried += 1
             if path is not None:
-                ends_out = [c0[3], c1[3]]
-                break
+                over = turned_over(path)
+                if over is None:
+                    ends_out = [c0[3], c1[3]]
+                    break
+                path, turned = None, over         # a path the pair router cannot lay: none between these poses
             if tried == POSE_TRIES:
                 # a few failed: ONE search from every start pose to any end pose -- none there, none for any pair of
                 # them (a pair that cannot be laid tried all 144 at 3-4 s each: K28 SDQS1, 535 s)
@@ -1001,12 +1016,20 @@ def route(n, strict=True):
                     EG.setdefault((c1_[1][0] - i0, c1_[1][1] - j0), set()).add((c1_[2] + 4) % 8)
                 any_, far_ = search(None, None, None, None, poses=True,
                                     multi=([((c0_[1][0] - i0, c0_[1][1] - j0), c0_[2]) for c0_ in cands[0]], EG))
+                if any_ is not None and turned_over(any_) is not None:
+                    # the cheapest from any start to any end turns too far: the rest are dearer, and each costs a search
+                    turned = turned_over(any_)
+                    break
                 if any_ is None:
                     if far_[1] is not None:
                         fi_, fj_, _fd, fk_, _fs = far_[1]
                         stuck = (f'; the farthest any start got: {far_[0]:.2f} of {total:.2f} mm along it, at '
                                  f'({(fi_ + i0) * g:.2f}, {(fj_ + j0) * g:.2f}) on {lays[fk_]}')
                     break
+        if path is None and turned is not None:
+            STUCK_AT['last'] = turned
+            stuck += (f'; its paths turn through more than the pair router\'s max_turn_angle ({TURN_UNITS * 45} degrees), '
+                      f'curling back onto themselves, at ({turned[0]:.2f}, {turned[1]:.2f})')
         if path is None:
             return None, (f'no end connector with a body between them ({len(cands[0])} x {len(cands[1])} candidate '
                           f'poses, {tried} tried' + (', then none from any to any' if tried < len(combos) else '') + ')' + stuck)
@@ -1220,6 +1243,13 @@ for n, why in failed.items():
     res['conflicts'].append({'frame': 'snap', 'xy': at, 'lanes': [n],
                              'charged': [{'kind': 'snap', 'text': f'{n}: {why}', 'short': 1.0, 'lanes': [n],
                                           'xy': at}], 'hard': []})
+    # a PAIR that cannot be laid: its change nearest where it got stuck goes back to the solve as a via cut, a jog's
+    # room wide (pairs.jog_room) -- the dive stands where its via cannot keep to the lane's line and still leave the
+    # pair its straight runs (zynq K26 DQS1: a via 0.3 mm off the line, 0.57 mm short of its berth, laid as a hook)
+    ch_, vs_ = plan.get('changes', {}).get(n), [tuple(v_[:2]) for v_ in LANE[n]['vias']]
+    if n in prs and ch_ and len(ch_) == len(vs_):
+        q_ = min(range(len(vs_)), key=lambda k_: math.hypot(vs_[k_][0] - at[0], vs_[k_][1] - at[1]))
+        res.setdefault('dive_cuts', []).append({'lane': n, 'u': float(ch_[q_]), 'w': _pairs.jog_room(cfg)})
 if PAIRS_ONLY:
     # the singles as the smooth plan has them, the pairs held: the plan the polish fits the singles into
     for n in M:

@@ -150,6 +150,35 @@ def pose_probe_steps(cfg) -> int:
     return 3
 
 
+def pose_turn_units(cfg) -> int:
+    """How far a pair may turn over any stretch of its path, in 45-degree units: the pair router's max_turn_angle (180
+    degrees). Past it a path between two poses curls back onto itself, and a pair's two legs a pitch apart cannot cross
+    their own copper: zynq K26's DQS1 was planned a 450-degree hook round its berth's dive, and the router found no way
+    through it. Every pair the ladder and the human's K51 route turns through 180 degrees at most (SCK's crossover)"""
+    return max(int(cfg.max_turn_angle / 45.0 + 0.5), 1)
+
+
+def pose_turn_over(moves, units):
+    """The index of the first step of `moves` -- from one pose to the other, the signed 45-degree turn of each grid step
+    (0: straight) or 'v' (a via) -- at which the path has turned through more than `units` over some stretch, or None"""
+    run = lo = hi = 0
+    for i, m in enumerate(moves):
+        if m == 'v':
+            continue
+        run += m
+        lo, hi = min(lo, run), max(hi, run)
+        if hi - lo > units:
+            return i
+    return None
+
+
+def jog_room(cfg) -> float:
+    """The stretch a pair's dive takes when its via stands off the lane's line (a barrel kept clear of a pad): the
+    router's straight run from the via, then a 45-degree jog onto the line and back, a turning radius's straight after
+    each turn"""
+    return via_straight(cfg, (math.sqrt(0.5), math.sqrt(0.5))) + 2 * turn_straight_steps(cfg) * cfg.grid_step
+
+
 def pose_via_cells(cfg, half: float) -> int:
     """How many grid steps across its heading the pair router checks each of a pair's two barrels at a via, the
     centre cell being checked too (py_router diff_pair_routing._try_route_direction: the widest of the half pitch,

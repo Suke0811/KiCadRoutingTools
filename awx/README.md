@@ -1005,7 +1005,12 @@ with the whole route's own ends model.
   give its room, a pair's dive it could not lay straight. The LP goes to
   SciPy's HiGHS as its DUAL -- a row per column, every elastic slack a plain
   inequality -- and the lanes are read back from the dual's multipliers: the
-  same optimum, six times faster (K51's second pass 30 s, not 188).
+  same optimum, six times faster (K51's second pass 30 s, not 188). The
+  interior point is capped at 500 iterations (it ends in 58-103), past
+  which the dual simplex solves the same LP: zynq's second passes ran for
+  half an hour on a face of optima, residuals at 1e-15, never declared
+  optimal (K26's now 80 s). With `detmath`'s tie-break either method lands
+  on the one optimum.
 - **The polish** (`whole_polish.py`). The audit's own measures -- pitch, via
   rooms, static clearance (a pad as KiCad draws it, its corners rounded,
   and for a single, in a pad's corner zone, the router's corner buffer
@@ -1059,7 +1064,17 @@ with the whole route's own ends model.
   and the pair router takes over at the pose with no setback of its own
   (`pairs.handover_setback`; `diff_pair_setback_floor` 0, no ladder), so the
   plan and the router share one end, and the snap's search runs pose to
-  pose, owing the router's probe past each pose (`pairs.pose_probe_steps`).
+  pose, owing the router's probe past each pose (`pairs.pose_probe_steps`),
+  and turning through the pair router's `max_turn_angle` (180 degrees) at
+  most over any stretch (`pairs.pose_turn_over`): past it a path curls back
+  onto itself, and a pair's legs cannot cross their own copper -- zynq
+  K26's DQS1 was laid a 450-degree hook round a dive 0.57 mm from its
+  berth, which the router refused (its own turn counts restart every
+  hundred steps and let the hook by; every pair the ladder routes turns
+  180 degrees at most). A pair the step cannot lay sends its change
+  nearest where it got stuck back to the solve as a via cut, a jog's room
+  wide (`pairs.jog_room`: the router's straight from the via and a
+  45-degree jog out and back), and the loop solves again.
   An OPPOSITE-HANDS pair -- P on one side of its travel at its tooth, on the
   other arriving at its berth (SCK) -- swaps its legs at its dive with a
   CROSSOVER (`pairs.crossover`), as a designer does: the first diver jogs
@@ -1226,6 +1241,11 @@ start of the fanout to the checked route: 45 s, 160 s, 278 s, 596 s and
 1248 s, the five side by side. The
 heaviest processes at K35 are the two snaps (the pairs' 515 MB, the
 singles' 435 MB); the pairs' snap, 97 s, is the longest stage.
+
+On the zynq article's ends (`BASE=tmp/zynq/zynqF.kicad_pcb DEST=U2`,
+`whole_chain.sh`) the whole route passes K18 (18 lanes, 12 vias, 466 mm),
+K26 (25, 30, 731 -- the pair turn and the dive cut) and K32 (31, 46, 940),
+every net connected, DRC-clean, K26 the same copper on both machines.
 
 **Every machine, and the same answer on each** (`detmath.py`). The
 standard: every rung routes on every machine, no solve hangs, as fast as it

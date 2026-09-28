@@ -777,6 +777,9 @@ def build_and_solve(sides, prev=None):
     return dict(o=o, paid=paid, vias=vias, orders=orders)
 
 
+IPM_ITERS = 500      # the interior point's iterations before the dual simplex takes over (it ends in 58-103 here)
+
+
 def lp_by_dual(c, A, b, bnd):
     """min c'x subject to A x <= b and the column bounds bnd, solved as its DUAL by the same solver (scipy's HiGHS
     interior point) and x read back from the dual's multipliers: the same optimum. This LP has more rows than columns
@@ -795,9 +798,15 @@ def lp_by_dual(c, A, b, bnd):
     pos[bj] = np.arange(len(bj))
     U = coo_matrix((np.ones(len(fl)), (pos[fl], np.arange(len(fl)))), shape=(len(bj), len(fl)))
     W = coo_matrix((-np.ones(len(fh)), (pos[fh], np.arange(len(fh)))), shape=(len(bj), len(fh)))
-    res = linprog(np.concatenate([b, -lo[fl], hi[fh]]),
-                  A_ub=hstack([AT[plain], csr_matrix((int(plain.sum()), len(fl) + len(fh)))]).tocsr(), b_ub=c[plain],
-                  A_eq=hstack([AT[bj], U, W]).tocsr(), b_eq=c[bj], bounds=(0, None), method='highs-ipm')
+    args = (np.concatenate([b, -lo[fl], hi[fh]]),)
+    kw = dict(A_ub=hstack([AT[plain], csr_matrix((int(plain.sum()), len(fl) + len(fh)))]).tocsr(), b_ub=c[plain],
+              A_eq=hstack([AT[bj], U, W]).tocsr(), b_eq=c[bj], bounds=(0, None))
+    res = linprog(*args, **kw, method='highs-ipm', options={'maxiter': IPM_ITERS})
+    if res.status != 0:
+        # ...an interior point that does not end -- zynq K18's pass 2 ran 2329 iterations in a minute and on for half an
+        # hour, residuals at 1e-15 and never declared optimal -- by the dual simplex: the same LP, one optimum
+        # (detmath.lp_tie_break), the same point after lp_round
+        res = linprog(*args, **kw, method='highs-ds')
     x = np.zeros(n)
     if res.status == 0:
         x[plain] = -res.ineqlin.marginals

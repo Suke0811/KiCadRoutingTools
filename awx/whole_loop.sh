@@ -149,9 +149,21 @@ PY
     # the PAIRS first, laid as the pair router moves (its turning radius, its straight dives), then the singles
     # fitted round them (the polish, the pairs held) and snapped
     echo "=== round $i: the smooth plan passes -> the pairs laid first"
-    $ST --out $out/pairs$i.json -- whole_snap.py $out/p$i.json $out/pairs$i.json --pairs > $out/pairs$i.log 2>&1 || { tail -3 $out/pairs$i.log; exit 1; }
+    if ! $ST --out $out/pairs$i.json -- whole_snap.py $out/p$i.json $out/pairs$i.json --pairs > $out/pairs$i.log 2>&1; then
+      grep -q "^SNAP FAILED" $out/pairs$i.log || { tail -3 $out/pairs$i.log; exit 1; }
+    fi
     grep -E "^snap:|FAILED" $out/pairs$i.log | sed 's/^/  /'
-    grep -q "^SNAP FAILED" $out/pairs$i.log && { echo "=== round $i: a pair cannot be laid"; exit 1; }
+    if grep -q "^SNAP FAILED" $out/pairs$i.log; then
+      # a pair the snap cannot lay: its dive nearest where it got stuck goes to the solve as a via cut (whole_snap's
+      # dive_cuts), and the solve again; a pair with no dive to move there stops
+      nd=$(python3 -c "import json, sys; d = json.load(open(sys.argv[1])).get('dive_cuts', []); json.dump({'vcuts': d}, open(sys.argv[2], 'w')); print(len(d))" $out/pairs$i.json $out/dc$i.json)
+      [ "$nd" = "0" ] && { echo "=== round $i: a pair cannot be laid"; exit 1; }
+      progress 1500
+      cuts="${cuts:+$cuts,}$out/dc$i.json"
+      echo "=== round $i: a pair cannot be laid at a dive -> the solve again, $nd dive(s) moved (via cuts)"
+      resolve
+      continue
+    fi
     $ST --out $out/q$i.json -- whole_polish.py $out/pairs$i.json $out/q$i.json > $out/q$i.log 2>&1 || { tail -3 $out/q$i.log; exit 1; }
     $ST -- whole_audit.py $out/q$i.json > $out/q$i.audit 2>&1 || { tail -3 $out/q$i.audit; exit 1; }
     gq=$(python3 whole_gate.py $out/q$i.json $out/q$i.audit)
