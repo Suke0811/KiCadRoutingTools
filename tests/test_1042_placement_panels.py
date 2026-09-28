@@ -335,8 +335,8 @@ def test_placement_rows_are_off_the_verdict_axis():
 
 def test_a_placement_only_ledger_keeps_its_band():
     """Placement laps leave the axis only when a ROUTED verdict is there to
-    protect. A placement-only ledger -- the placement skill's film,
-    `make_film --from-ledger wk/ledger.jsonl` (placement_driver.py) -- has
+    protect. A placement-only ledger -- the pcb-free-agent skill's film,
+    `make_film --from-ledger wk/<run>/ledger.jsonl` -- has
     none, and its laps are the whole search: before #1042 the band drew them
     all, and it must still."""
     _mark = len(_FAIL)

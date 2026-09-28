@@ -5,7 +5,6 @@ instruction + RESULT= contracts, the monitor's pollers (ledger tail, board
 artifacts, stage derivation), the scavenge fallback, and the build_cmd
 allowed_tools/add_dirs extension the placement runs depend on.
 """
-import importlib.util
 import json
 import os
 import shutil
@@ -23,8 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..',
 import ai_backend  # noqa: E402
 import placement_run  # noqa: E402
 from placement_run import (  # noqa: E402
-    PLACEMENT_ALLOWED_TOOLS, PLACEMENT_RESULT_SCHEMA, PLACEMENT_SKILLS,
-    RUN_MARKER, RUNS_DIRNAME, build_placement_instructions,
+    PLACEMENT_ALLOWED_TOOLS, PLACEMENT_RESULT_SCHEMA, PLACEMENT_SKILL_MODES,
+    PLACEMENT_SKILLS, RUN_MARKER, RUNS_DIRNAME, build_placement_instructions,
     build_placement_prompt, create_workdir, derive_stage, format_prune_note,
     list_board_artifacts, newest_stable_board, parse_placement_result,
     prune_runs, read_ledger_tail, scan_workdir_outputs, stage_inputs,
@@ -286,13 +285,31 @@ check("instructions carry the RESULT schema", PLACEMENT_RESULT_SCHEMA in instr)
 check("place mode has no --no-delegate", "--no-delegate" not in instr)
 check("instructions refuse copper stripping", '"refused"' in instr)
 instr_pr = build_placement_instructions(wk, "place_route", extra="Focus on U1.")
-check("place_route mode has --no-delegate", "--no-delegate" in instr_pr)
+# The free-agent skill has no staged driver to run inline, so neither mode
+# passes the old loop driver's --no-delegate any more.
+check("place_route mode has no --no-delegate either",
+      "--no-delegate" not in instr_pr)
 check("extra instructions included", "Focus on U1." in instr_pr)
 
+# Both tab modes run the one free-agent skill; the skill's own mode argument
+# is what tells them apart.
+check("both tab modes run pcb-free-agent",
+      PLACEMENT_SKILLS == {"place": "pcb-free-agent",
+                           "place_route": "pcb-free-agent"},
+      str(PLACEMENT_SKILLS))
+check("tab modes map to the skill's place / full modes",
+      PLACEMENT_SKILL_MODES == {"place": "place", "place_route": "full"},
+      str(PLACEMENT_SKILL_MODES))
+_board_fwd = os.path.abspath(staged).replace("\\", "/")
 prompt = build_placement_prompt(ai_backend.BACKENDS["claude"], wk, staged, "place")
-check("prompt invokes the placement skill",
-      prompt.startswith("/" + PLACEMENT_SKILLS["place"] + " "), prompt[:60])
+check("place prompt is /pcb-free-agent place <board>",
+      prompt.startswith(f"/pcb-free-agent place {_board_fwd}"), prompt[:120])
 check("prompt names the staged board", staged.replace("\\", "/") in prompt)
+prompt_pr = build_placement_prompt(ai_backend.BACKENDS["claude"], wk, staged,
+                                   "place_route")
+check("place_route prompt is /pcb-free-agent full <board>",
+      prompt_pr.startswith(f"/pcb-free-agent full {_board_fwd}"),
+      prompt_pr[:120])
 
 # ------------------------------------------------------------------- RESULT
 
@@ -390,58 +407,20 @@ check("missing ledger tolerated", rows4 == [] and off4 == 0)
 
 # ------------------------------------------------------------ derive_stage
 
+# The staged drivers and their --stage ids are retired, so the transcript no
+# longer names a stage: the newest ledger row wins, then the artifact name.
 tail = ["  -> Bash: python3 .../placement_driver.py --stage P4 --board x",
         "     [ok] stage emitted"]
 row = {"iteration": 7, "kind": "reseat", "lever": "COL4"}
-check("transcript stage wins over ledger",
-      derive_stage(tail, row, "loop_round3.kicad_pcb")
-      == placement_run.STAGE_LABELS["P4"])
-tail_l2 = ["Bash: loop_driver.py --stage L2 --no-delegate"]
-check("loop stages mapped", derive_stage(tail_l2, None, None)
-      == placement_run.STAGE_LABELS["L2"])
-check("--stage= form matched",
-      derive_stage(["placement_driver.py --stage=P2"], None, None)
-      == placement_run.STAGE_LABELS["P2"])
-check('--stage "quoted" form matched',
-      derive_stage(['placement_driver.py --stage "L3" --board x'], None, None)
-      == placement_run.STAGE_LABELS["L3"])
-check("P-close mapped",
-      derive_stage(["--stage P-close"], None, None)
-      == placement_run.STAGE_LABELS["P-close"])
-
-# EVERY registered stage, derived from the drivers themselves rather than
-# listed here (#936 C2). A hand-written list is what produced the defect: the
-# regex covered P<digit> and P-close, so P-brief -- the stage that records the
-# declared design brief (#711) -- rendered as "working..." for its whole
-# duration, and no pin noticed because every pin named a stage the regex
-# already matched. Importing the registries means a NEW stage id fails here.
-_DRIVERS = {
-    "placement_driver": os.path.join(
-        os.path.dirname(__file__), "..", ".claude", "skills",
-        "plan-pcb-placement", "scripts", "placement_driver.py"),
-    "loop_driver": os.path.join(
-        os.path.dirname(__file__), "..", ".claude", "skills",
-        "plan-pcb-placement-and-routing", "scripts", "loop_driver.py"),
-}
-_registered = set()
-for _name, _path in _DRIVERS.items():
-    _spec = importlib.util.spec_from_file_location("krt_" + _name, _path)
-    _mod = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_mod)
-    _stages = set(getattr(_mod, "STAGES", {}))
-    check(f"{_name} registers stages at all", len(_stages) >= 5)
-    _registered |= _stages
-_unmatched = sorted(s for s in _registered
-                    if derive_stage([f"--stage {s}"], None, None)
-                    != placement_run.STAGE_LABELS.get(s, s))
-check("every registered stage id is recognised and labelled",
-      not _unmatched, f"unrecognised: {_unmatched}")
-_unlabelled = sorted(_registered - set(placement_run.STAGE_LABELS))
-check("every registered stage id has progress text", not _unlabelled,
-      f"unlabelled: {_unlabelled}")
-# ...and the labels invent nothing the drivers do not register.
-_extra = sorted(set(placement_run.STAGE_LABELS) - _registered)
-check("no label for a stage that does not exist", not _extra, f"extra: {_extra}")
+check("ledger row wins over a stage-like transcript and an artifact",
+      derive_stage(tail, row, "loop_round3.kicad_pcb") == "lap 7: reseat/COL4")
+check("a stage-like transcript alone is not a stage any more",
+      derive_stage(["Bash: loop_driver.py --stage L2"], None, None)
+      == "working...")
+check("artifact wins over a stage-like transcript when no row exists",
+      derive_stage(tail, None, "loop_round3.kicad_pcb") == "placing round 3")
+check("the old STAGE_LABELS table is gone",
+      not hasattr(placement_run, "STAGE_LABELS"))
 
 check("ledger row formatted",
       derive_stage([], row, None) == "lap 7: reseat/COL4")

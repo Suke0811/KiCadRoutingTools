@@ -47,8 +47,6 @@ LAP5 = os.path.join(FIX, 'zone_plan_r2_lap5.json')
 ESP = os.path.join(REPO, 'kicad_files', 'esp_prog.kicad_pcb')
 PLAN_975 = os.path.join(REPO, 'tests', 'fixtures', '975', 'esp_prog_run27',
                         'zone_plan.json')
-DRIVER = os.path.join(REPO, '.claude', 'skills', 'plan-pcb-placement',
-                      'scripts', 'placement_driver.py')
 
 
 def _raw(**extra):
@@ -694,13 +692,10 @@ def test_plan_only_on_a_true_pile_and_its_exit_4():
 
 def test_plan_check_refuses_no_emitted_corpus_intent():
     """The control: every tracked board's own emitted intent is a plan the
-    board satisfies, so plan_check must refuse none of them."""
-    from types import SimpleNamespace
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    drv = importlib.import_module('placement_driver')
+    board satisfies, so plan_check must refuse none of them. (The half that
+    also ran the retired placement_driver's P1 `_plan_owed` left with it.)"""
     refused = {}
-    n = grouped = 0
+    n = 0
     for board in run_utils.corpus_boards():
         pcb = parse_kicad_pcb(board)
         try:
@@ -715,17 +710,7 @@ def test_plan_check_refuses_no_emitted_corpus_intent():
         if errs:
             refused[os.path.basename(board)] = [(v.rule, v.ref, v.block)
                                                 for v in errs]
-        # ...and P1's own call, on the boards whose plan names a sheet or
-        # kicad GROUP: without the group sources `_plan_owed` passes, those
-        # blocks resolve to nothing and P1 refuses every such plan (D2).
-        if any(b.get('group') for b in doc.get('blocks') or ()):
-            grouped += 1
-            ok, why = drv._plan_owed(SimpleNamespace(board=board), it, pcb,
-                                     fp)
-            if not ok:
-                refused[os.path.basename(board) + ' (P1)'] = why[:300]
     assert n >= 15, n
-    assert grouped >= 1, 'no corpus plan names a group -- D2 is untested'
     assert not refused, refused
     print(f"  PASS: plan_check refuses none of {n} emitted corpus intents")
 
@@ -867,42 +852,6 @@ def test_round2_the_far_face_charge_is_what_the_courtyard_confines():
           "inside it")
 
 
-def test_p1_itself_refuses_a_plan_error():
-    """The DRIVER's P1, not only `plan_check`: run 27's plan with the logos
-    answered and one zone shrunk so its members cannot fit under a declared
-    overlap budget of 0. Each member still fits alone -- a zone smaller than
-    a member is an anchor, which is not charged. Without this, P1 could stop
-    asking and every other test would still pass (the #959 battery's
-    `p1-never-checks-the-plan` survived)."""
-    logos = ['#00000000-0000-0000-0000-00005a3b5201',
-             '#00000000-0000-0000-0000-00005d8c51dd',
-             '#00000000-0000-0000-0000-00005e7dd057']
-    with open(PLAN_975, encoding='utf-8') as fh:
-        plan = json.load(fh)
-    plan['dispositions'] = {'refs': {k: 'a back-side logo; cosmetic'
-                                     for k in logos}}
-    plan['legality_budget'] = {'overlap_area': 0.0, 'oob_count': 0}
-    for b in plan['blocks']:
-        if b['name'] == 'ldo':          # U2, C1, C3
-            b['zone'] = [114.5, 91.5, 118.4, 93.1]
-            b['tolerance_mm'] = 0.0
-    with tempfile.TemporaryDirectory() as tmp:
-        p = os.path.join(tmp, 'overfull.json')
-        with open(p, 'w', encoding='utf-8') as fh:
-            json.dump(plan, fh)
-        r = run_utils.check(
-            [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-             '--board', ESP, '--zone-plan', p, '--waive',
-             'seed-connectors:the probe hands them over'],
-            refuse='in the zone plan that no arrangement can satisfy',
-            code=4)
-    assert 'plan_zone_overfull' in r.stdout and "'ldo'" in r.stdout, \
-        r.stdout[-1500:]
-    assert '--plan-only' in r.stdout, r.stdout[-800:]
-    print("  PASS: the driver's P1 refuses the overfull plan by name, and "
-          "points at --plan-only")
-
-
 TESTS = [
     test_run29_lap5_overlaps_are_warnings_not_errors,
     test_round2_the_plan_errors_track_the_grade,
@@ -920,7 +869,6 @@ TESTS = [
     test_plan_only_on_a_pile,
     test_plan_only_on_a_true_pile_and_its_exit_4,
     test_plan_check_refuses_no_emitted_corpus_intent,
-    test_p1_itself_refuses_a_plan_error,
 ]
 
 

@@ -42,16 +42,15 @@ RUN_ALL_FAST_OK = True
 RUN_ALL_TIMEOUT = 120
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BOARD_SCORE = os.path.join(
-    ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts',
-    'board_score.py')
+BOARD_SCORE = os.path.join(ROOT, 'py_tools', 'board_score.py')
 #: Every skill that can state the gate or the formula. `plan-pcb-routing` was
 #: missing (#941): it is the third door, it discusses `blocking` in its own
 #: right, and an unlisted directory is where the next restatement lands -- the
 #: same registration hole this file's own docstring is about one level up.
+#: `pcb-free-agent` replaced the two placement skills (#1009) and is enrolled
+#: in their place for the same reason.
 SKILL_DIRS = [
-    os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement'),
-    os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing'),
+    os.path.join(ROOT, '.claude', 'skills', 'pcb-free-agent'),
     os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-routing'),
     os.path.join(ROOT, '.claude', 'skills', 'review-routed-board'),
 ]

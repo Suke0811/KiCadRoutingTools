@@ -416,24 +416,7 @@ def main():
               'board (the hole is not copper)',
               len(kr) == 1 and kr[0]['overrun_mm'] < 0, str(kr))
 
-        # 18 -- the placement driver implicates the owner of a COUNTED row only
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            'pd962', os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement',
-                                  'scripts', 'placement_driver.py'))
-        pd = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pd)
-        js = os.path.join(work, 'drc_items.json')
-        with open(js, 'w', encoding='utf-8') as fh:
-            json.dump({'items': [
-                {'type': 'graphic-off-board', 'owner_ref': 'U2', 'item1': 'x'},
-                {'type': 'segment-board-edge', 'owner_ref': 'AE1',
-                 'accepted': 'immutable-graphic'},
-                {'type': 'via-in-paste', 'owner_ref': 'C18', 'net1': 'GND'}]}, fh)
-        got = pd._implicated_refs([js])
-        check('18. _implicated_refs names U2 (counted), not AE1 (accepted) and not '
-              'C18 (a via-in-paste row complains about a via, not a pose)',
-              'U2' in got and 'AE1' not in got and 'C18' not in got, str(got))
+        # 18 (placement_driver's _implicated_refs) went with the driver (#1009).
 
         # 19 -- kicad_drc_compare carries both types and the baseline
         sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))

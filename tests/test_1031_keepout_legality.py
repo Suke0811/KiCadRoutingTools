@@ -418,55 +418,10 @@ def main():
               all(len({(r[0], r[1], r[4]) for r in g[k]}) == len(g[k])
                   for k in ('keepout_copper_pads', 'keepout_copper_tht_refs')))
 
-        # 13 -- P-close ECHOES and PERSISTS a keepout-band waiver, merged into
-        # the waivers.json beside the render so P3's own keys survive
-        import importlib.util
-        _spec = importlib.util.spec_from_file_location(
-            'pdrv_1031', os.path.join(ROOT, '.claude', 'skills',
-                                      'plan-pcb-placement', 'scripts',
-                                      'placement_driver.py'))
-        pdrv = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(pdrv)
-        ftmp = os.path.join(work, 'drv')
-        os.makedirs(ftmp)
-        dargv = pdrv._fixture_argv(pdrv._next_line_fixture(ftmp))
-        da = pdrv._args(dargv + ['--waive', 'X:checked', '--waive',
-                                 'keepout-band:R9 reached on In1 by design'])
-        wpath = os.path.join(os.path.dirname(os.path.abspath(da.render_json)),
-                             'waivers.json')
-        with open(wpath, 'w', encoding='utf-8') as fh:
-            json.dump({'unlocked_high': 1, 'waivers': {'U1': 'p3'}}, fh)
-        out = pdrv.STAGES['P-close'](da)
-        wdoc = json.load(open(wpath, encoding='utf-8'))
-        check('13. P-close echoes the keepout-band waiver with its reason',
-              'GATE WAIVERS: --waive keepout-band: R9 reached on In1 by '
-              'design' in out and not out.startswith('<error>'), out[:300])
-        check('13. ...and persists it, keeping P3\'s keys',
-              wdoc.get('closeout', {}).get('waivers')
-              == {'keepout-band': 'R9 reached on In1 by design'}
-              and wdoc.get('waivers') == {'U1': 'p3'}, str(wdoc))
-        out0 = pdrv.STAGES['P-close'](pdrv._args(dargv + ['--waive',
-                                                          'X:checked']))
-        check('13. with no gate waiver it says none',
-              'GATE WAIVERS: none' in out0, out0[:300])
-
-        # 14 -- a census that could not be BUILT is not a clean one: the
-        # driver refuses it, and render_placement --gate fails on it
-        rj3 = os.path.join(ftmp, 'r_ko_err.json')
-        rdoc = json.load(open(da.render_json, encoding='utf-8'))
-        rdoc['checklist']['a_off_outline'] = {
-            'pad_copper': [], 'courtyard': [], 'keepout_copper': [],
-            'keepout_copper_unmeasured': [['*', 'error', 'ValueError: x']]}
-        with open(rj3, 'w', encoding='utf-8') as fh:
-            json.dump(rdoc, fh)
-        a3 = pdrv._args(dargv + ['--waive', 'X:checked'])
-        a3.render_json = rj3
-        out3 = pdrv.STAGES['P-close'](a3)
-        check('14. P-close refuses a render whose keep-out census errored',
-              out3.startswith('<error>')
-              and 'could not build its rule-area keep-out census' in out3,
-              out3[:300])
-
+        # 13 and 14's driver half (P-close's waiver echo and its refusal of
+        # an errored census) went with placement_driver.py (#1009).
+        # 14 -- a census that could not be BUILT is not a clean one:
+        # render_placement --gate fails on it
         import render_placement
         from placement import legality as _leg
 
@@ -644,9 +599,7 @@ def main():
               _tht_kind(both[:1], 'tht_one_plane') == 'tht')
 
         # 19 -- inherited band pads: render_placement --before carries the
-        # before board's own census, and the driver judges NEW copper
-        # against it (a human reference board is not refused for its own
-        # pads), absolute without it
+        # before board's own census, so a gate can judge NEW copper against it
         rj5 = os.path.join(work, 'rp_before.json')
         run_check([sys.executable, '-X', 'utf8',
                    os.path.join(ROOT, 'py_tools', 'render_placement.py'),
@@ -659,33 +612,14 @@ def main():
               _pairs(c5.get('keepout_copper_before') or [])
               == _pairs(c5['keepout_copper']) and c5['keepout_copper'],
               str(c5.get('keepout_copper_before')))
-        rdoc6 = json.load(open(da.render_json, encoding='utf-8'))
-        for label, before, refused in (
-                ('inherited, no deeper', [['R1', 0.5]], False),
-                ('inherited but DEEPER now', [['R1', 0.1]], True),
-                ('no --before census (absolute)', None, True)):
-            rdoc6['checklist']['a_off_outline'] = {
-                'pad_copper': [], 'courtyard': [],
-                'keepout_copper': [['R1', 0.3]],
-                'keepout_copper_before': before}
-            rj6 = os.path.join(ftmp, 'r_before_%d.json' % int(refused))
-            with open(rj6, 'w', encoding='utf-8') as fh:
-                json.dump(rdoc6, fh)
-            a6 = pdrv._args(dargv + ['--waive', 'X:checked'])
-            a6.render_json = rj6
-            o6 = pdrv.STAGES['P-close'](a6)
-            got = 'seat pads inside a rule-area KEEP-OUT band' in o6
-            check('19. P-close keep-out arm: %s -> %s'
-                  % (label, 'refused' if refused else 'passes'),
-                  got == refused, o6[:200])
 
         # 20 -- ONE per-part currency for the search and the gates: the
         # part's WORST illegal pad. R7 (wide pad 1, narrow pad 2) is seeded
         # upright with BOTH pads shallowly in the band; turned 180 and slid
         # over, pad 1 leaves the band while pad 2 goes deeper than either
         # seed pad did. A per-pad SUM falls there while the worst pad grows,
-        # so a search pricing the sum accepted a move place_pose and the
-        # --before gate refuse. The band edge sits at x = 2.05.
+        # so a search pricing the sum accepted a move place_pose refuses.
+        # The band edge sits at x = 2.05.
         ko7 = KEEPOUT.replace('(xy 2 2) (xy 38 2) (xy 38 28) (xy 2 28)',
                               '(xy 2.05 2) (xy 38 2) (xy 38 28) (xy 2.05 28)')
 
@@ -736,29 +670,13 @@ def main():
                    posed7, '--clearance', '0.2', 'set', 'R7',
                    str(deeper7[0]), '19', '--rot', str(deeper7[1])],
                   refuse='oob_keepout_copper_amount', code=4)
-        before7 = legality.board_keepout_findings(pcb7, 0.2, b7)[
-            'oob_keepout_copper_refs']
         for label, pose, ok in (('deeper worst pad, smaller sum', deeper7,
                                  False),
                                 ('out of the band', out7, True)):
-            bm = _board7('r7_%d' % int(ok), *pose)
-            after7 = legality.board_keepout_findings(
-                parse_kicad_pcb(bm), 0.2, bm)['oob_keepout_copper_refs']
-            rdoc6['checklist']['a_off_outline'] = {
-                'pad_copper': [], 'courtyard': [],
-                'keepout_copper': after7, 'keepout_copper_before': before7}
-            rj7 = os.path.join(ftmp, 'r_r7_%d.json' % int(ok))
-            with open(rj7, 'w', encoding='utf-8') as fh:
-                json.dump(rdoc6, fh)
-            a7 = pdrv._args(dargv + ['--waive', 'X:checked'])
-            a7.render_json = rj7
-            gate_ok = ('seat pads inside a rule-area KEEP-OUT band'
-                       not in pdrv.STAGES['P-close'](a7))
             search_ok = ctx7.keepout_ok('R7', pose[0], 19, pose[1])
-            check('20. %s: the search and the --before gate agree (%s)'
-                  % (label, 'accept' if ok else 'refuse'),
-                  search_ok == gate_ok == ok,
-                  'search %s, gate %s' % (search_ok, gate_ok))
+            check('20. %s: the search %s it'
+                  % (label, 'accepts' if ok else 'refuses'),
+                  search_ok == ok, 'search %s' % search_ok)
         run_check([sys.executable, '-X', 'utf8',
                    os.path.join(ROOT, 'py_placer', 'place_pose.py'), b7,
                    posed7, '--clearance', '0.2', 'set', 'R7',

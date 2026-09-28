@@ -35,9 +35,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tests'))
 import run_utils                                              # noqa: E402
 
-SCORE = os.path.join(ROOT, '.claude', 'skills',
-                     'plan-pcb-placement-and-routing', 'scripts',
-                     'board_score.py')
+SCORE = os.path.join(ROOT, 'py_tools', 'board_score.py')
 PLACED = os.path.join(ROOT, 'tests', 'fixtures', 'run25',
                       'esp_prog_placed.kicad_pcb')
 LAP5 = os.path.join(ROOT, 'tests', 'fixtures', 'run25',

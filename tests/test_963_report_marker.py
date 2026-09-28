@@ -29,6 +29,10 @@ WHAT THIS DOES NOT FIX, said here rather than implied: the marker is written by
 the run being audited, so a run can write it, be audited, and then extend the
 file -- which is exactly what run 29 did to DONE. The audit records the
 report's own sha and length so a later reader can tell.
+
+The combined skill (plan-pcb-placement-and-routing) that specified the watcher
+and whose loop_driver close-out wrote DONE was retired; the checks that read
+its SKILL.md and dumped its close-out text left with it.
 """
 import io
 import os
@@ -44,8 +48,6 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 import run_utils                                              # noqa: E402
 import run_watch as RW                                        # noqa: E402
 
-SKILL = os.path.join(ROOT, '.claude', 'skills',
-                     'plan-pcb-placement-and-routing', 'SKILL.md')
 RUNBOOK = os.path.join(ROOT, 'tests', 'stress', 'RUNBOOK.md')
 WATCHER = os.path.join(ROOT, 'tests', 'stress', 'run_watch.py')
 
@@ -323,13 +325,8 @@ def test_the_docstring_no_longer_claims_there_is_no_time_value():
     print("  PASS: the docstring says what is true of its own flags")
 
 
-def test_one_watcher_specification_and_the_run_prompt_defers():
-    """AND, not OR.
-
-    `test_431_skill_commands.py:1152` records a pin written as an `or` of two
-    phrases that passed with either one deleted. The watcher spec needs both
-    halves: the mechanism, and that a run prompt does not restate it.
-    """
+def test_the_runbook_carries_the_report_flags_and_they_are_real():
+    """The RUNBOOK command block names both flags, and argparse has both."""
     # The flags are checked against the REAL argparse here, by running it.
     # `test_431_skill_commands` does not do it for us: its `TOOLS` skips any
     # path under `tests/`, so run_watch.py is not in that gate's population --
@@ -338,81 +335,17 @@ def test_one_watcher_specification_and_the_run_prompt_defers():
     import subprocess as _sp
     _help = _sp.run([sys.executable, '-X', 'utf8', WATCHER, 'cheats', '--help'],
                     capture_output=True, text=True, cwd=ROOT).stdout
-    skill = io.open(SKILL, encoding='utf-8').read()
-    assert 'ONE agent with one section per brief' in skill, skill[:200]
-    assert 'only specification of the watcher mechanism' in skill, (
-        'nothing says the skill is the single spec, which is the whole of '
-        "#963's fourth acceptance line")
-    assert 'defers to it' in skill
-    assert 'REPORT_DONE' in skill, 'the close-out does not name the marker'
     book = io.open(RUNBOOK, encoding='utf-8').read()
     assert 'REPORT_DONE' in book and '--report-wait' in book, (
         'the RUNBOOK command block does not carry the flags')
-    # AND THE THREE FILES MUST NOT CONTRADICT EACH OTHER. A first cut left
-    # SKILL.md:356 saying the watcher "and then exits" at DONE while :362 said
-    # it waits -- one file, two mechanisms, which is the defect this whole item
-    # is about, rebuilt six lines apart.
-    assert 'and then exits' not in skill, (
-        'SKILL.md still says the cheat watcher exits at DONE')
     for flag in ('--report-done', '--report-wait'):
         assert flag in _help, f'{flag} is not a real flag: ' + _help[:300]
-        assert flag in skill, (
-            f'{flag} changes how the watcher BEHAVES for a reader following '
-            f'this skill -- the cheats arm no longer exits at DONE, and a '
-            f'replay over a finished run dir blocks without the escape -- and '
-            f'the only specification of the mechanism does not mention it')
-    print("  PASS: one spec, no contradiction, and the flags are real")
+    print("  PASS: the RUNBOOK carries the flags, and they are real")
 
-
-
-def test_the_close_out_writes_a_DONE_the_audit_can_read():
-    """The shipped-sha check needs a producer, and it had none.
-
-    `report_audit`'s shipped-sha check reads the marker's own convention --
-    `sha256 <64 hex>` -- and the L5 close-out text said `echo done > DONE`. So
-    on every real run the check reported, correctly and uselessly, that the
-    marker names no digest and the comparison was NOT made: an instrument with
-    no production caller, which is the failure mode this repo has written down
-    twice. A pre-push reviewer ran `report_audit` on exactly the marker the
-    close-out prescribes and got that sentence.
-
-    Asserted on the TEXT the terminal arms emit, because that text IS the
-    producer -- there is no other code path that writes this file.
-    """
-    import subprocess
-    _DRIVER = os.path.join(ROOT, '.claude', 'skills',
-                           'plan-pcb-placement-and-routing', 'scripts',
-                           'loop_driver.py')
-    out = subprocess.run(
-        [sys.executable, '-X', 'utf8', _DRIVER, '--dump-all'],
-        capture_output=True, text=True, encoding='utf-8', errors='replace',
-        cwd=ROOT)
-    assert out.returncode == 0, out.stderr[-400:]
-    txt = out.stdout
-    assert '> {work}/DONE' not in txt, 'the dump did not interpolate'
-    marks = [l for l in txt.splitlines()
-             if '/DONE' in l and 'REPORT_DONE' not in l and 'echo' in l]
-    assert marks, 'no DONE-writing line in the terminal text at all'
-    for line in marks:
-        assert 'sha256' in line, (
-            'the close-out writes a DONE with no sha256, so report_audit\'s '
-            'shipped-sha check has no producer:\n  ' + line.strip())
-        assert 'board ' in line, (
-            'the marker names a digest but not the board it belongs to:\n  '
-            + line.strip())
-    # And the regex the audit reads it with must accept that shape once the
-    # placeholder is filled in.
-    import re
-    filled = re.sub(r'<[^>]+>', 'a' * 64, marks[0])
-    assert RW._DONE_SHIPPED_RE.search(filled), (
-        'the prescribed marker does not match the audit\'s own pattern:\n  '
-        + filled.strip())
-    print("  PASS: the close-out prescribes a DONE the shipped-sha check can "
-          "read")
 
 
 if __name__ == '__main__':
-    run_utils.evidence(SKILL)
+    run_utils.evidence(RUNBOOK)
     for k, v in sorted(globals().items()):
         if k.startswith('test_'):
             print("--- " + k)

@@ -19,6 +19,10 @@ Traps written against:
   * a fixture that makes the check vacuous -- the anchor arms move a REAL part
     by the distance run 29 moved it, and a turned part is checked apart from a
     moved one.
+
+The P1 refusals built on these rows (lock owed, drift remedy, brief-clause
+waiver, precedence and wording) lived in the retired placement_driver and
+left with it; the rows themselves, the loader and the grade stay pinned here.
 """
 import json
 import os
@@ -46,8 +50,6 @@ BRIEF_711 = os.path.join(REPO, 'tests', 'fixtures', '711',
 FIX = os.path.join(REPO, 'tests', 'fixtures', '959')
 PILE = os.path.join(FIX, 'run29_pile.kicad_pcb')
 MECH_29 = os.path.join(FIX, 'run29_mechanical.json')
-DRIVER = os.path.join(REPO, '.claude', 'skills', 'plan-pcb-placement',
-                      'scripts', 'placement_driver.py')
 CHECK = None
 
 #: The #959 comment's `mechanical_probe.py` control, verbatim: USB1 on the
@@ -62,6 +64,24 @@ PROBE = {'interfaces': [{'ref': 'USB1', 'edge': 'west'}],
 
 def _check():
     return run_utils.tool('check_floorplan.py')
+
+
+def _tiny_board(path, refs):
+    """An outline and one part per ref, each with one connected pad.
+    (Was placement_driver._tiny_board, retired with that driver.)"""
+    fps = ''.join(
+        f'  (footprint "test:FP" (layer "F.Cu") (uuid "fp-{r}") '
+        f'(at {2 + 3 * i} 2)\n'
+        f'    (property "Reference" "{r}" (at 0 0))\n'
+        f'    (pad "1" smd rect (at 0 0) (size 0.6 0.8) (layers "F.Cu") '
+        f'(net 1 "/A") (uuid "p1-{r}"))\n'
+        '  )\n' for i, r in enumerate(refs))
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write('(kicad_pcb (version 20241229) (generator "test")\n'
+                 '  (net 0 "")\n  (net 1 "/A")\n'
+                 '  (gr_rect (start 0 0) (end 20 10) (layer "Edge.Cuts") '
+                 '(uuid "e1"))\n' + fps + ')\n')
+    return path
 
 
 def _stage(tmp, board=ESP, brief=BRIEF_711, mech=None, name='board'):
@@ -361,75 +381,19 @@ def test_an_overhanging_mechanical_part_raises_no_envelope_error():
     print("  PASS: tigard's overhanging anchors raise no envelope error")
 
 
-def test_p1_refuses_a_contradiction_until_dispositioned():
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    drv = importlib.import_module('placement_driver')
-    with tempfile.TemporaryDirectory() as tmp:
-        d = os.path.join(tmp, 'b')
-        os.makedirs(d)
-        board = drv._tiny_board(os.path.join(d, 'board.kicad_pcb'),
-                                ('U1', 'U2'), locked=('U2',))
-        with open(os.path.join(d, 'board.design-brief.json'), 'w',
-                  encoding='utf-8') as fh:
-            json.dump({'schema': 1, 'kind': 'design-brief', 'units': 'mm',
-                       'board': 'board.kicad_pcb',
-                       'interfaces': [{'ref': 'U2', 'edge': 'east',
-                                       'user_facing': True}]}, fh)
-        with open(os.path.join(d, 'mechanical.json'), 'w',
-                  encoding='utf-8') as fh:
-            json.dump({'interfaces': [{'ref': 'U2', 'edge': 'west'}]}, fh)
-        blocks = [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
-                   'note': 'both parts, one zone'}]
-
-        def plan(name, **extra):
-            p = os.path.join(tmp, name)
-            doc = drv._zone_plan_doc(
-                blocks, edge_connectors=[{'ref': 'U2', 'edge': 'east',
-                                          'class': 'edge_receptacle'}],
-                **extra)
-            with open(p, 'w', encoding='utf-8') as fh:
-                json.dump(doc, fh)
-            return p
-        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                '--board', board]
-        r = run_utils.check(argv + ['--zone-plan', plan('a.json')],
-                            refuse='contradiction(s) between DECLARED',
-                            code=4)
-        assert "brief 'east' [declared" in r.stdout, r.stdout
-        assert "mechanical 'west' [recorded_fact" in r.stdout, r.stdout
-        # The row names its winner, and acknowledging it accepts that.
-        assert '-> brief wins' in r.stdout, r.stdout
-        assert 'ACCEPTS that winner' in r.stdout, r.stdout
-        disp = {'rules': {'envelope': 'fixture', 'legality': 'fixture'},
-                'contradictions': {
-                    'U2:edge': 'the brief holds: the enclosure moved'}}
-        r = run_utils.check(argv + ['--zone-plan',
-                                    plan('b.json', dispositions=disp)],
-                            accept=True)
-        assert '<stage_instructions' in r.stdout
-        r = run_utils.check(argv + ['--zone-plan', plan('c.json'),
-                                    '--no-mechanical'], accept=True)
-    print("  PASS: P1 refuses the contradiction naming both sources, passes "
-          "once dispositioned, and --no-mechanical is the OFF arm")
-
-
-def test_p1_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction():
+def test_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction():
     """#1051/#1054: mechanical.json pins U1 while the brief makes it a
     member of a row. No plan can hold both -- the loader refuses a fixed
-    pose on an array member, and a FILE lock on one is an array_conflict --
-    so P1 used to demand exactly those two impossible remedies. It is now a
-    CONTRADICTION row (`U1:array`), refused by name until answered, and the
-    declared brief wins: once acknowledged the mechanical value has LOST,
-    is not anchored, and P1 owes no lock or fixed pose for it."""
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    drv = importlib.import_module('placement_driver')
+    pose on an array member, and a FILE lock on one is an array_conflict.
+    So it is a CONTRADICTION row (`U1:array`), and the declared brief wins:
+    the mechanical value has LOST and is not anchored. (The P1 refusal and
+    remedy text built on this row were the retired placement_driver's.)"""
+    from placement import design_brief as db
     with tempfile.TemporaryDirectory() as tmp:
         d = os.path.join(tmp, 'b')
         os.makedirs(d)
-        board = drv._tiny_board(os.path.join(d, 'board.kicad_pcb'),
-                                ('U1', 'U2', 'U3'))
+        board = _tiny_board(os.path.join(d, 'board.kicad_pcb'),
+                            ('U1', 'U2', 'U3'))
         row = {'name': 'pair', 'members': ['U1', 'U2'], 'order': 'declared',
                'rotation': 'shared'}
         with open(os.path.join(d, 'board.design-brief.json'), 'w',
@@ -440,122 +404,24 @@ def test_p1_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction():
                   encoding='utf-8') as fh:
             json.dump({'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
                                   'reason': 'the datum'}]}, fh)
-
-        def plan(name, **extra):
-            p = os.path.join(tmp, name)
-            with open(p, 'w', encoding='utf-8') as fh:
-                json.dump(drv._zone_plan_doc(
-                    [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
-                      'note': 'one zone'}], min_reader=7,
-                    arrays=[dict(row, source='brief')], **extra), fh)
-            return p
-        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                '--board', board]
-        r = run_utils.check(argv + ['--zone-plan', plan('a.json')],
-                            refuse='contradiction(s) between DECLARED',
-                            code=4)
-        out = r.stdout + r.stderr
-        assert 'U1:array' in out and "moves with array 'pair'" in out, out
-        assert '-> brief wins' in out, out
-        # No remedy that cannot work: neither a lock nor a fixed pose.
-        assert "lock 'U1'" not in out and 'fixed_poses' not in out, out
-        disp = {'rules': {'envelope': 'fixture', 'legality': 'fixture'},
-                'contradictions': {'U1:array': 'the row holds; the pose '
-                                               'in the file was stale'}}
-        r = run_utils.check(argv + ['--zone-plan',
-                                    plan('b.json', dispositions=disp)],
-                            accept=True)
-        assert 'not held at their declared pose' not in r.stdout, r.stdout
-    print("  PASS: P1 refuses U1:array by name (brief wins), offers no lock or "
-          "fixed pose, and passes once acknowledged with nothing owed")
-
-
-def test_p1_refuses_an_unlocked_mechanical_ref():
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    drv = importlib.import_module('placement_driver')
-    with tempfile.TemporaryDirectory() as tmp:
-        board = drv._tiny_board(os.path.join(tmp, 'board.kicad_pcb'),
-                                ('U1', 'U2'))
-        with open(os.path.join(tmp, 'mechanical.json'), 'w',
-                  encoding='utf-8') as fh:
-            json.dump({'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
-                                  'reason': 'the datum'}]}, fh)
-        p = os.path.join(tmp, 'p.json')
-        with open(p, 'w', encoding='utf-8') as fh:
-            json.dump(drv._zone_plan_doc(
-                [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
-                  'note': 'both'}]), fh)
-        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                '--board', board, '--zone-plan', p]
-        r = run_utils.check(argv, refuse='U1 is not locked', code=4)
-        assert 'not held at their declared pose' in r.stdout, r.stdout
-        assert "lock 'U1'" in r.stdout
-        run_utils.check([sys.executable, '-X', 'utf8',
-                         run_utils.tool('place_pose.py'), board, board,
-                         'lock', 'U1'], accept=True)
-        run_utils.check(argv, accept=True)
-    print("  PASS: P1 refuses an unlocked mechanical ref, passes once locked")
-
-
-def test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats():
-    """#1054: stage 0 seats an UNLOCKED `fixed_poses[]` ref at exactly its
-    pose and locks it, so P1 owes no hand lock for one named AT the declared
-    pose -- and the zone coverage owes it no zone. Not for an entry that
-    leaves the declared rotation to the part's current angle, and never for
-    a FILE-locked part off its pose (stage 0 refuses to move a file lock)."""
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    drv = importlib.import_module('placement_driver')
-    with tempfile.TemporaryDirectory() as tmp:
-        board = drv._tiny_board(os.path.join(tmp, 'board.kicad_pcb'),
-                                ('U1', 'U2'))
-        with open(os.path.join(tmp, 'mechanical.json'), 'w',
-                  encoding='utf-8') as fh:
-            json.dump({'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
-                                  'reason': 'the datum'}]}, fh)
-
-        def plan(name, entry):
-            p = os.path.join(tmp, name)
-            with open(p, 'w', encoding='utf-8') as fh:
-                json.dump(drv._zone_plan_doc(
-                    [{'name': 'rest', 'refs': ['U2'], 'zone': [0, 0, 10, 10],
-                      'note': 'U1 is seated by its fixed pose'}],
-                    min_reader=7,
-                    fixed_poses=[dict({'ref': 'U1', 'basis': 'mechanical'},
-                                      **entry)]), fh)
-            return [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                    '--board', board, '--zone-plan', p]
-
-        r = run_utils.check(plan('at.json', {'x': 2.0, 'y': 2.0, 'rot': 0}),
-                            accept=True)
-        assert 'not held at their declared pose' not in r.stdout, r.stdout
-        assert '1 at a fixed pose' in r.stdout, r.stdout
-        # No `rot` for a declared rotation: stage 0 keeps the current angle.
-        r = run_utils.check(plan('norot.json', {'x': 2.0, 'y': 2.0}),
-                            refuse='U1 is not locked', code=4)
-        assert 'has no `rot` and mechanical.json declares one' in r.stdout, \
-            r.stdout
-        # Unlocked, the entry at a DIFFERENT pose: refused, and named.
-        r = run_utils.check(plan('off.json', {'x': 3.0, 'y': 2.0, 'rot': 0}),
-                            refuse='U1 is not locked', code=4)
-        assert ('fixed_poses entry at (3.0, 2.0, 0.0) does not count: it '
-                'is not the declared pose') in r.stdout, r.stdout
-        # ...and a rotation off by 90 is a different pose too.
-        run_utils.check(plan('turned.json', {'x': 2.0, 'y': 2.0, 'rot': 90}),
-                        refuse='it is not the declared pose', code=4)
-        # A FILE-locked part off its pose: stage 0 will not move it.
-        run_utils.check([sys.executable, '-X', 'utf8',
-                         run_utils.tool('place_pose.py'), board, board,
-                         'set', 'U1', '3', '2', 'lock', 'U1'], accept=True)
-        r = run_utils.check(plan('locked.json',
-                                 {'x': 2.0, 'y': 2.0, 'rot': 0}),
-                            refuse='U1 is 1.000mm from its declared', code=4)
-        assert 'the part is locked in the board file' in r.stdout, r.stdout
-    print("  PASS: P1 accepts an unlocked mechanical ref its fixed pose "
-          "seats; not rot-less, never a file-locked drift")
-
-
+        pcb = parse_kicad_pcb(board)
+        bp = os.path.join(d, 'board.design-brief.json')
+        frag, _ = db.compile_brief(db.load_brief(bp),
+                                   board_refs=sorted(pcb.footprints))
+        mech = R.load_mechanical(os.path.join(d, 'mechanical.json'))
+        rows = R.reconcile(pcb, board, brief_fragment=frag, brief_source=bp,
+                           mechanical=mech)
+        by_id = {r['id']: r for r in rows}
+        r = by_id.get('U1:array')
+        assert r is not None, sorted(by_id)
+        assert r['kind'] == 'contradiction' and r['winner'] == 'brief', r
+        assert r['values']['brief']['value'] == "moves with array 'pair'", r
+        assert 'U1' in R.lost_mechanical_refs(rows), rows
+        # The non-member is not swept into the row.
+        assert 'U2:array' not in by_id and 'U3:array' not in by_id, sorted(
+            by_id)
+    print("  PASS: U1:array is a contradiction the declared brief wins, and "
+          "the losing mechanical pose is not anchored")
 
 
 def test_the_loader_refuses_every_stranger():
@@ -804,136 +670,22 @@ def test_a_run_written_lock_is_not_a_recorded_fact():
           "recorded fact; a staged lock moved is drift, not a contradiction")
 
 
-def test_p1_refuses_the_run29_move_the_plan_never_anchored():
-    """B1 end to end, the verifier's own scenario: run 29's pile, brief,
-    mechanical.json and r1 plan (with its other debts answered); `Ref*`
-    moved 25.9 mm and locked. P1 passed. It must refuse, print the command
-    that puts it back, and never demand the LOST USB1 be locked west."""
-    with open(os.path.join(FIX, 'zone_plan_r1.json'), encoding='utf-8') as fh:
-        plan = json.load(fh)
-    plan['dispositions'] = {
-        'refs': {k: 'a logo; test' for k in (
-            '#00000000-0000-0000-0000-00005a3b5201',
-            '#00000000-0000-0000-0000-00005d8c51dd',
-            '#00000000-0000-0000-0000-00005e7dd057')},
-        'contradictions': {'USB1:edge': 'the brief holds'},
-        'rules': {'decap_distance': 'test'},
-        'withheld': {'overlap_area': 'test'}}
-    with tempfile.TemporaryDirectory() as tmp:
-        b = _stage(tmp, board=PILE, mech=MECH_29)
-        pp = os.path.join(tmp, 'plan.json')
-        with open(pp, 'w', encoding='utf-8') as fh:
-            json.dump(plan, fh)
-        run_utils.check([sys.executable, '-X', 'utf8',
-                         run_utils.tool('place_pose.py'), b, b, 'set', 'Ref*',
-                         '115.6', '92.2', 'lock', 'Ref*', 'lock', 'Ref*~2'],
-                        accept=True)
-        # USB1 LOST its edge to the brief, so its mechanical pose is not a
-        # target: moved off it (parked clear of Ref*'s declared pose), it must not be
-        # demanded back (a lost ref is skipped by the drift check too).
-        run_utils.check([sys.executable, '-X', 'utf8',
-                         run_utils.tool('place_pose.py'), b, b, 'set', 'USB1',
-                         '125', '104', '--rot', '180', '--force'],
-                        accept=True)
-        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                '--board', b, '--zone-plan', pp,
-                '--waive', 'seed-connectors:the probe hands them over']
-        r = run_utils.check(argv, refuse='not held at their declared pose',
-                            code=4)
-        assert "Ref* is 25.866mm from its declared" in r.stdout, r.stdout
-        assert "unlock 'Ref*' set 'Ref*' 141.2 95.9 --rot 0.0\n" in \
-            r.stdout, r.stdout
-        assert "'USB1'" not in r.stdout.split('not held')[1], r.stdout
-        # The printed remedy, run as printed: two calls.
-        pose = [sys.executable, '-X', 'utf8',
-                run_utils.tool('place_pose.py'), b, b]
-        run_utils.check(pose + ['unlock', 'Ref*', 'set', 'Ref*', '141.2',
-                                '95.9', '--rot', '0.0'], accept=True)
-        run_utils.check(pose + ['lock', 'Ref*'], accept=True)
-        r = subprocess.run(argv, capture_output=True, text=True,
-                           encoding='utf-8', errors='replace', cwd=REPO,
-                           timeout=900)
-        assert 'not held at their declared pose' not in r.stdout, r.stdout
-    print("  PASS: run 29's moved-and-locked Ref* is refused at P1 with the "
-          "command that restores it; USB1 (lost) is not demanded")
-
-
-def test_p1_drift_command_carries_unlock_and_allow_routed():
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    drv = importlib.import_module('placement_driver')
-    with tempfile.TemporaryDirectory() as tmp:
-        board = drv._tiny_board(os.path.join(tmp, 'board.kicad_pcb'),
-                                ('U1', 'U2'))
-        with open(os.path.join(tmp, 'mechanical.json'), 'w',
-                  encoding='utf-8') as fh:
-            json.dump({'fixed': [{'ref': 'U1', 'x': 2.0, 'y': 2.0, 'rot': 0,
-                                  'reason': 'the datum'}]}, fh)
-        p = os.path.join(tmp, 'p.json')
-        with open(p, 'w', encoding='utf-8') as fh:
-            json.dump(drv._zone_plan_doc(
-                [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
-                  'note': 'both'}]), fh)
-        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                '--board', board, '--zone-plan', p]
-        pose = [sys.executable, '-X', 'utf8', run_utils.tool('place_pose.py'),
-                board, board]
-        run_utils.check(pose + ['set', 'U1', '3', '2', 'lock', 'U1'],
-                        accept=True)
-        r = run_utils.check(argv, refuse='U1 is 1.000mm from its declared',
-                            code=4)
-        assert "unlock 'U1' set 'U1' 2.0 2.0 --rot 0.0\n" in r.stdout, \
-            r.stdout
-        assert r.stdout.count(f"{board} lock 'U1'") == 1, r.stdout
-        # Run exactly what it printed, and P1 has nothing left to say
-        # about U1.
-        cmds = [ln.strip() for ln in r.stdout.splitlines()
-                if ln.strip().startswith('python3 -X utf8 py_placer/'
-                                         'place_pose.py')]
-        assert len(cmds) == 2, cmds
-        import shlex
-        for c in cmds:
-            # The board path (backslashes on Windows) is taken out before
-            # the POSIX split, which would read them as escapes.
-            rest = c.split('place_pose.py ', 1)[1].replace(board, '', 2)
-            run_utils.check(pose + shlex.split(rest), accept=True)
-        r2 = subprocess.run(argv, capture_output=True, text=True,
-                            encoding='utf-8', errors='replace', cwd=REPO,
-                            timeout=900)
-        assert 'not held at their declared pose' not in r2.stdout, r2.stdout
-        run_utils.check(pose + ['unlock', 'U1', 'set', 'U1', '3', '2'],
-                        accept=True)
-        run_utils.check(pose + ['lock', 'U1'], accept=True)
-        assert '--allow-routed' not in r.stdout
-        text = open(board, encoding='utf-8').read().rstrip()
-        assert text.endswith(')')
-        with open(board, 'w', encoding='utf-8') as fh:
-            fh.write(text[:-1] + '  (segment (start 1 8) (end 4 8) (width '
-                     '0.2) (layer "F.Cu") (net 1) (uuid "s1"))\n)\n')
-        r = run_utils.check(argv, refuse='U1 is 1.000mm from its declared',
-                            code=4)
-        assert '--allow-routed unlock' in r.stdout, r.stdout
-        assert '--allow-routed lock' in r.stdout, r.stdout
-    print("  PASS: P1's drift refusal prints unlock, and --allow-routed on "
-          "a board that carries copper")
-
-
-def test_stale_contradiction_answers_agree_between_grader_and_p1():
+def test_a_stale_contradiction_answer_is_named_by_the_grader():
     """SF5: check_floorplan reported `stale_dispositions: []` for a
-    contradiction id P1 refused as stale."""
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    drv = importlib.import_module('placement_driver')
+    contradiction id no row carries (the retired P1 refused it as stale)."""
     with tempfile.TemporaryDirectory() as tmp:
-        board = drv._tiny_board(os.path.join(tmp, 'board.kicad_pcb'),
-                                ('U1', 'U2'))
+        board = _tiny_board(os.path.join(tmp, 'board.kicad_pcb'),
+                            ('U1', 'U2'))
         p = os.path.join(tmp, 'p.json')
         with open(p, 'w', encoding='utf-8') as fh:
-            json.dump(drv._zone_plan_doc(
-                [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
-                  'note': 'both'}], dispositions={
-                    'rules': {'envelope': 'fixture', 'legality': 'fixture'},
-                    'contradictions': {'BOGUS:edge': 'x'}}), fh)
+            json.dump({'schema': 1, 'kind': 'floorplan-intent',
+                       'units': 'mm',
+                       'blocks': [{'name': 'all', 'refs': ['U*'],
+                                   'zone': [0, 0, 10, 10], 'note': 'both'}],
+                       'dispositions': {
+                           'rules': {'envelope': 'fixture',
+                                     'legality': 'fixture'},
+                           'contradictions': {'BOGUS:edge': 'x'}}}, fh)
         r = subprocess.run([sys.executable, '-X', 'utf8', _check(), board,
                             '--intent', p, '--plan-only'],
                            capture_output=True, text=True, encoding='utf-8',
@@ -944,10 +696,6 @@ def test_stale_contradiction_answers_agree_between_grader_and_p1():
         assert s['stale_dispositions'] == [
             'dispositions.contradictions.BOGUS:edge: no such contradiction '
             'on this board and these inputs'], s['stale_dispositions']
-        run_utils.check([sys.executable, '-X', 'utf8', DRIVER, '--stage',
-                         'P1', '--board', board, '--zone-plan', p],
-                        refuse='dispositions.contradictions.BOGUS:edge '
-                               'answers no contradiction', code=4)
         # ...and the GRADE path, not only --plan-only.
         r = subprocess.run([sys.executable, '-X', 'utf8', _check(), board,
                             '--intent', p],
@@ -958,8 +706,8 @@ def test_stale_contradiction_answers_agree_between_grader_and_p1():
         s = json.loads(line.split('JSON_SUMMARY: ', 1)[1])
         assert any('contradictions.BOGUS:edge' in x
                    for x in s['stale_dispositions']), s['stale_dispositions']
-    print("  PASS: a stale contradiction answer is named by the grader and "
-          "refused by P1 alike")
+    print("  PASS: a stale contradiction answer is named on the plan and the "
+          "grade paths")
 
 
 def test_rows_read_edges_the_way_the_grader_does():
@@ -1016,63 +764,6 @@ def test_floors_unavailable_is_reported():
     assert 'no project file' in row['values']['mechanical']['source']
     assert row['values']['graded']['value'] == 0.25
     print("  PASS: an 'unavailable' floor is a report naming why")
-
-
-def test_p1_refuses_plan_drift_and_honours_a_named_waiver():
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    drv = importlib.import_module('placement_driver')
-    with tempfile.TemporaryDirectory() as tmp:
-        d = os.path.join(tmp, 'b')
-        os.makedirs(d)
-        board = drv._tiny_board(os.path.join(d, 'board.kicad_pcb'),
-                                ('U1', 'U2'), locked=('U2',))
-        with open(os.path.join(d, 'board.design-brief.json'), 'w',
-                  encoding='utf-8') as fh:
-            json.dump({'schema': 1, 'kind': 'design-brief', 'units': 'mm',
-                       'board': 'board.kicad_pcb',
-                       'interfaces': [{'ref': 'U2', 'edge': 'east',
-                                       'user_facing': True}]}, fh)
-        p = os.path.join(tmp, 'p.json')
-        with open(p, 'w', encoding='utf-8') as fh:
-            json.dump(drv._zone_plan_doc(
-                [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
-                  'note': 'both'}],
-                edge_connectors=[{'ref': 'U2', 'edge': 'west',
-                                  'class': 'edge_receptacle'}]), fh)
-        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                '--board', board, '--zone-plan', p]
-        r = run_utils.check(argv, refuse='drops or contradicts 1 clause(s)',
-                            code=4)
-        cid = r.stdout.split('of the design brief:\n  - ', 1)[1].split(
-            ': ', 1)[0]
-        assert 'U2' in cid, cid
-        run_utils.check(argv + ['--waive', f'brief-clause:{cid}:'],
-                        refuse='needs a REASON', code=4)
-        run_utils.check(argv + ['--waive',
-                                f'brief-clause:{cid}:the enclosure moved'],
-                        accept=True)
-        # With a second dropped clause, waiving the first leaves the second
-        # refused, by name.
-        with open(os.path.join(d, 'board.design-brief.json'), 'w',
-                  encoding='utf-8') as fh:
-            json.dump({'schema': 1, 'kind': 'design-brief', 'units': 'mm',
-                       'board': 'board.kicad_pcb',
-                       'interfaces': [{'ref': 'U2', 'edge': 'east',
-                                       'user_facing': True}],
-                       'proximity': [{'ref': 'U1', 'near': 'U2',
-                                      'max_mm': 5.0, 'requirement': 'R',
-                                      'why': 'test'}]}, fh)
-        r = run_utils.check(argv + ['--waive',
-                                    f'brief-clause:{cid}:the enclosure moved'],
-                            refuse='drops or contradicts 1 clause(s)',
-                            code=4)
-        assert 'proximity[' in r.stdout and cid not in r.stdout.split(
-            'of the design brief:')[1].split('The brief is')[0], r.stdout
-    print(f"  PASS: P1 refuses a plan that drifts from the brief ({cid}) and "
-          "passes it once waived by name with a reason")
-
-
 
 
 def test_round2_the_stagers_empty_declaration_is_a_declaration():
@@ -1150,69 +841,6 @@ def test_round2_a_brief_written_in_the_run_cannot_outrank_the_record():
         assert r['kind'] == 'contradiction', r
     print("  PASS: a brief the run wrote is a hypothesis the record outranks; "
           "one the regime recorded is a declaration")
-
-
-def test_p1_refuses_a_run_written_value_the_record_outranks():
-    """Pre-push review BLOCKING: under an unaided regime the brief is the
-    run's reading, so run 29's own case -- brief USB1 east, mechanical.json
-    west -- is drift the recorded value wins. P1 passed it: it demanded the
-    mechanical refs locked (west) while the brief-clause check demanded the
-    plan carry EAST, and the grade then failed on a locked part. P1 must
-    refuse the losing values and name both; no disposition answers it."""
-    with tempfile.TemporaryDirectory() as tmp:
-        wd, b, _mp = _stage_regime(tmp)
-        bp = os.path.join(wd, 'board.design-brief.json')
-        with open(bp, 'w', encoding='utf-8') as fh:
-            json.dump({'schema': 1, 'kind': 'design-brief', 'units': 'mm',
-                       'board': 'board.kicad_pcb',
-                       'interfaces': [{'ref': 'USB1', 'edge': 'east',
-                                       'user_facing': True}]}, fh)
-        bounds = parse_kicad_pcb(b).board_info.board_bounds
-        plan = {'schema': 1, 'kind': 'floorplan-intent', 'units': 'mm',
-                'blocks': [{'name': 'all', 'refs': ['*'],
-                            'zone': [round(v, 3) for v in bounds],
-                            'note': 'everything, one zone'}],
-                'edge_connectors': [{'ref': 'USB1', 'edge': 'east'}],
-                'dispositions': {'refs': {k: 'a logo; test' for k in (
-                    '#00000000-0000-0000-0000-00005a3b5201',
-                    '#00000000-0000-0000-0000-00005d8c51dd',
-                    '#00000000-0000-0000-0000-00005e7dd057')}}}
-        pp = os.path.join(tmp, 'plan.json')
-        with open(pp, 'w', encoding='utf-8') as fh:
-            json.dump(plan, fh)
-        r = run_utils.check(
-            [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-             '--board', b, '--zone-plan', pp,
-             '--waive', 'seed-connectors:the probe hands them over'],
-            refuse='disagree with a RECORDED fact', code=4)
-        line = [x for x in r.stdout.splitlines() if 'USB1:edge' in x]
-        assert line and "mechanical 'west'" in line[0] and (
-            "brief 'east' [hypothesis" in line[0]) and (
-            "intent 'east' [hypothesis" in line[0]), r.stdout[-2000:]
-        # No disposition can answer it, by construction: this is DRIFT, not a
-        # contradiction, so a `dispositions.contradictions` key for it is
-        # stale and refused on its own (an arm asserting that could not
-        # fail, and was removed -- narrow re-review). Correcting the losing
-        # sources is the answer, and it is what clears the refusal:
-        with open(bp, 'w', encoding='utf-8') as fh:
-            json.dump({'schema': 1, 'kind': 'design-brief', 'units': 'mm',
-                       'board': 'board.kicad_pcb',
-                       'interfaces': [{'ref': 'USB1', 'edge': 'west',
-                                       'user_facing': True}]}, fh)
-        plan['edge_connectors'] = [{'ref': 'USB1', 'edge': 'west'}]
-        with open(pp, 'w', encoding='utf-8') as fh:
-            json.dump(plan, fh)
-        r = subprocess.run(
-            [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-             '--board', b, '--zone-plan', pp,
-             '--waive', 'seed-connectors:the probe hands them over'],
-            capture_output=True, text=True, encoding='utf-8',
-            errors='replace', cwd=REPO, timeout=900)
-        assert 'disagree with a RECORDED fact' not in r.stdout, \
-            r.stdout[-1500:]
-    print("  PASS: a run-written brief and plan that the recorded edge "
-          "outranks are refused at P1, both values named; corrected, the "
-          "refusal clears")
 
 
 def test_anchors_on_a_zoneless_plan_leave_a_clean_grade_complete():
@@ -1415,7 +1043,6 @@ TESTS = [
     test_both_shapes_load_and_a_stranger_is_refused,
     test_round2_the_stagers_empty_declaration_is_a_declaration,
     test_round2_a_brief_written_in_the_run_cannot_outrank_the_record,
-    test_p1_refuses_a_run_written_value_the_record_outranks,
     test_anchors_on_a_zoneless_plan_leave_a_clean_grade_complete,
     test_a_board_with_no_outline_still_exits_3_with_a_brief,
     test_round2_a_moved_run_dir_keeps_its_declaration,
@@ -1427,12 +1054,9 @@ TESTS = [
     test_an_off_lattice_or_unrotated_declaration_grades_clean,
     test_the_regime_owns_its_mechanical_file,
     test_a_run_written_lock_is_not_a_recorded_fact,
-    test_p1_refuses_the_run29_move_the_plan_never_anchored,
-    test_p1_drift_command_carries_unlock_and_allow_routed,
-    test_stale_contradiction_answers_agree_between_grader_and_p1,
+    test_a_stale_contradiction_answer_is_named_by_the_grader,
     test_rows_read_edges_the_way_the_grader_does,
     test_floors_unavailable_is_reported,
-    test_p1_refuses_plan_drift_and_honours_a_named_waiver,
     test_the_comments_probe_is_no_longer_byte_identical,
     test_no_mechanical_is_the_off_arm,
     test_run29_anchors_and_the_lost_usb1,
@@ -1440,10 +1064,7 @@ TESTS = [
     test_provenance_verified_then_mismatch,
     test_a_hypothesis_is_drift_not_a_contradiction,
     test_an_overhanging_mechanical_part_raises_no_envelope_error,
-    test_p1_refuses_a_contradiction_until_dispositioned,
-    test_p1_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction,
-    test_p1_refuses_an_unlocked_mechanical_ref,
-    test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats,
+    test_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction,
 ]
 
 

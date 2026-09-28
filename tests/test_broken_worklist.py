@@ -17,7 +17,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts'))
+sys.path.insert(0, os.path.join(ROOT, 'py_tools'))
 # board_score's own main() puts the clone root on sys.path before it calls
 # anything; a test calling those functions directly has to do the same, or
 # `kicad_parser` is missing and the net-name audit reports UNGRADED forever.
@@ -29,11 +29,10 @@ for _p522 in ('py_router', 'py_placer'):
     if _d522 not in sys.path:
         sys.path.insert(0, _d522)
 # #522 reorg + skill merge: the engine moved to py_router/, the placer to
-# py_placer/, and board_score.py into the placement-and-routing skill. Tests
+# py_placer/, and board_score.py into py_tools/. Tests
 # that shell out to or import them need those roots on sys.path.
 for _p in ('py_router', 'py_placer',
-           os.path.join('.claude', 'skills', 'plan-pcb-placement-and-routing',
-                        'scripts')):
+           'py_tools'):
     _d = os.path.join(ROOT, _p)
     if _d not in sys.path:
         sys.path.insert(0, _d)

@@ -29,6 +29,10 @@ makes the narrative the deliverable -- is held over every emitted command by
 test_a_render_that_writes_its_keys_to_a_file_does_not_print_them`, which shares
 that file's `--dump-all`/`--dump-refusals` cache. This file is the part that
 has to RUN something.
+
+placement_driver was retired with its skill, so the checks that read ITS
+emitted recipe and self-test text left with it; what `render_placement` does
+with the flags is still pinned here.
 """
 import io
 import json
@@ -44,8 +48,6 @@ sys.path.insert(0, os.path.join(ROOT, 'tests'))
 import run_utils                                               # noqa: E402
 
 RENDER = os.path.join(ROOT, 'py_tools', 'render_placement.py')
-PLACE_DRIVER = os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement',
-                            'scripts', 'placement_driver.py')
 BOARD = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
 
 
@@ -113,24 +115,12 @@ def test_a_bare_quiet_would_be_the_worst_of_both():
     print("  PASS: --quiet without --json-out still prints the keys")
 
 
-def test_the_guard_can_fire_on_the_drivers_own_render():
-    """The recipe the driver hands a reader must produce the key it checks.
+def test_a_requested_review_sheet_is_recorded_in_the_document():
+    """A render asked for a sheet carries a truthy `review_sheet` key.
 
-    Reachability is the thing nobody asserted, and it is why the guard died:
-    every test of it injected the key by hand, so the guard passed its own
-    tests while being unable to see a single real render.
+    A guard that reads the key can only fire on renders that carry it; every
+    earlier test injected the key by hand, which is how such a guard dies.
     """
-    r = _run([PLACE_DRIVER, '--dump-refusals'], timeout=900)
-    assert r.returncode == 0, r.stderr[-400:]
-    blocks = [b for b in r.stdout.split('python3')
-              if 'render_placement.py' in b and '--json-out wk/render.json' in b]
-    assert blocks, 'the no-render recipe is no longer emitted at all'
-    assert any('--review-sheet' in b for b in blocks), (
-        'the recipe _guard_render hands a reader with no render yet does not '
-        'ask for a review sheet, so the document it produces carries no '
-        '`review_sheet` key and the fifth check cannot fire on it')
-
-    # ...and a render of that SHAPE really does carry the key.
     with tempfile.TemporaryDirectory() as td:
         doc = os.path.join(td, 'render.json')
         out = _run([RENDER, BOARD, '--review-sheet',
@@ -143,25 +133,7 @@ def test_the_guard_can_fire_on_the_drivers_own_render():
         assert got['review_sheet'], (
             'the sheet was requested and the key is falsy, which is the '
             'REFUSING shape -- the guard would reject its own recipe')
-    print("  PASS: the driver's own recipe produces the key its guard reads")
-
-
-def test_the_self_test_no_longer_claims_the_arm_is_unreachable():
-    """A comment that outlives its fact is how the next reader re-derives it.
-
-    The placement driver's self-test said the fifth check "can only be seen by
-    feeding the two shapes that mean something, or it is an arm nothing
-    exercises". After the templates pass `--review-sheet` that is false, and a
-    reader who believes it will not look for the real population.
-    """
-    src = io.open(PLACE_DRIVER, encoding='utf-8').read()
-    assert 'or it is an arm nothing exercises' not in src, (
-        'the stale claim is back in placement_driver.py')
-    assert 'could not fire on its own population' in src, (
-        'the correction that replaced it is gone; say what changed, or the '
-        'next reader re-derives the wrong conclusion')
-    print("  PASS: the self-test says what is true of the guard now")
-
+    print("  PASS: a requested review sheet is recorded in the document")
 
 
 def test_an_unwritable_sheet_still_leaves_the_document_and_still_exits_2():

@@ -18,6 +18,11 @@ Traps written against:
     seeder writes after seating, and this block is never seated;
   * a non-zero exit is not evidence: every CLI arm asserts the reason, and
     the converge arm asserts there is NO traceback.
+
+The P1 pad-less census and its refusals lived in the retired placement_driver
+and left with it (its `dispositions.refs` judgement survives as
+`floorplan.stale_dispositions`, pinned in test_959_rule_roster). What stays is
+the board fact, the grade, and the three CLIs that must refuse, not crash.
 """
 import json
 import os
@@ -37,36 +42,34 @@ from kicad_parser import parse_kicad_pcb                    # noqa: E402
 RUN_ALL_TIMEOUT = 900
 
 ESP = os.path.join(REPO, 'kicad_files', 'esp_prog.kicad_pcb')
-PLAN_975 = os.path.join(REPO, 'tests', 'fixtures', '975', 'esp_prog_run27',
-                        'zone_plan.json')
-DRIVER = os.path.join(REPO, '.claude', 'skills', 'plan-pcb-placement',
-                      'scripts', 'placement_driver.py')
 LOGOS = ['#00000000-0000-0000-0000-00005a3b5201',
          '#00000000-0000-0000-0000-00005d8c51dd',
          '#00000000-0000-0000-0000-00005e7dd057']
 
 
-def _driver():
-    sys.path.insert(0, os.path.dirname(DRIVER))
-    import importlib
-    return importlib.import_module('placement_driver')
-
-
-def _p1(board, plan, *extra, waive=True):
-    return ([sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-             '--board', board, '--zone-plan', plan]
-            + (['--waive', 'seed-connectors:the probe hands them over']
-               if waive else []) + list(extra))
-
-
-def _plan(tmp, name, **edits):
-    with open(PLAN_975, encoding='utf-8') as fh:
-        doc = json.load(fh)
-    doc.update(edits)
-    p = os.path.join(tmp, name)
-    with open(p, 'w', encoding='utf-8') as fh:
-        json.dump(doc, fh)
-    return p
+def _tiny_board(path, refs, locked=(), padless=(), courtyard=()):
+    """An outline and one part per ref, each with one connected pad -- except
+    the refs in `padless`, which carry none (a logo); those in `courtyard`
+    also draw an F.CrtYd rectangle, which is what lets `zone_containment`
+    grade a pad-less block at all. Refs in `locked` carry `(locked yes)`.
+    (Was placement_driver._tiny_board, retired with that driver.)"""
+    def _body(r):
+        if r in padless:
+            return ('    (fp_rect (start -1 -1) (end 1 1) (layer "F.CrtYd") '
+                    '(width 0.05))\n' if r in courtyard else '')
+        return (f'    (pad "1" smd rect (at 0 0) (size 0.6 0.8) '
+                f'(layers "F.Cu") (net 1 "/A") (uuid "p1-{r}"))\n')
+    fps = ''.join(
+        f'  (footprint "test:FP" (layer "F.Cu") (uuid "fp-{r}") '
+        f'(at {2 + 3 * i} 2){" (locked yes)" if r in locked else ""}\n'
+        f'    (property "Reference" "{r}" (at 0 0))\n'
+        + _body(r) + '  )\n' for i, r in enumerate(refs))
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write('(kicad_pcb (version 20241229) (generator "test")\n'
+                 '  (net 0 "")\n  (net 1 "/A")\n'
+                 '  (gr_rect (start 0 0) (end 20 10) (layer "Edge.Cuts") '
+                 '(uuid "e1"))\n' + fps + ')\n')
+    return path
 
 
 def test_esp_prog_has_21_blocks_and_three_are_padless():
@@ -77,149 +80,19 @@ def test_esp_prog_has_21_blocks_and_three_are_padless():
     print(f"  PASS: 21 blocks, pad-less: {len(padless)}")
 
 
-def test_p1_names_the_three_logos():
-    """The plan zones every pad-bearing part (fixture 975, run 27's own), and
-    P1 still refuses -- naming the three blocks the old count left out."""
-    r = run_utils.check(_p1(ESP, PLAN_975),
-                        refuse='3 pad-less block(s) are answered for by '
-                               'nothing', code=4)
-    for key in LOGOS:
-        assert key in r.stdout, (key, r.stdout[-1500:])
-    assert 'place_pose.py' in r.stdout and "lock '<KEY>'" in r.stdout
-    print("  PASS: P1 refuses naming all three #uuid logo blocks")
-
-
-def test_the_padless_check_keeps_the_older_refusals_first():
-    """Precedence: every refusal P1 had before #959 still comes first. On
-    esp_prog with run 27's plan and NO seed-connectors waiver the reader is
-    told about the free connectors -- the run-27 refusal -- not the logos;
-    with the waiver, the logos."""
-    r = run_utils.check(_p1(ESP, PLAN_975, waive=False),
-                        refuse='carry no `(locked yes)` in the board', code=4)
-    assert 'pad-less' not in r.stdout, r.stdout[-800:]
-    run_utils.check(_p1(ESP, PLAN_975),
-                    refuse='pad-less block(s) are answered for by nothing',
-                    code=4)
-    print("  PASS: the seed-connectors refusal precedes the pad-less one")
-
-
-def test_must_lock_does_not_answer_a_padless_block():
-    with tempfile.TemporaryDirectory() as tmp:
-        plan = _plan(tmp, 'ml.json',
-                     must_lock=['USB1', 'Ref*', 'Ref*~2'] + LOGOS)
-        run_utils.check(_p1(ESP, plan),
-                        refuse='3 pad-less block(s) are answered for by '
-                               'nothing', code=4)
-    print("  PASS: must_lock does not excuse a block the seeder never seats")
-
-
-def test_a_zoned_padless_block_is_refused_as_inert():
-    with tempfile.TemporaryDirectory() as tmp:
-        with open(PLAN_975, encoding='utf-8') as fh:
-            blocks = json.load(fh)['blocks']
-        blocks = blocks + [{'name': 'logos', 'refs': [LOGOS[0]],
-                            'zone': [120, 95, 125, 100],
-                            'note': 'the recycle logo, back side'}]
-        plan = _plan(tmp, 'inert.json', blocks=blocks)
-        r = run_utils.check(_p1(ESP, plan),
-                            refuse='are named in a zoned block and draw no '
-                                   'courtyard', code=4)
-        # It names the block AND the pattern that claims the logo.
-        assert f"(block 'logos', refs '{LOGOS[0]}')" in r.stdout, \
-            r.stdout[-1500:]
-        # LOCKED does not rescue it: no rule grades a block with no pads and
-        # no courtyard, so the zone would be a claim nothing checks (the
-        # Phase-2 verifier measured a locked logo 13 mm outside its zone
-        # grading PASS). 0 of 30 corpus pad-less blocks draw a courtyard.
-        board = os.path.join(tmp, 'esp.kicad_pcb')
-        shutil.copy(ESP, board)
-        run_utils.check([sys.executable, '-X', 'utf8',
-                         run_utils.tool('place_pose.py'), board, board,
-                         'lock', LOGOS[0]], accept=True)
-        r = run_utils.check(_p1(board, plan),
-                            refuse='are named in a zoned block and draw no '
-                                   'courtyard', code=4)
-        # Locked, the only thing left to do is take it out of the block --
-        # the advice must not tell it to place and lock again.
-        assert 'already answered by a lock or a disposition' in r.stdout, \
-            r.stdout[-1500:]
-    print("  PASS: a zone around a courtyard-less pad-less block is refused, "
-          "locked or not, naming the block and pattern")
-
-
-def test_a_glob_that_sweeps_in_an_answered_logo_asks_nothing():
-    """Round-2 verification: `R*` in an ordinary plan sweeps glasgow's
-    `REF**` logos into the resistor zone. A courtyard-less block is graded
-    by nothing, so the sweep is not a claim about it -- once the logo is
-    answered (locked, here) the plan passes. Named EXACTLY, it is refused."""
-    drv = _driver()
-    with tempfile.TemporaryDirectory() as tmp:
-        board = drv._tiny_board(os.path.join(tmp, 'b.kicad_pcb'),
-                                ('U1', 'U2', 'LOGO1'), padless=('LOGO1',),
-                                locked=('LOGO1',))
-        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                '--board', board, '--zone-plan']
-        swept = os.path.join(tmp, 'swept.json')
-        with open(swept, 'w', encoding='utf-8') as fh:
-            json.dump(drv._zone_plan_doc(
-                [{'name': 'all', 'refs': ['U*', 'L*'], 'zone': [0, 0, 10, 10],
-                  'note': 'a class glob, not a claim about the logo'}]), fh)
-        run_utils.check(argv + [swept], accept=True)
-        named = os.path.join(tmp, 'named.json')
-        with open(named, 'w', encoding='utf-8') as fh:
-            json.dump(drv._zone_plan_doc(
-                [{'name': 'all', 'refs': ['U*', 'LOGO1'],
-                  'zone': [0, 0, 10, 10], 'note': 'names the logo'}]), fh)
-        run_utils.check(argv + [named],
-                        refuse="LOGO1 (block 'all', refs 'LOGO1')", code=4)
-        # The board's own spelling IS a naming, wildcards and all -- glasgow
-        # keys its logos `REF**` (Phase-4 verifier SF7) -- and the check
-        # folds case exactly where `fnmatch` does (Windows).
-        import fnmatch
-        board2 = drv._tiny_board(os.path.join(tmp, 'c.kicad_pcb'),
-                                 ('U1', 'U2', 'REF**'), padless=('REF**',),
-                                 locked=('REF**',))
-        for pat in ('REF**', 'ref[*][*]'):
-            plan = os.path.join(tmp, f'n{len(pat)}.json')
-            with open(plan, 'w', encoding='utf-8') as fh:
-                json.dump(drv._zone_plan_doc(
-                    [{'name': 'all', 'refs': ['U*', pat],
-                      'zone': [0, 0, 10, 10], 'note': 'names the logo'}]),
-                    fh)
-            argv3 = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                     '--board', board2, '--zone-plan', plan]
-            if fnmatch.fnmatch('REF**', pat):
-                run_utils.check(argv3, refuse=f"(block 'all', refs '{pat}')",
-                                code=4)
-            else:
-                run_utils.check(argv3, accept=True)
-    print("  PASS: a glob sweeping in an answered courtyard-less logo passes; "
-          "naming it -- escaped, literal, or case-folded as fnmatch folds -- "
-          "is refused")
-
-
-def test_a_padless_block_with_a_courtyard_is_graded_once_locked():
-    drv = _driver()
+def test_a_padless_block_with_a_courtyard_is_graded():
+    """A pad-less block that draws a courtyard IS graded by its zone: move
+    the locked logo outside the zone and zone_containment names it."""
     with tempfile.TemporaryDirectory() as tmp:
         blocks = [{'name': 'all', 'refs': ['U*', 'LOGO1'],
                    'zone': [0, 0, 10, 10], 'note': 'ICs and the logo'}]
         plan = os.path.join(tmp, 'p.json')
         with open(plan, 'w', encoding='utf-8') as fh:
-            json.dump(drv._zone_plan_doc(blocks), fh)
-        unlocked = drv._tiny_board(os.path.join(tmp, 'a.kicad_pcb'),
-                                   ('U1', 'U2', 'LOGO1'), padless=('LOGO1',),
-                                   courtyard=('LOGO1',))
-        argv = [sys.executable, '-X', 'utf8', DRIVER, '--stage', 'P1',
-                '--zone-plan', plan, '--board']
-        run_utils.check(argv + [unlocked],
-                        refuse='the zone DOES grade it once it is placed',
-                        code=4)
-        locked = drv._tiny_board(os.path.join(tmp, 'b.kicad_pcb'),
-                                 ('U1', 'U2', 'LOGO1'), padless=('LOGO1',),
-                                 courtyard=('LOGO1',), locked=('LOGO1',))
-        run_utils.check(argv + [locked], accept=True)
-        # ...and the grade really does see it: move the locked logo outside
-        # the zone and zone_containment names it.
+            json.dump({'schema': 1, 'kind': 'floorplan-intent',
+                       'units': 'mm', 'blocks': blocks}, fh)
+        locked = _tiny_board(os.path.join(tmp, 'b.kicad_pcb'),
+                             ('U1', 'U2', 'LOGO1'), padless=('LOGO1',),
+                             courtyard=('LOGO1',), locked=('LOGO1',))
         from placement import floorplan as fp_
         it = fp_.load_intent(plan)
         far = os.path.join(tmp, 'c.kicad_pcb')
@@ -229,75 +102,11 @@ def test_a_padless_block_with_a_courtyard_is_graded_once_locked():
         res = fp_.grade(it, parse_kicad_pcb(far), far)
         assert any(v.rule == 'zone_containment' and v.ref == 'LOGO1'
                    for v in res.violations), res.violations
-    print("  PASS: a courtyard pad-less block in a zone must be locked, and "
-          "is then graded")
-
-
-def test_a_disposition_or_a_file_lock_answers_it():
-    with tempfile.TemporaryDirectory() as tmp:
-        plan = _plan(tmp, 'disp.json', dispositions={'refs': {
-            k: 'a back-side logo; its position is cosmetic' for k in LOGOS}})
-        # Answered: P1 moves on to its NEXT question -- the rule roster --
-        # which is asserted BY ITS OWN TEXT: "the pad-less text is absent" is
-        # also true of a refusal that rejected the disposition itself.
-        run_utils.check(_p1(ESP, plan),
-                        refuse='rule(s) this plan leaves dark', code=4)
-        # The file lock answers it too, and is what the refusal tells the
-        # reader to write.
-        board = os.path.join(tmp, 'esp.kicad_pcb')
-        shutil.copy(ESP, board)
-        run_utils.check([sys.executable, '-X', 'utf8',
-                         run_utils.tool('place_pose.py'), board, board,
-                         'lock'] + LOGOS, accept=True)
-        run_utils.check(_p1(board, PLAN_975),
-                        refuse='rule(s) this plan leaves dark', code=4)
-        # A disposition for a block already locked answers nothing.
-        plan = _plan(tmp, 'twice.json', dispositions={'refs': {
-            LOGOS[0]: 'answered twice'}})
-        run_utils.check(_p1(board, plan),
-                        refuse='already locked in the board', code=4)
-    print("  PASS: dispositions.refs and a file lock both answer it; both "
-          "at once is refused as stale")
-
-
-def test_disposition_keys_are_exact_and_padless_only():
-    with tempfile.TemporaryDirectory() as tmp:
-        plan = _plan(tmp, 'glob.json', dispositions={'refs': {
-            '#*': 'every logo, by pattern'}})
-        run_utils.check(_p1(ESP, plan),
-                        refuse='names 1 block(s) this board does not have',
-                        code=4)
-        plan = _plan(tmp, 'padded.json', dispositions={'refs': {
-            'C1': 'not a logo'}})
-        run_utils.check(_p1(ESP, plan), refuse='answers PAD-LESS blocks only',
-                        code=4)
-    print("  PASS: a glob key and a pad-bearing key are both refused")
-
-
-def test_the_pass_message_counts_blocks():
-    """On a board whose every block is answered, the census the stage prints
-    has BLOCKS as its denominator."""
-    drv = _driver()
-    with tempfile.TemporaryDirectory() as tmp:
-        board = drv._tiny_board(os.path.join(tmp, 'b.kicad_pcb'),
-                                ('U1', 'U2', 'LOGO1', 'LOGO2'),
-                                padless=('LOGO1', 'LOGO2'),
-                                locked=('LOGO2',))
-        plan = os.path.join(tmp, 'p.json')
-        doc = drv._zone_plan_doc(
-            [{'name': 'all', 'refs': ['U*'], 'zone': [0, 0, 10, 10],
-              'note': 'both ICs'}])
-        doc['dispositions']['refs'] = {'LOGO1': 'cosmetic'}
-        with open(plan, 'w', encoding='utf-8') as fh:
-            json.dump(doc, fh)
-        r = run_utils.check([sys.executable, '-X', 'utf8', DRIVER, '--stage',
-                             'P1', '--board', board, '--zone-plan', plan],
-                            accept=True)
-        out = r.stdout
-        assert 'all 4 footprint(s) accounted for' in out, out[:900]
-        assert ('2 pad-less, the seeder never moves them (1 locked, '
-                '1 dispositioned)') in ' '.join(out.split()), out[:900]
-    print("  PASS: the census counts 4 blocks, 2 of them pad-less")
+        # The control: in its zone, the same logo draws no containment.
+        res = fp_.grade(it, parse_kicad_pcb(locked), locked)
+        assert not any(v.rule == 'zone_containment' and v.ref == 'LOGO1'
+                       for v in res.violations), res.violations
+    print("  PASS: a courtyard pad-less block is graded by its zone")
 
 
 def test_rank_poses_refuses_instead_of_raising_a_bare_keyerror():
@@ -363,15 +172,7 @@ def test_place_pose_snap_on_a_padless_block_is_a_refusal():
 
 TESTS = [
     test_esp_prog_has_21_blocks_and_three_are_padless,
-    test_p1_names_the_three_logos,
-    test_the_padless_check_keeps_the_older_refusals_first,
-    test_must_lock_does_not_answer_a_padless_block,
-    test_a_zoned_padless_block_is_refused_as_inert,
-    test_a_glob_that_sweeps_in_an_answered_logo_asks_nothing,
-    test_a_padless_block_with_a_courtyard_is_graded_once_locked,
-    test_a_disposition_or_a_file_lock_answers_it,
-    test_disposition_keys_are_exact_and_padless_only,
-    test_the_pass_message_counts_blocks,
+    test_a_padless_block_with_a_courtyard_is_graded,
     test_rank_poses_refuses_instead_of_raising_a_bare_keyerror,
     test_converge_poses_exits_4_with_json_and_no_traceback,
     test_place_pose_snap_on_a_padless_block_is_a_refusal,

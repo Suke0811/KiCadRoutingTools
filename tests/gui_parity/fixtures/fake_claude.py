@@ -3,11 +3,12 @@
 
 Receives the EXACT argv ClaudeBackend.build_cmd produced (the test prepends
 this script to it), asserts the placement-run contract (write-capable
-allowlist, --add-dir), then plays a canned run: stream-json init + a
---stage P4 tool line, a lap board + ledger row (left to sit long enough for
-the monitor's size-stable artifact scan to render a preview), then REPORT.md,
-a movie, final.kicad_pcb, and a terminal result event ending with a valid
-RESULT= line.
+allowlist, --add-dir, a /pcb-free-agent prompt), then plays a canned run:
+stream-json init + a milestone `converge.py record` tool line, a lap board +
+ledger row (left to sit long enough for the monitor's size-stable artifact
+scan to render a preview; the row is what the tab's stage line shows now that
+there is no staged driver), then REPORT.md, a movie, final.kicad_pcb, and a
+terminal result event ending with a valid RESULT= line.
 """
 import json
 import os
@@ -41,8 +42,10 @@ def main():
         if tool not in allowed.split(","):
             sys.stderr.write(f"fake_claude: {tool} missing from allowlist: {allowed}\n")
             return 2
-    if "input.kicad_pcb" not in prompt or "--no-delegate" in prompt:
-        # place mode: board staged into the workdir, no loop-driver flag.
+    if ("input.kicad_pcb" not in prompt or "--no-delegate" in prompt
+            or "/pcb-free-agent " not in prompt):
+        # Both tab modes run the free-agent skill on the board staged into
+        # the workdir; no retired loop-driver flag.
         sys.stderr.write(f"fake_claude: unexpected prompt: {prompt[:200]}\n")
         return 2
     staged = os.path.join(workdir, "input.kicad_pcb")
@@ -56,17 +59,16 @@ def main():
 
     emit({"type": "system", "subtype": "init", "model": "fake-model",
           "claude_code_version": "0.0-test", "cwd": workdir,
-          "skills": ["plan-pcb-placement", "plan-pcb-placement-and-routing"]})
-    # Both keys, like real Claude Code events: the formatted transcript
-    # prefers the short description (no --stage in it), so stage derivation
-    # must come from the raw event's full command via the runner's on_event
-    # tap - this pins that path, not the display path.
+          "skills": ["pcb-free-agent"]})
+    # Both keys, like real Claude Code events. The skill records each
+    # milestone in the converge ledger, and the ledger row written below is
+    # what the tab's stage line derives from.
     emit({"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "Bash",
-         "input": {"description": "Ask the placement driver for the next stage",
-                   "command": "python3 -X utf8 .claude/skills/plan-pcb-placement/"
-                              "scripts/placement_driver.py --stage P4 --board "
-                              "input.kicad_pcb"}}]}})
+         "input": {"description": "Record the milestone board",
+                   "command": "python3 -X utf8 py_placer/converge.py record "
+                              "--ledger ledger.jsonl --board lap1.kicad_pcb "
+                              "--kind quench --lever nudge"}}]}})
 
     # A lap board + a ledger row appear mid-run; then sit quietly long enough
     # for the monitor (1 s ticks, artifact scan every 2nd tick, two same-size

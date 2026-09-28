@@ -52,6 +52,11 @@ them -- the gate at ONE fires somewhere in
 streaks of 31, 26, 24 and 16, and only 2 of the 28 hold a classification row at
 all. At TWO it still fires on those streaks, which is the point; it stops
 refusing the single retry L4 authorises.
+
+The retry gate itself lived in loop_driver's L5 and left with it; the tests
+that drove L3/L4/L5 went too. What stays is converge's half -- the
+classification state, the row's own refusals, and the stop-4 gate on
+`record --final` -- which does not depend on any driver.
 """
 import io
 import json
@@ -63,16 +68,13 @@ import tempfile
 RUN_ALL_TIMEOUT = 600
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS = os.path.join(ROOT, '.claude', 'skills',
-                       'plan-pcb-placement-and-routing', 'scripts')
 for _p in (os.path.join(ROOT, 'tests'), os.path.join(ROOT, 'py_placer'),
-           SCRIPTS, ROOT):
+           ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 import run_utils                                               # noqa: E402
 import converge as C                                           # noqa: E402
-import loop_driver as L                                        # noqa: E402
 
 CV = os.path.join(ROOT, 'py_placer', 'converge.py')
 BOARD = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
@@ -121,13 +123,6 @@ def _score(td, name, blocking=2):
     return p
 
 
-def _l5(td, rows, blocking=2, extra=()):
-    return L.STAGES['L5'](L._args(
-        ['--board', BOARD,
-         '--ledger', _ledger(td, 'l.jsonl', rows),
-         '--score', _score(td, 's.json', blocking)] + list(extra)))
-
-
 def test_classification_state_counts_laps_since_the_decision():
     """And counts them with `_is_lap`, so the rows that turn no loop are out.
 
@@ -159,54 +154,16 @@ def test_classification_state_counts_laps_since_the_decision():
     print("  PASS: the last decision, and the laps recorded after it")
 
 
-def test_the_third_unclassified_routing_lap_is_refused():
-    """Two laps is what one decision buys; the third is L4's own re-measure."""
-    with tempfile.TemporaryDirectory() as td:
-        for n in (1, 2):
-            out = _l5(td, [lap()] * n)
-            assert not out.startswith('<error>'), (
-                f'{n} lap(s) refused, and L4 authorises two:\n' + out[:400])
-        out = _l5(td, [lap()] * 3)
-        assert out.startswith('<error>'), out[:400]
-        assert 'kind classification' in out and '--shape' in out, out[:600]
-        assert 'no classification row has ever been written' in out, out[:600]
-    print("  PASS: the third unclassified routing lap refuses, naming the row")
+def test_a_recorded_classification_moves_no_verdict():
+    """Writing the row is genuinely free.
 
-
-def test_the_refusal_asks_for_a_row_and_names_no_process():
-    """The pin that keeps this evidence-bound rather than topology-bound.
-
-    #963's follow-up: requiring an L3 invocation, or a fresh prompt file, would
-    refuse a model that diagnosed correctly by another route. Restoring the
-    stage command to this text is the likeliest way that comes back, because it
-    reads like helpfulness.
-    """
-    with tempfile.TemporaryDirectory() as td:
-        out = _l5(td, [lap()] * 3)
-    assert out.startswith('<error>'), out[:200]
-    for banned in ('--stage L3', 'route_prompt', 'place_prompt', '--delegate'):
-        assert banned not in out, (
-            f'the refusal names {banned!r}, which demands a PROCESS. It may '
-            f'ask only for the row: ' + out[:400])
-    assert 'not a demand that a particular stage ran' in out, out[:400]
-    print("  PASS: the refusal demands a row, not a process")
-
-
-def test_a_recorded_classification_clears_it_and_moves_no_verdict():
-    """The escape is one command, which is why there is no waiver for it.
-
-    It is only an escape if writing the row is genuinely free: `_HALF` has no
-    `classification` key, so the row enters neither plateau window and the
-    commensurability lookback skips it. If that stopped being true, the gate
-    would be charging a run for satisfying it.
+    `_HALF` has no `classification` key, so the row enters neither plateau
+    window and the commensurability lookback skips it. If that stopped being
+    true, a gate would be charging a run for satisfying it.
     """
     with tempfile.TemporaryDirectory() as td:
         rows = [lap()] * 3
-        assert _l5(td, rows).startswith('<error>')
-        out = _l5(td, rows + [classification()])
-        assert not out.startswith('<error>'), out[:400]
-
-        # ...and the halves read exactly the same before and after the row.
+        # The halves read exactly the same before and after the row.
         led_before = _ledger(td, 'b.jsonl', rows)
         led_after = _ledger(td, 'a.jsonl', rows + [classification()])
         sp = _score(td, 'v.json')
@@ -220,60 +177,7 @@ def test_a_recorded_classification_clears_it_and_moves_no_verdict():
                 f'{before[half]} -> {after[half]}')
         assert before['verdict'] == after['verdict'], (before['verdict'],
                                                        after['verdict'])
-    print("  PASS: the row clears the gate and moves neither half")
-
-
-def test_the_three_ways_it_must_not_fire():
-    """A gate measured only by what it refuses has an unmeasured cost."""
-    with tempfile.TemporaryDirectory() as td:
-        out = _l5(td, [lap()] * 3, blocking=0)
-        assert not out.startswith('<error>'), (
-            'blocking == 0 must never be refused: L3 returns "nothing to '
-            'classify" there, so the row the gate wants cannot be produced:\n'
-            + out[:400])
-
-        out = _l5(td, [lap('placement')] * 5)
-        assert not out.startswith('<error>'), (
-            'placement laps are not routing laps:\n' + out[:400])
-
-        out = _l5(td, [classification('placement')]
-                  + [lap('placement')] * 4)
-        assert not out.startswith('<error>'), (
-            'placement laps after shape=placement are the classification '
-            'being ACTED ON, not evidence that it went unread:\n' + out[:400])
-    print("  PASS: blocking 0, placement laps, and acting on the decision")
-
-
-def test_the_waiver_is_reason_bearing_and_separate():
-    with tempfile.TemporaryDirectory() as td:
-        out = _l5(td, [lap()] * 3,
-                  extra=['--accept-unclassified', 'the board is gone'])
-        assert not out.startswith('<error>'), out[:400]
-        # ...but not on whitespace. A waiver that records nothing is a waiver
-        # that spent a gate and left no trace, which is what the roll-call in
-        # the close-out text exists to prevent.
-        out = _l5(td, [lap()] * 3, extra=['--accept-unclassified', '   '])
-        assert out.startswith('<error>'), (
-            'a whitespace reason waived the gate:\n' + out[:300])
-        # It is NOT --accept-unclosed's vocabulary: that one is the terminal
-        # branch's, and sharing it would let a close-out waiver clear a retry.
-        out = _l5(td, [lap()] * 3,
-                  extra=['--accept-unclosed', 'verifier'])
-        assert out.startswith('<error>'), (
-            '--accept-unclosed cleared a gate that is not its own:\n'
-            + out[:400])
-    # THE REASON, not the code. An unrecognised flag also exits 2, so
-    # `returncode == 2` would pass just as happily if the flag did not exist.
-    # `allow`: an argparse message is exactly what this arm EXPECTS, and
-    # `check` screens those out as accidents by default -- which is right
-    # everywhere else in this file, and wrong here.
-    run_utils.check(
-        [sys.executable, '-X', 'utf8',
-         os.path.join(SCRIPTS, 'loop_driver.py'), '--stage', 'L5',
-         '--board', BOARD, '--accept-unclassified'],
-        refuse='expected one argument', code=2,
-        allow=('error: argument',))
-    print("  PASS: the waiver needs a reason, and is its own vocabulary")
+    print("  PASS: the row moves neither half")
 
 
 def test_a_classification_row_must_name_a_shape():
@@ -339,27 +243,6 @@ def test_a_measured_unfixable_close_out_needs_a_live_classification():
             refuse='lap(s) were recorded after the last classification',
             code=2)
     print("  PASS: a measured-unfixable claim needs the measurement recorded")
-
-
-def test_l3_and_l4_print_the_command_that_satisfies_the_gate():
-    """A refusal whose remedy nothing emits is a remedy nobody runs.
-
-    L4's step 1 has said "Record the classification in the ledger" in prose
-    with NO command since it was written, and run 29 recorded none at all.
-    """
-    dump = subprocess.run(
-        [sys.executable, '-X', 'utf8',
-         os.path.join(SCRIPTS, 'loop_driver.py'), '--dump-all'],
-        capture_output=True, text=True, encoding='utf-8', errors='replace',
-        cwd=ROOT)
-    assert dump.returncode == 0, dump.stderr[-400:]
-    for arm in ('L3', 'L4'):
-        body = dump.stdout.split(f'===== {arm} =====', 1)[1].split('=====', 1)[0]
-        assert '--kind classification' in body, (
-            f'{arm} does not emit the record command its own text asks for')
-        assert '--shape' in body, arm
-    print("  PASS: L3 and L4 emit the row the gate asks for")
-
 
 
 def test_a_classification_row_must_name_its_measurement():
@@ -429,36 +312,6 @@ def test_a_measured_unfixable_claim_counts_laps_of_EITHER_half():
                    '--kind', 'completion', '--stop-condition', '4'] + lenses),
             refuse='1 placement, 0 routing', code=2)
     print("  PASS: a placement lap makes an unfixability claim stale too")
-
-
-def test_l4_reads_the_shared_lap_predicate():
-    """The seventh bullet of its own commit, which no test covered.
-
-    `l4`'s stale-board list filtered `kind in ('completion', 'routing')`, and
-    `routing` is not a kind `record --kind` can write -- so that arm was dead
-    and restoring it changed no exit code anywhere.
-    """
-    with tempfile.TemporaryDirectory() as td:
-        rows = [lap(), lap(final=True, stop_condition='STUCK'),
-                lap(exhausted={'half': 'routing', 'reason': 'spent'}),
-                {'kind': 'routing', 'accepted': True, 'result_sha': 'a' * 64}]
-        out = L.STAGES['L4'](L._args(
-            ['--board', BOARD, '--shape', 'placement',
-             '--ledger', _ledger(td, 'l4.jsonl', rows),
-             '--score', _score(td, 's4.json')]))
-        assert 'iteration 0' in out, (
-            'the one real routing lap is not listed as stale:\n' + out[:600])
-        for gone in ('iteration 1', 'iteration 2', 'iteration 3'):
-            assert gone not in out, (
-                f'{gone} is a close-out, a declaration or a kind nothing can '
-                f'write, and none of them is a lap:\n' + out[:600])
-        # And a malformed row is not a crash.
-        out = L.STAGES['L4'](L._args(
-            ['--board', BOARD, '--shape', 'placement',
-             '--ledger', _ledger(td, 'l4b.jsonl', [{'kind': [], 'accepted': 1}]),
-             '--score', _score(td, 's4b.json')]))
-        assert 'NONE RECORDED' in out, out[:400]
-    print("  PASS: L4 asks the one predicate, and a bad row is not a traceback")
 
 
 def test_a_ledger_line_that_is_not_an_object_is_not_a_traceback():

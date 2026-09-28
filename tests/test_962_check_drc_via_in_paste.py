@@ -232,9 +232,7 @@ def main():
               and vj.get('undeclarable') == 1 and vj.get('violations') == 0, str(vj))
         # ...and board_score reads that count off the same console line
         import importlib.util as _ilu
-        _sp = _ilu.spec_from_file_location('bs962d', os.path.join(
-            ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts',
-            'board_score.py'))
+        _sp = _ilu.spec_from_file_location('bs962d', os.path.join(ROOT, 'py_tools', 'board_score.py'))
         _bs = _ilu.module_from_spec(_sp)
         _sp.loader.exec_module(_bs)
         check('5. ... board_score reads the undeclarable count off that line',

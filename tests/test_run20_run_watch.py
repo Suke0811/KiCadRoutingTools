@@ -341,18 +341,33 @@ _TOOL_AGNOSTIC = {'--accept-residue', '--accept-unclosed',
                   '--accept-congestion', '--accept-unclassified',
                   '--allow-unplaced', '--allow-routed',
                   '--force', '--no-verify', '--no-delegate'}
+#: Entries scoped ONLY to the retired skill drivers (RW.DRIVERS). No tool in
+#: the tree declares them any more, but run_watch keeps them on purpose: it
+#: replays recorded runs whose teed rows carry those drivers' argv. Listed by
+#: name, and exempt only while every driver in the scope is really absent --
+#: a restored driver goes back under the ordinary check.
+_REPLAY_ONLY = {'--waive'}
+_retired = set(RW.DRIVERS)
 _dead_entries = []
+_replay_seen = set()
 for _lab, _flag, _why, _tools in RW.CHEAT_FLAGS:
     if not _tools:
         if _flag not in _TOOL_AGNOSTIC:
             _dead_entries.append(_flag + ': unscoped, and not declared '
                                          'tool-agnostic')
         continue
+    if (_flag in _REPLAY_ONLY and set(_tools) <= _retired
+            and not any(_glob.glob(os.path.join(REPO, _d, _t))
+                        for _d in _SRC_DIRS for _t in _tools)):
+        _replay_seen.add(_flag)
+        continue
     if not any(_declares(_t, _flag) for _t in _tools):
         _dead_entries.append('%s: no tool in %s declares it'
                              % (_flag, list(_tools)[:4]))
 check('every scoped cheat flag is declared by a tool in its own scope',
       not _dead_entries, '; '.join(_dead_entries))
+check('...and every replay-only exemption is still used (it cannot go stale)',
+      _replay_seen == _REPLAY_ONLY, str(sorted(_REPLAY_ONLY - _replay_seen)))
 check('...and the table is not empty (else the check is vacuous)',
       len(RW.CHEAT_FLAGS) >= 15, str(len(RW.CHEAT_FLAGS)))
 _scope = dict((f, t) for _l, f, _w, t in RW.CHEAT_FLAGS)
