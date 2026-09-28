@@ -111,23 +111,26 @@ def case_right_failure_wrong_reason_is_caught():
 
 
 def case_it_works_on_the_real_guards():
-    """Against the actual drivers, not synthetic scripts."""
-    D = os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement',
-                     'scripts', 'placement_driver.py')
-    if not os.path.isfile(D):
-        print('  SKIP  placement_driver not present'); return
-    check([sys.executable, '-X', 'utf8', D, '--stage', 'P4',
-           '--board', 'b.kicad_pcb'],
-          refuse='needs --before', code=4)
-    want(True, 'P4 refuses without --before, for that stated reason')
-    with tempfile.TemporaryDirectory() as tmp:
-        b = os.path.join(tmp, 'b.kicad_pcb'); open(b, 'w').close()
-        a = os.path.join(tmp, 'a.kicad_pcb'); open(a, 'w').close()
-        check([sys.executable, '-X', 'utf8', D, '--stage', 'P4',
-               '--board', b, '--before', a],
-              refuse='render', code=4)
-        want(True, 'P4 refuses without a render, for that stated reason')
+    """Against a real refusal in a shipped tool, not a synthetic script.
 
+    pcb-free-agent's make_unplaced refuses a routed input with exit 3 and
+    names the strip tool, before writing anything.
+    """
+    D = os.path.join(ROOT, '.claude', 'skills', 'pcb-free-agent', 'scripts',
+                     'make_unplaced.py')
+    src = os.path.join(ROOT, 'kicad_files', 'qfn_interior_pads.kicad_pcb')
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'pile.kicad_pcb')
+        check([sys.executable, '-X', 'utf8', D, src, out],
+              refuse='strip_copper_only.py', code=3)
+        want(not os.path.exists(out),
+             'make_unplaced refuses a routed input and writes nothing')
+        try:
+            check([sys.executable, '-X', 'utf8', D, src, out],
+                  refuse='some other reason', code=3)
+            want(False, 'a real refusal for another reason must not pass')
+        except AssertionError:
+            want(True, 'a real refusal for the WRONG stated reason fails the check')
 
 if __name__ == '__main__':
     for fn in (case_import_error_is_not_a_satisfied_guard,

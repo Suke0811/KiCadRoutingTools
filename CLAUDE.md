@@ -213,8 +213,8 @@ Validate routed boards against the *real* spec, with the right checker — most
   in the placement stack measures z, so a declared height limit would grade
   nothing at all. See `docs/design-brief.md`.
   **Since #959 the connector declarations COMPILE** (`design_brief.
-  compile_with_consequences`, which `check_floorplan`, `board_brief` and the
-  placement skill's P1 call, so emit, grade and drift see the same clauses).
+  compile_with_consequences`, which `check_floorplan` and `board_brief` call,
+  so emit, grade and drift see the same clauses).
   `edge_mount` / `through_edge` compile to a 0.75 mm setback, read on the drawn
   body for an edge-mount part or an edge receptacle (a class `user_facing`,
   the emitter or a declared edge assigns) and on the courtyard otherwise. A vertical mount is exempt from the receptacle seat.
@@ -224,7 +224,7 @@ Validate routed boards against the *real* spec, with the right checker — most
   passed off as a declaration. `mechanical.json` beside the board is read the
   same way (`--mechanical` / `--no-mechanical`): reconciled against the brief
   and the outline, value by value with an authority, and compiled into
-  grade-only anchors, whose refs P1 requires to be locked -- or named, unlocked,
+  grade-only anchors, whose refs must be locked -- or named, unlocked,
   by a plan `fixed_poses[]` entry at the declared pose (with its `rot` where the
   file has one), which the seeder's stage 0 seats and locks (#1054).
   `docs/floorplan-intent.md` has the authority table.

@@ -46,7 +46,9 @@ and `route` for a placed one.
   with everything off the board, build the input with
   `python3 -X utf8 .claude/skills/pcb-free-agent/scripts/make_unplaced.py <src> <dst>`.
   It piles every pad-bearing part off the outline and removes each moved
-  part's lock.
+  part's lock. It refuses a routed input: strip that first with
+  `python3 -X utf8 tests/stress/strip_copper_only.py <src> <dst>`, which keeps
+  the outline bit-identical.
 - **Work in a run directory**, `wk/<run>/`. Copy every board with
   `python3 -X utf8 py_router/copy_board.py <src> <dst>`, never a bare `cp`,
   because the `.kicad_pro` beside a board carries its DRC floor.

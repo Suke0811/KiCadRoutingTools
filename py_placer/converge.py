@@ -1378,7 +1378,7 @@ def cmd_record(a):
         print(f"record: {len(_failed)} lens FAILED under --stop-condition "
               f"DONE-EXHAUSTED. Done-and-measured-done IS the every-lens-"
               f"passes claim, so a FAIL beside it is the contradiction "
-              f"L5's cross-check exists to refuse. Record STUCK or BUDGET "
+              f"this check exists to refuse. Record STUCK or BUDGET "
               f"(or fix the board and re-dispatch the lens), never a done "
               f"a lens denies. Nothing was written.", file=sys.stderr)
         return 2

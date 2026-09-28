@@ -33,8 +33,12 @@ import time
 # permission rule matches the canonical name only. This line has said `Task`
 # alone since #633; on 2.1.251 the dispatch event carries `"name":"Agent"`, so
 # the close-out verification this comment claims may never have been granted.
+#
+# Monitor, because /pcb-free-agent's stop rules require watching long jobs
+# (never unwatched for more than 20 minutes); without it a headless run can
+# only poll with Bash.
 PLACEMENT_ALLOWED_TOOLS = (
-    "Bash,Read,Glob,Grep,Write,Edit,WebSearch,Agent,Task,TodoWrite")
+    "Bash,Read,Glob,Grep,Write,Edit,WebSearch,Agent,Task,TodoWrite,Monitor")
 
 # The machine-readable completion contract, appended to the instructions.
 # Same last-RESULT=-line convention as ai_plan.PLAN_RESULT_SCHEMA, parsed by

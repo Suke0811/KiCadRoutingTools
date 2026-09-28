@@ -393,9 +393,8 @@ outside the seed scope -- is recorded when it is at the pose and refused when
 it is not. A seated part is stamped `(locked yes)`, so every later stage and
 the polish treat it as an obstacle, and `place_seed --repair` never moves one.
 `place_seed`'s `JSON_SUMMARY` carries `fixed_seated` (with `at_written_pose`)
-and `fixed_refused`. The placement skill's P1 accepts an unlocked
-`mechanical.json` ref, instead of demanding a hand lock, when the plan names
-it here at the declared pose.
+and `fixed_refused`. An unlocked `mechanical.json` ref is accepted, instead
+of needing a hand lock, when the plan names it here at the declared pose.
 
 ### WHERE ALONG the edge: `center_on_edge` and `along_edge_band`
 
@@ -693,8 +692,9 @@ into a question the plan answers. It is printed by the grade, by `--emit-intent`
 and by `--plan-only`. `--json` carries it as `rule_roster`, and `JSON_SUMMARY`
 carries `rules_dark_undispositioned`.
 
-The placement skill's P1 gate refuses a plan when a rule meets all five of these
-conditions:
+`check_floorplan --plan-only`'s rule roster names a rule as OWING an answer when
+it meets all five of these conditions (the retired placement driver's P1 stage
+refused the plan on it; nothing refuses a run on it now, so read the roster):
 
 1. The rule is dark, meaning the plan does not arm it.
 2. It is not a **policy** rule. `proximity`, `zone_exclusive` and
@@ -711,9 +711,10 @@ Budget keys work the same way. `legality_budget` without `overlap_area` or
 the budget the plan actually declares, not off the plan's
 `context.budget_withheld` note.
 
-A rule the **design brief** declares is answered in one place only, P1's
-brief-clause check. That check refuses a plan that drops or contradicts a brief
-clause, by clause id, and `--waive brief-clause:<id>:<why>` answers it. The roster
+A rule the **design brief** declares is answered in one place only, the
+brief-clause check (`check_floorplan`'s DRIFT report). It names a plan that drops
+or contradicts a brief clause, by clause id; the retired P1 stage refused on it
+and took `--waive brief-clause:<id>:<why>` as the answer. The roster
 reports such a rule as `uncovered` and asks nothing more.
 
 `check_floorplan --json` also writes a `declaration_ledger`. It has one row per
@@ -1018,7 +1019,8 @@ A plan that declares no `legality_budget` gets WARNs only from the area rows.
 Nothing bounds its overlap, so no area bound is sound.
 
 **Callers.**
-- The placement skill's P1 refuses every plan ERROR.
+- `check_floorplan --plan-only` reports every plan ERROR (the retired placement
+  driver's P1 stage refused on them).
 - `place_seed` refuses the four findings the seeder has no per-member answer for
   (`floorplan.PLAN_SEED_REFUSES`: the zone, edge and board area bounds and
   `block_glob_literal`) with **exit 5**, writing nothing. It prints the rest and
@@ -1056,8 +1058,9 @@ Every disagreement is reported with both values and their sources: in the
 emitted intent's `context.reconciliation`, and in the grade's `--json` as a
 top-level `reconciliation`.
 
-- **Two declared or recorded values that disagree** are a CONTRADICTION, and P1
-  refuses until it is answered in `dispositions.contradictions`, because the
+- **Two declared or recorded values that disagree** are a CONTRADICTION, and
+  `check_floorplan` lists it as undispositioned until it is answered in
+  `dispositions.contradictions`, because the
   loser may be the right one. That includes a mechanical POSE for a part the
   brief declares an ARRAY member (`<ref>:array`): the file pins it, the row
   moves it, and no plan can hold both (the loader refuses a fixed pose on a
@@ -1065,16 +1068,16 @@ top-level `reconciliation`.
   wins, so the mechanical value loses and is not anchored; to keep the pose
   instead, take the part out of the array.
 - **A plan that disagrees with the brief** is DRIFT, and the declared value wins.
-  No `dispositions` entry clears it. P1 refuses it with the brief-clause
-  wording, and only `--waive brief-clause:<id>:<why>` answers it there.
+  No `dispositions` entry clears it. `check_floorplan` reports it as DRIFT
+  with the brief-clause wording.
 
 **Anchors.** Each mechanical ref that wins is compiled at GRADE time, from the
 file itself, into a grade-only anchor block `mech:<ref>`. The anchor is the
 grader's own rect at the declared pose, rounded outward, and is graded by
 `zone_containment` at a fixed ERROR. The `mech:` prefix is reserved in plans.
 
-- The anchor itself does not check a lock. P1 requires each such ref that
-  carries pads to be FILE-locked at its pose, or named -- unlocked, at that
+- The anchor itself does not check a lock. Each such ref that carries pads
+  must be FILE-locked at its pose, or named -- unlocked, at that
   pose -- by the plan's `fixed_poses[]`, which the seeder's stage 0 seats and
   locks (#1054). `--emit-intent` compiles such an entry for every anchored
   ref no edge connector, `must_lock` pattern or brief pose already claims
@@ -1408,7 +1411,7 @@ were unchanged, because no zone packing exists for the limit to pull caps out
 of. The three zoned boards (ulx3s, orangecrab_ext_pll, glasgow_revC) all
 regressed: more decap errors, or worse guards. The rows stay as `rejected`
 change detectors. The placement skill does not print a decap flag in its
-emits. P1's rule roster asks the question instead: an applicable dark
+emits. The rule roster (`check_floorplan --plan-only`) asks the question instead: an applicable dark
 `decap_distance` is answered by a limit from a requirement, or by a written
 disposition.
 

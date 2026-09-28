@@ -22,6 +22,8 @@ input deterministically, so the run is replayable. Measured on an 18-part
 - **Padless artwork stays.** It has no nets, and nothing could bring it back.
 - **Refuses (exit 3) when a footprint draws the board outline** (#829):
   moving it would move the outline.
+- **Refuses (exit 3) a routed input.** Strip it first with
+  `tests/stress/strip_copper_only.py`, which keeps the outline bit-identical.
 
 The OUTPUT is verified, not the plan: every moved part's courtyard clears the
 outline, siblings (.kicad_pro/.kicad_prl/.kicad_dru) are carried, no copper,
@@ -91,6 +93,15 @@ def build(src: str, dst: str, keep_locked: bool = False) -> int:
               file=sys.stderr)
         return 3
 
+    # A routed input is refused BEFORE anything is written: its copper would
+    # be left where the parts were, and that copper encodes the original
+    # poses. Most corpus boards ship routed.
+    if assess_placement(pcb, src).has_copper:
+        print(f'refuse: {src} carries routed copper. Strip it first, keeping '
+              f'the outline bit-identical:\n    python3 -X utf8 '
+              f'tests/stress/strip_copper_only.py {src} <unrouted.kicad_pcb>',
+              file=sys.stderr)
+        return 3
     was_locked = sorted(r for r, f in pcb.footprints.items()
                         if f.pads and getattr(f, 'locked', False))
     held = was_locked if keep_locked else []

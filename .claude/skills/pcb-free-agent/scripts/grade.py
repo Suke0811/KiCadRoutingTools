@@ -52,7 +52,12 @@ def _poses(board):
 
 
 def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None):
+    # Absolute BEFORE anything runs: every checker runs with cwd=ROOT, so a
+    # path relative to the caller's directory would name a missing file.
     board, baseline = os.path.abspath(board), os.path.abspath(baseline)
+    intent = os.path.abspath(intent) if intent else None
+    if intent and not os.path.isfile(intent):
+        raise SystemExit(f'refuse: intent {intent} does not exist')
     for p, what in ((board, 'board'), (baseline, 'baseline')):
         if not os.path.isfile(p) or os.path.getsize(p) == 0:
             raise SystemExit(f'refuse: {what} {p} is not a real non-empty file')
@@ -97,7 +102,7 @@ def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None):
     out['off_outline_pad_copper'] = off.get('pad_copper')
     out['off_outline_graphic_copper'] = off.get('graphic_copper')
     metrics = (_load(rj) or {}).get('metrics') or {}
-    for k in ('hpwl_mm', 'crossings'):
+    for k in ('hpwl', 'crossings'):          # render_placement's own keys
         if k in metrics:
             out[k] = metrics[k]
 

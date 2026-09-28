@@ -2738,25 +2738,23 @@ Example cleanup prompt:
 >
 > Would you like me to delete the intermediate files?"
 
-### The box-in row needs one qualification
+### A boxed-in net: parameters, until the geometry is at the floor
 
-The blocker-classification table — which evidence means floorplan, which means
-placement detail, which means parameters — is the `diagnose-routing-failures`
-skill's failure-mode classification. Follow it, with ONE qualification to the
-boxed-in row.
+When a failed net's `blockers` list is empty and the log says it was boxed in
+by static obstacles, the default reading is PARAMETERS: stay in routing and
+change the grid, the ripup budget or the width, because placement is not the
+lever. (`diagnose-routing-failures` classifies the other failure modes.)
 
-That row reads *"`blockers` empty; the log says boxed in by static obstacles |
-parameters | stay here — grid, ripup budget, width. Placement is not the
-lever."* That is right only while the geometry still has somewhere to go, and
-the row does not say how to tell. **Read `boxed_in[].geometry` first**: it
+That is right only while the geometry still has somewhere to go, and the
+rule does not say how to tell. **Read `boxed_in[].geometry` first**: it
 carries the grid, clearance, track width and via diameter the run was actually
 using. Compare those against the board's own floor — its `.kicad_dru` rules and
 the fab minimums — yourself, because no summary key makes that comparison for
 you.
 
-- **Geometry still above the floor:** the row applies. Shrink it, and pair a
+- **Geometry still above the floor:** the parameters reading holds. Shrink it, and pair a
   finer grid **with** the shrink rather than spending the grid alone.
-- **Geometry already at the floor:** the row's advice is exhausted, and this is
+- **Geometry already at the floor:** the parameters reading is exhausted, and this is
   a placement question after all. A finer grid resolves the same obstacles more
   precisely; it does not make a gap wider, and there is nothing left to pair it
   with. Measured (run 20): `0.05 -> 0.025 -> 0.0125`, about 40 minutes, left

@@ -16,8 +16,9 @@ Reports:
   Monitor calls) versus other tool time versus model time;
 - tokens, de-duplicated by message id (a streamed message repeats its usage
   per content block);
-- any use of a forbidden entry point: `converge.py` verbs other than `record`,
-  or the retired loop drivers.
+- any use of a forbidden entry point: the retired staged drivers. Every
+  `converge.py` verb is allowed (the skill hands the agent all of py_placer/);
+  they are COUNTED per verb, so a report can say how the ledger was used.
 
 A line that does not parse is counted in `unparsed_lines`, never dropped.
 """
@@ -37,7 +38,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
 SHELLS = ('Bash', 'PowerShell')
 SCRIPT_RE = re.compile(r'([\w./\\-]*\w\.py)\b')
 FORBIDDEN_SCRIPTS = ('loop_driver.py', 'placement_driver.py')
-CONVERGE_VERB_RE = re.compile(r'converge\.py["\']?\s+([A-Za-z][\w-]*)')
+#: converge's own subcommands. Matching a closed set means an argument that
+#: merely follows the script name (`grep x converge.py py_tools/y.py`) is not
+#: read as a verb.
+CONVERGE_VERBS = ('poses', 'where', 'record', 'step-back', 'replay', 'status',
+                  'verdict')
+CONVERGE_VERB_RE = re.compile(r'converge\.py["\']?\s+(%s)(?![\w./\\-])'
+                              % '|'.join(re.escape(v) for v in CONVERGE_VERBS))
 WAIT_RE = re.compile(r'(^|[;&|]\s*|\bdo\s+)(until|sleep)\b')
 
 
@@ -67,7 +74,8 @@ def tally(rows):
     tools, scripts, tokens = (collections.Counter() for _ in range(3))
     forbidden, seen, uses, results = [], set(), {}, {}
     first = last = None
-    turns = agents = records = 0
+    turns = agents = 0
+    verbs = collections.Counter()
     for r in rows:
         if r.get('timestamp'):
             t = _ts(r['timestamp'])
@@ -101,12 +109,7 @@ def tally(rows):
                 for f in sorted(hits & set(FORBIDDEN_SCRIPTS)):
                     forbidden.append({'hit': f, 'command': cmd[:300]})
                 if 'converge.py' in hits:
-                    verbs = CONVERGE_VERB_RE.findall(cmd)
-                    records += verbs.count('record')
-                    for v in verbs:
-                        if v != 'record':
-                            forbidden.append({'hit': f'converge.py {v}',
-                                              'command': cmd[:300]})
+                    verbs.update(CONVERGE_VERB_RE.findall(cmd))
     wait = work = 0.0
     for k, (t0, name, inp) in uses.items():
         if not (t0 and results.get(k)):
@@ -126,7 +129,9 @@ def tally(rows):
             'assistant_turns': turns, 'tool_calls': sum(tools.values()),
             'tools': dict(tools.most_common()),
             'repo_scripts': dict(scripts.most_common()),
-            'agent_spawns': agents, 'converge_record_calls': records,
+            'agent_spawns': agents,
+            'converge_record_calls': verbs.get('record', 0),
+            'converge_verbs': dict(verbs),
             'tokens': dict(tokens), 'forbidden_uses': forbidden}
 
 

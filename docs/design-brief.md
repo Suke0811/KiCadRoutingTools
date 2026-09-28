@@ -411,8 +411,8 @@ Before #959 `mount_mode`, `cable_entry` and `user_top_side` were carried into
 `context` and graded by nothing: the #959 comment changed each one and no
 measurement moved. They now compile, in `design_brief.connector_consequences`,
 which every tool that reads a brief against a board calls -- `check_floorplan`
-on both its emit and grade paths, `--plan-only`, `board_brief` and the
-placement skill's P1 -- so the grade and drift see exactly what the emit wrote.
+on both its emit and grade paths, `--plan-only`, and `board_brief` -- so the
+grade and drift see exactly what the emit wrote.
 
 The mapping is the one the evidence supports, **not** the issue's literal one.
 It was measured on five as-built boards (esp_prog, tigard, splitflap_driver,

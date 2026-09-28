@@ -38,3 +38,15 @@ The first line of `verdict_<N>.txt` is exactly `VERDICT=PASS` or
 `VERDICT=FAIL`. Then give one line per check with its measured number, and for
 FAIL, the specific defects (net names, refs, coordinates). Return the same text
 as your final message. Do not modify any board.
+
+**`full` and `route` modes, also write one file per routed-board lens**, so
+the run can close its ledger with `converge.py record --final --lens-file …`:
+- `<RUN DIR>/verdict_<N>_connectivity.txt`
+- `<RUN DIR>/verdict_<N>_drc.txt`
+- `<RUN DIR>/verdict_<N>_spec.txt`
+
+Each file holds one line:
+`VERDICT=PASS:lens=<lens>` or `VERDICT=FAIL:lens=<lens>;finding=<what>;evidence=<number>`.
+- **connectivity:** check_connected and board_score's unrouted/broken.
+- **drc:** check_drc.
+- **spec:** check_complete, plus the mechanical facts.
