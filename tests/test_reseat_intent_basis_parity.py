@@ -33,8 +33,8 @@ What each case pins:
 * TWO VIEWS: the count reads a decap pair the grade's way (past the search
   radius it is `decap_ungraded`, not counted); the licence and prune read it
   the gate's way (still measured), so walking out of the radius is a rise,
-  not a fix. A term growing inside its limit is no finding, and the count's
-  limit is exclusive at the grade's own tolerance.
+  not a fix. A term growing inside its limit is no finding, and a cap at
+  EXACTLY its limit is not a breach (the grade's `> limit + EPS`).
 * THE CONTROL for that: the same re-seat with the probe's tethers withheld is
   REFUSED at `intent 0->0` and C3's error stays -- so the acceptance above is
   the tether terms' doing, not the board's.
@@ -245,18 +245,25 @@ def test_growing_inside_the_limit_is_no_finding():
         assert after['count'] == 0 and pr.licence(before, after) == (True,
                                                                      []), after
         assert pr.terms('C3') == (0.0,), pr.terms('C3')
-    print("  PASS: 2.125 -> ~2.6mm under a 3mm limit: no count, no rise, "
-          "prune vector (0.0,)")
+    print(f"  PASS: {before['tethers'][i]:.3f} -> {after['tethers'][i]:.3f}mm "
+          f"under a 3mm limit: no count, no rise, prune vector (0.0,)")
 
 
 def test_the_limit_is_exclusive_at_its_tolerance():
-    """At a limit 0.025mm above C3's 2.125mm the grade reports nothing; so
-    must the count (the grade's `> limit + EPS`, not a slackened compare)."""
+    """A limit EQUAL to C3's exact measured distance is not a breach: the
+    grade compares `> limit + EPS`, and so must the count. `>= limit` (or any
+    slackened compare) counts it; only a limit set to the exact value can
+    tell the two apart."""
     with tempfile.TemporaryDirectory() as td:
-        intent, pcb, pr, _st = _esp_probe(td, {'max_distance_mm': 2.15})
+        _i, _pcb, pr0, _st = _esp_probe(td, {'max_distance_mm': 2.0})
+        i = next(k for k, t in enumerate(pr0.tethers)
+                 if t.data.get('cap') == 'C3')
+        exact = pr0.snapshot()['tethers'][i]
+        intent, pcb, pr, _st = _esp_probe(td, {'max_distance_mm': exact})
         assert pr.snapshot()['count'] == 0 == _grade_count(
-            intent, pcb, ESP, ('decap_distance',))
-    print("  PASS: 2.125mm under a 2.15mm limit counts 0, as graded")
+            intent, pcb, ESP, ('decap_distance',)), exact
+    print(f"  PASS: C3 at exactly its limit ({exact!r}mm) counts 0, as "
+          f"graded")
 
 
 def _summary(r):

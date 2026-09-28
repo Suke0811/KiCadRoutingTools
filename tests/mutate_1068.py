@@ -117,12 +117,20 @@ ROWS = [
      "                max(0.0, self.state.tether_gate_view_value(self.tethers[i]))\n",
      (TPAR,), 'KILLED'),
 
-    # The count's limit is slackened below the grade's tolerance.
-    ('the-count-limit-is-slack', 'q',
+    # The count's limit loses the grade's tolerance: a cap at EXACTLY its
+    # limit counts.
+    ('the-count-limit-is-inclusive', 'q',
      "            if v > t.threshold + legality.EPS:\n"
      "                count += 1\n",
-     "            if v >= t.threshold - 0.05:\n"
+     "            if v >= t.threshold:\n"
      "                count += 1\n",
+     (TPAR,), 'KILLED'),
+
+    # Prune's vector reads the GRADE's view: a cap walked out of the radius
+    # reads as no excess, so prune may keep that walk.
+    ('prune-reads-the-grades-view', 'q',
+     "                max(0.0, self.state.tether_gate_view_value(self.tethers[i])\n",
+     "                max(0.0, self.state.tether_graded_value(self.tethers[i])\n",
      (TPAR,), 'KILLED'),
 
     # The printed basis goes back to a bare `intent`.
