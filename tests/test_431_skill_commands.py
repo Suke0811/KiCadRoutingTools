@@ -11,15 +11,9 @@ the doc-vs-code gate: `run_doc_examples.gridrouteconfig_undocumented_fields` and
 
 Explicitly NOT testable, and worth saying rather than pretending: whether Claude
 *decides correctly* what to do with a given placement. The mitigations are
-design, not assertion -- a MANDATORY copper-free measurement whose two outcomes
-are both legitimate, the decision table it feeds, the driver that refuses to
-emit a repair stage without that measurement, and the board-state gates that
-refuse the worst case outright.
-
-Note the design change (run 8): this file used to assert the skill said
-placement was "normally SKIPPED". That was the wrong invariant. A default of
-SKIP is satisfied most cheaply by skipping, and the thing being skipped is the
-check that catches stacked parts.
+design, not assertion -- the free-agent skill's independent verifier and the
+board-state gates that refuse the worst case outright. (The staged placement
+skill's measure-then-decide assertions left with that skill.)
 
 THE THREE BLIND SPOTS (#923), named here so the next person who finds a class
 this gate misses knows which of the three they are looking at. A fact-checking
@@ -35,12 +29,12 @@ pass found ~15 wrong claims in the skills and this file passed on every one:
      whether the annotated flag can reach `gate_or_exit` at all. What is still
      open: a flag whose MEANING moved without its default or exit code moving.
 
-  2. IT NEVER SAW A REFUSAL. `source_text` reads a driver through `--dump-all`,
-     which fabricates PASSING evidence for every guard, so the commands inside
-     `err(...)` -- what a STUCK reader runs next -- were unscanned. One of them
-     exited 2. Closed by `--dump-refusals` plus
-     `test_the_refusal_branches_are_scanned`, which requires every refusal site
-     in each driver to be rendered.
+  2. IT NEVER SAW A REFUSAL. `source_text` read a driver through `--dump-all`,
+     which fabricated PASSING evidence for every guard, so the commands inside
+     `err(...)` were unscanned. Closed by `--dump-refusals` at the time; the
+     staged drivers (placement_driver.py, loop_driver.py) have since been
+     RETIRED along with that machinery, and no source here emits commands
+     from code any more -- every source is read as the text it is.
 
   3. IT COULD NOT SEE A CLAIM ABOUT A TOOL'S OUTPUT. Every "read the `X` field"
      instruction was invisible -- the class containing `hot[].ratio`, a key no
@@ -62,82 +56,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: Measured 141 s: ~20 tools asked for their parser, plus four driver dumps.
-#: Declared rather than left to the 600 s global, because the refusal dumps
-#: made it grow and a gate killed by the runner's default budget reports the
+#: Declared rather than left to the 600 s global: ~20 tools are asked for
+#: their parser, and a gate killed by the runner's default budget reports the
 #: same "no result" as a broken one.
 RUN_ALL_TIMEOUT = 900
 
-# Files that instruct Claude or a human to run these tools.
-# The skill was split into three (run-8 S2): placement, routing, and the thin
-# combined one that sequences them. A flag can now live in any of them, and the
-# whole point of this gate is that NO skill file drifts from the real parsers --
-# so every one is a source, and the assertions below say which file must carry
-# which rule.
-@functools.lru_cache(maxsize=None)
-def driver_dump(rel, flag):
-    """(text, exit code) for one of a driver's dumps, run once per flag.
 
-    The driver's own path is rewritten to the repo-relative one, because a
-    re-entry line is `python3 -X utf8 {sys.argv[0]} --stage ...` and
-    `sys.argv[0]` is ABSOLUTE -- which `_TOOL_RE` cannot match, a drive
-    letter's colon not being in its character class. loop_driver, whose
-    refusals are mostly re-entry commands, was therefore not in TOOLS at all
-    and its own flags went unchecked: a `--stage-bogus L5` shipped past this
-    gate in a verifier's negative control.
-    """
-    path = os.path.join(ROOT, rel)
-    env = dict(os.environ, COLUMNS='200', KRT_NO_BANNER='1')
-    p = subprocess.run([sys.executable, '-X', 'utf8', path, flag],
-                       capture_output=True, text=True, encoding='utf-8',
-                       errors='replace', cwd=ROOT, timeout=300, env=env)
-    text = (p.stdout or '') + (p.stderr or '')
-    for spelling in (path, path.replace(os.sep, '/')):
-        text = text.replace(spelling, rel)
-    return text, p.returncode
-
-
-#: CACHED because the two scans below ask for every source once per
-#: TOOL, and a driver source costs two subprocess runs. Sound because
-#: nothing in this file writes to a source between reads -- and
-#: without it the refusal dump multiplied a 143 s gate by ~40.
+#: CACHED because the scans below ask for every source once per TOOL. Sound
+#: because nothing in this file writes to a source between reads.
 @functools.lru_cache(maxsize=None)
 def source_text(rel):
-    """What the executor actually reads for this source.
+    """What the executor actually reads for this source: its text.
 
-    For a DRIVER that is its --dump-all output, not its Python source. The
-    source splits one emitted command across several string literals, so a
-    source scan sees `--json` at the end of a line whose value is on the next
-    one and reports a defect that does not exist -- while missing that the
-    emitted text is what the executor runs. Ask the driver.
-
-    BOTH DUMPS (#923). `--dump-all` fabricates PASSING evidence for every guard,
-    so it renders one branch per stage -- the instructions -- and no refusal
-    ever. That left the commands inside refusals unscanned, which is the worst
-    place in the file for a broken one: a refusal is what a STUCK reader is
-    handed next. Measured: P3's refusal spelled `place_optimize.py
-    --suggest-locks --json wk/locks.json`, a flag that tool does not have, exit
-    2, thirty lines below the branch that spells it correctly -- and this gate
-    passed on it for as long as it existed. `--dump-refusals` renders the other
-    branch and audits its own coverage against the driver's refusal sites.
+    A MISSING source reads as empty, and `test_every_source_exists` is what
+    keeps that from being a quiet way to stop gating a file.
     """
     path = os.path.join(ROOT, rel)
     if not os.path.isfile(path):
         return ''
-    if rel.endswith('_driver.py'):
-        out, rc = driver_dump(rel, '--dump-all')
-        assert '=====' in out, f'{rel} --dump-all emitted nothing:\n{out[:400]}'
-        assert rc == 0, \
-            f'{rel} --dump-all exited {rc}; a stage refused:\n{out[-600:]}'
-        ref, ref_rc = driver_dump(rel, '--dump-refusals')
-        assert '<error>' in ref, \
-            f'{rel} --dump-refusals rendered no refusal:\n{ref[:400]}'
-        # Non-zero means a refusal site nothing renders -- so a refusal exists
-        # that this gate cannot see, which is exactly the hole it is here to
-        # close. The driver names the line.
-        assert ref_rc == 0, \
-            f'{rel} --dump-refusals exited {ref_rc}:\n{ref[-800:]}'
-        return out + '\n' + ref
     return open(path, encoding='utf-8', errors='replace').read()
 
 
@@ -151,31 +87,18 @@ def _all_skill_text():
     return '\n'.join(out)
 
 
+# Files that instruct Claude or a human to run these tools. A flag can live in
+# any of them, and the whole point of this gate is that NO skill file drifts
+# from the real parsers -- so every one is a source.
 SOURCES = [
     '.claude/skills/plan-pcb-routing/SKILL.md',
-    '.claude/skills/plan-pcb-placement/SKILL.md',
-    '.claude/skills/plan-pcb-placement-and-routing/SKILL.md',
-    # The skill's reference pages carry command blocks too (#549). Without them
-    # every block moved out of SKILL.md becomes flag-unchecked, which is the
-    # quiet way this gate stops gating.
-    '.claude/skills/plan-pcb-placement-and-routing/references/evidence-map.md',
-    '.claude/skills/plan-pcb-placement-and-routing/references/verifier-prompts.md',
-    '.claude/skills/plan-pcb-placement-and-routing/references/convergence.md',
-    # boundary-criteria.md was the one reference page in NO flag gate at
-    # all (#936): a command block added there shipped unchecked, which is
-    # precisely the hole the comment above names. It cites no flags today,
-    # so registering it costs nothing and closes the hole before the first
-    # command lands in it.
-    '.claude/skills/plan-pcb-placement-and-routing/references/boundary-criteria.md',
-    # ...and so does the DRIVER that now emits the workflow. This is the same
-    # hole one level down, and it opened exactly as the comment above predicts:
-    # the stage bodies moved out of SKILL.md into scripts/*.py, the gate kept
-    # scanning only .md, and it went on reporting "all flag citations real"
-    # while the drivers emitted SEVEN commands that die at argparse. A command
-    # the executor is told to run is a command this gate must check, whatever
-    # file it is spelled in.
-    '.claude/skills/plan-pcb-placement/scripts/placement_driver.py',
-    '.claude/skills/plan-pcb-placement-and-routing/scripts/loop_driver.py',
+    # The free-agent skill replaced the staged placement and combined skills
+    # (and their drivers). It prescribes no procedure, but every command it
+    # does spell -- the milestone record, the film, the verifier's checks --
+    # is one the executor runs verbatim. Its reference page carries most of
+    # them (#549: a block moved out of SKILL.md must not go flag-unchecked).
+    '.claude/skills/pcb-free-agent/SKILL.md',
+    '.claude/skills/pcb-free-agent/references/verifier.md',
     'docs/floorplan-intent.md',
     'docs/placement-optimization.md',
     'docs/claude-skills.md',
@@ -204,12 +127,7 @@ _TOOL_RE = re.compile(
 
 
 def discovered_tools():
-    """Every repo tool the skills tell the executor to run.
-
-    Read through `source_text`, so a DRIVER is discovered from what it EMITS.
-    Reading its Python source instead missed every tool it names only in an
-    f-string -- including itself, spelled `{sys.argv[0]}`.
-    """
+    """Every repo tool the skills tell the executor to run."""
     found = set()
     for rel in SOURCES:
         path = os.path.join(ROOT, rel)
@@ -420,9 +338,6 @@ def _continued_blocks(text, tool):
     return blocks
 
 
-DRIVERS = tuple(s for s in SOURCES if s.endswith('_driver.py'))
-
-
 def _tool_spans(block, tool):
     """Token runs that belong to `tool`: from its name to the next tool named."""
     block = _ROUTE_ARGS_RE.sub(' ', block)
@@ -479,152 +394,6 @@ def _parser_obj(tool):
         argparse.ArgumentParser.parse_args = real
     assert got.get('p') is not None, f'no parser for {tool}'
     return got['p']
-
-
-def test_driver_commands_supply_required_options_and_values():
-    """A flag that EXISTS can still make the command die at argparse.
-
-    The flag-name check above cannot see two failures that stop the executor
-    just as hard, and both shipped:
-
-      * a REQUIRED option left out entirely -- `route_planes.py` without
-        `--plane-layers` exits 2 before it opens the board;
-      * a flag that takes a value, given none -- `board_score.py --json` at the
-        end of a line is `expected one argument`.
-
-    Scoped to the drivers, because a driver emission is a command the executor
-    is told to run verbatim. Prose may legitimately show a fragment.
-    """
-    problems = []
-    checked = 0
-    unparsed = {}
-    for src in DRIVERS:
-        text = source_text(src)
-        for tool in TOOLS:
-            spans = [s for b in _continued_blocks(text, tool)
-                     for s in _tool_spans(b, tool)]
-            if not spans:
-                continue
-            try:
-                parser = _parser_obj(tool)
-            except Exception:
-                # DECLARED, not dropped. `_parser_obj` builds the parser by
-                # importing the tool and calling `main()` with --help
-                # intercepted; a tool that parses its args anywhere else has no
-                # `main` to call, and this arm used to `continue` in silence --
-                # 13 emitted command spans went unchecked while the gate
-                # printed a clean count. The flag NAMES in them are still
-                # covered, by the flag test's `--help` reader; what is not
-                # covered is whether each flag was given a VALUE.
-                #
-                # Counted and held to no growth, the shape test_923 uses for
-                # its skipped sections: a population that is legitimate to have
-                # and illegitimate to grow.
-                unparsed[tool] = unparsed.get(tool, 0) + len(spans)
-                continue
-            import argparse as _ap
-            # store_true/store_false/count/help consume nothing; every other
-            # action stores a value and argparse errors without one -- EXCEPT
-            # when its nargs makes zero values legal. `nargs='*'` and `'?'`
-            # both accept none, so `--reseat --clearance 0.2` parses to
-            # `{'reseat': [], 'clearance': 0.2}` and is the documented calling
-            # convention ("bare --reseat = auto scope"). Without this the check
-            # reported a correct, working command as dying at argparse, and the
-            # false positive outlived several attempts to fix the driver that
-            # was never wrong. `nargs='+'` and a fixed count still need values.
-            def _optional_value(a):
-                return getattr(a, 'nargs', None) in ('*', '?', 0)
-            takes_value = {s: (not isinstance(a, (_ap._StoreTrueAction,
-                                                  _ap._StoreFalseAction,
-                                                  _ap._StoreConstAction,
-                                                  _ap._CountAction,
-                                                  _ap._HelpAction))
-                               and not _optional_value(a))
-                           for a in parser._actions for s in a.option_strings}
-            required = [tuple(a.option_strings) for a in parser._actions
-                        if getattr(a, 'required', False) and a.option_strings]
-            for span in spans:
-                checked += 1
-                for opts in required:
-                    if not any(o in span for o in opts):
-                        problems.append(
-                            (src, tool, f'required {"/".join(opts)} not passed'))
-                for i, tok in enumerate(span):
-                    if not takes_value.get(tok):
-                        continue
-                    nxt = span[i + 1] if i + 1 < len(span) else None
-                    if nxt is None or nxt.startswith('--'):
-                        problems.append(
-                            (src, tool, f'{tok} takes a value, none given'))
-    assert not problems, (
-        'driver commands that die at argparse:\n'
-        + '\n'.join(f'  {s}:  {t}  {w}' for s, t, w in sorted(set(problems))))
-    # ABOVE the pre-commit value, which is the whole point: 64 spans were
-    # found when only the instruction branch was read, so a floor of 60 passed
-    # with the refusal half gone -- measured, as a battery row that SURVIVED.
-    # Measured after: 154.
-    assert checked >= 90, f'only {checked} driver command(s) scanned'
-    # The population this arm cannot value-check, named and capped. 14 today:
-    # check_drc.py 10, check_connected.py 3, route.py 1 -- all parse their args
-    # outside a `main()`, so `_parser_obj` has nothing to call. Giving any of
-    # them a `main()` moves its spans into `checked` and this number DOWN,
-    # which is why the guard is a ceiling and not an equality.
-    #
-    # 13 -> 14 (#941 row 11), the deliberate raise this message asks for. P0
-    # mandated measuring on a copper-free board and named no lever to make one,
-    # while the only full copper stripper in the tree is one non-negotiable 2
-    # forbids BY NAME on a user's board. Naming `route.py --nets '*' --undo`
-    # adds one route.py span the arm cannot value-check, because route.py is
-    # one of those three. The alternative was to leave the mandate leverless.
-    _unp = sum(unparsed.values())
-    assert _unp <= 14, (
-        f'{_unp} driver command span(s) are value-unchecked, up from 14:\n'
-        + '\n'.join(f'  {t}: {n}' for t, n in sorted(unparsed.items()))
-        + '\n\nA tool whose parser cannot be built has its flag NAMES checked '
-          'by the --help reader but not whether each was given a VALUE. Give '
-          'it a main(), or raise this ceiling deliberately and say why.')
-    print(f'  PASS: {checked} driver command spans, all runnable '
-          f'({_unp} value-unchecked: '
-          f'{", ".join(f"{os.path.basename(t)} {n}" for t, n in sorted(unparsed.items())) or "none"})')
-
-
-def test_the_refusal_branches_are_scanned():
-    """The refusals, specifically -- not "the drivers, mostly" (#923).
-
-    `--dump-all` fabricates passing evidence, so for as long as this gate read
-    only that, every command inside an `err(...)` was unscanned. The global
-    floors above cannot see that half disappearing again: they are satisfied
-    many times over by the instruction branches alone. So this asserts what the
-    addition is FOR -- each driver's refusal dump reaches every refusal site it
-    has, and the commands in it reach this gate's argparse check.
-    """
-    for rel in DRIVERS:
-        out, rc = driver_dump(rel, '--dump-refusals')
-        assert rc == 0, f'{rel} --dump-refusals exited {rc}:\n{out[-800:]}'
-        m = re.search(r'(\d+) of (\d+) refusal text\(s\) fully rendered, '
-                      r'over (\d+) literal chunk', out)
-        assert m, f'{rel} --dump-refusals printed no coverage line:\n{out[-400:]}'
-        reached, total, chunks = (int(m.group(1)), int(m.group(2)),
-                                  int(m.group(3)))
-        assert reached == total, f'{rel}: {reached} of {total} texts rendered'
-        # 38 and 49 measured (an `err(why)` that carries no literal of its
-        # own is a pass-through, counted apart). The floor is what catches the
-        # ENUMERATION breaking rather than the dump: a verifier renamed one
-        # guard helper and the site count fell 48 -> 41 with no other signal,
-        # under a floor of 20 that could not notice.
-        assert total >= 34, f'{rel}: only {total} refusal text(s) enumerated ' \
-                            f'-- the AST scan stopped matching?'
-        assert chunks >= total, f'{rel}: {chunks} literal chunk(s) over ' \
-                                f'{total} texts -- the text scan is empty'
-        cited = {(t, f) for t in TOOLS
-                 for b in _continued_blocks(out, t)
-                 for f in _cited_flags(b, t)}
-        assert len(cited) >= 10, \
-            f'{rel}: only {len(cited)} flag citation(s) inside refusals -- ' \
-            f'this gate is back to reading the instruction branch alone'
-        print(f'  PASS: {rel.rsplit("/", 1)[-1]}: {total} refusal texts, all '
-              f'rendered ({chunks} chunks); {len(cited)} flag citation(s) '
-              f'in them')
 
 
 #: The LAST number in a Default cell, so the rows that spell the real rule --
@@ -923,10 +692,12 @@ def test_every_documented_flag_exists():
     # A gate that checks nothing passes for the wrong reason. The docs cite well
     # over a dozen flags across these tools; if this trips, the block/flag
     # scanner stopped matching rather than the docs becoming clean.
-    # ABOVE the pre-commit value for the same reason as the span floor: the
-    # instruction branch alone yields 574, so 400 could not see the refusal
-    # half disappear. Measured after: 862.
-    assert checked >= 650, f"only {checked} flag citations found -- scanner broken?"
+    # History: 862 measured while the two staged drivers were sources (their
+    # instruction and refusal dumps supplied ~500 of them). The drivers and
+    # the staged skills were RETIRED for pcb-free-agent, whose skill spells
+    # few commands by design. Measured after: 352 -- the floor sits close
+    # under it so that losing one whole source still trips it.
+    assert checked >= 320, f"only {checked} flag citations found -- scanner broken?"
     # ...and the population this aggregate CANNOT see. A per-tool floor was
     # considered and rejected: test_doc_flag_liveness gives the reason in its
     # own words -- "a gate that cries wolf gets deleted" -- and most of these
@@ -1079,35 +850,6 @@ def test_exit_code_contract_is_documented():
           'are what is live')
 
 
-def test_skill_decides_placement_by_measurement_not_by_default():
-    """The single most important thing for a model to get right here.
-
-    This used to assert the skill said placement was "normally SKIPPED", and
-    that was the wrong invariant to pin. A default of SKIP is what lets an
-    executor route a board whose parts are stacked on each other: the cheapest
-    way to satisfy "usually skip" is to skip, and the check that would have
-    caught the damage is the thing being skipped.
-
-    The rule is measure-then-decide. The measurement is two commands on the
-    copper-free board, it is never optional, and BOTH outcomes are legitimate:
-    clean means route (a verdict, not an assumption), dirty means fix. The
-    reason not to optimise a clean placement survives -- as a consequence of
-    the measurement rather than as a reason to skip it.
-    """
-    skill = _all_skill_text()
-    # The gate is a measurement, and it is mandatory.
-    assert 'measure first, then decide' in skill.lower()
-    assert 'never optional' in skill.lower() or 'NEVER skip the assessment' in skill
-    # Both instruments, because neither alone sees a same-net stack.
-    assert 'check_drc' in skill and 'check_assembly' in skill
-    assert 'copper-free' in skill.lower() or 'COPPER-FREE' in skill
-    # The measured reason a CLEAN placement is left alone must survive.
-    assert 'WORSE by a polish pass' in skill or 'makes it worse' in skill
-    assert 'decision table' in skill.lower()
-    # and that the render is not mistaken for the verdict (#431 limit 3)
-    assert 'triage, not a verdict' in skill
-
-
 def test_routing_only_stays_the_default_path():
     """#549. Placement must stay reachable only through a board-state branch or
     a post-failure branch, never on the path of "here is a board, route it".
@@ -1149,26 +891,6 @@ def test_routing_only_stays_the_default_path():
           f"template clean")
 
 
-def test_skill_states_the_board_outline_is_not_editable():
-    """#549. True today only by construction -- no writer emits an Edge.Cuts
-    primitive -- and stated nowhere, so nothing stops a future change or a
-    confident model from resizing a board to make parts fit."""
-    skill = _all_skill_text()
-    low = skill.lower()
-    # AND, not OR. Written as `or` first, this passed with either phrase
-    # deleted -- both were present, so neither was actually pinned.
-    assert 'outline is not yours to change' in low, \
-        "the skill must state that the board outline is the user's, not ours"
-    assert 'never resize a board' in low, \
-        "the skill must carry the imperative, not only the heading"
-    # and must name the three tools that DO rewrite Edge.Cuts, as things not to run
-    for tool in ('fix_outline_gaps.py', 'strip_routing.py', 'prep_set2.py'):
-        assert tool in skill, f"{tool} rewrites Edge.Cuts and is not warned about"
-    assert 'oob_area' in skill, \
-        "the cutout-blind metric must be called out where oob is discussed"
-    print("  PASS: outline rule present, all 3 rewriting tools named")
-
-
 def test_verdict_lines_do_not_collide_with_the_gui_result_contract():
     """ai_backend.extract_result_line takes the LAST `RESULT=` line and ai_gui
     parses it as the plan JSON. A verifier verdict spelled `RESULT=` would be
@@ -1176,16 +898,13 @@ def test_verdict_lines_do_not_collide_with_the_gui_result_contract():
     src = open(os.path.join(ROOT, 'kicad_routing_plugin', 'ai_backend.py'),
                encoding='utf-8').read()
     assert 'RESULT=' in src, "the host contract moved; re-check this gate"
-    # The VERDICT= verifier contract lives in the COMBINED skill: when the
-    # skills merged, the verifier stages moved out of plan-pcb-routing (which
-    # is a pure routing planner again) into plan-pcb-placement-and-routing.
-    # Checking SOURCES[0] here asserted the contract against a file that no
-    # longer owns it.
-    for rel in ('.claude/skills/plan-pcb-placement-and-routing/SKILL.md',
-                '.claude/skills/plan-pcb-placement-and-routing/references/verifier-prompts.md'):
+    # The VERDICT= verifier contract lives in the free-agent skill's verifier
+    # brief (it replaced the staged skills' verifier prompts). A MISSING file
+    # fails rather than being skipped: skipping is how this check went on
+    # passing against two retired files that no longer existed.
+    for rel in ('.claude/skills/pcb-free-agent/references/verifier.md',):
         path = os.path.join(ROOT, rel)
-        if not os.path.isfile(path):
-            continue
+        assert os.path.isfile(path), f'{rel} is missing; re-aim this gate'
         text = open(path, encoding='utf-8').read()
         for line in text.splitlines():
             st = line.strip().strip('`')
@@ -1198,326 +917,24 @@ def test_verdict_lines_do_not_collide_with_the_gui_result_contract():
     print("  PASS: verdicts use VERDICT=; RESULT= left to the host")
 
 
-def test_the_score_is_the_gate_and_the_router_is_not_the_judge():
-    """The board that prompted this shipped at 39/44 nets and 762 DRC errors
-    with every tool reporting success, because the only thing being consulted
-    was the router's own tally. Two claims have to stay in the skill or that
-    recurs: the score exists and is the gate, and place_route_loop's ACCEPTED
-    is not a verdict."""
-    skill = _all_skill_text()
-    low = skill.lower()
-
-    assert 'board_score.py' in skill, \
-        "the skill must name the score helper -- it is the only number not " \
-        "produced by the thing being graded"
-    # The router's self-report must be explicitly demoted. Without this the
-    # skill reads ACCEPTED as 'this round is good', which is how a disconnected
-    # board survives an 'improving' loop.
-    assert 'not a quality verdict' in low, \
-        "the skill must state that place_route_loop's ACCEPTED is not a verdict"
-    # DERIVED, never a literal. This assertion used to hardcode
-    # `place_route_loop.py:358`; `def better` had moved to 564, and the gate
-    # pinned the stale citation in place -- so CORRECTING the skill failed the
-    # test whose job is keeping the skill correct (#936 B6). Same shape as
-    # test_broken_worklist holding `route_disconnected_planes` (#936 C1): a pin
-    # on a number nobody re-derives becomes a pin on the defect.
-    _lrp = os.path.join(ROOT, 'py_placer', 'place_route_loop.py')
-    with open(_lrp, encoding='utf-8') as _fh:
-        _better = next(i for i, ln in enumerate(_fh, 1)
-                       if ln.startswith('def better'))
-    assert 'better()' in skill and f'place_route_loop.py:{_better}' in skill, \
-        ('cite where the router-self-report comparison actually lives -- '
-         f'`def better` is at py_placer/place_route_loop.py:{_better}')
-    # The loop has to be bounded, or 'keep going until fixed' is unbounded.
-    assert '100 iterations per board' in low or '100 per board' in low, \
-        "the convergence budget must be stated in the skill"
-    # ...but bounded is not the only failure mode. A run stopped at 11 of 20 and
-    # called it "budget exhausted" while its own ledger said the levers were not
-    # exhausted, so the skill must also say what is NOT a stop condition.
-    assert 'not a stop condition' in low or 'not stop conditions' in low, \
-        "the skill must name the non-reasons for stopping (wall-clock, fatigue, " \
-        "'the score stopped moving') -- bounding the loop from above is useless " \
-        "if it can be abandoned from below"
-    # The lever must be chosen by connectivity, not by whichever number is
-    # biggest: `drc` can be ~90% grading artifact on a multi-class board, and a
-    # run that let it pick spent eleven iterations on clearances while five nets
-    # carried no copper.
-    assert 'connectivity first' in low, \
-        "the skill must rank unrouted/broken above drc when choosing the lever"
-    # Re-entering at the failing step is what makes a 100-iteration budget cheap.
-    assert 'rip-existing-nets' in skill, \
-        "ripping blocking nets must be documented as a sanctioned lever"
-    # Vacuity: ungraded must never read as clean.
-    assert 'ungraded' in low, "the skill must distinguish ungraded from passed"
-
-    conv = os.path.join(ROOT, '.claude/skills/plan-pcb-placement-and-routing/references/convergence.md')
-    assert os.path.isfile(conv), "references/convergence.md is missing"
-    ctext = open(conv, encoding='utf-8').read()
-    # parent_sha / "stop condition" are the REAL schema (board_store.Ledger +
-    # converge.py record); the old parent_board/stopped_by names never existed
-    # in any writer and the pin rotted silently.
-    for key in ('ledger.jsonl', 'parent_sha', 'stop condition', 'blocking'):
-        assert key in ctext, f"convergence.md does not document `{key}`"
-    # The ledger has to be the one the TOOLS read. `board_store.Ledger` is
-    # append-only JSONL and `converge.py record` is its only writer, so a
-    # hand-written single JSON document leaves step-back, replay, status and
-    # make_film --from-ledger all unreachable -- which is what the skill used
-    # to prescribe.
-    for verb in ('record', 'status'):
-        assert f'converge.py {verb}' in ctext or f'converge.py {verb}' in skill, \
-            f"neither the skill nor convergence.md names `converge.py {verb}`"
-    # The ledger is bare JSONL with NO wrapper object (convergence.md says so
-    # itself), so there is no "limit" field to pin -- the budget lives in
-    # prose and in stop condition 2's "100 ledger entries actually written".
-    assert '100 per board' in ctext, \
-        "convergence.md must state the 100-per-board budget"
-    print("  PASS: score is the gate, router self-report demoted, loop bounded")
-
-
-def test_routed_board_lenses_exist_and_reenter_the_loop():
-    """A verifier fan-out that only reports is not a gate. The three
-    routed-board lenses must exist, and a FAIL must be documented as
-    re-entering the loop rather than becoming a caveat on a shipped board."""
-    rel = '.claude/skills/plan-pcb-placement-and-routing/references/verifier-prompts.md'
-    text = open(os.path.join(ROOT, rel), encoding='utf-8').read()
-    for lens in ('connectivity', 'drc', 'spec'):
-        assert f'`{lens}`' in text, f"routed-board lens `{lens}` is missing"
-    assert 're-enters the loop' in text.lower(), \
-        "a FAIL must be documented as re-entering the loop, not as a footnote"
-    assert 'do not re-word a fail into a caveat' in text.lower(), \
-        "the caveat-laundering failure mode must be refused by name"
-    print("  PASS: 3 routed lenses present, FAIL re-enters the loop")
-
-
-#: Render commands whose NARRATIVE is the deliverable, and which therefore
-#: keep their stdout. `--pair` prints `N fixed, M NEW` and the before/after
-#: metrics, which the surrounding text tells the reader to read; `--focus`
-#: prints THE WORST N and the crop commands it hands you, and writes to a
-#: DIRECTORY, so there is no single picture to look at first.
-#:
-#: A PREDICATE, not a list of line numbers (#963): a new diff template lands
-#: exempt automatically and a new close-out template does not, which is the
-#: opposite of what a line list does as it rots.
-_RENDER_LOUD = ('--pair', '--focus')
-
-#: The stdout-only blocks -- used as a PROHIBITION, not as a second
-#: exemption, and that inversion is the correction. A round-2 verifier
-#: measured the exempting version letting the two L2 hand-off renders print
-#: their whole checklist at a boundary `SKILL.md:205-213` names by name and
-#: prescribes `--quiet` for: re-measured on the in-repo fixture with the
-#: hand-off's own flags, 37 lines of stdout against 5, one of them a
-#: `JSON_SUMMARY:` echo. (LINES, not characters: the stdout carries the
-#: temp paths it was handed, so the character count moves with the
-#: directory and an earlier draft of this comment quoted one that nothing
-#: else can reproduce.)
-#: So the rule is the other way round: a render may not be quieted while its
-#: own stage text sends the reader to a block `--quiet` removes -- REWRITE
-#: THE SENTENCE to name the sheet and the document, which is what the two
-#: hand-offs now do. `--pair`/`--focus` remain the only exemption, because
-#: they are what makes the narrative the deliverable.
-_RENDER_NARRATIVE = ('WHAT THIS PANEL SHOWS', 'WHAT THE MOVE DID',
-                     'THE WORST N')
-
-
-def test_a_render_that_writes_its_keys_to_a_file_does_not_print_them():
-    """`--json-out` implies `--quiet`, unless the narrative IS the deliverable.
-
-    Measured (#963): ten of the thirteen render commands the two drivers emit
-    omitted `--quiet`, so 10 of run 29's 13 review sheets printed every
-    checklist key before the picture could be looked at -- 36 stdout lines
-    against 3 with the flag, on the `tigard_placed` fixture the issue's
-    addendum names. (LINES: the character counts the issue also quotes carry
-    the temp paths of the run that produced them and do not reproduce
-    elsewhere.) The blind-first ordering is the whole mechanism of the boundary
-    review, and the commands the review gates prescribe were the ones defeating
-    it.
-
-    The exemption is `--pair`/`--focus` ALONE. A prose-derived exemption was
-    tried and withdrawn: it let a boundary render re-open the very defect
-    this gate exists for, since any stage text naming a stdout block then
-    bought that command its stdout back.
-
-    `--quiet` is `store_true`, so
-    `test_driver_commands_supply_required_options_and_values` cannot see it:
-    that arm checks argparse-`required` options and whether a value-taking flag
-    was given a value, and a flag that consumes nothing is invisible to both.
-
-    Scoped to spans carrying `--json-out`, which is not a convenience but the
-    exact statement of the rule: a render that writes its keys to a FILE should
-    not also print them. Prose that merely names the tool yields a span with no
-    flags and is invisible here.
-    """
-    import collections
-    tool = 'py_tools/render_placement.py'
-    seen = exempt = narrated = 0
-    loud, missing, quieted, sheetless = [], [], [], []
-    sheets = collections.Counter()
-    # EVERY render span, then branch -- not `if '--json-out' not in span:
-    # continue`, which is what this did and which made the bare-`--quiet`
-    # clause eleven lines below it dead code. Proved on the POPULATION rather
-    # than on the gate: rewriting one template into a bare `--quiet` with no
-    # `--json-out` left this PASSING, and `tests/test_963_render_templates.py::
-    # test_a_bare_quiet_would_be_the_worst_of_both` exists to justify a clause
-    # that could never fire.
-    for src in DRIVERS + tuple(s for s in SOURCES if s.endswith('.md')):
-        text = source_text(src)
-        _cursor = 0
-        for b in _continued_blocks(text, tool):
-            # The prose this command is embedded in. LOCATED BY A CURSOR over
-            # the WHOLE block, not by `text.find(b.splitlines()[0])`: three
-            # render blocks share a first line, so that resolved all three to
-            # the first one's paragraph. Measured by a verifier -- deleting
-            # the SECOND hand-off's entire narrative left this gate green,
-            # because it was reading the first hand-off's text three times.
-            # `_continued_blocks` yields in file order, so a cursor is exact
-            # even when two blocks are byte-identical.
-            _at = text.find(b, _cursor)
-            if _at >= 0:
-                _cursor = _at + len(b)
-            # ...and bounded by the END OF THE STAGE. A fixed 1400-character
-            # window runs into the next stage's prose, which is a sentence
-            # this command's reader never sees.
-            _stop = text.find('</stage_instructions>', _at) if _at >= 0 else -1
-            _end = _at + 1400 if _at >= 0 else 0
-            if _stop >= 0:
-                _end = min(_end, _stop)
-            _after = text[_at:_end] if _at >= 0 else ''
-            _tells = next((n for n in _RENDER_NARRATIVE if n in _after), None)
-            for span in _tool_spans(b, tool):
-                _cmd = ' '.join(span)[:110]
-                # THE EXEMPTION IS ALSO A REQUIREMENT, and it was not until
-                # `mutate_963.py::handoff-render-quieted-again` SURVIVED: the
-                # arm below only ever reported a MISSING `--quiet`, so putting
-                # it back on a hand-off render -- the exact first cut #963
-                # withdrew -- passed this gate. `_RENDER_NARRATIVE` names the
-                # blocks that exist only on stdout, so a span whose own text
-                # sends the reader to one may not silence it.
-                if _tells and '--quiet' in span:
-                    quieted.append((src, f'silences the {_tells} block its '
-                                         f'own text sends you to: ' + _cmd))
-                # And a DRIVER-emitted render must say WHERE THE PICTURE GOES.
-                # Without `-o`, render_placement writes
-                # `<board>_placement.png` beside the BOARD -- on a fenced run,
-                # potentially beside the control (references/evidence-map.md).
-                # #963 started out naming this a DEFERRED defect, on two
-                # congestion one-liners; it is fixed instead, and this arm is
-                # what keeps it fixed. Drivers only: an `.md` template spells
-                # `<PATH>` and leaves the paths to the reader.
-                if (src in DRIVERS and '-o' not in span
-                        and ('--review-sheet' in span
-                             or '--json-out' in span)):
-                    sheetless.append((src, _cmd))
-                if '--json-out' not in span:
-                    # A bare `--quiet` silences `describe` via `_quiet_text`
-                    # while `_quiet` stays False and the keys still print --
-                    # the exact inversion of what the flag is for.
-                    if '--quiet' in span:
-                        missing.append((src, 'bare --quiet: ' + _cmd))
-                    continue
-                seen += 1
-                if _tells:
-                    narrated += 1
-                _why = next((f for f in _RENDER_LOUD if f in span), None)
-                if _why:
-                    exempt += 1
-                    loud.append((src, _why, _cmd))
-                elif '--quiet' not in span:
-                    missing.append((src, _cmd))
-    # Per SPAN, not per (src, reason): `sorted(set(...))` collapsed nine
-    # exempt spans into four lines naming no command, so a reader could not
-    # tell WHICH command was exempt.
-    for src, why, cmd in sorted(loud):
-        print(f'    loud on purpose ({why}): {src.rsplit("/", 1)[-1]}: {cmd}')
-    assert not missing, (
-        'render commands that write their keys to a file and print them too:\n'
-        + '\n'.join(f'  {s}: {t}' for s, t in missing)
-        + '\n\nAdd --quiet, or add the flag that makes the narrative the '
-          'deliverable. `--quiet` with no --json-out is the worst of both: it '
-          'silences `describe` and the JSON still prints '
-          '(render_placement.py, _quiet vs _quiet_text).')
-    assert not quieted, (
-        'render commands that silence the stdout block their own stage text '
-        'tells the reader to read:\n'
-        + '\n'.join(f'  {s}: {t}' for s, t in quieted)
-        + '\n\nDrop --quiet, or drop the sentence -- those blocks are NOT in '
-          'the --json-out document (doc[\'describe\'] carries only `worst`) '
-          'and NOT on the review sheet.')
-    assert not sheetless, (
-        'driver-emitted render commands with no -o, so the picture lands '
-        'beside the BOARD:\n' + '\n'.join(f'  {s}: {t}' for s, t in sheetless)
-        + '\n\nMeasured at the commit that added this arm: 35 driver-emitted '
-          '--json-out spans, not one of them missing -o.')
-    # Measured floors, not round ones. A gate that stops finding its
-    # population reads exactly like a gate that finds nothing wrong.
-    assert seen >= 34, (
-        f'only {seen} --json-out render span(s) found, measured 38; this gate '
-        f'has stopped looking at the population it guards')
-    # BOUNDED ON BOTH SIDES. A floor alone is satisfied by widening the
-    # exemption: `_RENDER_LOUD = ('--json-out',)` exempts all 38 and passes,
-    # which is a gate that has been switched off from inside.
-    assert 7 <= exempt <= 12, (
-        f'{exempt} exempt span(s), measured 9: the --pair/--focus arm is what '
-        f'keeps this from being a blanket rule. Too few and it has stopped '
-        f'being exercised; too many and the predicate has been widened until '
-        f'it exempts the population it guards.')
-    # ...and the PROHIBITION has a population too. It fires on nothing today,
-    # which is what a green gate looks like and also what a dead one looks
-    # like: 8 spans carry a stdout block in their own stage text, and the
-    # check is that none of them is quieted. If that number goes to zero the
-    # arm is guarding nothing and the `quieted` assertion above is theatre.
-    assert narrated >= 6, (
-        f'only {narrated} render span(s) sit in prose naming a stdout-only '
-        f'block, measured 8: the --quiet-vs-narrative check has lost the '
-        f'population it guards, so it can no longer fire on anything.')
-    # And the drivers must keep ASKING for a sheet. Without `--review-sheet`
-    # the render writes no `review_sheet` key, and
-    # `placement_driver._guard_render`'s fifth check reads an absent key as
-    # "never asked for" -- which is how that guard sat unable to fire on its
-    # own driver's renders until #963.
-    #
-    # COUNTED IN `--dump-all` ALONE, and that is the whole point. A count over
-    # both dumps is dominated by the refusal scenarios, which render ONE recipe
-    # sixteen times with a different temp path each: a floor of 15 over that
-    # population bound only the recipe, and deleting either --pair TEMPLATE
-    # left the gate green. The instructions dump renders each site once.
-    for _src, _dumpflag, _floor, _what in (
-            ('.claude/skills/plan-pcb-placement/scripts/placement_driver.py',
-             '--dump-all', 2, 'the P3 pair and the lap pair'),
-            # The _guard_render recipe is a REFUSAL, so it is in the other
-            # dump -- and it is the one site whose 16 renderings used to carry
-            # the whole floor.
-            ('.claude/skills/plan-pcb-placement/scripts/placement_driver.py',
-             '--dump-refusals', 1, 'the _guard_render recipe'),
-            ('.claude/skills/plan-pcb-placement-and-routing/scripts/'
-             'loop_driver.py', '--dump-all', 6,
-             'the hand-off render in three arms, and the close sheet in the '
-             'three terminal arms -- 3 + 3, not 4 + 1')):
-        _dump, _rc = driver_dump(_src, _dumpflag)
-        _n = sum(1 for b in _continued_blocks(_dump, tool)
-                 for sp in _tool_spans(b, tool) if '--review-sheet' in sp)
-        sheets[(_src.rsplit('/', 1)[-1], _dumpflag)] = _n
-        assert _n >= _floor, (
-            f'{_src.rsplit("/", 1)[-1]} emits {_n} render command(s) asking '
-            f'for a review sheet in {_dumpflag}, measured {_floor}: {_what}. '
-            f'A site that stops asking makes _guard_render blind to it.')
-    print(f'  PASS: {seen} --json-out render span(s), {exempt} loud on '
-          f'purpose, sheet sites per driver {dict(sheets)}')
+def test_every_source_exists():
+    """`source_text` reads a missing source as empty, so a retired file left in
+    SOURCES stops being gated without a sound -- every floor here is then a
+    claim about fewer files than it names. Measured: two skills and their
+    drivers were retired and this gate kept listing all seven files."""
+    missing = [rel for rel in SOURCES
+               if not os.path.isfile(os.path.join(ROOT, rel))]
+    assert not missing, f'SOURCES names files that do not exist: {missing}'
 
 
 TESTS = [
-    test_a_render_that_writes_its_keys_to_a_file_does_not_print_them,
+    test_every_source_exists,
     test_every_documented_flag_exists,
-    test_driver_commands_supply_required_options_and_values,
-    test_the_refusal_branches_are_scanned,
     test_the_defaults_the_skills_quote_are_the_real_defaults,
-    test_the_score_is_the_gate_and_the_router_is_not_the_judge,
-    test_routed_board_lenses_exist_and_reenter_the_loop,
     test_the_placement_tools_are_actually_mentioned,
     test_exit_code_contract_is_documented,
     test_routing_only_stays_the_default_path,
-    test_skill_states_the_board_outline_is_not_editable,
     test_verdict_lines_do_not_collide_with_the_gui_result_contract,
-    test_skill_decides_placement_by_measurement_not_by_default,
 ]
 
 

@@ -155,8 +155,9 @@ def t_scope_is_still_not_derivable():
     directory is a PROVENANCE fact (the #522 reorg moved these files) and a
     skill naming a tool is a USAGE fact.
     """
-    skill_door = {'plan-pcb-placement': 'placement',
-                  'plan-pcb-placement-and-routing': 'combined'}
+    # The staged placement and combined skills were retired for
+    # pcb-free-agent, which places AND routes: the combined door's reader.
+    skill_door = {'pcb-free-agent': 'combined'}
     texts = {}
     r = subprocess.run(['git', 'ls-files', '.claude/skills'],
                        cwd=ROOT, capture_output=True, text=True)

@@ -42,6 +42,11 @@ the battery exits 2 if one fails there. `_uncache` is carried over from
 
 EXPECTED SURVIVORS: none declared.
 
+RETIRED: the four `p1-*` rows (P1 asks the roster, checks the plan, asks
+about pad-less blocks, reconciles) mutated the staged placement driver's P1
+stage. That driver was retired with its skill for pcb-free-agent, and the
+tests' P1 halves (`test_p1_*`) with it; the engine-side rows below remain.
+
 THE MEASURED RESULT is recorded below from the run, never predicted.
 
 MEASURED on the tree of `#959: the narrow re-review's findings, fixed`
@@ -74,8 +79,6 @@ TARGETS = {
     'ps': os.path.join(_ROOT, 'py_placer', 'place_seed.py'),
     'cs': os.path.join(_ROOT, 'py_placer', 'compare_seeds.py'),
     'sc': os.path.join(_ROOT, 'py_placer', 'pose_score.py'),
-    'dr': os.path.join(_ROOT, '.claude', 'skills', 'plan-pcb-placement',
-                       'scripts', 'placement_driver.py'),
 }
 
 T_ROSTER = os.path.join(_TESTS, 'test_959_rule_roster.py')
@@ -97,10 +100,6 @@ ROWS = [
     ('policy-rules-owed-too', 'fp',
      "        if not policy and applicable and gating:",
      "        if applicable and gating:",
-     (T_ROSTER,), 'KILLED'),
-    ('p1-never-asks-the-roster', 'dr',
-     "    ok_, why_ = _roster_owed(a, intent, pcb, _fp)\n",
-     "    ok_, why_ = True, None\n",
      (T_ROSTER,), 'KILLED'),
 
     # ---- #998: the plan, before any pose -----------------------------------
@@ -126,20 +125,12 @@ ROWS = [
      "        if r.returncode == 5:",
      "        if False:",
      (T_PLAN,), 'KILLED'),
-    ('p1-never-checks-the-plan', 'dr',
-     "    ok_, why_ = _plan_owed(a, intent, pcb, _fp)\n",
-     "    ok_, why_ = True, None\n",
-     (T_PLAN,), 'KILLED'),
     ('zone-check-absolute-not-relative', 'po',
      "                and row['outside_mm_after'] > row['outside_mm_before'] + 1e-9):",
      "                and row['outside_mm_after'] > 1e-9):",
      (T_POSE,), 'KILLED'),
 
     # ---- #999: pad-less blocks ----------------------------------------------
-    ('p1-never-asks-about-padless-blocks', 'dr',
-     "    ok_, why_ = _padless_owed(a, intent, pcb, padless, covered)\n",
-     "    ok_, why_ = True, None\n",
-     (T_PADLESS,), 'KILLED'),
     ('rank-poses-refusal-is-a-bare-keyerror', 'sc',
      "        raise PoseUnrankable(\n"
      "            f\"{ref} cannot be ranked: {why}. Place it with `place_pose set` \"",
@@ -183,11 +174,6 @@ ROWS = [
     ('a-brief-the-run-wrote-is-declared', 'rc',
      "    return 'hypothesis', ('written during an unaided run",
      "    return 'declared', ('written during an unaided run",
-     (T_RECON,), 'KILLED'),
-    ('p1-never-reconciles', 'dr',
-     "    ok_, why_ = _mechanical_owed(a, intent, plan, pcb, _bf, _bp, _brep,\n"
-     "                                 _berr)\n",
-     "    ok_, why_ = True, None\n",
      (T_RECON,), 'KILLED'),
 
     # ---- #1002: decaps ------------------------------------------------------

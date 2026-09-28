@@ -21,6 +21,8 @@ import os
 import subprocess
 import sys
 
+KRT_TOOL = {'scope': ['placement', 'routing', 'combined'], 'kind': 'instrument'}
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 

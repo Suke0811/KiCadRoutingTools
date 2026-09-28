@@ -36,12 +36,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: Same doc set as the flag gate. Keep the two in step.
 DOCS = (
     os.path.join('.claude', 'skills', 'plan-pcb-routing', 'SKILL.md'),
-    os.path.join('.claude', 'skills', 'plan-pcb-placement-and-routing',
-                 'SKILL.md'),
-    # The placement skill was in NO constant gate's list (#923), so a number it
-    # quotes by name was pinned nowhere -- the same hole the routing skill's
-    # timeout table had before this file existed.
-    os.path.join('.claude', 'skills', 'plan-pcb-placement', 'SKILL.md'),
+    # The free-agent skill replaced the staged placement and combined skills
+    # (#923 had enrolled those after a number they quoted was pinned nowhere);
+    # it inherits their place in the list, verifier brief included.
+    os.path.join('.claude', 'skills', 'pcb-free-agent', 'SKILL.md'),
+    os.path.join('.claude', 'skills', 'pcb-free-agent', 'references',
+                 'verifier.md'),
     os.path.join('docs', 'api-routing-config.md'),
     # #946: this file was in NO gate at all -- not this one, not
     # test_doc_constants, not run_doc_examples -- while quoting flags and

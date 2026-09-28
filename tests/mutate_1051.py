@@ -27,9 +27,8 @@ One row per load-bearing mechanism, across the eight places the PR put one:
       soundness guards, `clusters_dropped`.
   ps  `place_seed.py`: exit 4 on an unhonoured fixed pose; the disclosure
       judged at the WRITTEN poses.
-  pd  the plan-pcb-placement driver's P1: a `fixed_poses[]` entry excuses a
-      mechanical ref's hand lock only AT the declared pose (`same_pose`),
-      with a `rot`, on an unlocked part.
+  pd  (RETIRED) the staged placement driver's P1 fixed-pose rows, removed
+      with the driver when that skill was retired for pcb-free-agent.
   rl  `place_route_loop.py`: each round's quench disclosure reaches the
       JSON_SUMMARY.
   rc  `placement/reconcile.py`: a brief array member with a mechanical pose
@@ -133,12 +132,10 @@ FLOORPLAN = os.path.join(_ROOT, 'py_placer', 'placement', 'floorplan.py')
 SEEDER = os.path.join(_ROOT, 'py_placer', 'placement', 'seeder.py')
 QUENCH = os.path.join(_ROOT, 'py_placer', 'placement', 'quench.py')
 PLACE_SEED = os.path.join(_ROOT, 'py_placer', 'place_seed.py')
-DRIVER = os.path.join(_ROOT, '.claude', 'skills', 'plan-pcb-placement',
-                      'scripts', 'placement_driver.py')
 ROUTE_LOOP = os.path.join(_ROOT, 'py_placer', 'place_route_loop.py')
 RECONCILE = os.path.join(_ROOT, 'py_placer', 'placement', 'reconcile.py')
 TARGETS = {'ar': ARRAYS, 'fp': FLOORPLAN, 'sd': SEEDER, 'qu': QUENCH,
-           'ps': PLACE_SEED, 'pd': DRIVER, 'rl': ROUTE_LOOP, 'rc': RECONCILE}
+           'ps': PLACE_SEED, 'rl': ROUTE_LOOP, 'rc': RECONCILE}
 
 T_AS = os.path.join(_TESTS, 'test_1051_arrays_schema.py')
 T_SA = os.path.join(_TESTS, 'test_1051_suggest_arrays.py')
@@ -897,32 +894,12 @@ ROWS = [
       T_QB + '::test_seeded_row_keeps_formation_through_the_polish',),
      'KILLED'),
 
-    # ==== the P1 driver =====================================================
-    ('p1-fixed-pose-at-another-pose-accepted', 'pd',
-     "        elif not _rc.same_pose(_t, (_m['x'], _m['y'], _m.get('rot'))):",
-     "        elif False:",
-     (T_959 + '::test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats',),
-     'KILLED'),
-    ('p1-fixed-pose-without-rot-accepted', 'pd',
-     "        elif _m.get('rot') is not None and _t[2] is None:",
-     "        elif False:",
-     (T_959 + '::test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats',),
-     'KILLED'),
-    ('p1-fixed-pose-on-a-locked-part-accepted', 'pd',
-     "        if getattr(pcb.footprints[_r], 'locked', False):",
-     "        if False:",
-     (T_959 + '::test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats',),
-     'KILLED'),
-    ('p1-fixed-pose-never-excuses-the-lock', 'pd',
-     "    owed_m = sorted((set(unlocked) | set(drifted)) - seated)",
-     "    owed_m = sorted(set(unlocked) | set(drifted))",
-     (T_959 + '::test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats',),
-     'KILLED'),
-    ('p1-fixed-pose-owes-a-zone', 'pd',
-     "    left = sorted(movable - locked - edge - fixed - covered)",
-     "    left = sorted(movable - locked - edge - covered)",
-     (T_959 + '::test_p1_accepts_an_unlocked_mechanical_ref_a_fixed_pose_seats',),
-     'KILLED'),
+    # ==== the P1 driver: RETIRED =========================================
+    # Five rows (a fixed pose at another pose / without rot / on a locked
+    # part / excusing the lock / owing a zone) mutated the staged placement
+    # driver's P1 stage, killed by test_959_reconcile's `test_p1_*` driver
+    # tests. Driver and tests left the tree when the placement skill was
+    # retired for pcb-free-agent.
     # --- the re-review's two survivors (both reached by new assertions) ---
     ('fixed-pad-short-unnamed', 'sd',
      "            if sf.pad_overlap:",
@@ -938,7 +915,7 @@ ROWS = [
     ('mechanical-array-member-not-a-contradiction', 'rc',
      "        if ref not in members or ref not in pcb.footprints:",
      "        if True:",
-     (T_959 + '::test_p1_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction',),
+     (T_959 + '::test_a_brief_array_member_with_a_mechanical_pose_is_a_contradiction',),
      'KILLED'),
 ]
 

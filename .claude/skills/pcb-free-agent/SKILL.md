@@ -15,10 +15,11 @@ mode is `full`, `place` or `route`. With no mode, `full` for an unplaced board
 and `route` for a placed one.
 
 **Measured basis.** Two runs used this contract before it became a skill:
-- **esp_prog, from a pile:** DONE in 12 min, 6 vias. The staged loop took 3h54m
-  to 39 vias.
-- **glasgow_revC, all 264 parts piled and unlocked:** blocking 15 in 7h56m. The
-  staged loop took ~32 h to reach 35 on an easier input.
+- **An 18-part 2-layer board, from a pile:** DONE in 12 min, 6 vias. The
+  staged loop took 3h54m to 39 vias.
+- **A 264-part 4-layer board with a BGA-121, all parts piled and unlocked:**
+  blocking 15 in 7h56m. The staged loop took ~32 h to reach 35 on an easier
+  input.
 
 ## 1. The goal, per mode
 
@@ -90,10 +91,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 
   Re-run `check_floorplan --intent` after each of these tools.
 - **The routing skill's tuned env knobs** (`KICAD_GLOBAL_PLAN_RIVER` and the
-  others) produced via hole-to-hole DRC on glasgow (#1070). Check DRC after
+  others) produced via hole-to-hole DRC on a 264-part board (#1070). Check DRC after
   any env change.
 - **Around a 0.8 mm BGA, the router can run out of lanes.** Two changes that
-  measured wins on glasgow:
+  measured wins on a 264-part board:
   - finer tracks and vias (`--track-width 0.0762 --clearance 0.0889 --via-size 0.25 --via-drill 0.15`);
   - a cheaper ground-plane layer cost (`--layer-costs`).
 
@@ -104,7 +105,9 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 
 1. **You choose the steps.** Do not re-create a staged driver. The stop rules
    and the verifier are the only process.
-2. **Stop rules:**
+2. **Never change the board outline** (Edge.Cuts), and never move a part that
+   draws it. The outline is the enclosure's, not the layout's.
+3. **Stop rules:**
    - **First reach DONE**; nothing else before it.
    - **Watch long jobs.** Never leave a background job unwatched for more than
      20 minutes, and kill a search whose best has not improved in the last
@@ -117,14 +120,14 @@ Read `--help` before assuming a flag does not exist. Two runs declared
      the best board, with every remaining blocker itemised with its
      measurement.
    - **Hard cap:** 10 hours of wall clock, unless the user sets another.
-3. **An "impossible" claim needs its measurement.** "I tried A–F" is not a
+4. **An "impossible" claim needs its measurement.** "I tried A–F" is not a
    measurement. Read the whole log block, not only the first refusal line.
-4. **One verifier, at most 3 calls.** When you believe you have your best
+5. **One verifier, at most 3 calls.** When you believe you have your best
    board, spawn ONE fresh subagent (not a fork) with
    `references/verifier.md`, filled in for your mode, board, sha256, baseline
    and intent. On FAIL, fix what it names and continue. Spawn no other
    subagents unless the user asks.
-5. **Record milestones for the film:** the first legal placement, each kept
+6. **Record milestones for the film:** the first legal placement, each kept
    placement, the first routed board, the first DONE, each improvement, the
    final board, and tried-and-worse boards with `--rejected`.
    ```bash

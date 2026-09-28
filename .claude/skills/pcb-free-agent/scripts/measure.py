@@ -30,6 +30,8 @@ import os
 import re
 import sys
 
+KRT_TOOL = {'scope': ['combined'], 'kind': 'utility'}
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 SHELLS = ('Bash', 'PowerShell')

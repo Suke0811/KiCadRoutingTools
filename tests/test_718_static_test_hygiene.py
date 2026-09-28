@@ -156,20 +156,19 @@ _ROOT_JOIN_ARGV_OK = {
         'so the join is over a relative path rather than a bare basename.',
     'mutate_936.py':
         'same shape and same reason again: its `tests` values are the '
-        'module-level T_WORKLIST/T_DRIVERS/T_RUN/T_CONVERGE/T_DFL/T_923/'
-        'T_431 constants, every one a directory-qualified literal, so the '
+        'module-level T_WORKLIST/T_CONVERGE/T_DFL/T_431 constants, every one a directory-qualified literal, so the '
         'join is over a relative path rather than a bare basename.',
     'mutate_941_942.py':
         'same shape and same reason once more: its `tests` values are the '
-        'module-level T_937/T_941/T_942/T_918/T_431/T_DRIVERS constants, '
+        'module-level T_937/T_941/T_918 constants, '
         'every one a directory-qualified literal '
-        '("tests/test_942_subagent_contract.py"), so the join is over a '
+        '("tests/test_941_final_board_is_one_name.py"), so the join is over a '
         'relative path rather than a bare basename. `run_utils.tool()` is the '
         'wrong resolver here for the reason the rows above give: these are '
         'TEST files rather than shipped CLIs.',
     'mutate_937.py':
         'same shape and same reason: its `tests` values are the module-level '
-        'T_REG/T_CHK/T_OOB/T_GATE/T_LEV/T_DRV/T_431 constants, every one a '
+        'T_REG/T_CHK/T_OOB/T_LEV constants, every one a '
         'directory-qualified literal ("tests/test_937_tool_registry.py"), so '
         'the join is over a relative path rather than a bare basename. '
         '`run_utils.tool()` is the wrong resolver here for the reason the '
@@ -259,7 +258,7 @@ def _scan_wk_deps():
 
     Only joins rooted at the repo count. A test that builds a `wk` inside its
     own tempdir (`os.path.join(td, 'wk')` -- test_provenance_audit,
-    test_blind_stage_identity, test_run15_handback_contract) depends on nothing
+    test_blind_stage_identity) depends on nothing
     external and must NOT be swept in.
     """
     found = {}
@@ -1073,8 +1072,10 @@ _UNRESOLVABLE = {}
 #: before #962 added `mutate_962.py`; 55 before #959 added `mutate_959.py`;
 #: 56 before #963 added `mutate_963.py`; 57 before #946 added
 #: `mutate_946.py`; 58 before #1042 added `mutate_1042.py`; 59 before #1051
-#: added `mutate_1051.py`.
-_BATTERY_COUNT = 60
+#: added `mutate_1051.py`; 60 until the staged placement skills were retired
+#: for pcb-free-agent and `mutate_890.py` (whose only target was
+#: loop_driver.py) went with them.
+_BATTERY_COUNT = 59
 
 #: A floor well under today's 831, not a target. Same purpose as
 #: `test_the_scanners_still_match_something`: prove the corpus is populated.

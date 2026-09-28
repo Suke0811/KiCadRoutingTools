@@ -11,28 +11,26 @@ document that writes it at `components.broken.poured_nets_meaning`.
 
 `tests/test_895_boundary_criteria.py` closed that hole for the seven boundary
 criteria -- eight paths, one hand-written resolver lambda each. This file is
-the same idea without the hand list: run the six instruments the skills quote
+the same idea without the hand list: run the instruments the skills quote
 ONCE on a tracked fixture, and resolve every key claim the skills make about
 them against the document they actually wrote.
 
 WHAT IT ENROLS, and why it is not "every dotted word in the skills". A key
 claim needs an INSTRUMENT to be a claim at all -- `metrics.halo` is true of
 `render_placement` and false of `check_pockets` -- so a citation is enrolled
-only where the text says whose output it is:
+only where the text says whose output it is: a backticked path within `NEAR`
+characters of an instrument's name, spelled with or without `.py`. This is
+the channel that would have caught `hot[].ratio`, which sat one line under
+`check_pockets.py`. Proximity is a GUESS, so a claim only has to resolve in
+one of the instruments run, and one that resolves in a different one than it
+sits beside is printed rather than failed.
 
-  1. `references/evidence-map.md`, whose sections are headed with the command
-     that produces the document and whose first column is the key. AUTHORITATIVE:
-     the heading names the tool, so the row is resolved against THAT tool.
-     Sections headed by a tool this file does not run are counted and skipped.
-  2. `references/boundary-criteria.md`'s `instrument ... -> path` lines, where
-     the instrument is the nearest one named at or above the arrow. Also
-     authoritative.
-  3. Prose: a backticked path within `NEAR` characters of an instrument's name,
-     spelled with or without `.py`. This is the channel that would have caught
-     `hot[].ratio`, which sat one line under `check_pockets.py`. Proximity is a
-     GUESS, so a prose claim only has to resolve in one of the six, and a
-     claim that resolves in a different one than it sits beside is printed
-     rather than failed.
+Two AUTHORITATIVE channels -- the staged placement skill's
+`references/evidence-map.md` (a section heading names the tool, the first
+column the key) and `references/boundary-criteria.md`'s `instrument -> path`
+lines -- were retired with that skill, and with them the four instruments
+only they quoted (board_context, check_pockets, check_floorplan's graded
+document, place_seed). What is run today is render_placement and board_score.
 
 WHAT IT STILL CANNOT SEE, said here rather than implied away:
 
@@ -82,10 +80,6 @@ BRIEF = os.path.join(ROOT, 'tests', 'fixtures', '902',
                      'esp_prog_proximity.design-brief.json')
 
 SKILLS = os.path.join(ROOT, '.claude', 'skills')
-EVIDENCE_MAP = os.path.join(SKILLS, 'plan-pcb-placement-and-routing',
-                            'references', 'evidence-map.md')
-BOUNDARY = os.path.join(SKILLS, 'plan-pcb-placement-and-routing',
-                        'references', 'boundary-criteria.md')
 
 #: How close a backticked path has to sit to an instrument's name in prose for
 #: this file to read it as a claim about that instrument's output. 400 is the
@@ -95,16 +89,20 @@ BOUNDARY = os.path.join(SKILLS, 'plan-pcb-placement-and-routing',
 #: are reported as defects they are not.
 NEAR = 400
 
+#: Measured 2 after the staged placement skills were retired (the free-agent
+#: verifier's `checklist.a_off_outline` and the routing skill's
+#: `components.unrouted.placement_blocked`). Held at the measured value: with
+#: a population this small, losing one claim IS the scanner breaking.
+PROSE_FLOOR = 2
+
 #: A cited path this gate cannot resolve and that is not a defect, with the
 #: reason AND a file that must carry the name. Not a waiver list: the entry is
 #: CHECKED, so a rename still fails, and an entry nothing cites any more is
 #: reported stale -- the shape `test_803_cited_paths_are_tracked.UNTRACKED_OK`
 #: uses, held in both directions.
-UNRESOLVED_OK = {
-    'score.failed_nets': (
-        "a converge LEDGER ROW's nested score, not an instrument document",
-        'py_placer/converge.py', 'failed_nets'),
-}
+#: Empty since the staged skills' pages that cited `score.failed_nets` (a
+#: converge ledger row's nested score) were retired.
+UNRESOLVED_OK = {}
 
 FAILURES = []
 
@@ -174,105 +172,22 @@ def _declare_health(intent_path):
         json.dump(doc, fh)
 
 
-def _declare_connectors(src, dst):
-    """The edge connectors section I's place_seed rows are resolved against.
-
-    Declared here rather than taken from the emitter, so the rows do not move
-    when emission does. Every key the section cites needs a run that writes
-    it: `--reseat Y1` drops Y1's band (Y1 is the one declared part on this
-    fixture that is not `(locked yes)`, and a locked ref is outside the
-    re-seat scope, so its band is kept), and USB1, declared with no edge, is
-    graded on the legacy occupancy reading, which fills `graded_on`.
-    """
-    with open(src, encoding='utf-8') as fh:
-        doc = json.load(fh)
-    doc['edge_connectors'] = [
-        {'ref': 'CON1', 'edge': 'east', 'overhang_mm': {'min': 0.0, 'max': 1.5}},
-        {'ref': 'CON2', 'edge': 'north', 'overhang_mm': {'min': 0.0, 'max': 0.7}},
-        {'ref': 'Y1', 'edge': 'south', 'overhang_mm': {'min': 0.0, 'max': 0.73}},
-        {'ref': 'USB1', 'overhang_mm': {'min': 0.0, 'max': 1.0}}]
-    with open(dst, 'w', encoding='utf-8') as fh:
-        json.dump(doc, fh)
-
-
 def build_artifacts(tmp):
     """{instrument: [(artifact label, document)]}, from real runs."""
     art = {}
 
-    r = _run([os.path.join('py_tools', 'board_context.py'), FIXTURE, '--json'])
-    art['board_context.py'] = [('--json', json.loads(r.stdout))]
-
-    pk = os.path.join(tmp, 'pockets.json')
-    r = _run([os.path.join('py_tools', 'check_pockets.py'), FIXTURE,
-              '--bin', '5', '--json', pk])
-    run_utils.evidence(pk, 'the check_pockets document')
-    art['check_pockets.py'] = [('--json', json.load(open(pk, encoding='utf-8'))),
-                               ('JSON_SUMMARY', _summary(r.stdout))]
-
+    # Four instruments used to be run here as well -- board_context,
+    # check_pockets, check_floorplan's graded document and four place_seed
+    # shapes -- because the staged placement skill's evidence map and
+    # boundary criteria quoted their keys. Those pages were retired with that
+    # skill, and nothing left in the skills quotes a key of theirs (measured:
+    # 0 prose claims each), so running them would grade nothing.
+    # check_floorplan still EMITS the intent board_score grades against.
     cf = os.path.join('py_tools', 'check_floorplan.py')
     intent = os.path.join(tmp, 'intent.json')
-    graded = os.path.join(tmp, 'graded.json')
     _run([cf, FIXTURE, '--brief', BRIEF, '--emit-intent', intent], expect=(0, 4))
     run_utils.evidence(intent, 'the emitted intent')
-    # place_seed (#974), on its own copy of the emitted intent and BEFORE
-    # `_declare_health` rewrites it: section I's rows need a dropped band, a
-    # legacy basis and a dry run, and none of them may hang on what the health
-    # declarations add.
-    ps_intent = os.path.join(tmp, 'intent_ps.json')
-    _declare_connectors(intent, ps_intent)
-    seed = os.path.join('py_placer', 'place_seed.py')
-    r = _run([seed, FIXTURE, os.path.join(tmp, 'seed.kicad_pcb'),
-              '--intent', ps_intent, '--reseat', 'Y1'], expect=(0, 4))
-    r_dry = _run([seed, FIXTURE, os.path.join(tmp, 'seed_dry.kicad_pcb'),
-                  '--intent', ps_intent, '--repair', '--dry-run'],
-                 expect=(0, 4))
-    # #982: the FRESH-seed document too. The two runs above cannot stand in for
-    # it -- `unseated_refs`, `rotation_unseated`, `pad_conflicts_seeded`,
-    # `pad_conflicts_unseated`, `pad_conflicts_inherited` and
-    # `hole_conflicts_added` are written only on the fresh path. (Not the whole
-    # `pad_conflicts_*` family: `pad_conflicts_after` and `edge_bands_dropped`
-    # ride on the `--reseat` document above, which is measured, not assumed.)
-    # A row about one of those keys could not be written AT ALL while this gate
-    # ran without the document: an unresolved row fails, so a CORRECT row
-    # failed exactly as a misspelt one would, and section I stayed silent about
-    # the path place_seed is normally used on. `--force` because the fixture is
-    # placed; `--no-polish` to keep a documentation gate cheap.
-    r_fresh = _run([seed, FIXTURE, os.path.join(tmp, 'seed_fresh.kicad_pcb'),
-                    '--intent', ps_intent, '--force', '--no-polish',
-                    '--seed', '0'], expect=(0, 4))
-    # #959: the REFUSED-plan document (exit 5) is a fourth shape -- its
-    # `refused` / `plan_findings` / `plan_measured` exist only there. A zone
-    # that holds each member alone but not all six (75 mm2 against 82.9),
-    # under a declared overlap budget of 0, is an overlap no arrangement can
-    # avoid. (A zone smaller than a member's courtyard would not do: that is
-    # an ANCHOR by design, and anchors are not charged.)
-    with open(ps_intent, encoding='utf-8') as fh:
-        plan = json.load(fh)
-    plan['blocks'] = [{'name': 'too-small',
-                       'refs': ['U1', 'Y1', 'CON1', 'U2', 'C1', 'C2'],
-                       'zone': [120.0, 93.0, 126.5, 102.0],
-                       'note': 'deliberately overfull (#959 gate)'}]
-    plan['legality_budget'] = {'overlap_area': 0.0, 'oob_count': 0}
-    refused_intent = os.path.join(tmp, 'intent_refused.json')
-    with open(refused_intent, 'w', encoding='utf-8') as fh:
-        json.dump(plan, fh)
-    r_ref = _run([seed, FIXTURE, os.path.join(tmp, 'seed_refused.kicad_pcb'),
-                  '--intent', refused_intent, '--force', '--no-polish',
-                  '--seed', '0'], expect=(5,))
-    art['place_seed.py'] = [('JSON_SUMMARY --reseat', _summary(r.stdout)),
-                            ('JSON_SUMMARY --dry-run', _summary(r_dry.stdout)),
-                            ('JSON_SUMMARY fresh', _summary(r_fresh.stdout)),
-                            ('JSON_SUMMARY plan refused',
-                             _summary(r_ref.stdout))]
     _declare_health(intent)
-    # --health because section E's own heading carries it, and the `health_*`
-    # keys exist ONLY when it is passed.
-    r = _run([cf, FIXTURE, '--brief', BRIEF, '--intent', intent,
-              '--health', '--json', graded], expect=(0, 4))
-    run_utils.evidence(graded, 'the graded intent document')
-    art['check_floorplan.py'] = [
-        ('--json', json.load(open(graded, encoding='utf-8'))),
-        ('JSON_SUMMARY', _summary(r.stdout))]
 
     rj = os.path.join(tmp, 'render.json')
     _run([os.path.join('py_tools', 'render_placement.py'), FIXTURE,
@@ -282,8 +197,7 @@ def build_artifacts(tmp):
     art['render_placement.py'] = [('--json-out',
                                    json.load(open(rj, encoding='utf-8')))]
 
-    score = os.path.join('.claude', 'skills', 'plan-pcb-placement-and-routing',
-                         'scripts', 'board_score.py')
+    score = os.path.join('py_tools', 'board_score.py')
     parent = os.path.join(tmp, 'parent.json')
     bs = os.path.join(tmp, 'score.json')
     # --intent and --placement-terms so the floorplan and placement components
@@ -372,77 +286,12 @@ def _names(known):
     return out
 
 
-def cites_from_evidence_map(known):
-    """(tools, path, segments, where) per row, plus what was skipped/dropped.
-
-    The section heading carries the command that produced the document and the
-    first column is the key -- that is the design of the page, and it is what
-    makes attribution AUTHORITATIVE here rather than a guess.
-    """
-    rows, skipped, dropped = [], [], []
-    who, prefix = (), None
-    for lineno, line in enumerate(_text(EVIDENCE_MAP).splitlines(), 1):
-        if line.startswith('#'):
-            hit = tuple(sorted({t for n, t in _names(known).items()
-                                if n in line}))
-            who, prefix = hit, None
-            if line.startswith('##') and not hit:
-                skipped.append(line.strip()[:70])
-            continue
-        if not who or not line.startswith('|'):
-            continue
-        cell = line.split('|')[1]
-        for raw, _off in _backticked(cell):
-            token = raw.strip()
-            if token.startswith('.') and prefix:
-                # A CONTINUATION of the row above: `outline.cutouts` /
-                # `.edge_contours` names two keys, and reading only the first
-                # drops half the row.
-                token = prefix + token
-            segs = run_utils.parse_json_path(token)
-            if segs:
-                rows.append((who, token, segs, f'evidence-map.md:{lineno}'))
-                if '.' in token:
-                    prefix = token.rsplit('.', 1)[0]
-            else:
-                dropped.append((f'evidence-map.md:{lineno}', raw))
-    return rows, skipped, dropped
-
-
-def cites_from_boundary(known):
-    """`instrument <board> --json   ->   a.b[].c`, the instrument being the
-    nearest one named at or above the arrow -- the command wraps, so the arrow
-    is often on a line whose left side is empty."""
-    rows, dropped = [], []
-    if not os.path.isfile(BOUNDARY):
-        return rows, dropped
-    names = _names(known)
-    who = ()
-    for lineno, line in enumerate(_text(BOUNDARY).splitlines(), 1):
-        hit = tuple(sorted({t for n, t in names.items() if n in line}))
-        if hit:
-            who = hit
-        if '->' not in line or not who:
-            continue
-        for part in line.split('->', 1)[1].split(','):
-            token = part.strip().strip('`')
-            segs = run_utils.parse_json_path(token)
-            if segs:
-                rows.append((who, token, segs,
-                             f'boundary-criteria.md:{lineno}'))
-            elif token:
-                dropped.append((f'boundary-criteria.md:{lineno}', token))
-    return rows, dropped
-
-
 def cites_from_prose(known):
     """A backticked path within NEAR characters of an instrument's name."""
     rows = []
     names = _names(known)
     for path in skill_files():
         rel = os.path.relpath(path, ROOT).replace('\\', '/')
-        if path in (EVIDENCE_MAP, BOUNDARY):
-            continue
         text = _text(path)
         where = {}
         for name, tool in names.items():
@@ -481,60 +330,32 @@ def test_the_skills_key_what_the_instruments_emit():
                   f'{type(doc).__name__}')
 
     known = tuple(sorted(art))
-    em_rows, skipped, em_dropped = cites_from_evidence_map(known)
-    bd_rows, bd_dropped = cites_from_boundary(known)
     pr_rows = cites_from_prose(known)
-    print(f'  enrolled: {len(em_rows)} evidence-map, {len(bd_rows)} '
-          f'boundary-criteria, {len(pr_rows)} prose; '
-          f'{len(skipped)} section(s) skipped (tool not run here); '
-          f'{len(em_dropped) + len(bd_dropped)} token(s) not shaped like a key')
-    for where, raw in em_dropped + bd_dropped:
-        print(f'  drop: {where}: `{raw}`')
-
+    print(f'  enrolled: {len(pr_rows)} prose')
+    # The two AUTHORITATIVE channels (the evidence map and the boundary
+    # criteria pages) left with the staged placement skills they belonged
+    # to; prose over every skill page is what remains.
+    #
     # A gate that reports zero claims passes for the wrong reason, and the
     # extractor breaking is far likelier than the skills losing every claim.
-    check('the evidence-map channel found rows', len(em_rows) >= 60,
-          f'{len(em_rows)}')
-    # ...and a floor alone is not the whole guard, because attribution is by
-    # TOOL NAME ON THE HEADING LINE: rename one heading so it drops the tool and
-    # every row beneath it silently stops being checked. Measured when #936
-    # split section E in two -- the split is safe only because BOTH new headings
-    # kept the literal `check_floorplan.py` -- dropping it takes the channel
-    # 73 -> 58 (E2) or 73 -> 59 (E1), i.e. 15 or 14 rows. At TODAY's population
-    # the raised floor above catches that too; this arm is what still holds when
-    # the population grows past 60 by other means, which is exactly when a lost
-    # section stops showing up in the total.
-    #
-    # `skipped` is the count of `##` headings naming no tool this file runs. It
-    # is legitimate for a page to describe a tool this gate does not run, so the
-    # rule is NO GROWTH against the measured population, not zero.
-    check('no evidence-map section stopped being attributed',
-          len(skipped) <= 8, f'{len(skipped)} skipped: {skipped}')
-    check('the prose channel found rows', len(pr_rows) >= 5, f'{len(pr_rows)}')
-    check('the boundary-criteria channel found rows', len(bd_rows) >= 4,
-          f'{len(bd_rows)}')
+    check('the prose channel found rows', len(pr_rows) >= PROSE_FLOOR,
+          f'{len(pr_rows)}')
 
     def resolves_in(tool, segs):
         return any(run_utils.resolve_json_path(doc, segs)
                    for _label, doc in art[tool] if isinstance(doc, dict))
 
-    # ...and per INSTRUMENT, because an instrument with no evidence-map
-    # section (check_pockets) hangs entirely on prose: dropping `.py` from one tool
-    # name in one paragraph took `check_pockets` out of the gate completely and
-    # still cleared the channel floor.
+    # ...and per INSTRUMENT, because an instrument hangs entirely on prose:
+    # dropping `.py` from one tool name in one paragraph took `check_pockets`
+    # out of the gate completely and still cleared the channel floor.
     covered = {t: 0 for t in known}
-    for who, _raw, _segs, _where in em_rows + bd_rows + pr_rows:
+    for who, _raw, _segs, _where in pr_rows:
         for tool in who:
             covered[tool] = covered.get(tool, 0) + 1
     for tool, n in sorted(covered.items()):
         check(f'{tool} has claims to check', n >= 1, f'{n}')
 
     bad, elsewhere, used_waiver = [], [], set()
-    for who, raw, segs, where in em_rows + bd_rows:
-        # AUTHORITATIVE: the document names the producing command, so a key
-        # that belongs to a different instrument is a defect here, not a note.
-        if not any(resolves_in(t, segs) for t in who):
-            bad.append(('/'.join(who), raw, where))
     for who, raw, segs, where in pr_rows:
         if any(resolves_in(t, segs) for t in who):
             continue

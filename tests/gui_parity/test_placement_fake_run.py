@@ -3,8 +3,8 @@
 
 Proves the whole runner -> monitor -> completion loop headless: the tab
 launches the CLI with the placement contract (write-capable allowlist, one
---add-dir, staged board), streams the transcript, derives the stage from a
---stage tool line, renders a live preview frame from a mid-run lap board,
+--add-dir, staged board), streams the transcript, derives the progress line from
+the converge ledger row a milestone writes, renders a live preview frame from a mid-run lap board,
 parses the terminal RESULT= JSON, surfaces REPORT.md + movie buttons, and
 re-arms its buttons. The fake CLI is a real .cmd shim on Windows, so the
 npm-install path is under test end to end: the runner must strip the
@@ -198,9 +198,12 @@ def main():
     transcript = tab.transcript_ctrl.GetValue()
     check("transcript flowed (init line)", "fake-model" in transcript)
     check("transcript shows the tool line (description preferred)",
-          "placement driver" in transcript, transcript[:400])
-    check("stage derived from the RAW event's command",
-          any("P4" in s for s in statuses), str(statuses))
+          "Record the milestone board" in transcript, transcript[:400])
+    # The staged driver's `--stage P4` line is retired with that skill; the
+    # pcb-free-agent run records milestones in the converge ledger, and the
+    # tab's progress line is derived from the newest LEDGER ROW.
+    check("progress derived from the ledger row",
+          any("lap 1: quench/nudge" in s for s in statuses), str(statuses))
     check("elapsed/mode in status",
           any(s.startswith("Place —") for s in statuses), str(statuses))
     if pil_ok:

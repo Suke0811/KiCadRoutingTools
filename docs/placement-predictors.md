@@ -122,14 +122,16 @@ every board: +0.481 esp_prog, +0.392 kit-dev-coldfire, +0.649 sonde_u, +0.568
 splitflap, +0.473 tigard, +0.622 watchy. Two sentences this document printed
 beside that finding were wrong, and #788 corrects them:
 
-- **The L2 gate does not read this key.** `loop_driver.py`'s refusal reads
+- **The L2 gate did not read this key.** (L2 was a stage of `loop_driver.py`,
+  since retired with the staged skills for `/pcb-free-agent`, whose verifier
+  reads `checklist.a_off_outline` directly.) `loop_driver.py`'s refusal read
   `check_assembly.py`'s `oob_pad_count` — a part-level pad AABB against an
   outline inflated by the grading clearance, so it moves when `--clearance`
   moves — while `checklist.a_off_outline.pad_copper` is `render_placement.py`'s
   per-PAD, margin-0 census, which reads no `--intent`. `legality.py`'s own
   `oob_pad_basis` string has recorded the distinction all along. The skill
   guidance had the same conflation and is corrected with it.
-- **It is not the only pre-route number here that refuses.** L2 also refuses on
+- **It was not the only pre-route number here that refused.** L2 also refused on
   `buildable`/`verdict`, on `locked_contacts`
   and on `blocking` — and `blocking` belongs to the +0.785 family, because
   `check_assembly`'s `blocking` counts pad-INTERSECTION pairs only, which is
@@ -140,7 +142,7 @@ beside that finding were wrong, and #788 corrects them:
 How close the two censuses actually are, and what the answer depends on, is
 measured below.
 
-**2. `hpwl` -- which the drivers DO gate on -- barely relates to the routed
+**2. `hpwl` -- which the (since retired) drivers DID gate on -- barely relates to the routed
 outcome.** 4 boards right, 2 wrong, median **+0.059**, two-sided p = 0.69:
 
 | board | rho(hpwl, blocking) |
@@ -518,7 +520,7 @@ refuse, and how many of those routed worse than the ones it passed — answered
 on the same rows, at each board's own floor:
 
 ```
-L2 as it ships (blocking > 0 or oob_pad_count > 0)   refuses 35 of 119
+L2 as it shipped (blocking > 0 or oob_pad_count > 0) refuses 35 of 119
     the 84 it passes routed to blocking   min 0 / median 1 / max 9
 + (pad_conflicts > 0 or hole_conflicts > 0)          refuses 37
     the 2 it adds routed to blocking      0 and 2

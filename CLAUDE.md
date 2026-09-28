@@ -101,10 +101,9 @@ Validate routed boards against the *real* spec, with the right checker — most
   reach `gate_or_exit` at all. (The staged placement and combined drivers it
   also read through `--dump-all` / `--dump-refusals` were retired with their
   skills in favour of `/pcb-free-agent`, which prescribes no stages.)
-  `tests/test_923_output_key_claims.py` is the third: it RUNS `board_context`,
-  `check_pockets`, `check_floorplan`, `render_placement`, `board_score` and
-  `place_seed` on a tracked fixture and resolves every cited key against what
-  they really wrote (`hot[].ratio` was never an emitted key;
+  `tests/test_923_output_key_claims.py` is the third: it RUNS the instruments
+  the skills quote (`check_floorplan`, `render_placement`, `board_score`) on a
+  tracked fixture and resolves every cited key against what they really wrote (`hot[].ratio` was never an emitted key;
   `broken.poured_nets_meaning` is written under `components.`). A claim about a
   tool it does not run, or one in prose naming no instrument, is still
   invisible -- both files say so.
