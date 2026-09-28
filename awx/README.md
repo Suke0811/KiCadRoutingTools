@@ -1408,6 +1408,7 @@ is byte-inert on the H3 bench (K28: 34 vias, 786 segments, as recorded).*
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a whole-route plan installed and audited, gated (complete and clean), linted, drawn; the bench they share |
 | `whole_frame.py`, `whole_ends.py`, `whole_feedback.py` | the whole route's own frame of a bench; its own choice of ends (the fanout's `PLAN_JUDGE=ends`); the audits' findings at the ends, back to the fanout |
 | `stage_cache.py` | a whole-route stage run, or restored when its script, arguments, environment and every file it read are unchanged |
+| `whole_chain.sh`, `modal_whole.py` | one rung of the whole route end to end on our own ends -- fanout, solve, loop, route, checks, and the feedback rounds -- graded in one line (`WHOLE K=..`); the ladder in the cloud, one container per rung, and one command replayed there on the laptop's files at their own paths (`modal_whole.py::stage`) |
 | `wall_probe.py`, `pinch_gate.py`, `judge_gate.py`, `floor_survey.py`, `ledger_cal.py`, `cut_ledger.py`, `rule_table.py`, `solve_curve.py`, `modal_curve.py` | probes and gates: a lane's walls, the braid's refusals, the plan judge, the floor per net, a corridor's cut, the length rule over arms, the CP-SAT's convergence |
 | `modal_k.py`, `arms.example.json`, `arms.rec51.json` | cloud arms, one container per (arm, K); `return_board`, `return_files` bring artifacts back |
 
