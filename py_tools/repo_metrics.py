@@ -1292,9 +1292,9 @@ with a Python engine, usable as CLI scripts or as a KiCad plugin.</p>
     <div class="d">The geometry LP's dual as statics, geometry and a circuit</div></a>
 </div>
 
-<p>Install through KiCad's <strong>Plugin and Content Manager</strong>, or clone
-the repository and run <code>python3 build_router.py</code> to fetch the
-prebuilt router for your platform.</p>
+<p>This is the project's page on the web: links to the source and the
+releases, the project's reach, and interactive explainers of how the router
+works.</p>
 
 <div class="foot">This site is built from the repository and republished weekly
 by a GitHub Actions workflow.</div>
