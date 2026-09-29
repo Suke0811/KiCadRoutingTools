@@ -139,20 +139,37 @@ def _resolve(path, dirs) -> str:
     return re.sub(r'\$\{(\w+)\}|\$\((\w+)\)', sub, path)
 
 
-def stage_models(board_text, dirs) -> Tuple[str, int]:
-    """Point every `.wrl` model that does not exist at its `.step` twin when
-    that one does. Returns `(text, n_rewritten)`."""
+#: A missing `.wrl`'s twins, in the order tried: KiCad's own libraries
+#: ship `.step`, a vendor's may spell it `.STEP` or `.stp`.
+TWIN_EXTS = ('.step', '.STEP', '.stp', '.STP')
+
+
+def stage_models(board_text, dirs, board_dir=None) -> Tuple[str, int]:
+    """Make every model reference survive the board being re-written into a
+    temp dir, and point a missing `.wrl` at an existing `.step` twin.
+
+    The staged copy lives in a temp dir, so `${KIPRJMOD}` and a RELATIVE
+    path -- both resolved against the board's OWN directory (`board_dir`) --
+    would point at nothing there (the phase-5 verifier: ulx3s, orangecrab,
+    watchy and tigard use KIPRJMOD, glasgow `../../packages3D/`). Every
+    reference that resolves is therefore rewritten to its ABSOLUTE path.
+    Returns `(text, n_twins)`: how many `.wrl` were pointed at a twin."""
     n = [0]
 
     def fix(m):
         path = m.group(2)
+        real = _resolve(path, dirs)
+        if board_dir and not os.path.isabs(real) and '${' not in real:
+            real = os.path.normpath(os.path.join(board_dir, real))
+        if os.path.isfile(real):
+            return m.group(1) + real.replace('\\', '/') + m.group(3)
         if path.lower().endswith(('.wrl', '.vrml')):
-            real = _resolve(path, dirs)
-            twin = os.path.splitext(real)[0] + '.step'
-            if not os.path.isfile(real) and os.path.isfile(twin):
-                n[0] += 1
-                return (m.group(1) + os.path.splitext(path)[0] + '.step'
-                        + m.group(3))
+            stem = os.path.splitext(real)[0]
+            for ext in TWIN_EXTS:
+                if os.path.isfile(stem + ext):
+                    n[0] += 1
+                    return (m.group(1) + (stem + ext).replace('\\', '/')
+                            + m.group(3))
         return m.group(0)
     return _MODEL_RE.sub(fix, board_text), n[0]
 
@@ -186,7 +203,9 @@ def export_glb(board_path, pcb, out_dir, cli=None,
     tmp = tempfile.mkdtemp(prefix='stage3d_glb_')
     try:
         src = open(board_path, encoding='utf-8').read()
-        text, nfix = stage_models(src, kir.model_dirs(cli, board_path))
+        text, nfix = stage_models(
+            src, kir.model_dirs(cli, board_path),
+            os.path.dirname(os.path.abspath(board_path)))
         staged = os.path.join(tmp, os.path.basename(board_path))
         with open(staged, 'w', encoding='utf-8') as f:
             f.write(text)

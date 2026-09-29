@@ -43,11 +43,18 @@ AUTO_DWELL_S = 1.0
 AUTO_FLIP_S = 1.0
 
 
-def _is_gone(val) -> bool:
+def _gone_marker():
     try:
         from animate_route import _GONE
     except Exception:                                          # noqa: BLE001
-        return False
+        return object()
+    return _GONE
+
+
+_GONE = _gone_marker()
+
+
+def _is_gone(val) -> bool:
     return val is _GONE
 
 
@@ -73,6 +80,28 @@ def _ops_items(ops, kind):
         items.append(list(_row(val, kind)) + [i, -1])
         live[key] = len(items) - 1
     return items
+
+
+class _Replay(object):
+    """`{key: item index}` for the items alive after `n` ops, advanced
+    INCREMENTALLY: frames ask in log order and the log only grows, so one
+    pass over the ops serves every frame. Rebuilding it per hidden frame
+    was quadratic -- 3.8 s of a 1099-frame build, and ~2 minutes projected
+    for a 5000-frame one (the phase-5 verifier)."""
+
+    def __init__(self, ops):
+        self.ops, self.at, self.count, self.live = ops, 0, 0, {}
+
+    def upto(self, n):
+        if n < self.at:                 # never in log order; stay correct
+            self.at, self.count, self.live = 0, 0, {}
+        for key, val in self.ops[self.at:n]:
+            self.live.pop(key, None)
+            if not _is_gone(val):
+                self.live[key] = self.count
+                self.count += 1
+        self.at = max(self.at, n)
+        return self.live
 
 
 def _key_to_item(ops, n):
@@ -199,13 +228,14 @@ def build(stage_out, *, fps=6.0, stage_present=True) -> dict:
             'ahead, ignoring work under %.1f s -- %d turn(s)'
             % (AUTO_FLIP_S, AUTO_DWELL_S, nf))
     ops_s = stage_out['ops_s']
+    replay = _Replay(ops_s)
     states = []
     index = {}
     frames = []
     for i, r in enumerate(log):
         hide = []
         if r.get('hide'):
-            k2i = _key_to_item(ops_s, r['ns'])
+            k2i = replay.upto(r['ns'])
             hide = sorted(k2i[k] for k in r['hide'] if k in k2i)
         st = {'ns': r['ns'], 'nv': r['nv'], 'hide': hide,
               'hl_s': [list(x) for x in r.get('hl_s') or ()],

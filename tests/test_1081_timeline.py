@@ -58,6 +58,11 @@ def _via_row(v):
     return (_r(v.x), _r(v.y), _r(v.size), _r(v.drill), ls[0], ls[-1])
 
 
+#: The parts the fixture moves (C26 on the front, U1 -- turning -- on the
+#: back): their pose on every frame is checked against the X-ray's own.
+POSED = ('C26', 'U1')
+
+
 def _film_with_calls(boards, **kw):
     """Film, capturing what `BoardRenderer.frame` drew for each Movie frame."""
     calls = []
@@ -67,6 +72,9 @@ def _film_with_calls(boards, **kw):
 
     def _frame(self, segments=None, vias=None, highlight_segments=None,
                highlight_vias=None, **k):
+        fps = getattr(self.pcb, 'footprints', {}) or {}
+        last['pose'] = {ref: (fp.x, fp.y, fp.rotation or 0.0)
+                        for ref, fp in fps.items() if ref in POSED}
         last['c'] = (sorted(_seg_row(s) for s in (segments or ())),
                      sorted(_via_row(v) for v in (vias or ())),
                      sorted(_seg_row(s) for s in (highlight_segments or ())),
@@ -76,7 +84,7 @@ def _film_with_calls(boards, **kw):
                           highlight_vias=highlight_vias, **k)
 
     def _push(self, img, label, kind, **k):
-        calls.append((kind, last.get('c')))
+        calls.append((kind, last.get('c'), last.get('pose')))
         return orig_push(self, img, label, kind, **k)
     RR.BoardRenderer.frame, A.Movie._push_frame = _frame, _push
     try:
@@ -105,7 +113,7 @@ def _rebuilt(tl, st):
 
 
 def test_every_frame_is_rebuilt_from_the_record_alone():
-    with FC.Chain() as c:
+    with FC.Chain(rot_u1=90.0) as c:
         # a rip-and-retract and a regrowth, after the flip: re-reveal the
         # copper board through a board with a chunk of it removed
         tr = FC.rip_trace(c.boards[-1], os.path.join(c.dir, 'trace.json'))
@@ -118,9 +126,22 @@ def test_every_frame_is_rebuilt_from_the_record_alone():
                % (len(tl['frames']), len(frames), len(calls)))
         bad = []
         checked = 0
-        for i, (kind, call) in enumerate(calls):
+        pose_bad = []
+        for i, (kind, call, pose) in enumerate(calls):
             if kind == 'flip' or call is None:
                 continue          # a flip frame is the Stage's own picture
+            # the PARTS, from the record alone: the epoch's resting pose,
+            # overridden by `moving` mid-glide -- the phase-5 verifier found
+            # every pose mutation survived a check that read only copper
+            stt = TL.state_for(tl, i)
+            ep = tl['epochs'][stt['epoch']]
+            for ref in POSED:
+                want = (pose or {}).get(ref)
+                got = stt['moving'].get(ref) or (ep.get(ref) or [None])[:3]
+                if want is None or got is None or any(
+                        abs(float(a) - float(b)) > 1e-9
+                        for a, b in zip(got, want)):
+                    pose_bad.append((i, ref, got, want))
             checked += 1
             got = _rebuilt(tl, TL.state_for(tl, i))
             for what, a, b in zip(('segments', 'vias', 'highlights',
@@ -128,6 +149,9 @@ def test_every_frame_is_rebuilt_from_the_record_alone():
                 if a != b:
                     bad.append((i, what, len(a), len(b)))
         _check(checked > 40, 'checked %d Movie frames' % checked)
+        _check(not pose_bad, 'every frame\'s part poses rebuilt from the '
+               'record equal the X-ray\'s, turning glide included (first '
+               'mismatches: %s)' % pose_bad[:3])
         _check(not bad, 'every frame\'s copper rebuilt from the record '
                'alone equals what the X-ray drew (first mismatches: %s)'
                % bad[:4])
