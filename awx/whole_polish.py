@@ -34,6 +34,7 @@ import sys, json, math, collections
 import numpy as np
 from scipy.optimize import linprog
 
+import awx_settings
 import detmath
 import whole_ctx
 import plan_audit as pa
@@ -1097,7 +1098,7 @@ for n, ln in LANES.items():
 # parts the geometry holds lanes to one side of (whole_geo's islands: every part's pads and holes but the source's and
 # the destination's; a flip of either would change nothing and cost a round)
 _SRC = collections.Counter(ctx.src_ref[n] for n in geo['lanes']).most_common(1)[0][0]
-_DST = __import__('os').environ['DEST']
+_DST = awx_settings.req('DEST')
 
 
 ISLAND = whole_ctx.part_islands(ctx, skip=(_SRC, _DST))

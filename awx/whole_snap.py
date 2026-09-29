@@ -29,7 +29,8 @@ rule and NAMED (OUT's 'folded', which the gate fails); a terminal join is never 
 Then SWEEPS: every lane lifted and laid again against the others' real copper, which leaves room for clean jogs where
 the shares made a lane staircase. A lane that cannot be laid in its band FAILS, named (exit 3). The lanes placed later
 hug the ones before, so a bundle turns together, mitred."""
-import sys, os, json, math, heapq, time
+import sys, json, math, heapq, time
+import awx_settings
 import numpy as np
 
 import whole_ctx
@@ -53,7 +54,7 @@ OUT = sys.argv[2]
 PAIRS_ONLY = '--pairs' in sys.argv[3:]
 # where the singles did not fit round the pairs laid before (SNAP_KEEP=HOT.json,..: the loop's pairs-held audit, as
 # whole_gate --hot writes it): the pairs are laid again keeping each single's own room near those places
-KEEP = [(float(h_[0]), float(h_[1])) for f_ in os.environ.get('SNAP_KEEP', '').split(',') if f_
+KEEP = [(float(h_[0]), float(h_[1])) for f_ in awx_settings.get('SNAP_KEEP', '').split(',') if f_
         for h_ in json.load(open(f_)).get('hot', [])]
 HELD = set(plan.get('held', []))
 log = lambda *a: print(*a, flush=True)
@@ -78,7 +79,7 @@ RVIA = 2 * bd.LANE_MIN                                     # how far a via may m
 W_BEND = 4 * g                                             # a 45-degree bend, in mm of length
 W_DEV = 0.5                                                # per mm of length, per mm from the smooth line
 W_SHARE = 1.0                                              # a pair laid first: a step in a single's share costs its length again
-W_KEEP = float(os.environ.get('SNAP_W_KEEP', 20.0))       # a pair, per mm of length, per mm beyond its staircase (pairs.stair_spread)
+W_KEEP = float(awx_settings.get('SNAP_W_KEEP', 20.0))       # a pair, per mm of length, per mm beyond its staircase (pairs.stair_spread)
 SWEEPS = 2                                                 # clean-up sweeps against the others' real copper
 W_VIA = 1.0                                                # per mm a via stands from the plan's
 POSE_TRIES = 4                                             # a pair's pose combinations tried before one search asks if any can

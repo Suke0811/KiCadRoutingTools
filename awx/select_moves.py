@@ -20,7 +20,7 @@ silent assignment is impossible to audit.
 from __future__ import annotations
 
 import math
-import os
+import awx_settings
 from typing import (Callable, Dict, List, Optional, Sequence,
                     Tuple)
 
@@ -122,7 +122,7 @@ def _seg_hits_box(a: Pt, b: Pt, box) -> bool:
 # menu and changed the flag-off K28 chain for the worse (37 vias / 692 mm
 # on the frozen source against 36 / 670: the seed dodges the two bans the
 # passes used to repair, and picks worse); 0 = off.
-SEL_XING = int(os.environ.get('SEL_XING', '1'))
+SEL_XING = int(awx_settings.get('SEL_XING', '1'))
 
 
 def around_box_path(a: Pt, b: Pt, box, pad: float = 0.3):

@@ -17,7 +17,7 @@ pitch is the rules' track plus the pair gap.
     BRAID_PAIRS=1     the pair member (default off: the braid byte-identical)
 """
 import math
-import os
+import awx_settings
 import re
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -30,7 +30,7 @@ Pt = Tuple[float, float]
 # the pair router rejects a pair whose legs sit closer than the config's
 # clearance as a short (measured: gap 0.100 against clearance 0.105,
 # SDQS0 refused after a found route). Overridable per invocation.
-GAP = float(os.environ.get('BRAID_PAIR_GAP', '0') or 0) or _rules.DEFAULT.pair_gap
+GAP = float(awx_settings.get('BRAID_PAIR_GAP', '0') or 0) or _rules.DEFAULT.pair_gap
 # (the hug plus a grid diagonal, rules.pair_gap: the pose router's short test
 # is `gap < clearance` on the legs it GENERATES on the grid, and at a corner
 # the inner leg's gap shrinks -- measured 0.102, 0.1035 and 0.092 against
@@ -39,7 +39,7 @@ GAP = float(os.environ.get('BRAID_PAIR_GAP', '0') or 0) or _rules.DEFAULT.pair_g
 # the farthest apart a pair's two teeth (or two berths) may stand for the
 # pair to be routed as ONE lane: beyond it the legs are singles, and the
 # log says so (the plan chose the ends apart -- the joint menu's job)
-MAX_SEP = float(os.environ.get('BRAID_PAIR_SEP', '0') or 0) or 2.0 * _rules.DEFAULT.lane_pitch
+MAX_SEP = float(awx_settings.get('BRAID_PAIR_SEP', '0') or 0) or 2.0 * _rules.DEFAULT.lane_pitch
 
 _SUFFIX = re.compile(r'^(.*?)(_P|_N|P|N|\+|-|_p|_n)$')
 
@@ -50,7 +50,7 @@ _SUFFIX = re.compile(r'^(.*?)(_P|_N|P|N|\+|-|_p|_n)$')
 # nets, one pair coupled, the rest as they were before pairs existed. Unset
 # = every pair the suffix rule finds. The ladder's ADMISSION (coherent_nets)
 # ignores it (admit_all), so every arm routes the same net list.
-ONLY = {s.strip() for s in os.environ.get('BRAID_PAIR_ONLY', '').split(',') if s.strip()}
+ONLY = {s.strip() for s in awx_settings.get('BRAID_PAIR_ONLY', '').split(',') if s.strip()}
 
 
 def pitch(track: float = None) -> float:

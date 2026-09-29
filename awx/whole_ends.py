@@ -46,6 +46,7 @@ import collections
 import itertools
 import math
 import os
+import awx_settings
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -139,7 +140,7 @@ class Ends:
         self.st = st
         names = [n for n in st['launch'] if st['dmenu'].get(n)]
         prs = {}
-        if int(os.environ.get('PLAN_PAIRS', os.environ.get('BRAID_PAIRS', '0')) or 0):
+        if int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0):
             prs = {b: pr for b, pr in _pairs.pair_names(names).items() if pr[0] in names and pr[1] in names}
         legs = {l_ for pr in prs.values() for l_ in pr}
         self.lanes = [(n, (n,)) for n in names if n not in legs] + [(b, pr) for b, pr in prs.items()]

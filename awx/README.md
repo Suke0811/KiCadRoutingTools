@@ -165,7 +165,11 @@ Each stage runs as a process of its own. `--inproc` runs every stage in the
 driver's own process instead, as a routing call inside KiCad's process will
 run them: the same outputs, file for file, and a quarter to a third less wall
 time (H3 K15, K28, K41 and zynq K18, 2026-09-29). The stage cache is the
-separate processes' only, and the checkers still run in their own.
+separate processes' only, and the checkers still run in their own. In one
+process no stage reads or writes the environment: every awx module reads its
+settings through `awx_settings`, which the driver gives each stage's for the
+stage (with nothing given, the environment answers, as for a process of its
+own).
 
 ### Building the zynq article
 
@@ -2200,6 +2204,7 @@ shared and are not.
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP, the polish, the snap onto the router's grid (the loop that drives them is `whole_route.py`'s) |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a whole-route plan installed and audited, gated (complete and clean), linted, drawn; the bench they share |
 | `stage_cache.py` | a whole-route stage run, or restored when its script, arguments, environment and every file it read are unchanged |
+| `awx_settings.py` | what every awx module reads by name (a policy, a knob, a stage's hand-off): the values a caller gives for a call, else the environment |
 | `detmath.py` | one answer per LP: the geometry's and the polish's tie-break and rounding |
 | `whole_movie.py` | a film of one run (`whole_route.py`'s OUTDIR), the fanout to the copper: the solve drawn as its braid under the board (u on the trunk is the board's x), the geometry LP as the shadow prices of the rules that bind; the root solve and the geometry re-run under observation, and refused unless they write what the chain wrote |
 

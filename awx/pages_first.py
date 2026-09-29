@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import math
 import os
+import awx_settings
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -117,20 +118,20 @@ class Frame:
             return sg * (self.Ht + 0.5 + (a + self.Hu))
         return sg * (self.Ht + 0.5 + 2 * self.Hu + 1.0 + (self.Ht - sg * x))
 
-PAGES_DET = float(os.environ.get('PLAN_PAGES_DET', '40'))     # CP-SAT deterministic time. 40 (2026-09-14): at 20 the K41 solve stops FEASIBLE with 4 swimmers, at 40 with 2-3, 80 adds nothing; on the ladder 20 -> 40 took K41 87 -> 79/81 and K51 125 -> 115 complete, within the time budget (K41 92 s)
-PAGES_WORKERS = int(os.environ.get('PLAN_PAGES_WORKERS', '4'))
-PAGES_SWIM = float(os.environ.get('PLAN_PAGES_SWIM', '100'))  # vias: the price of a net left to swim
-PAIR_SWIM = float(os.environ.get('PLAN_PAIR_SWIM', '3') or 3)   # a pair leg's swim price, times PAGES_SWIM (2026-09-20: SDQS1 planned as a swimmer weaved 6 page crossings)
-PAGES_LOG = int(os.environ.get('PLAN_PAGES_LOG', '0'))        # 1 = per-net choice printed
-PAGES_ITERS = int(os.environ.get('PLAN_PAGES_ITERS', '3'))    # re-key on the chosen plan, at most this often
-PAGES_SIDEKEY = int(os.environ.get('PLAN_PAGES_SIDEKEY', os.environ.get('PLAN_PAGES_SIDERS', '1')))
-PAGES_SIDERS_MODE = int(os.environ.get('PLAN_PAGES_SIDERS', '1'))
-PAGES_STRICT = int(os.environ.get('PLAN_PAGES_STRICT', '1'))   # destination exclusions by the STRICT conflict test (the engine lays the geometry asked; non-strict let 14 verbatim berths collide at K41)
-PAGES_HINT = int(os.environ.get('PLAN_PAGES_HINT', '1'))      # 1 = the seed plan (the greedy's berths, the teeth as they stand) as the CP-SAT's solution hint. At DET 20 it measured WORSE standalone (K41 obj 2359.8 / 4 swimmers -> 2659.4 / 5); at DET 40 on the LADDER it is worth 2 vias at K41 (81 -> 79) and completion at K51 (106 / SA2 open -> 115 complete), 2026-09-14 pg2 vs pg3. On, with DET 40.
-PAGES_JOINKEY = int(os.environ.get('PLAN_PAGES_JOINKEY', '1'))  # 1 = a side exit's slot depends on its SOURCE class: lanes whose tooth is a joiner sit outermost of the block, by tooth position (the braid's exit-block rule)
+PAGES_DET = float(awx_settings.get('PLAN_PAGES_DET', '40'))     # CP-SAT deterministic time. 40 (2026-09-14): at 20 the K41 solve stops FEASIBLE with 4 swimmers, at 40 with 2-3, 80 adds nothing; on the ladder 20 -> 40 took K41 87 -> 79/81 and K51 125 -> 115 complete, within the time budget (K41 92 s)
+PAGES_WORKERS = int(awx_settings.get('PLAN_PAGES_WORKERS', '4'))
+PAGES_SWIM = float(awx_settings.get('PLAN_PAGES_SWIM', '100'))  # vias: the price of a net left to swim
+PAIR_SWIM = float(awx_settings.get('PLAN_PAIR_SWIM', '3') or 3)   # a pair leg's swim price, times PAGES_SWIM (2026-09-20: SDQS1 planned as a swimmer weaved 6 page crossings)
+PAGES_LOG = int(awx_settings.get('PLAN_PAGES_LOG', '0'))        # 1 = per-net choice printed
+PAGES_ITERS = int(awx_settings.get('PLAN_PAGES_ITERS', '3'))    # re-key on the chosen plan, at most this often
+PAGES_SIDEKEY = int(awx_settings.get('PLAN_PAGES_SIDEKEY', awx_settings.get('PLAN_PAGES_SIDERS', '1')))
+PAGES_SIDERS_MODE = int(awx_settings.get('PLAN_PAGES_SIDERS', '1'))
+PAGES_STRICT = int(awx_settings.get('PLAN_PAGES_STRICT', '1'))   # destination exclusions by the STRICT conflict test (the engine lays the geometry asked; non-strict let 14 verbatim berths collide at K41)
+PAGES_HINT = int(awx_settings.get('PLAN_PAGES_HINT', '1'))      # 1 = the seed plan (the greedy's berths, the teeth as they stand) as the CP-SAT's solution hint. At DET 20 it measured WORSE standalone (K41 obj 2359.8 / 4 swimmers -> 2659.4 / 5); at DET 40 on the LADDER it is worth 2 vias at K41 (81 -> 79) and completion at K51 (106 / SA2 open -> 115 complete), 2026-09-14 pg2 vs pg3. On, with DET 40.
+PAGES_JOINKEY = int(awx_settings.get('PLAN_PAGES_JOINKEY', '1'))  # 1 = a side exit's slot depends on its SOURCE class: lanes whose tooth is a joiner sit outermost of the block, by tooth position (the braid's exit-block rule)
 # PLAN_PAGES_MISMATCH: the price of an end whose layer is not its page, as
 # a multiple of a via (1 = as it was).
-PAGES_MISMATCH = float(os.environ.get('PLAN_PAGES_MISMATCH', '1') or 1)
+PAGES_MISMATCH = float(awx_settings.get('PLAN_PAGES_MISMATCH', '1') or 1)
 # THE INSTANCE, WRITTEN OUT (2026-09-15, session 9): PLAN_PAGES_DUMP=<dir>
 # writes every CP-SAT model this module solves, as built and hinted, to
 # <dir>/<board>_solve<n>.pb (binary CpModelProto) beside a .json naming the
@@ -138,7 +139,7 @@ PAGES_MISMATCH = float(os.environ.get('PLAN_PAGES_MISMATCH', '1') or 1)
 # takes a different greedy seed) can be re-solved offline against
 # deterministic time, and the objective / bound curve read off it. Inert
 # when unset: nothing in the solve changes.
-PAGES_DUMP = os.environ.get('PLAN_PAGES_DUMP', '')
+PAGES_DUMP = awx_settings.get('PLAN_PAGES_DUMP', '')
 import schedule as _schedule
 import braid as te
 # a row-line run and a column-line run on ONE layer that cross are a
@@ -165,7 +166,7 @@ sm.SEL_XING = max(sm.SEL_XING, 2)
 # wrong regime on the rung where the deficit is worst.
 # The braid SUBPROCESS was never affected -- braid.py does not import
 # this module, so every ladder number measured through chain_k.sh stands.
-_schedule.EXACT_PAGES = 0 if os.environ.get('BRAID_EXACT_PAGES') == '0' else 1
+_schedule.EXACT_PAGES = 0 if awx_settings.get('BRAID_EXACT_PAGES') == '0' else 1
 SCALE = 100                                                   # cost units -> ints
 
 
@@ -576,7 +577,7 @@ def _solve(st, board, log, fixed, learned, src_free, seed, src_seed, hold_s=None
     # Without this the re-solve is INFEASIBLE and the greedy choice, which
     # knows no pairs, stands (K36 pf8: SODT0 held between SCK's dogbones,
     # SDQ11/SDQ8 standing between SDQS1's teeth).
-    if fixed and int(os.environ.get('PLAN_PAIRS', os.environ.get('BRAID_PAIRS', '0')) or 0):
+    if fixed and int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0):
         import pairs as _pairs
         _dg = st['dgrid']
         _reach_b = 1.3 * max(_dg.pitch_x, _dg.pitch_y)
@@ -692,7 +693,7 @@ def _solve(st, board, log, fixed, learned, src_free, seed, src_seed, hold_s=None
     import pairs as _pairs
     n_pair_c = 0
     _pair_legs = set()        # a pair's legs swim at PAIR_SWIM times the price: a swimming pair weaves both legs
-    if int(os.environ.get('PLAN_PAIRS', os.environ.get('BRAID_PAIRS', '0')) or 0):
+    if int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0):
         _pair_legs = {leg for pr in _pairs.pair_names(names).values() for leg in pr}
         _dg, _sg = st['dgrid'], st['sgrid']
         _reach = {'berths': 1.3 * max(_dg.pitch_x, _dg.pitch_y),

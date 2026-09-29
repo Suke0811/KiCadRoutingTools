@@ -129,6 +129,7 @@ DEBT THIS FILE DOES NOT PAY (recorded, not fixed)
 KRT_TOOL = {'scope': [], 'kind': 'utility'}   # #937: a research tool (awx), catalogued, shown at no door
 import math
 import os
+import awx_settings
 import sys
 from dataclasses import dataclass, field
 
@@ -386,7 +387,7 @@ def install(rules, verbose=False):
     put('braid', 'GRID', rules.grid)
 
     # pairs: the pair gap (unless the invocation set its own, BRAID_PAIR_GAP)
-    if not float(os.environ.get('BRAID_PAIR_GAP', '0') or 0):
+    if not float(awx_settings.get('BRAID_PAIR_GAP', '0') or 0):
         put('pairs', 'GAP', rules.pair_gap)
 
     # source_realize: the production engine's fanout geometry

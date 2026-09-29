@@ -47,6 +47,7 @@ import io
 import json
 import math
 import os
+import awx_settings
 import shutil
 import sys
 
@@ -282,7 +283,7 @@ def main(argv=None):
                 # a pair routes FIRST by the braid's own pair step: its ends own
                 # the fan-in, only the others' stubs are reserved there
                 n_log = len(logs)
-                quiet = (contextlib.nullcontext() if os.environ.get('BRAID_PAIR_DEBUG')
+                quiet = (contextlib.nullcontext() if awx_settings.get('BRAID_PAIR_DEBUG')
                          else contextlib.redirect_stdout(io.StringIO()))
                 with quiet:
                     done_ = bd._route_pairs_planned_in_order(ctx, corridors, logs.append, [nm])

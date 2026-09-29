@@ -45,6 +45,8 @@ import time
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import awx_settings  # noqa: E402
 PYR = os.path.normpath(os.path.join(HERE, '..', 'py_router'))
 PY = sys.executable
 PATIENCE = 2                               # the loop's rounds in a row without a new best
@@ -97,18 +99,18 @@ def _stage_exit():
 
 
 def _inproc(argv, env, out_f, err_f):
-    """`python3 ARGV...` run in this process as its own would run it: the environment ENV (whole, not added to), the
-    arguments, awx/ its directory, fds 1 and 2 on OUT_F / ERR_F (None: where the driver's go); the exit code"""
+    """`python3 ARGV...` run in this process as its own would run it: ENV the settings every awx module reads
+    (awx_settings.given: the whole of them, as an environment is the whole of a child's -- os.environ is neither read
+    by them nor written), the arguments, awx/ its directory, fds 1 and 2 on OUT_F / ERR_F (None: where the driver's
+    go); the exit code"""
     # (sys.path is not restored: a module imported by an earlier stage put its paths there once, and a later stage's
     # lazy imports -- py_router's design_rules, say -- find their modules through them)
-    saved = dict(os.environ), list(sys.argv), os.getcwd()
-    os.environ.clear()
-    os.environ.update(env)
+    saved = list(sys.argv), os.getcwd()
     os.chdir(HERE)
     sys.argv = list(argv)
     sys.path.insert(0, os.path.dirname(os.path.abspath(argv[0])))
     rc = 0
-    with (_fds(out_f, err_f) if out_f is not None else contextlib.nullcontext()):
+    with awx_settings.given(env), (_fds(out_f, err_f) if out_f is not None else contextlib.nullcontext()):
         try:
             runpy.run_path(argv[0], run_name='__main__')
         except SystemExit as e:
@@ -123,10 +125,8 @@ def _inproc(argv, env, out_f, err_f):
                 _stage_exit()
             finally:
                 sys.stdout.flush(); sys.stderr.flush()
-    os.environ.clear()
-    os.environ.update(saved[0])
-    sys.argv = saved[1]
-    os.chdir(saved[2])
+    sys.argv = saved[0]
+    os.chdir(saved[1])
     return rc
 
 

@@ -56,6 +56,7 @@ import argparse
 import math
 import re
 import os
+import awx_settings
 import time as _time
 import shutil
 import sys
@@ -151,9 +152,9 @@ SLOPE_W = 0.02                 # extra band half-width per unit |do/ds|:
 # rescue / last-call budget multiplier. Defaults = the braid as it was
 # (measured: one attempt gives the same board 22% faster; a halved
 # budget loses nets, so the probe keeps the full one).
-ATTEMPTS = int(os.environ.get('BRAID_ATTEMPTS', '6'))
-LADDER_MODE = os.environ.get('BRAID_LADDER', 'full')   # full | open (connect_ladder)
-BUDGET_X = int(os.environ.get('BRAID_BUDGET_X', '4'))
+ATTEMPTS = int(awx_settings.get('BRAID_ATTEMPTS', '6'))
+LADDER_MODE = awx_settings.get('BRAID_LADDER', 'full')   # full | open (connect_ladder)
+BUDGET_X = int(awx_settings.get('BRAID_BUDGET_X', '4'))
 SWIM_TUBE = 1.2                # ribbon swimmer's band half-width: it
                                # WEAVES through the page lattice, so
                                # the neighbour-pinch band is wrong for
@@ -184,7 +185,7 @@ LANE_MIN = TRACK + CLEAR + 0.02    # the least centreline pitch two lanes are PL
 WRAP_REACH = 10 * LANE_MIN     # how far past a far-face stub its leg may be placed
 BIRTH_W = 0.2                  # place_dives: a bound birth dive's layer-change window, either side of its site
 RING_DIP = 0.5                 # _order_ring: a lifted ring lane's dip narrower than this is filled level
-PACK_MODE = int(os.environ.get('BRAID_PACK', '0') or 0)  # pack.py at write time (opt-in)
+PACK_MODE = int(awx_settings.get('BRAID_PACK', '0') or 0)  # pack.py at write time (opt-in)
 # PLAN_PAGES_SIDERS=1 (2026-09-14, pages-first plans only -- the plan sidecar's
 # `pages_first` marker): a stub whose direction is ACROSS the spine (a side
 # face) is always a side exit, never head-on. classify's head-on test is
@@ -193,7 +194,7 @@ PACK_MODE = int(os.environ.get('BRAID_PACK', '0') or 0)  # pack.py at write time
 # target order -- flipped with which neighbours the plan chose, and no planner
 # key could follow it (K28: 26/378 target pairs off). With every side-face
 # stub in its side's comb, the order on a face is a function of position alone.
-PAGES_SIDERS = int(os.environ.get('PLAN_PAGES_SIDERS', '1') or 0)   # default 1: measured best on the K28/K35/K41 ladder (2026-09-14); inert without the plan marker
+PAGES_SIDERS = int(awx_settings.get('PLAN_PAGES_SIDERS', '1') or 0)   # default 1: measured best on the K28/K35/K41 ladder (2026-09-14); inert without the plan marker
 # ^ **K51 is not in that ladder, and at K51 it is WRONG**: on one K51 board
 # (2026-09-15, session 13) turning it off took the SAME fanout board from
 # 112 vias to 98. See the README, "the record".
@@ -206,12 +207,12 @@ PAGES_SIDERS = int(os.environ.get('PLAN_PAGES_SIDERS', '1') or 0)   # default 1:
 # rules off the board routes 98 with NOTHING open, with EXACT_PAGES alone it
 # routes 98 and leaves SDQ11 open. None = the plan decides (today's
 # behaviour, byte-identical); '0' forces it off; anything else forces it on.
-EXACT_PAGES_ENV = os.environ.get('BRAID_EXACT_PAGES')
-BRANCH = os.environ.get('BRAID_BRANCH', '1') != '0'   # the trunk and its branches (build_branches); BRAID_BRANCH=0 off
+EXACT_PAGES_ENV = awx_settings.get('BRAID_EXACT_PAGES')
+BRANCH = awx_settings.get('BRAID_BRANCH', '1') != '0'   # the trunk and its branches (build_branches); BRAID_BRANCH=0 off
 import pairs as _pairs  # noqa: E402  the bus's differential pairs as members (#622, 2026-09-20)
-PAIRS = int(os.environ.get('BRAID_PAIRS', '0') or 0)   # 1: a differential pair is ONE lane, routed coupled by the production pair router (pairs.py, connect_pair); 0: its legs are singles -- byte-identical
+PAIRS = int(awx_settings.get('BRAID_PAIRS', '0') or 0)   # 1: a differential pair is ONE lane, routed coupled by the production pair router (pairs.py, connect_pair); 0: its legs are singles -- byte-identical
 PROX_TRACK = 0.25              # two same-layer lines nearer than this: a short (pinch_gate.py reads it)
-ECON_LONG = float(os.environ.get('BRAID_ECON_LONG', '3.0'))   # econ re-lay: a lane this far (mm) over its airline is a candidate
+ECON_LONG = float(awx_settings.get('BRAID_ECON_LONG', '3.0'))   # econ re-lay: a lane this far (mm) over its airline is a candidate
 # BRAID_ECON_MM_PER_VIA (mm, 0 = unbounded, the rule until 2026-09-20): the
 # most copper the econ re-lay may buy a via with. K36 SBA1 was re-laid
 # from 2 vias / 20.5 mm to 0 vias / 44.7 mm -- round the outside of the
@@ -220,20 +221,20 @@ ECON_LONG = float(os.environ.get('BRAID_ECON_LONG', '3.0'))   # econ re-lay: a l
 # to 3 / 47.6; the grade has no length term and never saw either. A DDR
 # lane 24 mm over its group is 24 mm of meander on every other lane of
 # the group at the length-matching phase.
-ECON_MM_PER_VIA = float(os.environ.get('BRAID_ECON_MM_PER_VIA', '6.0'))
+ECON_MM_PER_VIA = float(awx_settings.get('BRAID_ECON_MM_PER_VIA', '6.0'))
 # BRAID_ECON_JOINT (default on): when a lane's cheaper re-lay is too long
 # for the guard, or an extra-long lane has no cheaper lane alone, the
 # min-cut probe of rip_for names the lane(s) of this run its short path
 # would cross (SA0 in front of SBA1's berth), rips them, re-lays the lane
 # and then them, and keeps the set only when it is cheaper in all.
-ECON_JOINT = int(os.environ.get('BRAID_ECON_JOINT', '1'))
+ECON_JOINT = int(awx_settings.get('BRAID_ECON_JOINT', '1'))
 # BRAID_APPROACH_RESERVE (mm, 0 = off): see Corridor.approach_virt
-APPROACH_RESERVE = float(os.environ.get('BRAID_APPROACH_RESERVE', '1.0') or 0)
+APPROACH_RESERVE = float(awx_settings.get('BRAID_APPROACH_RESERVE', '1.0') or 0)
 # ...and how hard the rip tries when a lane is refused. These were hard
 # coded defaults on rip_for; they are the natural dials for "repair
 # harder" and there was no way to turn them.
-RIP_VICTIMS = int(os.environ.get('BRAID_RIP_VICTIMS', '3'))
-RIP_DEPTH = int(os.environ.get('BRAID_RIP_DEPTH', '1'))
+RIP_VICTIMS = int(awx_settings.get('BRAID_RIP_VICTIMS', '3'))
+RIP_DEPTH = int(awx_settings.get('BRAID_RIP_DEPTH', '1'))
 
 
 def _prime_highs_threads():
@@ -286,7 +287,7 @@ def _prime_highs_threads():
 HIGHS_PRIMED = _prime_highs_threads()
 
 
-BLOCK_PUSH = int(os.environ.get('BRAID_BLOCK_PUSH', '1') or 0)
+BLOCK_PUSH = int(awx_settings.get('BRAID_BLOCK_PUSH', '1') or 0)
 # ^ 2: pushed only when the push CLEARS within its cap (a push that finds
 # copper at every step is no push -- see _clear_block); 1: pushed to the
 # cap regardless (the recorded chain's rule).
@@ -295,7 +296,7 @@ BLOCK_PUSH = int(os.environ.get('BRAID_BLOCK_PUSH', '1') or 0)
 # own run meets (deflect_islands). The human bench's north block: pushed 1.5 mm
 # clear of the passive cluster north of DU1, ours sat 2 mm further out than
 # the human's lanes (SDQ10 -7.9 against -5.5), every north diagonal steeper.
-JOG_VIA = float(os.environ.get('BRAID_JOG_VIA', '1.0') or 1.0)
+JOG_VIA = float(awx_settings.get('BRAID_JOG_VIA', '1.0') or 1.0)
 W_GATE = 0.33                  # narrowest swap column the gated schedule
                                # gets: every clean gated K on the bench
                                # had W >= 0.343 (K21, W=0.322, needed
@@ -4303,7 +4304,7 @@ class Corridor:
         at half the pitch alone the berth-side pose failed on the outer
         leg's cell at every setback). BRAID_PAIR_SLACK adds to it."""
         return (_pairs.pitch(TRACK) / 2 + TRACK / 2 + 2 * self.ctx.cfg.grid_step
-                + float(os.environ.get('BRAID_PAIR_SLACK', '0') or 0))
+                + float(awx_settings.get('BRAID_PAIR_SLACK', '0') or 0))
 
     def _pair_conn_points(self, nm):
         """Where a pair member's ROUTED CONNECTORS end (connect_pair): a
@@ -4354,7 +4355,7 @@ class Corridor:
             cand_a.append(walk(on_run(1)))
             kb2 = len(seg_len) - 2
             cand_b.append(walk(cum[kb2] + seg_len[kb2] - (on_run(kb2) - cum[kb2]), back=True))
-        if os.environ.get('BRAID_PAIR_DEBUG'):
+        if awx_settings.get('BRAID_PAIR_DEBUG'):
             (tp_, tn_), (sp_, sn_) = self.ctx.pair_ends[nm]
             self.log(f'    pair {nm} lane: {len(xy)} pts, {total:.2f} mm; connectors end at {ta:.2f} and '
                      f'{tb:.2f} mm along (runs {ka} and {kb}); tooth {self.teeth[nm]} tips {tp_}/{tn_}; '
@@ -4431,7 +4432,7 @@ class Corridor:
         # dive zones and slope pitches are sized for one track, and the
         # pair's centreline (half a pitch of extra clearance) found a
         # neck in each; free, the same search landed them at last call.
-        free_pair = (os.environ.get('BRAID_PAIR_FREE', '1') != '0') if free is None else bool(free)
+        free_pair = (awx_settings.get('BRAID_PAIR_FREE', '1') != '0') if free is None else bool(free)
         if slack is not None:
             half = slack
         wpts = list(self.lane_xy[nm])
@@ -4484,7 +4485,7 @@ class Corridor:
             _ga, _gb = _given
         # ...and an opposite-hands pair's CROSSOVER (pairs.crossover), laid as drawn between its two spans
         _gx = ((getattr(self, '_geo', None) or {}).get('lanes', {}).get(nm) or {}).get('cross')
-        if os.environ.get('BRAID_PAIR_DEBUG') and virt_vias:
+        if awx_settings.get('BRAID_PAIR_DEBUG') and virt_vias:
             xy_ = self.lane_xy.get(nm) or [self.teeth[nm], self.stubs[nm]]
             nv = [f'({vx:.2f},{vy:.2f})' for (vx, vy) in virt_vias
                   if min(math.hypot(vx - e[0], vy - e[1]) for e in (xy_[0], xy_[-1])) < 1.2]
@@ -4517,7 +4518,7 @@ class Corridor:
                 self.log(f'    pair {nm} refused: the pose router stopped at the source (no copper)')
             else:
                 self.log(f'    pair {nm} refused: no frontier reported (envelope split failed?)')
-            if os.environ.get('BRAID_PAIR_DEBUG'):
+            if awx_settings.get('BRAID_PAIR_DEBUG'):
                 # the refusal as a picture: the board's copper, the virtual
                 # lines this search saw, the planned lane, the frontier
                 try:
@@ -4680,7 +4681,7 @@ class Corridor:
         # pair lane needs the room of two and a coupled dive; routed after
         # the singles it found none and landed only at last call (K34-K36:
         # every pair). Boosted above the ribbon's own refused-lane boost.
-        if getattr(ctx, 'pairs', None) and int(os.environ.get('BRAID_PAIRS_FIRST', '1') or 0):
+        if getattr(ctx, 'pairs', None) and int(awx_settings.get('BRAID_PAIRS_FIRST', '1') or 0):
             for nm in M:
                 if nm in ctx.pairs:
                     boost[nm] = boost.get(nm, 0) + 100
@@ -5722,7 +5723,7 @@ def _walk_stub(segs_n, start, lay, _stop, _k, max_hops=24):
     return chain
 
 
-SRC_TRIM_REACH = float(os.environ.get('SRC_TRIM_REACH', '4.0') or 0)  # mm: the longest splice tried (K44 DQ13 came back three channels over, 2.5 mm)
+SRC_TRIM_REACH = float(awx_settings.get('SRC_TRIM_REACH', '4.0') or 0)  # mm: the longest splice tried (K44 DQ13 came back three channels over, 2.5 mm)
 SRC_TRIM_TRIES = 6                                                     # candidates graded per lane, best saving first
 SRC_TRIM_MIN = 0.3                                                     # mm: the least stub depth worth a splice
 
@@ -5813,7 +5814,7 @@ def note_source_joint(ctx, nm, lane, vias, board_path, log):
         if saving < 0.2:
             continue
         cands.append((saving, j, pr, run))
-    if os.environ.get('SRC_TRIM_DEBUG') == '1':
+    if awx_settings.get('SRC_TRIM_DEBUG') == '1':
         log(f'  source stub trim {nm}: lane {len(verts)} vertices from the tip, stub chain {arc[-1]:.1f} mm, '
             f'{len(cands)} candidate(s): ' + ', '.join(f'depth {c[2][1]:.1f}/splice {c[2][0]:.2f}/saves {c[0]:.1f}'
                                                        for c in sorted(cands, key=lambda c: -c[0])[:5]))
@@ -5977,20 +5978,20 @@ PP = _pairs.pitch(TRACK)
 def pair_slacks():
     """BRAID_PAIR_SLACKS, read when the pairs are routed and not when braid is imported: the whole route routes its
     lanes with BRAID_PAIR_SLACKS=0 in the same process that planned them with the default"""
-    return [float(v) * PP for v in os.environ.get('BRAID_PAIR_SLACKS', '2,4').split(',') if v.strip()]
+    return [float(v) * PP for v in awx_settings.get('BRAID_PAIR_SLACKS', '2,4').split(',') if v.strip()]
 
 
-PAIR_FANIN = float(os.environ.get('BRAID_PAIR_FANIN', '10') or 0) * LANE_MIN
+PAIR_FANIN = float(awx_settings.get('BRAID_PAIR_FANIN', '10') or 0) * LANE_MIN
 # BRAID_PAIR_CROSS_FANIN (1): the cross-corridor reservation under the pair's fan-in rule
-PAIR_CROSS_FANIN = int(os.environ.get('BRAID_PAIR_CROSS_FANIN', '1') or 0)
-PAIR_DIVE_EXTRA = float(os.environ.get('BRAID_PAIR_DIVE_EXTRA', '2') or 0) * PP
+PAIR_CROSS_FANIN = int(awx_settings.get('BRAID_PAIR_CROSS_FANIN', '1') or 0)
+PAIR_DIVE_EXTRA = float(awx_settings.get('BRAID_PAIR_DIVE_EXTRA', '2') or 0) * PP
 # BRAID_PAIR_FANIN_BAND (pair pitches, 0 = off): the convergence zone's extra half-width
 # beyond the ends' separation (Corridor._pair_fanin_band)
-PAIR_FANIN_BAND = float(os.environ.get('BRAID_PAIR_FANIN_BAND', '2') or 0) * PP
+PAIR_FANIN_BAND = float(awx_settings.get('BRAID_PAIR_FANIN_BAND', '2') or 0) * PP
 # BRAID_PAIR_APPROACH (pair pitches): how far in front of a pair's tips a neighbour's
 # exit stub may not be reserved (the pair router's setback ladder reaches four pair pitches -- twice its four-spacing
 # setback -- and this is half a pitch more)
-PAIR_APPROACH = float(os.environ.get('BRAID_PAIR_APPROACH', '4.5') or 0) * PP
+PAIR_APPROACH = float(awx_settings.get('BRAID_PAIR_APPROACH', '4.5') or 0) * PP
 
 
 def _in_boxes(pt, boxes, grow=0.0):
@@ -6313,7 +6314,7 @@ def _route_pairs_in_order(ctx, groups, log, order):
     # seal a single into its tooth (K36 pf1: SA4 walled by static copper
     # -- the pair SDQS1's copper -- at every stage, a 6 mm free window
     # refused in 0.05 s). BRAID_PAIR_EXIT_RESERVE: the stub's length, mm.
-    reach = float(os.environ.get('BRAID_PAIR_EXIT_RESERVE', '1.0') or 0)
+    reach = float(awx_settings.get('BRAID_PAIR_EXIT_RESERVE', '1.0') or 0)
     members = [nm for g in groups for nm in g]
     virt = []
     if reach > 0:
@@ -6514,7 +6515,7 @@ def run(board, nets, dest, out):
     # catches an allocation freed before the next line -- the 800 MB
     # swings the sampler saw at K15 (README TODO 10).
     _t0 = _time.time()
-    _trace = os.environ.get('MEM_TRACE') == '1'
+    _trace = awx_settings.get('MEM_TRACE') == '1'
 
     def log(msg=''):
         if _trace:
@@ -7405,7 +7406,7 @@ def write_out(a, ctx, corridors, names, log):
     from pcb_modification import smooth_octolinear_chains
     pre_len = {nm: sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
                        for s in out_segs[nm]) for nm in names}
-    if os.environ.get('MEM_TRACE') == '1':
+    if awx_settings.get('MEM_TRACE') == '1':
         import resource as _res
         import subprocess as _sp
         import tracemalloc as _tm
@@ -7425,7 +7426,7 @@ def write_out(a, ctx, corridors, names, log):
             log('        vmmap before: ' + _l)
         _tm.start(1)
     _res_list = [{'new_segments': list(out_segs.get(nm, []))} for nm in names]
-    if os.environ.get('BRAID_SMOOTH', '1') != '0':
+    if awx_settings.get('BRAID_SMOOTH', '1') != '0':
         _n, _nets, _rm, _addl, stt = smooth_octolinear_chains(
             [r for k, r in enumerate(_res_list) if names[k] not in _legs],
             pcb, kids, clearance=0.1, keep_input_copper=True)
@@ -7475,7 +7476,7 @@ def write_out(a, ctx, corridors, names, log):
         # lanes packed into rivers (pack.py, opt-in: BRAID_PACK=1)
         import pack as pk
         _prof = None
-        if os.environ.get('BRAID_PACK_PROFILE'):
+        if awx_settings.get('BRAID_PACK_PROFILE'):
             import cProfile
             _prof = cProfile.Profile()
             _prof.enable()
@@ -7486,7 +7487,7 @@ def write_out(a, ctx, corridors, names, log):
             pk.pack_corridor(c, log)
         if _prof is not None:
             _prof.disable()
-            _prof.dump_stats(os.environ['BRAID_PACK_PROFILE'])
+            _prof.dump_stats(awx_settings.req('BRAID_PACK_PROFILE'))
         # the pack moves vias: the dicts read at the top are stale
         out_segs = {nm: c.out_segs.get(nm, []) for c in corridors for nm in c.members}
         out_vias = {nm: c.out_vias[nm] for c in corridors for nm in c.members}
@@ -7500,7 +7501,7 @@ def write_out(a, ctx, corridors, names, log):
     post_len = {nm: sum(math.hypot(s.end_x - s.start_x,
                                    s.end_y - s.start_y)
                         for s in final_segs[nm]) for nm in names}
-    if os.environ.get('MEM_TRACE') == '1':
+    if awx_settings.get('MEM_TRACE') == '1':
         _tc, _tp = _tm.get_traced_memory()
         _snap = _tm.take_snapshot()
         _tm.stop()
@@ -7655,7 +7656,7 @@ def write_out(a, ctx, corridors, names, log):
     # copper laid at 0.1. Lower-only, so a project already at the floor is
     # untouched; the copper is unaffected either way (the braid routes from
     # ctx.cfg, never from the project).
-    if os.environ.get('AWX_STAMP_PRO', '1') != '0':   # 0 = the flag-off parity control
+    if awx_settings.get('AWX_STAMP_PRO', '1') != '0':   # 0 = the flag-off parity control
         try:
             from fix_kicad_drc_settings import fix_project_for_output
             fix_project_for_output(out_board, a.board,

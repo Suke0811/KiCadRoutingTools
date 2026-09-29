@@ -23,6 +23,7 @@ the vias are proved (the plan's vias no more than the bound's whole vias) or, on
 -- all but the fallback, the plan-finding workers' last try, which runs its whole budget. Only a plan PROVED optimal in its vias is written;
 one the search could not prove is no plan."""
 import sys, os, re, itertools, collections, json, math, hashlib
+import awx_settings
 import whole_ctx
 import whole_frame
 from ortools.sat.python import cp_model
@@ -40,7 +41,7 @@ MARG = CLR                             # a crossing starts a clearance past both
 # across the spine, its slope up to K_SWEEP) PITCH / sqrt(1 + K^2) apart along s; the geometry keeps the real pitch
 K_SWEEP = 4.0
 W_V = 10 ** 6                          # per via: vias first (an integer: the objective stays CP-SAT's exact one)
-SOLVE_BATCHES = int(os.environ.get('WHOLE_SOLVE_BATCHES', '100'))  # CP-SAT interleaved batches: the work budget
+SOLVE_BATCHES = int(awx_settings.get('WHOLE_SOLVE_BATCHES', '100'))  # CP-SAT interleaved batches: the work budget
 SOLVE_WORKERS = 4
 # ...running these: two LP workers (the default and the strongest relaxation), core-based search and the objective's
 # lower-bound search. The default four ran nothing that raises the bound, and a plan's vias are proved from below: K51's
@@ -582,10 +583,10 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
 
 
 def main():
-    files = lambda var: [x for x in os.environ.get(var, '').split(',') if x]
+    files = lambda var: [x for x in awx_settings.get(var, '').split(',') if x]
     out = sys.argv[1] if len(sys.argv) > 1 else '/dev/null'
     ctx, _cs = whole_ctx.plan()
-    J = solve(ctx, os.environ['DEST'], files('CUTS'), files('HIST'), os.environ.get('HINT') or None)
+    J = solve(ctx, awx_settings.req('DEST'), files('CUTS'), files('HIST'), awx_settings.get('HINT') or None)
     if J is None:
         sys.exit(1)
     json.dump(J, open(out, 'w'), indent=0)

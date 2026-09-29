@@ -24,6 +24,7 @@ import json
 import marshal
 import math
 import os
+import awx_settings
 import pickle
 import sys
 import types
@@ -40,11 +41,11 @@ import plan_audit as pa  # noqa: E402
 
 def bench():
     """(board, nets, dest) from the environment, or a usage stop"""
-    miss = [k for k in ('BENCH', 'NETS', 'DEST') if not os.environ.get(k)]
+    miss = [k for k in ('BENCH', 'NETS', 'DEST') if not awx_settings.get(k)]
     if miss:
         raise SystemExit(f'set {", ".join(miss)}: the bench board, its nets (N1,N2,.. or @FILE) and the '
                          f'destination part')
-    return os.environ['BENCH'], pa.read_nets(os.environ['NETS']), os.environ['DEST']
+    return awx_settings.req('BENCH'), pa.read_nets(awx_settings.req('NETS')), awx_settings.req('DEST')
 
 
 def part_islands(ctx, skip=()):

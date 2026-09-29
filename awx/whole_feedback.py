@@ -24,6 +24,7 @@ import itertools
 import json
 import math
 import os
+import awx_settings
 import sys
 
 import braid as bd
@@ -41,7 +42,7 @@ S = json.load(open(sidecar))
 ends = dict(S['ends'])
 lay = {0: dict(S['tooth_layer']), 1: dict(S['dest_layer'])}
 # the lanes as whole_ends makes them: a pair one lane, under the same switch
-PAIRS = (_pairs.pair_names(list(ends)) if int(os.environ.get('PLAN_PAIRS', os.environ.get('BRAID_PAIRS', '0')) or 0)
+PAIRS = (_pairs.pair_names(list(ends)) if int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0)
          else {})
 LANE = {leg: base for base, pr in PAIRS.items() for leg in pr}
 CY = None

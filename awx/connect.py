@@ -22,6 +22,7 @@ early can never wander into the corridor a later neighbour needs.
 import copy
 import math
 import os
+import awx_settings
 import sys
 from typing import List, Optional, Tuple
 
@@ -163,7 +164,7 @@ def connect(pcb: PCBData, net_id: int, a: Point, a_layer: str,
     layer_map = build_layer_map(cfg.layers)
     if a_layer not in layer_map or b_layer not in layer_map:
         raise ValueError(f'layer not routable: {a_layer} / {b_layer}')
-    if os.environ.get('MEM_TRACE') == '1':
+    if awx_settings.get('MEM_TRACE') == '1':
         import resource as _res
 
         def _m(tag):
@@ -348,7 +349,7 @@ def connect_pair(pcb: PCBData, p_id: int, n_id: int,
         import pairs as _pairs
         ha = _pairs.hand(a_dir, a_p, a_n)
         hb = _pairs.hand(b_dir, b_p, b_n, arriving=True)
-        if ha and hb and ha != hb and os.environ.get('BRAID_PAIR_CROSS', '1') != '0':
+        if ha and hb and ha != hb and awx_settings.get('BRAID_PAIR_CROSS', '1') != '0':
             # OPPOSITE HANDS (2026-09-22): the production router refuses a
             # polarity mismatch outright (a pad swap is never allowed on real
             # nets, a flipped connector only where a direction was not forced),
@@ -473,7 +474,7 @@ def _connect_pair_cross(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
     appr = pitch * appr_scale
     reach = JOIN_PITCHES * pitch
     via_half = _pairs.envelope_via_half(cfg, half)
-    dbg = bool(os.environ.get('BRAID_PAIR_DEBUG'))
+    dbg = bool(awx_settings.get('BRAID_PAIR_DEBUG'))
 
     def approach(tip_p, tip_n, d, layer):
         # the envelope's path starts at the tips' MIDPOINT and runs `appr`
@@ -938,7 +939,7 @@ def _routed_connector(pcb, p_id, n_id, tip_p, tip_n, d, layer, far, cfg, half, v
     ecfg.track_width = round(2 * half + cfg.track_width, 6)
     ecfg.via_size = round(2 * via_half + cfg.via_size, 6)
     ecfg.via_drill = round(ecfg.via_size - (cfg.via_size - cfg.via_drill), 6)
-    dbg = os.environ.get('BRAID_PAIR_DEBUG')
+    dbg = awx_settings.get('BRAID_PAIR_DEBUG')
     res = None
     # the far point's layer: the one the BAND is open on there (the plan's
     # page past the fan-in; a berth whose lane arrives on the other layer
@@ -1041,7 +1042,7 @@ def _connect_pair_prod(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
         segs_c, vias_c, end_p, end_n, end_dir, end_layer = gv
         why = _legs_clear(vw, segs_c, [p_id, n_id], cfg, virtual, layer_map, band=band,
                           ends=[(end_p[0], end_p[1], end_layer), (end_n[0], end_n[1], end_layer)], vias=vias_c)
-        if os.environ.get('BRAID_PAIR_DEBUG'):
+        if awx_settings.get('BRAID_PAIR_DEBUG'):
             print(f"    connector {end} (the plan's): {len(segs_c)} seg(s), ends ({end_p[0]:.2f},{end_p[1]:.2f})/"
                   f"({end_n[0]:.2f},{end_n[1]:.2f}) heading ({end_dir[0]:.2f},{end_dir[1]:.2f}): {why or 'clean'}")
         if why is not None:
@@ -1067,7 +1068,7 @@ def _connect_pair_prod(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
         # in the open corridor. Either connector that cannot be routed
         # falls back to the straight approach piece.
         via_half = _pairs.envelope_via_half(cfg, half)
-        dbg = os.environ.get('BRAID_PAIR_DEBUG')
+        dbg = awx_settings.get('BRAID_PAIR_DEBUG')
         for end, tip_p, tip_n, d, layer, far in (('a', a_p, a_n, a_dir, a_layer, a_conn),
                                                    ('b', b_p, b_n, b_dir, b_layer, b_conn)):
             if far is None:
@@ -1107,7 +1108,7 @@ def _connect_pair_prod(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
             if c is None:
                 c = _routed_connector(pcb, p_id, n_id, tip_p, tip_n, d, layer, far, cfg, half, via_half,
                                       band, margin, band_slack, virtual, virtual_vias)
-            if os.environ.get('BRAID_PAIR_DEBUG'):
+            if awx_settings.get('BRAID_PAIR_DEBUG'):
                 print(f"    connector {end}: tips ({tip_p[0]:.2f},{tip_p[1]:.2f})/({tip_n[0]:.2f},{tip_n[1]:.2f}) "
                       f"d=({d[0]:.2f},{d[1]:.2f}) {layer} -> far ({far[0]:.2f},{far[1]:.2f}): "
                       + ('NONE (straight approach instead)' if c is None else
@@ -1156,12 +1157,12 @@ def _connect_pair_prod(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
                     if _pairs._seg_seg_dist(legs[-1], legs[-2]) >= cfg.track_width + cfg.clearance - 1e-6:
                         why = _legs_clear(vw, legs, [p_id, n_id], cfg, virtual, layer_map)
                         if why is None:
-                            if os.environ.get('BRAID_PAIR_DEBUG'):
+                            if awx_settings.get('BRAID_PAIR_DEBUG'):
                                 print(f"    approach: tips {sep:.2f} mm apart -- legs run {run:.1f} mm, then bend onto the "
                                       f"planned lane at ({far[0]:.2f},{far[1]:.2f}) heading ({ld[0]:.2f},{ld[1]:.2f})")
                             return legs, ep, en, ld
                     run += 0.1
-                if os.environ.get('BRAID_PAIR_DEBUG'):
+                if awx_settings.get('BRAID_PAIR_DEBUG'):
                     print(f"    approach: no clean bend onto the planned lane within 3 mm ({why}); converging along the escape")
             if sep > 2 * half + 2 * cfg.track_width and vw is not None:
                 # TIPS FAR APART across the escape (a comb of teeth between
@@ -1186,12 +1187,12 @@ def _connect_pair_prod(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
                              Segment(kn[0], kn[1], en[0], en[1], cfg.track_width, layer, n_id)]
                     why = _legs_clear(vw, legs, [p_id, n_id], cfg, virtual, layer_map)
                     if why is None:
-                        if os.environ.get('BRAID_PAIR_DEBUG'):
+                        if awx_settings.get('BRAID_PAIR_DEBUG'):
                             print(f"    approach: tips {sep:.2f} mm apart -- legs run {run:.1f} mm along the escape, "
                                   f"then converge over {conv:.2f} mm")
                         return legs, ep, en, d
                     run += 0.1
-                if os.environ.get('BRAID_PAIR_DEBUG'):
+                if awx_settings.get('BRAID_PAIR_DEBUG'):
                     print(f"    approach: tips {sep:.2f} mm apart -- no clean convergence within 3 mm ({why}); straight approach")
             end_p = (mid[0] + d[0] * appr + sgn * n[0] * half, mid[1] + d[1] * appr + sgn * n[1] * half)
             end_n = (mid[0] + d[0] * appr - sgn * n[0] * half, mid[1] + d[1] * appr - sgn * n[1] * half)
@@ -1260,7 +1261,7 @@ def _connect_pair_prod(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
         for cells in _band_cell_strips(coord, window, band, list(cfg.layers),
                                        band_slack):
             stamp(cells)
-    if os.environ.get('BRAID_PAIR_DEBUG'):
+    if awx_settings.get('BRAID_PAIR_DEBUG'):
         # why a pose is refused: the ladder's cells along each end's
         # direction, centre / P / N, on the map the router searches
         for lbl, m_, dd, L in (('a', _pairs.mid(a_p, a_n), a_dir, a_layer), ('b', _pairs.mid(b_p, b_n), b_dir, b_layer)):
@@ -1369,7 +1370,7 @@ def _connect_pair_prod(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
             # STRAIGHT approaches, twice then three times as long, which
             # puts the pose further out and square to the tips (zynq K44
             # DQS1 at its berth, 2026-09-20)
-            if os.environ.get('BRAID_PAIR_DEBUG'):
+            if awx_settings.get('BRAID_PAIR_DEBUG'):
                 print(f"    pair route refused with no frontier -- retrying with straight approaches x{attempt + 2}")
             return _connect_pair_prod(pcb, p_id, n_id, a_p0, a_n0, a_layer0, b_p0, b_n0, b_layer0,
                                       cfg, band, margin, band_slack, virtual, window_pts,
@@ -1393,7 +1394,7 @@ def _connect_pair_prod(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
             # reserved lane and a cap; the same pair lands at once along
             # the berths' own direction): the ends are tried again with
             # the plain approaches along the escape and arrival directions
-            if os.environ.get('BRAID_PAIR_DEBUG'):
+            if awx_settings.get('BRAID_PAIR_DEBUG'):
                 print("    pair route made no copper -- retrying with the plain approaches at both ends")
             return _connect_pair_prod(pcb, p_id, n_id, a_p0, a_n0, a_layer0, b_p0, b_n0, b_layer0,
                                       cfg, band, margin, band_slack, virtual, window_pts,

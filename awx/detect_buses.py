@@ -28,6 +28,7 @@ import atexit
 from array import array
 import json
 import os
+import awx_settings
 import topo_strings as ts
 
 Pt = Tuple[float, float]
@@ -50,7 +51,7 @@ Pt = Tuple[float, float]
 # ON DISK ONLY WHEN ASKED (TAUT_MEMO=1): it serves a harness that plans the same bench again and again (a fanout loop,
 # a population search, a whole-route loop), and it would otherwise grow without bound beside the code on the machine
 # of anyone routing their own board. Off, the memo lives in the process: a string is still relaxed once per run.
-_TAUT_DISK = os.environ.get('TAUT_MEMO', '0') not in ('', '0')
+_TAUT_DISK = awx_settings.get('TAUT_MEMO', '0') not in ('', '0')
 
 
 def memo_on_disk():
@@ -68,7 +69,7 @@ _TAUT_MEMO_LEGACY = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # in the memo" depend on when you last ran. A shard is now capped by ENTRY
 # COUNT, oldest-inserted first, which is deterministic given the same
 # sequence of runs.
-TAUT_MAX_ENTRIES = int(os.environ.get('TAUT_MAX_ENTRIES', '20000'))
+TAUT_MAX_ENTRIES = int(awx_settings.get('TAUT_MAX_ENTRIES', '20000'))
 _TAUT_SHARDS: Dict[str, dict] = {}
 _TAUT_DIRTY = set()
 _TAUT_MIGRATED = False
@@ -245,7 +246,7 @@ def _memo_put(key, pts):
 # NEXT process a function of wall time. 111 writes of a K41 search cost
 # 24 s, so the point of the throttle was to batch them -- a count batches
 # them just as well and reproducibly.
-_TAUT_SAVE_EVERY_N = int(os.environ.get('TAUT_SAVE_EVERY_N', '400'))
+_TAUT_SAVE_EVERY_N = int(awx_settings.get('TAUT_SAVE_EVERY_N', '400'))
 _TAUT_SINCE_SAVE = [0]
 
 
@@ -299,7 +300,7 @@ def taut_paths(nets: Sequence[str],
     # old relaxation's, so its memo entries carry their own tag and never
     # mix with the old algorithm's inside a run. TAUT_FAST=0 keeps the old
     # per-string relaxation reachable for comparison.
-    fast = os.environ.get('TAUT_FAST', '1') != '0'
+    fast = awx_settings.get('TAUT_FAST', '1') != '0'
     tag = '#fast' if fast else ''
     if fast:
         import taut_fast as tf

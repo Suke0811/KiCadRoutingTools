@@ -24,6 +24,7 @@ import hashlib
 import io
 import json
 import os
+import awx_settings
 import runpy
 import shutil
 import sys
@@ -31,7 +32,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-CACHE = os.environ.get('STAGE_CACHE_DIR') or os.path.join(HERE, 'tmp', 'stage_cache')
+CACHE = awx_settings.get('STAGE_CACHE_DIR') or os.path.join(HERE, 'tmp', 'stage_cache')
 # variables that change from one shell (or agent session, or terminal) to the next and name nothing a stage reads --
 # with them in the key a new session restored nothing, and one named the agent's 217 MB binary, hashed every stage
 VOLATILE = {'_', 'OLDPWD', 'PWD', 'SHLVL', 'TERM_SESSION_ID', 'SECURITYSESSIONID', 'COLUMNS', 'LINES',
@@ -43,7 +44,7 @@ VOLATILE_PREFIX = ('CLAUDE', '__CF', 'XPC_', 'TERM_PROGRAM')
 def enabled():
     """the cache is ON only when asked (STAGE_CACHE=1): it serves a harness that runs the same stages on the same inputs
     again and again, and would otherwise fill a user's disk beside the code"""
-    return os.environ.get('STAGE_CACHE', '0') not in ('', '0')
+    return awx_settings.get('STAGE_CACHE', '0') not in ('', '0')
 
 
 def file_sha(path):
@@ -80,7 +81,7 @@ def named(value):
 def env_key(leave_out=()):
     """the environment as a key sees it: every variable but the session's own (and leave_out), a file it names by
     its content"""
-    return {k: named(v) for k, v in sorted(os.environ.items())
+    return {k: named(v) for k, v in sorted(awx_settings.environ().items())
             if k not in VOLATILE and k not in leave_out and not k.startswith(VOLATILE_PREFIX)}
 
 

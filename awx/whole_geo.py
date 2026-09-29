@@ -20,7 +20,8 @@ per island and layer, in the lane order, pinned by the lanes' own ends), and a l
 its side is flipped to the other (GEO_FLIPS_FROM=POLISH.json,..: data the polish measured, never typed). What the
 LP had to pay is written as CUTS for the solve (the islands a lane could not be kept off, the changes it could not
 give their room). The bench from BENCH / NETS / DEST (whole_ctx)."""
-import sys, os, json, math, collections, functools, time
+import sys, json, math, collections, functools, time
+import awx_settings
 import numpy as np
 from scipy.optimize import linprog
 from scipy.sparse import coo_matrix, csr_matrix, hstack
@@ -58,7 +59,7 @@ log = lambda *a: print(*a, flush=True)
 J = json.load(open(sys.argv[1]))
 OUT = sys.argv[2] if len(sys.argv) > 2 else '/dev/null'
 ctx, _cs = whole_ctx.plan()
-Fr = whole_frame.build(ctx, os.environ['DEST'])   # the whole route's own frame (whole_frame.py)
+Fr = whole_frame.build(ctx, awx_settings.req('DEST'))   # the whole route's own frame (whole_frame.py)
 M = list(Fr.M)
 GRID2 = ctx.cfg.grid_step / 2             # half the router's grid step (the router's bar for a line off the grid)
 G = 4 * ctx.cfg.grid_step                 # a column: four router grid steps
@@ -83,7 +84,7 @@ P_MID = (P_MIN + P_COMF) / 2
 W_COMF_TIGHT = 3 * W_COMF
 # GEO_PAIR_ROOM=1 (opt-in; off by default): an island split that leaves a side holding a PAIR with less than a lane's
 # pitch to spare is taken only when every split that fits does the same (static_sides)
-PAIR_ROOM = os.environ.get('GEO_PAIR_ROOM', '0') not in ('', '0')
+PAIR_ROOM = awx_settings.get('GEO_PAIR_ROOM', '0') not in ('', '0')
 from fab_tiers import min_via_center_distance
 VIA_VV = min_via_center_distance(bd.VIA_SIZE, CL, ctx.cfg.via_drill, getattr(ctx.cfg, 'hole_to_hole_clearance', 0.0) or 0.0)
 VIA_VV += 2 * GRID2; VIA_ST += GRID2; LANE_ST += GRID2     # planned vs planned a whole step, vs static half
@@ -125,7 +126,7 @@ def layers_at(n, u):
     return {layer_of(n, u)}
 
 
-DST_REF = os.environ['DEST']
+DST_REF = awx_settings.req('DEST')
 SRC_REF = collections.Counter(ctx.src_ref[n] for n in M).most_common(1)[0][0]
 BOX = [Fr.SB, Fr.DB]       # the arrays' pad boxes, grown by how far outside them the terminals sit (whole_frame)
 log(f'pad boxes grown by the terminals: {[round(b[2] - b[0], 3) for b in BOX]}')
@@ -822,7 +823,7 @@ ROOMLESS = {}
 # the other side (the island then stands between two other lanes of the same order; no crossing changes). Read from
 # the previous polish output(s) the loop names in GEO_FLIPS_FROM -- data it measured, never typed.
 FLIP = set()
-for _f in [x for x in os.environ.get('GEO_FLIPS_FROM', '').split(',') if x]:
+for _f in [x for x in awx_settings.get('GEO_FLIPS_FROM', '').split(',') if x]:
     FLIP |= {tuple(x) for x in json.load(open(_f)).get('flips', [])}
 WIN = 12 * bd.LANE_MIN                  # an island concerns the lanes within this of it (first pass)
 

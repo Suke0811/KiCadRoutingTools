@@ -24,6 +24,7 @@ import contextlib
 import io
 import json
 import os
+import awx_settings
 import re
 import shutil
 import subprocess
@@ -50,15 +51,15 @@ import rules as _rules  # noqa: E402  ONE source for every design rule
 # the array and leaves the face at a chosen row or column (the human's
 # north riders at K51; escape_moves.enumerate_moves climb=). 0 = off, the
 # menu byte-identical. replan.py runs with 14.
-SRC_CLIMB = int(os.environ.get('SRC_CLIMB', '0'))
+SRC_CLIMB = int(awx_settings.get('SRC_CLIMB', '0'))
 # PLAN_PAGES=1 (2026-09-13): the PAGES-FIRST planner (pages_first.py) chooses
 # BOTH ends and the page of every net in one CP-SAT with hard two-page
 # planarity, so no net needs more than two vias by construction. 0 = the
 # recorded planner, byte-identical. DST_CLIMB=k enumerates destination
 # dog-bones whose run climbs along the array up to k pitches before it
 # leaves (escape_moves climb=), the class that makes a B berth's rank free.
-PLAN_PAGES = int(os.environ.get('PLAN_PAGES', '0'))
-DST_CLIMB = int(os.environ.get('DST_CLIMB', '0'))
+PLAN_PAGES = int(awx_settings.get('PLAN_PAGES', '0'))
+DST_CLIMB = int(awx_settings.get('DST_CLIMB', '0'))
 # PLAN_JUDGE (2026-09-15, THE PLAN item 1): what a candidate plan is JUDGED
 # on. '' (default, byte-identical): the old planner on judge_by_braid's
 # ride-priced cost, pages-first on (the braid's residue, the CP-SAT's own
@@ -70,17 +71,17 @@ DST_CLIMB = int(os.environ.get('DST_CLIMB', '0'))
 # / 90 / 96 -> routed 79 / 102+1o / 98 / 92 where the residue + model
 # judge approved every worse plan); the pages-first key becomes (count,
 # residue). 'flat': the same with a flat prices.SWIM per swimmer.
-PLAN_JUDGE = os.environ.get('PLAN_JUDGE', '')
+PLAN_JUDGE = awx_settings.get('PLAN_JUDGE', '')
 # DST_STREET=k: destination STREET dog-bones (escape_moves street=) -- a via in an empty band of the destination
 # array, on a lane a track pitch from the next, at k sites along it, the run leaving toward the source. On (2) under
 # the whole route's ends: the braid they give is far simpler (K35: 132 crossings against 162, the solve 10 s against
 # 121, the whole run 287 s against 606), at 58 vias against 52; 0 = off
-DST_STREET = int(os.environ.get('DST_STREET', '2' if PLAN_JUDGE == 'ends' else '0'))
-PLAN_JUDGE_RIDE = int(os.environ.get('PLAN_JUDGE_RIDE', '1') or 0)
+DST_STREET = int(awx_settings.get('DST_STREET', '2' if PLAN_JUDGE == 'ends' else '0'))
+PLAN_JUDGE_RIDE = int(awx_settings.get('PLAN_JUDGE_RIDE', '1') or 0)
 # PLAN_JUDGE_LEN: the length ESTIMATOR the judge prices at VIA_MM -- 'lane' (the
 # braid's planned polylines + berth runs; default) or 'ride' (the around-box
 # ride from launch to berth exit, ride_mm: the jcr arm, 3x over on the K35 batch)
-PLAN_JUDGE_LEN = os.environ.get('PLAN_JUDGE_LEN', 'ride')
+PLAN_JUDGE_LEN = awx_settings.get('PLAN_JUDGE_LEN', 'ride')
 if PLAN_JUDGE not in ('', 'count', 'flat', 'ends'):
     raise SystemExit(f'PLAN_JUDGE={PLAN_JUDGE!r}: expected count | flat | ends | unset')
 # PLAN_JUDGE=ends: the whole route's own ENDS model (whole_ends.py) both CHOOSES the berths and the teeth to move (in
@@ -109,7 +110,7 @@ def copy_pro(src_board, dst_board):
     # via, the numbers fanout_once is called with below), lower-only, as the
     # production CLIs do -- see braid.write_out for why a bare copy was not
     # enough (a Default class clearance of 0.0 rode down every chain step).
-    if os.environ.get('AWX_STAMP_PRO', '1') == '0':   # the flag-off parity control
+    if awx_settings.get('AWX_STAMP_PRO', '1') == '0':   # the flag-off parity control
         return
     try:
         from fix_kicad_drc_settings import fix_project_for_output
@@ -121,7 +122,7 @@ def copy_pro(src_board, dst_board):
         print(f'  project floor NOT stamped: {e}', flush=True)
 
 
-ROUNDS = int(os.environ.get('SRC_ROUNDS', '8'))   # realized source rounds (feasibility bans need re-plans); 0 = the teeth as they stand
+ROUNDS = int(awx_settings.get('SRC_ROUNDS', '8'))   # realized source rounds (feasibility bans need re-plans); 0 = the teeth as they stand
 DST_ITERS = 8  # destination select -> fan out -> audit -> ban -> re-select
 
 
@@ -132,7 +133,7 @@ def _load_force(var):
     (any subset of the three keys). Written by tmp/human_sides.py off the
     human's copper, it measures the plan's headroom -- what the braid does
     on our teeth with the human's destination classes -- not a mechanism."""
-    path = os.environ.get(var, '')
+    path = awx_settings.get(var, '')
     if not path:
         return {}
     import json
@@ -282,7 +283,7 @@ def plan_state(pcb, names, banned=frozenset()):
         _plegs = getattr(plan_state, '_pair_legs', None)
         if _plegs is None:
             _plegs = {}
-            if int(os.environ.get('PLAN_PAIRS', os.environ.get('BRAID_PAIRS', '0')) or 0):
+            if int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0):
                 for _b, (_pn, _nn) in _pairs.pair_names(names).items():
                     _plegs[_pn], _plegs[_nn] = _nn, _pn
             plan_state._pair_legs = _plegs
@@ -391,11 +392,11 @@ def plan_state(pcb, names, banned=frozenset()):
     # berth it does not name is held at the previous round's (the menu move at that berth's point and layer); what
     # worked stays, as replan.py's rounds kept the unmoved ends
     incr = None
-    if PLAN_JUDGE == 'ends' and os.environ.get('INCREMENTAL') and os.environ.get('FEEDBACK'):
+    if PLAN_JUDGE == 'ends' and awx_settings.get('INCREMENTAL') and awx_settings.get('FEEDBACK'):
         import pairs as _pairs_i
         import whole_ends as _we
-        prev = json.load(open(os.environ['INCREMENTAL']))
-        fb = json.load(open(os.environ['FEEDBACK']))
+        prev = json.load(open(awx_settings.req('INCREMENTAL')))
+        fb = json.load(open(awx_settings.req('FEEDBACK')))
         items = [e for pr in fb.get('pairs', ()) for e in pr] + list(fb.get('avoid', ()))
         free_t = {e['lane'] for e in items if e['end'] == 0}
         free_b = {e['lane'] for e in items if e['end'] == 1}
@@ -416,7 +417,7 @@ def plan_state(pcb, names, banned=frozenset()):
                                        # that enumerates its own moves
             'byname': byname, 'dmenu': dmenu, 'smenu': smenu, 'sblock': sblock, 'launch': launch,
             # the whole route's feedback (whole_feedback.py): ends its audits found crowded, priced by whole_ends
-            'feedback': json.load(open(os.environ['FEEDBACK'])) if os.environ.get('FEEDBACK') else None,
+            'feedback': json.load(open(awx_settings.req('FEEDBACK'))) if awx_settings.get('FEEDBACK') else None,
             'incr': incr,
             'tooth0': tooth0, 'tooth_vias': tooth_vias, 'src_pad': src_pad,
             'dst_pad': dst_pad, 'sref': sref, 'dref': dref, 'sgrid': sgrid,
@@ -537,7 +538,7 @@ def _spent():
     return PLAN_CALLS[0]
 
 
-PAIR_BAD_W = float(os.environ.get('PLAN_PAIR_BAD_W', '50') or 0)
+PAIR_BAD_W = float(awx_settings.get('PLAN_PAIR_BAD_W', '50') or 0)
 
 
 def pair_penalty(st, choice, log=None):
@@ -551,7 +552,7 @@ def pair_penalty(st, choice, log=None):
     pf9). Berths from `choice`, teeth as they stand (st['launch'] / tooth0).
     Returns (penalty, [reasons])."""
     import pairs as _pairs
-    if not int(os.environ.get('PLAN_PAIRS', os.environ.get('BRAID_PAIRS', '0')) or 0) or PAIR_BAD_W <= 0:
+    if not int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0) or PAIR_BAD_W <= 0:
         return 0.0, []
     bad = []
     dg, sg = st['dgrid'], st['sgrid']
@@ -701,7 +702,7 @@ def ban_moves(banned, moves, nets, names):
     whose ends model reads a joint ban: every other judge filters its menus leg by leg (plan_state), and bans each."""
     import pairs as _pairs
     legs = {}
-    if PLAN_JUDGE == 'ends' and int(os.environ.get('PLAN_PAIRS', os.environ.get('BRAID_PAIRS', '0')) or 0):
+    if PLAN_JUDGE == 'ends' and int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0):
         for pn, nn in _pairs.pair_names(list(names)).values():
             legs[pn] = legs[nn] = (pn, nn)
     for nm in nets:
@@ -716,7 +717,7 @@ def split_pairs(st):
     """(count, [pair]) of the differential pairs whose TEETH, as laid, stand on
     different faces or layers of the source array -- a pair that cannot be
     launched coupled. Zero without PLAN_PAIRS / BRAID_PAIRS."""
-    if not int(os.environ.get('PLAN_PAIRS', os.environ.get('BRAID_PAIRS', '0')) or 0):
+    if not int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0):
         return 0, []
     import pairs as _pairs
     import pages_first
@@ -752,7 +753,7 @@ def pf_fmt(k0, k1):
     return f'judged residue {k0[0]} -> {k1[0]}, cost {k0[1]:.2f} -> {k1[1]:.2f}'
 
 
-SRC_RESIDUE_ROUNDS = int(os.environ.get('SRC_RESIDUE_ROUNDS', '8'))   # one tooth realized -> re-chosen, at most this often a round
+SRC_RESIDUE_ROUNDS = int(awx_settings.get('SRC_RESIDUE_ROUNDS', '8'))   # one tooth realized -> re-chosen, at most this often a round
 
 
 def total(dst_c, st, cache, buses=None):
@@ -830,10 +831,10 @@ def dest_choice(st, board, log=print, fixed=None, learned=None, src_out=None, se
 # region. Blockers outside the run are reported and cannot be moved (the
 # K35 climb was walled by SA14, a net not in the run). 0 = off, the
 # one-net re-fan as before.
-SRC_REFAN_JOINT = int(os.environ.get('SRC_REFAN_JOINT', '0'))
+SRC_REFAN_JOINT = int(awx_settings.get('SRC_REFAN_JOINT', '0'))
 # cap on how many blockers may be re-fanned with one tooth: the region the
 # engine is asked to re-solve, not the whole array
-SRC_REFAN_MAX = int(os.environ.get('SRC_REFAN_MAX', '6'))
+SRC_REFAN_MAX = int(awx_settings.get('SRC_REFAN_MAX', '6'))
 
 
 def _st_with_src(st, nm, m):
@@ -1181,12 +1182,12 @@ def main():
           f'via {te.VIA_SIZE}/{te.VIA_DRILL}  [{_r.source}]')
     # the run's nets: coherent on the base -- or, an INCREMENTAL round, the previous round's (its base is that round's
     # source board, on which the coherent K can be other nets: K35's lost its three pairs to six others)
-    prev_nets = (json.load(open(os.environ['INCREMENTAL'])).get('nets')
-                 if PLAN_JUDGE == 'ends' and os.environ.get('INCREMENTAL') else None)
-    if PLAN_JUDGE == 'ends' and os.environ.get('INCREMENTAL') and not prev_nets:
-        print(f'WARNING: INCREMENTAL={os.environ["INCREMENTAL"]} records no nets: the run is the coherent {K} on '
+    prev_nets = (json.load(open(awx_settings.req('INCREMENTAL'))).get('nets')
+                 if PLAN_JUDGE == 'ends' and awx_settings.get('INCREMENTAL') else None)
+    if PLAN_JUDGE == 'ends' and awx_settings.get('INCREMENTAL') and not prev_nets:
+        print(f'WARNING: INCREMENTAL={awx_settings.req("INCREMENTAL")} records no nets: the run is the coherent {K} on '
               f'{os.path.basename(base)}, which can be other nets than the previous round\'s')
-    if PLAN_JUDGE == 'ends' and bool(os.environ.get('INCREMENTAL')) != bool(os.environ.get('FEEDBACK')):
+    if PLAN_JUDGE == 'ends' and bool(awx_settings.get('INCREMENTAL')) != bool(awx_settings.get('FEEDBACK')):
         print('WARNING: an incremental round needs both INCREMENTAL and FEEDBACK: this round chooses every end afresh')
     names = prev_nets or coherent_nets(K, base)
     print('planning (source realized every round)...')
@@ -1195,7 +1196,7 @@ def main():
     return fanout_destination(out_path, names, choice, dst_pad, dref, byname, board, realized, banned)
 
 
-PAIR_EXIT_REACH = float(os.environ.get('PLAN_PAIR_EXIT_REACH', '1.2') or 0)
+PAIR_EXIT_REACH = float(awx_settings.get('PLAN_PAIR_EXIT_REACH', '1.2') or 0)
 
 
 def pair_exit_clear(pcb, nid, other, m, reach=None, free=()):
@@ -1232,14 +1233,14 @@ def pair_exit_clear(pcb, nid, other, m, reach=None, free=()):
         x = m.exit_pt[0] + d[0] * 0.1 * k
         y = m.exit_pt[1] + d[1] * 0.1 * k
         if mp.point_violation((x, y)):
-            if os.environ.get('PLAN_PAIR_EXIT_DEBUG'):
+            if awx_settings.get('PLAN_PAIR_EXIT_DEBUG'):
                 print(f'    exit blocked: {m.net} {m.kind}/{m.direction}/{m.layer[0]} at {0.1 * k:.1f} mm on its own line')
             return False
         for sg in (1, -1):
             if side_ok[sg] and mp.point_violation((x + n[0] * pitch * sg, y + n[1] * pitch * sg)):
                 side_ok[sg] = False
         if not (side_ok[1] or side_ok[-1]):
-            if os.environ.get('PLAN_PAIR_EXIT_DEBUG'):
+            if awx_settings.get('PLAN_PAIR_EXIT_DEBUG'):
                 print(f'    exit blocked: {m.net} {m.kind}/{m.direction}/{m.layer[0]} at {0.1 * k:.1f} mm on both sides')
             return False
         k += 1
@@ -1341,7 +1342,7 @@ def fanout_destination(out_path, names, choice, dst_pad, dref, byname, board,
     # exits -- before the engine lays them, every pass. Off unless the
     # braid routes pairs as members (BRAID_PAIRS), so the chain is
     # byte-identical without it; inert on a run with no pairs.
-    _harm = int(os.environ.get('PLAN_PAIRS', os.environ.get('BRAID_PAIRS', '0')) or 0)
+    _harm = int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0)
     _pitch = 0.0
     if _harm:
         import pairs as _pairs
@@ -1541,7 +1542,7 @@ def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
                         # or check_drc truncates each category at 20 and the
                         # nets beyond that are never banned, never freed
                         '--max-print', '0'],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=awx_settings.environ())
     _drc_txt = r.stdout + r.stderr
     clean = 'NO DRC VIOLATIONS' in _drc_txt
     if not clean and 'DRC VIOLATION' not in _drc_txt:

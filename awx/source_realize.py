@@ -19,6 +19,7 @@ previous board.
 """
 import math
 import os
+import awx_settings
 import shutil
 import subprocess
 import sys
@@ -177,7 +178,7 @@ def full_move(m):
     coordinate along the face is the gap), layer, kind, dog-bone site."""
     d = {'face': m.direction, 'exit': tuple(m.exit_pt), 'layer': m.layer,
          'kind': m.kind, 'site': (tuple(m.site) if m.site else None)}
-    if os.environ.get('PLAN_PAGES', '0') not in ('', '0') and m.legs:
+    if awx_settings.get('PLAN_PAGES', '0') not in ('', '0') and m.legs:
         # the pages-first plan's berths are laid verbatim: the move's own
         # legs, laid by underpad.attempt before its search -- the engine's
         # "exact" is only the exact EXIT, and a stub audited exact once ran
@@ -407,7 +408,7 @@ def drc_pairs(board, nets=None, pcb_data=None):
     r = subprocess.run([sys.executable,
                         os.path.join(HERE, '..', 'py_router', 'check_drc.py'),
                         board, '--clearance', '0.1', '--clearance-margin', '0.1'],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=awx_settings.environ())
     out = r.stdout + r.stderr
     # A CHECKER THAT DID NOT REPORT IS NOT A CLEAN BOARD. This is the only
     # copper gate on the board `realize` writes (and replan's probe-clean
