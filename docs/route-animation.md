@@ -1098,9 +1098,9 @@ does not turn it:
 | `COPPER_DWELL_S` | 4.0 | copper must hold the other face this long |
 | `HOLD_S` | 6.0 | after a turn copper decided, no copper turn sooner than this |
 
-A routing film lands copper chunk after chunk on alternating layers; at a 1 s
-dwell the 853-frame `routed_output` film turned 27 times, and it turns 6 times
-under these values. The timeline's `side_rule` names the rule and the count.
+A routing film lands copper chunk after chunk on alternating layers; on one
+853-frame film of a routed board (a review run, not a committed fixture) a 1 s
+dwell turned the board 27 times, and these values turn it 6 times. The timeline's `side_rule` names the rule and the count.
 
 **Parts** are always a body box plus their pads, read from the board itself, in
 each part's own frame, so a part that turns while it glides (#1086) turns in 3D
