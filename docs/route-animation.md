@@ -989,3 +989,141 @@ front end at once — the same rationale `KICAD_MOVIE_CAMERA` and
 falls back (a typo in a shell must not abort a routing run that happened to ask
 for a movie), while an unknown value passed as a *kwarg* raises and names the
 accepted set (a typo in code is a bug).
+
+## The stage3d film: a 3D board and one benchmark band (#1081)
+
+`--layout stage3d` on `make_movie.py` or `make_film.py` (or
+`$KICAD_MOVIE_LAYOUT=stage3d`). It has three regions:
+
+- **the board**, top-left, at least 70 % of the frame's width and height, drawn
+  in 3D;
+- **the layer column** on its right: the lower box's own contents by phase, with
+  the per-layer strip while routing;
+- **one benchmark band** along the bottom, full width.
+
+`auto` never picks it, because like C and D it is a stance.
+
+### Geometry
+
+The floor is a promise the frame keeps before anything else gets room. A band
+that would push the board below it is shrunk, then declined. A portrait frame
+turns the column into a row under the board, and drops the row when it would be
+too short to read. A declared aspect outside 0.50–3.00 falls back to `legacy` at
+the board's own aspect. A frame too small to keep the floor at all still
+renders. Each of these is written to `FrameGeometry.notes`, and
+`frame_status_line` prints them, so no give-up is silent.
+
+`layout_budget` does not measure stage3d on purpose. px/mm varies across a
+perspective view, so the figure would not compare with the flat layouts'.
+
+| constant | value |
+|---|---|
+| `STAGE3D_BOARD_W_FRAC` (`py_router/frame_layout.py`) | 0.70 |
+| `STAGE3D_BOARD_H_FRAC` (`py_router/frame_layout.py`) | 0.70 |
+| `STAGE3D_BAND_MIN_PX` (`py_router/frame_layout.py`) | 64 |
+| `STAGE3D_ROW_MIN_PX` (`py_router/frame_layout.py`) | 90 |
+
+### The 3D board
+
+The board is drawn by a pinned three.js (r186, vendored unmodified under
+`py_router/stage3d/vendor/three`, MIT). It runs in headless Chromium, driven
+from Node by `playwright-core`, which is pinned by `py_router/stage3d/package.json`
+and its lockfile.
+
+Three tools are optional:
+
+- **Node**: `$KICAD_STAGE3D_NODE`, else `node` on PATH.
+- **`playwright-core`**: run `npm ci` in `py_router/stage3d`.
+- **A Chromium**: `$KICAD_STAGE3D_CHROMIUM`, else Playwright's own browser
+  cache, else an installed Chrome.
+
+Without any one of them the board box holds the 2D X-ray, and the film says why.
+The line reads, for example, `stage3d: 2D X-ray in the board box -- no Node.js
+on PATH`. `--board-3d 2d` asks for the X-ray. The GUI recorder is unaffected,
+because it never asks for a layout.
+
+**The 3D board replays the film; it does not re-derive it.**
+`animate_route.build_boards` records one stage state per frame. Each record
+holds:
+
+- the position in the copper edit logs;
+- the keys a growth stage hides under itself;
+- the highlight rows;
+- the poses of the parts mid-glide;
+- the side and flip.
+
+`stage3d.timeline` turns those records into copper with lifetimes plus
+per-frame states. `tests/test_1081_timeline.py` checks every frame of a film with
+a flip, a glide, a rip-and-retract and a regrowth. For each frame, the record
+alone must rebuild exactly the copper the X-ray drew, so the two views cannot
+disagree event for event.
+
+The flip is the Stage's own: the board turns on the frames the X-ray turns, about
+the screen-vertical axis, so the far side comes up mirrored left-right as the 2D
+film shows it. A film without a Stage has no flip in 2D. There, and only there,
+a 3D-only rule faces the back while back-side work has held for a second, and the
+timeline's `side_rule` says so.
+
+**Parts** are always a body box plus their pads, read from the board itself, in
+each part's own frame, so a part that turns while it glides (#1086) turns in 3D
+too. A part whose pad field spans the board, such as a castellated carrier, gets
+no box. When kicad-cli can export them, the parts' real models replace the
+boxes. `kicad-cli pcb export glb` names each part's node by its bare refdes, and
+the page re-poses a node by `F(now) * F(final)^-1`.
+
+KiCad 10 ships only `.step` models and silently drops a missing `.wrl`: 55 of 58
+were missing on splitflap. So the board is staged with each missing `.wrl`
+pointed at its `.step` twin, and the status line counts the matches
+(`GLB: 48 of 61 parts have a model`). `$KICAD_STAGE3D_MODELS=0` keeps the boxes.
+
+**Rendering is all-or-nothing.** Every distinct state is rendered to disk
+before any frame is composed. Only when all of them succeed is the board box
+mapped onto them. A lazy per-frame pass that failed mid-stream would either
+delete the film or switch from 3D to 2D half way through.
+
+**Only SwiftShader is accepted.** The page reports its WebGL renderer, and a
+render that ran anywhere else is refused, because a GPU's pixels depend on the
+machine and its driver. On SwiftShader two renders of one timeline are
+byte-identical state for state (`tests/test_1081_render3d.py`), at about
+60–120 ms per state. The Modal suite image has no Node or Chromium, so that
+test self-skips there and names why.
+
+### The benchmark band
+
+This band replaces the attempts band and the placement panels in this layout.
+Placement and routing laps become one curve on one run-time axis, split into two
+regimes by one line (`movie_benchmark`, `ledger_score`).
+
+**Above the line** is `blocking` on a log scale, which is not working yet. The
+axis is clamped at twice its 90th percentile, so one huge pile at lap 0 cannot
+flatten the rest.
+
+**The line is working**, as defined by `ledger_score.row_done`: blocking 0,
+nothing `unknown`, no lens FAILed, and a score about this board. An `ungraded`
+list does not stop it, exactly as it does not stop `converge verdict`'s DONE,
+but the chip counts it (`WORKING @ 0:40:00 (measured, 2 unexamined)`).
+
+Only the run's accepted spine moves the story. The ground is green while the
+latest ACCEPTED lap is working, and a later accepted lap that falls back ends the
+span with `not working @ t`. A rejected lap never makes the board working. The
+phase-4 verification found three real ledgers whose first blocking-0 lap was one
+the run itself had thrown away. `--final` and `--exhausted` rows are not laps
+(`converge._is_lap`); the last final row's verdict is named in the caption.
+
+**Below the line: better.** Records are the running best over accepted laps on
+the run's own order: working first, then `blocking`, then
+`(vias, copper_mm, segments)`, lexicographic. It is never a weighted sum.
+`ledger_score.quality_key` is held to `converge._score_key`'s quality half on 400
+shuffled documents. y is the via count as a percentage. A lap that ties on vias
+but wins on copper is still a record, labelled with the term that decided it
+(`copper -9.5 mm`).
+
+**The human benchmark is optional** (`--benchmark-board`, graded by
+`--benchmark-score` or by running `board_score` once).
+
+- **Given a benchmark:** 100 % is its via count, a dashed line marks it, and
+  the first record strictly better on the full key earns a gold marker. That
+  requires the benchmark to be a working board itself. A tie reads "matches".
+  A score naming another board by `board_sha` is refused.
+- **Without one:** 100 % is the first working board, there is no line and no
+  gold, and the caption says "no benchmark board".
