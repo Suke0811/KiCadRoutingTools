@@ -165,6 +165,7 @@ def colors_for(theme_name, layers) -> Dict[str, list]:
             'pad': c('pad', (200, 170, 80)), 'via': c('via', (180, 180, 180)),
             'body': [48, 50, 54] if th.name == 'dark' else [70, 72, 76],
             'hilite': c('hilite', (255, 255, 255)),
+            'hole': c('pad_hole', (20, 20, 22)),
             'layers': [list(pal.get(n, (200, 120, 60))) for n in layers]}
 
 

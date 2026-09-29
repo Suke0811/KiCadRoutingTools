@@ -56,14 +56,25 @@ def board_thickness(pcb) -> float:
     return t if 0.2 <= t <= 10.0 else DEFAULT_THICKNESS
 
 
+def _to_local(fp, x, y):
+    """A board point in `fp`'s own frame: global = origin + R(-rot) local,
+    so local = R(rot) (global - origin)."""
+    rot = math.radians(fp.rotation or 0.0)
+    dx, dy = x - fp.x, y - fp.y
+    return (dx * math.cos(rot) - dy * math.sin(rot),
+            dx * math.sin(rot) + dy * math.cos(rot))
+
+
 def _local_pad(fp, p) -> list:
     """A pad in its footprint's own frame: `[lx, ly, sx, sy, angle, shape,
-    face, drill]`. `face` is 'F', 'B' or 'T' (through-hole)."""
-    rot = math.radians(fp.rotation or 0.0)
-    dx, dy = p.global_x - fp.x, p.global_y - fp.y
-    # global = origin + R(-rot) local  =>  local = R(rot) (global - origin)
-    lx = dx * math.cos(rot) - dy * math.sin(rot)
-    ly = dx * math.sin(rot) + dy * math.cos(rot)
+    face, drill, hole, polys]`. `face` is 'F', 'B' or 'T' (through-hole);
+    `hole` is the drill centre `[hx, hy]` when the drill is OFFSET from the
+    copper (castellated paddles), else None; `polys` is a custom pad's real
+    copper outline(s), else None -- the parser's `size_x/size_y` for a custom
+    pad is only its board-space bbox, which is neither its shape nor
+    rotation-invariant (#1090: 0.52 mm off on rp2350 U4/U5 at a 37 degree
+    turn)."""
+    lx, ly = _to_local(fp, p.global_x, p.global_y)
     ang = (p.rect_rotation or 0.0) + (fp.rotation or 0.0)
     layers = [str(x) for x in (p.layers or ())]
     drill = float(getattr(p, 'drill', 0.0) or 0.0)
@@ -74,9 +85,18 @@ def _local_pad(fp, p) -> list:
         face = 'B'
     else:
         face = 'F'
+    hole = None
+    if (drill > 0 and getattr(p, 'hole_x', None) is not None
+            and getattr(p, 'hole_y', None) is not None):
+        hx, hy = _to_local(fp, p.hole_x, p.hole_y)
+        hole = [round(hx, 5), round(hy, 5)]
+    polys = None
+    if getattr(p, 'polygons', None):
+        polys = [[[round(c, 5) for c in _to_local(fp, x, y)] for x, y in poly]
+                 for poly in p.polygons if len(poly) >= 3] or None
     return [round(lx, 5), round(ly, 5), round(float(p.size_x), 5),
             round(float(p.size_y), 5), round(ang, 4),
-            (p.shape or 'rect').lower(), face, round(drill, 4)]
+            (p.shape or 'rect').lower(), face, round(drill, 4), hole, polys]
 
 
 def part_geometry(fp, board_area=None) -> dict:
@@ -122,9 +142,18 @@ def build_scene(pcb) -> dict:
         g = part_geometry(fp, area)
         g['side'] = 'B' if (fp.layer or '').startswith('B') else 'F'
         parts[ref] = g
+    # #1090: the plane pours, each shown from the frame its net's fill is
+    # revealed (the film's `revealed_zones`, per frame in the timeline).
+    # Like the 2D film, the zone OUTLINE -- not the computed fill.
+    li = {n: i for i, n in enumerate(bi.copper_layers)}
+    pours = [{'net': int(z.net_id), 'layer': li[z.layer],
+              'poly': [[float(x), float(y)] for x, y in z.polygon]}
+             for z in (getattr(pcb, 'zones', None) or [])
+             if z.layer in li and len(z.polygon) >= 3]
     return {'bounds': [float(v) for v in bb], 'outline': outline,
             'cutouts': cutouts, 'thickness': board_thickness(pcb),
-            'layers': list(bi.copper_layers), 'parts': parts, 'glb': None}
+            'layers': list(bi.copper_layers), 'parts': parts, 'glb': None,
+            'pours': pours}
 
 
 # ---------------------------------------------------------------------------

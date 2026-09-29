@@ -155,6 +155,34 @@ function setCopper(st) {
   }
 }
 
+// #1090: the plane pours -- one flat shape per zone on its layer, shown
+// from the frame the film reveals that net's fill.
+function buildPours(scene, tl, colors, root) {
+  S.pours = [];
+  const n = tl.layers.length, d = scene.thickness;
+  for (const z of (scene.pours || [])) {
+    const shape = new THREE.Shape(z.poly.map(p => new THREE.Vector2(p[0], p[1])));
+    const g = new THREE.ShapeGeometry(shape);
+    g.rotateX(Math.PI / 2);                     // shape (x, y) -> three (x, z)
+    const li = z.layer;
+    g.translate(0, li === 0 ? d + 0.02 : (li === n - 1 ? -0.02 : d * (1 - li / (n - 1))), 0);
+    const base = rgb(colors.layers[li] || colors.pad), body = rgb(colors.board);
+    const col = body.clone().lerp(base, 0.45);
+    const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+      color: col, transparent: true, opacity: 0.75, side: THREE.DoubleSide, depthWrite: false }));
+    m.renderOrder = 1;
+    m.visible = false;
+    m.userData.net = z.net;
+    root.add(m);
+    S.pours.push(m);
+  }
+}
+
+function setPours(st) {
+  const on = new Set(st.zones || []);
+  for (const m of S.pours) m.visible = on.has(m.userData.net);
+}
+
 function setHighlight(st, tl, scene, colors, root) {
   if (S.hl) {
     root.remove(S.hl);
@@ -188,21 +216,45 @@ function buildParts(scene, colors, root) {
   S.parts = {};
   const d = scene.thickness;
   const bodyMat = new THREE.MeshStandardMaterial({ color: rgb(colors.body), roughness: 0.7 });
-  const padMat = new THREE.MeshStandardMaterial({ color: rgb(colors.pad), roughness: 0.35, metalness: 0.7 });
+  const padMat = new THREE.MeshStandardMaterial({ color: rgb(colors.pad), roughness: 0.35, metalness: 0.7,
+                                                  side: THREE.DoubleSide });
+  const holeMat = new THREE.MeshBasicMaterial({ color: rgb(colors.hole || [20, 20, 22]) });
   for (const ref of Object.keys(scene.parts).sort()) {
     const P = scene.parts[ref];
     const grp = new THREE.Group();
     const faces = { F: new THREE.Group(), B: new THREE.Group() };
     for (const p of P.pads) {
-      const [lx, ly, sx, sy, ang, shape, face] = p;
-      const geo = (shape === 'circle')
-        ? new THREE.CylinderGeometry(Math.max(sx, sy) / 2, Math.max(sx, sy) / 2, 0.05, 20)
-        : new THREE.BoxGeometry(Math.max(sx, 0.05), 0.05, Math.max(sy, 0.05));
+      const [lx, ly, sx, sy, ang, shape, face, drill, hole, polys] = p;
       for (const f of (face === 'T' ? ['F', 'B'] : [face])) {
-        const m = new THREE.Mesh(geo, padMat);
-        m.position.set(lx, f === 'F' ? 0.03 : -0.03, ly);
-        m.rotation.y = -rad(ang);
-        faces[f].add(m);
+        const y = f === 'F' ? 0.03 : -0.03;
+        if (polys) {
+          // a custom pad's REAL outline, in the part's frame (#1090)
+          for (const poly of polys) {
+            const g = new THREE.ShapeGeometry(new THREE.Shape(poly.map(q => new THREE.Vector2(q[0], q[1]))));
+            g.rotateX(Math.PI / 2);
+            const m = new THREE.Mesh(g, padMat);
+            m.position.y = y + (f === 'F' ? 0.025 : -0.025);
+            m.userData.custom = true;
+            faces[f].add(m);
+          }
+        } else {
+          const geo = (shape === 'circle')
+            ? new THREE.CylinderGeometry(Math.max(sx, sy) / 2, Math.max(sx, sy) / 2, 0.05, 20)
+            : new THREE.BoxGeometry(Math.max(sx, 0.05), 0.05, Math.max(sy, 0.05));
+          const m = new THREE.Mesh(geo, padMat);
+          m.position.set(lx, y, ly);
+          m.rotation.y = -rad(ang);
+          faces[f].add(m);
+        }
+        if (drill > 0) {
+          // the drill, at its OWN centre (an offset drill is not the copper's)
+          const hx = hole ? hole[0] : lx, hz = hole ? hole[1] : ly;
+          const h = new THREE.Mesh(new THREE.CircleGeometry(drill / 2, 18), holeMat);
+          h.rotation.x = f === 'F' ? -Math.PI / 2 : Math.PI / 2;
+          h.position.set(hx, y + (f === 'F' ? 0.03 : -0.03), hz);
+          h.userData.hole = true;
+          faces[f].add(h);
+        }
       }
     }
     let body = null;
@@ -417,6 +469,7 @@ window.stage3dInit = async function (o) {
   root.add(buildBoard(scene, o.colors));
   buildCopper(tl, scene, o.colors, root);
   buildParts(scene, o.colors, root);
+  buildPours(scene, tl, o.colors, root);
   S.scene = scene;
   let glbParts = 0, glbError = null;
   if (o.glbUrl && scene.glb) {
@@ -434,6 +487,7 @@ window.stage3dInit = async function (o) {
 window.renderState = function (i) {
   const st = S.tl.states[i];
   setCopper(st);
+  setPours(st);
   setHighlight(st, S.tl, S.scene, S.colors, S.root);
   poseParts(st, S.tl);
   S.pivot.rotation.set(0, 0, st.angle);
@@ -454,7 +508,16 @@ window.stage3dProbe = function (i) {
     const box = new THREE.Box3().setFromObject(p.body);
     out[ref] = [box.min.y, box.max.y];
   }
-  return { bodies: out, thickness: S.scene.thickness };
+  let custom = 0, holes = 0;
+  for (const ref of Object.keys(S.parts)) {
+    S.parts[ref].grp.traverse(o => {
+      if (o.userData.custom) custom += 1;
+      if (o.userData.hole) holes += 1;
+    });
+  }
+  return { bodies: out, thickness: S.scene.thickness,
+           pours: S.pours.filter(m => m.visible).length, pours_total: S.pours.length,
+           custom, holes };
 };
 
 window.stage3dReady = true;

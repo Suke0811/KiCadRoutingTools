@@ -160,8 +160,75 @@ def test_bodies_sit_on_their_own_face():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _one_state_timeline(pcb, zones=()):
+    layers = list(pcb.board_info.copper_layers)
+    pose = {ref: [fp.x, fp.y, fp.rotation or 0.0, fp.layer or 'F.Cu']
+            for ref, fp in pcb.footprints.items()}
+    st = {'ns': 0, 'nv': 0, 'hide': [], 'hl_s': [], 'hl_v': [],
+          'color': None, 'epoch': 0, 'moving': {}, 'angle': 0.0,
+          'active': None, 'zones': sorted(zones)}
+    return {'layers': layers, 'segs': [], 'vias': [], 'epochs': [pose],
+            'frames': [0], 'states': [st], 'side_rule': 'test'}
+
+
+def _probe(board, zones=()):
+    pcb = parse_kicad_pcb(board)
+    sc = SC.build_scene(pcb)
+    tmp = tempfile.mkdtemp(prefix='t1081z_')
+    try:
+        pngs, info, why = R3.render(sc, _one_state_timeline(pcb, zones),
+                                    width=240, height=160, out_dir=tmp,
+                                    probe=0)
+        return pcb, sc, info.get('probe') or {}, why
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_pours_pads_and_drills_are_on_the_3d_board():
+    """#1090. The plane pours show from the frame their net is revealed (as
+    the 2D film draws them); a custom pad is its REAL outline, not the
+    parser's board-space bbox; and every drill is drawn, at its own centre."""
+    board = os.path.join(ROOT, 'kicad_files',
+                         'lvds_converter_dualclk_gnd.kicad_pcb')
+    pcb, sc, pr, why = _probe(board)
+    nets = sorted({z['net'] for z in sc['pours']})
+    _check(sc['pours'] and pr.get('pours_total') == len(sc['pours'])
+           and pr.get('pours') == 0,
+           '%d pours built, none shown before their net is revealed (%s)'
+           % (len(sc['pours']), why))
+    _pcb, _sc, pr2, _w = _probe(board, zones=nets[:1])
+    want = sum(1 for z in sc['pours'] if z['net'] == nets[0])
+    _check(pr2.get('pours') == want,
+           'revealing net %s shows exactly its %d pour(s) (%s)'
+           % (nets[0], want, pr2.get('pours')))
+    board = os.path.join(ROOT, 'kicad_files',
+                         'rp2350_fpga_eensy_prePlane.kicad_pcb')
+    pcb, sc, pr, why = _probe(board)
+    customs = sum(1 for p in sc['parts'].values() for q in p['pads']
+                  if q[9])
+    drills = sum(1 for p in sc['parts'].values() for q in p['pads']
+                 if q[7] > 0)
+    offset = sum(1 for p in sc['parts'].values() for q in p['pads']
+                 if q[8])
+    _check(customs >= 16 and pr.get('custom', 0) >= customs,
+           '%d custom pads drawn as their outlines (%s)'
+           % (customs, pr.get('custom')))
+    _check(drills and offset and pr.get('holes', 0) >= drills,
+           '%d drills drawn (%d at an offset centre) (%s)'
+           % (drills, offset, pr.get('holes')))
+    # the offset drill really is off the copper's centre, in the part frame
+    fp = pcb.footprints['U8']
+    pad = next(q for q in fp.pads if getattr(q, 'hole_x', None) is not None)
+    loc = next(q for q in sc['parts']['U8']['pads'] if q[8])
+    gx, gy = SC._to_local(fp, pad.hole_x, pad.hole_y)
+    _check(abs(loc[8][0] - gx) < 1e-4 and abs(loc[8][1] - gy) < 1e-4
+           and abs(loc[8][0] - loc[0]) + abs(loc[8][1] - loc[1]) > 0.05,
+           'U8\'s drill sits at its own centre, not the copper\'s')
+
+
 TESTS = (test_the_board_renders_deterministically,
-         test_bodies_sit_on_their_own_face)
+         test_bodies_sit_on_their_own_face,
+         test_pours_pads_and_drills_are_on_the_3d_board)
 
 
 def main():

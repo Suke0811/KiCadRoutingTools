@@ -225,10 +225,24 @@ def test_the_side_rule_waits_out_a_stray_event():
            'a back-side glide is watched from the back')
 
 
+def test_the_revealed_pours_ride_the_timeline():
+    """#1090: the film's revealed plane nets reach the 3D board per frame."""
+    rec = {'kind': 'frame', 'ns': 0, 'nv': 0, 'hide': (), 'hl_s': (),
+           'hl_v': (), 'color': None, 'mark': 'solid', 'zones': (3, 1),
+           'epoch': 0, 'moving': {}, 'mirror': False, 'flip': None,
+           'view': None, 'active': None}
+    tl = TL.build({'log': [dict(rec, zones=()), rec], 'epochs': [{}],
+                   'layers': ['F.Cu', 'B.Cu'], 'ops_s': [], 'ops_v': []})
+    _check([TL.state_for(tl, i)['zones'] for i in (0, 1)] == [[], [1, 3]],
+           'zones per frame: %s' % [TL.state_for(tl, i)['zones']
+                                    for i in (0, 1)])
+
+
 TESTS = (
     test_every_frame_is_rebuilt_from_the_record_alone,
     test_the_board_faces_the_work_and_turns_back,
     test_the_side_rule_waits_out_a_stray_event,
+    test_the_revealed_pours_ride_the_timeline,
 )
 
 

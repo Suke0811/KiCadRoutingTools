@@ -245,6 +245,8 @@ def build(stage_out, *, fps=6.0, stage_present=True) -> dict:
               'moving': {k: list(v) for k, v in
                          sorted((r.get('moving') or {}).items())},
               'angle': round(angles[i], 6),
+              # the pours revealed so far (#1090), as the 2D film draws them
+              'zones': sorted(int(z) for z in (r.get('zones') or ())),
               'active': r.get('active')}
         h = hashlib.sha1(json.dumps(st, sort_keys=True).encode()).hexdigest()
         if h not in index:
