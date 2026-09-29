@@ -476,11 +476,17 @@ plus `py_router/movie_attempts.py` (the attempts band) and
 
 ### Themes
 
-`--theme dark` (the default) or `--theme light`, on `make_movie.py`,
-`make_film.py` and `render_placement.py`, or `$KICAD_RENDER_THEME`.
+`--theme light` (the default since #1081) or `--theme dark`, on
+`make_movie.py`, `make_film.py`, `route_render.py` and `render_placement.py`,
+or `$KICAD_RENDER_THEME`. **Every** render that names no theme is light:
+`render_theme.default_theme()` is the one resolver, and every place that used
+to fall back to `DARK` by hand -- `BoardRenderer(theme=None)`,
+`layer_palette`, the chrome, the panels, the placement renders, the fanout
+animator -- now asks it. `$KICAD_RENDER_THEME=dark` restores KiCad's own
+canvas everywhere at once.
 
-The dark theme's values **are** the constants the renderers used before, so an
-unthemed render is byte-identical. The light theme is a genuinely second
+The dark theme's values **are** the constants the renderers used before
+#1081, so a dark render is byte-identical to one from then. The light theme is a genuinely second
 measured palette, not a transform of the first, and three measurements say why:
 
 - **on a light board the outline vanishes.** `board_edge` measures 12.33:1
@@ -538,11 +544,13 @@ regression.
 `--layout` and `--aspect` on `make_movie.py`, or `$KICAD_MOVIE_LAYOUT` /
 `$KICAD_MOVIE_ASPECT`.
 
-`legacy` is the default and reproduces today's frame exactly. That is deliberate
-and is the same call the camera knob already made (*"'off' (default) keeps every
-existing movie bit-for-bit"*): making `auto` the default would change the shape
-of every existing artifact — the GUI recorder's, `place_route_loop`'s
-`placement.mp4`, `render_run`'s.
+`stage3d` is the film's default since #1081, at the requester's call: the 3D
+board, the layer column and the benchmark band (see *The stage3d film* below)
+-- for `make_movie`, `make_film`, the GUI recorder and `place_route_loop`'s
+film alike, through the one resolver `frame_layout.resolve_layout_aspect`.
+`legacy` still reproduces the old frame exactly (`--layout legacy` or
+`$KICAD_MOVIE_LAYOUT=legacy`), and `plan_frame(layout=None)` still means
+legacy for a caller that plans a frame directly.
 
 **A declared size is kept.** With `--aspect` given, or a layout with an aspect
 of its own (`stacked`, `sidebar`, `split`), the frame is exactly that size.
@@ -1038,6 +1046,14 @@ Three tools are optional:
   cache, else an installed Chrome.
 
 Without any one of them the board box holds the 2D X-ray, and the film says why.
+
+**A hi-fi backend (#1089):** `--board-3d blender` renders the SAME scene and
+timeline in Blender's Cycles on the CPU (`py_router/stage3d/blender_scene.py`,
+run inside `blender -b -P`; `$KICAD_STAGE3D_BLENDER`, else `blender` on PATH, else a
+standard install). Physically lit, several times slower, and deterministic the
+same way: CPU device, fixed seed and samples, no denoiser, and the PNGs
+re-encoded without Cycles' render-time metadata (identical pictures were
+different files). `tests/test_1081_blender.py` self-skips without Blender.
 The line reads, for example, `stage3d: 2D X-ray in the board box -- no Node.js
 on PATH`. `--board-3d 2d` asks for the X-ray. The GUI recorder is unaffected,
 because it never asks for a layout.
@@ -1076,6 +1092,11 @@ were missing on splitflap. So the board is staged with each missing `.wrl`
 pointed at its `.step` twin, and the status line counts the matches
 (`GLB: 48 of 61 parts have a model`). `$KICAD_STAGE3D_MODELS=0` keeps the boxes.
 
+**Plane pours, pad outlines and drills (#1090).** Each zone's outline is on
+the 3D board from the frame its net's fill is revealed, as the 2D film draws
+it; a custom pad is its real outline (not the parser's board-space bbox); and
+every drill is drawn at its own centre (an offset drill is not the copper's).
+
 **Rendering is all-or-nothing.** Every distinct state is rendered to disk
 before any frame is composed. Only when all of them succeed is the board box
 mapped onto them. A lazy per-frame pass that failed mid-stream would either
@@ -1087,6 +1108,14 @@ machine and its driver. On SwiftShader two renders of one timeline are
 byte-identical state for state (`tests/test_1081_render3d.py`), at about
 60–120 ms per state. The Modal suite image has no Node or Chromium, so that
 test self-skips there and names why.
+
+### One pipeline for both front ends (#1087)
+
+`make_movie` and `make_film.build_film` compose their bands and panels through
+`py_router/film_passes.py`: `plan()` decides, before the frame is planned, what
+it must reserve (the attempts or benchmark band, the placement panels, the iso
+box); `compose()` and `compose_iso()` draw them. What stays in each front end
+is its own: make_movie's run clock, make_film's badges and cards.
 
 ### The benchmark band
 

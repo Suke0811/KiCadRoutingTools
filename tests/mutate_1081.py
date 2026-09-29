@@ -49,6 +49,10 @@ TARGETS = {
     'tl': os.path.join(_S3D, 'timeline.py'),
     'film': os.path.join(_S3D, 'film.py'),
     'page': os.path.join(_S3D, 'page', 'stage3d.mjs'),
+    'env': os.path.join(_ROOT, 'py_router', 'env_knobs.py'),
+    'render': os.path.join(_ROOT, 'py_router', 'route_render.py'),
+    'r3d': os.path.join(_S3D, 'render3d.py'),
+    'fp': os.path.join(_ROOT, 'py_router', 'film_passes.py'),
 }
 
 
@@ -63,6 +67,9 @@ T_BAND = _t('test_1081_benchmark_band.py')
 T_TL = _t('test_1081_timeline.py')
 T_R3D = _t('test_1081_render3d.py')
 T_E2E = _t('test_1081_e2e.py')
+T_DEF = _t('test_1081_defaults.py')
+T_BL = _t('test_1081_blender.py')
+T_1042 = _t('test_1042_placement_panels.py')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -181,6 +188,27 @@ ROWS = [
      "      part.body.position.y = back ? -(h / 2 + 0.06) : h / 2 + 0.06;",
      "      part.body.position.y = h / 2 + 0.06;",
      (T_R3D,), 'KILLED'),
+    # --- the defaults (#1081), Blender (#1089), one pipeline (#1087) -------
+    ('the-film-default-back-to-legacy', 'env',
+     "    g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'stage3d')",
+     "    g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'legacy')",
+     (T_DEF,), 'KILLED'),
+    ('the-theme-default-back-to-dark', 'env',
+     "    g['RENDER_THEME'] = _s('KICAD_RENDER_THEME', 'light')",
+     "    g['RENDER_THEME'] = _s('KICAD_RENDER_THEME', 'dark')",
+     (T_DEF,), 'KILLED'),
+    ('an-unthemed-renderer-hardwired-dark', 'render',
+     "            else _default_theme()",
+     "            else _THEME_DARK",
+     (T_DEF,), 'KILLED'),
+    ('blender-keeps-its-render-time-metadata', 'r3d',
+     "        px.save(p, format='PNG')",
+     "        pass",
+     (T_BL,), 'KILLED'),
+    ('the-pipeline-drops-the-verdict-band', 'fp',
+     "        track = bands.track if (vbox is not None or ptrack is None) else None",
+     "        track = None",
+     (T_1042,), 'KILLED'),
     ('a-2d-fallback-that-says-nothing', 'film',
      "        _say('stage3d: 2D X-ray in the board box -- %s' % why, notes)",
      "        pass",
