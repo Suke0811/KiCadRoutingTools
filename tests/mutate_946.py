@@ -251,6 +251,32 @@ ROWS = [
      "        b = (sc.get('blocking') if sc else None)\n        if b is None:\n            continue",
      (T_ATT,), 'KILLED'),
 
+    # #1077: a blocking that is not a count is drawn ungraded, never raised.
+    ('a-non-count-blocking-is-plotted', 'attempts',
+     "        b = _blocking_value(b)\n",
+     "",
+     (T_ATT,), 'KILLED'),
+
+    ('graded-trusts-any-blocking', 'attempts',
+     "    return bool(sc) and _blocking_value(sc.get('blocking')) is not None",
+     "    return bool(sc) and sc.get('blocking') is not None",
+     (T_ATT,), 'KILLED'),
+
+    ('film-counts-false-as-a-count', 'attempts',
+     "    if isinstance(b, bool) or not isinstance(b, (int, float)):",
+     "    if not isinstance(b, (int, float)):",
+     (T_ATT,), 'KILLED'),
+
+    ('film-counts-nan-or-negative', 'attempts',
+     "    if not math.isfinite(b) or b < 0:",
+     "    if False:",
+     (T_ATT,), 'KILLED'),
+
+    ('a-null-iteration-raises-again', 'attempts',
+     "        return it if isinstance(it, int) and not isinstance(it, bool) else i",
+     "        return int(it)",
+     (T_ATT,), 'KILLED'),
+
     ('a-rejected-attempt-can-set-the-record', 'attempts',
      "                and (a.accepted or not require_accepted)",
      "                and True",
