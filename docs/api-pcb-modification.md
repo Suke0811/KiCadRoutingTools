@@ -105,7 +105,9 @@ the routing pipeline applies both so the model and the output file agree.
 > grades a removal of segments (a single one, or an unbranched run) plus the
 > vias it leaves joining nothing: every pad stays connected on the strict
 > graph (track widths clamped; a via joins a pad only by its centre,
-> `check_net_connectivity(..., via_in_pad_margin=...)`) and on the physical
+> `check_net_connectivity(..., via_in_pad_margin=...)`; on a layer a pad's
+> unconnected-layer mode removes, only its hole joins,
+> `check_net_connectivity(..., unflashed_hole_only=True)`) and on the physical
 > graph, no copper island, dangling end or soft joint appears, and no via the
 > pass may not drop -- anything but this run's own, unlocked vias -- is left
 > dangling. In-pad / in-via wiggles (both ends in same-net pad or via copper),

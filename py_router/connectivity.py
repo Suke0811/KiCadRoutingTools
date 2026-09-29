@@ -184,7 +184,7 @@ def is_edge_stub(pad_x: float, pad_y: float, bga_zones: List) -> bool:
 COINCIDENCE_TOL = 0.02
 
 
-def endpoint_reaches_pad(x, y, radius, layers, pad) -> set:
+def endpoint_reaches_pad(x, y, radius, layers, pad, unflashed_hole_only=False) -> set:
     """Which of `layers` a disc of copper -- centre (x, y), radius `radius` --
     both SHARES with `pad`'s copper and physically OVERLAPS. Empty set = no
     contact.
@@ -226,6 +226,12 @@ def endpoint_reaches_pad(x, y, radius, layers, pad) -> set:
     another: B.Cu ends near an F.Cu-only pad are genuinely split, and a
     layer-blind widening silences that -- the direction that ships broken
     copper.
+
+    `unflashed_hole_only`: on a layer the pad's unconnected-layer mode removes
+    (pad_unflashed_layers), the copper must reach the HOLE, as KiCad grades
+    it. Off by default: the grading callers keep the outline credit, and the
+    #1063 removal model turns it on so it never cuts back to an annulus-only
+    joint.
     """
     if getattr(pad, 'pad_type', '') == 'np_thru_hole':
         return set()                        # a hole, not copper (#328)
@@ -237,10 +243,56 @@ def endpoint_reaches_pad(x, y, radius, layers, pad) -> set:
                                                 or ()), want))
     if not on:
         return set()                        # cheap test first; geometry is the cost
-    from check_connected import _point_in_pad
-    if _point_in_pad(x, y, pad, margin=max(radius - 1e-6, COINCIDENCE_TOL)):
-        return on
-    return set()
+    margin = max(radius - 1e-6, COINCIDENCE_TOL)
+    hole_only = pad_unflashed_layers(pad, on) if unflashed_hole_only else set()
+    out = set()
+    if hole_only and copper_reaches_pad_hole(x, y, margin, pad):
+        out |= hole_only
+    flashed = on - hole_only
+    if flashed:
+        from check_connected import _point_in_pad
+        if _point_in_pad(x, y, pad, margin=margin):
+            out |= flashed
+    return out
+
+
+def pad_unflashed_layers(pad, layers) -> set:
+    """Which of `layers` KiCad flashes `pad` on only when copper reaches its
+    HOLE -- the layers its unconnected-layer mode removes.
+
+    KiCad's connectivity tests a pad on such a layer by its hole shape, not
+    its outline, so a track ending in the annulus but short of the drill is
+    NOT connected there (and the pad gets no copper on that layer at all).
+    ecp5_mini's edge headers (`remove_unused_layers yes`, `keep_end_layers
+    yes`) are the measured case: #1063's cleanup cut the In1.Cu tail that ran
+    to the pad centre, leaving an end 0.46 mm out on a 0.7 mm drill, and
+    KiCad graded seven nets open that the outline model graded connected.
+
+    'remove_except_start_end' keeps the drill's start and end layers, which
+    for a through-hole pad are F.Cu and B.Cu. Only a plated hole can connect
+    anything; an SMD pad has no hole and no unconnected-layer mode.
+    """
+    mode = getattr(pad, 'unconnected_layer_mode', 'keep_all') or 'keep_all'
+    if mode == 'keep_all':
+        return set()
+    from kicad_parser import pad_is_plated_through
+    if not pad_is_plated_through(pad):
+        return set()
+    layers = set(layers)
+    if mode == 'remove_except_start_end':
+        layers -= {'F.Cu', 'B.Cu'}
+    return layers
+
+
+def copper_reaches_pad_hole(x, y, radius, pad) -> bool:
+    """Does a disc of copper -- centre (x, y), radius `radius` -- overlap
+    `pad`'s drill (a slot is its capsule, pad_drill_capsule)?"""
+    from kicad_parser import pad_drill_capsule
+    (ax, ay), (bx, by), hr = pad_drill_capsule(pad)
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+    return math.hypot(x - (ax + t * dx), y - (ay + t * dy)) <= hr + radius
 
 
 def via_copper_layers(via, copper_layers=None) -> set:

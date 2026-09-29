@@ -284,6 +284,13 @@ class Pad:
     # `size_y` of a custom pad are the primitive extent, but KiCad sizes the
     # paste ratio term from the anchor. None for every other shape.
     anchor_size: Optional[Tuple[float, float]] = None
+    # KiCad's unconnected-layer mode (`(remove_unused_layers ..)` +
+    # `(keep_end_layers ..)`): 'keep_all', 'remove_all' or
+    # 'remove_except_start_end'. On a layer the mode removes, KiCad flashes the
+    # pad only when copper reaches its HOLE, so a track ending in the annulus
+    # but short of the drill is not connected there.
+    # connectivity.pad_unflashed_layers reads it. Set by BOTH parse paths.
+    unconnected_layer_mode: str = 'keep_all'
 
 
 _VIA_BIRTH_WATCH = None
@@ -1243,6 +1250,50 @@ def pad_drill_capsule(pad) -> Tuple[Tuple[float, float], Tuple[float, float], fl
     p1 = (px - ux * half_span, py - uy * half_span)
     p2 = (px + ux * half_span, py + uy * half_span)
     return p1, p2, radius
+
+
+_REMOVE_UNUSED_RE = re.compile(r'\(remove_unused_layers(?:\s+(yes|no))?\s*\)')
+_KEEP_END_RE = re.compile(r'\(keep_end_layers(?:\s+(yes|no))?\s*\)')
+
+
+def unconnected_layer_mode_from_text(pad_text: str) -> str:
+    """A pad block's unconnected-layer mode (see Pad.unconnected_layer_mode).
+
+    KiCad 8+ writes `(remove_unused_layers yes|no)` and `(keep_end_layers
+    yes|no)`; KiCad 7 wrote bare flags, which mean yes. Probed on pcbnew
+    10.0.0: KEEP_ALL saves `no`, REMOVE_EXCEPT_START_AND_END saves `yes` +
+    `(keep_end_layers yes)`, and REMOVE_ALL and START_END_ONLY both save `yes`
+    + `(keep_end_layers no)`, so the file reads either of those as remove_all.
+    """
+    m = _REMOVE_UNUSED_RE.search(pad_text)
+    if not m or m.group(1) == 'no':
+        return 'keep_all'
+    k = _KEEP_END_RE.search(pad_text)
+    if k and k.group(1) != 'no':
+        return 'remove_except_start_end'
+    return 'remove_all'
+
+
+def unconnected_layer_mode_from_pcbnew(pad) -> str:
+    """The pcbnew twin of unconnected_layer_mode_from_text. START_END_ONLY
+    maps to remove_all, which is what the same board reads as once saved."""
+    try:
+        import pcbnew
+        mode = pad.Padstack().UnconnectedLayerMode()
+        if mode == pcbnew.UNCONNECTED_LAYER_MODE_KEEP_ALL:
+            return 'keep_all'
+        if mode == pcbnew.UNCONNECTED_LAYER_MODE_REMOVE_EXCEPT_START_AND_END:
+            return 'remove_except_start_end'
+        return 'remove_all'
+    except Exception:
+        pass
+    try:  # KiCad < 9: no padstack object
+        if not pad.GetRemoveUnconnected():
+            return 'keep_all'
+        return ('remove_except_start_end' if pad.GetKeepTopBottom()
+                else 'remove_all')
+    except Exception:
+        return 'keep_all'
 
 
 def pad_is_plated_through(pad) -> bool:
@@ -3701,6 +3752,7 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
                 paste_margin=_pad_paste[0],
                 paste_margin_ratio=_pad_paste[1],
                 anchor_size=_anchor_size,
+                unconnected_layer_mode=unconnected_layer_mode_from_text(pad_text),
             )
 
             footprint.pads.append(pad)
@@ -6340,6 +6392,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                 paste_margin=_pad_paste[0],
                 paste_margin_ratio=_pad_paste[1],
                 anchor_size=_anchor_size_b if shape == 'custom' else None,
+                unconnected_layer_mode=unconnected_layer_mode_from_pcbnew(pad),
             )
 
             footprint.pads.append(pad_obj)
