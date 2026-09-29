@@ -2805,32 +2805,35 @@ def _chain_segments_into_contours(segments: List[Tuple[Tuple[float, float], Tupl
             current_end = polygon[-1]
             bx = int(current_end[0] / bucket_size)
             by = int(current_end[1] / bucket_size)
-            found_next = False
 
-            # Search nearby buckets for matching endpoint
-            for dbx in [-1, 0, 1]:
-                if found_next:
-                    break
-                for dby in [-1, 0, 1]:
-                    if found_next:
-                        break
+            # Take the NEAREST matching endpoint, not the first one the bucket
+            # order reaches (#1074). A finely tessellated arc (the 16-chord
+            # floor of _arc_to_segments on r=0.1mm: 0.0098mm chords) puts
+            # several unused endpoints inside the tol box; a shared endpoint
+            # of a real tessellation is exactly coincident, so nearest-wins
+            # always takes the true continuation, where first-wins latched
+            # onto a neighbour, dead-ended, and dropped the whole ring --
+            # a footprint-carried cut-out window then never became a
+            # board_cutout and check_drc could not see copper crossing it.
+            best_i, best_far, best_d = -1, None, None
+            for dbx in (-1, 0, 1):
+                for dby in (-1, 0, 1):
                     for i in seg_buckets.get((bx + dbx, by + dby), []):
                         if i in used:
                             continue
                         seg = group_segs[i]
-                        if approx_equal(seg[0], current_end):
-                            polygon.append(seg[1])
-                            used.add(i)
-                            found_next = True
-                            break
-                        elif approx_equal(seg[1], current_end):
-                            polygon.append(seg[0])
-                            used.add(i)
-                            found_next = True
-                            break
+                        for far, near in ((seg[1], seg[0]), (seg[0], seg[1])):
+                            if not approx_equal(near, current_end):
+                                continue
+                            d = math.hypot(near[0] - current_end[0],
+                                           near[1] - current_end[1])
+                            if best_d is None or d < best_d:
+                                best_i, best_far, best_d = i, far, d
 
-            if not found_next:
+            if best_i < 0:
                 break
+            polygon.append(best_far)
+            used.add(best_i)
 
         # Remove duplicate closing point
         gap_filled = False
