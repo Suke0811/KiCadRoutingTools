@@ -96,8 +96,35 @@ class Chain(object):
         return False
 
 
-def film(boards, layout='sidebar', tween=4, size=320, stage_out=None):
-    """`(frames, movie, stage, geom)` from the real build_boards + Stage."""
+def rip_trace(board, path, n=240, rip=24):
+    """A copper trace for `board` that ROUTES, RIPS and RE-ROUTES, written to
+    `path`: `n` segments landed over three events, the first `rip` of them
+    ripped (retracted) and grown back as a reroute (a growth stage with its
+    finished self hidden under it), then the rest of the copper and the vias.
+    """
+    import json
+    import animate_route as A
+    from kicad_parser import parse_kicad_pcb
+    pcb = parse_kicad_pcb(board)
+    layers = list(pcb.board_info.copper_layers)
+    segs, vias = A._board_rows(pcb, layers)
+    third = max(1, n // 3)
+    ev = [{'event': 'route', 'net_name': 'n%d' % k,
+           'add_s': segs[k * third:(k + 1) * third]} for k in range(3)]
+    ev.append({'event': 'rip', 'net_name': 'n0', 'by': 'n9',
+               'del_s': segs[:rip]})
+    ev.append({'event': 'reroute', 'net_name': 'n0', 'add_s': segs[:rip]})
+    ev.append({'event': 'route', 'net_name': 'rest', 'add_s': segs[n:],
+               'add_v': vias})
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump({'layers': layers, 'events': ev}, f)
+    return path
+
+
+def film(boards, layout='sidebar', tween=4, size=320, stage_out=None,
+         traces=None):
+    """`(frames, movie, stage, geom)` from the real build_boards + Stage.
+    `traces` maps a step index to a trace file for that step."""
     import animate_route as A
     import movie_camera as MC
     st = MC.Stage(MC.synth_rounds(boards), '', tween=tween, quiet=True)
@@ -110,7 +137,8 @@ def film(boards, layout='sidebar', tween=4, size=320, stage_out=None):
     MC.Stage.attach = _attach
     geom = []
     try:
-        steps = [('step %d' % i, b, None) for i, b in enumerate(boards)]
+        steps = [('step %d' % i, b, (traces or {}).get(i))
+                 for i, b in enumerate(boards)]
         frames = A.build_boards(steps, boards[-1], size, 1, None, 2, 6,
                                 stage=st, layout=layout, geom_out=geom,
                                 stage_out=stage_out)
