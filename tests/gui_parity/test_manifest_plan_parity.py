@@ -18,15 +18,17 @@ itself". This is the converter half of GUI/CLI parity; the apply half
 test_gui_engine_parity.py under KiCad's python.
 
 Example-driven checks only see a flag that a manifest uses AND a table here
-names. check_route_flag_coverage closes that for route.py: it enumerates EVERY
-flag the real parser accepts and requires each to reach the GUI, or to be
-listed CLI-only or as a known gap with the reason. Its run_all half, with the
+names. check_flag_coverage closes that for each FLAG_COVERAGE tool (route.py,
+route_diff.py, route_planes.py, bga_fanout.py): it enumerates EVERY flag the
+real parser accepts and requires each to reach the GUI, or to be listed
+CLI-only or as a known gap with the reason. Its run_all half, with the
 negative controls, is tests/test_route_flag_plan_coverage.py.
 
 Run:  python3 tests/gui_parity/test_manifest_plan_parity.py [manifest ...]
       (no args -> every runs_set*/*/redo_commands.sh under $STRESS_DIR)
 Exit code 1 on any mismatch.
 """
+import functools
 import glob
 import os
 import sys
@@ -71,6 +73,7 @@ SCALAR_FLAGS = {
     '--guide-corridor-layer': 'guide_corridor_layer_ctrl',
     '--guide-corridor-spacing': 'guide_corridor_spacing_ctrl',
     '--keepout-layer': 'keepout_layer_ctrl',
+    '--diff-chamfer-extra': 'chamfer_extra',
 }
 BOOL_FLAGS = {
     '--no-bga-zones': 'no_bga_zone', '--no-bga-zone': 'no_bga_zone',
@@ -86,7 +89,7 @@ BOOL_FLAGS = {
     # converter's fallthrough carried it as `bus`, which reaches no control:
     # a replayed step routed with bus mode OFF. Its control is bus_enabled.
     '--bus': 'bus_enabled',
-    # Found by check_route_flag_coverage below: controls with another name.
+    # Found by check_flag_coverage below: controls with another name.
     '--can-swap-to-top-layer': 'can_swap_to_top',
     '--skip-routing': 'skip_routing_check',
     # #856's switch. The converter held it as a VALUE flag, which ate the
@@ -96,6 +99,12 @@ BOOL_FLAGS = {
     # Their enabling switches, carried by the fallthrough onto ai_plan's
     # keepout / guide_corridor aliases.
     '--keepout': 'keepout', '--guide-corridor': 'guide_corridor',
+    # Found by the enumeration over route_diff.py and bga_fanout.py.
+    '--diff-pair-intra-match': 'intra_match_check',
+    '--ac-couple-match': 'ac_couple_check',
+    '--check-for-previous': 'check_previous',
+    '--no-inner-top-layer': 'no_inner_top',
+    '--force-escape-direction': 'force_escape',
 }
 # route.py `--no-X` flags whose GUI home is a POSITIVE checkbox: the step must
 # carry that checkbox's name with the value False. Asserting only that the
@@ -119,6 +128,10 @@ LIST_FLAGS = {
     '--rip-existing-nets': 'rip_existing_nets',
     '--polarity-swap-nets': 'polarity_swap_nets',
     '--coplanar-nets': 'coplanar_nets',
+    # bga_fanout's future-pour declaration: collected by the converter and
+    # then never copied into the step (26 kept corpus steps on 18 boards).
+    '--plane-net-layers': 'plane_net_layers',
+    '--layer-costs': 'layer_costs',
 }
 # Per-action overrides of SCALAR_FLAGS. #381 D4: route_diff.py's trace width is
 # --track-width, but its GUI home is the diff tab's diff_pair_width control (not
@@ -303,7 +316,10 @@ def check_pair(argv, step):
             got = [str(x) for x in got] if isinstance(got, list) else \
                   ([str(got)] if got is not None else [])
             n += 1
-            if not set(want).issubset(set(got)):
+            # Compare as the converter's _num normalises: a recorded
+            # `--layer-costs 1.0 3.0` is carried as [1, 3], the same numbers.
+            if not ({str(_num(w)) for w in want}
+                    <= {str(_num(g)) for g in got}):
                 bad.append((a, f"want {want} got {got}"))
             continue
         i += 1
@@ -437,6 +453,9 @@ _MUST_RESOLVE = {
     'guide_corridor_layer', 'guide_corridor_layer_ctrl',
     'guide_corridor_spacing', 'guide_corridor_spacing_ctrl',
     'keepout_layer', 'keepout_layer_ctrl',
+    # route_diff / bga_fanout fallthrough names older conversions carry.
+    'diff_pair_intra_match', 'ac_couple_match', 'diff_chamfer_extra',
+    'check_for_previous', 'no_inner_top_layer', 'force_escape_direction',
 }
 
 
@@ -766,6 +785,104 @@ _ROUTE_PROBE = ['python3', 'py_router/route.py', 'in.kicad_pcb',
                 'out.kicad_pcb', '--nets', 'PROBE_NET']
 _PROBE_VALUE = 'PROBE_VALUE'
 
+# The other tools. A reason route.py already gives is reused verbatim where
+# the flag means the same thing there (the shared registrars and the file /
+# diagnostic flags); the rest are the tool's own.
+_SAME_AS_ROUTE = ('--debug-lines', '--debug-memory', '--enable-used-layers',
+                  '--keep-thermal', '--net-clearances', '--output',
+                  '--overwrite', '--schematic-dir', '--strict-sizes',
+                  '--verbose')
+
+DIFF_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in _SAME_AS_ROUTE}
+# KNOWN GAPS, PENDING ANDY'S DECISION (route_diff.py).
+DIFF_KNOWN_GAPS = {
+    '--diff-pair-centerline-setback': (
+        "its control exists (differential_tab.centerline_setback, 0 = auto, "
+        "which the diff tab passes as diff_pair_centerline_setback) but "
+        "reset_params_to_defaults never restores it, so an alias alone would "
+        "leak one step's setback into every later diff step. Fix: alias + "
+        "reset line. 0 recorded uses"),
+}
+
+PLANES_CLI_ONLY = dict(
+    {f: ROUTE_CLI_ONLY[f] for f in ('--debug-lines', '--enable-used-layers',
+                                    '--keep-thermal', '--output',
+                                    '--overwrite', '--strict-sizes',
+                                    '--verbose')},
+    **{'--dry-run': "analysis only, writes no board (the planes tab always "
+                    "runs create_plane with dry_run=True and applies the "
+                    "result to the live board itself)",
+       '--skip-existing-zones': "the planes tab always behaves as if it were "
+                                "given (skip_existing_zones=True: keep an "
+                                "existing same-net zone on the live board); "
+                                "what it cannot replay is the flag's ABSENCE"})
+# KNOWN GAPS, PENDING ANDY'S DECISION (route_planes.py). No control on the
+# planes tab: planes_gui hands create_plane a fixed default for each, so a
+# recorded non-default value is lost. They steer the routed connections of a
+# multi-net (Voronoi split) plane layer and its zone fill. 0 recorded uses of
+# any of them.
+PLANES_KNOWN_GAPS = {
+    '--min-thickness': "no control; planes_gui passes "
+                       "defaults.PLANE_MIN_THICKNESS",
+    '--plane-max-iterations': "no control; planes_gui passes "
+                              "defaults.MAX_ITERATIONS",
+    '--plane-proximity-cost': "no control; planes_gui passes 2.0",
+    '--plane-proximity-radius': "no control; planes_gui passes 3.0",
+    '--plane-track-via-clearance': "no control; planes_gui passes "
+                                   "defaults.PLANE_TRACK_VIA_CLEARANCE",
+    '--voronoi-seed-interval': "no control; planes_gui passes 2.0",
+}
+
+BGA_CLI_ONLY = {'--output': ROUTE_CLI_ONLY['--output']}
+# KNOWN GAPS, PENDING ANDY'S DECISION (bga_fanout.py).
+BGA_KNOWN_GAPS = {
+    '--diff-pairs': (
+        "takes net PATTERNS; the fanout tab's only control is the "
+        "'Differential pairs' checkbox, which sends ['*'] (every pair) or "
+        "nothing, so a replay cannot scope the pairs. The largest measured "
+        "replay loss: 51 kept steps on 36 corpus boards, all with specific "
+        "patterns (DDR CK/DQS, PCIe, HDMI, ...). Needs a pattern control or "
+        "a code change"),
+    '--diff-pair-gap': (
+        "no control: fanout_gui hard-codes defaults.BGA_DIFF_PAIR_GAP (#493 "
+        "stopped it leaking the diff tab's gap), so a recorded gap is lost -- "
+        "the same 51 kept steps record 0.09, 0.1, 0.1143, 0.127, 0.15, "
+        "0.2032 and 0.25 mm. Needs a control"),
+    '--primary-escape': (
+        "its control is the escape_direction RadioBox, which the plan "
+        "executor's _set_control cannot set (no RadioBox branch, no "
+        "SetValue) and reset_params_to_defaults does not restore. Needs a "
+        "special handler + reset line. 0 recorded uses"),
+}
+
+# The tools whose EVERY flag is held to account: the plan action a recorded
+# command converts to, and the probe -- a command that already names its
+# scope, so a switch's trailing PROBE_VALUE lands as an ignored positional
+# while a valued flag (the scope flag included) takes it. Each tool carries
+# its own lists, because a flag can mean different things on two tools.
+FLAG_COVERAGE = {
+    'route.py': dict(action='route', probe=_ROUTE_PROBE,
+                     cli_only=ROUTE_CLI_ONLY, known_gaps=ROUTE_KNOWN_GAPS,
+                     reset_gaps=ROUTE_RESET_KNOWN_GAPS),
+    'route_diff.py': dict(
+        action='route_diff',
+        probe=['python3', 'py_router/route_diff.py', 'in.kicad_pcb',
+               'out.kicad_pcb', '--nets', 'PROBE_NET'],
+        cli_only=DIFF_CLI_ONLY, known_gaps=DIFF_KNOWN_GAPS, reset_gaps={}),
+    'route_planes.py': dict(
+        action='route_planes',
+        probe=['python3', 'py_router/route_planes.py', 'in.kicad_pcb',
+               'out.kicad_pcb', '--nets', 'PROBE_NET', '--plane-layers',
+               'In1.Cu'],
+        cli_only=PLANES_CLI_ONLY, known_gaps=PLANES_KNOWN_GAPS,
+        reset_gaps={}),
+    'bga_fanout.py': dict(
+        action='fanout',
+        probe=['python3', 'py_router/bga_fanout.py', 'in.kicad_pcb',
+               'out.kicad_pcb', '--component', 'U1', '--nets', 'PROBE_NET'],
+        cli_only=BGA_CLI_ONLY, known_gaps=BGA_KNOWN_GAPS, reset_gaps={}),
+}
+
 # The widget classes the executor's _set_control can SET: its explicit
 # CheckBox / SpinCtrl / SpinCtrlDouble / Choice branches, plus the wx classes
 # that reach its `hasattr(ctrl, "SetValue")` branch. A Button, a StaticText, a
@@ -807,6 +924,7 @@ def _local_wx_bindings(node):
     return out
 
 
+@functools.lru_cache(maxsize=None)
 def _class_widgets():
     """{class name: {attribute: wx class}} for every SETTABLE control.
 
@@ -946,19 +1064,22 @@ def _keys_read(nodes, var):
     return keys
 
 
-def _route_apply_facts():
-    """What ai_plan does with a ROUTE step, read by AST (it imports wx).
+@functools.lru_cache(maxsize=None)
+def _apply_facts(action):
+    """What ai_plan does with a step of `action`, read by AST (it imports wx).
 
     Returns (skip, block, special_handled, selection_keys):
-      skip             _GENERIC_SKIP['route'] -- params the generic loop leaves
-                       to the route action block;
-      block            string constants in apply_step_params's route block, so
-                       a skipped param is proved HANDLED there, not dropped;
+      skip             _GENERIC_SKIP[action] -- params the generic loop leaves
+                       to the action block;
+      block            string constants in apply_step_params's block for the
+                       action, so a skipped param is proved HANDLED there, not
+                       dropped;
       special_handled  names _apply_special actually tests `name` against: a
                        _PARAM_SPECIAL entry with no branch returns False and is
                        logged "ignored" like any other;
-      selection_keys   top-level step keys apply_step_selection's route branch
-                       reads, directly or through a helper it hands `step` to.
+      selection_keys   top-level step keys apply_step_selection's branch for
+                       the action reads, directly or through a helper it hands
+                       `step` to.
     """
     tree = ast.parse((REPO / "kicad_routing_plugin" / "ai_plan.py").read_text(
         encoding='utf-8'))
@@ -968,15 +1089,15 @@ def _route_apply_facts():
         if (isinstance(n, ast.Assign) and len(n.targets) == 1
                 and isinstance(n.targets[0], ast.Name)
                 and n.targets[0].id == '_GENERIC_SKIP'):
-            skip = set(ast.literal_eval(n.value).get('route', ()))
-    block = _strings_in(_action_branch(apply, 'route') or [])
+            skip = set(ast.literal_eval(n.value).get(action, ()))
+    block = _strings_in(_action_branch(apply, action) or [])
     special_handled = set()
     for c in ast.walk(_function(apply, '_apply_special')):
         if (isinstance(c, ast.Compare) and isinstance(c.left, ast.Name)
                 and c.left.id == 'name'):
             special_handled |= _strings_in(c.comparators)
     branch = _action_branch(_function(tree, 'apply_step_selection'),
-                            'route') or []
+                            action) or []
     keys = _keys_read(branch, 'step')
     for n in branch:
         for c in ast.walk(n):
@@ -990,14 +1111,45 @@ def _route_apply_facts():
     return skip, block, special_handled, keys
 
 
+@functools.lru_cache(maxsize=None)
 def _reset_touched():
-    """Controls swig_gui's reset_params_to_defaults restores: every `self.X`
-    it names, plus the `for _name in (...): getattr(self, _name [+ sfx])`
-    loops it uses for the geometry floors."""
+    """Control names swig_gui's reset_params_to_defaults restores.
+
+    It reaches the tab panels three ways besides `self.X`: a local alias
+    (`_po = self.planes_tab.create_options; _po.stitch_pitch.SetValue(..)`),
+    a holder search driven by a table of NAMES (`_fctl('exit_margin')` over
+    the fanout tab and its option panels), and delegation to another dialog
+    method (`self.reset_cap_params_to_defaults()`). So a control counts as
+    restored when the reset -- or a dialog method it calls -- names it as an
+    attribute or as an identifier string, plus the `for _name in (...):
+    getattr(self, _name + sfx)` loops of the geometry floors.
+
+    Names, not owner paths: this leans on control names being disjoint
+    across the owners a step searches, which ai_plan's _ACTION_OWNERS comment
+    measured on the live dialog (#772).
+    """
     tree = ast.parse((REPO / "kicad_routing_plugin" / "swig_gui.py").read_text(
         encoding='utf-8'))
-    fn = _function(tree, 'reset_params_to_defaults')
-    touched = {c.attr for c in ast.walk(fn) if _is_self_attr(c)}
+    cls = next(n for n in tree.body
+               if isinstance(n, ast.ClassDef) and n.name == 'RoutingDialog')
+    methods = {m.name: m for m in cls.body if isinstance(m, ast.FunctionDef)}
+    touched, seen, todo = set(), set(), ['reset_params_to_defaults']
+    while todo:
+        name = todo.pop()
+        if name in seen or name not in methods:
+            continue
+        seen.add(name)
+        fn = methods[name]
+        for c in ast.walk(fn):
+            if isinstance(c, ast.Attribute):
+                touched.add(c.attr)
+            elif (isinstance(c, ast.Constant) and isinstance(c.value, str)
+                  and c.value.isidentifier()):
+                touched.add(c.value)
+            if (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                    and _is_self_attr(c.func)):
+                todo.append(c.func.attr)
+    fn = methods['reset_params_to_defaults']
     for loop in ast.walk(fn):
         if not (isinstance(loop, ast.For) and isinstance(loop.target, ast.Name)
                 and isinstance(loop.iter, (ast.Tuple, ast.List))):
@@ -1018,41 +1170,47 @@ def _reset_touched():
     return touched
 
 
-def route_flags():
-    """Every long flag route.py's argparse accepts, from the capability
-    scanner test_798 holds exact against the parser."""
+def tool_flags(tool):
+    """Every long flag `tool`'s argparse accepts, from the capability scanner
+    test_798 holds exact against the parsers."""
     sys.path.insert(0, str(REPO))
     import krt_capabilities as caps
-    return caps.script_flags(caps._tool_path(caps.ROOT, 'route.py'))
+    return caps.script_flags(caps._tool_path(caps.ROOT, tool))
 
 
-def check_route_flag_coverage():
+def check_flag_coverage(tool):
     """Return (bad, rows): [(flag, why)] and {flag: (disposition, detail)}.
 
-    The probe converts `route.py ... --nets PROBE_NET <flag> PROBE_VALUE` and
-    diffs it against the same step without the flag, so whatever the flag
+    The probe converts the tool's FLAG_COVERAGE probe plus `<flag>
+    PROBE_VALUE` and diffs it against the probe alone, so whatever the flag
     contributes -- params, step keys, a refusal, or nothing -- is what gets
-    resolved. A `--no-X` flag is probed a second time BARE, as a manifest
-    records a switch, to check the sense it lands with."""
-    flags = sorted(route_flags())
+    resolved, on the owners the step's ACTION searches. A `--no-X` flag is
+    probed a second time BARE, as a manifest records a switch, to check the
+    sense it lands with."""
+    spec = FLAG_COVERAGE[tool]
+    action, probe = spec['action'], spec['probe']
+    cli_only, known_gaps = spec['cli_only'], spec['known_gaps']
+    reset_gaps = spec['reset_gaps']
+    flags = sorted(tool_flags(tool))
     bad, rows = [], {}
-    if '--nets' not in flags or len(flags) < 50:
-        return ([('<route.py>', 'the flag scan returned %d flags without '
-                  '--nets -- it read nothing, so it would check nothing'
-                  % len(flags))], rows)
+    if len(flags) < 10:
+        return ([('<%s>' % tool, 'the flag scan returned %d flags -- it read '
+                  'nothing, so it would check nothing' % len(flags))], rows)
     aliases, special = _ai_plan_tables()
     owners = _action_owners_table() or {}
-    tab_attr, subs = owners.get('route', (None, ()))
+    tab_attr, subs = owners.get(action, (None, ()))
     chain = list(subs) + ([tab_attr] if tab_attr else []) + ['<dialog>']
     widgets = _class_widgets()
     reach = [(o, widgets.get(_OWNER_CLASSES.get(o, ''), {})) for o in chain]
-    skip, block, special_handled, sel_keys = _route_apply_facts()
+    skip, block, special_handled, sel_keys = _apply_facts(action)
     reset = _reset_touched()
     # Flags the converter itself reads a VALUE for (its tables are its arity).
+    renamed = m2p.TOOL_FLAG_ALIASES.get(tool, {})
     valued = (set(m2p.FLAG_PARAMS) | set(m2p.LIST_FLAGS)
               | set(m2p.GROUP_LIST_FLAGS)
-              | set(m2p.TOOL_FLAG_PARAMS.get('route.py', {})))
-    base = m2p.parse_command(list(_ROUTE_PROBE))
+              | set(m2p.TOOL_FLAG_PARAMS.get(tool, {}))
+              | set(m2p.TOOL_OPTIONAL_LIST_FLAGS.get(tool, {})))
+    base = m2p.parse_command(list(probe))
 
     def _control(p):
         tgt = aliases.get(p, p)
@@ -1070,18 +1228,18 @@ def check_route_flag_coverage():
                       and step.get(k) != base.get(k))
         return new, keys
 
-    for listed in (ROUTE_CLI_ONLY, ROUTE_KNOWN_GAPS, ROUTE_RESET_KNOWN_GAPS):
+    for listed in (cli_only, known_gaps, reset_gaps):
         for flag, why in listed.items():
             if flag not in flags:
-                bad.append((flag, "STALE list entry: route.py no longer "
-                                  "accepts this flag"))
+                bad.append((flag, "STALE list entry: %s no longer accepts "
+                                  "this flag" % tool))
             if not (isinstance(why, str) and why.strip()):
                 bad.append((flag, "list entry carries no reason"))
-    for flag in sorted(set(ROUTE_CLI_ONLY) & set(ROUTE_KNOWN_GAPS)):
-        bad.append((flag, "on BOTH ROUTE_CLI_ONLY and ROUTE_KNOWN_GAPS"))
+    for flag in sorted(set(cli_only) & set(known_gaps)):
+        bad.append((flag, "on BOTH the CLI-only and the known-gaps list"))
 
     for flag in flags:
-        step = m2p.parse_command(_ROUTE_PROBE + [flag, _PROBE_VALUE])
+        step = m2p.parse_command(probe + [flag, _PROBE_VALUE])
         missing, got, controls = [], [], set()
         if step is None:
             missing.append('the converter returns no step at all')
@@ -1095,7 +1253,7 @@ def check_route_flag_coverage():
             for p, v in sorted(new.items()):
                 if p in skip or p in special:
                     # Mirrors the generic loop's order: skip, then special.
-                    where, names = (('the route action block', block)
+                    where, names = (('the %s action block' % action, block)
                                     if p in skip else
                                     ('_apply_special', special_handled))
                     if p in names:
@@ -1107,14 +1265,14 @@ def check_route_flag_coverage():
                 tgt, owner, kind = _control(p)
                 if owner is None:
                     missing.append('param %r -> %r, which is no settable '
-                                   'control on the route owners %s'
-                                   % (p, tgt, chain))
+                                   'control on the %s owners %s'
+                                   % (p, tgt, action, chain))
                     continue
                 if isinstance(v, bool) and kind != 'CheckBox':
                     missing.append('switch param %r lands on the %s %r'
                                    % (p, kind, tgt))
                     continue
-                if flag in valued and kind == 'CheckBox':
+                if renamed.get(flag, flag) in valued and kind == 'CheckBox':
                     missing.append('the converter reads a VALUE for it, but '
                                    '%r lands on the CheckBox %r, which holds '
                                    'only on/off' % (p, tgt))
@@ -1125,12 +1283,11 @@ def check_route_flag_coverage():
                 if k in sel_keys:
                     got.append(f'step[{k!r}]')
                 else:
-                    missing.append(f'step[{k!r}], which the route selection '
-                                   f'never reads')
+                    missing.append(f'step[{k!r}], which the {action} '
+                                   f'selection never reads')
             if flag.startswith('--no-'):
                 # SENSE, from the BARE switch a manifest actually records.
-                bare = m2p.parse_command(_ROUTE_PROBE[:4] + [flag]
-                                         + _ROUTE_PROBE[4:])
+                bare = m2p.parse_command(probe[:4] + [flag] + probe[4:])
                 for p, v in sorted(_delta(bare)[0].items()):
                     tgt, owner, kind = _control(p)
                     want = tgt.startswith('no_')
@@ -1141,34 +1298,32 @@ def check_route_flag_coverage():
                             'POSITIVE checkbox %r must untick it' % (p, v, tgt))
         reached = bool(got) and not missing
         detail = '; '.join(got if reached else missing + got)
-        if flag in ROUTE_CLI_ONLY:
-            rows[flag] = ('cli-only', ROUTE_CLI_ONLY[flag])
-        elif flag in ROUTE_KNOWN_GAPS:
-            rows[flag] = ('known-gap', ROUTE_KNOWN_GAPS[flag])
+        if flag in cli_only:
+            rows[flag] = ('cli-only', cli_only[flag])
+        elif flag in known_gaps:
+            rows[flag] = ('known-gap', known_gaps[flag])
         else:
             rows[flag] = ('reached' if reached else 'NOT REACHED', detail)
-        if reached and (flag in ROUTE_CLI_ONLY or flag in ROUTE_KNOWN_GAPS):
+        if reached and (flag in cli_only or flag in known_gaps):
             bad.append((flag, "STALE list entry: it now reaches the GUI (%s); "
-                              "take it off %s" % (detail, 'ROUTE_CLI_ONLY'
-                              if flag in ROUTE_CLI_ONLY
-                              else 'ROUTE_KNOWN_GAPS')))
-        elif not reached and flag not in ROUTE_CLI_ONLY \
-                and flag not in ROUTE_KNOWN_GAPS:
+                              "take it off %s's %s list" % (
+                                  detail, tool, 'CLI-only' if flag in cli_only
+                                  else 'known-gaps')))
+        elif not reached and flag not in cli_only and flag not in known_gaps:
             bad.append((flag, "NOT REACHED -- %s. Map it onto its control (a "
                               "manifest_to_plan row, or an ai_plan alias), or "
-                              "list it in ROUTE_CLI_ONLY with the reason, or "
-                              "in ROUTE_KNOWN_GAPS" % detail))
+                              "list it for %s as CLI-only with the reason, or "
+                              "as a known gap" % (detail, tool)))
         unreset = sorted(c for c in controls if c not in reset) \
             if reached else []
-        if unreset and flag not in ROUTE_RESET_KNOWN_GAPS:
+        if unreset and flag not in reset_gaps:
             bad.append((flag, "LEAKS between plan steps: %s %s not restored "
                               "by reset_params_to_defaults" % (
                                   ', '.join(unreset),
                                   'is' if len(unreset) == 1 else 'are')))
-        elif not unreset and flag in ROUTE_RESET_KNOWN_GAPS:
-            bad.append((flag, "STALE ROUTE_RESET_KNOWN_GAPS entry: its "
-                              "control is reset now (or it no longer "
-                              "reaches one)"))
+        elif not unreset and flag in reset_gaps:
+            bad.append((flag, "STALE reset-gap entry: its control is reset "
+                              "now (or it no longer reaches one)"))
     return bad, rows
 
 
@@ -1427,17 +1582,21 @@ def main():
     for p, why in own_bad:
         print(f"    {p}: {why}")
 
-    # EVERY route.py flag, not the ones a manifest happened to use (self-
-    # contained, no corpus needed).
-    flag_bad, rows = check_route_flag_coverage()
-    tally = {}
-    for disp, _detail in rows.values():
-        tally[disp] = tally.get(disp, 0) + 1
-    print(f"\nRoute flag coverage: {'OK' if not flag_bad else 'FAILED'} "
-          f"({len(rows)} route.py flags: "
-          + ', '.join(f"{n} {d}" for d, n in sorted(tally.items())) + ").")
-    for f, why in flag_bad:
-        print(f"    {f}: {why}")
+    # EVERY flag of each FLAG_COVERAGE tool, not the ones a manifest happened
+    # to use (self-contained, no corpus needed).
+    flag_bad = []
+    for tool in FLAG_COVERAGE:
+        bad_t, rows = check_flag_coverage(tool)
+        tally = {}
+        for disp, _detail in rows.values():
+            tally[disp] = tally.get(disp, 0) + 1
+        print(f"\nFlag coverage, {tool}: {'OK' if not bad_t else 'FAILED'} "
+              f"({len(rows)} flags: "
+              + ', '.join(f"{n} {d}" for d, n in sorted(tally.items()))
+              + ").")
+        for f, why in bad_t:
+            print(f"    {f}: {why}")
+        flag_bad += bad_t
 
     # #459 placement-block flags (self-contained, no corpus needed).
     grp_bad = check_group_flags()

@@ -310,6 +310,18 @@ _PARAM_CONTROL_ALIASES = {
     # occurrence's patterns under the fallthrough name; the text control takes
     # them as one group. New conversions emit length_match_groups (special).
     'length_match_group': 'length_match_groups_ctrl',
+    # route_diff.py / bga_fanout.py flags whose control has another name,
+    # under the fallthrough names older conversions carry.
+    'diff_pair_intra_match': 'intra_match_check',
+    'ac_couple_match': 'ac_couple_check',
+    'diff_chamfer_extra': 'chamfer_extra',
+    'check_for_previous': 'check_previous',
+    'no_inner_top_layer': 'no_inner_top',
+    'force_escape_direction': 'force_escape',
+    # --layer-costs on a fanout or plane step: both tabs read the shared
+    # Basic-tab control (#288, #381 D6). Route and diff steps never get here
+    # -- their action blocks format it (see _GENERIC_SKIP).
+    'layer_costs': 'layer_costs_ctrl',
 }
 # _PARAM_SPECIAL: params handled by _apply_special() (composite / inverted /
 # panel-backed controls that a plain SetValue can't fill).
@@ -320,9 +332,11 @@ _PARAM_SPECIAL = {'layers', 'no_bga_zone', 'no_bga_zones', 'power_nets',
                   # #381 D5:
                   'impedance', 'length_match_groups', 'swappable_nets',
                   # #486:
-                  'coplanar_nets',
-                  # review parity finding 5:
-                  'plane_net_layers'}
+                  'coplanar_nets'}
+# (plane_net_layers left _PARAM_SPECIAL: its handler looked for the control on
+# the DIALOG, which never had one -- it is on fanout_tab.bga_options -- so it
+# was logged "ignored" on every step. The alias above reaches it through the
+# fanout owners #772 widened to the option panels.)
 
 # #439: geometry-floor param -> its Basic-tab override checkbox attribute. A plan
 # step that names one of these is the GUI equivalent of the CLI passing that flag,
@@ -569,15 +583,6 @@ def apply_step_params(step, dialog):
             if ctl is None:
                 return False
             ctl.SetValue(_join_nets(value) if isinstance(value, (list, tuple))
-                         else str(value or ''))
-            return True
-        if name == 'plane_net_layers':
-            # Review parity finding 5: NET:LAYER[,...] spec list -> the
-            # space-separated fanout text control (specs contain no spaces).
-            ctl = getattr(dialog, 'plane_net_layers_ctrl', None)
-            if ctl is None:
-                return False
-            ctl.SetValue(' '.join(value) if isinstance(value, (list, tuple))
                          else str(value or ''))
             return True
         if name == 'power_nets_widths' and isinstance(value, (list, tuple)):

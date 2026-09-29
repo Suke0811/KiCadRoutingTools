@@ -150,6 +150,8 @@ FLAG_PARAMS = {
     '--guide-corridor-layer': 'guide_corridor_layer_ctrl',
     '--guide-corridor-spacing': 'guide_corridor_spacing_ctrl',
     '--keepout-layer': 'keepout_layer_ctrl',
+    # route_diff.py's meander chamfer multiplier: the diff tab's control.
+    '--diff-chamfer-extra': 'chamfer_extra',
     # (#856's --relax-drc-severities is a store_true switch and lives in
     # BOOL_FLAGS. It used to sit here, where the value branch consumed the
     # NEXT token as its value: `--relax-drc-severities --clearance 0.1`
@@ -250,6 +252,13 @@ BOOL_FLAGS = {
     # #856: opt-in severity relaxation (ai_plan aliases it onto its checkbox).
     # A switch, so it must not consume the next token -- see FLAG_PARAMS.
     '--relax-drc-severities': 'relax_drc_severities',
+    # Found by the flag enumeration over route_diff.py and bga_fanout.py:
+    # each has a control, reset per step, under another name.
+    '--diff-pair-intra-match': 'intra_match_check',     # route_diff
+    '--ac-couple-match': 'ac_couple_check',              # route_diff
+    '--check-for-previous': 'check_previous',            # bga_fanout
+    '--no-inner-top-layer': 'no_inner_top',              # bga_fanout
+    '--force-escape-direction': 'force_escape',          # bga_fanout
 }
 # route.py `--no-X` flags whose GUI home is a POSITIVE checkbox (default on).
 # The converter emits the control's own name with False, the CAP_BOOL_FLAGS
@@ -553,9 +562,12 @@ def parse_command(argv):
     elif action == 'fanout':
         step['kind'] = 'bga' if tool == 'bga_fanout.py' else 'qfn'
         step['nets'] = [str(n) for n in nets] or ['*']
+    # --plane-net-layers was collected above and then never copied out: the
+    # LIST_FLAGS row's own comment says a converted plan used to drop it, and
+    # it still did (26 kept bga_fanout steps on 18 corpus boards).
     for k in ('--power-nets', '--power-nets-widths', '--layer-costs',
               '--layers', '--polarity-swap-nets', '--coplanar-nets',
-              '--rip-existing-nets'):
+              '--rip-existing-nets', '--plane-net-layers'):
         if k in lists:
             step['params'][LIST_FLAGS[k]] = lists[k]
     return step
