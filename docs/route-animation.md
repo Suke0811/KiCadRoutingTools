@@ -1046,6 +1046,19 @@ Three tools are optional:
   cache, else an installed Chrome.
 
 Without any one of them the board box holds the 2D X-ray, and the film says why.
+The line reads, for example, `stage3d: 2D X-ray in the board box -- no Node.js
+on PATH`.
+
+**Choosing the board.** `--board-3d auto|2d|blender` on either CLI, else
+`$KICAD_MOVIE_BOARD3D` (default `auto`: the 3D board when this machine can
+render it). The variable is the only way for a front end with no flag of its
+own -- the GUI recorder and place_route_loop's film -- to choose; `2d` asks for
+the X-ray.
+
+The 3D state frames live in a temp directory until the film is written, and the
+front ends remove them right after `save_movie` (`stage3d.film.cleanup()`), not
+only at exit: in a long-lived KiCad process an exit handler would be the only
+removal, and every film would leave its PNGs behind.
 
 **A hi-fi backend (#1089):** `--board-3d blender` renders the SAME scene and
 timeline in Blender's Cycles on the CPU (`py_router/stage3d/blender_scene.py`,
@@ -1054,9 +1067,6 @@ standard install). Physically lit, several times slower, and deterministic the
 same way: CPU device, fixed seed and samples, no denoiser, and the PNGs
 re-encoded without Cycles' render-time metadata (identical pictures were
 different files). `tests/test_1081_blender.py` self-skips without Blender.
-The line reads, for example, `stage3d: 2D X-ray in the board box -- no Node.js
-on PATH`. `--board-3d 2d` asks for the X-ray. The GUI recorder is unaffected,
-because it never asks for a layout.
 
 **The 3D board replays the film; it does not re-derive it.**
 `animate_route.build_boards` records one stage state per frame. Each record
@@ -1074,11 +1084,23 @@ a flip, a glide, a rip-and-retract and a regrowth. For each frame, the record
 alone must rebuild exactly the copper the X-ray drew, so the two views cannot
 disagree event for event.
 
-The flip is the Stage's own: the board turns on the frames the X-ray turns, about
-the screen-vertical axis, so the far side comes up mirrored left-right as the 2D
-film shows it. A film without a Stage has no flip in 2D. There, and only there,
-a 3D-only rule faces the back while back-side work has held for a second, and the
-timeline's `side_rule` says so.
+**The board faces the work** (`stage3d.timeline.activity_sides`), turning
+about the screen-vertical axis, so the far side comes up mirrored left-right as
+the 2D film shows it. A glide faces the side its parts are on, copper faces the
+layer it lands on, an inner layer keeps whatever face is showing, and the board
+turns about a second BEFORE the work begins. This is deliberately not the 2D
+Stage's rule, which flips for placement only and never flips back. Stray work
+does not turn it:
+
+| constant (`py_router/stage3d/timeline.py`) | value | meaning |
+|---|---|---|
+| `AUTO_DWELL_S` | 1.0 | a glide on the other face turns the board once it lasts this long |
+| `COPPER_DWELL_S` | 4.0 | copper must hold the other face this long |
+| `HOLD_S` | 6.0 | after a turn copper decided, no copper turn sooner than this |
+
+A routing film lands copper chunk after chunk on alternating layers; at a 1 s
+dwell the 853-frame `routed_output` film turned 27 times, and it turns 6 times
+under these values. The timeline's `side_rule` names the rule and the count.
 
 **Parts** are always a body box plus their pads, read from the board itself, in
 each part's own frame, so a part that turns while it glides (#1086) turns in 3D

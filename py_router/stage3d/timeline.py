@@ -233,7 +233,7 @@ def build(stage_out, *, fps=6.0, stage_present=True) -> dict:
     `layers`, `segs` / `vias` (rows with `born`, `died` op indices),
     `epochs` (part poses per board), `frames` (one per film frame, each an
     index into `states`), `states` (the distinct per-frame states) and
-    `side_rule` ('stage' or 'auto: ...')."""
+    `side_rule` (the activity rule and its turn count)."""
     log = stage_out['log']
     segs = _ops_items(stage_out['ops_s'], 'seg')
     vias = _ops_items(stage_out['ops_v'], 'via')
