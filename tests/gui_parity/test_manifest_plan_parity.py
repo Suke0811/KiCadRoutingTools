@@ -233,6 +233,20 @@ def _positional_nets(argv):
     return out
 
 
+def _component_refs(argv):
+    """The references after a route.py --component / -C (nargs='+'), up to the
+    next option or a positional board file. Derived independently of
+    manifest_to_plan, like the positional helpers above."""
+    out = []
+    for i, a in enumerate(argv):
+        if a in ('--component', '-C'):
+            for b in argv[i + 1:]:
+                if b.startswith('-') or b.endswith('.kicad_pcb'):
+                    break
+                out.append(b)
+    return out
+
+
 def check_pair(argv, step):
     """Return list of (flag, reason) mismatches for one command/step pair."""
     params = step.get('params', {})
@@ -324,6 +338,27 @@ def check_pair(argv, step):
                 bad.append(('<positional nets>',
                             f"want {want_nets} got {got_nets} "
                             f"(missing {missing})"))
+
+    # route.py --component: every reference must survive, and a step that
+    # names components but no patterns must carry NO pattern. route.py drops
+    # power/ground from a component's nets only in that case; a '*' fallback
+    # would turn it into the intersection that keeps them (and before the
+    # route selection read the refs at all, into "route every net").
+    if step.get('action') == 'route':
+        want_refs = _component_refs(argv)
+        if want_refs:
+            got_refs = step.get('components') or (
+                [step['component']] if step.get('component') else [])
+            n += 1
+            if [str(r) for r in got_refs] != want_refs:
+                bad.append(('--component', f"want refs {want_refs} got "
+                                           f"{got_refs}"))
+            named = (_positional_nets(argv)
+                     or any(a == '--nets' or a.startswith('--nets=')
+                            for a in argv))
+            if not named and step.get('nets'):
+                bad.append(('--component', f"a component-only step must carry "
+                                           f"nets [], got {step.get('nets')}"))
 
     # --plane-layers must survive as the assignment layers
     pl = _plane_layers(argv)
@@ -688,12 +723,6 @@ ROUTE_CLI_ONLY = {
 # converter row or an alias. Listed so this gate stays green while the list
 # stays visible; taking an entry off is that code change.
 ROUTE_KNOWN_GAPS = {
-    '--component': (
-        "converts to step['component'] / step['components'], which the "
-        "route action never reads (apply_step_selection reads step['nets'] "
-        "and step['group'] only), so a replayed `route.py --component U1` "
-        "routes EVERY net. Fix: resolve the refs in the route selection "
-        "branch, as the fanout branch does"),
     '--no-fix-drc-settings': (
         "its inverse is the 'Fix DRC settings after routing' box "
         "(fix_drc_check), a persisted preference reset_params_to_defaults "

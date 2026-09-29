@@ -240,6 +240,9 @@ def step_label(index, step):
         shown = " ".join(nets[:4]) + (" ..." if len(nets) > 4 else "")
         power = (step.get("params") or {}).get("power_nets")
         suffix = f" (power: {' '.join(power)})" if power else ""
+        refs = _step_component_refs(step)
+        if refs:
+            shown = (f"{shown} of " if shown else "") + " ".join(refs)
         return f"{index}. Route nets: {shown}{suffix}"
     if action == "route_planes":
         parts = []
@@ -971,9 +974,19 @@ def apply_step_selection(step, dialog, all_steps=None):
     # silently grant protection-override to nets this step never named.
     dialog._plan_net_globs = None
     if action == "route":
-        globs = step.get("nets") or ["*"]
+        # route.py --component (one or more refs, #537): its nets, composed
+        # with the step's patterns exactly as route.py composes them. The
+        # scope defaults to "*" only when the step names no patterns AND no
+        # component, so a component-only step carries `nets: []`, and its
+        # raw patterns (net_name_patterns) are then [] like the CLI's.
+        refs = _step_component_refs(step)
+        explicit = [str(g) for g in (step.get("nets") or [])]
+        globs = explicit or ([] if refs else ["*"])
         dialog._plan_net_globs = list(globs)
-        names = _match_net_names(dialog.pcb_data, globs)
+        names = _match_net_names(dialog.pcb_data, globs) if globs else []
+        if refs:
+            names = _route_component_net_names(dialog.pcb_data, refs, names,
+                                               bool(explicit), notes)
         # Drop wildcard-selected plane nets only from route steps that run
         # BEFORE the first plane step (routing a whole rail as tracks there
         # fights the later pour). A route step AFTER the planes keeps them:
@@ -1119,6 +1132,44 @@ def _group_net_names(pcb_data, step, names, notes):
     if not narrowed:
         notes.append(f"route: --group {block!r} ({scope}) selected no nets")
     return narrowed
+
+
+def _step_component_refs(step):
+    """The component references a route step names: manifest_to_plan writes
+    one as step['component'] and several as step['components']."""
+    refs = step.get("components") or step.get("component") or []
+    if isinstance(refs, str):
+        refs = [refs]
+    return [str(r) for r in refs if str(r).strip()]
+
+
+def _route_component_net_names(pcb_data, refs, pattern_names, explicit, notes):
+    """route.py's --component composition, verbatim.
+
+    With patterns (--nets or positional) the components' nets are INTERSECTED
+    with what the patterns matched, power included: the operator named what
+    they want. Without patterns the components' nets ARE the scope, less
+    POWER_NET_EXCLUSION_PATTERNS. A reference that matches no footprint is an
+    error on the CLI (argparse exit 2), so the step selects nothing rather
+    than routing the remaining subset.
+    """
+    from net_queries import nets_for_components
+    from routing_constants import POWER_NET_EXCLUSION_PATTERNS
+    sel = nets_for_components(
+        pcb_data, refs,
+        exclude_patterns=None if explicit else POWER_NET_EXCLUSION_PATTERNS)
+    if sel.unmatched_patterns:
+        notes.append(f"route: --component matched no footprint for "
+                     f"{sel.unmatched_patterns}; the CLI refuses this step, "
+                     f"so it selects nothing")
+        return []
+    if explicit:
+        in_components = set(sel.net_names)
+        return [n for n in pattern_names if n in in_components]
+    if sel.excluded_names:
+        notes.append(f"route: --component dropped {len(sel.excluded_names)} "
+                     f"power/ground net(s), as the CLI does without --nets")
+    return list(sel.net_names)
 
 
 def _component_net_names(pcb_data, ref, globs):

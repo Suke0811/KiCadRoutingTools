@@ -476,8 +476,15 @@ def parse_command(argv):
         # both positional retries of specific failed nets.
         # Empty still legitimately means "all nets" (what the CLI does with no
         # net args), so the ['*'] fallback stays for genuinely net-less steps.
+        # NOT for a --component step: route.py defaults to '*' only when no
+        # component is named either, and a component-only step routes that
+        # component's nets LESS power/ground, which a '*' pattern would turn
+        # into the intersection that keeps them. ai_plan reads the empty list
+        # as "no patterns", the CLI's own reading.
         net_globs = [p for p in positional if not p.endswith('.kicad_pcb')]
-        step['nets'] = [str(n) for n in (nets or net_globs)] or ['*']
+        has_refs = 'component' in step or 'components' in step
+        step['nets'] = ([str(n) for n in (nets or net_globs)]
+                        or ([] if has_refs else ['*']))
     elif action == 'route_diff':
         # route_diff.py takes its pair patterns POSITIONALLY, after the input and
         # output boards -- there is no --pairs flag on the real CLI:

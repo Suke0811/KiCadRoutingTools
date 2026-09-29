@@ -130,6 +130,37 @@ class TheBusFix(unittest.TestCase):
         self.assertIn("if 'bus_enabled' in settings:", persist)
 
 
+class TheComponentScope(unittest.TestCase):
+    """route.py --component, converter half. The route selection used to
+    ignore step['component'] entirely, so a replayed `--component U1` routed
+    every net; it now composes the refs as route.py does, which needs the
+    step to say whether it named any pattern at all."""
+
+    def _step(self, *flags):
+        import manifest_to_plan as m2p
+        return m2p.parse_command(['python3', 'py_router/route.py',
+                                  'in.kicad_pcb', 'out.kicad_pcb', *flags])
+
+    def test_a_component_only_step_names_no_pattern(self):
+        """route.py drops power/ground from the component's nets ONLY when no
+        pattern is given; a '*' fallback would keep them."""
+        step = self._step('--component', 'U1')
+        self.assertEqual(step.get('component'), 'U1')
+        self.assertEqual(step['nets'], [])
+
+    def test_patterns_given_are_kept_for_the_intersection(self):
+        step = self._step('--component', 'U1', '--nets', '*', '!GND')
+        self.assertEqual(step['nets'], ['*', '!GND'])
+
+    def test_several_refs_survive(self):
+        step = self._step('--component', 'U3', 'U4', 'J1*')
+        self.assertEqual(step.get('components'), ['U3', 'U4', 'J1*'])
+        self.assertEqual(step['nets'], [])
+
+    def test_a_step_with_no_scope_at_all_still_means_every_net(self):
+        self.assertEqual(self._step()['nets'], ['*'])
+
+
 class TheGuiParityGate(unittest.TestCase):
     """The counterpart this file is the run_all half of."""
 
@@ -272,6 +303,14 @@ class NegativeControls(unittest.TestCase):
                      "'bus': 'bus_enabled', 'no_smoothing': 'smoothing',")
         self._run(refuse="a --no-X switch landing on the POSITIVE checkbox "
                          "'smoothing' must untick it")
+
+    def test_the_route_selection_stops_reading_the_component(self):
+        """What shipped until now: the converter carried the refs and the
+        route selection never looked at them, so the step routed every net."""
+        self._mutate(AI_PLAN, 'refs = _step_component_refs(step)', 'refs = []',
+                     within='apply_step_selection')
+        self._run(refuse="--component: NOT REACHED -- step['component'], "
+                         "which the route selection never reads")
 
     def test_a_stale_cli_only_entry(self):
         self._mutate(GATE_REL, "ROUTE_CLI_ONLY = {",
