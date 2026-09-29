@@ -228,11 +228,49 @@ def test_copper_revealed_after_the_flip_is_mirrored():
                % (sum(flags), len(flags)))
 
 
+def test_the_key_is_drawn_after_the_mirror_at_any_supersample():
+    """The in-frame key (legacy layout, no rail) is TEXT: on a back-side
+    frame it must be drawn AFTER the mirror, at the renderer's supersampled
+    resolution -- the phase-2 verifier measured 94 of 140 key pixels wrong
+    at supersample 2 when it was drawn at 1x after the frame was finished.
+    Pinned structurally, on the calls the renderer receives: every mirrored
+    frame that carries a key carries it in `overlays_after_mirror`, never in
+    `overlays`, which the mirror would reverse."""
+    calls = []
+    orig = RR.BoardRenderer.frame
+
+    def _frame(self, *a, **k):
+        calls.append((k.get('mirror', False), list(k.get('overlays') or ()),
+                      list(k.get('overlays_after_mirror') or ())))
+        return orig(self, *a, **k)
+
+    def _is_key(fn):
+        return '_key_overlay' in getattr(fn, '__qualname__', '')
+    RR.BoardRenderer.frame = _frame
+    try:
+        with FC.Chain() as c:
+            import os as _os
+            tr = FC.rip_trace(c.boards[-1], _os.path.join(c.dir, 't.json'))
+            FC.film(c.boards, layout='legacy', traces={3: tr})
+    finally:
+        RR.BoardRenderer.frame = orig
+    mirrored = [x for x in calls if x[0]]
+    keyed = [x for x in mirrored if any(_is_key(f) for f in x[2])]
+    _check(mirrored and keyed,
+           '%d mirrored frames, %d carry the key after the mirror'
+           % (len(mirrored), len(keyed)))
+    _check(not any(_is_key(f) for x in mirrored for f in x[1]),
+           'no mirrored frame draws the key before the mirror')
+    _check(not any(x[2] for x in calls if not x[0]),
+           'the front side draws nothing after a mirror it does not have')
+
+
 TESTS = (
     test_one_chrome_record_and_one_stage_record_per_frame,
     test_no_caption_over_the_board_when_a_rail_carries_it,
     test_a_back_side_glide_draws_its_ghost,
     test_copper_revealed_after_the_flip_is_mirrored,
+    test_the_key_is_drawn_after_the_mirror_at_any_supersample,
 )
 
 

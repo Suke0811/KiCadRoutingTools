@@ -61,7 +61,8 @@ def _record_snaps(boards, tween):
         fp = self.r.pcb.footprints.get(REF) if self.r.pcb else None
         if fp is not None and REF in (self.movie.moving or ()):
             seen.append((label, fp.x, fp.y, fp.rotation, _offsets(fp),
-                         [p.rect_rotation for p in fp.pads]))
+                         [p.rect_rotation for p in fp.pads],
+                         [(p.size_x, p.size_y) for p in fp.pads]))
         return orig(self, label)
     MC.Stage._snap = _snap
     try:
@@ -125,6 +126,37 @@ def test_the_before_frame_of_a_cut_shows_the_source():
                % _max_dev(before[0][4], _offsets(src)))
         _check(_max_dev(before[0][4], _offsets(dst)) > 0.1,
                'and not the destination\'s')
+        # the pad RECTANGLES too, in the parser's normal form: a turned pad
+        # kept rect_rotation -90 and drew without its rounded corners
+        rr = [round(v, 6) for v in before[0][5]]
+        want = [round(p.rect_rotation or 0.0, 6) for p in src.pads]
+        _check(rr == want and before[0][6] == [(p.size_x, p.size_y)
+                                              for p in src.pads],
+               'the "before" frame\'s pad rectangles are the source '
+               'parse\'s (rect_rotation %s vs %s)' % (rr[:3], want[:3]))
+
+
+def test_the_stage_record_holds_resting_rotations():
+    """Each epoch's pose table holds the part at REST -- its rotation too
+    (the phase-2 verifier: the epoch check compared x/y only)."""
+    with FC.Chain(rot_u1=90.0) as c:
+        out = {}
+        FC.film(c.boards, tween=10, stage_out=out)
+        rots = []
+        for tab in out['epochs']:
+            r = tab.get(REF)
+            if r and (not rots or rots[-1] != r[2]):
+                rots.append(r[2])
+        _check(rots[:1] == [180.0] and rots[-1] == 270.0
+               and all(v in (180.0, 270.0) for v in rots),
+               'U1 rests at 180, then at 270 -- never a mid-turn angle (%s)'
+               % rots)
+        mid = [r['moving'][REF][2] for r in out['log']
+               if REF in (r.get('moving') or {})]
+        _check(len(mid) == 10 and mid[-1] == 270.0 and
+               all(180.0 < m <= 270.0 for m in mid),
+               'the glide frames carry the turning angle (%s)'
+               % [round(m, 1) for m in mid])
 
 
 def test_the_turn_takes_the_short_way_round():
@@ -138,11 +170,18 @@ def test_the_turn_takes_the_short_way_round():
                % (a, b, got, want))
     _check(MC.turn_deg({'from': [0, 0], 'to': [0, 0]}) == 0.0,
            'a pose without a rotation does not turn')
+    for ang, want in ((0, (0.0, 2, 1)), (-90, (0.0, 1, 2)),
+                      (180, (0.0, 2, 1)), (46, (-44.0, 1, 2)),
+                      (136, (-44.0, 2, 1))):
+        _check(MC.fold_rect(ang, 2, 1) == want,
+               'fold_rect(%s) = %s (want %s)'
+               % (ang, MC.fold_rect(ang, 2, 1), want))
 
 
 TESTS = (
     test_the_glide_starts_at_the_source_orientation_and_lands_exactly,
     test_the_before_frame_of_a_cut_shows_the_source,
+    test_the_stage_record_holds_resting_rotations,
     test_the_turn_takes_the_short_way_round,
 )
 

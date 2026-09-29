@@ -755,8 +755,8 @@ class Stage:
                          [(p, [list(pt) for pt in (p.polygons or [])])
                           for p in fp.pads if getattr(p, 'polygons', None)],
                          {'rot': fp.rotation or 0.0,
-                          'rr': [(p, p.rect_rotation or 0.0)
-                                 for p in fp.pads],
+                          'rr': [(p, p.rect_rotation or 0.0, p.size_x,
+                                  p.size_y) for p in fp.pads],
                           # an OFFSET drill's hole is absolute too
                           'holes': [(p, p.hole_x, p.hole_y)
                                     for p in fp.pads
@@ -841,6 +841,22 @@ def turn_deg(move):
     return d - 360.0 if d > 180.0 else d
 
 
+def fold_rect(angle, sx, sy):
+    """A rectangle `sx` x `sy` tilted `angle` degrees, in the PARSER's own
+    normal form: the tilt folded to (-45, 45] with the sides swapped when the
+    fold crosses 90 -- which is how `kicad_parser._resolve_pad_rect` states an
+    orthogonal pad (tilt 0, sides swapped for 90), and the only tilt the
+    renderer draws a ROUNDED rectangle at. Unfolded, a pad turned 90 degrees
+    kept `rect_rotation -90` and lost its rounded corners through the whole
+    glide (the phase-2 verifier: 4.5% of U1's pixels)."""
+    a = angle % 180.0
+    if a > 135.0:
+        return a - 180.0, sx, sy
+    if a > 45.0:
+        return a - 90.0, sy, sx
+    return a, sx, sy
+
+
 def _offset_to(fp, home, dx, dy, phi=0.0):
     """Pose `fp` at its home (destination) pose offset by `(dx, dy)` and
     turned by `phi` KiCad degrees about its origin (#1086).
@@ -860,8 +876,8 @@ def _offset_to(fp, home, dx, dy, phi=0.0):
             p.polygons = [[(x + dx, y + dy) for x, y in poly] for poly in orig]
         if extra is not None:
             fp.rotation = extra['rot']
-            for p, rr in extra['rr']:
-                p.rect_rotation = rr
+            for p, rr, sx, sy in extra['rr']:
+                p.rect_rotation, p.size_x, p.size_y = rr, sx, sy
             for p, hx0, hy0 in extra.get('holes', ()):
                 p.hole_x, p.hole_y = hx0 + dx, hy0 + dy
         return
@@ -877,8 +893,8 @@ def _offset_to(fp, home, dx, dy, phi=0.0):
         p.polygons = [[_turn(x, y) for x, y in poly] for poly in orig]
     if extra is not None:
         fp.rotation = extra['rot'] + phi
-        for p, rr in extra['rr']:
-            p.rect_rotation = rr - phi
+        for p, rr, sx, sy in extra['rr']:
+            p.rect_rotation, p.size_x, p.size_y = fold_rect(rr - phi, sx, sy)
         for p, hx0, hy0 in extra.get('holes', ()):
             p.hole_x, p.hole_y = _turn(hx0, hy0)
 
