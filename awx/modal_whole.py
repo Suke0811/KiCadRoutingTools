@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Modal app: the WHOLE ROUTE's K ladder (whole_chain.sh), one container per rung.
+"""Modal app: the WHOLE ROUTE's K ladder (whole_route.py), one container per rung.
 
     modal run awx/modal_whole.py --ks 15,28,35,41,51 --out DIR
 
-Each rung runs whole_chain.sh (the fanout on the whole route's ends, the solve, the loop, the route, the checks) in
+Each rung runs whole_route.py (the fanout on the whole route's ends, the solve, the loop, the route, the checks) in
 its own container and sends back its log and its routed board, written to DIR/kK.log and DIR/kK_seq.kicad_pcb, so a
 cloud ladder can be held against the laptop's copper for copper. The stack is the LAPTOP's: its Python (3.14) and
 the same pinned numpy / scipy / shapely / ortools (modal_k.py: a python or numpy change moves routed copper). The
@@ -55,7 +55,7 @@ def run_rung(K: int, rounds: int = 3) -> dict:
     wd = f"{REPO}/awx"
     out = f"/tmp/whole_k{K}"
     t0 = time.time()
-    p = subprocess.run(["zsh", "whole_chain.sh", str(K), out, str(rounds)], cwd=wd,
+    p = subprocess.run(["python3", "whole_route.py", str(K), out, str(rounds)], cwd=wd,
                        capture_output=True, text=True, errors="replace")
     board = ""
     for r in range(rounds, 0, -1):

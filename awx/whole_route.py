@@ -1,0 +1,567 @@
+#!/usr/bin/env python3
+"""whole_route.py K OUTDIR [ROUNDS] -- the whole route on rung K, end to end, in Python.
+   whole_route.py --loop SOLVE.json OUTDIR [ROUNDS] -- the loop alone on a solve (the bench from BENCH / NETS / DEST).
+
+The same chain as whole_chain.sh and whole_loop.sh, and the same stages run the same way: each stage is its own
+process, given the environment and the arguments the shell scripts give it, in the same order, on the same branches.
+What changes is only the driver, which no longer needs zsh.
+
+The chain (whole_chain.sh): the fanout choosing every net's tooth and berth with the whole route's ends model
+(fanout_from_plan, PLAN_JUDGE=ends), the solve (whole_solve), the loop (below) and the route all at once (route_lanes),
+graded (check_connected, check_drc). When the loop does not pass, the ends its audits found crowded (whole_gate --hot ->
+whole_feedback) go back to the fanout (FEEDBACK=), which chooses again INCREMENTALLY from the previous round's board;
+up to ROUNDS fanouts (default 3). BASE (default fb_t2q_pairs.kicad_pcb) is the bench, DEST (default DU1) its
+destination part, both from the environment as the shell script reads them.
+
+The loop (whole_loop.sh), every step fed by a MEASUREMENT of the one before: geometry (whole_geo), polish
+(whole_polish), audit (whole_audit through whole_gate); side flips the polish could not avoid go to the geometry again
+on the same solve, or with cuts and findings to the solve again; a smooth plan that passes has its pairs laid first
+(whole_snap --pairs), the singles fitted round them (whole_polish; SNAP_KEEP where a single is short) and snapped
+(whole_snap), audited, gated and linted. A loop that is NOT CONVERGING stops (exit 3), and so does one whose findings
+stand at the ENDS (exit 4, the fanout's to change). Each stage goes through stage_cache.py, on by default here as in
+whole_loop.sh (STAGE_CACHE=0 runs every stage).
+
+Exits 0 with OUTDIR/rN/seq.kicad_pcb routed, connected and DRC-clean; the last line is the grade:
+  WHOLE K=.. round=.. lanes=../.. vias=.. copper=..mm connected=0|1 drc=0|1 secs=..
+1: no fanout board, or the route not connected or not DRC-clean; 2: no proved solve; 3: the rounds ran out.
+--loop exits 0 with OUTDIR/plan.json the snapped plan that passed, 1 when no round got there, 3 when it stopped not
+converging, 4 when it stopped at crowded ends.
+"""
+KRT_TOOL = {'scope': [], 'kind': 'actor'}   # #937: a research tool (awx), catalogued, shown at no door
+
+import argparse
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import traceback
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PYR = os.path.normpath(os.path.join(HERE, '..', 'py_router'))
+PY = sys.executable
+PATIENCE = 2                               # the loop's rounds in a row without a new best
+INHERIT = object()                         # run(to=INHERIT): the command's output where the driver's own goes
+
+
+# =============================================================================== running a stage
+class Log:
+    """where the driver's own lines go: the console for the chain, the round's loop.log for the loop"""
+
+    def __init__(self, f=None):
+        self.f = f
+
+    def __call__(self, s=''):
+        if self.f is None:
+            print(s, flush=True)
+        else:
+            self.f.write(s + '\n')
+            self.f.flush()
+
+
+def run(argv, env, log_path=None, err=None, to=None):
+    """`python3 ARGV...` in awx/ as the shell runs it: stdout and stderr to LOG_PATH (`> log 2>&1`), or both to the
+    open file TO (a command inside the loop left unredirected: its lines land in the loop's log), or stdout captured
+    and stderr to ERR (the loop's own log, as `$(...)` inside it leaves it); (exit code, stdout)"""
+    if log_path is not None:
+        with open(log_path, 'w') as f:
+            return subprocess.run([PY] + argv, cwd=HERE, env=env, stdout=f, stderr=subprocess.STDOUT).returncode, ''
+    if to is INHERIT:
+        return subprocess.run([PY] + argv, cwd=HERE, env=env).returncode, ''
+    if to is not None:
+        return subprocess.run([PY] + argv, cwd=HERE, env=env, stdout=to, stderr=to).returncode, ''
+    p = subprocess.run([PY] + argv, cwd=HERE, env=env, stdout=subprocess.PIPE, stderr=err or subprocess.DEVNULL,
+                       text=True)
+    return p.returncode, p.stdout
+
+
+def lines_of(path):
+    try:
+        with open(path) as f:
+            return f.read().splitlines()
+    except OSError:
+        return []
+
+
+def grep(path, pattern):
+    """the lines of PATH matching the extended regex PATTERN"""
+    r = re.compile(pattern)
+    return [ln for ln in lines_of(path) if r.search(ln)]
+
+
+def tail(path, n):
+    return lines_of(path)[-n:]
+
+
+def prefixed(text, prefix):
+    """`echo "$text" | sed 's/^/PREFIX/'`: every line prefixed, an empty text one prefixed empty line"""
+    return '\n'.join(prefix + ln for ln in (text.split('\n') if text else ['']))
+
+
+def stripped(s):
+    """`$(...)`: the output less its trailing newlines"""
+    return s.rstrip('\n')
+
+
+# =============================================================================== the loop (whole_loop.sh)
+def nflips(files):
+    """the side flips in a comma list of polish outputs, every file's"""
+    return len({tuple(x) for f in files.split(',') if f for x in json.load(open(f)).get('flips', [])})
+
+
+def findings(gate_line):
+    """the findings in a gate line (whole_gate's summary): dive, static, shape, swim, pitch in the plan, band outside
+    (0/1); a gate line without its counts (an audit that did not run to its end) counts as many"""
+    s = gate_line
+    try:
+        n = sum(int(re.search(k + r' (\d+)', s).group(1)) for k in ('dive', 'static', 'shape', 'swim'))
+        n += int(re.search(r'pitch (\d+) in the plan', s).group(1))
+        n += int(re.search(r'band broken (\d+)', s).group(1)) if 'band broken' in s else 0
+        n += int(re.search(r'(\d+) lane\(s\) missing', s).group(1)) if 'missing' in s else 0     # a lane a snap could not lay
+        return n + (1 if float(re.search(r'band ([\d.]+) mm', s).group(1)) > 0 else 0)
+    except AttributeError:
+        return 999
+
+
+class NotConverging(Exception):
+    pass
+
+
+def loop(solve, out, rounds, env, log):
+    """whole_loop.sh SOLVE OUTDIR ROUNDS, its lines to LOG: 0 with OUTDIR/plan.json the snapped plan that passed, 1 when
+    no round got there, 3 when it stopped not converging, 4 when it stopped at crowded ends"""
+    env = dict(env)
+    # the braid's plan environment the planning reads (a pages-first sidecar's paging, its pairs)
+    env.update(BRAID_PAIRS='1', BRAID_EXACT_PAGES='0', PLAN_PAGES_SIDERS='2')
+    # every expensive stage through stage_cache.py -- on here, a harness's cache (STAGE_CACHE=0 runs them all)
+    env['STAGE_CACHE'] = env.get('STAGE_CACHE') or '1'
+    env['TAUT_MEMO'] = env.get('TAUT_MEMO') or '1'
+    os.makedirs(out, exist_ok=True)
+    O = lambda name: os.path.join(out, name)
+    solve = os.path.abspath(solve)
+    st = dict(flips=env.get('SEED_FLIPS', ''), cuts=env.get('SEED_CUTS', ''), hist=env.get('SEED_HIST', ''),
+              best=-1, best_i=0, stall=0, solve=solve)
+    # what a command inside the loop leaves unredirected: the round's loop.log in the chain, the terminal on its own
+    err = log.f if log.f is not None else sys.stderr
+    unredirected = log.f if log.f is not None else INHERIT
+
+    def stage(outs, script, args, logp, **extra):
+        """a stage through stage_cache.py, `> LOGP 2>&1`; its exit code"""
+        argv = ['stage_cache.py'] + [a for o in outs for a in ('--out', o)] + ['--', script] + list(args)
+        return run(argv, {**env, **extra}, log_path=logp)[0]
+
+    def gate(plan, audit, *more):
+        """whole_gate.py PLAN AUDIT [...]: (exit code, stdout), its stderr to the loop's log"""
+        rc, so = run(['whole_gate.py', plan, audit] + list(more), env, err=err)
+        return rc, stripped(so)
+
+    def addhot(plan, found, hot):
+        """an audit's findings as history: its hot places (whole_gate --hot), added when it names any"""
+        gate(plan, found, '--hot', hot)
+        try:
+            if len(json.load(open(hot))['hot']) == 0:
+                return False
+        except Exception:                                    # (the shell's test reads a python traceback as not "0")
+            traceback.print_exc(file=err)
+        st['hist'] = (st['hist'] + ',' if st['hist'] else '') + hot
+        return True
+
+    def failed(logp):
+        for ln in tail(logp, 3):
+            log(ln)
+        return 1
+
+    def progress(score, i, fresh=False):
+        # (fresh: the round found side flips it has not tried -- not a stall, whatever its score)
+        if st['best'] < 0 or score < st['best']:
+            st['best'], st['best_i'], st['stall'] = score, i, 0
+        elif not fresh:
+            st['stall'] += 1
+        if st['stall'] >= PATIENCE:
+            log(f"=== round {i}: NOT CONVERGING -- score {score}, the best {st['best']} at round {st['best_i']}, "
+                f"{PATIENCE} rounds without a better one")
+            raise NotConverging
+
+    def resolve(i):
+        """the solve again, warm, with every cut and every audit's history so far -- less an island cut a side flip has
+        answered since (the flip puts that lane on the island's other side; the cut would keep holding it off the
+        island); None when the solve failed"""
+        s2, cuts_out = O(f's{i + 1}.json'), O(f'cuts{i + 1}.json')
+        try:
+            fl = lambda fs: {tuple(x[:2]) for f in fs if f and os.path.isfile(f)
+                             for x in json.load(open(f)).get('flips', [])}
+            flipped = fl(st['flips'].split(','))
+            cuts, vcuts = [], []
+            for f in [f for f in st['cuts'].split(',') if f]:
+                c = json.load(open(f))
+                # a cut from the geometry of round k whose flip that geometry had ALREADY been given (a polish of an
+                # earlier round found it, or the seed): both sides of the island failed -- the solve hears of it.
+                # Only a cut the flip answers, one from before it, is dropped (zynq K42: DQ10's cut at C98, made again
+                # after its flip, never reached the solve)
+                m = re.search(r'/c(\d+)\.json$', f)
+                k = int(m.group(1)) if m else 0
+                given = fl(env.get('SEED_FLIPS', '').split(',') + [os.path.join(out, f'{nm}{j}.json')
+                                                                   for j in range(1, k) for nm in ('p', 'q', 'qk')])
+                cuts += [x for x in c.get('cuts', []) if (x['lane'], x['island']) not in flipped
+                         or (x['lane'], x['island']) in given]
+                vcuts += c.get('vcuts', [])
+            json.dump({'cuts': cuts, 'vcuts': vcuts}, open(cuts_out, 'w'))
+        except Exception:
+            traceback.print_exc(file=err)
+        if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log',
+                 HINT=st['solve'], CUTS=cuts_out, HIST=st['hist']) != 0:
+            return failed(s2[:-5] + '.log')
+        for ln in grep(s2[:-5] + '.log', r'whole_solve|vias|check|history'):
+            log('  ' + ln)
+        st['solve'] = s2
+        return None
+
+    def body():
+        for i in range(1, rounds + 1):
+            if os.path.exists(O(f'hp{i}.json')):
+                os.remove(O(f'hp{i}.json'))    # (a round that passes writes none: an earlier run's must not stand in)
+            flips = st['flips']
+            log(f"=== round {i}: geometry of {os.path.basename(st['solve'])}"
+                + (f" (flips from {os.path.basename(flips.split(',')[-1])})" if flips else ''))
+            g, p = O(f'g{i}.json'), O(f'p{i}.json')
+            if stage([g], 'whole_geo.py', [st['solve'], g], O(f'g{i}.log'), GEO_FLIPS_FROM=flips) != 0:
+                return failed(O(f'g{i}.log'))
+            if stage([p], 'whole_polish.py', [g, p], O(f'p{i}.log')) != 0:
+                return failed(O(f'p{i}.log'))
+            if stage([], 'whole_audit.py', [p], O(f'p{i}.audit')) != 0:
+                return failed(O(f'p{i}.audit'))
+            gl = gate(p, O(f'p{i}.audit'))[1]
+            log(prefixed(gl, '  smooth: '))
+            f = findings(gl)
+            before = nflips(flips) if flips else 0
+            after = nflips(p)
+            # the round's cuts -- the geometry's islands and via cuts, the polish's via cuts -- less an island cut that
+            # one of the round's NEW flips answers (the flip puts that lane on the island's other side)
+            gj, pj = json.load(open(g)), json.load(open(p))
+            old = {tuple(x) for fl in flips.split(',') if fl for x in json.load(open(fl)).get('flips', [])}
+            new = {tuple(x) for x in pj.get('flips', [])} - old
+            cuts = [c for c in gj.get('cuts', []) if (c['lane'], c['island']) not in new]
+            vcuts = gj.get('vcuts', []) + pj.get('vcuts', [])
+            json.dump({'cuts': cuts, 'vcuts': vcuts}, open(O(f'c{i}.json'), 'w'))
+            n = len(cuts) + len(vcuts)
+            passes = gate(p, O(f'p{i}.audit'))[0] == 0
+            if not passes and addhot(p, O(f'p{i}.audit'), O(f'hp{i}.json')):
+                n += 1
+            # a finding at the ENDS standing in two rounds running: the solve had its round and did not move it, the
+            # fanout must (whole_feedback --repeat; the fanout's sidecar beside BENCH) -- stopped here rather than
+            # solving again and again. Not while the round has new side flips: a flip is the geometry's own answer
+            sidecar = env['BENCH'][:-len('.kicad_pcb')] + '.plan.json' if env['BENCH'].endswith('.kicad_pcb') \
+                else env['BENCH'] + '.plan.json'
+            newflips = after > before
+            hp, hp0 = O(f'hp{i}.json'), O(f'hp{i - 1}.json')
+            if (not passes and not newflips and os.path.isfile(hp) and os.path.isfile(sidecar)
+                    and run(['whole_feedback.py', '--now', sidecar, hp], env, to=unredirected)[0] == 0):
+                # ...and at once, when a finding there is one no solve moves (a pitch or a static clearance at the ends)
+                log(f"=== round {i}: ENDS CROWDED -- findings at the ends no solve moves: the fanout's to change")
+                return 4
+            if (not passes and not newflips and i > 1 and os.path.isfile(hp0) and os.path.isfile(hp)
+                    and os.path.isfile(sidecar)
+                    and run(['whole_feedback.py', '--repeat', sidecar, hp0, hp], env, to=unredirected)[0] == 0):
+                log(f"=== round {i}: ENDS CROWDED -- the same findings at the ends two rounds running: "
+                    f"the fanout's to change")
+                return 4
+            if after > before:
+                progress(2000 + f, i, fresh=True)
+                st['flips'] = p                       # the polish output carries every flip so far
+                if n == 0:
+                    log(f"=== round {i}: {after - before} new side flip(s) -> the geometry again on the same solve")
+                    continue
+                # flips AND cuts or findings: both at once -- the solve with them, then the geometry with the flips
+                st['cuts'] = (st['cuts'] + ',' if st['cuts'] else '') + O(f'c{i}.json')
+                log(f"=== round {i}: {after - before} new side flip(s), and cuts or findings -> the solve again, "
+                    f"then the geometry with the flips")
+                rc = resolve(i)
+                if rc is not None:
+                    return rc
+                continue
+            if passes:
+                rc = smooth_passes(i)
+                if rc == 'continue':
+                    continue
+                return rc
+            progress(2000 + f, i)
+            if n == 0:
+                log(f"=== round {i}: no flips, no cuts and no findings with a place left")
+                return 1
+            st['cuts'] = (st['cuts'] + ',' if st['cuts'] else '') + O(f'c{i}.json')
+            log(f"=== round {i}: cuts or findings -> the solve again")
+            rc = resolve(i)
+            if rc is not None:
+                return rc
+        log("=== no round passed")
+        return 1
+
+    def smooth_passes(i):
+        """the PAIRS first, laid as the pair router moves (its turning radius, its straight dives), then the singles
+        fitted round them (the polish, the pairs held) and snapped: an exit code, or 'continue' for the next round"""
+        p = O(f'p{i}.json')
+        log(f"=== round {i}: the smooth plan passes -> the pairs laid first")
+        pairs, pl = O(f'pairs{i}.json'), O(f'pairs{i}.log')
+        if stage([pairs], 'whole_snap.py', [p, pairs, '--pairs'], pl) != 0 and not grep(pl, r'^SNAP FAILED'):
+            return failed(pl)
+        for ln in grep(pl, r'^snap:|FAILED'):
+            log('  ' + ln)
+        if grep(pl, r'^SNAP FAILED'):
+            # a pair the snap cannot lay: its dive nearest where it got stuck goes to the solve as a via cut
+            # (whole_snap's dive_cuts), and the solve again; a pair with no dive to move there stops
+            nd = None
+            try:
+                d = json.load(open(pairs)).get('dive_cuts', [])
+                json.dump({'vcuts': d}, open(O(f'dc{i}.json'), 'w'))
+                nd = len(d)
+            except Exception:
+                traceback.print_exc(file=err)
+            if nd == 0:
+                log(f"=== round {i}: a pair cannot be laid")
+                return 1
+            progress(1500, i)
+            st['cuts'] = (st['cuts'] + ',' if st['cuts'] else '') + O(f'dc{i}.json')
+            log(f"=== round {i}: a pair cannot be laid at a dive -> the solve again, {nd if nd is not None else ''} "
+                f"dive(s) moved (via cuts)")
+            rc = resolve(i)
+            return 'continue' if rc is None else rc
+        q = O(f'q{i}.json')
+        if stage([q], 'whole_polish.py', [pairs, q], O(f'q{i}.log')) != 0:
+            return failed(O(f'q{i}.log'))
+        if stage([], 'whole_audit.py', [q], O(f'q{i}.audit')) != 0:
+            return failed(O(f'q{i}.audit'))
+        gq = gate(q, O(f'q{i}.audit'))[1]
+        log(prefixed(gq, '  pairs held: '))
+        chosen = q
+        if gate(q, O(f'q{i}.audit'))[0] != 0:
+            # the singles do not fit round the pairs: the pairs laid AGAIN keeping each single's room where it was
+            # short (whole_snap SNAP_KEEP), then the singles fitted again round those
+            gate(q, O(f'q{i}.audit'), '--hot', O(f'hk{i}.json'))
+            # (a pair that cannot be laid so is no plan: the pairs laid first stand, and their singles' places go to
+            # the solve below; any other failure stops)
+            pk, pkl = O(f'pairs{i}k.json'), O(f'pairs{i}k.log')
+            if stage([pk], 'whole_snap.py', [p, pk, '--pairs'], pkl, SNAP_KEEP=O(f'hk{i}.json')) != 0:
+                if not grep(pkl, r'^SNAP FAILED'):
+                    return failed(pkl)
+                log(f"  pairs laid again, the singles kept room: {chr(10).join(grep(pkl, r'^SNAP FAILED'))}")
+            if not grep(pkl, r'^SNAP FAILED'):
+                qk = O(f'qk{i}.json')
+                if stage([qk], 'whole_polish.py', [pk, qk], O(f'qk{i}.log')) != 0:
+                    return failed(O(f'qk{i}.log'))
+                if stage([], 'whole_audit.py', [qk], O(f'qk{i}.audit')) != 0:
+                    return failed(O(f'qk{i}.audit'))
+                gk = gate(qk, O(f'qk{i}.audit'))[1]
+                log(prefixed(gk, '  pairs laid again, the singles kept room: '))
+                if gate(qk, O(f'qk{i}.audit'))[0] == 0:
+                    chosen = qk
+        if chosen == q and gate(q, O(f'q{i}.audit'))[0] != 0:
+            # the singles do not fit round the pairs: where they are short goes to the solve as history -- and the
+            # side flips the polish found with the pairs held go to the next geometry, as a smooth polish's do
+            qf = O(f'qk{i}.json') if os.path.isfile(O(f'qk{i}.json')) else q
+            o = {tuple(x) for fl in st['flips'].split(',') if fl for x in json.load(open(fl)).get('flips', [])}
+            nq = len({tuple(x) for x in json.load(open(qf)).get('flips', [])} - o)
+            if nq != 0:
+                st['flips'] = (st['flips'] + ',' if st['flips'] else '') + qf
+                log(f"  pairs held: {nq} new side flip(s) for the next geometry")
+            progress(1000 + findings(gq), i, fresh=nq != 0)
+            if not addhot(q, O(f'q{i}.audit'), O(f'hq{i}.json')):
+                log(f"=== round {i}: the singles do not fit round the pairs")
+                return 1
+            log(f"=== round {i}: the singles do not fit round the pairs -> the solve again, their places priced")
+            rc = resolve(i)
+            return 'continue' if rc is None else rc
+        # (a single the snap cannot lay leaves the plan without it -- the gate fails it -- and where it got stuck goes
+        # to the solve with the audit's findings below; any other failure stops)
+        plan, sl = O('plan.json'), O('snap.log')
+        if stage([plan], 'whole_snap.py', [chosen, plan], sl) != 0 and not grep(sl, r'^SNAP FAILED'):
+            return failed(sl)
+        for ln in grep(sl, r'^snap:|FAILED'):
+            log('  ' + ln)
+        if stage([], 'whole_audit.py', [plan], O('plan.audit')) != 0:
+            return failed(O('plan.audit'))
+        gs = gate(plan, O('plan.audit'))[1]
+        log(prefixed(gs, '  snapped: '))
+        with open(O('plan.lint'), 'w') as lf:
+            subprocess.run([PY, 'whole_lint.py', plan], cwd=HERE, env=env, stdout=lf, stderr=subprocess.STDOUT)
+        lint = (tail(O('plan.lint'), 1) or [''])[0]
+        log(f"  snapped: {lint}")
+        if gate(plan, O('plan.audit'))[0] == 0 and lint == 'LINT clean':
+            log(f"=== the plan passes: {plan}")
+            return 0
+        # the snapped plan is short: where goes to the solve as history -- the audit's places and the lint's (a lane
+        # folded at its end: the end it folds at), a finding with no place stops
+        folded = sum(1 for ln in lines_of(O('plan.lint')) if re.search(r'^LINT \S+ \S+ ', ln)
+                     and not re.search(r'^LINT( [a-z-]+ [0-9]+,?)+$', ln))
+        progress(findings(gs) + folded, i)
+        with open(O('plan.found'), 'w') as ff:
+            ff.write(open(O('plan.audit')).read() + open(O('plan.lint')).read())
+        if not addhot(plan, O('plan.found'), O(f'hs{i}.json')):
+            log(f"=== round {i}: the snapped plan does not pass")
+            return 1
+        log(f"=== round {i}: the snapped plan does not pass -> the solve again, its places priced")
+        rc = resolve(i)
+        return 'continue' if rc is None else rc
+
+    try:
+        return body()
+    except NotConverging:
+        return 3
+
+
+# =============================================================================== the chain (whole_chain.sh)
+def grade_counts(board, nets):
+    """(vias, copper mm) of the run's nets on BOARD, counted as the chain counts them"""
+    code = ("import sys, math, io, contextlib\n"
+            f"sys.path.insert(0, {PYR!r})\n"
+            "with contextlib.redirect_stdout(io.StringIO()):\n"
+            "    from kicad_parser import parse_kicad_pcb\n"
+            f"    p = parse_kicad_pcb({board!r})\n"
+            f"nets = set({sorted(nets)!r})\n"
+            "nm = {i: n.name.split('/')[-1] for i, n in p.nets.items()}\n"
+            "print(sum(1 for v in p.vias if nm.get(v.net_id) in nets),\n"
+            "      round(sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y) for s in p.segments "
+            "if nm.get(s.net_id) in nets)))\n")
+    p = subprocess.run([PY, '-c', code], cwd=HERE, stdout=subprocess.PIPE, text=True)
+    v, c = (p.stdout.split() + ['', ''])[:2]
+    return v, c
+
+
+def chain(K, o, R=3):
+    """whole_chain.sh K OUTDIR ROUNDS: the exit code, the grade the last line printed"""
+    o = os.path.abspath(o)
+    os.makedirs(o, exist_ok=True)
+    t0 = time.time()
+    secs = lambda: int(time.time() - t0)
+    env = dict(os.environ)
+    base = env.get('BASE') or 'fb_t2q_pairs.kicad_pcb'
+    dest = env.get('DEST') or 'DU1'
+    env.update(OMP_NUM_THREADS='1', VECLIB_MAXIMUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
+               TAUT_MEMO=env.get('TAUT_MEMO') or '1', PROBE_MEMO=env.get('PROBE_MEMO') or '1')
+    env.update(PYTHONHASHSEED='7', PLAN_PAGES='1', PLAN_JUDGE='ends', BRAID_PAIRS='1', PLAN_PAIRS='1',
+               BRAID_EXACT_PAGES='0', PLAN_PAGES_SIDERS='2')
+    if 'BASE' in os.environ:                     # (the shell's BASE and DEST reach a stage only when the caller set them)
+        env['BASE'] = base
+    if 'DEST' in os.environ:
+        env['DEST'] = dest
+    nets_out = run(['coherent_nets.py', str(K), f'--board={base}'], env)[1]
+    NETS = (nets_out.splitlines() or [''])[-1]
+    FB = os.path.join(o, 'feedback.json')
+    if os.path.exists(FB):
+        os.remove(FB)
+    prev = ''
+    say = Log()
+    r = 0
+    for r in range(1, R + 1):
+        d = os.path.join(o, f'r{r}')
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'nets.lines'), 'w') as f:
+            f.write(NETS.replace(',', '\n') + '\n')
+        say(f"=== fanout round {r}")
+        fenv = dict(env)
+        if os.path.isfile(FB):
+            fenv['FEEDBACK'] = FB
+        if prev:
+            fenv['INCREMENTAL'] = os.path.join(prev, 'fo.plan.json')
+        rc = run(['fanout_from_plan.py', os.path.join(d, 'fo.kicad_pcb'), str(K), f'--board={base}'], fenv,
+                 log_path=os.path.join(d, 'fo.log'))[0]
+        say(f"  fanout exit {rc} at {secs()} s")
+        for ln in grep(os.path.join(d, 'fo.log'), r'plan model'):
+            say(ln[:220])
+        if not os.path.isfile(os.path.join(d, 'fo.kicad_pcb')):
+            return 1, None
+        # the same ends as the round before (feedback it priced but did not follow): the rest of the round would be
+        # the same
+        if prev:
+            try:
+                same = json.load(open(os.path.join(d, 'fo.plan.json'))) == \
+                    json.load(open(os.path.join(prev, 'fo.plan.json')))
+            except Exception:
+                same = False
+            if same:
+                say(f"=== fanout round {r} laid round {r - 1}'s ends again")
+                r -= 1
+                break
+        bench = os.path.join(d, 'fo.kicad_pcb')
+        env.update(BENCH=bench, NETS=NETS, DEST=dest)
+        solve = os.path.join(d, 'solve.json')
+        run(['whole_solve.py', solve], env, log_path=os.path.join(d, 'solve.log'))
+        for ln in grep(os.path.join(d, 'solve.log'), r'whole_solve:|workers:'):
+            say(ln[:200])
+        if not os.path.isfile(solve):
+            say("  no proved plan -- stopping")
+            g = f"WHOLE K={K} round={r} lanes=0/0 vias=0 copper=0mm connected=0 drc=0 secs={secs()}"
+            say(g)
+            return 2, g
+        with open(os.path.join(d, 'loop.log'), 'w') as lf:
+            rc = loop(solve, os.path.join(d, 'loop'), 6, env, Log(lf))
+        for ln in grep(os.path.join(d, 'loop.log'), r'^=== round|smooth:|NOT CONVERGING|passes'):
+            say(ln[:170])
+        say(f"  loop exit {rc} at {secs()} s")
+        if rc == 0:
+            rr = ['--plan', os.path.join(d, 'loop', 'plan.json'), '--board', bench, '--nets', NETS, '--dest', dest]
+            del env['BENCH']
+            seq = os.path.join(d, 'seq.kicad_pcb')
+            run(['route_lanes.py', 'all'] + rr + ['--mode', 'seq', '--write', seq], {**env, 'BRAID_PAIR_SLACKS': '0'},
+                log_path=os.path.join(d, 'route_seq.log'))
+            sm = '\n'.join(grep(os.path.join(d, 'route_seq.log'), r'^SUMMARY'))
+            say(f"  all at once: {sm}")
+            nets = [n for n in lines_of(os.path.join(d, 'nets.lines')) for n in n.split()]
+            pats = [f'*{n}' for n in nets]
+            # (the checkers by the path the shell gives them, from awx/: their logs echo it)
+            checker = lambda name: os.path.join('..', 'py_router', name)
+            cc = run([checker('check_connected.py'), seq, '--nets'] + pats, env,
+                     log_path=os.path.join(d, 'conn.log'))[0]
+            dc = run([checker('check_drc.py'), seq, '--nets'] + pats + ['--clearance-margin', '0.1'], env,
+                     log_path=os.path.join(d, 'drc.log'))[0]
+            lanes = '\n'.join(m.split(' ')[0] for m in re.findall(r'[0-9]+/[0-9]+ in band', sm))
+            v, c = grade_counts(seq, set(nets))
+            g = (f"WHOLE K={K} round={r} lanes={lanes} vias={v} copper={c}mm connected={int(cc == 0)} "
+                 f"drc={int(dc == 0)} secs={secs()}")
+            say(g)
+            return int(cc != 0 or dc != 0), g
+        del env['BENCH']
+        hots = []
+        loopd = os.path.join(d, 'loop')
+        for a in sorted(glob.glob(os.path.join(loopd, 'p*.audit'))) + sorted(glob.glob(os.path.join(loopd, 'q*.audit'))):
+            j, h = a[:-len('.audit')] + '.json', a[:-len('.audit')] + '.fbhot.json'
+            run(['whole_gate.py', j, a, '--hot', h], env)
+            hots.append(h)
+        hots += sorted(glob.glob(os.path.join(loopd, 'hs*.json')))     # the snapped plans' places
+        p = subprocess.run([PY, 'whole_feedback.py', os.path.join(d, 'fo.plan.json'), FB] + hots, cwd=HERE, env=env,
+                           stdout=subprocess.PIPE, text=True)
+        fbl = stripped(p.stdout)
+        say(fbl)
+        # nothing new for the fanout: the next round would lay the same ends from the same feedback
+        if 'whole_feedback: 0 new' in fbl:
+            say("=== the feedback adds nothing new: another fanout lays the same ends")
+            break
+        sb = [m[len('source board: '):] for ln in lines_of(os.path.join(d, 'fo.log'))
+              for m in re.findall(r'source board: [^,]+', ln)]
+        prev = d
+        if sb and sb[-1] and os.path.isfile(os.path.join(d, sb[-1])):
+            base = os.path.join(d, sb[-1])
+            if 'BASE' in env:
+                env['BASE'] = base
+    g = f"WHOLE K={K} round={r} lanes=0/0 vias=0 copper=0mm connected=0 drc=0 secs={secs()}"
+    say(g)
+    return 3, g
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('first', metavar='K|SOLVE', help="the rung on the bench's ladder, or with --loop the solve JSON")
+    ap.add_argument('outdir', metavar='OUTDIR')
+    ap.add_argument('rounds', metavar='ROUNDS', nargs='?', type=int,
+                    help="the fanout rounds (default 3), or with --loop the loop's rounds (default 6)")
+    ap.add_argument('--loop', action='store_true',
+                    help='the loop alone on a solve, the bench from BENCH / NETS / DEST as every whole_* stage reads it')
+    a = ap.parse_args()
+    if a.loop:
+        sys.exit(loop(a.first, os.path.abspath(a.outdir), a.rounds or 6, dict(os.environ), Log()))
+    sys.exit(chain(a.first, a.outdir, a.rounds or 3)[0])
+
+
+if __name__ == '__main__':
+    main()

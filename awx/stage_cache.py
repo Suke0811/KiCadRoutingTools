@@ -15,7 +15,7 @@ directory listing, a subprocess's reads.
 
     python3 stage_cache.py --out g1.json -- whole_geo.py solve.json g1.json
 
-OFF BY DEFAULT: STAGE_CACHE=1 turns it on (a test harness redoing the same bench -- whole_loop.sh sets it); without it
+OFF BY DEFAULT: STAGE_CACHE=1 turns it on (a test harness redoing the same bench -- whole_route.py sets it); without it
 the stage runs and nothing is recorded. STAGE_CACHE_DIR is where entries live (default awx/tmp/stage_cache).
 """
 import atexit

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """whole_movie.py RUNDIR OUT.mp4 -- a film of one whole-route run (#622), from the fanout to the final copper.
 
-RUNDIR is whole_chain.sh's OUTDIR; the round that routed (rN/seq.kicad_pcb) is filmed. The film walks the stages the
+RUNDIR is whole_route.py's OUTDIR; the round that routed (rN/seq.kicad_pcb) is filmed. The film walks the stages the
 chain ran, in order -- the ends, the frame, the solve, the geometry, the polish, the snap, the audit, the route -- on
 the board, and draws the two SOLVERS' own decision spaces beside it:
 
@@ -27,9 +27,11 @@ RUNDIR/rN/movie/.
 
 usage: whole_movie.py RUNDIR OUT.mp4 [--fps 30] [--workers 6] [--stills DIR [--at T1,T2,..]] [--human BOARD]
                      [--speed X] [--force] [--scenes]
-The bench is the chain's: BASE (default fb_t2q_pairs.kicad_pcb) and DEST (default DU1) as whole_chain.sh reads them.
+The bench is the chain's: BASE (default fb_t2q_pairs.kicad_pcb) and DEST (default DU1) as whole_route.py reads them.
 Needs ffmpeg (libx264) for the mp4; --stills alone writes PNGs.
 """
+KRT_TOOL = {'scope': [], 'kind': 'instrument'}   # #937: a research tool (awx), catalogued, shown at no door
+
 import argparse
 import collections
 import contextlib
@@ -49,7 +51,7 @@ PYR = os.path.normpath(os.path.join(HERE, '..', 'py_router'))
 
 # =============================================================================== tracing (runs in a subprocess)
 def _chain_env(round_dir, dest):
-    """the environment whole_chain.sh and whole_loop.sh give a stage of this round"""
+    """the environment whole_route.py gives a stage of this round"""
     nets = [ln.strip() for ln in open(os.path.join(round_dir, 'nets.lines')) if ln.strip()]
     env = dict(os.environ)
     for k in ('HINT', 'CUTS', 'HIST', 'GEO_FLIPS_FROM', 'SEED_FLIPS', 'SEED_CUTS', 'SEED_HIST', 'SNAP_KEEP'):
@@ -314,7 +316,7 @@ def _parse(path):
 
 
 def loop_rounds(round_dir):
-    """the loop's rounds as whole_loop.sh ran them, replayed from its log: each round's solve and the side flips its
+    """the loop's rounds as whole_route.py ran them, replayed from its log: each round's solve and the side flips its
     geometry was given (GEO_FLIPS_FROM), and the round whose plan passed"""
     loop = os.path.join(round_dir, 'loop')
     rounds, flips, cur, passed = {}, [], None, None
@@ -358,7 +360,7 @@ def load_story(a):
     S.base_path = os.environ.get('BASE', 'fb_t2q_pairs.kicad_pcb')
     if not os.path.isabs(S.base_path):
         S.base_path = os.path.join(HERE, S.base_path)
-    if S.rn > 1:        # the round's own input: the previous round's source board (whole_chain.sh's BASE for it)
+    if S.rn > 1:        # the round's own input: the previous round's source board (whole_route.py's BASE for it)
         sb = re.findall(r'source board: ([^,]+)', _read(os.path.join(rdir, f'r{S.rn - 1}', 'fo.log')))
         if sb and os.path.isfile(os.path.join(rdir, f'r{S.rn - 1}', sb[-1].strip())):
             S.base_path = os.path.join(rdir, f'r{S.rn - 1}', sb[-1].strip())
@@ -891,7 +893,7 @@ class Film:
         self.bvia_new = [v for v in self.via_new if near_dst(v[0], v[1])]
         moved = sorted({s[6] for s in self.stub_gone} | {s[6] for s in self.teeth_new})
         self.moved_teeth = sorted({S.lane_of.get(m, m) for m in moved})
-        # the numbers of the result, counted as whole_chain.sh counts them
+        # the numbers of the result, counted as whole_route.py counts them
         self.vias_ours = len(self.seq_c[1])
         self.mm_ours = copper_len(self.seq_c[0])
         if self.human_c:

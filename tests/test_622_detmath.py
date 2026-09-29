@@ -111,11 +111,10 @@ def main():
           list(np.interp([-1.0, 2.0, 3.0], [0.0, 1.0, 2.0], [0.0, 10.0, 30.0])) == [0.0, 30.0, 30.0], 'np.interp keeps its contract')
 
     print('4. every chain stage installs first')
-    drivers = [os.path.join(AWX, d) for d in ('whole_chain.sh', 'whole_loop.sh')]
-    scripts = set()
-    for d in drivers:
-        txt = open(d).read()
-        scripts |= set(re.findall(r'python3 ([a-z_]+\.py)', txt)) | set(re.findall(r'-- ([a-z_]+\.py)', txt))
+    # the driver names each stage it runs as a string ('whole_geo.py'); the checkers it names live in py_router
+    driver = ast.parse(open(os.path.join(AWX, 'whole_route.py')).read())
+    scripts = {n.value for n in ast.walk(driver) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+               and re.fullmatch(r'[a-z_]+\.py', n.value) and os.path.isfile(os.path.join(AWX, n.value))}
     scripts.discard('stage_cache.py')                 # runs the stage in its own process, as __main__
     local = {f[:-3] for f in os.listdir(AWX) if f.endswith('.py')}
     check(len(scripts) >= 8, f'the drivers name {len(scripts)} stages: {sorted(scripts)}')

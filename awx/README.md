@@ -6,7 +6,7 @@ the others, and where each changes layer. It holds two routers:
 
 | | how it works | status |
 |---|---|---|
-| **The whole route**<br>`whole_chain.sh`, `whole_*.py` | Chooses every net's ends, then plans every lane's **whole path before anything is routed** -- crossings, layer changes, geometry on the router's grid -- checks the plan against the router's own rules, and routes every lane in its band at once. | **The current router.** Every rung of both benches routes connected and DRC-clean on a Mac and on Linux, never with more vias than the human and always with less copper. |
+| **The whole route**<br>`whole_route.py`, `whole_*.py` | Chooses every net's ends, then plans every lane's **whole path before anything is routed** -- crossings, layer changes, geometry on the router's grid -- checks the plan against the router's own rules, and routes every lane in its band at once. | **The current router.** Every rung of both benches routes connected and DRC-clean on a Mac and on Linux, never with more vias than the human and always with less copper. |
 | The braid chain and the evolution<br>`chain_k.sh`, `braid.py`, `evolve.py` | A CP-SAT plan of both ends, a corridor braid routed stage by stage, then a population of routed boards improved by probes the real router judges. | The earlier approach. Its records stand, and the whole route reuses its fanout, router, benches and audits. |
 
 Two rules both keep:
@@ -57,7 +57,7 @@ against the router's own rules, and only then routes it.
 **On our own ends.** The fanout chooses every net's tooth and berth with the
 whole route's own ends model (`whole_ends.py`, `PLAN_JUDGE=ends`), and the
 whole route plans and routes on them: no braid planner, no human ends
-(`whole_chain.sh`). Every board below routes every lane in its band at once,
+(`whole_route.py`). Every board below routes every lane in its band at once,
 every net connected, DRC-clean, on a Mac and on Linux (Modal). Each cell
 counts every via and millimetre of the run's nets on the board; the human's
 are counted the same way.
@@ -149,11 +149,9 @@ route and the checks, with up to `ROUNDS` fanout rounds (default 3):
 
 ```bash
 cd awx
-zsh whole_chain.sh 51 OUTDIR                                       # the H3 bench (BASE=fb_t2q_pairs.kicad_pcb DEST=DU1)
-BASE=tmp/zynq/zynqF.kicad_pcb DEST=U2 zsh whole_chain.sh 9 OUTDIR   # the zynq article (build it first, below), any rung of its ladder
+python3 whole_route.py 51 OUTDIR                                       # the H3 bench (BASE=fb_t2q_pairs.kicad_pcb DEST=DU1)
+BASE=tmp/zynq/zynqF.kicad_pcb DEST=U2 python3 whole_route.py 9 OUTDIR   # the zynq article (build it first, below), any rung of its ladder
 ```
-
-`whole_chain.sh` and `whole_loop.sh` are zsh scripts; run them with `zsh`.
 
 It exits 0 when `OUTDIR/rN/seq.kicad_pcb` is routed, connected and
 DRC-clean, and its last line is the grade:
@@ -168,7 +166,7 @@ The second bench is built from a public board: `ZYNQ7020_AD9364_V2` from
 [kangyuzhe666/ZYNQ7010-7020_AD9363](https://github.com/kangyuzhe666/ZYNQ7010-7020_AD9363),
 the Zynq `U1` (CLG400) to its DDR3 `U2`. Its routing is stripped, the bench is
 made two-layer with `U1` fanned out, and the result is turned into the flow
-frame (one quarter turn), where `whole_chain.sh` runs it:
+frame (one quarter turn), where `whole_route.py` runs it:
 
 ```bash
 cd awx
@@ -187,7 +185,7 @@ python3 flow_frame.py turn tmp/zynq/zynq.kicad_pcb tmp/zynq/zynqF.kicad_pcb $K $
 
 Built this way (2026-09-29): 48 two-pad nets between the arrays, `DDR3_A14`
 refused at the source, 47 in the ladder (checkpoints 9 17 25 31 37 42 47),
-one quarter turn about (109.3, -103.2); K9 through `whole_chain.sh` routes 9/9
+one quarter turn about (109.3, -103.2); K9 through `whole_route.py` routes 9/9
 lanes in their bands with 4 vias, connected and DRC-clean, in about 30 s.
 The zynq numbers in this README were measured on the first build
 (2026-09-19: 46 nets, 44 in the ladder, checkpoints 9 18 26 32 38 42 44).
@@ -218,11 +216,11 @@ export BENCH=tmp/hp/HHe_k51.kicad_pcb NETS DEST=DU1   # (or tmp/e/fo.kicad_pcb) 
 
 ```bash
 python3 whole_solve.py SOLVE.json                  # crossings and layer changes
-zsh whole_loop.sh SOLVE.json OUTDIR               # geometry -> polish -> audit -> pairs -> singles -> snap
+python3 whole_route.py --loop SOLVE.json OUTDIR   # geometry -> polish -> audit -> pairs -> singles -> snap
 python3 whole_render.py OUTDIR/plan.json OUT.png   # look at it (AUDIT=FILE marks the audit's findings)
 ```
 
-`whole_loop.sh` exits 0 with `OUTDIR/plan.json` the snapped plan that
+`whole_route.py --loop` exits 0 with `OUTDIR/plan.json` the snapped plan that
 passed, 1 when no round got there, 3 when it stopped not converging, and 4
 when it stopped at crowded ends.
 
@@ -277,7 +275,7 @@ flowchart LR
 | [**polish**](#the-polish-whole_polishpy) | the audit's measures, met in board xy | small vertex moves, an LP per round |
 | [**snap**](#the-snap-whole_snappy) | octilinear paths on the router's grid, the pairs first | a grid search per lane |
 | [**audit, gate, lint**](#the-audit-the-gate-and-the-lint) | whether the router can lay it | every `plan_audit` check, nothing waived |
-| [**loop**](#the-loop-whole_loopsh) | what to try next | findings back to the solve as cuts and history |
+| [**loop**](#the-loop-whole_routepy---loop) | what to try next | findings back to the solve as cuts and history |
 | [**feedback**](#feedback-whole_feedbackpy) | which ends to move | findings at the ends, back to the fanout |
 | [**route**](#the-route-route_lanespy---plan) | the copper | the production router, each lane in its band |
 
@@ -813,7 +811,7 @@ its tooth to its berth.
 
 </details>
 
-#### The loop (`whole_loop.sh`)
+#### The loop (`whole_route.py --loop`)
 
 Every stage is fed a measurement of the one before. What the audits find goes
 back to the solve as **cuts** and **history**, so a round that fails solves
@@ -848,7 +846,7 @@ only the fanout can move.
   read changed under while it ran is not recorded, and an entry's meta is
   written last and whole. It is a cache for a **harness** that redoes the
   same bench: off by default -- a user's run writes nothing beside the code
-  -- and on in `whole_loop.sh` (`STAGE_CACHE=1`, as the braid's taut memo is
+  -- and on in `whole_route.py` (`STAGE_CACHE=1`, as the braid's taut memo is
   `TAUT_MEMO=1`; `=0` turns either off there).
 - **The planned bench.** The bench every stage plans is planned once and
   saved (`whole_ctx.plan`, under `tmp/ctx_cache`, keyed and checked the same
@@ -954,9 +952,9 @@ and change the braid's default routing.
 **The standard:** every rung routes on every machine, no solve hangs, it runs
 as fast as it can, and a machine type gives the same board on every run.
 
-**Where it stands.** A Mac and a Linux box (Modal, `modal_whole.py::stage`
-running `whole_chain.sh`) go further up to K35: the same bits stage by stage
-(fanout, solve, geometry, polish, snaps, route) and the same board, digest
+**Where it stands.** A Mac and a Linux box (Modal, `modal_whole.py`) go
+further up to K35: the same bits stage by stage (fanout, solve, geometry,
+polish, snaps, route) and the same board, digest
 for digest, cold with every cache off. Every rung of the zynq article gives
 the same vias and copper on both (2026-09-28; those boards were not compared
 digest for digest). Of three causes of difference, two are fixed at the root
@@ -2201,13 +2199,13 @@ shared and are not.
 
 | | |
 |---|---|
-| `whole_chain.sh`, `modal_whole.py` | one rung of the whole route end to end on our own ends -- fanout, solve, loop, route, checks, and the feedback rounds -- graded in one line (`WHOLE K=..`); the ladder in the cloud, one container per rung, and one command replayed there on the laptop's files at their own paths (`modal_whole.py::stage`) |
+| `whole_route.py`, `modal_whole.py` | one rung of the whole route end to end on our own ends -- fanout, solve, loop, route, checks, and the feedback rounds -- graded in one line (`WHOLE K=..`); the ladder in the cloud, one container per rung, and one command replayed there on the laptop's files at their own paths (`modal_whole.py::stage`) |
 | `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the whole route's own choice of ends (the fanout's `PLAN_JUDGE=ends`); its own frame of a bench; the audits' findings at the ends, back to the fanout |
-| `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py`, `whole_loop.sh` | the crossing and layer solve, the geometry LP, the polish, the snap onto the router's grid, the loop that drives them |
+| `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP, the polish, the snap onto the router's grid (the loop that drives them is `whole_route.py`'s) |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a whole-route plan installed and audited, gated (complete and clean), linted, drawn; the bench they share |
 | `stage_cache.py` | a whole-route stage run, or restored when its script, arguments, environment and every file it read are unchanged |
 | `detmath.py` | the same bits on every machine: fdlibm's functions, installed by every chain stage; the LPs' tie-break and rounding |
-| `whole_movie.py` | a film of one run (`whole_chain.sh`'s OUTDIR), the fanout to the copper: the solve drawn as its braid under the board (u on the trunk is the board's x), the geometry LP as the shadow prices of the rules that bind; the root solve and the geometry re-run under observation, and refused unless they write what the chain wrote |
+| `whole_movie.py` | a film of one run (`whole_route.py`'s OUTDIR), the fanout to the copper: the solve drawn as its braid under the board (u on the trunk is the board's x), the geometry LP as the shadow prices of the rules that bind; the root solve and the geometry re-run under observation, and refused unless they write what the chain wrote |
 
 **Shared by both routers:**
 
@@ -2351,11 +2349,12 @@ The basics come first, in this order. Length matching and routing on inner
 layers follow once the basics route real boards (*later*, below).
 
 1. **An engine function, `route_bus`.**
-   - One call on a parsed board, in a `py_router/bus_topo/` package. The
-     CLI and the GUI call the same code, and awx's harnesses import from
-     it.
-   - A Python driver replaces `whole_chain.sh` and `whole_loop.sh`, which
-     are zsh: no Windows, and no GUI.
+   - One call on a parsed board. The CLI and the GUI call the same code.
+     It stays in `awx/` until the basics route real boards, then moves
+     into a `py_router/bus_topo/` package that awx's harnesses import
+     from: code that is still changing is not moved.
+   - The driver is `whole_route.py`. It runs each stage as a process of
+     its own; the GUI needs them as calls in its own process.
    - Each stage becomes a function driven by its arguments, not by argv
      and the environment.
    - Importing `whole_ctx` no longer changes directory.

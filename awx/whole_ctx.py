@@ -5,7 +5,7 @@ The whole-route tools read one bench from the environment, like the rest of the 
 teeth and berths laid), NETS (N1,N2,.. or @FILE) and DEST (the destination part's reference). plan() reads it --
 braid.setup's reading of the board (its ends, layers, escape directions, pairs and taut paths, a board of the other
 pair chirality turned over), under the braid's plan environment (BRAID_PAIRS=1 BRAID_EXACT_PAGES=0
-PLAN_PAGES_SIDERS=2, which whole_loop.sh sets); none of the braid's own planning. The whole route's frame is built on
+PLAN_PAGES_SIDERS=2, which whole_route.py sets); none of the braid's own planning. The whole route's frame is built on
 it (whole_frame.py).
 
 PlanLanes(ctx, frame) holds the whole route's lanes where the router and plan_audit's checks expect a corridor, and
