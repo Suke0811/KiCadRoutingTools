@@ -23,7 +23,7 @@ mentions it.)
 1. [The whole route](#the-whole-route) -- [results](#results), [running it](#running-it), [how it works](#how-it-works), [the same answer on every machine](#every-machine-and-the-same-answer-on-each); its two solvers explained: [CP-SAT and HiGHS in the whole route](https://drandyhaas.github.io/KiCadRoutingTools/solvers/)
 2. [The braid chain and the evolution](#the-braid-chain-and-the-evolution)
 3. [Shared pieces](#shared-pieces) -- grading, `rules.py`, measuring honestly, the tools, what this adds to `py_router`
-4. [TODO](#todo)
+4. [TODO](#todo) -- first, [the bus step in the routing chain](#first-the-bus-step-in-the-routing-chain)
 
 <details>
 <summary><b>Words this README uses</b></summary>
@@ -2328,7 +2328,143 @@ length. The evolution's records were not re-run.
 Ordered, highest value first. An item leaves this list when it is done or
 abandoned with a measurement. Untried ideas live here and nowhere else.
 
-### First, the whole route (`whole_*.py`)
+### First, the bus step in the routing chain
+
+The whole route becomes a step of the production chain. It owns an array
+pair's bus: both ends of every net, the pairs among them, and the lanes
+between them. It hands the board on with that copper laid and protected.
+A* routes everything else, including any lane the step refuses. The plan
+is never handed to A* as hints: the ends are chosen for the lanes the
+plan lays, and are worth nothing without them.
+
+The chain:
+
+- pour the planes;
+- fan out every array, all nets, plane drops included;
+- the cap nudge;
+- **the bus step**;
+- the other differential pairs;
+- the impedance pass;
+- `route.py` on the rest, with the plane finalize.
+
+The basics come first, in this order. Length matching and routing on inner
+layers follow once the basics route real boards (*later*, below).
+
+1. **An engine function, `route_bus`.**
+   - One call on a parsed board, in a `py_router/bus_topo/` package. The
+     CLI and the GUI call the same code, and awx's harnesses import from
+     it.
+   - A Python driver replaces `whole_chain.sh` and `whole_loop.sh`, which
+     are zsh: no Windows, and no GUI.
+   - Each stage becomes a function driven by its arguments, not by argv
+     and the environment.
+   - Importing `whole_ctx` no longer changes directory.
+   - The caches are off, and everything the step writes goes beside the
+     board.
+2. **The real board as it is.**
+   - The flow frame's quarter turn is done in memory, and the copper is
+     written back in the board's own frame. Today the board must be turned
+     beforehand, and the output is not turned back.
+   - A board with inner copper layers is accepted. The lanes run on F and
+     B, and the inner layers are obstacles the through vias pass.
+   - The outline is read as drawn, not as its bounding box, and zones and
+     keepouts are read.
+3. **Other nets' copper in every stage.**
+   - Today only the snap and the polish see foreign tracks and vias,
+     through the production obstacle map.
+   - The geometry and the solve see only pads and array stubs, so a plan
+     can run through a foreign via and fail late, in the audit.
+   - The benches carried no foreign copper. A real board carries every
+     other ball's escape and plane drop.
+4. **The router's rules.**
+   - Clearance, track and via come from the same resolution `route.py`
+     makes: net classes, `.kicad_dru` layer rules, the fab tier and
+     `--clearance-ceiling`. They go through `Rules.from_router_config`.
+   - The `.kicad_pro` floor is written back.
+   - Today `rules.py` holds fixed constants.
+5. **Finding the buses.**
+   - A detector names every pair of parts that share enough point-to-point
+     nets and have an array on at least one side. The step takes the whole
+     bus, not a ladder prefix.
+   - Pairs are found by their name suffixes, and termination parts serve
+     as waypoints, as today.
+   - Fly-by and multi-drop nets stay with A*, and are reported by name.
+6. **The handoff.**
+   - The step writes its laid nets into the project's `protected_nets`.
+     Without that, `route.py` registers an earlier step's small nets as
+     rip candidates by default, and the plane finalize rips unprotected
+     signal nets to make room for its taps.
+   - A lane the step refuses is left with no partial copper, unprotected,
+     and listed in a JSON summary. `route.py` skips connected nets, so it
+     routes exactly those.
+   - The bus's own pairs belong to the step, so the routing skill stops
+     sending them to `route_diff`.
+7. **Plane vias before the bus.**
+   - Pads of plane nets inside the bus's area (decoupling capacitors,
+     termination resistors, VREF) get their plane vias before the plan.
+     The plan then sees them as copper, the way the fanout's plane drops
+     already take their sites first.
+   - Today they are tapped by `route.py`'s finalize, after the bus, when
+     the lanes may already have closed round them.
+8. **Crossings, measured.** Some other nets have pads on both sides of the
+   bus's corridor, so their copper must get across it. The expectation is
+   that A* weaves them through the bus's gaps and layer changes, or routes
+   them round its ends. Measure it:
+   - a census on the bus-pair boards: which nets have to cross;
+   - the whole-board A/B (item 10), with the step on and off: whether A*
+     still routes them.
+   - If many fail, the bus is kept to a subset of the signal layers,
+     leaving a layer or two free for the nets that must cross it (*later*,
+     with routing on inner layers).
+9. **The front ends.**
+   - A CLI step: `record_invocation`, `KRT_TOOL`, a JSON summary, and exit
+     codes by outcome.
+   - The GUI calls the same function in-process, like every other routing
+     call, on a worker thread with progress and cancel.
+   - The wiring CLAUDE.md asks for:
+     - the plan executor's action, with controls named after the
+       parameters;
+     - `reset_params_to_defaults` and settings persistence;
+     - `manifest_to_plan`'s `TOOL_ACTIONS` and `FLAG_PARAMS`;
+     - `test_cli_postpass_coverage`;
+     - a parity gate that runs the GUI step against the CLI on a bench.
+   - ortools becomes an optional dependency in `deps_check`. Without it the
+     step refuses with the install line, and the rest of the chain is
+     untouched.
+   - The `lane_search` crate change needs its release binaries. Without
+     them, Python falls back.
+10. **The gate.**
+    - The full chain is run with and without the step on the stress
+      corpus's array-pair DDR boards (allwinner_h3_ddr3, zynq_ad9364,
+      orangecrab, keks, ulx5m_gatemate, sechzig).
+    - The grade is the whole board's: unrouted plus broken nets and real
+      DRC not worse, and the bus's vias down.
+    - Paired and directional, on three boards or more, as CLAUDE.md
+      requires for a default change.
+    - Then the routing skills emit the step, and `test_431` holds their
+      flag claims.
+
+**Later, once the basics route real boards:**
+
+- **Length and time matching inside the step.** Group spreads and pair
+  skews go in the judge, room for meanders is planned in the geometry, and
+  the production matching runs on the step's own copper. It has to be the
+  step's: `route.py`'s matching never lengthens copper an earlier step
+  laid; that copper only sets the group's target.
+- **Routing on inner layers.** The page pair is chosen among the signal
+  layers, with escape vias spanning to them.
+- **Fly-by and multi-drop nets,** as legs in daisy order.
+- **A row part at one end** (TSOP-II SDRAM, SODIMM, edge connectors).
+  Until then `route.py --bus`, the old attraction mode, stays the opt-in
+  tool for such buses.
+- **A layer left for the nets that cross the bus,** if item 8 finds many
+  of them failing: the bus is kept to a subset of the signal layers, and a
+  layer or two stay free for the crossers. This needs a board with more
+  signal layers than the bus uses.
+- **Feedback from `route.py`:** failures that name bus copper as the
+  blocker are sent back to a re-run of the step as reservations.
+
+### Next, the whole route (`whole_*.py`)
 
 - **A pair's change, as the board counts it.** The solve counts a lane's
   layer change as one via; a pair's lays a barrel on each leg, two on the
