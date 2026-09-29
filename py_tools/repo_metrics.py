@@ -42,6 +42,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -1285,6 +1286,8 @@ with a Python engine, usable as CLI scripts or as a KiCad plugin.</p>
     <div class="d">Plugin package and prebuilt router binaries</div></a>
   <a class="card" href="metrics/"><div class="t">Reach metrics →</div>
     <div class="d">Installs, downloads and traffic, updated weekly</div></a>
+  <a class="card" href="solvers/"><div class="t">How the whole route plans →</div>
+    <div class="d">Interactive explainer of CP-SAT and HiGHS in the bus router</div></a>
 </div>
 
 <p>Install through KiCad's <strong>Plugin and Content Manager</strong>, or clone
@@ -1299,6 +1302,11 @@ by a GitHub Actions workflow.</div>
     out = os.path.join(SITE, 'index.html')
     with open(out, 'w') as f:
         f.write(html)
+    # hand-written pages kept under docs/ (each a folder with an index.html)
+    for page in ('solvers',):
+        src = os.path.join(ROOT, 'docs', page)
+        if os.path.isdir(src):
+            shutil.copytree(src, os.path.join(SITE, page), dirs_exist_ok=True)
     return out
 
 
