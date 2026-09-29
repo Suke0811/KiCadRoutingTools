@@ -424,7 +424,7 @@ def load_story(a):
     S.fo = _parse(os.path.join(rd, 'fo.kicad_pcb'))
     S.seq = _parse(os.path.join(rd, 'seq.kicad_pcb'))
     S.human = None
-    hp = a.human or os.path.expanduser('~/Downloads/bus/00_human_original.kicad_pcb')
+    hp = a.human or os.path.join(HERE, 'fb_t2q_human.kicad_pcb')
     if hp and os.path.isfile(hp):
         h = _parse(hp)
         same = all(r in h.footprints and abs(h.footprints[r].x - S.fo.footprints[r].x) < 1e-3 and
@@ -2268,7 +2268,7 @@ def main():
     ap.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2) - 2))
     ap.add_argument('--stills', help='write PNG stills into this directory (at --at seconds, or one per scene)')
     ap.add_argument('--at', help='comma list of times (s) for --stills')
-    ap.add_argument('--human', help='the human\'s board, drawn at the end (default ~/Downloads/bus/00_human_original.kicad_pcb)')
+    ap.add_argument('--human', help='the human\'s board, drawn at the end (default fb_t2q_human.kicad_pcb beside this script)')
     ap.add_argument('--speed', type=float, default=1.0, help='scale every scene\'s length')
     ap.add_argument('--title', default='The whole route', help='the title card\'s title')
     ap.add_argument('--force', action='store_true', help='film a run whose re-runs do not reproduce the chain\'s files')

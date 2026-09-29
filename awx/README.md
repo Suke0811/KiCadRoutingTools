@@ -171,9 +171,10 @@ replays one command in the cloud on the laptop's files at their own paths.
 ```bash
 NETS=$(python3 coherent_nets.py 51 --board=fb_t2q_pairs.kicad_pcb)
 # the human's ends ...
-python3 human_ends_bench.py HUMAN.kicad_pcb tmp/hp/HHe_k51.kicad_pcb "$NETS" \
+python3 human_ends_bench.py fb_t2q_human.kicad_pcb tmp/hp/HHe_k51.kicad_pcb "$NETS" \
     --others bench:fb_t2q_pairs.kicad_pcb --ladder fb_t2q_pairs.ladder.txt --sidecar --marker
 # ... or our own (the fanout's plan environment: PYTHONHASHSEED=7 PLAN_PAGES=1 BRAID_PAIRS=1 PLAN_PAIRS=1)
+mkdir -p tmp/e tmp/e2
 PLAN_JUDGE=ends python3 fanout_from_plan.py tmp/e/fo.kicad_pcb 51 --board=fb_t2q_pairs.kicad_pcb
 export BENCH=tmp/hp/HHe_k51.kicad_pcb NETS DEST=DU1   # (or tmp/e/fo.kicad_pcb) the bench every whole_* tool reads
 ```
@@ -1024,8 +1025,7 @@ a 48-net problem). It carries no differential pairs, so its K's are not the
 same net lists as the whole route's `fb_t2q_pairs`, and the human's counts
 differ between the two. Every board below is 0 open and 0 DRC at the routed
 0.1 mm floor, graded independently (`grade_k.py`), and carries the same
-out-of-run nets as the reference boards. `tmp/records/` holds each one with
-its fanout board and sidecars.
+out-of-run nets as the reference boards.
 
 | vias | K15 | K28 | K35 | K41 | K51 |
 |---|---|---|---|---|---|
@@ -1051,12 +1051,12 @@ Notes:
   has the run).
 - The 83 carries two grazes of 7 and 8 um under 0.1 on B.Cu -- the
   grid-quantisation class the chain's `--clearance-margin 0.1` filters, as
-  `check_drc` documents. The 85 (`tmp/records/k51_85_climbs`) is the last
-  board clean with no margin at all.
+  `check_drc` documents. The 85 is the last board clean with no
+  margin at all.
 - **83 is a local optimum** of every single-net move class with the climb
   menus, at descent thresholds of three and two lane vias. Five generations
   of descents, near jumps and crossovers at K51 over two runs stood nothing,
-  and the last run (`tmp/ev51f`) ended with four distinct 83s: every jump and
+  and the last run ended with four distinct 83s: every jump and
   crossover world descended back to 83.
 
 **The zynq article** (2026-09-19). `zynq_ad9364` from the stress corpus
@@ -1086,14 +1086,13 @@ evolution row was found:
   alone.
 - **K42, K44:** the descent alone carrying `--length=1 --worst=8`, three
   rounds: 90 -> 77 -> 71, and 105 -> 97 -> 95. On main's engine
-  (2026-09-22) the same three rounds take the chain's 92 to 91 -> 87 -> 83
-  (`tmp/records/zynq_k44_83_desc`), below the evolution's 88.
+  (2026-09-22) the same three rounds take the chain's 92 to 91 -> 87 -> 83,
+  below the evolution's 88.
 - **Then a K44 population** seeded from the 95 (pop 4, two generations,
   length rule on, 53 min): every descent of the 95 null; the crossover of the
   95 with the chain's 105 (seven of their fourteen differing ends) descended
   108 -> 93, and that 93 to 89; a near jump from the 93 (two nets) descended
-  101 -> 88. The population ended 88 / 89 / 93 / 95; the 88 is
-  `tmp/records/zynq_k44_88_pop` (its board-frame copy beside it).
+  101 -> 88. The population ended 88 / 89 / 93 / 95.
 - **The length tie rule** -- an equal-via board that shortens the copper
   stands -- is what let the K38 descent take nine vias in one round where the
   same round without it took four.
@@ -1110,7 +1109,6 @@ H3 bench cannot:
 - **One big corridor.** At K42 the whole bus becomes one 42-net corridor with
   eleven in-band refusals.
 
-Renders: `tmp/zynq/img/`.
 
 ### How the chain works
 
@@ -1237,8 +1235,7 @@ films a run from its ledger: one canvas per generation, the population row,
 each descent under its parent, jump and crossover worlds with lineage arrows,
 per-probe steps with the copper that changed lit and ghosted, and a lineage
 ribbon. `--runs TAG,... --descents DIR,...` films several runs and standalone
-descents as one continuous evolution, worlds identified by their copper;
-`tmp/movie/k51_day.mp4` is the whole K51 lineage 98 -> 83.
+descents as one continuous evolution, worlds identified by their copper.
 
 **Memory.** `--jobs` runs operators side by side. On this 8 GB machine one
 job with four workers is the budget (a worker is 300-450 MB, and six workers
@@ -1316,7 +1313,7 @@ spacing, its dives and its corners). They stay in the DRC gate's scope.
 
 <img src="img/pack_zynq_k44.png" alt="The zynq K44 record before and after the pack" width="900">
 
-*The zynq K44 record (`tmp/records/zynq_k44_88_pop`) as the evolution left it
+*The zynq K44 record of 88 vias, as the evolution left it
 and packed: 3854 -> 1286 segments, the lanes 1175 -> 1104 mm, 88 vias both,
 0 open, 0 DRC, 56 s.*
 
@@ -1369,8 +1366,7 @@ rung, 0 open, 0 DRC with and without the margin, every lane packed:
 | run copper, mm | 221 -> 217 | 468 -> 458 | 774 -> 736 | 971 -> 940 | 1171 -> 1121 | 1300 -> 1235 | 1477 -> 1350 |
 
 - **Re-run after the audit** (2026-09-22): the K44 record packs to the same
-  1104 mm (3854 -> 1286 segments), and the H3 K51 record of 87
-  (`tmp/rtev51/best_k51`) goes 1003 -> 939 mm, 1744 -> 1469 segments, at 87
+  1104 mm (3854 -> 1286 segments), and the H3 K51 record of 87 goes 1003 -> 939 mm, 1744 -> 1469 segments, at 87
   vias, 0 open, 0 DRC.
 - **What a lane keeps after all that is its wrap:** a lane that goes the
   long way round its bundle at the same via count is invisible to the chain's
@@ -1519,8 +1515,7 @@ A two-pad part with one pad on P and the other on N -- the zynq's R20 on CK,
 takes it (four segment ends on its pad).
 
 - `coherent_nets.admissible` admits such a net (its ends are still the two
-  arrays), and `make_bench.pair_nets` selects by the same rule (the bench
-  rebuilt as `tmp/zynq/zynqCK`, 47 nets).
+  arrays), and `make_bench.pair_nets` selects by the same rule.
 - `braid._route_pair_legs` routes the pair in legs -- teeth -> the part's
   pads -> berths -- each leg by the same router, the pads leaving square to
   the part on the side of the next stop (a slanted direction had the router's
@@ -1626,8 +1621,7 @@ lanes, not one neighbour.
 Zynq K47's DQS pairs landed only free of the plan, and a single stayed open
 (111 vias, 1 open).
 
-- **The band.** The probe (`tmp/probe_k47_pair.py`, the band mask printed at
-  the fan-in) showed the pair's teeth 1.55 mm apart with DQ6's and DQ0's
+- **The band.** A probe of the band mask at the fan-in showed the pair's teeth 1.55 mm apart with DQ6's and DQ0's
   teeth between them, and the pair's band a single lane's wedge from the
   pair's centre: one cell of it at the P tooth, and the converged tips 2 mm
   out outside it altogether.
@@ -1827,7 +1821,7 @@ obstacles) and writes the plan sidecar the braid reads.
 
 ```bash
 NETS=$(python3 coherent_nets.py 51 --board=fb_t2q_pairs.kicad_pcb)
-python3 human_ends_bench.py HUMAN.kicad_pcb tmp/hp/HHa_k51.kicad_pcb "$NETS" \
+python3 human_ends_bench.py fb_t2q_human.kicad_pcb tmp/hp/HHa_k51.kicad_pcb "$NETS" \
     --others bench:fb_t2q_pairs.kicad_pcb --ladder fb_t2q_pairs.ladder.txt --sidecar --marker
 PLAN_PAGES=1 PLAN_JUDGE=count PLAN_JUDGE_LEN=lane BRAID_PAIRS=1 PLAN_PAIRS=1 \
 BRAID_EXACT_PAGES=0 PLAN_PAGES_SIDERS=2 \
@@ -2209,7 +2203,7 @@ shared and are not.
 | `dedupe_boards.py` | boards identical by copper (the portfolio, the population) |
 | `pack.py`, `pack_board.py` | the pack: every lane of a finished board a taut string, vias fixed (opt-in) |
 | `re_escape.py`, `refan_pairs.py` | a long source escape routed again from its pad; a pair's teeth re-fanned as a pair |
-| `modal_k.py`, `arms.example.json`, `arms.rec51.json` | cloud arms, one container per (arm, K); `return_board`, `return_files` bring artifacts back |
+| `modal_k.py`, `arms.example.json` | cloud arms, one container per (arm, K); `return_board`, `return_files` bring artifacts back |
 
 **Benches, frames and comparisons:**
 
