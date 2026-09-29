@@ -61,7 +61,11 @@ sys.path.insert(0, os.path.join(REPO, 'py_tools'))  # #522
 # replaced found nothing there. The macOS path stays as the last resort so
 # the "not found" message below names a concrete location.
 from kicad_oracle import find_kicad_cli as _find_kicad_cli  # noqa: E402
-KICAD_CLI = (_find_kicad_cli()
+# Resolved SILENTLY here: at import the not-found warning came out BEFORE the
+# CMD banner __main__ installs, so on a machine without KiCad this tool's
+# output no longer started with `CMD:` (test_run4_instruments, red on the
+# Modal suite image). __main__ says the warning after the banner instead.
+KICAD_CLI = (_find_kicad_cli(warn=False)
              or "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli")
 
 # kicad violation types that correspond to copper-clearance/short classes
@@ -1162,4 +1166,5 @@ def main():
 
 if __name__ == "__main__":
     import cli_banner; cli_banner.install()  # CMD/EXIT self-echo (run-5 c1)
+    _find_kicad_cli()  # the loud not-found warning, now AFTER the banner
     sys.exit(main())

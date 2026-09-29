@@ -119,7 +119,11 @@ _IGNORE_SEVERITIES = [
 ]
 
 
-def find_kicad_cli() -> Optional[str]:
+def find_kicad_cli(warn: bool = True) -> Optional[str]:
+    # `warn=False` resolves SILENTLY, for a module that looks kicad-cli up at
+    # IMPORT and says the not-found warning itself later -- a CLI whose output
+    # must start with its CMD banner (tests/stress/kicad_drc_compare.py).
+    #
     # The ENV OVERRIDE GOES FIRST. It used to be checked after the unix
     # candidates, so `KICAD_CLI=/my/build/kicad-cli` was ignored on any machine
     # that also had a packaged one -- an override that the presence of a
@@ -160,7 +164,8 @@ def find_kicad_cli() -> Optional[str]:
                 except ValueError:
                     return (0,)
             return sorted(set(hits), key=_ver)[-1]
-    _warn_no_kicad_cli()
+    if warn:
+        _warn_no_kicad_cli()
     return None
 
 

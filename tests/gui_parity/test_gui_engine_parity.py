@@ -240,7 +240,10 @@ def run_gui_leg(board_path, workdir):
         raise RuntimeError(f"GUI plan ran {res.get('completed')} of "
                            f"{len(GUI_PLAN)} steps")
     out = os.path.join(workdir, 'gui_final.kicad_pcb')
-    shutil.copy(res['live_board'], out)
+    # WITH its .kicad_pro (the one PlanExecutor._write_drc_floors stamped at
+    # plan end): a bare copy is graded against no project rule at all, while
+    # cli_final carries the one the CLI wrote (#441).
+    R._copy_board_with_siblings(res['live_board'], out)
     return out
 
 
