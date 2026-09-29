@@ -117,7 +117,51 @@ def test_the_board_renders_deterministically():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-TESTS = (test_the_board_renders_deterministically,)
+def test_bodies_sit_on_their_own_face():
+    """A front part's body stands on the TOP face, a back part's hangs below
+    the BOTTOM one -- measured in the scene graph. A back body used to sit
+    inside the board, and a 3 mm back-side connector poked out of the top
+    (the phase-6 verifier: 83 of 83 back parts on orangecrab)."""
+    board = os.path.join(ROOT, 'kicad_files', 'orangecrab.kicad_pcb')
+    if not os.path.isfile(board):
+        board = os.path.join(ROOT, 'kicad_files',
+                             'rp2350_fpga_eensy_prePlane.kicad_pcb')
+    pcb = parse_kicad_pcb(board)
+    sc = SC.build_scene(pcb)
+    layers = list(pcb.board_info.copper_layers)
+    pose = {ref: [fp.x, fp.y, fp.rotation or 0.0, fp.layer or 'F.Cu']
+            for ref, fp in pcb.footprints.items()}
+    tl = {'layers': layers, 'segs': [], 'vias': [], 'epochs': [pose],
+          'frames': [0], 'states': [{'ns': 0, 'nv': 0, 'hide': [],
+                                     'hl_s': [], 'hl_v': [], 'color': None,
+                                     'epoch': 0, 'moving': {}, 'angle': 0.0,
+                                     'active': None}],
+          'side_rule': 'stage'}
+    tmp = tempfile.mkdtemp(prefix='t1081p_')
+    try:
+        pngs, info, why = R3.render(sc, tl, width=240, height=160,
+                                    out_dir=tmp, probe=0)
+        pr = info.get('probe') or {}
+        bodies, d = pr.get('bodies') or {}, pr.get('thickness', 1.6)
+        back = [r for r, p in sc['parts'].items()
+                if p['side'] == 'B' and r in bodies]
+        front = [r for r, p in sc['parts'].items()
+                 if p['side'] == 'F' and r in bodies]
+        _check(pngs is not None and back and front,
+               '%s: %d front and %d back bodies probed (%s)'
+               % (os.path.basename(board), len(front), len(back), why))
+        bad_b = [r for r in back if bodies[r][1] > 1e-6]
+        bad_f = [r for r in front if bodies[r][0] < d - 1e-6]
+        _check(not bad_b, 'every back body hangs below the bottom face '
+               '(wrong: %s)' % bad_b[:5])
+        _check(not bad_f, 'every front body stands on the top face '
+               '(wrong: %s)' % bad_f[:5])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+TESTS = (test_the_board_renders_deterministically,
+         test_bodies_sit_on_their_own_face)
 
 
 def main():

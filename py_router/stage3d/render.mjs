@@ -36,6 +36,10 @@ async function main() {
                                          deviceScaleFactor: 1 });
     page.on('pageerror', e => errors.push(String(e)));
     page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+    // nothing leaves this machine: every other host is refused (a GLB can
+    // carry external buffer URIs)
+    await page.route((u) => !String(u).startsWith('http://stage3d.local/'),
+                     (route) => route.abort());
     await page.route('http://stage3d.local/**', async (route) => {
       const p = new URL(route.request().url()).pathname;
       let file = files[p];
@@ -55,6 +59,16 @@ async function main() {
       glbUrl: job.glb ? 'http://stage3d.local/data/parts.glb' : null,
       width: job.width, height: job.height, colors: job.colors });
     out({ type: 'info', ...info, browser: browser.version(), errors });
+    // refuse a GPU BEFORE rendering anything: its pixels depend on the
+    // machine, and a 2000-state job would render for minutes to be thrown away
+    if (!/swiftshader/i.test(String(info.renderer || ''))) {
+      out({ type: 'error', why: 'renderer is ' + info.renderer + ', not SwiftShader' });
+      process.exitCode = 2;
+      return;
+    }
+    if (job.probe !== undefined && job.probe !== null) {
+      out({ type: 'probe', ...(await page.evaluate((k) => window.stage3dProbe(k), job.probe)) });
+    }
     const cdp = await page.context().newCDPSession(page);
     fs.mkdirSync(job.outDir, { recursive: true });
     const t0 = Date.now();

@@ -210,6 +210,7 @@ function buildParts(scene, colors, root) {
       const [x0, y0, x1, y1, h] = P.body;
       body = new THREE.Mesh(new THREE.BoxGeometry(Math.max(x1 - x0, 0.1), h, Math.max(y1 - y0, 0.1)), bodyMat);
       body.position.set((x0 + x1) / 2, h / 2 + 0.06, (y0 + y1) / 2);
+      body.userData.h = h;
       grp.add(body);
     }
     grp.add(faces.F, faces.B);
@@ -235,13 +236,18 @@ function poseParts(st, tl) {
     part.faces.F.position.y = back ? part.d : 0;
     part.faces.B.position.y = back ? 0 : -part.d;
     if (part.body) {
-      part.body.scale.y = back ? -1 : 1;
+      // a back-side part's body hangs BELOW the board's bottom face (the
+      // group sits at y = 0 there); mirroring a box about its own centre
+      // moved nothing, so it used to sit inside the board -- and a 3 mm
+      // connector stuck out of the TOP (the phase-6 verifier, orangecrab J4)
+      const h = part.body.userData.h;
+      part.body.position.y = back ? -(h / 2 + 0.06) : h / 2 + 0.06;
       part.body.visible = !part.glb;
     }
     if (part.glb) {
       const F = new THREE.Matrix4().makeRotationY(rad(rot));
       if (back) F.multiply(new THREE.Matrix4().makeRotationX(Math.PI));
-      F.setPosition(x, 0, y);
+      F.setPosition(x, back ? 0 : part.d, y);
       for (const n of part.glb) {
         n.obj.matrix.multiplyMatrices(F, n.rest);
         n.obj.matrixWorldNeedsUpdate = true;
@@ -262,17 +268,33 @@ async function loadGlb(url, glb, root) {
     for (let a = o.parent; a; a = a.parent) if (want.has(a.name)) return;  // top node only
     picked.push(o);
   });
+  // Duplicate references (orangecrab's three G***): kicad-cli names every
+  // node by the BARE reference, the parser keys the later blocks `REF~2`...,
+  // so the k-th node of a name goes to the k-th block when the counts agree
+  // -- otherwise (one footprint, two models) every node is that part's.
+  const byName = {};
+  for (const o of picked) (byName[o.name] = byName[o.name] || []).push(o);
+  const assigned = [];
+  for (const name of Object.keys(byName)) {
+    const nodes = byName[name];
+    const keys = [name];
+    for (let k = 2; S.parts[name + '~' + k]; k++) keys.push(name + '~' + k);
+    nodes.forEach((o, i) => assigned.push([o, (nodes.length === keys.length) ? keys[i] : name]));
+  }
   let n = 0;
-  for (const o of picked) {
-    const pose = glb.poses[o.name];
-    const part = S.parts[o.name];
+  for (const [o, key] of assigned) {
+    const pose = glb.poses[key];
+    const part = S.parts[key];
     if (!pose || !part) continue;
     // rest = F(final)^-1 * node (in mm): the model in its part's own frame,
     // so any later pose is F(now) * rest -- no knowledge of the model's own
     // offset needed.
+    // F sits ON the part's face (the top face at y = d, the bottom at 0):
+    // with F at y = 0 on both sides, a part that changed side landed one
+    // board thickness off (the phase-6 verifier)
     const F = new THREE.Matrix4().makeRotationY(rad(pose[2]));
     if (pose[3] === 'B') F.multiply(new THREE.Matrix4().makeRotationX(Math.PI));
-    F.setPosition(pose[0], 0, pose[1]);
+    F.setPosition(pose[0], pose[3] === 'B' ? 0 : S.scene.thickness, pose[1]);
     const world = new THREE.Matrix4().multiplyMatrices(mm, o.matrixWorld);
     const rest = new THREE.Matrix4().copy(F).invert().multiply(world);
     const clone = o.clone(true);
@@ -300,12 +322,16 @@ function frameCamera(scene, W, H) {
   const el = rad(52);                   // a 3/4 view from the board's near edge
   const cy = scene.thickness / 2;
   // Fit the board's OWN corners, not a bounding sphere: a long board seen at
-  // 3/4 wastes most of a sphere fit. The flip turns the board about the
-  // screen-vertical axis, so its x-extent is what the turn sweeps; the fit
-  // holds at every angle because the corners are symmetric about the pivot.
+  // 3/4 wastes most of a sphere fit.
   const corners = [];
   for (const x of [x0, x1]) for (const z of [y0, y1]) for (const y of [-3, scene.thickness + 3])
     corners.push(new THREE.Vector3(x, y, z));
+  // ...and the board STANDING on its edge, mid-flip (turned about the
+  // screen-vertical axis, its x-extent becomes height): the flat fit clipped
+  // a wide board's top and bottom at the turn (the phase-6 verifier)
+  const half = (x1 - x0) / 2 + 3;
+  for (const y of [cy - half, cy + half]) for (const z of [y0, y1])
+    corners.push(new THREE.Vector3(cx, y, z));
   for (let k = 0; k < 4; k++) {
     cam.position.set(cx, cy + dist * Math.sin(el), cz + dist * Math.cos(el));
     cam.lookAt(cx, cy, cz);
@@ -349,13 +375,18 @@ window.stage3dInit = async function (o) {
   root.add(buildBoard(scene, o.colors));
   buildCopper(tl, scene, o.colors, root);
   buildParts(scene, o.colors, root);
-  let glbParts = 0;
-  if (o.glbUrl && scene.glb) glbParts = await loadGlb(o.glbUrl, scene.glb, root);
+  S.scene = scene;
+  let glbParts = 0, glbError = null;
+  if (o.glbUrl && scene.glb) {
+    // a GLB is decoration: a missing or corrupt one leaves the boxes
+    try { glbParts = await loadGlb(o.glbUrl, scene.glb, root); }
+    catch (e) { glbError = String(e).slice(0, 160); }
+  }
   Object.assign(S, { renderer, world, cam, pivot, root, tl, scene, colors: o.colors });
   const gl = renderer.getContext();
   const ext = gl.getExtension('WEBGL_debug_renderer_info');
   return { renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
-           three: THREE.REVISION, states: tl.states.length, glbParts };
+           three: THREE.REVISION, states: tl.states.length, glbParts, glbError };
 };
 
 window.renderState = function (i) {
@@ -366,6 +397,22 @@ window.renderState = function (i) {
   S.pivot.rotation.set(0, 0, st.angle);
   S.renderer.render(S.world, S.cam);
   return true;
+};
+
+// For tests: every drawn part body's world-space y range and side at
+// state `i`, so a body on the wrong side of the board is a number, not a
+// picture someone has to notice.
+window.stage3dProbe = function (i) {
+  window.renderState(i);
+  S.world.updateMatrixWorld(true);
+  const out = {};
+  for (const ref of Object.keys(S.parts)) {
+    const p = S.parts[ref];
+    if (!p.body || !p.body.visible || !p.grp.visible) continue;
+    const box = new THREE.Box3().setFromObject(p.body);
+    out[ref] = [box.min.y, box.max.y];
+  }
+  return { bodies: out, thickness: S.scene.thickness };
 };
 
 window.stage3dReady = true;

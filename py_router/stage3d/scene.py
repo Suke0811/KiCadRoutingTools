@@ -211,12 +211,17 @@ def export_glb(board_path, pcb, out_dir, cli=None,
             return None, 'kicad-cli pcb export glb exited %s%s' % (
                 r.returncode, (': ' + head) if head else '')
         names = set(_glb_node_names(out))
-        refs = [ref for ref in pcb.footprints if ref in names]
+        # a duplicate reference's later blocks are keyed `REF~2`... by the
+        # parser, while kicad-cli names every node by the bare reference
+        refs = [ref for ref in pcb.footprints
+                if ref.split('~')[0] in names]
         poses = {ref: [fp.x, fp.y, fp.rotation or 0.0,
                        'B' if (fp.layer or '').startswith('B') else 'F']
-                 for ref, fp in pcb.footprints.items() if ref in names}
+                 for ref, fp in pcb.footprints.items() if ref in refs}
         n = sum(1 for ref in pcb.footprints if not ref.startswith('#'))
-        return ({'path': out, 'matched': sorted(refs), 'poses': poses},
+        return ({'path': out,
+                 'matched': sorted({r.split('~')[0] for r in refs}),
+                 'poses': poses},
                 'GLB: %d of %d parts have a model%s'
                 % (len(refs), n, (' (%d .wrl -> .step)' % nfix)
                    if nfix else ''))

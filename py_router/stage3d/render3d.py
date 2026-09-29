@@ -167,7 +167,7 @@ def colors_for(theme_name, layers) -> Dict[str, list]:
 
 def render(scene, timeline, *, width, height, out_dir, theme='dark',
            glb=None, node=None, browser=None, timeout=None,
-           quiet=True) -> Tuple[Optional[List[str]], dict, str]:
+           quiet=True, probe=None) -> Tuple[Optional[List[str]], dict, str]:
     """Render every timeline STATE to `out_dir`. Returns `(pngs, info,
     why)`: `pngs[i]` is state i's frame, or `(None, info, why)` when any part
     of it failed -- and a failure is never a partial list."""
@@ -193,11 +193,18 @@ def render(scene, timeline, *, width, height, out_dir, theme='dark',
     job = {'browser': browser, 'width': int(width), 'height': int(height),
            'outDir': frames_dir, 'scene': sp, 'timeline': tp,
            'glb': (glb or {}).get('path') if glb else None,
-           'colors': colors_for(theme, timeline['layers'])}
+           'colors': colors_for(theme, timeline['layers']),
+           'probe': probe}
     jp = os.path.join(out_dir, 'job.json')
     with open(jp, 'w', encoding='utf-8') as f:
         json.dump(job, f)
-    n = len(timeline['states'])
+    try:
+        n = len(timeline['states'])
+        timeline['layers']
+    except (KeyError, TypeError) as exc:
+        return None, {}, 'the timeline is malformed (%s)' % exc
+    if n == 0:
+        return None, {}, 'the timeline has no states to render'
     budget = timeout or (STARTUP_S + STATE_BUDGET_S * n)
     try:
         r = subprocess.run([node, os.path.join(HERE, 'render.mjs'), jp],
@@ -214,8 +221,12 @@ def render(scene, timeline, *, width, height, out_dir, theme='dark',
             msg = json.loads(line)
         except ValueError:
             continue
+        if not isinstance(msg, dict):
+            continue
         if msg.get('type') == 'info':
             info = msg
+        elif msg.get('type') == 'probe':
+            info['probe'] = msg
         elif msg.get('type') == 'done':
             done = msg
         elif msg.get('type') == 'error':
@@ -236,5 +247,8 @@ def render(scene, timeline, *, width, height, out_dir, theme='dark',
     if missing:
         return None, info, '%d of %d state frames missing' % (len(missing), n)
     info['ms_per_state'] = done.get('ms_per_state')
+    if info.get('glbError'):
+        info['glb_note'] = 'part models failed (%s); boxes drawn' % (
+            info['glbError'])
     return pngs, info, 'rendered %d states at %.0f ms each (SwiftShader, %s)' % (
         n, done.get('ms_per_state') or 0, bwhy)
