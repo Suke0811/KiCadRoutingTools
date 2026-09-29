@@ -174,6 +174,12 @@ REGISTRY = {
         'the reporting rule.'),
     'kicad_routing_plugin/swig_gui.py': (
         'reporting', 'wall_time reported after a routing run'),
+    'kicad_routing_plugin/about_tab.py': (
+        'throttle',
+        "the Donate button's shimmer (#1080): time.monotonic() gives the "
+        'animation phase, which decides only where the highlight band is '
+        'painted and whether a frame is repainted. It reaches no routing, '
+        'placement or report output.'),
     'py_router/plane_region_connector.py': (
         'reporting',
         '_total_route_time, via `import time as _time`. Invisible to the '
