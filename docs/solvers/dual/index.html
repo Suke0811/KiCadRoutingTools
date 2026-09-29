@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shadow prices as forces</title>
+<meta name="description" content="Interactive explainer: the dual of the whole route's geometry LP, its shadow prices as forces in equilibrium, with physics, geometry and a circuit analogue.">
+<style>
+:root{--F:#d9483b;--B:#2f6fd0;--ink:#1d2330;--mut:#5b6577;--line:#d8dde6;--bg:#f6f7fa;--card:#fff;--acc:#6a3fc4;--ok:#2e9d4c;--warn:#e3a008;--strut:#c2338f;--wall:#d9822b;color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:24px 18px 80px}
+h1{font-size:28px;margin:8px 0 4px;text-wrap:balance}
+h2{font-size:22px;margin:44px 0 6px;padding-top:10px;border-top:2px solid var(--line);text-wrap:balance}
+h3{font-size:17px;margin:26px 0 4px}
+p{margin:8px 0}
+.lede{color:var(--mut);font-size:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:12px 0}
+.callout{border-left:4px solid var(--acc);background:#f1ecfb;padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:#fdf3dc}
+code{background:#eceff5;border-radius:4px;padding:1px 5px;font-size:13px}
+svg,canvas{max-width:100%;height:auto;display:block}
+svg.demo{width:100%}
+.row{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin:8px 0}
+button{font:inherit;padding:5px 12px;border:1px solid #b9c0cf;background:#fff;color:var(--ink);border-radius:6px;cursor:pointer}
+select,input{color:var(--ink)}
+select{font:inherit;background:#fff;border:1px solid #b9c0cf;border-radius:6px;padding:2px 6px}
+input[type=range]{accent-color:var(--acc)}
+button:hover{background:#eef1f8}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.primary:hover{background:#5a33a8}
+label{color:var(--mut);font-size:14px}
+input[type=range]{vertical-align:middle}
+.stat{font-variant-numeric:tabular-nums;background:#eef1f8;border-radius:6px;padding:2px 9px;font-size:14px;color:var(--ink)}
+.stat b{color:var(--acc)}
+.log{font:13px/1.45 ui-monospace,Consolas,monospace;color:var(--mut);min-height:38px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+th{background:#eef1f8}
+.F{color:var(--F);font-weight:600}.B{color:var(--B);font-weight:600}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:760px){.two{grid-template-columns:1fr}}
+details{margin:8px 0}summary{cursor:pointer;color:var(--acc)}
+nav.toc{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:rgba(246,247,250,.94);backdrop-filter:blur(4px);border-bottom:1px solid var(--line);padding:8px 18px;font-size:14px;display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center}
+nav.toc a{color:var(--acc);text-decoration:none}nav.toc a:hover{text-decoration:underline}
+nav.toc .home{font-weight:600;margin-right:8px}
+h2,h3{scroll-margin-top:52px}
+dl.gl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin:6px 0}
+dl.gl dt{font-weight:600}dl.gl dd{margin:0;color:var(--ink)}
+@media(max-width:560px){dl.gl{grid-template-columns:1fr}dl.gl dd{margin-bottom:6px}}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--mut);margin:6px 0}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:4px}
+footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:var(--mut);font-size:14px}
+.tag{display:inline-block;font-size:12px;padding:0 7px;border-radius:9px;background:#e6e0f6;color:#4a2a9a;margin-right:4px}
+pre.math{font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#f3f5f9;border:1px solid var(--line);border-radius:8px;padding:10px 14px;overflow-x:auto;margin:10px 0;color:var(--ink)}
+.tw{overflow-x:auto;margin:10px 0}
+.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+figure{margin:14px 0}figure img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid var(--line)}
+figcaption{color:var(--mut);font-size:13px;margin-top:6px}
+.answer{border-left:4px solid var(--acc);background:#f1ecfb;padding:12px 16px;border-radius:0 8px 8px 0;margin:14px 0}
+.answer p{margin:6px 0}
+.phys h3{margin-top:0;font-size:16px}
+.phys{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:760px){.phys{grid-template-columns:1fr}}
+.phys .card{margin:0}
+.fb td,.fb th{padding:4px 8px;font-size:13px}
+.ok{color:var(--ok);font-weight:600}
+.flow{animation:flow 1s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-24}}
+@media (prefers-reduced-motion:reduce){.flow{animation:none}}
+a.cite{color:var(--acc);text-decoration:none;white-space:nowrap}a.cite:hover{text-decoration:underline}
+ol.refs{padding-left:22px}ol.refs li{margin:6px 0;scroll-margin-top:52px}ol.refs li:target{background:#f1ecfb;border-radius:6px}
+ol.refs .why{color:var(--mut)}
+</style>
+</head>
+<body>
+<nav class="toc"><a class="home" href="../">&larr; CP-SAT and HiGHS</a>
+<a href="#sec-short">Short answer</a><a href="#sec-pd">Primal and dual</a><a href="#sec-ball">A ball in a box</a><a href="#sec-geo">Geometry</a><a href="#sec-toy">Two lanes</a><a href="#sec-bound">Both sides of the toy</a><a href="#sec-column">Lanes past an island</a><a href="#sec-real">The real LP</a><a href="#sec-phys">Physics</a><a href="#sec-circuit">Circuit</a><a href="#sec-refs">References</a></nav>
+<main>
+
+<h1>The dual of the geometry LP: shadow prices are forces</h1>
+<p class="lede"><code>whole_geo.py</code> turns the solve's plan into millimetres with one linear program, and HiGHS solves that LP through its <b>dual</b>. This page, a companion to <a href="../">the solvers page</a>, explains what that dual is: as algebra, as physics, as geometry and as a circuit. The primal asks <i>where every lane sits</i>. The dual asks <i>what forces hold each lane there</i>. The two questions have one answer. Every figure below is interactive, and the small models use the same kinds of rows as the real LP.</p>
+
+<h3>The words you will meet</h3>
+<dl class="gl">
+<dt>primal</dt><dd>the LP as written: choose the positions <code>x</code> that minimise the cost <code>c&middot;x</code> subject to the rules <code>A&middot;x &le; b</code>.</dd>
+<dt>dual</dt><dd>a second LP built from the same numbers, with one unknown per <i>rule</i> instead of one per position.</dd>
+<dt>shadow price</dt><dd>a rule's dual value <code>y</code>: how fast the cost falls as that rule is loosened, the saving per unit for a small loosening. Its units are cost per millimetre, which for an energy is a force.</dd>
+<dt>binding</dt><dd>a rule that holds with no room to spare at the optimum. Only binding rules can have a price.</dd>
+<dt>elastic slack</dt><dd>a variable that lets a hard rule be broken at a very high price (<code>W_HARD = 10&#8308;</code> per mm), so the LP always has an answer and reports where it had to cheat.</dd>
+<dt>complementary slackness</dt><dd>at the optimum, no rule has both room to spare and a price. A rule with room to spare has price 0, and a rule with a price is binding.</dd>
+</dl>
+
+<!-- ======================= SHORT ANSWER ======================= -->
+<h2 id="sec-short">The short answer</h2>
+<div class="answer">
+<p><b>Physically, the dual is the statics of the same system.</b> Think of every lane point as a bead that can slide sideways. The costs are constant forces on the beads: a string held at fixed tension, a weight pulling each bead toward its preferred spot. The rules are rigid contacts: struts between neighbours, walls at pad boxes and the board edge, pins at the terminals. The dual asks for one force per contact such that</p>
+<ul>
+ <li>every force is a <b>push, never a pull</b> (<code>y &ge; 0</code>),</li>
+ <li>at every bead the forces <b>cancel</b> (one balance equation per primal variable),</li>
+ <li>no contact carries <b>more than it is rated for</b> (<code>W_HARD</code> for a hard rule, the string's tension for length),</li>
+</ul>
+<p>and among all such sets of forces it picks the one with the largest value of <code>&minus;b&middot;y</code>: minus the sum, over the contacts, of each contact's force times the position <code>b_i</code> where that contact stands. The winning set is the actual reaction force in every contact once the beads have settled, and for it that value is exactly the lowest energy, computed <b>from the forces and the contacts' positions alone</b>, without knowing where any bead is. Any other balanced set gives a smaller value, so it is a guaranteed lower bound on the energy. Structural engineering has the same statement as the static theorem of plastic collapse, and the two were shown to be the same LP duality <a class="cite" href="#ref-clz">(Charnes, Lemke and Zienkiewicz 1959)</a>.</p>
+<p><b>Geometrically</b>, the rules are the walls of a region and the cost is a direction. At the optimal corner, the downhill direction <code>&minus;c</code> lies inside the cone spanned by the outward normals of the walls that meet there, and the dual values are its coordinates in that cone. Adding those walls with those weights builds a new wall perpendicular to the cost. That wall is a floor under the whole region, and it touches the region exactly at the optimum.</p>
+</div>
+
+<!-- ======================= 1. PRIMAL AND DUAL ======================= -->
+<h2 id="sec-pd">1 &nbsp; The primal and the dual, written out</h2>
+<p>For an LP whose unknowns are free (a lane's offset can go either way):</p>
+<pre class="math">primal   minimise   c&middot;x          subject to   A&middot;x &le; b                  (one row per rule)
+dual     maximise  &minus;b&middot;y          subject to   A&#7488;&middot;y = &minus;c,   y &ge; 0      (one price per rule)</pre>
+<p>Everything in one problem has a partner in the other:</p>
+<div class="tw"><table>
+<tr><th>Primal</th><th>Dual</th><th>Physical reading</th></tr>
+<tr><td>a variable <code>x_j</code> (a lane's offset at one column)</td><td>a constraint: row <code>j</code> of <code>A&#7488;y = &minus;c</code></td><td>the balance of forces at that bead</td></tr>
+<tr><td>a rule, row <code>i</code> of <code>A&middot;x &le; b</code></td><td>a variable <code>y_i &ge; 0</code></td><td>the force in that contact; it can push, never pull</td></tr>
+<tr><td>the rule's limit <code>b_i</code></td><td>its weight in the dual objective</td><td>where the contact stands</td></tr>
+<tr><td>the cost <code>c_j</code></td><td>the balance's right-hand side</td><td>the applied force on bead <code>j</code> is <code>&minus;c_j</code></td></tr>
+<tr><td>a free variable</td><td>an equality</td><td>a bead free to move must be in exact balance</td></tr>
+<tr><td>a variable <code>&ge; 0</code> with cost <code>c_j</code></td><td>an inequality: <code>&minus;(A&#7488;y)_j &le; c_j</code></td><td>a bead resting on a floor at 0, which takes up any leftover push. For a helper variable (a slack, a length, a bend) this reads as a cap: the rules through it carry at most <code>c_j</code> in total</td></tr>
+<tr><td>a rule with room to spare</td><td><code>y_i = 0</code></td><td>a wall you are not touching pushes with nothing</td></tr>
+</table></div>
+<details><summary>Where the dual comes from, in four lines</summary>
+<p>Attach a multiplier <code>y_i &ge; 0</code> to each rule and form the Lagrangian <code>L(x, y) = c&middot;x + y&middot;(A&middot;x &minus; b)</code>. For any feasible <code>x</code> the bracket is <code>&le; 0</code>, so <code>L &le; c&middot;x</code>. Minimising <code>L</code> over a free <code>x</code> gives a finite answer only if <code>c + A&#7488;y = 0</code>, and then the answer is <code>&minus;b&middot;y</code>. So for every <code>y &ge; 0</code> with <code>A&#7488;y = &minus;c</code> and every feasible <code>x</code>: <code>&minus;b&middot;y = min L &le; L(x, y) &le; c&middot;x</code>. That is <b>weak duality</b>. For a linear program the best such <code>y</code> reaches the optimum exactly: <b>strong duality</b>.</p>
+<p>Read physically: <code>y&middot;(A&middot;x &minus; b)</code> is minus each contact's force times its gap (the gap is <code>b &minus; A&middot;x</code>), and <code>c + A&#7488;y = 0</code> says the applied forces and the contact forces cancel at every bead.</p>
+</details>
+
+<!-- ======================= 2. BALL ======================= -->
+<h2 id="sec-ball">2 &nbsp; The picture physicists use: a heavy ball in a box</h2>
+<p>With two unknowns, every rule is a straight wall and together they fence in a polygon. Let the cost be <b>height</b>: gravity pulls a ball with force <code>f = &minus;c</code>, and it rolls to the lowest point, a corner. Each wall it touches pushes back along its inward normal with some force <code>y_i</code>. The ball is at rest, so</p>
+<pre class="math">f  &minus;  &Sigma; y_i &middot; a_i  =  0        that is        A&#7488;y = &minus;c        (a_i = wall i's outward normal)</pre>
+<p>which is the dual constraint, word for word. A wall can push but cannot pull, so <code>y_i &ge; 0</code>. A wall the ball does not touch pushes with nothing: complementary slackness. And the ball's energy <code>c&middot;x</code> equals <code>&minus;b&middot;y</code>, computed from the forces and the wall positions alone.</p>
+<div class="card">
+  <p style="margin-top:0"><b>Drag</b> anywhere in the box (or use the slider) to point gravity. Click a wall, then <b>move it out</b> with the second slider: the energy changes by the wall's force times the distance, which is what a shadow price is. Under the box, the same box is drawn with the <b>potential energy as height</b>: the cost tilts the floor into a tray, the rules are its fences, and gravity points straight down.</p>
+  <svg id="ballSvg" class="demo" viewBox="0 0 820 404" style="touch-action:none" role="img" aria-label="A ball resting in a polygon under gravity, with wall forces"></svg>
+  <svg id="traySvg" class="demo" viewBox="0 0 820 266" role="img" aria-label="The same box drawn with energy as height: a tilted tray with fences"></svg>
+  <div class="row"><label for="ballAng">gravity direction <input type="range" id="ballAng" min="0" max="359" value="255"></label><span class="stat" id="ballAngV"></span>
+   <label for="ballWall">wall <select id="ballWall"></select></label>
+   <label for="ballDel">move it out by <input type="range" id="ballDel" min="-1.2" max="1.2" step="0.02" value="0"></label><span class="stat" id="ballDelV"></span><button id="ballRst">Reset walls</button></div>
+  <div class="row"><label><input type="checkbox" id="ballShowF" checked> wall forces</label><label><input type="checkbox" id="ballShowG" checked> cone and floor</label>
+   <span class="stat">energy c&middot;x <b id="ballE"></b></span><span class="stat">dual value &minus;b&middot;y <b id="ballD"></b></span></div>
+  <div class="log" id="ballLog"></div>
+  <details><summary>Try this</summary><ul>
+   <li>Turn gravity slowly. The ball stays in one corner, and the forces shift between its two walls, until gravity crosses a wall's normal. Then the ball jumps to the next corner.</li>
+   <li>Point gravity straight through a wall, perpendicular to it (the edge between two slices of the dial). The ball can rest anywhere along that wall: many optima. The force is still well defined, and one wall carries all of it.</li>
+   <li>Select a wall the ball is not touching and move it. Nothing changes: its price is 0.</li>
+   <li>Select a touching wall and move it out a little. The energy falls by <code>y&middot;&delta;</code>. Move it far enough and the ball switches corners, and the prediction stops holding.</li>
+  </ul></details>
+</div>
+
+<!-- ======================= 2b. GEOMETRY ======================= -->
+<h3 id="sec-geo">2b &nbsp; The same thing, geometrically</h3>
+<p>The purple shapes in the figure are the dual drawn as geometry. Four facts, each visible above:</p>
+<ol>
+ <li><b>The normal cone.</b> At each corner, the outward normals of the two walls that meet there span a wedge (shaded purple at the ball). The ball rests at a corner exactly when gravity points into that corner's wedge. The dual values are gravity's coordinates along the wedge's two edges: the purple parallelogram splits <code>f</code> into <code>y&#8321;a&#8321; + y&#8322;a&#8322;</code>. Because the coordinates are taken inside the wedge, they come out non-negative. That is dual feasibility, and using only the corner's own walls is complementary slackness.</li>
+ <li><b>A floor built from walls.</b> Multiply each wall's inequality <code>a_i&middot;x &le; b_i</code> by its <code>y_i</code> and add them. The result, <code>(&Sigma; y_i a_i)&middot;x &le; &Sigma; y_i b_i</code>, is a new valid wall, and because <code>&Sigma; y_i a_i = f</code> it lies <b>perpendicular to gravity</b>: the dashed purple line. Every point of the box is above it, so the energy is at least <code>&minus;b&middot;y</code> everywhere. That is weak duality as a picture: any non-negative mix of walls whose normals add up to <code>f</code> is a floor under the box. The dual looks for the highest such floor, and the highest one touches the box at the ball. That is strong duality.</li>
+ <li><b>The normal fan.</b> The wedges of all the corners tile the circle of directions (the dial at the bottom right). Turning gravity walks the pointer from slice to slice, and the ball from corner to corner. On a boundary between two slices, gravity is perpendicular to a wall and a whole side is optimal. The real LP has ties like that, so <code>whole_geo</code> adds a tiny tie-break to the cost (<code>detmath.lp_tie_break</code>), which turns every side into a single corner so every machine gets the same answer.</li>
+ <li><b>Farkas' lemma.</b> At any corner, exactly one of two things is true. Either <code>f</code> lies in the corner's wedge (and the <code>y</code> values are a certificate that nothing lower exists), or some edge leaving the corner goes downhill (and the corner is not optimal). Never both, never neither. That lemma <a class="cite" href="#ref-farkas">(Farkas 1902)</a> is what LP duality rests on, and it is also the simplex method's stopping rule.</li>
+</ol>
+
+<!-- ======================= 3. TOY ======================= -->
+<h2 id="sec-toy">3 &nbsp; The toy: two lanes in one column</h2>
+<p>Two lanes, <b>a</b> and <b>b</b>, run on the same layer through one column of the route. Each has a preferred offset, its reference <code>r</code>. Moving lane a costs <code>w_a</code> per mm and lane b <code>w_b</code> per mm. The rule: b sits at least a pitch <code>P</code> above a. Walls (a pad box, the board edge) are optional. The LP:</p>
+<pre class="math">minimise    w_a&middot;|o_a &minus; r_a|  +  w_b&middot;|o_b &minus; r_b|  +  W&middot;e
+subject to  o_a &minus; o_b &minus; e &le; &minus;P        the pitch rule, elastic: breaking it by e costs W per mm
+            o_a &ge; L,   o_b &le; U          the walls, when present
+            e &ge; 0</pre>
+<p>(An absolute value is linear inside an LP by the usual trick: a helper <code>d &ge; o &minus; r</code>, <code>d &ge; r &minus; o</code>, cost <code>w&middot;d</code>.) Attaching <code>y</code> to the pitch rule, <code>u_a</code> and <code>u_b</code> to the walls, and minimising the Lagrangian term by term gives the dual:</p>
+<pre class="math">maximise    y&middot;g  &minus;  u_a&middot;(r_a &minus; L)  &minus;  u_b&middot;(U &minus; r_b)          g = P &minus; (r_b &minus; r_a), the room the rule needs
+subject to  0 &le; y &le; W                 from e:   the strut is rated for W; past that it yields
+            |y &minus; u_a| &le; w_a            lane a:   strut y down, wall u_a up; its pull covers the rest (at most w_a)
+            |u_b &minus; y| &le; w_b            lane b:   the same, mirrored
+            u_a, u_b &ge; 0              walls push, never pull</pre>
+<p>As mechanics: two beads on a rail, each held toward its reference by a constant force <code>w</code>. Off its reference the bead is pulled back with exactly <code>w</code>; sitting on it, it can resist any force up to <code>w</code>, like a bead in a V-shaped groove. A strut of length <code>P</code> sits between the beads, and its compression is <code>y</code>.</p>
+<div class="card">
+  <p style="margin-top:0"><b>Drag the references</b> (the grey markers under the rail) and change the sliders. The page solves the LP exactly and draws the forces on each lane below the rail. The cost <code>C</code> and the dual value <code>D</code> are always equal.</p>
+  <div class="row"><button data-p="toy" class="primary">The toy</button><button data-p="uneq">Unequal pulls</button><button data-p="wall">Lane a against a wall</button><button data-p="yield">The rule cannot hold</button><button data-p="cheap">W set too low</button></div>
+  <svg id="toySvg" class="demo" viewBox="0 0 860 362" style="touch-action:none" role="img" aria-label="Two lanes on a rail with a strut between them and their free-body diagrams"></svg>
+  <div class="row">
+   <label for="tP">pitch P <input type="range" id="tP" min="0.05" max="0.6" step="0.01" value="0.3"></label><span class="stat" id="tPV"></span>
+   <label for="tWa">w_a <input type="range" id="tWa" min="0.2" max="4" step="0.1" value="1"></label><span class="stat" id="tWaV"></span>
+   <label for="tWb">w_b <input type="range" id="tWb" min="0.2" max="4" step="0.1" value="1"></label><span class="stat" id="tWbV"></span>
+   <label for="tW">W <input type="range" id="tW" min="0.5" max="12" step="0.5" value="10"></label><span class="stat" id="tWV"></span>
+  </div>
+  <div class="row">
+   <label><input type="checkbox" id="tHasL"> wall L</label><label for="tL">at <input type="range" id="tL" min="-0.6" max="0" step="0.01" value="-0.3"></label><span class="stat" id="tLV"></span>
+   <label><input type="checkbox" id="tHasU"> wall U</label><label for="tU">at <input type="range" id="tU" min="0" max="0.8" step="0.01" value="0.5"></label><span class="stat" id="tUV"></span>
+  </div>
+  <div class="row">
+   <span class="stat">o_a <b id="tOa"></b></span><span class="stat">o_b <b id="tOb"></b></span><span class="stat">strut y <b id="tY"></b></span><span class="stat">walls u_a <b id="tUa"></b> u_b <b id="tUb"></b></span><span class="stat">slack e <b id="tE"></b></span><span class="stat">cost C <b id="tC"></b></span><span class="stat">dual D <b id="tD"></b></span>
+  </div>
+  <div class="log" id="tLog" style="min-height:58px"></div>
+</div>
+<p><b>Who pays, and why that sets the price.</b> The rule needs <code>g</code> mm more room than the references give. Three sources can supply it: moving lane a (<code>w_a</code> per mm, until its wall), moving lane b (<code>w_b</code> per mm, until its wall), or breaking the rule (<code>W</code> per mm, without limit). The LP takes the cheapest first. The shadow price <code>y</code> is the unit price of the <b>last</b> source it had to use, because that is what one more millimetre of pitch would cost. In the mechanics the same thing reads: the weaker pull gives way first; once a bead reaches a wall, the wall takes up the extra force; when both walls hold, the only thing left to give is the strut, which yields at its rated force <code>W</code>.</p>
+
+<!-- ======================= 3b. BOTH SIDES ======================= -->
+<h3 id="sec-bound">3b &nbsp; Both sides of the toy: the primal plane and the dual line</h3>
+<p>The same toy, drawn twice. <b>Left, the primal</b>: every point of the plane is a pair of offsets <code>(o_a, o_b)</code>. The green region is what the rules allow. The cost is a pyramid with its tip at the references, so its level sets are <b>diamonds</b> with half-widths <code>C/w_a</code> and <code>C/w_b</code>. When the rule can hold at all, the optimum is where the smallest diamond first touches the green region. <b>Right, the dual</b>: pick any strut force <code>y</code>. If both lanes can balance it, <code>D(y)</code> is a guaranteed floor under the cost of every position. The curve never rises above the dashed line <code>C</code> (weak duality), and its peak touches it (strong duality).</p>
+<p><b>Below both, the potential energy.</b> Only one number matters to the toy's energy: the separation <code>s = o_b &minus; o_a</code>, because for any separation the lanes split the move the cheapest way. The energy has two parts. The <span style="color:var(--acc);font-weight:600">lanes' energy</span> is a valley with its bottom at the references' own separation; it gets steeper when a lane reaches its wall, and goes vertical when both have. The <span style="color:var(--strut);font-weight:600">rule's energy</span> is zero above <code>P</code> and a ramp of slope <code>W</code> below it: an elastic rule is a steep wall, not a vertical one. The toy rests at the bottom of their <b>sum</b>. There the slope of the lanes' energy is the force in the strut, <code>F = dV/ds</code> (at a kink, any value between the two slopes). The dual appears on this plot too: lay a line of slope <code>y</code> under the lanes' energy, touching it, and it crosses <code>s = P</code> at height <code>D(y)</code>. As <code>y</code> rises, that crossing rises until the line touches the curve at the rest point, and then falls again. Its highest value is <code>C</code>. In symbols, <code>D(y) = y&middot;P &minus; L*(y)</code>, where <code>L*</code> is the Legendre transform (the convex conjugate) of the lanes' energy <code>L</code>.</p>
+<div class="card">
+  <div class="two">
+   <div><svg id="planeSvg" class="demo" viewBox="0 0 400 402" role="img" aria-label="The primal plane of the toy: allowed region and cost diamonds"></svg></div>
+   <div><svg id="chartSvg" class="demo" viewBox="0 0 420 402" role="img" aria-label="The dual value D(y) against the strut force y"></svg></div>
+  </div>
+  <svg id="energySvg" class="demo" viewBox="0 0 860 300" role="img" aria-label="The toy's potential energy against the gap between the lanes"></svg>
+  <div class="row"><label for="tYt">try a strut force y <input type="range" id="tYt" min="0" max="10" step="0.01" value="0.5"></label><span class="stat" id="tYtV"></span><span class="stat">D(y) <b id="tDy"></b></span><span class="stat">C <b id="tC2"></b></span><span class="stat">gap C &minus; D(y) <b id="tGap"></b></span></div>
+  <div class="log" id="bLog"></div>
+  <details><summary>What to look for</summary><ul>
+   <li><b>The toy</b> preset: <code>w_a = w_b</code>, so the diamond's side is parallel to the rule's line and a whole segment touches. Every split of the move is optimal, and the dual still has one answer, <code>y = 1</code>. The tie shows in the primal, as a whole side of the diamond lying on the rule's line, but not in the dual, whose peak is a single point.</li>
+   <li><b>Unequal pulls</b>: now a corner of the diamond touches, the cheap lane moves and the other stays. The dual's peak sits at <code>y = min(w_a, w_b)</code>.</li>
+   <li><b>Lane a against a wall</b>: the allowed region gets a vertical side. The dual curve gets a kink at <code>y = w_a</code>, where the wall starts helping lane a.</li>
+   <li><b>The rule cannot hold</b>: the green region shrinks to nothing inside the walls. The optimum sits past the rule's line, the slack is paid, and the dual's peak moves to <code>y = W</code>: a broken rule is a price at its cap.</li>
+  </ul></details>
+</div>
+
+<!-- ======================= 4. COLUMN LP ======================= -->
+<h2 id="sec-column">4 &nbsp; Many lanes, many columns: the forces in a small geometry LP</h2>
+<p>Now the same kinds of rows as <code>whole_geo</code>, at small scale. Three lanes on one layer cross nine columns, pinned at both ends, and pass an island (a pad box) on sides you choose. The rows are the pitch between neighbours (hard, elastic), the island and the board edge (hard, elastic), the pins at the terminals, the length by tangent cuts (cost 1 per mm of extra length: a string with tension up to 1), and bends (cost 0.25 per mm of kink here, light enough that the string's tension shows; <code>whole_geo</code> uses 3 on its 0.1 mm columns). A small simplex in the page solves it and also returns every row's price. Struts are drawn for the rows with a price, thicker for larger forces: <span style="color:var(--strut);font-weight:600">magenta</span> for pitch, <span style="color:var(--wall);font-weight:600">orange</span> for the island and the board edge. The length and bend forces are not drawn. <b>Click any lane point</b> to list every force on it; they add up to zero.</p>
+<p>One thing the table shows that a real string would not: the tangent cuts turn the string's smooth sideways pull into <b>steps</b>. A nearly straight segment pulls with nothing at all, because a small sideways move adds almost no length (about <code>k&sup2;/2</code> per column for slope <code>k</code>), and the pull jumps to 0.119, 0.287, 0.573 and 0.832 as the slope passes each cut. <code>whole_geo</code>'s length term behaves the same way.</p>
+<div class="card">
+  <svg id="colSvg" class="demo" viewBox="0 0 900 372" role="img" aria-label="Three lanes passing an island, with the binding rules drawn as struts"></svg>
+  <div class="row"><label for="colH">board height <input type="range" id="colH" min="1.5" max="3.2" step="0.05" value="2.4"></label><span class="stat" id="colHV"></span>
+   <label for="colSplit">lanes below the island <select id="colSplit"><option>0</option><option selected>1</option><option>2</option><option>3</option></select></label>
+   <span class="stat">cost C <b id="colC"></b></span><span class="stat">dual &minus;b&middot;y <b id="colD"></b></span><span class="stat">rules with a price <b id="colN"></b></span></div>
+  <div class="two">
+   <div><b id="colFbT">Forces on the selected point</b><div class="tw"><table class="fb" id="colFb"></table></div></div>
+   <div><b>Rules with a price, by kind</b><div class="tw"><table class="fb" id="colKinds"></table></div><div class="log" id="colLog"></div></div>
+  </div>
+  <details><summary>Try this</summary><ul>
+   <li>Click lane 2 at column 3, where it turns up onto the island. The island's clearance pushes it up, the lane above presses down on it through the pitch strut, and the length and bend rows pull it back toward a straight line. They cancel.</li>
+   <li>Lower the board height to 1.8 mm, where the two upper lanes no longer fit. The LP breaks the cheapest rule it can (here the island's clearance, by 0.1 mm, drawn dashed), and the whole stack carries the cap force <code>W_HARD</code> (100 in this toy so it fits the scale; <code>10&#8308;</code> in the real one): the board edge presses on the top lane, the pitch strut passes the force down, and the island pushes back, like books squeezed on a shelf. Only the rule whose slack was paid is broken; the others are at the cap because they carry its load. <code>whole_geo</code> sends the broken rows to CP-SAT as cuts.</li>
+   <li>Click lane 1 at column 1, on its nearly straight run. Nothing acts on it: its slope is below the first tangent cut, so the string pulls with nothing there.</li>
+  </ul></details>
+</div>
+
+<!-- ======================= 5. THE REAL LP ======================= -->
+<h2 id="sec-real">5 &nbsp; The real dual, in <code>whole_geo.py</code></h2>
+<p>The primal that <code>build_and_solve</code> writes down:</p>
+<pre class="math">variables  o      offset of each lane at each column (every 0.1 mm)   bounded: board, pad boxes, reference interval
+           d      extra length of one column's sideways move           cost W_LEN  = 1
+           d2     a bend                                              cost W_BEND = 3
+           c      pitch short of comfortable (two lane pitches)       cost W_COMF&middot;G
+           e      elastic slack on every hard rule                    cost W_HARD = 10&#8308;
+rows       A&middot;x &le; b   pitch, slope, turn, via room, via to via, island side, ...  (hard rules carry &minus;e)
+           tangent cuts   (t/r)&middot;(o[k+1] &minus; o[k]) &minus; d &le; &minus;G&middot;(1/r &minus; 1),   r = &radic;(1 + t&sup2;)</pre>
+<p>And its dual, one price per row and one push per finite bound:</p>
+<pre class="math">variables  y_r &ge; 0          one per row                                  150,960 at K51
+           u_j, w_j &ge; 0     one per finite lower / upper bound of an offset   the walls' pushes
+for each offset o_j:     &Sigma;_r A_rj&middot;y_r &minus; u_j + w_j = &minus;c_j &asymp; 0      balance: the bead is free, so the forces cancel
+for each slack e_r:      y_r &le; 10&#8308;                             a hard rule's rated force
+for each length d:       &Sigma;_tangents y &le; 1                     the string's tension
+for each bend d2:        &Sigma; y &le; 3                              a hinge's yield moment
+maximise                 &minus;b&middot;y + lo&middot;u &minus; hi&middot;w</pre>
+<p>Every piece of section 3 is here at full size. Only the rows that bind can carry a price, and at K51 that is a tiny fraction of them:</p>
+<div class="two">
+ <div class="tw"><table>
+  <tr><th>K51, geometry pass 1</th><th class="num">count</th></tr>
+  <tr><td>offsets (variables)</td><td class="num">7,205</td></tr>
+  <tr><td>rows (inequalities)</td><td class="num">150,960</td></tr>
+  <tr><td>rules with a shadow price</td><td class="num">376</td></tr>
+  <tr><td>&nbsp;&nbsp;a via's room</td><td class="num">143</td></tr>
+  <tr><td>&nbsp;&nbsp;neighbours at the bar (pitch)</td><td class="num">142</td></tr>
+  <tr><td>&nbsp;&nbsp;turn limit</td><td class="num">69</td></tr>
+  <tr><td>&nbsp;&nbsp;pad box or board edge</td><td class="num">16</td></tr>
+  <tr><td>&nbsp;&nbsp;a pair's dive run</td><td class="num">4</td></tr>
+  <tr><td>&nbsp;&nbsp;via to via</td><td class="num">2</td></tr>
+  <tr><td>solved as its dual by HiGHS in</td><td class="num">18 s</td></tr>
+ </table></div>
+ <div>
+  <p>That is 0.25% of the rules. The other 150,584 push with nothing, and most of them have room to spare. Geometrically, the optimum is a corner of a polytope in thousands of dimensions, and 376 of the walls that touch it there carry a price. The downhill direction <code>&minus;c</code> lies in the cone of those walls' outward normals (together with the bounds'), and the prices are its coordinates in that cone, exactly as in the ball's wedge.</p>
+  <p>A rule whose elastic slack was paid (the rule broke) has its price at the cap <code>10&#8308;</code>. The converse does not hold: other rules can sit at the cap because they carry the broken rule's load, as the squeezed stack in section 4 shows. The broken rows are the ones <code>whole_geo</code> writes as cuts for CP-SAT (the islands a lane could not be kept off, the changes it could not give their room).</p>
+ </div>
+</div>
+<figure>
+ <img src="film.png" width="1280" height="467" alt="A frame from the K51 whole-route film: the geometry LP's binding rules drawn as struts on the board, with a close-up of their prices">
+ <figcaption>The K51 film at the geometry stage. The panel at the top left is pass 1 of the LP. On the board, the lit struts are the 376 rules with a price, coloured by kind; the close-up on the right shows a few with their values (about 16 up to about 5,000). <code>whole_movie.py</code> reads these prices straight from the dual that HiGHS solves.</figcaption>
+</figure>
+
+<h3>Why <code>whole_geo</code> solves the dual itself</h3>
+<p><code>lp_by_dual</code> (<code>whole_geo.py</code>, line 787) does not solve the primal and read the prices off. It builds the dual explicitly and hands <i>that</i> to HiGHS:</p>
+<pre class="math">AT = (&minus;A.T)
+A_ub = AT[plain]            the caps:      one per cost-carrying helper   (y &le; 10&#8308;, &Sigma; y &le; 1, &Sigma; y &le; 3, ...)
+A_eq = [AT[bj], U, W]       the balances:  one per bounded offset, with the walls' pushes u and w
+linprog(b, lo, hi terms, A_ub, A_eq, method='highs-ipm')     interior point, capped at 500 iterations
+x = &minus;marginals              the offsets come back as the multipliers of the balance equations</pre>
+<ul>
+ <li><b>It is faster.</b> The primal has many more rows than columns, and every elastic slack becomes a one-entry inequality in the dual. SciPy's <code>highs-ipm</code>, which runs IPX, one of HiGHS's interior point solvers <a class="cite" href="#ref-schork">(Schork and Gondzio 2020)</a>, takes the dual form about six times faster: 31 s instead of 188 s on K51's pass 2.</li>
+ <li><b>The positions come back for free.</b> The dual of the dual is the primal, so the multipliers HiGHS returns on the balance equations <i>are</i> the lane offsets. In mechanics this is the principle of virtual work: the multiplier of an equilibrium equation is the displacement that does work against it.</li>
+ <li><b>It has a fallback.</b> If the interior point does not finish (zynq K18's pass 2 once ran for half an hour), the same dual goes to HiGHS's dual simplex <a class="cite" href="#ref-huangfu">(Huangfu and Hall 2018)</a>, and <code>detmath.lp_round</code> rounds the result so every machine gets the same offsets.</li>
+</ul>
+
+<!-- ======================= 6. PHYSICS ======================= -->
+<h2 id="sec-phys">6 &nbsp; The physics behind it</h2>
+<p>None of this is an analogy invented for the page. Each item below is the same mathematics under a physicist's name.</p>
+<div class="phys">
+ <div class="card"><h3>Lagrange multipliers are constraint forces</h3><p>When a system minimises its potential energy subject to constraints, the multipliers on the constraints are the reaction forces the constraints exert: the normal force of a floor, the tension in a rod <a class="cite" href="#ref-lagrange">(Lagrange 1788)</a>. The optimality conditions of an LP, the Karush&ndash;Kuhn&ndash;Tucker conditions <a class="cite" href="#ref-karush">(Karush 1939)</a> <a class="cite" href="#ref-kt">(Kuhn and Tucker 1951)</a> <a class="cite" href="#ref-cottle">(Cottle 2012)</a>, are exactly equilibrium plus contact.</p></div>
+ <div class="card"><h3>Complementary slackness is the contact law</h3><p>In contact mechanics (Signorini's problem <a class="cite" href="#ref-signorini33">(Signorini 1933)</a> <a class="cite" href="#ref-signorini59">(Signorini 1959)</a>): the gap is at least zero, the contact force is at least zero, and their product is zero. A wall pushes only while it is touched; a rope pulls only while it is taut. The LP says the same about a rule's room and its price.</p></div>
+ <div class="card"><h3>Linear costs are constant forces</h3><p>A dead weight has energy <code>m&middot;g&middot;h</code>, linear in height, so it pulls with a constant force. A string held at fixed tension <code>T</code> by a weight over a pulley has energy <code>T &times; length</code>. The length term <code>W_LEN &times; length</code> is such a string with tension 1, and in the dual the tangent cuts' prices add up to at most 1: the string's tension, pulling sideways with about <code>T&middot;sin&theta;</code>, in steps, one per tangent cut (section 4).</p></div>
+ <div class="card"><h3>An absolute value holds like friction</h3><p>A cost <code>w&middot;|o &minus; r|</code> is a V-shaped groove. Away from the bottom it pulls with exactly <code>w</code>. At the bottom it can supply any force up to <code>w</code>, like static friction holding a block until the load exceeds its limit. That is why a lane at its reference can take a strut force smaller than <code>w</code> without moving.</p></div>
+ <div class="card"><h3>Elastic rules are rigid-plastic members</h3><p>A hard rule with an elastic slack behaves like a strut of a rigid, perfectly plastic material: it carries any force up to its rating <code>W_HARD</code> and then yields, and yielding is paying the slack. The bend term, cost <code>3 &times; |kink|</code>, is a plastic hinge with yield moment 3: its energy is the moment times the rotation (the kink, a second difference of offsets, stands in for the rotation).</p></div>
+ <div class="card"><h3>Plastic limit analysis is an LP pair</h3><p>The collapse load of a rigid-plastic structure has two theorems. The static theorem: any set of forces that balances the load and nowhere exceeds yield gives a load the structure can certainly carry (a lower bound). The kinematic theorem: any collapse mechanism gives an upper bound. They meet at the collapse load <a class="cite" href="#ref-gp">(Greenberg and Prager 1952)</a> <a class="cite" href="#ref-dpg">(Drucker, Prager and Greenberg 1952)</a>. Charnes and Greenberg wrote the static problem for frames as a linear program in 1951 <a class="cite" href="#ref-cg">(Charnes and Greenberg 1951)</a>, and Charnes, Lemke and Zienkiewicz showed in 1959 that the two theorems are a dual pair of LPs <a class="cite" href="#ref-clz">(Charnes, Lemke and Zienkiewicz 1959)</a>; see also <a class="cite" href="#ref-dg">(Dorn and Greenberg 1957)</a>. The same kind of LP later laid out optimal trusses <a class="cite" href="#ref-dgg">(Dorn, Gomory and Greenberg 1964)</a>. Section 3b's curve is the static theorem for the toy.</p></div>
+ <div class="card"><h3>The positions are virtual displacements</h3><p>The principle of virtual work <a class="cite" href="#ref-lagrange">(Lagrange 1788)</a> says a set of forces is in equilibrium exactly when it does zero work in every small displacement the constraints allow. In the dual, the balance equations are the equilibrium, and their multipliers are the positions (<code>x = &minus;marginals</code>). Strong duality, <code>c&middot;x = &minus;b&middot;y</code>, is the work bookkeeping that closes.</p></div>
+ <div class="card"><h3>Potential and complementary energy</h3><p>Elasticity has two minimum principles for one equilibrium: displacements minimise the potential energy, and stresses minimise the complementary energy, and at the solution the two are equal and opposite. They are linked by a Legendre transform <a class="cite" href="#ref-fenchel">(Fenchel 1949)</a> <a class="cite" href="#ref-rock70">(Rockafellar 1970)</a>. The primal and dual of an LP are the same pair for rigid contacts and constant loads.</p></div>
+</div>
+<p>Economists read the same numbers as prices: the value of one more unit of a scarce resource. Kantorovich's 1939 "resolving multipliers" are these prices <a class="cite" href="#ref-kant">(Kantorovich 1939/1960)</a>, the theory grew up in the Cowles Commission's activity analysis <a class="cite" href="#ref-koop">(Koopmans 1951)</a>, the first published proof of the duality theorem is Gale, Kuhn and Tucker's <a class="cite" href="#ref-gkt">(Gale, Kuhn and Tucker 1951)</a>, and the standard account is Dantzig's <a class="cite" href="#ref-dantzig">(Dantzig 1963)</a>. The units make the link to physics. A shadow price here is cost per millimetre, and cost is an energy, so a shadow price is an energy per length: a force.</p>
+
+<!-- ======================= 7. CIRCUIT ======================= -->
+<h2 id="sec-circuit">7 &nbsp; The same LP as an electrical circuit</h2>
+<p>There is an electrical version of all of this, and it is old. Jack Dennis showed that a network of ideal diodes and sources (with resistors added for a quadratic program) has a DC operating point that solves a linear program and its dual together <a class="cite" href="#ref-dennis">(Dennis 1959)</a>. In his construction the program's variables are diode currents and the dual's are node voltages. The circuit below is that construction applied to this page's force LP: the forces are the diode currents, and the node voltages come out as the positions. In the mapping below, positions become node <b>voltages</b> and forces become branch <b>currents</b>: force is a "through" quantity like current, and position an "across" quantity like voltage.</p>
+<div class="tw"><table>
+<tr><th>LP / mechanics</th><th>Circuit</th></tr>
+<tr><td>a lane offset <code>o_j</code></td><td>the voltage of node <code>j</code></td></tr>
+<tr><td>a pitch rule <code>o_b &minus; o_a &ge; P</code></td><td>an ideal diode in series with a battery of <code>P</code> volts between the two nodes</td></tr>
+<tr><td>its shadow price <code>y</code> (the strut force)</td><td>the current through that branch</td></tr>
+<tr><td><code>y &ge; 0</code>: a push, never a pull</td><td>a diode conducts one way only</td></tr>
+<tr><td>complementary slackness</td><td>the diode law: current flows only while the diode is forward-biased, holding exactly <code>P</code>; with room to spare it is reverse-biased and carries none</td></tr>
+<tr><td>balance at each bead, <code>A&#7488;y = &minus;c</code></td><td>Kirchhoff's current law at each node</td></tr>
+<tr><td>a wall <code>o &ge; L</code></td><td>a diode to a rail held at <code>L</code> volts</td></tr>
+<tr><td><code>w&middot;|o &minus; r|</code>, the groove that holds like friction</td><td>a two-way current limiter to a rail at <code>r</code>: it holds the node at <code>r</code> for any current up to <code>w</code>, and passes exactly <code>w</code> once the node is pulled away</td></tr>
+<tr><td>the elastic cap <code>W</code> on a hard rule</td><td>a current limiter in the rule's branch: past <code>W</code> amps it can no longer hold the voltage, and the rule breaks</td></tr>
+<tr><td>the cost <code>C</code></td><td>the power the limiters burn</td></tr>
+<tr><td>the dual value <code>D = &minus;b&middot;y</code></td><td>the power the batteries and rails deliver</td></tr>
+<tr><td>strong duality, <code>C = D</code></td><td>power balance: Tellegen's theorem <a class="cite" href="#ref-tellegen">(Tellegen 1952)</a></td></tr>
+</table></div>
+<div class="card">
+  <p style="margin-top:0">The two-lane toy of section 3, wired up (1 mm of offset is 1 volt, a force of 1 is 1 amp). It shares that section's settings, so the buttons and sliders here change both. Wires that carry current are drawn flowing; a blocking diode carries none.</p>
+  <div class="row"><button data-p="toy" class="primary">The toy</button><button data-p="uneq">Unequal pulls</button><button data-p="wall">Lane a against a wall</button><button data-p="yield">The rule cannot hold</button><button data-p="cheap">W set too low</button></div>
+  <svg id="circSvg" class="demo" viewBox="0 0 860 372" role="img" aria-label="The two-lane toy as a circuit of diodes, batteries and current limiters"></svg>
+  <div class="row"><label for="cP">battery P <input type="range" id="cP" min="0.05" max="0.6" step="0.01" value="0.3"></label><span class="stat" id="cPV"></span>
+   <label for="cW">limiter W <input type="range" id="cW" min="0.5" max="12" step="0.5" value="10"></label><span class="stat" id="cWV"></span>
+   <span class="stat">burned by the limiters <b id="cC"></b></span><span class="stat">delivered by the sources <b id="cD"></b></span></div>
+  <div class="two"><div><b>Power in every element</b><div class="tw"><table class="fb" id="circPow"></table></div></div><div class="log" id="circLog" style="padding-top:22px"></div></div>
+</div>
+<p><b>Why the power balances.</b> Tellegen's theorem says that on any network, any branch currents that satisfy Kirchhoff's current law and any branch voltages that satisfy his voltage law are orthogonal: the sum over all branches of voltage times current is zero, even when the two do not come from the same operating point <a class="cite" href="#ref-tellegen">(Tellegen 1952)</a>. At the operating point it says the power balances. Ideal diodes burn nothing (no voltage while they conduct, no current while they block), so everything the sources deliver is burned in the limiters. The limiters' burn is the LP's cost, term by term, and the sources' delivery is the dual objective, term by term. So Tellegen's theorem, applied to the operating point, is strong duality.</p>
+<p><b>With springs instead of constant pulls, the circuit is made of resistors.</b> A quadratic cost is a spring, and its circuit element is a resistor. The extremum principle is then Maxwell's minimum-heat theorem: in a network of resistors with no electromotive forces inside it, the currents Ohm's law gives generate less heat than any other distribution with the same currents in and out <a class="cite" href="#ref-maxwell">(Maxwell 1873, Art. 284)</a>. Millar gave the general version for nonlinear resistive elements, the "content" and "co-content" <a class="cite" href="#ref-millar">(Millar 1951)</a>, Duffin showed that networks of monotone conductors settle at the minimum of a convex potential <a class="cite" href="#ref-duffin">(Duffin 1947)</a>, Minty proved existence and uniqueness for networks of monotone resistors from convex extremum principles and tied them to optimisation problems outside electrical engineering <a class="cite" href="#ref-minty">(Minty 1960)</a>, and Rockafellar's book develops flows and potentials in duality for network optimisation <a class="cite" href="#ref-rock84">(Rockafellar 1984)</a>. An LP is the limit where every element is an ideal diode, a source or a limiter.</p>
+<p><b>People built these.</b> Circuits that solve an optimisation problem by settling to equilibrium were a line of research in the 1980s: a canonical circuit built from the Kuhn&ndash;Tucker conditions, which solves nonlinear programs <a class="cite" href="#ref-chualin">(Chua and Lin 1984)</a>; a linear programming circuit from the Hopfield network school <a class="cite" href="#ref-tank">(Tank and Hopfield 1986)</a>; the paper that showed those two are the same circuit, and pointed out and corrected an error in the Tank&ndash;Hopfield design <a class="cite" href="#ref-kennedy87">(Kennedy and Chua 1987)</a>; and a stability analysis of such networks for nonlinear programs <a class="cite" href="#ref-kennedy88">(Kennedy and Chua 1988)</a>. None of them scaled to an LP of 150,960 rows, but the equations they settle are the ones on this page.</p>
+
+<!-- ======================= REFERENCES ======================= -->
+<h2 id="sec-refs">References</h2>
+<ol class="refs" id="refList">
+<li id="ref-cg">A. Charnes and H. J. Greenberg, "Plastic collapse and linear programming. Preliminary report," abstract 506, <i>Bulletin of the American Mathematical Society</i> 57(6):480, 1951 (in J. W. T. Youngs, "The summer meeting in Minneapolis"). <a href="https://doi.org/10.1090/S0002-9904-1951-09546-4">doi:10.1090/S0002-9904-1951-09546-4</a> <span class="why">&mdash; the static problem of plastic collapse, for frames, as a linear program.</span></li>
+<li id="ref-clz">A. Charnes, C. E. Lemke and O. C. Zienkiewicz, "Virtual work, linear programming and plastic limit analysis," <i>Proceedings of the Royal Society A</i> 251(1264):110&ndash;116, 1959. <a href="https://doi.org/10.1098/rspa.1959.0094">doi:10.1098/rspa.1959.0094</a> <span class="why">&mdash; the static and kinematic collapse theorems as a dual pair of linear programs.</span></li>
+<li id="ref-chualin">L. O. Chua and G.-N. Lin, "Nonlinear programming without computation," <i>IEEE Transactions on Circuits and Systems</i> 31(2):182&ndash;188, 1984. <a href="https://doi.org/10.1109/TCS.1984.1085482">doi:10.1109/TCS.1984.1085482</a> <span class="why">&mdash; a circuit, built from the Kuhn&ndash;Tucker conditions, whose node voltages solve a nonlinear program.</span></li>
+<li id="ref-cottle">R. W. Cottle, "William Karush and the KKT theorem," <i>Documenta Mathematica</i>, Extra Volume ISMP, 255&ndash;269, 2012. <span class="why">&mdash; the history of the Karush&ndash;Kuhn&ndash;Tucker conditions.</span></li>
+<li id="ref-dantzig">G. B. Dantzig, <i>Linear Programming and Extensions</i>, Princeton University Press, 1963. <a href="https://doi.org/10.1515/9781400884179">doi:10.1515/9781400884179</a> <span class="why">&mdash; the simplex method and LP duality.</span></li>
+<li id="ref-dennis">J. B. Dennis, <i>Mathematical Programming and Electrical Networks</i>, Technology Press of the Massachusetts Institute of Technology, 1959 (from his 1958 MIT Sc.D. thesis). <span class="why">&mdash; linear and quadratic programs, and their duals, as the DC operating point of networks of diodes, sources and resistors.</span></li>
+<li id="ref-dg">W. S. Dorn and H. J. Greenberg, "Linear programming and plastic limit analysis of structures," <i>Quarterly of Applied Mathematics</i> 15(2):155&ndash;167, 1957. <a href="https://doi.org/10.1090/qam/92465">doi:10.1090/qam/92465</a> <span class="why">&mdash; limit analysis of structures by linear programming.</span></li>
+<li id="ref-dgg">W. S. Dorn, R. E. Gomory and H. J. Greenberg, "Automatic design of optimal structures," <i>Journal de M&eacute;canique</i> 3:25&ndash;52, 1964. <span class="why">&mdash; truss layout as a linear program (the ground structure).</span></li>
+<li id="ref-dpg">D. C. Drucker, W. Prager and H. J. Greenberg, "Extended limit design theorems for continuous media," <i>Quarterly of Applied Mathematics</i> 9(4):381&ndash;389, 1952. <a href="https://doi.org/10.1090/qam/45573">doi:10.1090/qam/45573</a> <span class="why">&mdash; the lower- and upper-bound theorems for any perfectly plastic body.</span></li>
+<li id="ref-duffin">R. J. Duffin, "Nonlinear networks. IIa," <i>Bulletin of the American Mathematical Society</i> 53(10):963&ndash;971, 1947. <a href="https://doi.org/10.1090/S0002-9904-1947-08917-5">doi:10.1090/S0002-9904-1947-08917-5</a> <span class="why">&mdash; networks of monotone conductors settle at the minimum of a convex potential.</span></li>
+<li id="ref-farkas">J. Farkas, "Theorie der einfachen Ungleichungen," <i>Journal f&uuml;r die reine und angewandte Mathematik</i> 124:1&ndash;27, 1902. <a href="https://doi.org/10.1515/crll.1902.124.1">doi:10.1515/crll.1902.124.1</a> <span class="why">&mdash; Farkas&rsquo; lemma.</span></li>
+<li id="ref-fenchel">W. Fenchel, "On conjugate convex functions," <i>Canadian Journal of Mathematics</i> 1(1):73&ndash;77, 1949. <a href="https://doi.org/10.4153/CJM-1949-007-x">doi:10.4153/CJM-1949-007-x</a> <span class="why">&mdash; the convex conjugate (the Legendre&ndash;Fenchel transform).</span></li>
+<li id="ref-gkt">D. Gale, H. W. Kuhn and A. W. Tucker, "Linear programming and the theory of games," in T. C. Koopmans (ed.), <i>Activity Analysis of Production and Allocation</i>, Wiley, 1951, pp. 317&ndash;329. <span class="why">&mdash; the first published proof of the LP duality theorem.</span></li>
+<li id="ref-gp">H. J. Greenberg and W. Prager, "Limit design of beams and frames," <i>Transactions of the American Society of Civil Engineers</i> 117(1):447&ndash;458, 1952. <a href="https://doi.org/10.1061/TACEAT.0006679">doi:10.1061/TACEAT.0006679</a> <span class="why">&mdash; the static and kinematic theorems of limit design.</span></li>
+<li id="ref-huangfu">Q. Huangfu and J. A. J. Hall, "Parallelizing the dual revised simplex method," <i>Mathematical Programming Computation</i> 10(1):119&ndash;142, 2018. <a href="https://doi.org/10.1007/s12532-017-0130-5">doi:10.1007/s12532-017-0130-5</a> <span class="why">&mdash; the dual simplex solver in HiGHS.</span></li>
+<li id="ref-kant">L. V. Kantorovich, "Mathematical methods of organizing and planning production," <i>Management Science</i> 6(4):366&ndash;422, 1960 (translation of the 1939 Leningrad booklet). <a href="https://doi.org/10.1287/mnsc.6.4.366">doi:10.1287/mnsc.6.4.366</a> <span class="why">&mdash; "resolving multipliers": the dual variables as prices.</span></li>
+<li id="ref-karush">W. Karush, "Minima of functions of several variables with inequalities as side conditions," Master&rsquo;s thesis, Department of Mathematics, University of Chicago, 1939. <span class="why">&mdash; the optimality conditions with inequality constraints.</span></li>
+<li id="ref-kennedy87">M. P. Kennedy and L. O. Chua, "Unifying the Tank and Hopfield linear programming circuit and the canonical nonlinear programming circuit of Chua and Lin," <i>IEEE Transactions on Circuits and Systems</i> 34(2):210&ndash;214, 1987. <a href="https://doi.org/10.1109/TCS.1987.1086095">doi:10.1109/TCS.1987.1086095</a> <span class="why">&mdash; the two circuits as one, and an error in the Tank&ndash;Hopfield design corrected.</span></li>
+<li id="ref-kennedy88">M. P. Kennedy and L. O. Chua, "Neural networks for nonlinear programming," <i>IEEE Transactions on Circuits and Systems</i> 35(5):554&ndash;562, 1988. <a href="https://doi.org/10.1109/31.1783">doi:10.1109/31.1783</a> <span class="why">&mdash; stability of optimisation circuits for nonlinear programs.</span></li>
+<li id="ref-koop">T. C. Koopmans (ed.), <i>Activity Analysis of Production and Allocation</i>, Cowles Commission Monograph 13, Wiley, 1951. <span class="why">&mdash; the volume where linear programming and its duality theory were set out.</span></li>
+<li id="ref-kt">H. W. Kuhn and A. W. Tucker, "Nonlinear programming," in J. Neyman (ed.), <i>Proceedings of the Second Berkeley Symposium on Mathematical Statistics and Probability</i>, University of California Press, 1951, pp. 481&ndash;492. <a href="https://doi.org/10.1525/9780520411586-036">doi:10.1525/9780520411586-036</a> <span class="why">&mdash; the Kuhn&ndash;Tucker conditions.</span></li>
+<li id="ref-lagrange">J.-L. Lagrange, <i>M&eacute;chanique analitique</i>, Paris: Veuve Desaint, 1788. <a href="https://doi.org/10.5479/sil.322586.39088000898585">doi:10.5479/sil.322586.39088000898585</a> <span class="why">&mdash; virtual work, and multipliers as the forces of constraint.</span></li>
+<li id="ref-maxwell">J. C. Maxwell, <i>A Treatise on Electricity and Magnetism</i>, Vol. I, Oxford: Clarendon Press, 1873, Art. 284. <span class="why">&mdash; the minimum-heat theorem for resistor networks.</span></li>
+<li id="ref-millar">W. Millar, "Some general theorems for non-linear systems possessing resistance," <i>Philosophical Magazine</i> (Series 7) 42(333):1150&ndash;1160, 1951. <a href="https://doi.org/10.1080/14786445108561361">doi:10.1080/14786445108561361</a> <span class="why">&mdash; content and co-content.</span></li>
+<li id="ref-minty">G. J. Minty, "Monotone networks," <i>Proceedings of the Royal Society A</i> 257(1289):194&ndash;212, 1960. <a href="https://doi.org/10.1098/rspa.1960.0144">doi:10.1098/rspa.1960.0144</a> <span class="why">&mdash; existence and uniqueness for networks of monotone resistors, from convex extremum principles.</span></li>
+<li id="ref-rock70">R. T. Rockafellar, <i>Convex Analysis</i>, Princeton University Press, 1970. <a href="https://doi.org/10.1515/9781400873173">doi:10.1515/9781400873173</a> <span class="why">&mdash; conjugate duality.</span></li>
+<li id="ref-rock84">R. T. Rockafellar, <i>Network Flows and Monotropic Optimization</i>, Wiley-Interscience, 1984 (reprinted Athena Scientific, 1998). <span class="why">&mdash; flows and potentials in duality, as in electrical networks.</span></li>
+<li id="ref-schork">L. Schork and J. Gondzio, "Implementation of an interior point method with basis preconditioning," <i>Mathematical Programming Computation</i> 12(4):603&ndash;635, 2020. <a href="https://doi.org/10.1007/s12532-020-00181-8">doi:10.1007/s12532-020-00181-8</a> <span class="why">&mdash; IPX, one of HiGHS&rsquo;s interior point solvers.</span></li>
+<li id="ref-signorini33">A. Signorini, "Sopra alcune questioni di elastostatica," <i>Atti della Societ&agrave; Italiana per il Progresso delle Scienze</i> 21(II):143&ndash;148, 1933. <span class="why">&mdash; the first short statement of the unilateral contact problem.</span></li>
+<li id="ref-signorini59">A. Signorini, "Questioni di elasticit&agrave; non linearizzata e semilinearizzata," <i>Rendiconti di Matematica e delle sue Applicazioni</i> (5) 18:95&ndash;139, 1959. <span class="why">&mdash; the Signorini contact conditions in full.</span></li>
+<li id="ref-tank">D. W. Tank and J. J. Hopfield, "Simple &lsquo;neural&rsquo; optimization networks: An A/D converter, signal decision circuit, and a linear programming circuit," <i>IEEE Transactions on Circuits and Systems</i> 33(5):533&ndash;541, 1986. <a href="https://doi.org/10.1109/TCS.1986.1085953">doi:10.1109/TCS.1986.1085953</a> <span class="why">&mdash; an analog circuit that solves a linear program by settling.</span></li>
+<li id="ref-tellegen">B. D. H. Tellegen, "A general network theorem, with applications," <i>Philips Research Reports</i> 7:259&ndash;269, 1952. <span class="why">&mdash; Tellegen&rsquo;s theorem.</span></li>
+</ol>
+
+<footer>A companion to <a href="../">What CP-SAT and HiGHS actually do in the whole route</a>. The real LP is <code>awx/whole_geo.py</code> (<code>build_and_solve</code>, <code>lp_by_dual</code>) on <code>bus622-take5</code>; the K51 numbers and the figure are from the film <code>whole_movie.py</code> makes of a K51 run. The small LPs on this page are solved in the browser: the toy exactly, the island by a short simplex that also returns every row's price.</footer>
+</main>
+
+<script>
+/* ================= helpers ================= */
+const $=(s,r=document)=>r.querySelector(s);
+const NS='http://www.w3.org/2000/svg';
+function S(tag,at,par){const e=document.createElementNS(NS,tag);for(const k in (at||{}))if(at[k]!==undefined&&at[k]!==null)e.setAttribute(k,at[k]);if(par)par.appendChild(e);return e}
+function T(par,x,y,txt,at){const e=S('text',Object.assign({x,y,'font-size':13,fill:'#1d2330'},at||{}),par);e.textContent=txt;return e}
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const CF='#d9483b',CP='#c2338f',CW='#d9822b',CO='#2e9d4c',CK='#5b6577',CA='#6a3fc4',CI='#1d2330';
+const z0=v=>Math.abs(v)<5e-10?0:v;
+const f3=v=>z0(v).toFixed(3),f2=v=>z0(v).toFixed(2);
+function arrow(par,x1,y1,x2,y2,col,w,dash){const dx=x2-x1,dy=y2-y1,L=Math.hypot(dx,dy);if(L<1.5)return;const ux=dx/L,uy=dy/L,h=Math.min(11,L*0.55),bx=x2-ux*h,by=y2-uy*h;
+  S('line',{x1,y1,x2:bx,y2:by,stroke:col,'stroke-width':w||2,'stroke-linecap':'round','stroke-dasharray':dash},par);
+  S('polygon',{points:`${x2},${y2} ${bx-uy*h*0.45},${by+ux*h*0.45} ${bx+uy*h*0.45},${by-ux*h*0.45}`,fill:col},par)}
+function svgPt(svg,ev){const p=svg.createSVGPoint();p.x=ev.clientX;p.y=ev.clientY;return p.matrixTransform(svg.getScreenCTM().inverse())}
+
+/* ================= a simplex that also returns every row's price ================= */
+/* min cost.x  s.t.  rows[i]: sum_j t[j] x_j <= b,  x >= 0.  Returns x, y (shadow prices, >= 0) and the variables' reduced costs. */
+function simplexDual(cost,rows){
+  const n=cost.length,m=rows.length;let nart=0;for(const r of rows)if(r.b<0)nart++;
+  const N=n+m+nart,Tb=[],basis=[];let ai=0;
+  for(let i=0;i<m;i++){const r=rows[i],row=new Float64Array(N+1),s=r.b<0?-1:1;
+    for(const j in r.t)row[+j]+=s*r.t[j];row[n+i]=s;row[N]=s*r.b;
+    if(r.b<0){row[n+m+ai]=1;basis.push(n+m+ai);ai++}else basis.push(n+i);Tb.push(row)}
+  const pivot=(pr,pc)=>{const row=Tb[pr],pv=row[pc];for(let j=0;j<=N;j++)row[j]/=pv;
+    for(let i=0;i<m;i++){if(i===pr)continue;const f=Tb[i][pc];if(Math.abs(f)>1e-13){const R=Tb[i];for(let j=0;j<=N;j++)R[j]-=f*row[j]}}basis[pr]=pc};
+  const reduced=(c,maxc)=>{const z=new Float64Array(maxc);for(let j=0;j<maxc;j++)z[j]=c[j];
+    for(let i=0;i<m;i++){const cb=c[basis[i]];if(cb){const R=Tb[i];for(let j=0;j<maxc;j++)z[j]-=cb*R[j]}}return z};
+  const run=(c,maxc)=>{for(let it=1;;it++){if(it>40000)return false;const z=reduced(c,maxc);let pc=-1,bz=-1e-9;
+      if(it<5000){for(let j=0;j<maxc;j++)if(z[j]<bz){bz=z[j];pc=j}}else{for(let j=0;j<maxc;j++)if(z[j]<-1e-9){pc=j;break}}
+      if(pc<0)return true;let pr=-1,br=Infinity;
+      for(let i=0;i<m;i++){const a=Tb[i][pc];if(a>1e-9){const q=Tb[i][N]/a;if(q<br-1e-12||(Math.abs(q-br)<=1e-12&&pr>=0&&basis[i]<basis[pr])){br=q;pr=i}}}
+      if(pr<0)return false;pivot(pr,pc)}};
+  if(nart){const c1=new Float64Array(N);for(let j=n+m;j<N;j++)c1[j]=1;run(c1,N);
+    for(let i=0;i<m;i++)if(basis[i]>=n+m){for(let j=0;j<n+m;j++)if(Math.abs(Tb[i][j])>1e-9){pivot(i,j);break}}}
+  const c2=new Float64Array(N);for(let j=0;j<n;j++)c2[j]=cost[j];
+  const ok=run(c2,n+m);
+  const x=new Float64Array(n);for(let i=0;i<m;i++)if(basis[i]<n)x[basis[i]]=Tb[i][N];
+  const z=reduced(c2,n+m),y=new Float64Array(m);for(let i=0;i<m;i++)y[i]=Math.max(0,z[n+i]);
+  return{ok,x,y,zc:z.slice(0,n)};
+}
+
+/* ================= 2. the ball in a box ================= */
+(function(){
+  const svg=$('#ballSvg');
+  const P0=[[1,1],[6,0.6],[9,2.2],[8.6,5.6],[4.5,6.4],[1.2,4.8]];
+  const NW=P0.length,A=[],B0=[];
+  for(let i=0;i<NW;i++){const p=P0[i],q=P0[(i+1)%NW],dx=q[0]-p[0],dy=q[1]-p[1],L=Math.hypot(dx,dy),a=[dy/L,-dx/L];A.push(a);B0.push(a[0]*p[0]+a[1]*p[1])}
+  const dl=new Array(NW).fill(0);let ang=255,sel=0;
+  const X=x=>291+(x-5)*44,Y=y=>202-(y-3.5)*44,Xi=px=>(px-291)/44+5,Yi=py=>3.5-(py-202)/44;
+  const Bn=()=>B0.map((b,i)=>b+dl[i]);
+  const ws=$('#ballWall');for(let i=0;i<NW;i++){const o=document.createElement('option');o.value=i;o.textContent='wall '+(i+1);ws.appendChild(o)}
+  function verts(B){const out=[];
+    for(let i=0;i<NW;i++)for(let j=i+1;j<NW;j++){const det=A[i][0]*A[j][1]-A[i][1]*A[j][0];if(Math.abs(det)<1e-12)continue;
+      const x=(B[i]*A[j][1]-A[i][1]*B[j])/det,y=(A[i][0]*B[j]-B[i]*A[j][0])/det;let ok=true;
+      for(let k=0;k<NW;k++)if(A[k][0]*x+A[k][1]*y>B[k]+1e-7){ok=false;break}
+      if(!ok||out.some(v=>Math.hypot(v.x-x,v.y-y)<1e-7))continue;
+      const act=[];for(let k=0;k<NW;k++)if(Math.abs(A[k][0]*x+A[k][1]*y-B[k])<1e-7)act.push(k);out.push({x,y,act})}
+    const cx=out.reduce((s,v)=>s+v.x,0)/out.length,cy=out.reduce((s,v)=>s+v.y,0)/out.length;
+    out.sort((u,v)=>Math.atan2(u.y-cy,u.x-cx)-Math.atan2(v.y-cy,v.x-cx));return{V:out,cx,cy}}
+  function rest(B,f){const{V,cx,cy}=verts(B);let best=null,be=Infinity;
+    for(const v of V){const e=-(f[0]*v.x+f[1]*v.y);if(e<be-1e-9){be=e;best=v}}
+    const y=new Array(NW).fill(0),act=best.act;let pair=null;
+    for(let p=0;p<act.length&&!pair;p++)for(let q=p+1;q<act.length&&!pair;q++){const i=act[p],j=act[q],det=A[i][0]*A[j][1]-A[j][0]*A[i][1];if(Math.abs(det)<1e-12)continue;
+      const yi=(f[0]*A[j][1]-A[j][0]*f[1])/det,yj=(A[i][0]*f[1]-f[0]*A[i][1])/det;if(yi>-1e-9&&yj>-1e-9){y[i]=Math.max(0,yi);y[j]=Math.max(0,yj);pair=[i,j]}}
+    if(!pair&&act.length){const i=act[0];y[i]=Math.max(0,f[0]*A[i][0]+f[1]*A[i][1]);pair=[i]}
+    return{V,cx,cy,x:best,E:be,y,D:-B.reduce((s,b,i)=>s+b*y[i],0),pair}}
+  const LET='ABCDEFGHIJ',tray=$('#traySvg');
+  function drawTray(R,f){
+    tray.innerHTML='';const V=R.V,E=(x,y)=>-(f[0]*x+f[1]*y),E0=R.E;let E1=E0;for(const v of V)E1=Math.max(E1,E(v.x,v.y));
+    const k=36,kz=Math.min(24,150/Math.max(E1-E0,1e-6)),Z=(x,y)=>E(x,y)-E0;
+    const P=(x,y,z)=>[400+(x-5)*k+(y-3.5)*k*0.55,212-(y-3.5)*k*0.42-z*kz];
+    S('rect',{x:10,y:6,width:800,height:254,fill:'#fbfcfe',stroke:'#e3e7ee',rx:8},tray);
+    T(tray,24,26,'potential energy as height: the cost tilts the floor, the rules are fences',{'font-size':12,fill:CK});
+    arrow(tray,46,52,46,104,CI,2.5);T(tray,56,84,'gravity',{'font-size':11,fill:CK});
+    S('polygon',{points:V.map(v=>P(v.x,v.y,0).join(',')).join(' '),fill:'#eef1f8',stroke:'#c3c9d5','stroke-dasharray':'4 4'},tray);
+    for(const v of V){const a=P(v.x,v.y,0),b=P(v.x,v.y,Z(v.x,v.y));S('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:'#c3c9d5','stroke-dasharray':'3 3'},tray)}
+    S('polygon',{points:V.map(v=>P(v.x,v.y,Z(v.x,v.y)).join(',')).join(' '),fill:CA,'fill-opacity':0.1,stroke:'#8a94a8','stroke-width':1.5},tray);
+    for(let l=1;l<7;l++){const zl=(E1-E0)*l/7,q=[];for(let i=0;i<V.length;i++){const a=V[i],b=V[(i+1)%V.length],za=Z(a.x,a.y),zb=Z(b.x,b.y);if((za-zl)*(zb-zl)<0){const t=(zl-za)/(zb-za);q.push([a.x+t*(b.x-a.x),a.y+t*(b.y-a.y)])}}
+      if(q.length===2){const u=P(q[0][0],q[0][1],zl),w=P(q[1][0],q[1][1],zl);S('line',{x1:u[0],y1:u[1],x2:w[0],y2:w[1],stroke:'#b9c0cf'},tray)}}
+    const ed=V.map((a,i)=>({a,b:V[(i+1)%V.length]})).sort((u,w)=>(w.a.y+w.b.y)-(u.a.y+u.b.y));
+    for(const e of ed){const pa=P(e.a.x,e.a.y,Z(e.a.x,e.a.y)),pb=P(e.b.x,e.b.y,Z(e.b.x,e.b.y)),on=e.a===R.x||e.b===R.x;
+      S('polygon',{points:`${pa[0]},${pa[1]} ${pb[0]},${pb[1]} ${pb[0]},${pb[1]-16} ${pa[0]},${pa[1]-16}`,fill:on?'#5b6577':'#8a94a8','fill-opacity':on?0.35:0.16,stroke:on?CI:'#8a94a8','stroke-width':on?1.5:1},tray)}
+    const bp=P(R.x.x,R.x.y,0);S('circle',{cx:bp[0],cy:bp[1]-8,r:8,fill:CI,stroke:'#fff','stroke-width':2},tray);
+    const s0=212,s1=212-(E1-E0)*kz,ax=730;S('line',{x1:ax,y1:s0,x2:ax,y2:s1,stroke:'#a9b0be'},tray);
+    for(const[z,v] of [[0,E0],[(E1-E0)/2,(E0+E1)/2],[E1-E0,E1]]){const yy=212-z*kz;S('line',{x1:ax-4,y1:yy,x2:ax,y2:yy,stroke:'#a9b0be'},tray);T(tray,ax+6,yy+4,f2(v),{'font-size':11,fill:CK})}
+    T(tray,ax,s1-10,'energy c·x',{'text-anchor':'middle','font-size':11,fill:CK});
+    T(tray,bp[0]-16,bp[1]-4,'the ball: the lowest point, energy '+f3(E0),{'text-anchor':'end','font-size':12,'font-weight':600,fill:CI})}
+  function draw(){
+    const th=ang*Math.PI/180,f=[Math.cos(th),Math.sin(th)],B=Bn(),R=rest(B,f);
+    const sv=dl[sel];dl[sel]=0;const R0=rest(Bn(),f);dl[sel]=sv;
+    const showF=$('#ballShowF').checked,showG=$('#ballShowG').checked;
+    svg.innerHTML='';
+    const defs=S('defs',{},svg);const cp=S('clipPath',{id:'ballClip'},defs),cb=S('clipPath',{id:'ballBox'},defs);
+    const pts=R.V.map(v=>`${X(v.x)},${Y(v.y)}`).join(' ');S('polygon',{points:pts},cp);S('rect',{x:10,y:8,width:562,height:388},cb);
+    S('rect',{x:10,y:8,width:562,height:388,fill:'#fbfcfe',stroke:'#e3e7ee',rx:8},svg);
+    S('polygon',{points:pts,fill:'#eef1f8'},svg);
+    const g=S('g',{'clip-path':'url(#ballClip)'},svg),u=[-f[1],f[0]];
+    for(let s=-14;s<=14;s++){const bx=R.cx+s*0.55*f[0],by=R.cy+s*0.55*f[1];S('line',{x1:X(bx-20*u[0]),y1:Y(by-20*u[1]),x2:X(bx+20*u[0]),y2:Y(by+20*u[1]),stroke:'#d3d8e2','stroke-width':1},g)}
+    T(svg,562,389,'faint lines: equal energy',{'font-size':11,fill:CK,'text-anchor':'end'});
+    for(let i=0;i<NW;i++){const vs=R.V.filter(v=>v.act.includes(i));if(vs.length<2)continue;
+      let a=vs[0],b=vs[1];if(vs.length>2){let d=-1;for(const p of vs)for(const q of vs){const dd=Math.hypot(p.x-q.x,p.y-q.y);if(dd>d){d=dd;a=p;b=q}}}
+      const touch=R.x.act.includes(i),on=R.y[i]>1e-9;
+      if(i===sel)S('line',{x1:X(a.x),y1:Y(a.y),x2:X(b.x),y2:Y(b.y),stroke:CA,'stroke-width':11,'stroke-opacity':0.2,'stroke-linecap':'round'},svg);
+      S('line',{x1:X(a.x),y1:Y(a.y),x2:X(b.x),y2:Y(b.y),stroke:touch?CI:'#8a94a8','stroke-width':touch?4:3,'stroke-linecap':'round'},svg);
+      const mx=(a.x+b.x)/2+A[i][0]*0.36,my=(a.y+b.y)/2+A[i][1]*0.36;
+      T(svg,clamp(X(mx),44,540),clamp(Y(my)+4,22,392),'wall '+(i+1)+(on?'  y = '+f2(R.y[i]):''),{'text-anchor':'middle','font-size':12,fill:on?CW:CK,'font-weight':on?700:400});
+      const h=S('line',{x1:X(a.x),y1:Y(a.y),x2:X(b.x),y2:Y(b.y),stroke:'transparent','stroke-width':20,style:'cursor:pointer'},svg);
+      h.addEventListener('pointerdown',ev=>{ev.stopPropagation();sel=i;ws.value=i;$('#ballDel').value=dl[i];draw()})}
+    R.V.forEach((v,k)=>{const dx=v.x-R.cx,dy=v.y-R.cy,L=Math.hypot(dx,dy)||1;T(svg,X(v.x+dx/L*0.3),Y(v.y+dy/L*0.3)+4,LET[k],{'text-anchor':'middle','font-size':12,fill:v===R.x?CA:'#8a94a8','font-weight':700})});
+    const bx=X(R.x.x),by=Y(R.x.y),sc=62;
+    if(showG){const gg=S('g',{'clip-path':'url(#ballBox)'},svg);
+      S('line',{x1:X(R.x.x-20*u[0]),y1:Y(R.x.y-20*u[1]),x2:X(R.x.x+20*u[0]),y2:Y(R.x.y+20*u[1]),stroke:CA,'stroke-width':2,'stroke-dasharray':'8 6'},gg);
+      if(R.pair&&R.pair.length===2){const[i,j]=R.pair,p1=Math.atan2(A[i][1],A[i][0]);let d=Math.atan2(A[j][1],A[j][0])-p1;while(d>Math.PI)d-=2*Math.PI;while(d<=-Math.PI)d+=2*Math.PI;
+        const wp=[`${bx},${by}`];for(let t=0;t<=16;t++){const p=p1+d*t/16;wp.push(`${bx+Math.cos(p)*sc*1.25},${by-Math.sin(p)*sc*1.25}`)}
+        S('polygon',{points:wp.join(' '),fill:CA,'fill-opacity':0.12,stroke:CA,'stroke-opacity':0.45},gg);
+        const vi=[R.y[i]*A[i][0]*sc,-R.y[i]*A[i][1]*sc],vj=[R.y[j]*A[j][0]*sc,-R.y[j]*A[j][1]*sc];
+        if(R.y[i]>1e-6)arrow(gg,bx,by,bx+vi[0],by+vi[1],CA,2);if(R.y[j]>1e-6)arrow(gg,bx,by,bx+vj[0],by+vj[1],CA,2);
+        S('line',{x1:bx+vi[0],y1:by+vi[1],x2:bx+vi[0]+vj[0],y2:by+vi[1]+vj[1],stroke:CA,'stroke-dasharray':'3 3'},gg);
+        S('line',{x1:bx+vj[0],y1:by+vj[1],x2:bx+vi[0]+vj[0],y2:by+vi[1]+vj[1],stroke:CA,'stroke-dasharray':'3 3'},gg)}
+      const fl=[R.x.x+6*u[0],R.x.y+6*u[1]];if(X(fl[0])>30&&X(fl[0])<560&&Y(fl[1])>20&&Y(fl[1])<390)T(svg,X(fl[0]),Y(fl[1])-6,'floor: Σ yᵢ·wallᵢ',{'font-size':12,fill:CA,'text-anchor':'middle'})}
+    arrow(svg,bx,by,bx+f[0]*sc,by-f[1]*sc,CI,3);T(svg,clamp(bx+f[0]*(sc+18),34,548),clamp(by-f[1]*(sc+18)+4,20,392),'f = −c',{'text-anchor':'middle','font-size':13,'font-weight':700});
+    if(showF)for(let i=0;i<NW;i++)if(R.y[i]>1e-6)arrow(svg,bx,by,bx-A[i][0]*R.y[i]*sc,by+A[i][1]*R.y[i]*sc,CW,3);
+    S('circle',{cx:bx,cy:by,r:9,fill:CI,stroke:'#fff','stroke-width':2},svg);
+    /* inset 1: the forces head to tail */
+    S('rect',{x:584,y:8,width:228,height:196,fill:'#fbfcfe',stroke:'#e3e7ee',rx:8},svg);
+    T(svg,698,27,'forces on the ball, head to tail',{'text-anchor':'middle','font-size':12,fill:CK});
+    const seq=[[f[0],f[1],CI]];for(let i=0;i<NW;i++)if(R.y[i]>1e-9)seq.push([-R.y[i]*A[i][0],-R.y[i]*A[i][1],CW]);
+    let px=0,py=0,mnx=0,mxx=0,mny=0,mxy=0;for(const s of seq){px+=s[0];py+=s[1];mnx=Math.min(mnx,px);mxx=Math.max(mxx,px);mny=Math.min(mny,py);mxy=Math.max(mxy,py)}
+    const s2=Math.min(60,140/Math.max(mxx-mnx,mxy-mny,0.3)),ox=698-(mnx+mxx)/2*s2,oy=112+(mny+mxy)/2*s2;
+    px=ox;py=oy;for(const s of seq){const nx=px+s[0]*s2,ny=py-s[1]*s2;arrow(svg,px,py,nx,ny,s[2],2.5);px=nx;py=ny}
+    S('circle',{cx:ox,cy:oy,r:3.5,fill:CI},svg);T(svg,698,196,'they close: the sum is zero',{'text-anchor':'middle','font-size':12,fill:CK});
+    /* inset 2: the normal fan */
+    S('rect',{x:584,y:212,width:228,height:184,fill:'#fbfcfe',stroke:'#e3e7ee',rx:8},svg);
+    T(svg,698,231,'each corner owns a slice of directions',{'text-anchor':'middle','font-size':12,fill:CK});
+    const fx=698,fy=314,fr=58;
+    R.V.forEach((v,k)=>{if(v.act.length<2)return;let i=v.act[0],j=v.act[v.act.length-1];const p1=Math.atan2(A[i][1],A[i][0]);let d=Math.atan2(A[j][1],A[j][0])-p1;while(d>Math.PI)d-=2*Math.PI;while(d<=-Math.PI)d+=2*Math.PI;
+      const wp=[`${fx},${fy}`];for(let t=0;t<=16;t++){const p=p1+d*t/16;wp.push(`${fx+Math.cos(p)*fr},${fy-Math.sin(p)*fr}`)}const cur=v===R.x;
+      S('polygon',{points:wp.join(' '),fill:cur?CA:(k%2?'#dfe3eb':'#eef1f8'),'fill-opacity':cur?0.4:1,stroke:'#fff','stroke-width':1.5},svg);
+      const pm=p1+d/2;T(svg,fx+Math.cos(pm)*(fr+11),fy-Math.sin(pm)*(fr+11)+4,LET[k],{'text-anchor':'middle','font-size':12,'font-weight':700,fill:cur?CA:CK})});
+    arrow(svg,fx,fy,fx+f[0]*(fr-6),fy-f[1]*(fr-6),CI,2.5);
+    /* readouts */
+    $('#ballAngV').textContent=ang+'°';$('#ballDelV').textContent=(dl[sel]>=0?'+':'')+dl[sel].toFixed(2);
+    $('#ballE').textContent=f3(R.E);$('#ballD').textContent=f3(R.D);
+    const tw=R.x.act.filter(i=>R.y[i]>1e-9);
+    let s=`Corner ${LET[R.V.indexOf(R.x)]}: `+(tw.length?tw.map(i=>`wall ${i+1} pushes with y = ${f3(R.y[i])}`).join(', '):'no wall carries a force')+`. Every other wall: y = 0. `;
+    s+=`Energy ${f3(R.E)} = dual value ${f3(R.D)}.`;
+    const dE=R.E-R0.E,pr=-R0.y[sel]*dl[sel];
+    if(Math.abs(dl[sel])>1e-9)s+=`  Wall ${sel+1} moved ${dl[sel]>0?'out':'in'} by ${Math.abs(dl[sel]).toFixed(2)}: the energy changed by ${f3(dE)}; its force predicted ${f3(pr)}`+(Math.abs(dE-pr)<1e-6?' (exact: the ball is still at a corner of the same walls).':' (no longer equal: the ball has changed corners, so the old price no longer applies).');
+    else s+=`  Wall ${sel+1} is selected: its price is ${f3(R.y[sel])}, so moving it out by δ lowers the energy by ${f3(R.y[sel])}·δ.`;
+    $('#ballLog').textContent=s;drawTray(R,f)}
+  let dragging=false;
+  const setAng=ev=>{const p=svgPt(svg,ev);if(p.x>575)return;const R=verts(Bn());ang=Math.round((Math.atan2(Yi(p.y)-R.cy,Xi(p.x)-R.cx)*180/Math.PI+360)%360);$('#ballAng').value=ang;draw()};
+  svg.addEventListener('pointerdown',ev=>{const p=svgPt(svg,ev);if(p.x>575)return;dragging=true;svg.setPointerCapture(ev.pointerId);setAng(ev)});
+  svg.addEventListener('pointermove',ev=>{if(dragging)setAng(ev)});
+  svg.addEventListener('pointerup',()=>dragging=false);svg.addEventListener('pointercancel',()=>dragging=false);
+  $('#ballAng').addEventListener('input',e=>{ang=+e.target.value;draw()});
+  ws.addEventListener('change',e=>{sel=+e.target.value;$('#ballDel').value=dl[sel];draw()});
+  $('#ballDel').addEventListener('input',e=>{dl[sel]=+e.target.value;draw()});
+  $('#ballRst').addEventListener('click',()=>{dl.fill(0);$('#ballDel').value=0;draw()});
+  $('#ballShowF').addEventListener('change',draw);$('#ballShowG').addEventListener('change',draw);
+  draw();
+})();
+
+/* ================= 3. the two-lane toy ================= */
+(function(){
+  const st={ra:0,rb:0,P:0.3,wa:1,wb:1,W:10,hasL:false,L:-0.3,hasU:false,U:0.5,yt:0.5};
+  const PRE={toy:{ra:0,rb:0,P:0.3,wa:1,wb:1,W:10,hasL:false,L:-0.3,hasU:false,U:0.5,yt:0.5},
+    uneq:{ra:0,rb:0.1,P:0.3,wa:1,wb:2.5,W:10,hasL:false,L:-0.3,hasU:false,U:0.5,yt:0.5},
+    wall:{ra:0,rb:0.1,P:0.3,wa:1,wb:2,W:10,hasL:true,L:-0.12,hasU:false,U:0.5,yt:1.5},
+    yield:{ra:0,rb:0.1,P:0.3,wa:1,wb:2,W:10,hasL:true,L:-0.05,hasU:true,U:0.15,yt:5},
+    cheap:{ra:0,rb:0.1,P:0.3,wa:1,wb:2.5,W:1.5,hasL:true,L:-0.05,hasU:false,U:0.5,yt:1}};
+  function solve(){
+    const g=st.P-(st.rb-st.ra),capA=st.hasL?Math.max(0,st.ra-st.L):Infinity,capB=st.hasU?Math.max(0,st.U-st.rb):Infinity;
+    let ma=0,mb=0,e=0,y=0,used=[],tie=false;
+    if(g>1e-12){const src=[{k:'a',p:st.wa,cap:capA,amt:0},{k:'b',p:st.wb,cap:capB,amt:0},{k:'e',p:st.W,cap:Infinity,amt:0}];
+      src.sort((u,v)=>u.p-v.p||(u.k<v.k?-1:1));let rem=g,i=0;
+      while(rem>1e-12&&i<src.length){let j=i;while(j+1<src.length&&Math.abs(src[j+1].p-src[i].p)<1e-9)j++;
+        let act=src.slice(i,j+1).filter(t=>t.cap-t.amt>1e-12);if(act.length>1)tie=true;
+        while(rem>1e-12&&act.length){const share=rem/act.length;let tot=0;for(const t of act){const tk=Math.min(share,t.cap-t.amt);t.amt+=tk;tot+=tk}rem-=tot;act=act.filter(t=>t.cap-t.amt>1e-12)}
+        y=src[i].p;i=j+1}
+      for(const t of src){if(t.k==='a')ma=t.amt;else if(t.k==='b')mb=t.amt;else e=t.amt;if(t.amt>1e-12)used.push(t)}}
+    const oa=st.ra-ma,ob=st.rb+mb;
+    const ua=st.hasL&&oa<=st.L+1e-9?Math.max(0,y-st.wa):0,ub=st.hasU&&ob>=st.U-1e-9?Math.max(0,y-st.wb):0;
+    const pa=ma>1e-12?st.wa:y-ua,pb=mb>1e-12?st.wb:y-ub;
+    const C=st.wa*ma+st.wb*mb+st.W*e;
+    const Dfun=v=>v*g-(st.hasL?Math.max(0,v-st.wa)*capA:0)-(st.hasU?Math.max(0,v-st.wb)*capB:0);
+    const yF=Math.min(st.W,st.hasL?Infinity:st.wa,st.hasU?Infinity:st.wb);
+    const xmax=yF<st.W-1e-9?Math.min(st.W,Math.max(2*yF,1)):st.W;
+    return{g,capA,capB,ma,mb,e,y,oa,ob,ua,ub,pa,pb,C,D:g>1e-12?Dfun(y):0,Dfun,yF,xmax,used,tie}}
+  const XO=o=>50+(o+0.6)/1.4*760,XOi=x=>(x-50)/760*1.4-0.6;
+  const svg=$('#toySvg');let drag=null;
+  function drawToy(R){
+    svg.innerHTML='';const defs=S('defs',{},svg);
+    const pat=S('pattern',{id:'hatch',width:8,height:8,patternUnits:'userSpaceOnUse',patternTransform:'rotate(45)'},defs);S('rect',{width:8,height:8,fill:'#fbe9d6'},pat);S('line',{x1:0,y1:0,x2:0,y2:8,stroke:CW,'stroke-width':2},pat);
+    S('line',{x1:50,y1:150,x2:810,y2:150,stroke:'#a9b0be'},svg);
+    for(let t=-6;t<=8;t++){const o=t/10,x=XO(o);S('line',{x1:x,y1:150,x2:x,y2:t%2?154:158,stroke:'#a9b0be'},svg);if(t%2===0)T(svg,x,172,(o>0?'+':'')+o.toFixed(1),{'text-anchor':'middle','font-size':11,fill:CK})}
+    T(svg,810,188,'offset across the column (mm)',{'text-anchor':'end','font-size':12,fill:CK});
+    if(st.hasL){S('rect',{x:50,y:78,width:Math.max(0,XO(st.L)-50),height:68,fill:'url(#hatch)'},svg);S('line',{x1:XO(st.L),y1:78,x2:XO(st.L),y2:146,stroke:CW,'stroke-width':3},svg);T(svg,XO(st.L)-6,72,'wall L',{'text-anchor':'end','font-size':12,fill:CW,'font-weight':600})}
+    if(st.hasU){S('rect',{x:XO(st.U),y:78,width:Math.max(0,810-XO(st.U)),height:68,fill:'url(#hatch)'},svg);S('line',{x1:XO(st.U),y1:78,x2:XO(st.U),y2:146,stroke:CW,'stroke-width':3},svg);T(svg,XO(st.U)+6,72,'wall U',{'font-size':12,fill:CW,'font-weight':600})}
+    S('line',{x1:50,y1:115,x2:810,y2:115,stroke:'#d8dde6','stroke-width':2},svg);
+    for(const[k,r] of [['a',st.ra],['b',st.rb]]){const x=XO(r);S('line',{x1:x,y1:84,x2:x,y2:138,stroke:'#8a94a8','stroke-dasharray':'3 3'},svg);
+      S('polygon',{points:`${x},${131} ${x-7},${144} ${x+7},${144}`,fill:'#8a94a8'},svg);T(svg,x,k==='a'?60:48,'r_'+k,{'text-anchor':'middle','font-size':12,fill:CK,'font-weight':600})}
+    const x1=XO(R.oa),x2=XO(R.ob);
+    if(R.g>1e-12){const w=2+Math.min(10,2.5*Math.sqrt(R.y));S('line',{x1,y1:115,x2,y2:115,stroke:CP,'stroke-width':w,'stroke-dasharray':R.e>1e-12?'7 5':undefined},svg);
+      T(svg,(x1+x2)/2,93,R.e>1e-12?`strut yields at y = ${f2(R.y)}: ${f3(R.e)} mm short`:`strut force y = ${f3(R.y)}`,{'text-anchor':'middle','font-size':12,'font-weight':700,fill:CP})}
+    else{S('line',{x1,y1:115,x2:XO(R.oa+st.P),y2:115,stroke:CP,'stroke-width':2,'stroke-dasharray':'3 4','stroke-opacity':0.6},svg);T(svg,(x1+x2)/2,93,'the rule has room: price 0',{'text-anchor':'middle','font-size':12,fill:CP})}
+    for(const[k,o] of [['a',R.oa],['b',R.ob]]){S('circle',{cx:XO(o),cy:115,r:13,fill:CF,stroke:'#fff','stroke-width':2,'pointer-events':'none'},svg);T(svg,XO(o),119.5,k,{'text-anchor':'middle','font-size':13,'font-weight':700,fill:'#fff','pointer-events':'none'})}
+    for(const k of ['a','b']){const x=XO(k==='a'?st.ra:st.rb);const h=S('rect',{x:x-12,y:36,width:24,height:112,fill:'transparent',style:'cursor:ew-resize'},svg);
+      h.addEventListener('pointerdown',ev=>{drag=k;svg.setPointerCapture(ev.pointerId);ev.preventDefault()})}
+    /* free-body diagrams */
+    const Fa=[['strut',-R.y,CP],[R.ma>1e-12?`pull toward r_a (its full ${f2(st.wa)})`:`held at r_a (${f2(R.pa)} of up to ${f2(st.wa)})`,R.pa,CO],['wall L',R.ua,CW]];
+    const Fb=[['strut',R.y,CP],[R.mb>1e-12?`pull toward r_b (its full ${f2(st.wb)})`:`held at r_b (${f2(R.pb)} of up to ${f2(st.wb)})`,-R.pb,CO],['wall U',-R.ub,CW]];
+    const mx=Math.max(0.001,...Fa.map(f=>Math.abs(f[1])),...Fb.map(f=>Math.abs(f[1]))),sc=Math.min(70,150/mx);
+    for(const[cx,name,F] of [[235,'a',Fa],[645,'b',Fb]]){
+      S('rect',{x:cx-205,y:200,width:410,height:158,fill:'#fbfcfe',stroke:'#e3e7ee',rx:8},svg);
+      T(svg,cx-195,219,`forces on lane ${name}  (+ is to the right)`,{'font-size':12,fill:CK,'font-weight':600});
+      S('line',{x1:cx,y1:228,x2:cx,y2:330,stroke:'#c9ced8','stroke-dasharray':'2 3'},svg);
+      let sum=0;F.forEach((f,i)=>{const yy=245+i*30;sum+=f[1];if(Math.abs(f[1])>1e-9)arrow(svg,cx,yy,cx+f[1]*sc,yy,f[2],3);
+        T(svg,cx-195,yy+17,f[0],{'font-size':11,fill:f[2]});T(svg,cx+195,yy+4,(f[1]>=0?'+':'')+f3(f[1]),{'text-anchor':'end','font-size':12,fill:f[2],'font-weight':600})});
+      T(svg,cx+195,346,`sum = ${f3(sum)}`+(Math.abs(sum)<1e-9?'  balanced':''),{'text-anchor':'end','font-size':12,fill:Math.abs(sum)<1e-9?CO:CF,'font-weight':700})}}
+  svg.addEventListener('pointermove',ev=>{if(!drag)return;const p=svgPt(svg,ev);let o=Math.round(XOi(p.x)*100)/100;o=clamp(o,-0.58,0.78);
+    if(st.hasL)o=Math.max(o,st.L);if(st.hasU)o=Math.min(o,st.U);if(drag==='a')st.ra=o;else st.rb=o;render()});
+  svg.addEventListener('pointerup',()=>drag=null);svg.addEventListener('pointercancel',()=>drag=null);
+
+  const PX=o=>40+(o+0.6)/1.4*340,PY=o=>370-(o+0.6)/1.4*340;
+  function clipPoly(poly,a,b,c){const out=[];for(let i=0;i<poly.length;i++){const p=poly[i],q=poly[(i+1)%poly.length],fp=a*p[0]+b*p[1]-c,fq=a*q[0]+b*q[1]-c;if(fp<=0)out.push(p);if((fp<0&&fq>0)||(fp>0&&fq<0)){const t=fp/(fp-fq);out.push([p[0]+t*(q[0]-p[0]),p[1]+t*(q[1]-p[1])])}}return out}
+  function drawPlane(R){
+    const sv=$('#planeSvg');sv.innerHTML='';const defs=S('defs',{},sv),cp=S('clipPath',{id:'plClip'},defs);S('rect',{x:40,y:30,width:340,height:340},cp);
+    T(sv,40,18,'primal: positions (o_a, o_b)',{'font-size':13,'font-weight':700});
+    S('rect',{x:40,y:30,width:340,height:340,fill:'#fbfcfe',stroke:'#c9ced8'},sv);
+    const g=S('g',{'clip-path':'url(#plClip)'},sv);
+    let poly=[[-0.6,-0.6],[0.8,-0.6],[0.8,0.8],[-0.6,0.8]];poly=clipPoly(poly,1,-1,-st.P);if(st.hasL)poly=clipPoly(poly,-1,0,-st.L);if(st.hasU)poly=clipPoly(poly,0,1,st.U);
+    if(poly.length>2)S('polygon',{points:poly.map(p=>`${PX(p[0])},${PY(p[1])}`).join(' '),fill:'#e3f2e7'},g);
+    S('line',{x1:PX(0),y1:30,x2:PX(0),y2:370,stroke:'#e0e4ec'},g);S('line',{x1:40,y1:PY(0),x2:380,y2:PY(0),stroke:'#e0e4ec'},g);
+    S('line',{x1:PX(-0.6),y1:PY(-0.6+st.P),x2:PX(0.8),y2:PY(0.8+st.P),stroke:CP,'stroke-width':2},g);
+    if(st.hasL)S('line',{x1:PX(st.L),y1:30,x2:PX(st.L),y2:370,stroke:CW,'stroke-width':2},g);
+    if(st.hasU)S('line',{x1:40,y1:PY(st.U),x2:380,y2:PY(st.U),stroke:CW,'stroke-width':2},g);
+    const c=st.wa*Math.abs(R.oa-st.ra)+st.wb*Math.abs(R.ob-st.rb);
+    const lv=c>1e-9?[c*0.5,c*1.5,c*2.2]:[0.15,0.3,0.45];
+    const dia=(L,at)=>S('polygon',Object.assign({points:[[st.ra+L/st.wa,st.rb],[st.ra,st.rb+L/st.wb],[st.ra-L/st.wa,st.rb],[st.ra,st.rb-L/st.wb]].map(p=>`${PX(p[0])},${PY(p[1])}`).join(' '),fill:'none'},at),g);
+    for(const L of lv)dia(L,{stroke:'#c3c9d5','stroke-dasharray':'4 4'});if(c>1e-9)dia(c,{stroke:CA,'stroke-width':2.5});
+    S('circle',{cx:PX(st.ra),cy:PY(st.rb),r:5.5,fill:'#fff',stroke:CI,'stroke-width':2},g);
+    if(R.y>1e-9){const L=Math.min(60,22*Math.sqrt(R.y));arrow(g,PX(R.oa),PY(R.ob),PX(R.oa)-L/Math.SQRT2,PY(R.ob)-L/Math.SQRT2,CP,2.5)}
+    S('circle',{cx:PX(R.oa),cy:PY(R.ob),r:6,fill:CF,stroke:'#fff','stroke-width':2},g);
+    T(sv,210,392,'o_a (mm)',{'text-anchor':'middle','font-size':12,fill:CK});T(sv,16,200,'o_b (mm)',{'text-anchor':'middle','font-size':12,fill:CK,transform:'rotate(-90 16 200)'});
+    for(const o of [-0.4,0,0.4,0.8]){T(sv,PX(o),384,o.toFixed(1),{'text-anchor':'middle','font-size':10,fill:CK});T(sv,36,PY(o)+3,o.toFixed(1),{'text-anchor':'end','font-size':10,fill:CK})}
+    const lg=[['#e3f2e7','the rules allow'],[CA,'cheapest diamond'],[CP,'the pitch rule']];lg.forEach((l,i)=>{S('rect',{x:48,y:38+i*16,width:10,height:10,fill:l[0],rx:2},sv);T(sv,63,47+i*16,l[1],{'font-size':11,fill:CK})})}
+  function drawChart(R){
+    const sv=$('#chartSvg');sv.innerHTML='';T(sv,56,18,'dual: the strut force y',{'font-size':13,'font-weight':700});
+    const x0=56,x1=404,y0=30,y1=340,W=R.xmax;const N=240,pts=[];let mn=Math.min(0,R.C),mxv=Math.max(R.C,0.05);
+    for(let i=0;i<=N;i++){const v=R.yF*i/N,d=R.Dfun(v);pts.push([v,d]);mn=Math.min(mn,d);mxv=Math.max(mxv,d)}
+    const pad=(mxv-mn)*0.12+1e-6;mn-=pad;mxv+=pad;const XC=v=>x0+v/W*(x1-x0),YC=d=>y1-(d-mn)/(mxv-mn)*(y1-y0);
+    S('rect',{x:x0,y:y0,width:x1-x0,height:y1-y0,fill:'#fbfcfe',stroke:'#c9ced8'},sv);
+    if(R.yF<W-1e-9){S('rect',{x:XC(R.yF),y:y0,width:x1-XC(R.yF),height:y1-y0,fill:'#eceef3'},sv);T(sv,(XC(R.yF)+x1)/2,y1-12,'no balance here',{'text-anchor':'middle','font-size':11,fill:CK})}
+    if(mn<0&&mxv>0)S('line',{x1:x0,y1:YC(0),x2:x1,y2:YC(0),stroke:'#dfe3eb'},sv);
+    S('line',{x1:x0,y1:YC(R.C),x2:x1,y2:YC(R.C),stroke:CI,'stroke-width':1.5,'stroke-dasharray':'7 5'},sv);T(sv,x1-4,YC(R.C)-6,'C = the lowest cost',{'text-anchor':'end','font-size':11,fill:CI});
+    S('polyline',{points:pts.map(p=>`${XC(p[0])},${YC(p[1])}`).join(' '),fill:'none',stroke:CA,'stroke-width':2.5},sv);
+    const step=W<=4?0.5:W<=8?1:2;for(let v=0;v<=W+1e-9;v+=step){S('line',{x1:XC(v),y1:y1,x2:XC(v),y2:y1+4,stroke:'#a9b0be'},sv);T(sv,XC(v),y1+17,String(+v.toFixed(1)),{'text-anchor':'middle','font-size':10,fill:CK})}
+    for(let i=0;i<=3;i++){const d=mn+(mxv-mn)*i/3;T(sv,x0-5,YC(d)+3,d.toFixed(2),{'text-anchor':'end','font-size':10,fill:CK})}
+    T(sv,(x0+x1)/2,y1+34,'strut force y (cost per mm)',{'text-anchor':'middle','font-size':12,fill:CK});T(sv,16,(y0+y1)/2,'D(y)',{'text-anchor':'middle','font-size':12,fill:CK,transform:`rotate(-90 16 ${(y0+y1)/2})`});
+    S('circle',{cx:XC(R.y),cy:YC(R.D),r:6,fill:CA,stroke:'#fff','stroke-width':2},sv);
+    const yt=st.yt;if(yt<=R.yF+1e-9){const d=R.Dfun(yt);S('line',{x1:XC(yt),y1:y1,x2:XC(yt),y2:YC(d),stroke:CP,'stroke-dasharray':'3 3'},sv);S('circle',{cx:XC(yt),cy:YC(d),r:5,fill:CP},sv)}
+    else S('line',{x1:XC(yt),y1:y0,x2:XC(yt),y2:y1,stroke:CP,'stroke-dasharray':'3 3'},sv)}
+  function lanes(){const g0=st.rb-st.ra,src=[{p:st.wa,cap:st.hasL?Math.max(0,st.ra-st.L):Infinity},{p:st.wb,cap:st.hasU?Math.max(0,st.U-st.rb):Infinity}].sort((u,v)=>u.p-v.p);
+    const bp=[[g0,0]];let g=g0,L=0;for(const s of src){if(s.cap===Infinity)return{g0,bp,last:s.p,end:Infinity,close:Math.min(st.wa,st.wb)};g+=s.cap;L+=s.p*s.cap;bp.push([g,L])}
+    return{g0,bp,last:Infinity,end:g,close:Math.min(st.wa,st.wb)}}
+  function Lf(g,Q){if(g<=Q.g0)return Q.close*(Q.g0-g);if(g>Q.end+1e-12)return Infinity;const b=Q.bp;
+    for(let i=1;i<b.length;i++)if(g<=b[i][0]+1e-12){const d=b[i][0]-b[i-1][0];return d<1e-12?b[i][1]:b[i-1][1]+(b[i][1]-b[i-1][1])*(g-b[i-1][0])/d}
+    const l=b[b.length-1];return l[1]+Q.last*(g-l[0])}
+  function Lstar(y,Q){if(Q.end===Infinity&&y>Q.last+1e-12)return Infinity;let m=-Infinity;for(const p of Q.bp)m=Math.max(m,y*p[0]-p[1]);return m}
+  function drawEnergy(R){
+    const sv=$('#energySvg');sv.innerHTML='';const Q=lanes(),gs=R.ob-R.oa,x0=64,x1=820,y0=34,y1=250;
+    let gmin=Math.min(Q.g0,st.P,gs)-0.15,gmax=Math.max(Q.g0,st.P,gs)+0.2;if(Q.end<Infinity)gmax=Math.max(gmax,Q.end+0.1);
+    const Rg=g=>st.W*Math.max(0,st.P-g),Lg=g=>Lf(g,Q),Eg=g=>Lg(g)+Rg(g),Le=Lg(gmax);
+    const vmax=R.C>1e-9?2.5*R.C:Math.max(0.12,isFinite(Le)?Le:0.3);
+    const XG=g=>x0+(g-gmin)/(gmax-gmin)*(x1-x0),YE=e=>y1-e/vmax*(y1-y0);
+    const defs=S('defs',{},sv),cp=S('clipPath',{id:'enClip'},defs);S('rect',{x:x0,y:y0,width:x1-x0,height:y1-y0},cp);
+    T(sv,x0,20,'potential energy along one number: the separation s = o_b − o_a',{'font-size':13,'font-weight':700});
+    S('rect',{x:x0,y:y0,width:x1-x0,height:y1-y0,fill:'#fbfcfe',stroke:'#c9ced8'},sv);
+    const gp=S('g',{'clip-path':'url(#enClip)'},sv);
+    for(const[v,lab,dy] of [[Q.g0,'the references’ separation',30],[st.P,'pitch P',44]]){S('line',{x1:XG(v),y1:y0,x2:XG(v),y2:y1,stroke:'#c9ced8','stroke-dasharray':'4 4'},gp);T(sv,XG(v),y1+dy,lab,{'text-anchor':'middle','font-size':11,fill:CK})}
+    for(let t=Math.ceil(gmin*10);t<=Math.floor(gmax*10);t++){const x=XG(t/10);S('line',{x1:x,y1:y1,x2:x,y2:y1+4,stroke:'#a9b0be'},sv);T(sv,x,y1+16,(t/10).toFixed(1),{'text-anchor':'middle','font-size':10,fill:CK})}
+    for(let i=0;i<=2;i++){const e=vmax*i/2;T(sv,x0-5,YE(e)+3,e.toFixed(2),{'text-anchor':'end','font-size':10,fill:CK})}
+    T(sv,18,(y0+y1)/2,'energy (cost)',{'text-anchor':'middle','font-size':11,fill:CK,transform:`rotate(-90 18 ${(y0+y1)/2})`});
+    const pl=fn=>{const out=[];let seg=[];for(let i=0;i<=600;i++){const gg=gmin+(gmax-gmin)*i/600,v=fn(gg);if(!isFinite(v)){if(seg.length)out.push(seg);seg=[];continue}seg.push(`${XG(gg)},${YE(Math.min(v,vmax*3))}`)}if(seg.length)out.push(seg);return out};
+    for(const q of pl(Rg))S('polyline',{points:q.join(' '),fill:'none',stroke:CP,'stroke-width':2},gp);
+    for(const q of pl(Lg))S('polyline',{points:q.join(' '),fill:'none',stroke:CA,'stroke-width':2},gp);
+    if(Q.end<Infinity){S('line',{x1:XG(Q.end),y1:YE(Lg(Q.end)),x2:XG(Q.end),y2:y0,stroke:CA,'stroke-width':2},gp);T(sv,XG(Q.end)+5,y0+28,'both lanes at their walls',{'font-size':11,fill:CA})}
+    for(const q of pl(Eg))S('polyline',{points:q.join(' '),fill:'none',stroke:CI,'stroke-width':3,'stroke-opacity':0.85},gp);
+    const Ls=Lstar(R.y,Q);if(R.y>1e-9&&isFinite(Ls))S('line',{x1:XG(gmin),y1:YE(R.y*gmin-Ls),x2:XG(gmax),y2:YE(R.y*gmax-Ls),stroke:CA,'stroke-width':1.2,'stroke-dasharray':'2 3'},gp);
+    const Lt=Lstar(st.yt,Q);
+    if(isFinite(Lt)){const fn=g=>st.yt*g-Lt;S('line',{x1:XG(gmin),y1:YE(fn(gmin)),x2:XG(gmax),y2:YE(fn(gmax)),stroke:CP,'stroke-width':1.5,'stroke-dasharray':'6 4'},gp);
+      S('circle',{cx:XG(st.P),cy:YE(fn(st.P)),r:5,fill:CP},gp);T(sv,XG(st.P)+8,YE(fn(st.P))+16,'D(y) for your y = '+f3(fn(st.P)),{'font-size':11,fill:CP})}
+    else T(sv,x1-8,y0+44,'no line of slope y fits under the lanes’ energy',{'text-anchor':'end','font-size':11,fill:CP});
+    S('circle',{cx:XG(gs),cy:YE(Lg(gs)),r:4,fill:CA},gp);
+    S('circle',{cx:XG(gs),cy:YE(R.C),r:6.5,fill:CI,stroke:'#fff','stroke-width':2},gp);
+    T(sv,XG(gs)-10,YE(R.C)-12,`rest: C = ${f3(R.C)}`+(R.y>1e-9?`, slope of the lanes’ energy there = ${f2(R.y)} = the strut force`:''),{'text-anchor':XG(gs)>(x0+x1)/2?'end':'start','font-size':12,'font-weight':700});
+    const lg=[[CA,'lanes’ energy'],[CP,'the rule’s energy (a ramp of slope W below P)'],[CI,'total: the toy rests at its bottom']];
+    lg.forEach((l,i)=>{S('rect',{x:x0+10,y:y0+10+i*16,width:14,height:4,fill:l[0]},sv);T(sv,x0+30,y0+15+i*16,l[1],{'font-size':11,fill:CK})})}
+  function drawCircuit(R){
+    const sv=$('#circSvg');if(!sv)return;sv.innerHTML='';const on=v=>v>1e-9,GY=330;
+    const wire=(x1,y1,x2,y2,I)=>{S('line',{x1,y1,x2,y2,stroke:on(I)?CI:'#b9c0cf','stroke-width':on(I)?2.4:1.6,'stroke-linecap':'round'},sv);
+      if(on(I)){const d=Math.max(0.35,Math.min(2.2,1.3/(0.25+Math.log10(1+I))));S('line',{x1,y1,x2,y2,stroke:'#fff','stroke-width':1.3,'stroke-dasharray':'4 8',class:'flow',style:`animation-duration:${d.toFixed(2)}s`},sv)}};
+    const box=(x,y,w,h,l1,l2,col,hot)=>{S('rect',{x,y,width:w,height:h,rx:5,fill:hot?'#fdeef6':'#fff',stroke:col,'stroke-width':hot?2.4:1.5},sv);T(sv,x+w/2,y+h/2-1,l1,{'text-anchor':'middle','font-size':12,'font-weight':700,fill:col});if(l2)T(sv,x+w/2,y+h/2+13,l2,{'text-anchor':'middle','font-size':10,fill:CK})};
+    const src=(cx,cy,lab,val,active)=>{S('circle',{cx,cy,r:17,fill:'#fff',stroke:active?CI:'#a9b0be','stroke-width':1.8},sv);T(sv,cx,cy-3,'+',{'text-anchor':'middle','font-size':12,fill:CK});T(sv,cx,cy+12,'−',{'text-anchor':'middle','font-size':12,fill:CK});T(sv,cx+23,cy+4,`${lab} = ${val} V`,{'font-size':11,fill:active?CI:'#a9b0be'})};
+    const dH=(x,y,c)=>{S('polygon',{points:`${x},${y-11} ${x},${y+11} ${x+22},${y}`,fill:c?CP:'#fff',stroke:c?CP:'#8a94a8','stroke-width':1.6},sv);S('line',{x1:x+23,y1:y-11,x2:x+23,y2:y+11,stroke:c?CP:'#8a94a8','stroke-width':2.6},sv)};
+    const dV=(x,y0,up,c)=>{const pts=up?`${x-11},${y0+26} ${x+11},${y0+26} ${x},${y0+4}`:`${x-11},${y0+2} ${x+11},${y0+2} ${x},${y0+24}`,by=up?y0+3:y0+25;
+      S('polygon',{points:pts,fill:c?CW:'#fff',stroke:c?CW:'#8a94a8','stroke-width':1.6},sv);S('line',{x1:x-11,y1:by,x2:x+11,y2:by,stroke:c?CW:'#8a94a8','stroke-width':2.6},sv)};
+    const y=R.y,pa=R.pa,pb=R.pb,ua=R.ua,ub=R.ub,atCap=R.e>1e-12;
+    /* ground bus, currents returning right to left */
+    wire(750,GY,600,GY,st.hasU?ub:0);wire(600,GY,260,GY,y);wire(260,GY,110,GY,st.hasL?ua:0);
+    S('line',{x1:430,y1:GY,x2:430,y2:GY+10,stroke:CK,'stroke-width':2},sv);[[16,10],[10,15],[4,20]].forEach(([w,dy])=>S('line',{x1:430-w/2,y1:GY+dy,x2:430+w/2,y2:GY+dy,stroke:CK,'stroke-width':2},sv));
+    /* the pitch rule: battery P, limiter W, ideal diode */
+    wire(260,110,302,110,y);S('line',{x1:302,y1:103,x2:302,y2:117,stroke:CI,'stroke-width':4},sv);S('line',{x1:312,y1:96,x2:312,y2:124,stroke:CI,'stroke-width':2},sv);
+    T(sv,296,98,'−',{'text-anchor':'middle','font-size':11,fill:CK});T(sv,319,94,'+',{'text-anchor':'middle','font-size':11,fill:CK});T(sv,307,142,`P = ${st.P.toFixed(2)} V`,{'text-anchor':'middle','font-size':11,fill:CI});
+    wire(312,110,372,110,y);box(372,92,84,36,'≤ W',`W = ${st.W.toFixed(1)} A`,CP,atCap);wire(456,110,500,110,y);dH(500,110,on(y));wire(523,110,600,110,y);
+    T(sv,430,72,on(y)?`rule current y = ${f3(y)} A`:'no current: the rule has room',{'text-anchor':'middle','font-size':12,'font-weight':700,fill:CP});
+    T(sv,511,142,on(y)?'diode conducts':'diode blocks',{'text-anchor':'middle','font-size':11,fill:on(y)?CP:CK});
+    if(atCap)T(sv,414,142,'at its limit: the rule breaks',{'text-anchor':'middle','font-size':11,fill:CF,'font-weight':600});
+    /* lane a: limiter to rail r_a (current up into node a) */
+    wire(260,GY,260,285,pa);src(260,268,'r_a',st.ra.toFixed(2),true);wire(260,251,260,216,pa);box(228,176,64,40,'±w_a',`${st.wa.toFixed(1)} A`,CO,R.ma>1e-12);wire(260,176,260,110,pa);
+    T(sv,236,160,on(pa)?`${f3(pa)} A`:'',{'text-anchor':'end','font-size':11,fill:CO,'font-weight':600});
+    /* lane b: limiter to rail r_b (current down out of node b) */
+    wire(600,110,600,176,pb);box(568,176,64,40,'±w_b',`${st.wb.toFixed(1)} A`,CO,R.mb>1e-12);wire(600,216,600,251,pb);src(600,268,'r_b',st.rb.toFixed(2),true);wire(600,285,600,GY,pb);
+    T(sv,624,160,on(pb)?`${f3(pb)} A`:'',{'font-size':11,fill:CO,'font-weight':600});
+    /* wall L: diode from rail L up into node a */
+    if(st.hasL){wire(110,GY,110,285,ua);src(110,268,'L',st.L.toFixed(2),true);wire(110,251,110,206,ua);dV(110,178,true,on(ua));wire(110,178,110,110,ua);wire(110,110,260,110,ua);
+      T(sv,122,160,on(ua)?`${f3(ua)} A`:'blocks',{'font-size':11,fill:on(ua)?CW:CK,'font-weight':600})}
+    else{src(110,268,'L','–',false);S('line',{x1:110,y1:251,x2:110,y2:206,stroke:'#b9c0cf','stroke-width':1.6},sv);dV(110,178,true,false);
+      S('line',{x1:110,y1:178,x2:110,y2:152,stroke:'#b9c0cf','stroke-width':1.6},sv);S('line',{x1:110,y1:152,x2:126,y2:132,stroke:'#b9c0cf','stroke-width':1.6},sv);S('line',{x1:110,y1:128,x2:110,y2:110,stroke:'#b9c0cf','stroke-width':1.6},sv);
+      S('line',{x1:110,y1:110,x2:260,y2:110,stroke:'#b9c0cf','stroke-width':1.6},sv);T(sv,132,140,'open: no wall L',{'font-size':11,fill:CK})}
+    /* wall U: diode from node b down into rail U */
+    if(st.hasU){wire(600,110,750,110,ub);wire(750,110,750,178,ub);dV(750,178,false,on(ub));wire(750,206,750,251,ub);src(750,268,'U',st.U.toFixed(2),true);wire(750,285,750,GY,ub);
+      T(sv,762,160,on(ub)?`${f3(ub)} A`:'blocks',{'font-size':11,fill:on(ub)?CW:CK,'font-weight':600})}
+    else{S('line',{x1:600,y1:110,x2:750,y2:110,stroke:'#b9c0cf','stroke-width':1.6},sv);S('line',{x1:750,y1:110,x2:750,y2:128,stroke:'#b9c0cf','stroke-width':1.6},sv);S('line',{x1:750,y1:152,x2:766,y2:132,stroke:'#b9c0cf','stroke-width':1.6},sv);
+      S('line',{x1:750,y1:152,x2:750,y2:178,stroke:'#b9c0cf','stroke-width':1.6},sv);dV(750,178,false,false);S('line',{x1:750,y1:206,x2:750,y2:251,stroke:'#b9c0cf','stroke-width':1.6},sv);src(750,268,'U','–',false);T(sv,770,140,'open: no wall U',{'font-size':11,fill:CK})}
+    /* the two nodes */
+    for(const[x,n,v,anc,dx] of [[260,'a',R.oa,'end',-8],[600,'b',R.ob,'start',8]]){S('circle',{cx:x,cy:110,r:6,fill:CI,stroke:'#fff','stroke-width':2},sv);
+      T(sv,x+dx,44,`node ${n}`,{'text-anchor':anc,'font-size':11,fill:CK});T(sv,x+dx,60,`V_${n} = ${f3(v)} V`,{'text-anchor':anc,'font-size':13,'font-weight':700,fill:CF});
+      S('line',{x1:x,y1:66,x2:x,y2:102,stroke:'#d8dde6','stroke-dasharray':'2 3'},sv)}
+    /* power in every element */
+    const burn=[['limiter ±w_a (lane a’s pull)',R.ma,R.pa],['limiter ±w_b (lane b’s pull)',R.mb,R.pb],['limiter W (the rule’s cap)',R.e,R.y]];
+    const give=[['battery P',st.P,R.y],['rail r_a',st.ra,R.pa],['rail r_b',-st.rb,R.pb]];if(st.hasL)give.push(['rail L',st.L,R.ua]);if(st.hasU)give.push(['rail U',-st.U,R.ub]);
+    let B=0,G=0,h='<tr><th>element</th><th class="num">volts</th><th class="num">amps</th><th class="num">watts</th></tr>';
+    for(const[n,v,i] of burn){B+=v*i;h+=`<tr><td>${n}: burns</td><td class="num">${f3(v)}</td><td class="num">${f3(i)}</td><td class="num">${f3(v*i)}</td></tr>`}
+    h+='<tr><td>the three ideal diodes: burn</td><td class="num">–</td><td class="num">–</td><td class="num">0.000</td></tr>';
+    for(const[n,v,i] of give){G+=v*i;h+=`<tr><td>${n}: delivers</td><td class="num">${f3(Math.abs(v))}</td><td class="num">${f3(i)}</td><td class="num">${f3(v*i)}</td></tr>`}
+    h+=`<tr><th>burned ${f3(B)}</th><th colspan="3" class="num ${Math.abs(B-G)<1e-9?'ok':''}">delivered ${f3(G)}</th></tr>`;
+    $('#circPow').innerHTML=h;$('#cC').textContent=f3(B)+' W';$('#cD').textContent=f3(G)+' W';
+    $('#circLog').textContent=on(y)?`A loop current of ${f3(y)} A flows: out of rail r_a${st.hasL&&on(R.ua)?' and rail L':''}, into node a, through the battery, the limiter W and the diode into node b, and back to ground through ${st.hasU&&on(R.ub)?'rail U and ':''}rail r_b. Kirchhoff's current law at each node is the force balance of section 3. The limiters burn ${f3(B)} W, which is the cost C; the sources deliver ${f3(G)} W, which is the dual value D.`:
+      `The references are already more than P apart, so node b sits more than P volts above node a. The diode is reverse-biased and no current flows anywhere: every price is zero, and nothing burns.`}
+  function render(){
+    const R=solve();st.yt=Math.min(st.yt,R.xmax);drawToy(R);drawPlane(R);drawChart(R);drawEnergy(R);drawCircuit(R);
+    for(const[id,k] of [['tP','P'],['cP','P'],['tW','W'],['cW','W']]){const el=$('#'+id);if(el&&document.activeElement!==el)el.value=st[k]}
+    $('#cPV').textContent=st.P.toFixed(2)+' V';$('#cWV').textContent=st.W.toFixed(1)+' A';
+    for(const[id,v,d] of [['tPV',st.P,2],['tWaV',st.wa,1],['tWbV',st.wb,1],['tWV',st.W,1],['tLV',st.L,2],['tUV',st.U,2]])$('#'+id).textContent=v.toFixed(d);
+    $('#tOa').textContent=f3(R.oa);$('#tOb').textContent=f3(R.ob);$('#tY').textContent=f3(R.y);$('#tUa').textContent=f3(R.ua);$('#tUb').textContent=f3(R.ub);$('#tE').textContent=f3(R.e);$('#tC').textContent=f3(R.C);$('#tD').textContent=f3(R.D);
+    let s;
+    if(R.g<=1e-12)s=`The references are already ${f3(-R.g+st.P)} mm apart, more than the pitch ${st.P.toFixed(2)}. The rule has room to spare, so its price is 0 and nothing moves.`;
+    else{const nm={a:'moving lane a',b:'moving lane b',e:'breaking the rule (the slack e)'};
+      s=`The rule needs g = ${f3(R.g)} mm more room. Taken cheapest first: `+R.used.map(t=>`${nm[t.k]}, ${f3(t.amt)} mm at ${f2(t.p)} per mm`+((t.k==='a'&&st.hasL&&Math.abs(t.amt-R.capA)<1e-9)||(t.k==='b'&&st.hasU&&Math.abs(t.amt-R.capB)<1e-9)?' (then its wall)':'')).join('; ')+`. The last source used sets the price: y = ${f2(R.y)}, the force in the strut.`;
+      if(R.tie)s+=` Two sources cost the same per mm, so every split between them is optimal. HiGHS would land on one of them; whole_geo's tie-break makes it the same one on every machine. The price is ${f2(R.y)} whichever split.`;
+      if(R.e>1e-12&&st.W>=Math.max(st.wa,st.wb))s+=' Both lanes are against their walls, so the only room left is to break the rule. Its price sits at its cap W: that is how whole_geo spots a broken rule and turns it into a cut for CP-SAT.';
+      else if(R.e>1e-12)s+=` Breaking the rule (W = ${f2(st.W)} per mm) is cheaper than moving a lane further, so the LP breaks it. That is why W_HARD is 10⁴ in whole_geo, far above any real cost.`}
+    $('#tLog').textContent=s;
+    const ts=$('#tYt');ts.max=R.xmax;st.yt=Math.min(st.yt,R.xmax);ts.value=st.yt;$('#tYtV').textContent='y = '+st.yt.toFixed(2);$('#tC2').textContent=f3(R.C);
+    if(st.yt<=R.yF+1e-9){const d=R.Dfun(st.yt);$('#tDy').textContent=f3(d);$('#tGap').textContent=f3(R.C-d);
+      $('#bLog').textContent=`With the strut at y = ${st.yt.toFixed(2)}, both lanes can balance it, so D = ${f3(d)} is a floor under the cost of every possible position. The best floor is at y = ${f2(R.y)}, where D = ${f3(R.D)} = C.`}
+    else{$('#tDy').textContent='no balance';$('#tGap').textContent='–';
+      const who=!st.hasL&&st.yt>st.wa?`lane a (its pull is only ${f2(st.wa)} and there is no wall L)`:!st.hasU&&st.yt>st.wb?`lane b (its pull is only ${f2(st.wb)} and there is no wall U)`:'the strut';
+      $('#bLog').textContent=`A strut force of ${st.yt.toFixed(2)} cannot be balanced: ${who} has nothing to push back with. It would slide away, so this y proves nothing. In the dual, this y is infeasible.`}}
+  function bind(id,key,fn){const el=$('#'+id);el.addEventListener('input',()=>{st[key]=el.type==='checkbox'?el.checked:+el.value;if(fn)fn();render()})}
+  const clampRefs=()=>{if(st.hasL){st.L=Math.min(st.L,st.ra,st.rb);$('#tL').value=st.L}if(st.hasU){st.U=Math.max(st.U,st.ra,st.rb);$('#tU').value=st.U}};
+  bind('tP','P');bind('tWa','wa');bind('tWb','wb');bind('tW','W');bind('cP','P');bind('cW','W');bind('tHasL','hasL',clampRefs);bind('tHasU','hasU',clampRefs);
+  bind('tL','L',()=>{st.ra=Math.max(st.ra,st.L);st.rb=Math.max(st.rb,st.L)});bind('tU','U',()=>{st.ra=Math.min(st.ra,st.U);st.rb=Math.min(st.rb,st.U)});
+  $('#tYt').addEventListener('input',e=>{st.yt=+e.target.value;render()});
+  document.querySelectorAll('[data-p]').forEach(b=>b.addEventListener('click',()=>{Object.assign(st,PRE[b.dataset.p]);
+    $('#tP').value=st.P;$('#tWa').value=st.wa;$('#tWb').value=st.wb;$('#tW').value=st.W;$('#tHasL').checked=st.hasL;$('#tHasU').checked=st.hasU;$('#tL').value=st.L;$('#tU').value=st.U;
+    document.querySelectorAll('[data-p]').forEach(o=>o.classList.toggle('primary',o.dataset.p===b.dataset.p));render()}));
+  render();
+})();
+
+/* ================= 4. lanes past an island ================= */
+(function(){
+  const NL=3,NC=9,G=1,PMIN=0.3,BM=0.1,CLR=0.1,WL=1,WB=0.25,WH=100;
+  const T0=[0.5,1.0,1.5],T1=[0.6,1.1,1.6],ISL={k0:3,k1:5,lo:1.0,hi:1.4},TA=[0,0.12,-0.12,0.3,-0.3,0.7,-0.7,1.5,-1.5];
+  let H=2.4,split=1,sel={l:1,k:3},R=null,pend=false;
+  const svg=$('#colSvg'),XC=k=>80+k*92,YC=o=>350-o*100,ov=(l,k)=>l*NC+k;
+  const KN={pitch:'pitch between neighbours',island:'island clearance',edge:'board edge',pin:'pins at the terminals',len:'length (tangent cuts)',bend:'bends'};
+  function build(){const cost=new Array(NL*NC).fill(0),rows=[],nv=()=>cost.length;
+    const le=(t,b,tag,el)=>{const t2=Object.assign({},t);if(el){const e=nv();cost.push(WH);t2[e]=-1;tag.el=true;tag.e=e}rows.push({t:t2,b,tag})};
+    for(let l=0;l<NL;l++){for(const[k,Tv] of [[0,T0[l]],[NC-1,T1[l]]]){le({[ov(l,k)]:1},Tv,{kind:'pin',l,k});le({[ov(l,k)]:-1},-Tv,{kind:'pin',l,k})}
+      for(let k=1;k<NC-1;k++){le({[ov(l,k)]:-1},-BM,{kind:'edge',l,k,side:'bottom'},true);le({[ov(l,k)]:1},H-BM,{kind:'edge',l,k,side:'top'},true)}}
+    for(let k=ISL.k0;k<=ISL.k1;k++)for(let l=0;l<NL;l++){if(l<split)le({[ov(l,k)]:1},ISL.lo-CLR,{kind:'island',l,k,side:'below'},true);else le({[ov(l,k)]:-1},-(ISL.hi+CLR),{kind:'island',l,k,side:'above'},true)}
+    for(let l=0;l<NL-1;l++)for(let k=0;k<NC;k++)le({[ov(l,k)]:1,[ov(l+1,k)]:-1},-PMIN,{kind:'pitch',l,k},true);
+    for(let l=0;l<NL;l++)for(let k=0;k<NC-1;k++){const d=nv();cost.push(WL);for(const t of TA){const r=Math.sqrt(1+t*t),tt={[d]:-1};if(t){tt[ov(l,k+1)]=t/r;tt[ov(l,k)]=-t/r}le(tt,-G*(1/r-1),{kind:'len',l,k})}}
+    for(let l=0;l<NL;l++)for(let k=1;k<NC-1;k++){const d=nv();cost.push(WB);
+      le({[ov(l,k+1)]:1,[ov(l,k)]:-2,[ov(l,k-1)]:1,[d]:-1},0,{kind:'bend',l,k});le({[ov(l,k+1)]:-1,[ov(l,k)]:2,[ov(l,k-1)]:-1,[d]:-1},0,{kind:'bend',l,k})}
+    return{cost,rows}}
+  function solve(){const{cost,rows}=build(),res=simplexDual(cost,rows),o=[];for(let l=0;l<NL;l++){o.push([]);for(let k=0;k<NC;k++)o[l].push(res.x[ov(l,k)])}
+    let C=0;const parts={len:0,bend:0,hard:0};for(let j=0;j<cost.length;j++){const v=cost[j]*res.x[j];C+=v;if(cost[j]===WL)parts.len+=v;else if(cost[j]===WB)parts.bend+=v;else if(cost[j]===WH)parts.hard+=v}
+    let D=0;rows.forEach((r,i)=>D-=r.b*res.y[i]);R={cost,rows,res,o,C,D,parts}}
+  function draw(){svg.innerHTML='';const{rows,res,o}=R;
+    S('rect',{x:30,y:YC(H),width:840,height:YC(0)-YC(H),fill:'#f3f5f9',stroke:'#8a94a8','stroke-width':1.5},svg);
+    for(const v of [BM,H-BM])S('line',{x1:30,y1:YC(v),x2:870,y2:YC(v),stroke:'#c3c9d5','stroke-dasharray':'4 4'},svg);
+    T(svg,866,YC(H)-6,'board edge',{'text-anchor':'end','font-size':11,fill:CK});
+    const ix=XC(ISL.k0)-26,iw=XC(ISL.k1)-XC(ISL.k0)+52;
+    S('rect',{x:ix,y:YC(ISL.hi+CLR),width:iw,height:YC(ISL.lo-CLR)-YC(ISL.hi+CLR),fill:'none',stroke:'#a9b0be','stroke-dasharray':'3 3',rx:6},svg);
+    S('rect',{x:ix+8,y:YC(ISL.hi),width:iw-16,height:YC(ISL.lo)-YC(ISL.hi),fill:'#c9ced8',rx:4},svg);T(svg,ix+iw/2,YC((ISL.lo+ISL.hi)/2)+4,'island',{'text-anchor':'middle','font-size':12,fill:CK});
+    rows.forEach((r,i)=>{const y=res.y[i];if(y<1e-7)return;const tg=r.tag,x=XC(tg.k),cap=tg.el&&res.x[tg.e]>1e-9,w=1.5+4.5*y/(y+1),dash=cap?'5 4':undefined;let e=null;
+      if(tg.kind==='pitch')e=S('line',{x1:x,y1:YC(o[tg.l][tg.k]),x2:x,y2:YC(o[tg.l+1][tg.k]),stroke:CP,'stroke-width':w,'stroke-dasharray':dash},svg);
+      else if(tg.kind==='island')e=S('line',{x1:x+4,y1:YC(o[tg.l][tg.k]),x2:x+4,y2:YC(tg.side==='below'?ISL.lo:ISL.hi),stroke:CW,'stroke-width':w,'stroke-dasharray':dash},svg);
+      else if(tg.kind==='edge')e=S('line',{x1:x-4,y1:YC(o[tg.l][tg.k]),x2:x-4,y2:YC(tg.side==='bottom'?0:H),stroke:CW,'stroke-width':w,'stroke-dasharray':dash},svg);
+      if(e)S('title',{},e).textContent=`${KN[tg.kind]}: y = ${f3(y)}${cap?' (broken: its slack is paid)':''}`});
+    for(let l=0;l<NL;l++)S('polyline',{points:o[l].map((v,k)=>`${XC(k)},${YC(v)}`).join(' '),fill:'none',stroke:CF,'stroke-width':3,'stroke-linejoin':'round'},svg);
+    for(let l=0;l<NL;l++)for(let k=0;k<NC;k++){const cx=XC(k),cy=YC(o[l][k]),on=sel.l===l&&sel.k===k;
+      if(on)S('circle',{cx,cy,r:10,fill:'none',stroke:CA,'stroke-width':2.5},svg);
+      S('circle',{cx,cy,r:k===0||k===NC-1?5.5:4.5,fill:k===0||k===NC-1?CK:CF,stroke:'#fff','stroke-width':1.5},svg);
+      const h=S('circle',{cx,cy,r:13,fill:'transparent',style:'cursor:pointer'},svg);S('title',{},h).textContent=`lane ${l+1}, column ${k}`;
+      h.addEventListener('click',()=>{sel={l,k};draw();fbd()})}
+    T(svg,XC(0),YC(0)+16,'pinned',{'text-anchor':'middle','font-size':11,fill:CK});T(svg,XC(NC-1),YC(0)+16,'pinned',{'text-anchor':'middle','font-size':11,fill:CK})}
+  function fbd(){const{rows,res}=R,j=ov(sel.l,sel.k),gr=new Map();
+    rows.forEach((r,i)=>{const a=r.t[j];if(!a)return;const y=res.y[i];if(y<1e-9)return;const tg=r.tag;let nm;
+      if(tg.kind==='pitch')nm=tg.l===sel.l?'pitch: strut from the lane above':'pitch: strut from the lane below';
+      else if(tg.kind==='island')nm='island clearance';else if(tg.kind==='edge')nm='board edge';else if(tg.kind==='pin')nm='pin at the terminal';
+      else if(tg.kind==='len')nm=tg.k===sel.k?'length: the segment to the right':'length: the segment to the left';
+      else nm=tg.k===sel.k?'bend at this point':tg.k<sel.k?'bend at the point to the left':'bend at the point to the right';
+      gr.set(nm,(gr.get(nm)||0)-a*y)});
+    const zc=res.zc[j];if(zc>1e-9)gr.set('the floor (offset ≥ 0)',zc);
+    let sum=0,h='<tr><th>force on this point</th><th class="num">+ up / − down</th></tr>';
+    if(!gr.size)h+='<tr><td colspan="2">nothing acts here</td></tr>';
+    for(const[k,v] of gr){sum+=v;h+=`<tr><td>${k}</td><td class="num">${(v>=0?'+':'')+f3(v)}</td></tr>`}
+    h+=`<tr><th>sum (the cost puts no force on an offset)</th><th class="num ${Math.abs(sum)<1e-6?'ok':''}">${f3(sum)}</th></tr>`;
+    $('#colFb').innerHTML=h;$('#colFbT').textContent=`Forces on lane ${sel.l+1} at column ${sel.k}`}
+  function summary(){const{rows,res}=R,cnt={},cap=[];let n=0;
+    let atCap=0;rows.forEach((r,i)=>{if(res.y[i]>1e-7){n++;cnt[r.tag.kind]=(cnt[r.tag.kind]||0)+1;if(res.y[i]>=WH-1e-6)atCap++}if(r.tag.el&&res.x[r.tag.e]>1e-9)cap.push(`${KN[r.tag.kind]} (lane ${r.tag.l+1}, column ${r.tag.k}, by ${f3(res.x[r.tag.e])} mm)`)});
+    let h='<tr><th>kind</th><th class="num">with a price</th></tr>';for(const k of Object.keys(KN))h+=`<tr><td>${KN[k]}</td><td class="num">${cnt[k]||0}</td></tr>`;
+    $('#colKinds').innerHTML=h;$('#colN').textContent=`${n} of ${rows.length}`;$('#colC').textContent=f3(R.C);$('#colD').textContent=f3(R.D);$('#colHV').textContent=H.toFixed(2)+' mm';
+    const en=`Energy: length ${f3(R.parts.len)} + bends ${f3(R.parts.bend)} + broken rules ${f3(R.parts.hard)} = ${f3(R.C)}. `;
+    $('#colLog').textContent=en+(cap.length?`Broken, the slack paid: ${cap.join('; ')}. ${atCap} rules carry the cap force W_HARD = ${WH}: the broken rules and the stack that carries their load. whole_geo would send the broken rows to CP-SAT as cuts.`:`No rule is at its cap: every hard rule holds. Cost ${f3(R.C)} = dual value ${f3(R.D)}.`)}
+  function go(){if(pend)return;pend=true;requestAnimationFrame(()=>{pend=false;solve();draw();fbd();summary()})}
+  $('#colH').addEventListener('input',e=>{H=+e.target.value;go()});$('#colSplit').addEventListener('change',e=>{split=+e.target.value;go()});
+  go();
+})();
+</script>
+</body>
+</html>

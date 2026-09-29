@@ -1288,6 +1288,8 @@ with a Python engine, usable as CLI scripts or as a KiCad plugin.</p>
     <div class="d">Installs, downloads and traffic, updated weekly</div></a>
   <a class="card" href="solvers/"><div class="t">How the whole route plans →</div>
     <div class="d">Interactive explainer of CP-SAT and HiGHS in the bus router</div></a>
+  <a class="card" href="solvers/dual/"><div class="t">Shadow prices as forces →</div>
+    <div class="d">The geometry LP's dual as statics, geometry and a circuit</div></a>
 </div>
 
 <p>Install through KiCad's <strong>Plugin and Content Manager</strong>, or clone

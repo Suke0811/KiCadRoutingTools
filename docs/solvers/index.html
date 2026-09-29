@@ -58,7 +58,7 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
 </head>
 <body>
 <nav class="toc"><a class="home" href="../">&larr; KiCadRoutingTools</a>
-<a href="#sec-films">Films</a><a href="#pipeline">Pipeline</a><a href="#ends">Ends</a><a href="#cpsat">CP-SAT</a><a href="#sec-lp">HiGHS LP</a><a href="#simplex">How an LP is solved</a><a href="#sec-loop">Negotiation</a><a href="#sec-after">Polish &middot; snap &middot; audit &middot; route</a><a href="#summary">Side by side</a></nav>
+<a href="#sec-films">Films</a><a href="#pipeline">Pipeline</a><a href="#ends">Ends</a><a href="#cpsat">CP-SAT</a><a href="#sec-lp">HiGHS LP</a><a href="#simplex">How an LP is solved</a><a href="dual/">The dual as forces &rarr;</a><a href="#sec-loop">Negotiation</a><a href="#sec-after">Polish &middot; snap &middot; audit &middot; route</a><a href="#summary">Side by side</a></nav>
 <main>
 
 <h1>What CP-SAT and HiGHS actually do in the whole route</h1>
@@ -253,7 +253,7 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
   <div class="legend"><span><i style="background:#d9483b"></i>simplex path (corners)</span><span><i style="background:#0f8a7a"></i>interior point path (centre outward)</span><span>&#9733; = the true optimum</span><span>the numbered walls are the LP's rows</span></div>
   <div class="callout" style="margin-bottom:0"><b>Why this matters here.</b> Press <b>Tie</b>, then run both methods to the end. When the cost slope lines up with a side of the polygon, <i>every point on that side is equally good</i>. Simplex stops at whichever end it reaches first. Interior point stops in the <i>middle</i> of the side. Which answer you get can change with the platform's floating-point rounding, but the plan must be identical on every machine. So <code>detmath.lp_tie_break</code> adds a tiny distinct cost to every column, making the optimum a single corner. <code>detmath.lp_round</code> then snaps the answer. Now tick the tie-break box and run again: both methods land on the same corner.</div>
 </div>
-<p style="font-size:14px;color:var(--mut)"><code>whole_geo.lp_by_dual</code> has one further trick: it solves the <b>dual</b> LP. This LP has many more rows than columns, so its dual has a row per column and every slack is a plain inequality. HiGHS's interior point runs it about 6&times; faster (K51 pass 2: 31 s instead of 188 s). The primal solution is then read from the dual's multipliers. If the interior point doesn't converge (it once ran 2329 iterations on zynq K18), it falls back to dual simplex, which lands on the same point.</p>
+<p style="font-size:14px;color:var(--mut)"><code>whole_geo.lp_by_dual</code> has one further trick: it solves the <b>dual</b> LP. This LP has many more rows than columns, so its dual has a row per column and every slack is a plain inequality. HiGHS's interior point runs it about 6&times; faster (K51 pass 2: 31 s instead of 188 s). The primal solution is then read from the dual's multipliers. If the interior point doesn't converge (it once ran 2329 iterations on zynq K18), it falls back to dual simplex, which lands on the same point. What that dual <i>is</i>, and why its prices are forces in equilibrium: <a href="dual/">Shadow prices as forces</a>.</p>
 
 <!-- ======================= 3. LOOP ======================= -->
 <h2 id="sec-loop">3 &nbsp; The two solvers negotiate</h2>
