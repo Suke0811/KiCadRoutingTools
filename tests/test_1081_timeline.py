@@ -191,8 +191,25 @@ def test_the_board_faces_the_work_and_turns_back():
         _check(first_f and all(abs(ang[i]) < 1e-5 for i in first_f),
                'the F.Cu copper that follows lands face-on, the board turned '
                'back (%s)' % [round(ang[i], 2) for i in first_f])
-        _check(b_cu and abs(ang[b_cu[0]] - math.pi) < 1e-5,
-               'and the B.Cu work after it faces the back again')
+        # the LONGEST run of B.Cu work (the rule ignores copper that lands
+        # for under COPPER_DWELL_S): the board faces the back when it starts
+        runs, cur = [], []
+        for i in b_cu:
+            if cur and i != cur[-1] + 1:
+                runs.append(cur)
+                cur = []
+            cur.append(i)
+        if cur:
+            runs.append(cur)
+        longest = max(runs, key=len) if runs else []
+        need = int(TL.COPPER_DWELL_S * 6.0)
+        # this fixture's B.Cu copper lands in runs SHORTER than the dwell,
+        # so the board must not turn for it (a sustained run that does turn
+        # it is test_the_side_rule_waits_out_a_stray_event's)
+        _check(longest and len(longest) < need
+               and all(abs(ang[i]) < 1e-5 for i in longest),
+               'and a short burst of B.Cu copper (%d frames, under %d) does '
+               'NOT turn the board over' % (len(longest), need))
         _check(tl['side_rule'].startswith('activity:'),
                'the rule is named (%r)' % tl['side_rule'])
 

@@ -458,7 +458,7 @@ def _build_film_body(a, frame_spool, sink, steps, final, size, supersample,
         steps, final, layout, attempts=attempts,
         attempts_from=placement.get('attempts_from'),
         placement=placement, want_iso=want_iso, iso_opts=iso_opts,
-        quiet=quiet, who='make_film')
+        quiet=quiet, who='make_film', aspect=aspect)
     _lands = {}
     frames = a.build_boards(steps, final, size, supersample, layer_alpha,
                             rip_hold, chunks, stage=stage, marks=marks,
@@ -466,7 +466,7 @@ def _build_film_body(a, frame_spool, sink, steps, final, size, supersample,
                             theme=_th, layout=layout, aspect=aspect,
                             geom_out=_geom, attempts_band=_bands.band,
                             iso_panel=_bands.iso_box, lands_out=_lands,
-                            board3d=placement.get('board3d') or 'auto')
+                            board3d=placement.get('board3d'), fps=fps)
     if not frames:
         if sink is not None:
             sink.close()
@@ -624,7 +624,7 @@ def main(argv=None):
                     help="the benchmark board's `board_score --json` "
                          "document (must name that board by board_sha); "
                          "without it board_score is run once")
-    ap.add_argument('--board-3d', default='auto', choices=('auto', '2d', 'blender'),
+    ap.add_argument('--board-3d', default=None, choices=('auto', '2d', 'blender'),
                     help="stage3d only: 'auto' (default) draws the 3D board "
                          "when Node, playwright-core and a Chromium are "
                          "present, else the 2D X-ray and says why; "
@@ -745,6 +745,12 @@ def main(argv=None):
     finally:
         if hasattr(frames, 'close'):
             frames.close()
+        # the 3D board's state frames, once the film is written (#1081)
+        try:
+            from stage3d import film as _s3f
+            _s3f.cleanup()
+        except Exception:                                      # noqa: BLE001
+            pass
     return 0
 
 

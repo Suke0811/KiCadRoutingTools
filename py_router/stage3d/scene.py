@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from typing import Dict, Optional, Tuple
 
@@ -246,8 +247,11 @@ def export_glb(board_path, pcb, out_dir, cli=None,
         argv = [cli, 'pcb', 'export', 'glb', '--no-dnp', '--subst-models',
                 '--no-board-body', '-f', '-o', out, staged]
         try:
-            r = subprocess.run(argv, capture_output=True, text=True,
-                               timeout=timeout)
+            r = subprocess.run(
+                argv, capture_output=True, text=True, encoding='utf-8',
+                errors='replace', timeout=timeout,
+                **({'creationflags': subprocess.CREATE_NO_WINDOW}
+                   if sys.platform.startswith('win') else {}))
         except subprocess.TimeoutExpired:
             return None, 'kicad-cli pcb export glb timed out after %gs' % (
                 timeout)

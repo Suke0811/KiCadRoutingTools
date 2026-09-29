@@ -29,6 +29,10 @@ import sys
 from typing import Dict, List, Optional, Tuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+#: A console program started from kicad.exe (the GUI recorder) opens a
+#: console window on Windows unless told not to -- ai_gui does the same.
+NO_WINDOW = ({'creationflags': subprocess.CREATE_NO_WINDOW}
+             if sys.platform.startswith('win') else {})
 #: The Chromium revision playwright-core 1.58.2 drives natively.
 PREFERRED_REVISION = '1208'
 #: Node older than this has no stable ES modules + fetch.
@@ -46,7 +50,7 @@ def resolve_node(explicit=None) -> Tuple[Optional[str], str]:
         return None, 'no Node.js on PATH (set $KICAD_STAGE3D_NODE)'
     try:
         r = subprocess.run([cand, '--version'], capture_output=True,
-                           text=True, timeout=30)
+                           text=True, timeout=30, **NO_WINDOW)
         ver = (r.stdout or '').strip().lstrip('v')
         major = int(ver.split('.')[0])
     except Exception as exc:                                   # noqa: BLE001
@@ -170,7 +174,9 @@ def available(backend='three') -> Tuple[bool, str]:
     if backend == 'blender':
         p, why = resolve_blender()
         return (bool(p), 'ok' if p else why)
-    for fn in (resolve_node, resolve_playwright, resolve_browser):
+    # the no-cost checks first: `npm ci` not run means no process is
+    # spawned at all (resolve_node runs `node --version`)
+    for fn in (resolve_playwright, resolve_browser, resolve_node):
         p, why = fn()
         if not p:
             return False, why
@@ -254,8 +260,9 @@ def render(scene, timeline, *, width, height, out_dir, theme=None,
     budget = timeout or (STARTUP_S + STATE_BUDGET_S * n)
     try:
         r = subprocess.run([node, os.path.join(HERE, 'render.mjs'), jp],
-                           capture_output=True, text=True, timeout=budget,
-                           cwd=HERE)
+                           capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=budget, cwd=HERE,
+                           **NO_WINDOW)
     except subprocess.TimeoutExpired:
         return None, {}, 'the 3D render took over %.0f s (%d states)' % (
             budget, n)
@@ -351,7 +358,7 @@ def _render_blender(scene, timeline, *, width, height, out_dir, theme,
                             os.path.join(HERE, 'blender_scene.py'), '--',
                             jp], capture_output=True, text=True,
                            encoding='utf-8', errors='replace',
-                           timeout=budget)
+                           timeout=budget, **NO_WINDOW)
     except subprocess.TimeoutExpired:
         return None, {}, 'the Blender render took over %.0f s (%d states)' % (
             budget, n)

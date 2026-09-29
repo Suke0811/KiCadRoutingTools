@@ -117,8 +117,15 @@ def _final_note(row) -> str:
     fails = sorted(k for k, v in LS.lens_verdicts(row).items() if v == 'FAIL')
     done = LS.row_done(dict(row, kind='completion'))
     word = stop or ('DONE' if done else 'not done')
-    return 'final: %s%s' % (word, (' (%s FAIL)' % ', '.join(fails))
-                            if fails else '')
+    if len(word) > 40:                  # a stop_condition can be a paragraph
+        word = word[:37] + '...'
+    # `done_evidence` is about a --final row, and laps never are one, so this
+    # is the one place 'verified' can be said (the final review: the chip's
+    # tag could only ever read 'measured')
+    tag = ', verified' if (done and LS.done_evidence(row) == 'verified') \
+        else ''
+    return 'final: %s%s%s' % (word, (' (%s FAIL)' % ', '.join(fails))
+                              if fails else '', tag)
 
 
 def from_converge_ledger(path) -> Optional[BenchTrack]:

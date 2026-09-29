@@ -346,6 +346,14 @@ def test_final_and_exhausted_rows_are_not_laps():
     _img, dbg, _d = _draw(tr)
     _check('final: STUCK' in dbg['caption'], 'and shown (%r)'
            % dbg['caption'])
+    ok = rows[:2] + [dict(_row(2, 0, 8), final=True, stop_condition='DONE',
+                          lenses=['VERDICT=PASS:lens=connectivity',
+                                  'VERDICT=PASS:lens=drc',
+                                  'VERDICT=PASS:lens=spec'])]
+    tr = MB.from_converge_ledger(_ledger(ok))
+    _check(tr.final == 'final: DONE, verified',
+           'a --final DONE row with every lens PASS reads verified (%r)'
+           % tr.final)
 
 
 def test_ungraded_is_unexamined_not_passed():

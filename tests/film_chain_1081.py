@@ -108,14 +108,22 @@ def rip_trace(board, path, n=240, rip=24):
     pcb = parse_kicad_pcb(board)
     layers = list(pcb.board_info.copper_layers)
     segs, vias = A._board_rows(pcb, layers)
-    third = max(1, n // 3)
-    ev = [{'event': 'route', 'net_name': 'n%d' % k,
-           'add_s': segs[k * third:(k + 1) * third]} for k in range(3)]
+    # small events, one layer each, so each face gets a SUSTAINED run of
+    # work (the 3D side rule ignores copper that lands for under 4 s)
+    def by_layer(rows, name):
+        out = []
+        for li in sorted({r[5] for r in rows}):
+            mine = [r for r in rows if r[5] == li]
+            for k in range(0, len(mine), 6):
+                out.append({'event': 'route', 'net_name': '%s%d' % (name, k),
+                            'add_s': mine[k:k + 6]})
+        return out
+    ev = by_layer(segs[:n], 'n')
     ev.append({'event': 'rip', 'net_name': 'n0', 'by': 'n9',
                'del_s': segs[:rip]})
     ev.append({'event': 'reroute', 'net_name': 'n0', 'add_s': segs[:rip]})
-    ev.append({'event': 'route', 'net_name': 'rest', 'add_s': segs[n:],
-               'add_v': vias})
+    ev += by_layer(segs[n:], 'rest')
+    ev.append({'event': 'route', 'net_name': 'vias', 'add_v': vias})
     with open(path, 'w', encoding='utf-8') as f:
         json.dump({'layers': layers, 'events': ev}, f)
     return path

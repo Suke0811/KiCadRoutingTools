@@ -88,6 +88,7 @@ def test_make_movie_stage3d_three_ways():
         led = _ledger(c.dir)
         runs = {}
         arms = [('2d', {'board3d': '2d'}, {}),
+                ('knob', {}, {'KICAD_MOVIE_BOARD3D': '2d'}),
                 ('missing', {}, {'KICAD_STAGE3D_NODE':
                                  os.path.join(c.dir, 'no-node.exe')})]
         if CAN_3D:
@@ -97,6 +98,8 @@ def test_make_movie_stage3d_three_ways():
         for name, kw, env in arms:
             old = {k: os.environ.get(k) for k in env}
             os.environ.update(env)
+            import env_knobs                 # it reads the env at import
+            env_knobs.refresh()
             try:
                 png = tempfile.mkdtemp(prefix='t1081e_', dir=c.dir)
                 runs[name] = _movie(c.boards, led, png, **kw)
@@ -106,6 +109,7 @@ def test_make_movie_stage3d_three_ways():
                         os.environ.pop(k, None)
                     else:
                         os.environ[k] = v
+                env_knobs.refresh()
         for name, (out, err, n, sizes) in runs.items():
             _check(out and os.path.isfile(out), '%s: a film was written' % name)
             _check(len(sizes) == 1 and (960, 540) in sizes,
@@ -124,6 +128,12 @@ def test_make_movie_stage3d_three_ways():
                    '3d: says it drew the 3D board')
         _check('stage3d: 2D X-ray in the board box -- the 2D X-ray was '
                'asked for' in runs['2d'][1], '2d: says it was asked for')
+        _check('the 2D X-ray was asked for' in runs['knob'][1],
+               '$KICAD_MOVIE_BOARD3D=2d reaches a film that passed no flag '
+               '(the GUI recorder\'s and place_route_loop\'s only way)')
+        from stage3d import film as _s3f
+        _check(not _s3f._LIVE, 'the 3D state frames are removed once the '
+               'film is written, not at exit (%s)' % _s3f._LIVE)
         miss = runs['missing'][1]
         _check('stage3d: 2D X-ray in the board box' in miss
                and 'no-node' in miss,

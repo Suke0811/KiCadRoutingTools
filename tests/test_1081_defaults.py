@@ -44,12 +44,15 @@ print('RENDERER', r.theme.name)
 print('PALETTE', render_theme.layer_palette(['F.Cu', 'B.Cu'])['F.Cu']
       == render_theme.default_theme().layers[0])
 print('FALLBACK', render_theme.theme('chartreuse', strict=False).name)
+import env_knobs
+print('BOARD3D', env_knobs.MOVIE_BOARD3D)
 '''
 
 
 def _probe(env_extra):
     env = {k: v for k, v in os.environ.items()
-           if k not in ('KICAD_MOVIE_LAYOUT', 'KICAD_RENDER_THEME')}
+           if k not in ('KICAD_MOVIE_LAYOUT', 'KICAD_RENDER_THEME',
+                        'KICAD_MOVIE_BOARD3D')}
     env.update(env_extra)
     code = _PROBE % (ROOT, os.path.join(ROOT, 'py_router'),
                      os.path.join(ROOT, 'kicad_files',
@@ -78,15 +81,19 @@ def test_the_defaults_are_stage3d_and_light():
            % got.get('RENDERER'))
     _check(got.get('PALETTE') == 'True',
            'layer_palette with no theme follows the default')
+    _check(got.get('BOARD3D') == 'auto',
+           'the board is auto (3D when it can) unless told (%r)'
+           % got.get('BOARD3D'))
     _check(got.get('FALLBACK') == 'light',
            'a bad theme name falls back to the default (%r)'
            % got.get('FALLBACK'))
 
 
 def test_the_variables_still_override():
-    got = _probe({'KICAD_MOVIE_LAYOUT': 'legacy', 'KICAD_RENDER_THEME': 'dark'})
+    got = _probe({'KICAD_MOVIE_LAYOUT': 'legacy', 'KICAD_RENDER_THEME': 'dark',
+                  'KICAD_MOVIE_BOARD3D': '2d'})
     _check(got.get('LAYOUT') == 'legacy' and got.get('THEME') == 'dark'
-           and got.get('RENDERER') == 'dark',
+           and got.get('RENDERER') == 'dark' and got.get('BOARD3D') == '2d',
            '$KICAD_MOVIE_LAYOUT=legacy and $KICAD_RENDER_THEME=dark win (%s)'
            % got)
 

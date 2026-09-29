@@ -44,7 +44,7 @@ def _say(who, msg):
 
 def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
          attempts_from=None, placement=None, want_iso=False, iso_opts=None,
-         quiet=False, who='make_movie') -> Bands:
+         quiet=False, who='make_movie', aspect=None) -> Bands:
     """Everything the frame must reserve, decided before it is planned.
 
     `attempts`: a Track (use it), False (the OFF arm) or None (discover:
@@ -53,6 +53,19 @@ def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
     'ledger', 'benchmark', 'benchmark_score', 'intent'}`."""
     placement = dict(placement or {})
     stage3d = str(layout or '').strip().lower() == 'stage3d'
+    if stage3d:
+        # the SAME fallback plan_frame takes: a declared aspect outside
+        # 0.50..3.00 is a legacy frame, so it gets legacy's bands (a
+        # benchmark band drawn on a legacy frame, and the iso panel refused
+        # "because the board box IS the 3D view", were the half-fallback)
+        import frame_layout
+        try:
+            fa = frame_layout.parse_ratio(aspect) if aspect else None
+        except ValueError:
+            fa = None
+        if fa and not (frame_layout.EXTREME_ASPECT_LO <= fa
+                       <= frame_layout.EXTREME_ASPECT_HI):
+            stage3d, layout = False, 'legacy'
     here = os.path.dirname(os.path.abspath(final)) if final else ''
     btrack = None
     if stage3d:
@@ -75,10 +88,21 @@ def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
         except Exception as exc:                               # noqa: BLE001
             _say(who or 'make_movie', 'no benchmark band (%s)' % exc)
             btrack = None
-        return Bands(True, btrack, None, False, None, 'folded into the '
-                     'benchmark band (stage3d)', None,
-                     bool(btrack is not None and len(btrack.points) >= 2),
-                     False, False)
+        if btrack is not None and len(btrack.points) >= 2:
+            return Bands(True, btrack, None, False, None, 'folded into the '
+                         'benchmark band (stage3d)', None, True, False, False)
+        # NO ledger behind the film -- a placement chain made from boards
+        # alone: the placement panels stay (the final review: such a film
+        # used to lose every placement number it had)
+        ptrack, pwhy, pfn = _placement(steps, placement, attempts_ledger,
+                                       here, quiet)
+        band = False
+        if ptrack is not None:
+            import movie_placement
+            pfn = movie_placement.band_px(ptrack, False)
+            band = pfn
+        return Bands(True, None, None, False, ptrack, pwhy, pfn, band,
+                     False, placement.get('asked'))
     # #946/C4: the attempts are found BEFORE the frame is planned, so the
     # band is RESERVED in the layout (`plan_frame(track_px=)`) rather than
     # grown under every frame afterwards.
@@ -102,19 +126,8 @@ def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
     verdict = bool(track is not None and len(track.attempts) >= 2)
     # #1042: the placement panels, measured on the film's own placement
     # boards before the frame is planned so their region is reserved too
-    ptrack, pwhy, pfn = None, 'off (--no-placement-panel)', None
-    if not placement.get('off'):
-        try:
-            import movie_placement
-            led = placement.get('ledger') or attempts_ledger
-            if not led and here:
-                cand = os.path.join(here, 'ledger.jsonl')
-                led = cand if os.path.isfile(cand) else None
-            ptrack, pwhy = movie_placement.build_track(
-                steps, [], ledger=led, benchmark=placement.get('benchmark'),
-                intent=placement.get('intent'), quiet=quiet)
-        except Exception as exc:                               # noqa: BLE001
-            ptrack, pwhy = None, 'could not measure (%s)' % exc
+    ptrack, pwhy, pfn = _placement(steps, placement, attempts_ledger,
+                                   here, quiet)
     band = bool(verdict)
     if ptrack is not None:
         import movie_placement
@@ -139,6 +152,24 @@ def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
                  iso_box, placement.get('asked'))
 
 
+def _placement(steps, placement, attempts_ledger, here, quiet):
+    """`(ptrack, why, None)`: the #1042 placement panels, measured."""
+    if placement.get('off'):
+        return None, 'off (--no-placement-panel)', None
+    try:
+        import movie_placement
+        led = placement.get('ledger') or attempts_ledger
+        if not led and here:
+            cand = os.path.join(here, 'ledger.jsonl')
+            led = cand if os.path.isfile(cand) else None
+        ptrack, pwhy = movie_placement.build_track(
+            steps, [], ledger=led, benchmark=placement.get('benchmark'),
+            intent=placement.get('intent'), quiet=quiet)
+        return ptrack, pwhy, None
+    except Exception as exc:                                   # noqa: BLE001
+        return None, 'could not measure (%s)' % exc, None
+
+
 def compose(frames, bands, geom, marks, lands, theme, *, quiet=False,
             who='make_movie'):
     """The bands, onto frames `build_boards` planned with `bands`. Order:
@@ -146,7 +177,7 @@ def compose(frames, bands, geom, marks, lands, theme, *, quiet=False,
     before the run clock and the iso panel, so a band sits next to the board
     it annotates."""
     box = geom.track if geom is not None else None
-    if bands.stage3d:
+    if bands.stage3d and bands.btrack is not None:
         try:
             import movie_benchmark
             frames, rep = movie_benchmark.attach(frames, bands.btrack,

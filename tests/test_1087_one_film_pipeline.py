@@ -88,7 +88,32 @@ def test_both_front_ends_run_the_one_pipeline():
                % (name, dup))
 
 
-TESTS = (test_both_front_ends_run_the_one_pipeline,)
+def test_stage3d_without_a_ledger_keeps_the_placement_panels():
+    """A placement chain made from boards alone has no ledger, so no
+    benchmark band; stage3d then keeps the #1042 placement panels rather
+    than losing every placement number (the final review)."""
+    import film_chain_1081 as FC
+    with FC.Chain() as c:
+        steps = [('s%d' % i, b, None) for i, b in enumerate(c.boards[:3])]
+        with contextlib.redirect_stderr(io.StringIO()):
+            b = FP.plan(steps, c.boards[2], 'stage3d', quiet=True)
+        _check(b.stage3d and b.btrack is None and b.ptrack is not None
+               and b.band, 'stage3d, no ledger: the placement panels are '
+               'measured and reserved (%s, band %r)' % (b.pwhy, b.band))
+
+
+def test_an_extreme_aspect_gets_legacy_bands():
+    """plan_frame falls stage3d back to legacy outside 0.50..3.00; the
+    bands must follow, or a benchmark band lands on a legacy frame."""
+    with contextlib.redirect_stderr(io.StringIO()):
+        b = FP.plan([], None, 'stage3d', aspect='4:1', quiet=True,
+                    attempts=False)
+    _check(not b.stage3d, 'stage3d at 4:1 plans legacy bands')
+
+
+TESTS = (test_both_front_ends_run_the_one_pipeline,
+         test_stage3d_without_a_ledger_keeps_the_placement_panels,
+         test_an_extreme_aspect_gets_legacy_bands)
 
 
 def main():

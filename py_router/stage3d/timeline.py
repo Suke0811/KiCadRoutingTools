@@ -36,9 +36,19 @@ import json
 import math
 from typing import List, Optional
 
-#: A 3D-only flip (films without a Stage) needs the new side to hold this long
-#: before the board turns, and the board holds a side at least this long.
+#: A glide on the other face turns the board once it lasts this long...
 AUTO_DWELL_S = 1.0
+#: ...but COPPER must hold a face for longer: a routing film lands chunk
+#: after chunk on alternating layers, and at 1 s the board turned 27 times in
+#: an 853-frame film (the final review) -- a flip every 5 s, which reads as a
+#: fault, not as "the work moved to the back".
+COPPER_DWELL_S = 4.0
+#: ...and between two turns COPPER decided, the board stays put at least
+#: this long. A glide is exempt: it is the placement's own event, and the
+#: board must be allowed to turn back for the copper that follows it.
+#: (Measured on that 853-frame film: 1 s / no hold 27 turns, 2 s / 2 s 13,
+#: 4 s / 6 s 6 -- one turn every ~24 s.)
+HOLD_S = 6.0
 #: ...and turns over this long.
 AUTO_FLIP_S = 1.0
 
@@ -124,7 +134,8 @@ def _smooth(k):
 
 
 def activity_sides(log, epochs, fps, dwell_s=AUTO_DWELL_S,
-                   flip_s=AUTO_FLIP_S):
+                   flip_s=AUTO_FLIP_S, copper_dwell_s=COPPER_DWELL_S,
+                   hold_s=HOLD_S):
     """Per-frame flip angle: face the side the film is working on.
 
     Each frame WANTS a side: the side of the parts gliding on it (their
@@ -137,6 +148,8 @@ def activity_sides(log, epochs, fps, dwell_s=AUTO_DWELL_S,
     known before a frame is drawn, which is what makes looking ahead
     deterministic. Returns (angles, turns)."""
     dwell = max(1, int(round(dwell_s * fps)))
+    cdwell = max(dwell, int(round(copper_dwell_s * fps)))
+    hold = max(1, int(round(hold_s * fps)))
     turn = max(1, int(round(flip_s * fps)))
     want = []
     glide = []
@@ -166,14 +179,21 @@ def activity_sides(log, epochs, fps, dwell_s=AUTO_DWELL_S,
             runs[-1][2] = runs[-1][3] = i + 1
         else:
             runs.append([w, i, i + 1, i + 1])
-    # hysteresis: a run shorter than the dwell keeps the side showing
+    # hysteresis: a run shorter than its dwell keeps the side showing, and
+    # no turn comes sooner than `hold` after the last
     side = 'F'
     work_end = 0                        # end of the last GLIDE on `side`
     changes = []                        # (start, side, work_end before it)
+    last_copper_turn = -hold
     for w, a, b, last in runs:
-        if w != side and b - a >= dwell:
+        by_glide = any(glide[a:b])
+        need = dwell if by_glide else cdwell
+        if (w != side and b - a >= need
+                and (by_glide or a - last_copper_turn >= hold)):
             changes.append((a, w, work_end))
             side = w
+            if not by_glide:
+                last_copper_turn = a
         if w == side and glide[last - 1]:
             work_end = last
     angles = [0.0] * len(log)
@@ -225,8 +245,9 @@ def build(stage_out, *, fps=6.0, stage_present=True) -> dict:
         v[4], v[5] = li.get(v[4], 0), li.get(v[5], len(layers) - 1)
     angles, nf = activity_sides(log, stage_out.get('epochs') or [], fps)
     rule = ('activity: faces the side being worked on, turning %.1f s '
-            'ahead, ignoring work under %.1f s -- %d turn(s)'
-            % (AUTO_FLIP_S, AUTO_DWELL_S, nf))
+            'ahead, ignoring a glide under %.1f s and copper under %.1f s, '
+            'copper turning at most once per %.1f s -- %d turn(s)'
+            % (AUTO_FLIP_S, AUTO_DWELL_S, COPPER_DWELL_S, HOLD_S, nf))
     ops_s = stage_out['ops_s']
     replay = _Replay(ops_s)
     states = []

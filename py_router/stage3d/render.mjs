@@ -45,7 +45,7 @@ async function main() {
       let file = files[p];
       if (!file && (p.startsWith('/page/') || p.startsWith('/vendor/'))) {
         file = path.join(here, ...p.split('/').filter(Boolean));
-        if (!path.resolve(file).startsWith(here)) file = null;
+        if (!path.resolve(file).startsWith(here + path.sep)) file = null;
       }
       if (!file || !fs.existsSync(file)) return route.fulfill({ status: 404, body: 'not found' });
       return route.fulfill({ path: file,

@@ -242,7 +242,7 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
                panels=None, iso_opts=None, timing=None, theme=None,
                layout=None, aspect=None, attempts=None, max_frames=None,
                title=None, attempts_ledger=None, benchmark_board=None,
-               floorplan_intent=None, placement_panel=None, board3d='auto',
+               floorplan_intent=None, placement_panel=None, board3d=None,
                benchmark_score=None):
     """Render the movie. ``inputs`` is a run dir (one entry) or a board sequence.
 
@@ -284,7 +284,7 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                 panels, iso_opts, timing, theme, layout, aspect, attempts,
                 max_frames, spool, title=None, attempts_ledger=None,
                 benchmark_board=None, floorplan_intent=None,
-                placement_panel=None, board3d='auto', benchmark_score=None):
+                placement_panel=None, board3d=None, benchmark_score=None):
     import animate_route as a
     if isinstance(inputs, str):
         inputs = [inputs]
@@ -464,7 +464,8 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                    'benchmark': benchmark_board,
                    'benchmark_score': benchmark_score,
                    'intent': floorplan_intent},
-        want_iso=want_iso, iso_opts=iso_opts, quiet=quiet, who='make_movie')
+        want_iso=want_iso, iso_opts=iso_opts, quiet=quiet, who='make_movie',
+        aspect=aspect)
     _lands = {}
     if _bands.ptrack is not None and marks is None:
         marks = []
@@ -475,7 +476,7 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                             geom_out=geom_out, title=_title,
                             frames_sink=spool, max_frames=max_frames,
                             attempts_band=_band, iso_panel=_iso_box,
-                            lands_out=_lands, board3d=board3d)
+                            lands_out=_lands, board3d=board3d, fps=fps)
     if not frames:
         if not quiet:
             print("make_movie: no frames (nothing routed?)", file=sys.stderr)
@@ -538,9 +539,18 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
     out = out or default_output(inputs)
     out = os.path.abspath(out)
     os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
-    if not a.save_movie(frames, out, fps=fps, end_hold=end_hold,
-                        png_dir=png_dir, frame_meta=frame_meta, theme=theme):
-        return None
+    try:
+        if not a.save_movie(frames, out, fps=fps, end_hold=end_hold,
+                            png_dir=png_dir, frame_meta=frame_meta,
+                            theme=theme):
+            return None
+    finally:
+        # the 3D board's state frames, once the film is written (#1081)
+        try:
+            from stage3d import film as _s3f
+            _s3f.cleanup()
+        except Exception:                                      # noqa: BLE001
+            pass
     # save_movie falls back .mp4 -> .gif when imageio-ffmpeg is missing; report
     # the file that actually exists so callers (and the GUI) point at it.
     if out.lower().endswith('.mp4') and not os.path.exists(out):
@@ -623,7 +633,7 @@ def main():
                     help="the benchmark board's `board_score --json` "
                          "document (must name that board by board_sha); "
                          "without it board_score is run once to grade it")
-    ap.add_argument('--board-3d', default='auto', choices=('auto', '2d', 'blender'),
+    ap.add_argument('--board-3d', default=None, choices=('auto', '2d', 'blender'),
                     help="stage3d only: 'auto' (default) draws the 3D board "
                          "when Node, playwright-core (npm ci in "
                          "py_router/stage3d) and a Chromium are present, "

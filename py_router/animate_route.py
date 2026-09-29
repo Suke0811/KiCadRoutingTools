@@ -945,7 +945,7 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
                  geom_out=None, title=None, frames_sink=None,
                  max_frames=None, notes=None, attempts_band=False,
                  iso_panel=False, lands_out=None, stage_out=None,
-                 board3d='auto'):
+                 board3d=None, fps=None):
     """Frames for a chain given as [(label, board, trace|None), ...] plus the
     final board. ``build_run`` is this with the chain discovered from a run dir.
 
@@ -1079,6 +1079,12 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
         if geom_out is not None:
             geom_out.append(_g)
     m = Movie(r, layers, rip_hold=rip_hold)
+    if board3d is None:                  # no flag: $KICAD_MOVIE_BOARD3D
+        try:
+            import env_knobs as _ek
+            board3d = getattr(_ek, 'MOVIE_BOARD3D', 'auto') or 'auto'
+        except Exception:                                      # noqa: BLE001
+            board3d = 'auto'
     _s3d = (_geom is not None and _geom.layout == 'stage3d'
             and board3d not in ('2d', 'off'))
     if stage_out is None and _s3d:
@@ -1276,7 +1282,8 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
         m.frames, _s3rep = _s3f.apply(
             m.frames, stage_out, final, _geom, r.theme,
             stage_present=stage is not None,
-            mode=board3d if _s3d else '2d', notes=notes)
+            mode=board3d if _s3d else '2d', notes=notes,
+            fps=fps or getattr(stage, 'fps', None) or 6.0)
     # #1018: the board was rendered into its PLANNED BOX; the frame is the
     # planned FRAME. Composing here rather than leaving the box as the frame is
     # what makes the size claim real -- the rail, the panel and the foot exist

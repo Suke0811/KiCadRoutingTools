@@ -23,6 +23,18 @@ import tempfile
 
 #: `$KICAD_STAGE3D_MODELS=0` skips kicad-cli's real part models (boxes only).
 MODELS_ENV = 'KICAD_STAGE3D_MODELS'
+#: The state frames live until the film is WRITTEN (the board box maps onto
+#: them lazily), so they cannot be removed here. `cleanup()` removes them;
+#: the front ends call it after `save_movie`, and `atexit` stays a backstop
+#: -- in a long-lived process (KiCad, for the GUI recorder) it would be the
+#: only removal, and every film left hundreds of PNGs behind.
+_LIVE = []
+
+
+def cleanup():
+    """Remove every state-frame directory this process made so far."""
+    while _LIVE:
+        shutil.rmtree(_LIVE.pop(), ignore_errors=True)
 
 
 def _say(msg, notes):
@@ -32,7 +44,7 @@ def _say(msg, notes):
 
 
 def apply(frames, stage_out, final, geom, theme, *, stage_present,
-          mode='auto', notes=None, models=None):
+          mode='auto', notes=None, models=None, fps=6.0):
     """Map `frames` (board-box images, a list or a FrameSpool) onto the 3D
     board. Returns `(frames, report)`; on ANY failure the frames are the
     X-ray's, untouched, and `report['why']` says why. `mode` 'off' asks for
@@ -61,9 +73,11 @@ def apply(frames, stage_out, final, geom, theme, *, stage_present,
         _say('stage3d: 2D X-ray in the board box -- %s' % why, notes)
         return frames, report
     tmp = tempfile.mkdtemp(prefix='krt_stage3d_')
+    _LIVE.append(tmp)
     atexit.register(shutil.rmtree, tmp, True)
     try:
-        tl = TL.build(stage_out, stage_present=stage_present)
+        tl = TL.build(stage_out, fps=fps or 6.0,
+                      stage_present=stage_present)
         pcb = parse_kicad_pcb(final)
         sc = SC.build_scene(pcb)
         glb, gwhy = None, 'part models off ($%s=0)' % MODELS_ENV

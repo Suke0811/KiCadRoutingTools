@@ -310,6 +310,11 @@ def refresh() -> None:
     # MOVIE_PANELS: one variable reaches every front end at once.
     g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'stage3d')
     g['MOVIE_ASPECT'] = _s('KICAD_MOVIE_ASPECT', '')
+    # #1081: the stage3d board -- 'auto' (the 3D board when this machine can
+    # render it, else the X-ray, said), '2d' (always the X-ray) or 'blender'
+    # (the hi-fi Cycles backend, #1089). The one way a front end with no
+    # flag of its own -- the GUI recorder, place_route_loop -- chooses.
+    g['MOVIE_BOARD3D'] = _s('KICAD_MOVIE_BOARD3D', 'auto')
 
     # #1036: the routing movie's FRAME BUDGET. A per-segment route trace
     # (KICAD_ROUTE_TRACE=1) plays one frame per event, and run 32's 22-board
