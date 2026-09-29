@@ -2356,6 +2356,16 @@ abandoned with a measurement. Untried ideas live here and nowhere else.
   One at a time, over K28-K51, the zynq rungs and synthetic buses
   (`synth_bus.py`), judged on passes on every machine (a Mac and Linux), then
   vias, then time.
+- **The ends, proved.** The ends are chosen by a local search
+  (`whole_ends.choose`: improving moves, random kicks, the best few re-ranked
+  on the exact route), so nothing proves them best: CP-SAT proves the fewest
+  vias only for the ends it is given. The search's estimate is exact in its
+  parts (each layer's cover a chain on a permutation graph, the settling a
+  min cut), so a CP-SAT model that chooses every lane's tooth and berth with
+  that estimate as its objective -- the fanout's conflicts as forbidden pairs
+  of options, the congestion's square piecewise linear -- could prove the
+  best ends under it. Untried: against the local search on K15-K51, for the
+  ends each finds, its time, and the vias the whole route then gets.
 - **Round 1 passing: the side of a small part.** The geometry chooses which
   side of each island (a capacitor's or resistor's pads) a lane passes from
   its room estimate (`whole_geo.static_sides`), and the LP then cannot hold
