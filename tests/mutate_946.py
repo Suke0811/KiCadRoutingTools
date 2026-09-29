@@ -262,25 +262,13 @@ ROWS = [
      "    return bool(sc) and sc.get('blocking') is not None",
      (T_ATT,), 'KILLED'),
 
-    ('film-counts-false-as-a-count', 'attempts',
-     "    if isinstance(b, bool) or not isinstance(b, (int, float)):",
-     "    if not isinstance(b, (int, float)):",
-     (T_ATT,), 'KILLED'),
-
-    ('film-counts-nan-or-negative', 'attempts',
-     "    if (isinstance(b, float) and not math.isfinite(b)) or b < 0:",
-     "    if False:",
-     (T_ATT,), 'KILLED'),
-
-    ('film-isfinite-on-an-int-again', 'attempts',
-     "    if (isinstance(b, float) and not math.isfinite(b)) or b < 0:",
-     "    if not math.isfinite(b) or b < 0:",
-     (T_ATT,), 'KILLED'),
-
-    ('film-past-float-is-a-count', 'attempts',
-     "    if b > sys.float_info.max:\n        return None",
-     "    if False:\n        return None",
-     (T_ATT,), 'KILLED'),
+    # #1088 RETIRED four rows here -- film-counts-false-as-a-count,
+    # film-counts-nan-or-negative, film-isfinite-on-an-int-again and
+    # film-past-float-is-a-count. They mutated the film's hand MIRROR of
+    # converge's rule, and there is no mirror any more: the film imports
+    # `ledger_score.blocking_value`, whose clauses mutate_936's `ls` rows
+    # cover. `a-non-count-blocking-is-plotted` and `graded-trusts-any-
+    # blocking` stay: they are the film's own CALL sites.
 
     ('a-list-result-sha-raises', 'attempts',
      "        if e.get('result_sha') and isinstance(e['result_sha'], str):\n",

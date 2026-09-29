@@ -876,11 +876,17 @@ def test_a_blocking_that_is_not_a_count_is_ungraded_not_raised():
 
 
 def test_the_film_and_the_verdict_agree_on_what_a_blocking_is():
-    """#1077. `_blocking_value` MIRRORS `converge.blocking_value` (the router
-    side does not import the placer), so the two are pinned to agree here --
-    a mirror nobody compares drifts."""
+    """#1077/#1088. The film's `_blocking_value` IS converge's
+    `blocking_value` -- one function, imported from `ledger_score` -- so the
+    two cannot drift. It was a hand mirror pinned by the table below; the
+    table stays as a behaviour check on the one rule."""
     _mark = len(_FAIL)
     import converge
+    import ledger_score
+    if not (MA._blocking_value is converge.blocking_value
+            is ledger_score.blocking_value):
+        fail('the film and the verdict use different blocking rules again: '
+             '%r / %r' % (MA._blocking_value, converge.blocking_value))
     nan, inf = float('nan'), float('inf')
     table = (0, 3, 3.0, 2.5, -0.0, 10 ** 20, 10 ** 400, -10 ** 400,
              -1, -0.5, True, False, None,

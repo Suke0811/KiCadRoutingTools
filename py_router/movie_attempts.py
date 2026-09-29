@@ -109,7 +109,6 @@ from __future__ import annotations
 
 import glob
 import json
-import math
 import os
 import re
 import sys
@@ -294,26 +293,12 @@ def _is_placement_row(e) -> bool:
     return str(e.get('kind') or '') == 'placement'
 
 
-def _blocking_value(b):
-    """`b` as a count the axis can plot, or None (drawn ungraded).
-
-    A MIRROR of `py_placer/converge.py:blocking_value`, not an import: the
-    router side does not import placement engines (`_placer_path`).
-    tests/test_946_movie_attempts.py pins that the two agree. A count is an
-    int or a finite float >= 0 and never a bool -- a per-term dict raised
-    `float(b)` inside `make_film.main()`, and `false` plotted at 0.0 as
-    admissible (#1077).
-    """
-    if isinstance(b, bool) or not isinstance(b, (int, float)):
-        return None
-    # `isfinite` on floats only: it converts an int to float, and a
-    # 400-digit JSON integer raised OverflowError.
-    if (isinstance(b, float) and not math.isfinite(b)) or b < 0:
-        return None
-    # ...and within the float range, since this axis plots `float(b)`.
-    if b > sys.float_info.max:
-        return None
-    return b
+#: `blocking` as a count the axis can plot, or None (drawn ungraded): THE
+#: rule `converge` ranks and refuses by, imported rather than mirrored
+#: (#1088). A count is an int or a finite float >= 0, within the float range,
+#: and never a bool -- a per-term dict raised `float(b)` inside
+#: `make_film.main()`, and `false` plotted at 0.0 as admissible (#1077).
+from ledger_score import blocking_value as _blocking_value  # noqa: E402
 
 
 def _graded(e) -> bool:
