@@ -205,6 +205,33 @@ check('BLOCKING-NULL is reported on ANY lap, not only routing ones',
       len([e for e in ev if e.startswith('BLOCKING-NULL')]) == 1,
       f'{[e[:70] for e in ev]}')
 
+# #1071: a `blocking` that is not a count is unmeasured, as it is to the
+# verdict. A dict used to read "blocking=None", and a NaN or a `false` became
+# `prev` -- nothing compares above a NaN, and `false` is 0 -- so this ledger
+# reported "False -> 15" instead of 10 -> 15.
+ev = ledger_events([
+    {'iteration': 1, 'kind': 'completion', 'accepted': True,
+     'score': {'blocking': 10}},
+    {'iteration': 2, 'kind': 'completion', 'accepted': True,
+     'score': {'blocking': float('nan')}},
+    {'iteration': 3, 'kind': 'completion', 'accepted': True,
+     'score': {'blocking': {'drc': 4}}},
+    {'iteration': 4, 'kind': 'completion', 'accepted': True,
+     'score': {'blocking': False}},
+    {'iteration': 5, 'kind': 'completion', 'accepted': True,
+     'score': {'blocking': 15}},
+])
+bad = [e for e in ev if e.startswith('BLOCKING-NOT-A-COUNT')]
+check('a blocking that is not a count is named as such, never as null',
+      len(bad) == 3 and not [e for e in ev if e.startswith('BLOCKING-NULL')]
+      and 'a JSON object' in bad[1] and 'boolean false' in bad[2],
+      f'{[e[:90] for e in ev]}')
+up = [e for e in ev if e.startswith('BLOCKING-UP')]
+check('...and it is skipped, so the next count compares against the last '
+      'count (10 -> 15, not False -> 15)',
+      len(up) == 1 and 'blocking 10 -> 15' in up[0],
+      f'{[e[:90] for e in ev]}')
+
 print('--- the journal: liveness yes, scanning no ---')
 jd = tempfile.mkdtemp()
 with open(os.path.join(jd, 'JOURNAL.md'), 'w', encoding='utf-8') as fh:
@@ -338,20 +365,36 @@ def _declares(tool, flag):
 #: git flag -- so "which tool declares it" is the wrong question. They are
 #: listed by name so the exemption cannot silently grow.
 _TOOL_AGNOSTIC = {'--accept-residue', '--accept-unclosed',
-                  '--accept-congestion', '--allow-unplaced', '--allow-routed',
+                  '--accept-congestion', '--accept-unclassified',
+                  '--allow-unplaced', '--allow-routed',
                   '--force', '--no-verify', '--no-delegate'}
+#: Entries scoped ONLY to the retired skill drivers (RW.DRIVERS). No tool in
+#: the tree declares them any more, but run_watch keeps them on purpose: it
+#: replays recorded runs whose teed rows carry those drivers' argv. Listed by
+#: name, and exempt only while every driver in the scope is really absent --
+#: a restored driver goes back under the ordinary check.
+_REPLAY_ONLY = {'--waive'}
+_retired = set(RW.DRIVERS)
 _dead_entries = []
+_replay_seen = set()
 for _lab, _flag, _why, _tools in RW.CHEAT_FLAGS:
     if not _tools:
         if _flag not in _TOOL_AGNOSTIC:
             _dead_entries.append(_flag + ': unscoped, and not declared '
                                          'tool-agnostic')
         continue
+    if (_flag in _REPLAY_ONLY and set(_tools) <= _retired
+            and not any(_glob.glob(os.path.join(REPO, _d, _t))
+                        for _d in _SRC_DIRS for _t in _tools)):
+        _replay_seen.add(_flag)
+        continue
     if not any(_declares(_t, _flag) for _t in _tools):
         _dead_entries.append('%s: no tool in %s declares it'
                              % (_flag, list(_tools)[:4]))
 check('every scoped cheat flag is declared by a tool in its own scope',
       not _dead_entries, '; '.join(_dead_entries))
+check('...and every replay-only exemption is still used (it cannot go stale)',
+      _replay_seen == _REPLAY_ONLY, str(sorted(_REPLAY_ONLY - _replay_seen)))
 check('...and the table is not empty (else the check is vacuous)',
       len(RW.CHEAT_FLAGS) >= 15, str(len(RW.CHEAT_FLAGS)))
 _scope = dict((f, t) for _l, f, _w, t in RW.CHEAT_FLAGS)

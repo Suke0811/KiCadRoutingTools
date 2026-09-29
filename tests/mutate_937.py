@@ -29,11 +29,6 @@ A registry gate with only a global floor passes that mutation while every
 routing reader is stranded -- which is exactly the failure the per-door floors
 exist for.
 
-`arm-ceiling-undeclared` runs `test_431_skill_commands.py`, which costs ~110 s.
-It is the one slow row and it earns it: nothing else asserts that
-`loop_driver --dump-all` exits 0, and that exit code is what holds the twelve
-populated-arm ceilings down.
-
 The three `T_REG` rows each re-run the registry probe (one subprocess per
 tracked .py, ~11 s at 8 workers), so they are the next most expensive and the
 reason a mutation must never add work INSIDE that probe -- see the note on
@@ -56,23 +51,13 @@ TARGETS = {
     'chk': os.path.join(REPO, '.claude', 'skills', 'plan-pcb-routing',
                         'scripts', 'route_plan_check.py'),
     'leg': os.path.join(REPO, 'py_placer', 'placement', 'legality.py'),
-    'pd': os.path.join(REPO, '.claude', 'skills', 'plan-pcb-placement',
-                       'scripts', 'placement_driver.py'),
-    'ld': os.path.join(REPO, '.claude', 'skills',
-                       'plan-pcb-placement-and-routing', 'scripts',
-                       'loop_driver.py'),
-    'rt': os.path.join(REPO, '.claude', 'skills', 'plan-pcb-routing',
-                       'SKILL.md'),
     'cv': os.path.join(REPO, 'py_placer', 'converge.py'),
 }
 
 T_REG = 'tests/test_937_tool_registry.py'
 T_CHK = 'tests/test_937_route_plan_check.py'
 T_OOB = 'tests/test_937_off_outline_channels.py'
-T_GATE = 'tests/test_937_entry_gates.py'
 T_LEV = 'tests/test_937_lever_identity.py'
-T_DRV = 'tests/test_run8_skill_drivers.py'
-T_431 = 'tests/test_431_skill_commands.py'
 
 #: (name, target, old, new, tests that must notice, expectation)
 ROWS = [
@@ -100,21 +85,13 @@ ROWS = [
      "    if 'record_invocation' in ast.dump(tree):\n        return True\n    for node in ast.walk(tree):\n        if not isinstance(node, ast.Call):\n            continue",
      (T_REG,), KILLED),
 
-    # ---- the routing door has an entry gate --------------------------------
-    ('routing-step0-deleted', 'rt',
-     '## Step 0: the placement gate -- is this board ready to route?',
-     '## Notes on placement (informational)',
-     (T_GATE,), KILLED),
-    ('routing-howto-deleted', 'rt',
-     '## How to run this skill',
-     '## Some background',
-     (T_GATE,), KILLED),
-
-    # ---- P2/P3 read the VERDICT, not one of its five conjuncts -------------
-    ('guard-damage-reads-blocking', 'pd',
-     "        undamaged = (not blocking) if buildable is None else bool(buildable)",
-     "        undamaged = not blocking",
-     (T_GATE,), KILLED),
+    # ---- RETIRED: the routing entry gate, P2/P3's verdict guard, the
+    # congestion read and the arm ceilings. Their killers
+    # (test_937_entry_gates, test_run8_skill_drivers, test_431's driver dump)
+    # and the two staged drivers left the tree when the staged skills were
+    # retired for pcb-free-agent. The routing skill's two entry-gate rows had
+    # no surviving test that reads those headings, so they were deleted
+    # rather than re-aimed at a test that would not kill them.
 
     # ---- the plan checker --------------------------------------------------
     # A raw-text rule: invisible to the converted plan steps, which is the
@@ -139,20 +116,6 @@ ROWS = [
      "            if amt > EPS:\n                oob_copper_refs.append([ref, round(amt, 4)])",
      "            if False:\n                oob_copper_refs.append([ref, round(amt, 4)])",
      (T_OOB,), KILLED),
-
-    # ---- the threshold reports, the model disposes -------------------------
-    ('congestion-silent-above-the-cut', 'ld',
-     "        return True, (\n            f'  CONGESTION READ: hpwl {b:.1f} -> {n:.1f} '",
-     "        return True, None\n        return True, (\n            f'  CONGESTION READ: hpwl {b:.1f} -> {n:.1f} '",
-     (T_DRV,), KILLED),
-
-    # ---- every populated arm is measured -----------------------------------
-    # Drops one arm from the ceiling table; the dump must refuse an arm it
-    # cannot hold, and test_431 asserts that dump exits 0. ~110 s.
-    ('arm-ceiling-undeclared', 'ld',
-     "    'L3': 75, 'L4': 45, 'L5': 40,",
-     "    'L4': 45, 'L5': 40,",
-     (T_431,), KILLED),
 
     # ---- the lever identity is structured, never the prose -----------------
     ('lever-read-from-the-prose', 'cv',

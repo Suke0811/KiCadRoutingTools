@@ -144,6 +144,7 @@ Every proposal reports the corridor (*who* yielded, and how far) and a
 off the constraint graph's own shortest path. Every refusal is a named reason,
 never a count: `no_room_at_any_dose`, `block_member_locked:<ref>`,
 `geometry_worsened:<ref>`, `declared_keepout_refused_a_shift:<ref>`,
+`rule_area_keepout_refused_a_shift:<ref>` (a board rule-area band, #1031),
 `corridor_over_budget`, and the rest are enumerated in `relocate.py`.
 
 **The mechanism holds; the routed result does not support the feature.**
@@ -227,8 +228,9 @@ generator's pile) plus a floorplan intent, it emits a legal starting
 placement: edge connectors on their declared edge inside their overhang band,
 single-ref zones at the spec coordinate, multi-ref zones packed radially,
 everything else at the nearest legal pose to its connectivity centroid (which
-is also what lands a decap next to its IC). The intent's `must_lock` refs are
-stamped `(locked yes)` into the output, a quench polish tidies the free
+is also what lands a decap next to its IC). The intent's `must_lock` and
+seated `fixed_poses[]` refs are stamped `(locked yes)` into the output, a
+quench polish tidies the free
 parts, and the result is **graded against the same intent it was built
 from** — a seed that fails its own intent exits 4, deliberately.
 
@@ -237,24 +239,60 @@ python py_placer/place_seed.py unplaced.kicad_pcb seed.kicad_pcb --intent floorp
 python py_placer/place_seed.py unplaced.kicad_pcb seed3.kicad_pcb --intent floorplan.json --seed 3
 ```
 
+The stages, in the order `seeder.seed_from_intent` runs them (file-locked
+parts, and parts outside `seed_refs`, count as placed before stage 0):
+
+| stage | what it seats |
+|---|---|
+| 0 | `fixed_poses[]` (#1054): EXACTLY at the declared pose, a check and never a search -- courtyards may abut (KiCad's rule) but not overlap, pads and holes keep their clearance, and every declared pose is judged against every other one, so a clashing pair is refused BOTH; an illegal pose is refused with its measurement and the part held out of every later stage. Seated parts are stamped `(locked yes)` |
+| 1 | edge connectors on their declared edge, inside the overhang band. The edge seat bypasses `pose_ok` (it overhangs by design), so `edge_seat_ok` carries its own conjuncts -- band, pads on the board, keep-outs, exclusive zones and, since #1044, the board's rule-area `(tracks not_allowed)` bands, ABSOLUTE: a band pose is refused by name and the connector left to the later stages rather than seated where no track can reach its pad |
+| 1.5 | `must_lock` parts, at their current pose where it is legal |
+| 2 | zoned blocks, packed radially from the zone centre; a declared array whose members all sit in one zoned block is seated into it whole (stage 2.45) |
+| 2.4 | declared non-zoned arrays: each row's served part, then the row (stage 2.45), each row at its members' rank. A row member is never seated alone here. The order is disclosed in the seeder's `early_order` |
+| 2.45 | one declared array as ONE row (`_seat_array` -> `_seat_block`, #1051): the served part's pin order, one rotation, one pitch, a capped pose count (`ARRAY_SEAT_POSE_CAP`). A row not seated whole goes to `array_unseated` and its members are seated one by one |
+| 2.5 / 2.6 | the decap-governed caps, one per supply pin; what the pin stage declines is put back into its zone. `decap_stage` says what it claimed, and why when nothing -- on an unzoned seed, that no owner IC is seated before the stage (#1053) |
+| 3 | everything else, at the nearest legal pose to its connectivity centroid |
+| 3c / 3b | the eviction rung (`--evict-depth`, below), then the gated anchor re-seat rounds |
+
+`place_seed`'s `JSON_SUMMARY` carries what stages 0, 2.45 and 2.5 did, judged
+at the WRITTEN poses: `fixed_seated` / `fixed_refused`, `arrays_formed` (the
+grader's `array_formation` verdict) / `array_unseated`, and `decap_stage`.
+Its final gate also names rule-area band pads (#1044): `keepout_copper_seeded`
+is `[ref, mm]` for each part the seed MOVED whose pad copper went deeper into a
+`(tracks not_allowed)` band than at its input pose, and exits 4 on it;
+`oob_keepout_copper_count` is the written board's total, inherited ones
+included (reported, not charged).
+
 Every `JSON_SUMMARY` it prints (seed, `--repair`, `--reseat`) carries
 `connector_requirements` (#974): the declared edge connectors' graded
 evidence, the requirements that were NOT measured, declarations `--reseat`
 dropped, and the connector errors split own / pinned exactly as the exit code
 split them; a dry run carries only `{complete: false, reason: 'dry-run'}`. It
 reports only -- it never withholds the board or moves the exit code.
-`floorplan.connector_requirements` builds it; the keys are read per
-`.claude/skills/plan-pcb-placement-and-routing/references/evidence-map.md`
-section I.
+`floorplan.connector_requirements` builds it, and its docstring is the
+key-by-key reading.
+
+Before anything is written, the PLAN is checked against itself and the board
+(`floorplan.plan_check`, #959). An area bound no arrangement can meet within
+a declared overlap budget, a part longer than its edge, or a real reference
+used as a glob that lands a part in two disjoint zones refuses at **exit 5**
+with nothing written and `JSON_SUMMARY.refused: 'plan_check'`
+(`floorplan.PLAN_SEED_REFUSES`). Every other plan finding is printed as
+`PLAN [...]` and the seed proceeds, so the seeder can name the member it could
+not seat. `--repair` and `--reseat` only report. Exit 5 is distinct from 3
+(the BOARD cannot be seeded) and 4 (a seed was written and its grade failed).
+`check_floorplan --intent PLAN --plan-only` runs the same check without
+seeding.
 
 Rotations: the input rotation is tried in full first and kept when it fits; a
 part with no contained legal pose at it falls back to its 90° lattice (noted
 in the output — measured: an LDO with 0 legal poses at rot 0 and 3 at rot 90
 on a packed board). A part whose rotation is a *decision* (pin order, the U3
-rot-180 case) must be **locked** — the intent schema cannot express a
-rotation, and an unlocked load-bearing rotation was never protected from the
-quench either. Explore rotations deliberately with
-`place_portfolio.py --strategy poses`.
+rot-180 case) DECLARES it: a block's `rotation` / `rotation_candidates` (#893,
+honoured by the seat search and held by the quench), an array's `rotation`
+(the row is seated at one angle and the quench only translates it), or a
+`fixed_poses[]` entry's `rot` (seated exactly, then locked). Explore rotations
+deliberately with `place_portfolio.py --strategy poses`.
 
 ### The eviction rung (`--evict-depth`, #630, #699)
 
@@ -408,7 +446,9 @@ part could never be re-seated whatever the search found. So:
   longer required to *improve*, and that one asymmetry is the whole bug.
 - **A separate trigger.** At least one basis in `RESEAT_BASES` must strictly
   improve: the six hard gate terms, the scope's own HPWL, and the count of
-  breached declared claims. All are reported in `accept_basis` whether they
+  breached declared claims -- zone/keep-out AND, since #1068, the tether rules
+  (`decap_distance`, `decap_pin_distance`, `proximity`), each claim counted
+  once; `accept_basis.intent_rules` names which. All are reported in `accept_basis` whether they
   fired or not — a basis that measured nothing and a basis that measured no
   change must not look alike.
 - **The intent VECTOR is the guard; the intent COUNT is only the trigger.** A
@@ -420,7 +460,8 @@ part could never be re-seated whatever the search found. So:
   *first*. Its tuple has no intent term either, so a seat that cleared a
   keep-out reads as a pure hpwl loss and was undone before the gate ran. It now
   takes an `intent_probe` and refuses a revert that would re-break a
-  declaration — a conjunct rather than an `exempt` entry, so the sweep still
+  declaration (a tether term enters as its excess over its limit, so a revert
+  is refused only if it pushes a claim further past it) — a conjunct rather than an `exempt` entry, so the sweep still
   catches every mis-move it caught before and stays monotone, now on
   `(tuple, intent vector)` jointly. Kept moves are named in a `prune: KEPT …`
   note.
@@ -937,6 +978,32 @@ block):
 with it off the group phase never runs and output is byte-identical to the
 ungrouped engine — which is what lets every existing bit-identity test stand.
 
+**The intent adds groups of its own (#1051, #1052, #1043)**, whatever
+`--group-by` says, through the gate bundle `floorplan.resolve_intent_gate`
+builds for every quenching CLI:
+
+- **Rigid groups**: each declared `arrays[]` row (`array:<name>`) and each
+  block with `rigid: true` (`block:<name>`). A member sits out the
+  single-part nudge and every swap with a part outside its group (inside an
+  array ordered `pin` or `declared`, a swap of two members the order
+  positions); it leaves
+  only when its own pose fails a clause no group offset clears, and that
+  release is disclosed in `rigid_released` (a released member that is clean
+  again and still in its slot rejoins). A group with a member that cannot
+  move is `anchored`: its movable members are held still.
+- **Tethers**: `decaps.max_distance_mm`, `decaps.max_pin_distance_mm` and
+  `proximity[]`, each declared at error severity, gate every move by CALLING
+  the grader's own measurement (`QuenchState._tether_terms`): a tether within
+  its limit stays within, one past it gets no worse. With a decap limit armed,
+  each IC and its caps (the `decap` grouper's blocks) also join the group
+  phase as `tether:<IC>`, dropped when a rigid group already claims the IC.
+
+A ref claimed by several groups keeps the FIRST (rigid, then tether, then
+`--group-by`), each drop disclosed in `groups_deduped`. The summary keys
+(`quench.DISCLOSURE_KEYS`: `rigid`, `rigid_released`, `groups_deduped`,
+`tethers`) appear only when their channel is declared, and with none declared
+the quench is bit-identical to before.
+
 **What actually moves.** Small blocks move; large ones do not. On
 `splitflap_driver` with `--group-by decap`, 6 blocks of 2–3 parts translate and
 the objective improves (total 4781.6 → 4689.7, crossings 211 → 208, HPWL
@@ -1437,7 +1504,28 @@ re-seating 85/92 while leaving its zone targets unmoved):
   violators move, worst first, escalating caps (0.5/1/2/5 mm), file-locked
   non-must_lock violators are reported, never moved. Zones smaller than a
   part's courtyard grade (and seat) on the anchor point — the spec-coordinate
-  pattern is satisfiable by construction now.
+  pattern is satisfiable by construction now. A violator is reported
+  `repaired` only when every grade error it was charged for is gone
+  (#1066): each charged ref, moved or not, is re-graded after the pass and
+  one still carrying its claim is `unresolved`, named in `JSON_SUMMARY`
+  (`repaired_refs`, `unresolved_refs`, `unresolved_by_rule`). So is a moved
+  ref whose move CREATED a finding the input poses did not have, or made one
+  WORSE (compared per finding -- rule, ref, pad, net -- not per claim; a
+  finding naming no moved ref is charged by counterfactual, each moved ref
+  restored alone), and a cap pushed past the
+  decap search radius (its `decap_distance` became `decap_ungraded`, which is
+  not a fix). `unresolved` sets no exit code of its own; exit 4 stays
+  `unrepairable`'s and the final grade's. `place_reconstruct`'s legalize
+  stage reports the same `unresolved` list.
+  `--repair-decaps` (#1066 b, opt-in) adds the missing actor: each cap a
+  `decap_distance` / `decap_pin_distance` error charges is seated toward its
+  IC's pin (the rail pad nearest it, or the declared supply pad) and KEPT
+  only when that finding is gone, no finding anywhere is new or worse, the
+  overlap / off-board numbers did not grow, and the move is proportionate
+  (the repair's own `DISPROPORTION_RATIO` / `_FLOOR_MM`, against how far the
+  cap is past its limit). Its record is `JSON_SUMMARY.decap_rung`. It stays
+  off by default: `tests/test_placement_ab.py`'s `repair-decaps-*` rows
+  improve two of five boards and regress none, short of the N-1 rule.
 - **`place_reconstruct.py`** (`placement/reconstruct.py`) — the structural
   ("puzzle") solver: tier classification (frame -> anchors -> smalls),
   corner-inset pattern fit (propose-only), rigid ±v vector detection, ONE

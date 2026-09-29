@@ -289,10 +289,9 @@ class TestContainment(unittest.TestCase):
         the board NOT BUILDABLE, unless something says it is by design."""
         g = _grade(self._board(sx=10.0))
         self.assertEqual(g['containment_blocking'], 1, g['containment_pairs'])
-        # ...and `blocking` is UNTOUCHED. Three consumers read that count --
-        # board_score, the seeder's repair census, and placement_driver's
-        # _guard_damage with INVERTED polarity ("run repair only if blocking").
-        # Folding containment in would change all three.
+        # ...and `blocking` is UNTOUCHED. board_score and the seeder's repair
+        # census both read that count; folding containment in would change
+        # both.
         self.assertEqual(g['blocking'], 0)
 
     def test_an_AUTHORED_waiver_lifts_the_gate(self):

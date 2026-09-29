@@ -82,7 +82,13 @@ The DRC checker validates:
 11. **Track width** - Segments are at least the fab-floor minimum track width (the active `--fab-tier`'s deepest floor; standard = JLC 0.127mm on 2-layer, 0.0889mm on 4+ layer). Catches sub-fab copper a clearance-only check misses — a board's own `min_track_width` DRC rule can be lowered to match undersized tracks, so it never trips; the fab floor is the real limit.
 12. **Via / hole size** - Via outer diameter and drill are at least the deepest fab via the tier can reach — the advanced (small/fine) via the router escalates to: JLC 0.25mm/0.15mm. Pass `--fab-tier` so grading matches how the board was routed (see [Fab Tier Options](configuration.md#fab-tier-options)).
 
+13. **Footprint graphic copper past the outline** (`graphic-off-board`, #962) - Copper a footprint draws (a SOT-89 tab, an antenna) reaching past the board outline, measured with the stroke as drawn, circles on their true curve, and inside a FILLED shape. One row per shape. It runs even when the edge check is off (severity `ignore`), and regardless of `--nets` (graphic copper is net 0). Waived only for board-level art and for a footprint that owns the board outline; a lock is not a waiver. Copper the parser does not model (pad-less logos, bezier curves, copper text) is printed as not measured.
+14. **Graphic copper grazing the edge** - Inside the outline but within the edge clearance, footprint graphic copper is accepted as `immutable-graphic` (library art no routing pass can fix). With `--baseline BOARD`, a graze on a part whose pose differs from the baseline is a `graphic-board-edge` violation (`origin: placement`); an unmoved one is accepted `inherited`. Without it, grazes are accepted `unverified` and a console line says so.
+15. **Via in a solder-paste opening** (`via-in-paste`, #962) - A via whose barrel overlaps a paste opening of its own net and is not filled AND capped (IPC-4761 Type VII; the via's own spec, then the board setup, then KiCad's factory value, token by token). Paste wicks into such a barrel, and KiCad has no such check. A filled+capped via is accepted `protected-via-in-paste`; with `--baseline BOARD`, a via the baseline already had inside an opening, unprotected, is accepted `inherited-via-in-paste`; on a file older than KiCad 10 (version < 20250000), which cannot carry per-via capping/filling at all, every other such via is accepted `undeclarable-via-in-paste` (the requirement belongs on the fab drawing). A buried via, or a blind via that does not reach the paste side, is not a hit. A console line and the `--json` `via_in_paste` block count every class.
+
 Checks 11–12 are on by default; pass `--no-size-checks` to skip them, or override the floors with `--min-track-width` / `--min-via-diameter` / `--min-via-drill`. The floor is derived from the board's copper-layer count unless overridden.
+
+`--baseline BOARD` is the board this one was derived from (the unrouted input, or the placement run's starting board). It is a checker option, not a routing parameter; pass it whenever you have that board, or pre-existing vias in paste openings read as violations against the run.
 
 ### Clearance Margin
 
@@ -196,6 +202,18 @@ direct move — name the ref in `unlock` in the same call if you mean it;
 `--force` deliberately does not open that, and the unlock is verified on the
 staged board before anything is promoted.
 
+With `--intent PATH` (#959) each MOVED part is also graded against that
+floorplan intent's zones, by the grade's own `zone_containment` rule. A pose
+that leaves a part further outside its block's zone than it was, as an ERROR
+finding, refuses at exit 4, and nothing is written; with the rule demoted to
+warn the pose is written and the row reported. `JSON_SUMMARY.zone_check` names the block, the
+zone and the overrun before and after. The check is relative, like the legality
+verdict: a move from the pile toward its zone is never refused for not
+arriving. `--force` writes anyway and says so. A call that only locks or
+unlocks moves nothing and records `zone_check.skipped`. Run 29's lap-10
+`set Ref* ...` walked a part out of the plan's own zone and was caught only
+after the write. With a plan in hand, pass it.
+
 `--snap` is a two-rung ladder, because one rung was not enough: `pose_score`
 ranks first (it knows about wirelength and crossings), then the bare lattice
 around the aimed point, and **every** candidate from either rung is re-graded
@@ -236,6 +254,10 @@ with identical route args. Emits a ranked table, `seeds.json`, and a
 `JSON_SUMMARY` with `best_seed`. Exit 0 with a ranked winner, 4 when
 nothing was rankable -- including when every probe ran but produced no
 verdict, which returned 0 with `best_seed: null` until #713 fixed it.
+When `place_seed` refuses the zone PLAN (its exit 5, #959), the plan is the
+same for every seed, so the comparator stops at the first refusal and exits 4
+with the row marked `refused: plan_check`. `check_floorplan --intent PLAN
+--plan-only` checks a plan without seeding.
 
 There is **no probe timeout**. `--route-timeout` was removed (#713): a probe
 whose verdict a clock erased was not ranked worse, it was DROPPED from the
@@ -1124,6 +1146,17 @@ disconnecting the net), **stacked** duplicate copper, and **floating** vias
 (vias touching no copper on any layer). It never modifies the board — use it as
 a triage pass before or after the other checkers.
 
+**Removable** is graded by the same predicate route.py's post-route cleanup
+removes by (`pcb_modification.StrictRemovalModel`, #1063): a segment, or an
+unbranched run of them, whose removal keeps every pad connected and leaves no
+new dangling end, soft joint, copper island or dangling via. On a layer where a
+through-hole pad's `remove_unused_layers` mode leaves it unflashed, a track
+joins that pad only by reaching its drill, as in KiCad, so a tail into the pad
+centre there is not removable. So a plain
+`route.py` output carries no removable segment on the nets it cleaned; one that
+remains is copper that run did not own (a net outside its `--nets`, or input
+copper kept by `--keep-input-copper`).
+
 ### Usage
 
 ```bash
@@ -1898,6 +1931,41 @@ means PCM has not been pointed at it, not that interest fell. The
 from-source installs **including this project's own CI**: every Modal image
 build downloads the Linux binary, which makes Linux an upper bound rather than
 a user count.
+
+**PCM listing history.** GitHub records when a release was published, not when
+PCM began serving it, and PCM serves only its newest *listed* version, skipping
+every release in between. So the collector also reads the merge history of our
+package file in `gitlab.com/kicad/addons/metadata` (public API, no token) into
+`pcm_listings.json`. That file holds one entry per upstream commit: the newest
+version in the file at that commit, and the date its MR merged. This is
+history, so each commit is fetched once and kept.
+
+**How the downloads chart places counts in time.** From the first snapshot on,
+the chart is measured: the difference between two snapshots of the counters,
+spread over the hours between them. The collector records each snapshot's time
+in `release_times.json`, because runs do not land a day apart. Scheduled runs
+start anywhere from about 11:00 to 13:00 UTC, and a manual or release-triggered
+run replaces the day's snapshot at any hour. When one whole interval was booked
+to a single day, a manual run at 19:04 made one day read 30% high. The day the
+last snapshot falls in is left out until it is over. Before the first snapshot,
+the archive holds only each release's lifetime total,
+so the chart spreads that total evenly over the release's *reign*. The reign
+runs from when the release became the newest until its successor did. For the
+PCM zip, both dates come from the listing history above. The chart used to
+spread each total from publish to *today* instead. Every release then added a
+layer to every later day, so flat interest drew a rising line. The snapshots
+show why the reign is the right window: when PCM switched from v0.20.4 to
+v0.22.1, v0.20.4 dropped from ~150 installs a day to ~3.
+
+**PCM installs count only listed releases.** PCM cannot install a version its
+catalogue does not list, so a zip downloaded from any other release is a
+*direct* download. It comes from the release page, or from automation. The
+chart draws these as a separate dashed line, and the PCM card and tables count
+them apart. On 2026-09-27, v0.19.0 was never listed and had been superseded for
+two months. It took 415 zip downloads in a day, and its Linux binary climbed
+alongside while its other platforms did not move. Before the split, the PCM
+line counted every one of those as an install. With no listing history
+collected, every zip is counted as PCM and the page says so.
 
 ```bash
 # Both stages (default): snapshot, then render

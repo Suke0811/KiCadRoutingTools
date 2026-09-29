@@ -51,6 +51,7 @@ KRT_TOOL = {'scope': ['placement', 'routing', 'combined'], 'kind': 'actor'}
 import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -296,9 +297,10 @@ def check_rip_invariants(nets, rip_set, power_nets=(), impedance_nets=()):
 #: `connectivity` asks "is every net actually joined", which is exactly
 #: `unrouted` + `broken`; `drc` asks "does the copper break a rule", which is
 #: `drc` + `undersized`; `spec` asks "does the board meet what was ASKED for"
-#: (verifier-prompts.md lens 9: impedance, connector positions, length rules,
-#: track and pair widths), which is `impedance` + `floorplan` + `length` +
-#: `net_widths`.
+#: (the verifier brief's `spec` lens, .claude/skills/pcb-free-agent/
+#: references/verifier.md: check_complete's impedance, length and width
+#: clauses plus the declared mechanical facts), which is `impedance` +
+#: `floorplan` + `length` + `net_widths`.
 #:
 #: `spec` USED TO BE ABSENT, on the argument that its components are routinely
 #: ungraded and an ungraded component contradicts nothing. The premise is true
@@ -328,11 +330,11 @@ def check_rip_invariants(nets, rip_set, power_nets=(), impedance_nets=()):
 #:
 #: `assembly` IS DELIBERATELY UNMAPPED, and this is the part to read before
 #: "completing" the table. `blocking` sums NINE components; the routed-board
-#: lenses are 7-9 and cover eight of them. `assembly` is graded at the
-#: PLACEMENT boundaries, by the boundary verifier's check 5
-#: (references/verifier-prompts.md, "Check 5 addendum"), which answers
+#: lenses cover eight of them. `assembly` is graded by the verifier brief's
+#: every-mode `check_assembly` step, in its overall VERDICT line rather than a
+#: lens file (the retired staged skill's boundary verifier answered it as
 #: `VERDICT=...:check=<1-5>` -- a different grammar that `_LENS_RE` refuses on
-#: purpose. Mapping it onto one of these three would make a routed-board lens
+#: purpose). Mapping it onto one of these three would make a routed-board lens
 #: answerable for a check nobody asked it to run.
 #: `tests/test_904_lens_components_cover_blocking.py` re-derives the nine names
 #: from board_score.py's own source and fails when a new one has no home here.
@@ -349,8 +351,9 @@ _LENS_RE = r'^VERDICT=(PASS|FAIL):lens=([A-Za-z0-9_-]+)'
 #: BARE `--lens`. A close-out is the run's terminal record and nothing reopens
 #: it, so every verdict in it must have an artifact behind it: a path and a
 #: sha256 a later reader can open, rather than a line somebody retyped from a
-#: reply. references/verifier-prompts.md has required that durable copy since
-#: run 23; this is what makes it load-bearing instead of advisory.
+#: reply. The verifier brief requires that durable copy (its retired
+#: predecessor did since run 23); this is what makes it load-bearing instead
+#: of advisory.
 #:
 #: All three, deliberately, and the counter-argument is worth keeping because
 #: it is a good one: `spec` is the lens the arithmetic usually CANNOT refute --
@@ -366,9 +369,9 @@ _LENS_RE = r'^VERDICT=(PASS|FAIL):lens=([A-Za-z0-9_-]+)'
 LENS_MUST_BE_SOURCED = ('connectivity', 'drc', 'spec')
 
 #: Stop conditions a `--final --kind completion` row may carry when a lens
-#: FAILED. Two vocabularies, both of record: the routing half's NUMBERS
-#: (convergence.md §3 -- 2 budget spent, 4 measured-unfixable) and the outer
-#: loop's verdict NAMES as `verdict` prints them and L5 interpolates them.
+#: FAILED. Two vocabularies, both of record: the stop NUMBERS (2 budget
+#: spent, 4 measured-unfixable) and the verdict NAMES as `verdict` prints them
+#: (the retired loop_driver's L5 interpolated them).
 #: DONE-EXHAUSTED is deliberately absent -- with a FAIL lens it is a
 #: contradiction, refused above the membership check.
 FAIL_COMPATIBLE_STOPS = ('2', '4', 'STUCK', 'BUDGET')
@@ -377,10 +380,30 @@ FAIL_COMPATIBLE_STOPS = ('2', '4', 'STUCK', 'BUDGET')
 #: carries one -- not only when a lens FAILED, which is what let ~500 characters
 #: of prose into rows 29/30 of run 25 while the orchestrator's `4 (this half):
 #: ...` was refused twice at close-out. One record, two rules, depending on a
-#: lens. The numbers are convergence.md §3 (1 done, 2 budget spent, 3 plateau,
-#: 4 measured-unfixable); the names are what `verdict` prints and L5
-#: interpolates. FAIL_COMPATIBLE_STOPS is the subset legal beside a FAIL lens.
+#: lens. The numbers are the stop conditions (1 done, 2 budget spent, 3
+#: plateau, 4 measured-unfixable; this tuple is their definition since the
+#: staged skill's convergence.md was retired); the names are what `verdict`
+#: prints. FAIL_COMPATIBLE_STOPS is the subset legal beside a FAIL lens.
 STOP_TOKENS = ('1', '2', '3', '4', 'DONE-EXHAUSTED', 'STUCK', 'BUDGET')
+
+#: The three re-entry shapes, named once. The same three words the retired
+#: loop_driver's L4 demanded, and `--shape` records which one a lap acted
+#: on. Spelled as a constant since #963 required one on a classification
+#: row: the refusal and the argparse choices must be the same list, or the
+#: message can name a word the parser refuses.
+SHAPES = ('parameter', 'placement', 'floorplan')
+
+#: The stop token that claims the board is MEASURED-UNFIXABLE rather than
+#: merely not finished -- stop condition 4. Run 29 recorded
+#: exactly this, falsely, about an impedance clause whose own log's next two
+#: lines read `SE fallback: 2/2 member net(s) routed`, with no classification
+#: row anywhere in its ledger.
+#:
+#: `STUCK` is deliberately NOT here, and the distinction is the point: STUCK is
+#: `verdict`'s own name for "neither half improved in its last N laps", which
+#: is stop condition 3, a plateau. A plateau is a statement about a search;
+#: "unfixable" is a statement about a board.
+UNFIXABLE_STOPS = ('4',)
 
 #: MSYS2's argv-rewrite signature. Git Bash rewrites any argument starting with
 #: `/` into a Windows path unless MSYS2_ARG_CONV_EXCL is set, and EVERY KiCad
@@ -462,6 +485,114 @@ def score_component(score, key):
     return None
 
 
+def blocking_defect(b):
+    """None when `b` is a count a verdict can rank (or null/absent); else WHY
+    it is neither (#1071, #1075).
+
+    A verdict ranks every lap on `blocking` and asks `blocking == 0` for a
+    finished board, so the value must be a non-negative number. Anything else
+    either breaks the ranking outright (a per-term dict: two different dicts
+    compare with `<` and raise) or ranks wrong without a word (`false == 0`
+    reads as a finished board, `"10" < "9"`, NaN never compares below
+    anything so its half reads as plateaued).
+    """
+    if b is None:
+        return None
+    if isinstance(b, bool):
+        return (f'the boolean {json.dumps(b)}, not a count (true would rank '
+                f'as 1 and false as a finished board)')
+    if not isinstance(b, (int, float)):
+        kind = {dict: 'a JSON object', list: 'a JSON array',
+                str: 'a string'}.get(type(b), type(b).__name__)
+        try:
+            text = json.dumps(b, sort_keys=True)     # the JSON it arrived as
+        except (TypeError, ValueError):
+            text = repr(b)
+        text = text if len(text) <= 60 else text[:57] + '...'
+        hint = {dict: ' -- a per-term breakdown belongs in `blocking_by`',
+                str: ' -- strings compare letter by letter',
+                }.get(type(b), '')
+        return f'{kind} ({text}), not a number{hint}'
+    # FLOATS only: an int is always finite, and `math.isfinite` converts its
+    # argument to float -- a 400-digit JSON integer raised OverflowError here.
+    if isinstance(b, float) and not math.isfinite(b):
+        return f'{b!r}, which no board measures'
+    if b < 0:
+        return f'negative ({b!r}); a count of blockers cannot be below zero'
+    # Past the float range: nothing measures that many blockers, and the film
+    # plots `float(b)`, which raised OverflowError on a row `record` had
+    # accepted. (int > float compares exactly, without converting.)
+    if b > sys.float_info.max:
+        return (f'an integer of {len(str(b))} digits, beyond any float, which '
+                f'no board measures')
+    return None
+
+
+def blocking_value(b):
+    """`b` as a rankable count, or None when it is null OR not a count.
+
+    ONE rule for `_score_key` (the ranking), `record` (the refusal) and --
+    mirrored, since the router side does not import the placer --
+    `movie_attempts._blocking_value` (the film's axis).
+    """
+    return None if b is None or blocking_defect(b) else b
+
+
+#: The answers `score_board_binding` can give, in the order a reader meets
+#: them: the payload grades this board, it grades another one, it names no
+#: board at all, or the question could not be answered here.
+SCORE_BINDINGS = ('this', 'other', 'unbound', 'unknown')
+
+
+def score_board_binding(board, payload, board_sha=None):
+    """(binding, payload_sha) -- does this score payload grade THIS board?
+
+    ONE implementation of a question FIVE sites used to answer separately, and
+    they answered it at different STRENGTHS: `record` warned, L3 and L5
+    refused at exit 4, and the close-out compare refused about a different
+    document. #963's contributor measured that asymmetry from the outside -- a
+    stale score `record` accepted with `accepted: true` was refused by the very
+    next stage -- and named it "different enforcement strengths". The strengths
+    are a policy each caller may legitimately choose; the PREDICATE is not, and
+    it is the predicate that had drifted into five copies.
+
+    FOUR-VALUED RATHER THAN A BOOL, because `unbound` is a different operator
+    action from `other`: a payload with no `board_sha` at all is a pre-B4
+    board_score or a hand-built JSON, and `record` discloses that in its own
+    sentence. Collapsing it into False deletes that disclosure silently, which
+    is why `_grades_another_board` below is a WRAPPER and not the interface.
+
+    WHAT THIS DOES NOT COVER, said here rather than implied: it is the only
+    implementation in `converge.py`, the one file
+    `tests/test_963_one_binding_predicate.py` scans (the retired
+    `loop_driver.py` was the other). There is a sibling
+    of the same shape in `py_tools/render_placement.py` (~:570, ~:641-651),
+    hand-rolled on `hashlib` and degrading the same way, which #963 does not
+    touch and no gate here can see.
+
+    `unknown` is "I could not tell" -- no board, unreadable, board_store
+    unimportable -- and it must NEVER read as a mismatch. A check that switched
+    itself ON because it could not answer would be the same class of mistake it
+    exists to catch.
+
+    `board_sha` lets a caller that has ALREADY hashed the board hand the digest
+    in (`cmd_record` has it from `store.put`), so the board is not read twice
+    for one answer.
+    """
+    psha = payload.get('board_sha') if isinstance(payload, dict) else None
+    if not psha:
+        return ('unbound', None)
+    if board_sha:
+        return ('this' if board_sha == psha else 'other', psha)
+    if not board or not os.path.isfile(board):
+        return ('unknown', psha)
+    try:
+        from board_store import sha256_file
+        return ('this' if sha256_file(board) == psha else 'other', psha)
+    except Exception:                                           # noqa: BLE001
+        return ('unknown', psha)
+
+
 def _grades_another_board(board, score):
     """Does this score payload demonstrably grade a DIFFERENT board?
 
@@ -471,22 +602,20 @@ def _grades_another_board(board, score):
     candidate (record already WARNS about that), and a check that compared a
     verdict about board A against board B's numbers would be the same class of
     mistake it exists to catch.
+
+    Kept as a one-line wrapper over `score_board_binding` rather than deleted
+    because the bool is the shape its one caller wants -- the lens-vs-score
+    skip in `cmd_record`, which needs "is this foreign" and nothing finer.
     """
-    psha = (score or {}).get('board_sha') if isinstance(score, dict) else None
-    if not psha or not board or not os.path.isfile(board):
-        return False
-    try:
-        from board_store import sha256_file
-        return sha256_file(board) != psha
-    except Exception:                                           # noqa: BLE001
-        return False
+    return score_board_binding(board, score)[0] == 'other'
 
 
 def read_lens_file(path):
     """(line, lineno) -- the FIRST line of `path` that begins `VERDICT=`.
 
-    references/verifier-prompts.md has required every verifier to write its
-    verdict to disk since run 23 ("a reply is a notification and notifications
+    The verifier brief (.claude/skills/pcb-free-agent/references/verifier.md)
+    requires every verifier to write its verdict to disk, as its retired
+    predecessor did since run 23 ("a reply is a notification and notifications
     get lost"). Nothing read those files: the line was retyped into `--lens`
     from a reply, so the ledger recorded a CLAIM ABOUT THE RUN where it could
     have recorded a claim about a file. This is the reader.
@@ -494,7 +623,7 @@ def read_lens_file(path):
     SELECTION IS DELIBERATELY DUMB, and validation is left where it already
     lives. Selecting "the first line matching `_LENS_RE`" instead would step
     silently past a MALFORMED verdict to a well-formed one further down -- the
-    exact normalisation verifier-prompts.md forbids, and the one this file
+    exact normalisation the verifier grammar forbids, and the one this file
     already refuses to do with `--lens` ("stored RAW, so a malformed line stays
     visible instead of being normalised into something that reads like a
     pass"). So the first `VERDICT=`-prefixed line wins whatever it says, and
@@ -520,7 +649,7 @@ def read_lens_file(path):
         f"no line beginning 'VERDICT=' in {path} ({n} line(s) scanned). The "
         f"token is case-sensitive, and the verifier's own reply format is "
         f"`VERDICT=(PASS|FAIL):lens=<lens>` on a line of its own "
-        f"(references/verifier-prompts.md). A boundary-verification verdict "
+        f"(the verifier brief, .claude/skills/pcb-free-agent/references/verifier.md). A boundary-verification verdict "
         f"spells `check=<1-5>` instead of `lens=<name>` and is not a lens: "
         f"cite it in the report, not here.")
 
@@ -530,9 +659,9 @@ def lens_name(raw):
 
     ONE definition, because there were three: this file's grammar check, its
     --final lens-set loop (which re-inlined the pattern as a literal beside an
-    `__import__('re')`), and loop_driver._cross_check's own copy. Three regexes
-    for one grammar is three places for a `lens=Connectivity` to be handled
-    differently.
+    `__import__('re')`), and the retired loop_driver._cross_check's own
+    copy. Three regexes for one grammar is three places for a
+    `lens=Connectivity` to be handled differently.
 
     CASE-FOLDED. `_LENS_RE` accepts [A-Za-z0-9_-]+ and every table keyed by a
     lens name here is lower-case, so `lens=Connectivity` used to pass the
@@ -691,10 +820,23 @@ def cmd_poses(a):
         st = pose_score.make_state(pcb, a.board, clearance=clearance,
                                    board_edge_clearance=board_edge_clearance)
     diag = {}
-    with _StdoutToStderr():
-        poses = pose_score.rank_poses(pcb, a.board, a.ref, radius=a.radius,
-                                      step=a.step, limit=a.limit, state=st,
-                                      diagnostics=diag)
+    try:
+        with _StdoutToStderr():
+            poses = pose_score.rank_poses(pcb, a.board, a.ref,
+                                          radius=a.radius, step=a.step,
+                                          limit=a.limit, state=st,
+                                          diagnostics=diag)
+    except pose_score.PoseUnrankable as exc:
+        # #959 (#999): a graded refusal, not a traceback. Exit 4 for both
+        # kinds -- 1 is this command's "no legal pose" verdict and 2 its "the
+        # sweep stopped early", so neither may carry a refusal -- and
+        # `refused_kind` says which it was.
+        print(json.dumps({'ref': a.ref, 'poses': [], 'knobs': knobs,
+                          'refused': exc.reason,
+                          'refused_kind': ('not_on_board' if exc.code == 2
+                                           else 'unrankable')},
+                         indent=1))
+        return 4
     if not poses:
         # The dropped-pose census is the difference between "this part has
         # nowhere to go" and "your knobs veto even staying put" (run-7 S4:
@@ -824,6 +966,92 @@ def _load_defects(paths):
     return out
 
 
+#: The net-list flags whose values `record` checks for a shell-expanded glob
+#: (#1039 item 5).
+_NET_LIST_FLAGS = ('--nets', '-n', '--ignore-nets', '--rip-existing-nets',
+                   '--power-nets')
+
+
+def _looks_like_a_file(t):
+    """A token only a glob expansion would produce: it names a path
+    (a separator) or carries a file extension."""
+    # ONE leading '/' is KiCad's net-name prefix, not a directory: `/BOOT`,
+    # `/DEV`, `/TMP` (and on macOS `/HOME`, `/VAR`, `/USR`) exist as root
+    # directories and are real net names. A lone rooted name is judged on the
+    # rest of the token; `--nets /*` still trips the two-or-more-files rule.
+    rest = t[1:] if t.startswith('/') and not t.startswith('//') else t
+    base = os.path.basename(rest)
+    return (rest != base or '/' in rest or '\\' in rest
+            or ('.' in base.strip('.') and not base.startswith('.')))
+
+
+def _globbed_net_tokens(argv):
+    """Values of a net-list flag in `argv` that an unquoted `*` became, until
+    the next `-`-prefixed token.
+
+    A value is suspect when it is an EXISTING path. That alone is not enough
+    -- `--nets GND` next to a file called GND is a real net -- so the list is
+    refused only when it LOOKS expanded: two or more values are existing files,
+    or one of them has a path separator or a file extension. Returns the
+    suspect values when refused, else []."""
+    hits, on = [], False
+    for t in argv or ():
+        t = str(t)
+        if t.startswith('-'):
+            on = t.split('=', 1)[0] in _NET_LIST_FLAGS
+            if on and '=' in t:
+                v = t.split('=', 1)[1]
+                if v and os.path.exists(v):
+                    hits.append(v)
+            continue
+        if on and os.path.exists(t):
+            hits.append(t)
+    if len(hits) >= 2 or any(_looks_like_a_file(h) for h in hits):
+        return hits
+    return []
+
+
+def _resolve_parent(a, store, lg, out_sha):
+    """(parent_sha, parent_source, error) for a `record` row (#1034).
+
+    `--parent` (a board path, or a sha / unique sha prefix the store or the
+    ledger knows) wins; else the first existing `.kicad_pcb` in `--argv` whose
+    sha is already stored, the output board excluded; else the last accepted
+    row -- which is whichever lineage accepted last, so the caller prints a
+    NOTE. A bad `--parent` is an error, and nothing may be written.
+    """
+    from board_store import sha256_file
+    rows = lg.entries()
+    if a.parent:
+        p = a.parent
+        if os.path.isfile(p):
+            return sha256_file(p), 'parent', None
+        key = p.strip().lower()
+        known = {r.get('result_sha') for r in rows} | {
+            d for d in (os.listdir(store.root) if os.path.isdir(store.root)
+                        else ()) if not d.endswith('.partial')}
+        known.discard(None)
+        if re.fullmatch(r'[0-9a-f]{6,64}', key):
+            hits = sorted(s for s in known if s.startswith(key))
+            if len(hits) == 1:
+                return hits[0], 'parent', None
+            if len(hits) > 1:
+                return None, None, (f"--parent {p!r} matches {len(hits)} "
+                                    f"stored boards; give more of the sha")
+        return None, None, (f"--parent {p!r} is neither an existing board "
+                            f"file nor a sha this store or ledger knows")
+    for t in a.argv or ():
+        t = str(t)
+        if t.lower().endswith('.kicad_pcb') and os.path.isfile(t):
+            s = sha256_file(t)
+            if s != out_sha and store.has(s):
+                return s, 'argv', None
+    prev = lg.last_accepted()
+    if prev and prev.get('result_sha'):
+        return prev.get('result_sha'), 'last_accepted', None
+    return None, None, None
+
+
 def cmd_record(a):
     from board_store import BoardStore, Ledger
     # --score-file: the payload as a PATH, not as argv.
@@ -896,9 +1124,10 @@ def cmd_record(a):
         #
         # TWO paths. `path` is as the caller spelled it, which is this repo's
         # idiom everywhere else -- and on its own it is unresolvable, because
-        # the command L5 prints is relative to the work dir and a later reader
-        # is somewhere else. `abspath` is what the file WAS at record time. The
-        # sha256 remains the identity; the paths are where to look for it.
+        # a printed command's path is relative to the work dir and a later
+        # reader is somewhere else. `abspath` is what the file WAS at record
+        # time. The sha256 remains the identity; the paths are where to look
+        # for it.
         _lens_src.append({'path': _p, 'abspath': os.path.abspath(_p),
                           'sha256': sha256_file(_p), 'line': _no})
     # Refuse an --argv that can never replay (run-7 F4: entries recorded with
@@ -931,6 +1160,21 @@ def cmd_record(a):
                   f"Re-run the command with {_MSYS_REMEDY}, then record it. "
                   f"Nothing was written.", file=sys.stderr)
             return 2
+        # #1039 item 5: a --nets value that is an EXISTING PATH is a glob the
+        # shell expanded (`--argv ... --nets *` unquoted became repo file
+        # names in run 32's --final row). The ledger is append-only, so the
+        # unreplayable argv could never be fixed afterwards.
+        _globbed = _globbed_net_tokens(a.argv)
+        if _globbed:
+            print(f"record: --argv's net list carries {len(_globbed)} "
+                  f"value(s) that are existing files -- "
+                  f"{', '.join(repr(t) for t in _globbed[:3])}"
+                  f"{' ...' if len(_globbed) > 3 else ''}. That is a glob "
+                  f"the shell expanded, not a net name, so the row would "
+                  f"replay a different command. Build the argv as an array "
+                  f"(or `set -f`), quote the glob, and read lever_argv back. "
+                  f"Nothing was written.", file=sys.stderr)
+            return 2
     # The same shape in --lever is a WARNING, not a refusal: the lever is prose
     # for a human, so a mangled name there misleads a reader without making the
     # row unreplayable.
@@ -939,8 +1183,8 @@ def cmd_record(a):
               f"(a '/'-prefixed net name turned into a Windows path). The row "
               f"is still replayable; the prose is wrong. {_MSYS_REMEDY}.",
               file=sys.stderr)
-    # Lens verdicts are stored RAW, so the grammar stays owned by
-    # verifier-prompts.md and a malformed line stays visible instead of being
+    # Lens verdicts are stored RAW, so the grammar stays owned by the
+    # verifier brief and a malformed line stays visible instead of being
     # normalised into something that reads like a pass. Refuse the shape at
     # write time -- same posture as --argv above -- so the ledger never holds a
     # row that cannot be read back.
@@ -974,6 +1218,30 @@ def cmd_record(a):
                   f"({type(exc).__name__}: {exc}). Nothing was written.",
                   file=sys.stderr)
             return 2
+    # A SCORE IS AN OBJECT (#1078). `[1]`, `"x"` or `5` parse, pass every
+    # dict-guarded check below, get APPENDED -- and then the summary's
+    # `sc.get('failures')` raised AttributeError with the row already in the
+    # append-only ledger.
+    if _score_doc is not None and not isinstance(_score_doc, dict):
+        print(f"record: --score must be a JSON object (board_score's --json "
+              f"output); this is a JSON {type(_score_doc).__name__}. Nothing "
+              f"was written.", file=sys.stderr)
+        return 2
+    # ...AND ITS `blocking` IS A COUNT (#1071, #1075). `verdict` ranks every lap
+    # on it, and the ledger is append-only, so this is the one place to stop a
+    # value that breaks or bends every later verdict on the ledger.
+    _bad_blocking = blocking_defect(_score_doc.get('blocking')) \
+        if isinstance(_score_doc, dict) else None
+    if _bad_blocking:
+        print(f"record: --score's `blocking` is {_bad_blocking}. `verdict` "
+              f"ranks every lap on this number, so a value that is not a "
+              f"non-negative number either breaks every later verdict on this "
+              f"ledger (#1071: a per-term dict made the plateau test compare "
+              f"two dicts) or ranks wrong (false == 0 reads as a finished "
+              f"board). Record the total as a number -- board_score's own "
+              f"`blocking` -- or leave `blocking` out (or null) if nothing "
+              f"measured it. Nothing was written.", file=sys.stderr)
+        return 2
     if a.lens and isinstance(_score_doc, dict) and \
             _grades_another_board(a.board, _score_doc):
         # NEVER SILENT. The skip is correct -- a verdict about this board must
@@ -999,7 +1267,7 @@ def cmd_record(a):
                 f"--final row carried VERDICT=PASS:lens=connectivity on 32 "
                 f"unrouted nets and 47 broken joins, and the route log held no "
                 f"VERDICT= line at all -- no verifier had run. That row passed "
-                f"L3, L4 and L5 untested.\n\n"
+                f"the staged driver's L3, L4 and L5 untested.\n\n"
                 f"Either fix the board and re-score it, or record what the "
                 f"verifier actually found:\n"
                 f"  --lens 'VERDICT=FAIL:lens={_contra[0][0]};finding=<what is "
@@ -1022,6 +1290,77 @@ def cmd_record(a):
               f"is just a lower --flat with extra steps. Nothing was written.",
               file=sys.stderr)
         return 2
+    # A DECLARATION IS A CLAIM ABOUT --board, SO IT IS REFUSED, NOT WARNED
+    # (#963). An ordinary row keeps the warning below and must: a baseline row
+    # legitimately attaches a parent score to a rejected candidate, which is
+    # what tests/test_converge.py::test_record_warns_on_unbound_or_mismatched_
+    # score pins. A declaration has no such case -- its whole content is "this
+    # board's half has nothing left", so numbers taken on a different board are
+    # not weak evidence for it, they are evidence about something else.
+    # Checked HERE, before `store.put`, so the message can honestly say nothing
+    # was written; the shared predicate hashes the board itself, which costs
+    # one extra read on the rare `--exhausted` + `--score` path.
+    if a.exhausted and isinstance(_score_doc, dict):
+        _eb, _eps = score_board_binding(a.board, _score_doc)
+        if _eb == 'other':
+            print(f"record: --exhausted {a.exhausted} was given a score that "
+                  f"grades a DIFFERENT board (score board_sha "
+                  f"{str(_eps)[:12]}... is not --board "
+                  f"{os.path.abspath(a.board)}).\n\nA declaration is a claim "
+                  f"about the board it names, and it outlives the run: run 29 "
+                  f"declared placement exhausted against a board that existed "
+                  f"for eight minutes, and the claim survived three close-out "
+                  f"calls. Score the board you are declaring about, or drop "
+                  f"the score -- an unscored declaration is still a "
+                  f"declaration. Nothing was written.", file=sys.stderr)
+            return 2
+    # A CLASSIFICATION WITH NO SHAPE IS A DECISION THAT RECORDED NO DECISION
+    # (#963). `--shape` defaults to None and nothing required it, so the one
+    # row the retry gate reads could be written by a command that names
+    # nothing -- which would make that gate a formality one flagless call
+    # clears. The three words are not interchangeable and the cost of guessing
+    # is asymmetric: a wrong `parameter` spends iterations on a board no
+    # parameter can fix, a wrong `placement` throws away a routed board.
+    if a.kind == 'classification' and not a.shape:
+        print(f"record: --kind classification needs --shape "
+              f"{' | '.join(SHAPES)}. The shape IS the decision -- it is what "
+              f"the next re-entry changes, and a classification row that "
+              f"names none records that a decision was made without recording "
+              f"which. Nothing was written.", file=sys.stderr)
+        return 2
+    # ...AND THE MEASUREMENT THAT NAMED IT. `--shape` alone left the row
+    # writable by a command that records no evidence: a verifier measured run
+    # 29's exact false close-out ACCEPTED after one lever-less `record --kind
+    # classification --shape parameter`, which made the gate a formality
+    # rather than a demand for a decision. Same `.strip()` test, and the same
+    # reason, as `--exhausted-reason` thirty lines above: an unreasoned
+    # declaration is just a lower --flat with extra steps.
+    # ...AND IT MAY NOT JUST SAY THE SHAPE BACK. `--shape parameter --lever
+    # parameter` cleared every gate in this item, which is `--lever ""` with a
+    # word typed in it. This catches THAT SPELLING ONLY and nothing cleverer:
+    # no gate reads a sentence and knows whether a measurement is behind it,
+    # and a length or word-count rule would refuse an honest short lever while
+    # still passing `--lever "congestion"`. The limit is disclosed rather than
+    # papered over -- see #963's sub-issue A.
+    if (a.kind == 'classification'
+            and (a.lever or '').strip().strip('.:;,-').lower() in SHAPES):
+        print(f"record: --lever {a.lever!r} only names the shape again. The "
+              f"lever is the MEASUREMENT that made `{a.shape}` the answer -- "
+              f"the congestion read, the escape-face census, the DRC cluster "
+              f"-- so that the next reader can check the decision instead of "
+              f"taking it. Nothing was written.", file=sys.stderr)
+        return 2
+    if a.kind == 'classification' and not (a.lever or '').strip():
+        print("record: --kind classification needs --lever \"<the shape, and "
+              "the measurement that names it>\". The row's job is to say WHY "
+              "the next re-entry changes what it changes; a shape with no "
+              "measurement behind it is the default answer of a classifier "
+              "that could not see congestion. The three shapes cost very "
+              "different things to get wrong -- a mistaken `parameter` "
+              "spends iterations on a board no parameter can fix, a mistaken "
+              "`placement` throws away a routed board. Nothing was written.",
+              file=sys.stderr)
+        return 2
     if a.final and not a.stop_condition:
         print("record: --final requires --stop-condition (which of the run's "
               "stop conditions ended it). Nothing was written.",
@@ -1037,10 +1376,10 @@ def cmd_record(a):
     if a.stop_condition and _stop_token is None:
         print(f"record: --stop-condition {a.stop_condition!r} does not start "
               f"with a stop condition. It must be one of "
-              f"{' | '.join(STOP_TOKENS)} -- the numbers are convergence.md "
-              f"S3 (1 done, 2 budget spent, 3 plateau, 4 measured-unfixable) "
-              f"and the names are what `verdict` prints. Prose about WHY goes "
-              f"after it (\"3: five laps, no new copper\") or in "
+              f"{' | '.join(STOP_TOKENS)} -- the numbers are the stop "
+              f"conditions (1 done, 2 budget spent, 3 plateau, 4 measured-"
+              f"unfixable) and the names are what `verdict` prints. Prose "
+              f"about WHY goes after it (\"3: five laps, no new copper\") or in "
               f"--stop-reason; both land in the row's stop_reason. Nothing "
               f"was written.", file=sys.stderr)
         return 2
@@ -1050,6 +1389,58 @@ def cmd_record(a):
               "written.", file=sys.stderr)
         return 2
     _stop_reason = (a.stop_reason or '').strip() or _stop_reason
+    # A "MEASURED-UNFIXABLE" CLAIM NEEDS THE MEASUREMENT ON THE RECORD (#963).
+    # Run 29 closed with stop condition 4 on an impedance clause whose own log
+    # said, two lines later, `SE fallback: 2/2 member net(s) routed`. Its
+    # ledger held no classification row at all -- L3 and L4 were never invoked
+    # across 439 commands -- so the claim rested on 57 inline routing calls
+    # nothing had classified. An outside verifier refuted it an hour later and
+    # the re-route took BLOCKING 2 -> 0.
+    #
+    # BOUND TO THE ROW THAT MAKES THE CLAIM, not to the stage that prints it:
+    # run 29's close-out was written without the (since retired) staged
+    # driver's L5 advice carrying at all, so a gate in a driver would have been
+    # another thing to walk past.
+    if a.final and _stop_token in UNFIXABLE_STOPS:
+        _prior = Ledger(a.ledger).entries() if os.path.isfile(a.ledger) else []
+        _cls = _classification_state(_prior)
+        # EITHER HALF, unlike the retry gate. "This board cannot be fixed" is a
+        # claim about the whole board, so a placement lap after the decision
+        # makes it as stale as a routing lap does -- `classification(shape=
+        # placement)` followed by six placement laps used to reach this claim
+        # untouched. The RETRY gate counts routing only, and for the opposite
+        # reason: there, a placement lap is the decision being acted on.
+        _since = None if _cls is None else sum(_cls['laps_since'].values())
+        _rej = _classification_rejected(_prior)
+        if _cls is None or _since:
+            _what = ((f'{_rej} classification row(s) were recorded and '
+                      f'every one was --rejected, so none of them is a '
+                      f'decision this close-out can rest on'
+                      if _rej else 'no classification row was ever '
+                                   'recorded')
+                     if _cls is None else
+                     f'{_since} lap(s) were recorded after the last '
+                     f'classification (iteration {_cls["iteration"]}, shape '
+                     f'{_cls["shape"]}): '
+                     f'{_cls["laps_since"]["placement"]} placement, '
+                     f'{_cls["laps_since"]["routing"]} routing')
+            print(f"record: --stop-condition {_stop_token} says the board is "
+                  f"MEASURED-UNFIXABLE, and in this ledger {_what}.\n\n"
+                  f"That is the strongest claim a close-out makes and the "
+                  f"one run 29 recorded falsely: an impedance clause declared "
+                  f"geometrically unsatisfiable on a log whose next two lines "
+                  f"read `SE fallback: 2/2 member net(s) routed`, over 57 "
+                  f"routing calls nothing had classified. Write the decision "
+                  f"the claim rests on, then record the close-out:\n\n"
+                  f"  python3 -X utf8 py_placer/converge.py record --ledger "
+                  f"{a.ledger} \\\n"
+                  f"      --board {a.board} --kind classification "
+                  f"--shape <{'|'.join(SHAPES)}> \\\n"
+                  f"      --lever \"<the measurement that names the shape>\"\n\n"
+                  f"A plateau is a different claim and needs none of this: "
+                  f"--stop-condition 3, or the STUCK the verdict prints. "
+                  f"Nothing was written.", file=sys.stderr)
+            return 2
     # #901: these two are about --final, NOT about which half it closes.
     # They sat inside the `kind == 'completion'` gate below, so
     # `--kind systemic --final --stop-condition DONE-EXHAUSTED --lens
@@ -1060,19 +1451,19 @@ def cmd_record(a):
     # the routed board.
     _failed = [v for v in (a.lens or []) if v.strip().startswith('VERDICT=FAIL')]
     # TWO STOP VOCABULARIES ARE OF RECORD, and both must be acceptable as
-    # printed: the routing half closes on the NUMBERS of convergence.md §3,
-    # and the outer loop's L5 interpolates the verdict NAMES this tool's
-    # own `verdict` subcommand prints. L5's command was refused verbatim
-    # here for exactly that gap -- a FAIL lens is the NORMAL case on the
-    # STUCK/BUDGET paths. DONE-EXHAUSTED is the exception: done-and-
-    # measured-done IS the all-lenses-pass claim.
+    # printed: a close-out may carry the stop NUMBERS (1-4) or the verdict
+    # NAMES this tool's own `verdict` subcommand prints. The retired
+    # loop_driver's L5 command was refused verbatim here for exactly that
+    # gap -- a FAIL lens is the NORMAL case on the STUCK/BUDGET paths.
+    # DONE-EXHAUSTED is the exception: done-and-measured-done IS the
+    # all-lenses-pass claim.
     # The extracted TOKEN, so `4 (this half): <reason>` is judged as a 4.
     _sc = _stop_token or ''
     if a.final and _failed and _sc == 'DONE-EXHAUSTED':
         print(f"record: {len(_failed)} lens FAILED under --stop-condition "
               f"DONE-EXHAUSTED. Done-and-measured-done IS the every-lens-"
               f"passes claim, so a FAIL beside it is the contradiction "
-              f"L5's cross-check exists to refuse. Record STUCK or BUDGET "
+              f"this check exists to refuse. Record STUCK or BUDGET "
               f"(or fix the board and re-dispatch the lens), never a done "
               f"a lens denies. Nothing was written.", file=sys.stderr)
         return 2
@@ -1087,9 +1478,10 @@ def cmd_record(a):
 
     # A run-closing COMPLETION record must carry the routed-board lenses.
     # `blocking == 0` and "every lens passes" are two different claims and the
-    # second had no mechanism at all -- verifier-prompts.md states the conjunct
-    # and nothing computed it, so a close-out could be written with no lens ever
-    # dispatched. This one IS completion-only: it is about the routed board.
+    # second had no mechanism at all -- the verifier prompts stated the
+    # conjunct and nothing computed it, so a close-out could be written with
+    # no lens ever dispatched. This one IS completion-only: it is about the
+    # routed board.
     if a.final and a.kind == 'completion':
         _seen = {n for n in (lens_name(v) for v in (a.lens or [])) if n}
         _need = {'connectivity', 'drc', 'spec'}
@@ -1110,11 +1502,12 @@ def cmd_record(a):
             # fragments it is still correct for a human and invisible to any
             # grep -- including the cited-path guard this repo runs, whose
             # citation pattern needs a '/' inside a single token.
-            _ref = ('.claude/skills/plan-pcb-placement-and-routing/references/verifier-prompts.md')
+            _ref = ('.claude/skills/pcb-free-agent/references/verifier.md')
             print(f"record: --final needs the routed-board lenses and is "
-                  f"missing {', '.join(_miss)}. Dispatch them -- {_ref}, "
-                  f"'The nine lenses' 7-9 -- and pass each VERDICT= line as "
-                  f"--lens-file. `blocking == 0` is not `every lens passes`. "
+                  f"missing {', '.join(_miss)}. Have an independent verifier "
+                  f"({_ref}) write one `VERDICT=PASS|FAIL:lens=<name>` line "
+                  f"per lens to a file, and pass each file as --lens-file. "
+                  f"`blocking == 0` is not `every lens passes`. "
                   f"Nothing was written.", file=sys.stderr)
             return 2
     # ...and each routed-board lens on ANY --final row must have a FILE behind
@@ -1148,7 +1541,7 @@ def cmd_record(a):
                   f"A close-out is this run's terminal record and nothing "
                   f"reopens a ledger, so every verdict in it needs an artifact "
                   f"a later reader can open -- not a line retyped from a "
-                  f"reply. references/verifier-prompts.md already requires "
+                  f"reply. The verifier brief (pcb-free-agent references/verifier.md) requires "
                   f"every verifier to write its VERDICT= line to disk; pass "
                   f"that file and the row stores its path and sha256:\n"
                   f"    --lens-file <the verifier's file for that lens>\n\n"
@@ -1160,6 +1553,26 @@ def cmd_record(a):
             return 2
 
     store = BoardStore(a.store or os.path.join(os.path.dirname(a.ledger), 'boards'))
+    # #1034: the parent is the board this lap was MADE FROM, resolved BEFORE
+    # anything is stored so a bad --parent writes nothing. It used to be the
+    # last ACCEPTED row unconditionally, so two lineages run side by side
+    # chained across each other (run 32: A1, made from A0, parented on B0).
+    from board_store import sha256_file as _sha256
+    _parent_sha, _parent_source, _parent_err = _resolve_parent(
+        a, store, Ledger(a.ledger), _sha256(a.board))
+    if _parent_err:
+        print(f"record: {_parent_err}. Pass the board this lap was made "
+              f"from (its path, or a recorded result_sha). Nothing was "
+              f"written.", file=sys.stderr)
+        return 2
+    if _parent_source == 'last_accepted':
+        print(f"record NOTE: parent_sha is the last ACCEPTED row "
+              f"({_parent_sha[:12]}), because neither --parent nor a stored "
+              f"board in --argv named one. When lineages run in parallel "
+              f"that is whichever lineage accepted last -- pass --parent "
+              f"<the board this lap was made from>.", file=sys.stderr)
+    if _parent_source == 'parent' and a.parent and os.path.isfile(a.parent):
+        store.put(a.parent)         # so step-back can reach the parent too
     sha = store.put(a.board)
     # Run-3 B4: three ledger entries shipped carrying a PRIOR board's score
     # because --score is free JSON with no binding to --board. board_score
@@ -1167,16 +1580,21 @@ def cmd_record(a):
     # different board than the one being recorded. A warning rather than a
     # refusal: baseline rows legitimately attach a parent score to a
     # rejected candidate -- but never silently.
+    _binding, _payload_sha = 'unbound', None
     if a.score:
-        try:
-            _payload_sha = json.loads(a.score).get('board_sha')
-        except Exception:
-            _payload_sha = None
-        if _payload_sha is None:
+        # Through the SHARED predicate, and with the digest `store.put` just
+        # computed handed in: this used to re-parse `a.score` behind a bare
+        # `except Exception` even though `_score_doc` was already parsed and
+        # validated above, so the mismatch was judged on a second, weaker read
+        # of the same string. Passing `board_sha=sha` also spares the board a
+        # second hash -- `store.put` computed exactly this digest one line up.
+        _binding, _payload_sha = score_board_binding(a.board, _score_doc,
+                                                     board_sha=sha)
+        if _binding == 'unbound':
             print("record WARNING: score payload carries no board_sha "
                   "(pre-B4 board_score, or hand-built JSON) -- the ledger "
                   "cannot verify it grades THIS board.", file=sys.stderr)
-        elif _payload_sha != sha:
+        elif _binding == 'other':
             print(f"record WARNING: score payload grades a DIFFERENT board "
                   f"(payload board_sha {_payload_sha[:12]}... != recorded "
                   f"board {sha[:12]}...). Run-3 shipped three stale-payload "
@@ -1304,9 +1722,11 @@ def cmd_record(a):
                   f"({_hint}). `blocking` is a total, so the difference "
                   f"between these two rows is partly a difference in what was "
                   f"MEASURED, not in the board.", file=sys.stderr)
-    prev = lg.last_accepted()
-    entry = {'iteration': len(lg.entries()), 'kind': a.kind,
-             'parent_sha': (prev or {}).get('result_sha'),
+    entry = {'iteration': lg.next_iteration(), 'kind': a.kind,
+             # #1034: resolved above -- --parent, else the recorded argv,
+             # else the last accepted row (NOTE printed); the source says which.
+             'parent_sha': _parent_sha,
+             'parent_source': _parent_source,
              'result_sha': sha, 'lever': a.lever,
              'lever_argv': list(a.argv) if a.argv else None,
              # _score_doc, not a THIRD json.loads: the payload was parsed and
@@ -1377,6 +1797,20 @@ def cmd_record(a):
     if a.exhausted:
         entry['exhausted'] = {'half': a.exhausted,
                               'reason': a.exhausted_reason.strip()}
+    if _binding in ('other', 'unbound') and isinstance(_score_doc, dict):
+        # THE WARNING, ON THE ROW (#963). It has always gone to stderr and
+        # vanished, while the row kept a score `_score_key` will happily rank
+        # -- so no later reader could tell a warned row from a clean one, which
+        # is the contributor's "stale scores may be stored only as explicitly
+        # labelled attachments". NOTHING READS THIS YET, deliberately: making
+        # `_score_key` or `_half_state` skip such a row would move plateau
+        # windows on every historical ledger, which is a large behaviour change
+        # to hide inside a "just record it" line.
+        # No `board_sha` key here: it would be `result_sha` on this same row,
+        # byte for byte, and two numbers for one fact is the defect
+        # `_declaration`'s docstring refuses a field for.
+        entry['score_stale'] = {'binding': _binding,
+                                'payload_sha': _payload_sha}
     if a.accept_incommensurable:
         # The disposition belongs in the row, not only in the console the
         # refusal was cleared from. Same shape as --exhausted: what is recorded
@@ -1495,7 +1929,13 @@ def _is_lap(row, half):
     A row with no `kind` is in neither half. (Ledger.counts defaults a missing
     kind to `completion`; this does not, and that predates this function.)
     """
-    if _HALF.get(row.get('kind')) != half:
+    # `str(...)`, and a dict check, because this reads ROWS FROM A FILE. A
+    # hand-built or truncated ledger carrying `"kind": []` raised
+    # `TypeError: unhashable type` out of whichever stage was walking it --
+    # a reader crashing on a bad row rather than reading it as "not this half".
+    if not isinstance(row, dict):
+        return False
+    if _HALF.get(str(row.get('kind') or '')) != half:
         return False
     if row.get('final'):
         return False
@@ -1511,10 +1951,14 @@ def _score_key(score):
     disconnected net with a lower via count. `blocking == None` is NOT zero --
     it means a component that was asked for could not answer -- so it sorts
     worse than any real number rather than reading as a perfect board.
+
+    A `blocking` that is not a count (`blocking_value`: a dict, a boolean, a
+    string, NaN, a negative) is None here too (#1071): the row is still a lap,
+    but an UNJUDGED one, never ranked and never read as plateaued.
     """
     if not isinstance(score, dict):
         return None
-    b = score.get('blocking')
+    b = blocking_value(score.get('blocking'))
     q = score.get('quality')
     # `quality` IS NOT NECESSARILY A DICT. `record` accepts any JSON for it, so
     # `{"quality": [1, 2]}` reaches here and `q.get` raised AttributeError --
@@ -1529,8 +1973,14 @@ def _score_key(score):
     # A quality tuple carrying None (board_score.quality returns {'error': ...}
     # when the board will not parse) makes min() raise TypeError the moment two
     # rows tie on `blocking`. Untested until now because the self-tests use a
-    # uniform empty quality. Sort unknowns LAST rather than crashing.
-    quality = tuple(v if isinstance(v, (int, float)) else float('inf')
+    # uniform empty quality. Sort unknowns LAST rather than crashing. A boolean
+    # or a NaN is not a measurement either (#1075): NaN never compares, so it
+    # would scramble every tie it touched. `isfinite` on floats only: it
+    # converts an int to float, and a 400-digit one raised OverflowError.
+    quality = tuple(v if isinstance(v, (int, float))
+                    and not isinstance(v, bool)
+                    and (isinstance(v, int) or math.isfinite(v))
+                    else float('inf')
                     for v in (q.get('vias'), q.get('copper_mm'),
                               q.get('segments')))
     if b is None:
@@ -1545,19 +1995,34 @@ def _score_key(score):
 
 
 def _declaration(rows, half):
-    """(reason, live) for the last `--exhausted <half>` row, else None.
+    """(reason, live, board_sha) for the last `--exhausted <half>` row, else None.
 
     `live` is False when a lap of that half was recorded AFTER the declaration:
     the half went back to work, so the claim "there is nothing further" is
     stale. Superseding it needs no flag and no deletion -- running the half
     again is the retraction.
+
+    `board_sha` is the declaration row's OWN `result_sha` -- the board the claim
+    was made about (#963). It is not a new field and deliberately not one:
+    `cmd_record` already writes `result_sha` on every row from
+    `store.put(a.board)`, `--board` is required, and `BoardStore.put` COPIES the
+    file, so the binding is on disk on every ledger ever written -- including
+    run 29's row 29, whose board `frozen.kicad_pcb` was overwritten three
+    minutes later. A second key for one fact would be absent on every historical row,
+    would need this same fallback anyway, and both paths would then live
+    forever; two numbers for one fact is #941's defect in miniature.
+
+    The sha is captured on the row that RE-ARMS the walk, not on an earlier
+    declaration's: a self-declaring row restarts `found`, and the claim being
+    judged is the last one made.
     """
-    found, live = None, False
+    found, live, sha = None, False, None
     for r in rows:
         dec = r.get('exhausted')
         if isinstance(dec, dict) and dec.get('half') == half:
             found, live = (str(dec.get('reason') or '').strip()
                            or 'no reason recorded'), True
+            sha = r.get('result_sha')
         elif found is not None and _is_lap(r, half):
             # _is_lap, not a bare _HALF match, and this is the sharper half of
             # the fix: "the half went back to work" must mean a LAP was run.
@@ -1565,7 +2030,72 @@ def _declaration(rows, half):
             # `kind completion` and neither turns the loop, so either one
             # silently retracted a declaration a person had written down.
             live = False
-    return None if found is None else (found, live)
+    return None if found is None else (found, live, sha)
+
+
+def _classification_rejected(rows):
+    """How many `kind: classification` rows were recorded `--rejected`.
+
+    `_classification_state` counts ACCEPTED rows only, and rightly -- a
+    discarded decision is not one the next lap can act on. But the refusal
+    it feeds then said "no classification row was ever recorded" to a
+    ledger holding three of them, which is a false sentence about the
+    reader's own file and the fastest way to lose their trust in the gate.
+    Published beside it so the text can say which of the two it is.
+    """
+    return sum(1 for r in rows
+               if isinstance(r, dict)
+               and (r.get('kind') or '') == 'classification'
+               and not r.get('accepted'))
+
+
+def _classification_state(rows):
+    """The last L3 DECISION on the record, and what has happened since (#963).
+
+    `None` when the ledger holds no `kind: classification` row AT ALL, which is
+    not the same as "no laps since one" and is the difference that decides
+    whether this catches anything. Run 29 recorded ZERO classification rows
+    across 439 commands while the (since retired) staged driver's L5 printed
+    the `--stage L3` command three times, so a predicate phrased only as "laps
+    since the last classification" is vacuously satisfied on exactly the run
+    it was written for. A caller must
+    handle `None` explicitly; `verdict` publishes each half's total `laps`
+    beside this, which is the count that applies then.
+
+    `laps_since` is published for BOTH halves, and only ROUTING was gated on
+    -- by the refusal in the retired loop_driver's L5. A placement lap
+    recorded after `shape=placement` is the classification being ACTED ON,
+    not invalidated: gating on it would refuse the loop for doing what the
+    decision said. That sentence is the whole reason both numbers are here
+    rather than one, and deleting it is how the next reader adds the wrong
+    conjunct.
+
+    Counted with `_is_lap`, so a `--final` row, a declaration, a freeze and a
+    `systemic` or `classification` row are none of them laps -- one predicate,
+    the same one `_declaration` and `_half_state` use.
+    """
+    found, idx = None, -1
+    for i, r in enumerate(rows):
+        # A LEDGER LINE NEED NOT BE AN OBJECT. `_is_lap` was hardened for
+        # exactly this and is unreachable from here: the walk below runs
+        # first, so a bare string or list on any line tracebacked out of
+        # `record --final --stop-condition 4` before the laps were counted.
+        if not isinstance(r, dict):
+            continue
+        # ACCEPTED ONLY. `--rejected` on a classification says the decision
+        # was thrown away, and a discarded decision is not one the next lap
+        # can act on -- it satisfied the gate before this line existed.
+        if (r.get('kind') or '') == 'classification' and r.get('accepted'):
+            found, idx = r, i
+    if found is None:
+        return None
+    after = rows[idx + 1:]
+    return {'iteration': found.get('iteration'),
+            'shape': found.get('shape'),
+            'result_sha': found.get('result_sha'),
+            'lever': found.get('lever'),
+            'laps_since': {h: sum(1 for r in after if _is_lap(r, h))
+                           for h in ('placement', 'routing')}}
 
 
 def placement_terms(score):
@@ -1642,22 +2172,42 @@ def parent_score(rows, row):
     return hits[0].get('score')
 
 
-def _half_state(rows, half, flat):
+def _half_state(rows, half, flat, board_sha=None):
     """Can this half still improve? -- with the evidence it was decided from.
 
     Returns a dict: flat, laps, accepted, rejected, why, and (when they apply)
-    declared / declared_superseded / incommensurable / compared. `why` is one of
+    declared / declared_board / declared_stale_board / declared_superseded /
+    incommensurable / compared. `why` is one of
     declared-exhausted, too-few-laps, no-comparison, plateau, improving.
 
+    `board_sha` is the board being JUDGED, and it is keyword-with-a-default
+    because this function is called positionally at some thirty-five sites
+    across the test suite. It only ever adds `declared_stale_board`: `flat` and
+    `why` do not change, on purpose (#963). "Any digest change invalidates a
+    declaration" sounds safe and is inert-making -- every accepted lap of
+    EITHER half writes a new sha, so a placement exhaustion would die on the
+    next routing lap although routing copper says nothing about placement's
+    remaining levers; and the L2 freeze row changes the sha BY CONSTRUCTION
+    while `test_904_not_a_lap` pins that a freeze must not retract. A sha
+    cannot tell "rewrote the file, same poses" from "replaced the placement".
+    So this REPORTS, and nothing gates on it. A first cut refused the ship
+    behind a stale declaration, and a verifier measured that refusal firing on
+    the chain's own prescribed ordering -- including the L2 freeze, which
+    changes the sha by construction and which `test_904_not_a_lap` pins as
+    non-retracting. What refuses is `record --exhausted` given a score that
+    grades another board, and a later lap of the half, which retracts with no
+    flag at all.
+
     THE COUNTER COUNTS REJECTED LAPS TOO, and that is the fix for a gate that
-    could not be satisfied. It used to count accepted rows only, while L5's own
-    closing paragraph instructs "Record the lap you are about to run, accepted
-    or rejected. A rejected lap is data" -- so recording a rejected lap could
-    not satisfy the gate it was offered for. Worse, routing accepts a lap only
-    on STRICT improvement, so a half that is genuinely exhausted has no honest
-    accepted lap left to produce: the gate demanded the one thing a finished
-    half cannot make. A recorded rejection is exactly the evidence that a half
-    tried and did not improve, which is what a plateau IS.
+    could not be satisfied. It used to count accepted rows only, while the
+    retired loop_driver's L5 closing paragraph instructed "Record the lap you
+    are about to run, accepted or rejected. A rejected lap is data" -- so
+    recording a rejected lap could not satisfy the gate it was offered for.
+    Worse, routing accepts a lap only on STRICT improvement, so a half that is
+    genuinely exhausted has no honest accepted lap left to produce: the gate
+    demanded the one thing a finished half cannot make. A recorded rejection
+    is exactly the evidence that a half tried and did not improve, which is
+    what a plateau IS.
 
     An accepted lap whose score never measured `blocking` COUNTS AS A LAP but
     carries no key, so it can be compared with nothing. Dropping it entirely
@@ -1693,6 +2243,21 @@ def _half_state(rows, half, flat):
            'flat': False, 'why': 'too-few-laps'}
     if dec and dec[1]:
         out.update(flat=True, why='declared-exhausted', declared=dec[0])
+        # LAP SUPERSESSION FIRST, ALWAYS -- and it already has, because this
+        # branch is the live one. The ledger test is total and always
+        # answerable; the board test depends on a sha the caller may not have
+        # supplied, so reporting both about one declaration would be two
+        # findings for one fact.
+        if dec[2]:
+            out['declared_board'] = dec[2]
+            if board_sha and board_sha != dec[2]:
+                out['declared_stale_board'] = dec[2]
+        else:
+            # A hand-built or pre-#963 row can carry no `result_sha`. FAILING
+            # OPEN is right -- nothing can be judged -- but failing open in
+            # silence is not, because a reader sees the same absent key as a
+            # declaration that matched.
+            out['declared_board_unknown'] = True
         return out
     if dec and not dec[1]:
         out['declared_superseded'] = dec[0]
@@ -1768,7 +2333,8 @@ def _half_state(rows, half, flat):
     runs.append(cur)
     runs_pairs = [r for r in runs if len(r) >= 2]
     runs = [[k for k, _s in r] for r in runs_pairs]
-    # An ACCEPTED lap that recorded no `blocking` is unjudged, and a plateau
+    # An ACCEPTED lap that recorded no `blocking` -- or one that is not a count
+    # (`blocking_value`, #1071) -- is unjudged, and a plateau
     # asserted over unjudged laps is the "reported clean because unexamined"
     # error this toolchain names everywhere else. An improvement, by contrast,
     # is a DEFINITE finding and stands whatever else is in the window. So:
@@ -1940,8 +2506,9 @@ def cmd_verdict(a):
         # ledger execution falls past `elif blocking == 0` into the terminal
         # branch and prints `STUCK: blocking == None and neither half
         # improved`, which reads as a measurement of a board nothing measured.
-        # NO-SCORE says what actually happened, and loop_driver's L5 routes
-        # that verdict back to re-scoring instead of the ship ceremony.
+        # NO-SCORE says what actually happened, and a reader (the retired
+        # loop_driver's L5 was one) routes that verdict back to re-scoring
+        # instead of the ship ceremony.
         #
         # _score_key returns None for THREE distinct documents and they are
         # not the same fact, so none of them borrows another's sentence -- and
@@ -1955,6 +2522,17 @@ def cmd_verdict(a):
             why = ('the score document has no `blocking` key at all, so there '
                    'is nothing to be blocked or done ABOUT. If this came from '
                    'board_score, it did not finish.')
+        elif blocking_defect(score.get('blocking')):
+            # #1075. Not null, so neither null sentence below is true of it.
+            # Before this branch such a score fell through to the terminal
+            # verdicts: `false == 0` read DONE-EXHAUSTED and `Infinity`
+            # printed "STUCK: blocking == None".
+            why = ('`blocking` is ' + blocking_defect(score.get('blocking'))
+                   + '. A verdict ranks boards on `blocking`, so it must be a '
+                   'non-negative number (board_score writes an integer, or '
+                   'null when it could not measure); this is not a measurement '
+                   'of any board. Fix whatever wrote the score, re-score, then '
+                   'ask for a verdict.')
         elif isinstance(score.get('unknown'), (list, tuple, set)) \
                 and _names('unknown'):
             # The LIST test, not just truthiness: `{"unknown": "impedance"}`
@@ -1969,17 +2547,69 @@ def cmd_verdict(a):
                    'not zero. Re-score, then ask for a verdict.')
         return _no_score(why)
     blocking = key[0]
-    st = {h: _half_state(rows, h, a.flat) for h in ('placement', 'routing')}
+    # THE BOARD BEING CLOSED, for the exhaustion binding (#963). The score's
+    # own `board_sha` is primary -- board_score writes it, and L5 has already
+    # proven it equals `--board` before it shells out to here, so reading it
+    # costs nothing. `--board` is the second channel, for a pre-B4 or
+    # hand-built score that carries no sha. Absent on BOTH is unanswerable and
+    # invalidates nothing: every hand-built score in tests/test_converge.py
+    # lacks the key, and a question that cannot be answered must not decide.
+    board_sha = score.get('board_sha') if isinstance(score, dict) else None
+    board_sha_source = 'score' if board_sha else None
+    if getattr(a, 'board', None):
+        _bind, _psha = score_board_binding(
+            a.board, score if isinstance(score, dict) else None)
+        if _bind == 'other':
+            print(f"verdict: --board and --score disagree about which board "
+                  f"is being judged (score board_sha {str(_psha)[:12]}... is "
+                  f"not {os.path.abspath(a.board)}). A stop verdict read off "
+                  f"one board's ledger and another board's numbers is the "
+                  f"defect this binding exists to catch. Re-score the board "
+                  f"you are closing out. Nothing was judged.", file=sys.stderr)
+            return 2
+        if not board_sha:
+            try:
+                from board_store import sha256_file
+                board_sha, board_sha_source = sha256_file(a.board), '--board'
+            except Exception as exc:                        # noqa: BLE001
+                # NEVER SILENT. `--board` pointing at a directory or a path
+                # that is not there used to leave `board_sha_source: null` and
+                # say nothing, so a caller who passed the flag precisely to get
+                # the binding checked was told nothing had been checked only by
+                # reading a null they had no reason to look at.
+                print(f"verdict NOTE: --board {os.path.abspath(a.board)} "
+                      f"could not be hashed ({type(exc).__name__}), so the "
+                      f"exhaustion binding was NOT checked from it. The score "
+                      f"carries no board_sha either.", file=sys.stderr)
+    st = {h: _half_state(rows, h, a.flat, board_sha=board_sha)
+          for h in ('placement', 'routing')}
     flat_p, flat_r = st['placement']['flat'], st['routing']['flat']
     laps_p, laps_r = st['placement']['laps'], st['routing']['laps']
     why_p, why_r = st['placement']['why'], st['routing']['why']
 
     doc = {'ledger_rows': len(rows), 'scored_rows': len(scored),
            'budget': a.budget, 'flat': a.flat,
-           'blocking': None if blocking == float('inf') else blocking,
+           # A finite count by construction (`blocking_value`), so there is no
+           # inf to map: the old `None if inf` printed "STUCK: blocking ==
+           # None" for an `Infinity` score (#1075).
+           'blocking': blocking,
            'quality': score.get('quality'),
-           'ungraded': sorted(score.get('ungraded') or []),
-           'unknown': sorted(score.get('unknown') or []),
+           # `_names`, not `sorted(score.get(k) or [])`: that raised on
+           # `{"ungraded": 5}` and on a mixed list, next to a REAL blocking,
+           # where the NO-SCORE branch's guard never ran (#1076).
+           'ungraded': _names('ungraded'),
+           'unknown': _names('unknown'),
+           # The last L3 decision on the record, published on EVERY verdict
+           # rather than only on the branch that reads it -- the posture the
+           # incommensurable block already takes. `null` means no
+           # classification row exists at all, which is run 29's case and the
+           # one a reader most needs told.
+           'classification': _classification_state(rows),
+           # WHICH INPUT the board binding came from, published beside it: an
+           # aggregate verdict cannot say which of its inputs moved (#694), and
+           # `null` here is the honest answer for a score with no board_sha and
+           # no --board -- not a passing one.
+           'board_sha': board_sha, 'board_sha_source': board_sha_source,
            # `accepted_laps` is kept and still means accepted laps only; `laps`
            # is what the plateau test counts, and it counts REJECTED laps too
            # -- see _half_state. They differ, so both are published rather than
@@ -2029,7 +2659,9 @@ def cmd_verdict(a):
                     f'last {a.flat} can be COMPARED -- '
                     + {'unjudged': (
                         f'{st[h].get("unjudged")} accepted lap(s) in that '
-                        f'window recorded no `blocking` -- iteration(s) '
+                        f'window recorded no `blocking` a verdict can rank '
+                        f'(null, absent, or not a non-negative number) -- '
+                        f'iteration(s) '
                         + (', '.join(str(i) for i in
                                      (st[h].get('unjudged_iterations') or []))
                            or 'not numbered')
@@ -2096,6 +2728,42 @@ def cmd_verdict(a):
             f'remaining blocker with the measurement that proves it.'))
         code = STUCK
 
+    # A DECLARATION MADE ABOUT ANOTHER BOARD, named on every verdict (#963).
+    # Run 29 declared placement exhausted against a board that existed for
+    # eight minutes -- `os-promote-placed` created it at 12:51:40,
+    # `ol-exh-place` declared against it at 12:56:04, and
+    # `ov-restore-frozen` overwrote `frozen.kicad_pcb` at 12:59:45, three
+    # minutes and 41 seconds after the row was written -- and it outlived its
+    # board and survived three L5 calls, because nothing here read the sha the
+    # row had carried all along. This REPORTS, and nothing gates on it:
+    # `test_963_exhaustion_binding::test_the_ship_is_not_gated_on_the_board_
+    # having_moved` pins that, because a first cut did gate and refused the
+    # chain's own prescribed ordering.
+    for h in ('placement', 'routing'):
+        if st[h].get('declared_board_unknown'):
+            # A READER for the key, without which it was one write site and
+            # nothing else: a hand-built or pre-#963 declaration carries no
+            # `result_sha`, so "no stale-board finding" there means "nobody
+            # could look", which is not the same as "it matched".
+            doc['reason'] += (
+                f' The live {h} exhaustion carries NO board of its own '
+                f'(a row written before the binding existed, or by hand), so '
+                f'whether it still applies to this board could not be checked.')
+        _sb = st[h].get('declared_stale_board')
+        if _sb:
+            doc['reason'] += (
+                f' DECLARED ABOUT ANOTHER BOARD: the live {h} exhaustion was '
+                f'recorded against board {str(_sb)[:12]}..., and the board '
+                f'being judged is {str(board_sha)[:12]}... (from '
+                f'{board_sha_source}). EXPECTED after any accepted lap -- '
+                f'every lap of either half writes a new sha, and a routing '
+                f'lap says nothing about placement levers -- so this is not '
+                f'a finding against the run. What it says is that the claim '
+                f'has not been re-checked against the board in hand. '
+                f'Recover the one it was made about and see what changed:'
+                f' converge.py step-back --ledger <this ledger> --to {_sb} '
+                f'--out wk/declared.kicad_pcb')
+
     # LOUD, on every verdict, never only on the one it happened to change.
     # A plateau or an improvement read off two totals that graded different
     # components is a claim about the instrument, not about the board.
@@ -2111,18 +2779,35 @@ def cmd_verdict(a):
                 f'both were graded with --impedance-nets, and the board called '
                 f'worse was one impedance crossing better. Re-score with the '
                 f'same flags to make the comparison mean anything.')
-    if doc['ungraded']:
+    if doc['ungraded'] and not isinstance(score.get('ungraded'),
+                                          (list, tuple, set)):
+        # Like `unknown` below: `"abc"` names no component, so it must not be
+        # read as three components nobody examined (#1076).
+        doc['reason'] += (' The score\'s `ungraded` is not a list ('
+                          + ', '.join(doc['ungraded'])
+                          + '), so it names no component -- re-score before '
+                            'trusting any verdict here.')
+    elif doc['ungraded']:
         # Not fatal: a board with no spec files has nothing to grade those
         # components against, and making it fatal would put every corpus board
         # permanently in STUCK. But it is never silent -- a component nothing
         # examined is UNEXAMINED, and DONE must say so out loud.
         doc['reason'] += (' UNEXAMINED, and not passed: '
                           + ', '.join(doc['ungraded']) + '.')
-    if doc['unknown']:
+    if doc['unknown'] and isinstance(score.get('unknown'),
+                                     (list, tuple, set)):
         doc['reason'] += (' A component RAN and could not answer: '
                           + ', '.join(doc['unknown'])
                           + ' -- fix the instrument before trusting any '
                             'verdict here.')
+    elif doc['unknown']:
+        # The NO-SCORE branch's rule: "a component RAN" is asserted only over
+        # a LIST the score named (#1076) -- `false` or `"impedance"` names no
+        # component, it is a malformed score.
+        doc['reason'] += (' The score\'s `unknown` is not a list ('
+                          + ', '.join(doc['unknown'])
+                          + '), so it names no component -- re-score before '
+                            'trusting any verdict here.')
     print(json.dumps(doc, indent=1, sort_keys=True))
     return code
 
@@ -2200,12 +2885,13 @@ def cmd_status(a):
     c['unlevered'] = len(_unlevered)
     # THE STRUCTURED LEVER CHANNEL, beside the free-text one (#937).
     #
-    # `loop_driver.py:4-9` records the ONE documented reason the two drivers
-    # are separate: "placement accepts a lap when the named finding it aimed
-    # at is gone, routing accepts an iteration when `blocking` strictly
-    # decreased... The driver never emits both." That is an argument for an
-    # accept rule stated PER LEVER rather than per half -- and the first thing
-    # such a rule needs is to know which lever a row pulled.
+    # The retired `loop_driver.py`'s docstring recorded the ONE documented
+    # reason the two drivers were separate: "placement accepts a lap when the
+    # named finding it aimed at is gone, routing accepts an iteration when
+    # `blocking` strictly decreased... The driver never emits both." That is
+    # an argument for an accept rule stated PER LEVER rather than per half --
+    # and the first thing such a rule needs is to know which lever a row
+    # pulled.
     #
     # `lever` cannot answer that: it is free prose by design, and
     # run_watch.py:544 is explicit that it is "NEVER matched" because
@@ -2277,7 +2963,12 @@ def build_parser():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest='verb', required=True)
 
-    q = sub.add_parser('poses', help='rank a part\'s candidate poses')
+    q = sub.add_parser('poses', help='rank a part\'s candidate poses. '
+                       'Exit 0 ranked; 1 no legal pose, including staying '
+                       'put; 2 the sweep stopped early; 4 refused -- the ref '
+                       'is not on the board, or is a block the placement '
+                       'state cannot move (a pad-less logo), with the reason '
+                       'in `refused` (#959)')
     q.add_argument('board')
     q.add_argument('--ref', required=True)
     q.add_argument('--radius', type=float, default=2.0)
@@ -2346,7 +3037,7 @@ def build_parser():
                         'keeps the MEASUREMENT can tell a later reader what '
                         'the lap was for; a ledger that keeps a paragraph '
                         'about it cannot.')
-    r.add_argument('--shape', choices=('parameter', 'placement', 'floorplan'),
+    r.add_argument('--shape', choices=SHAPES,
                    default=None,
                    help='the re-entry shape this lap acted on (the same word '
                         'L4 demands). Stored as entry["shape"].')
@@ -2374,7 +3065,7 @@ def build_parser():
                         'sha256 in entry["lens_source"]. Repeatable, one per '
                         'lens. Prefer this: a retyped line is a claim about '
                         'the run, a file is a claim about a file, and '
-                        'references/verifier-prompts.md already requires the '
+                        'the pcb-free-agent verifier brief requires the '
                         'copy on disk. --final --kind completion REQUIRES it '
                         'for connectivity, drc and spec. Combines with --lens '
                         '(bare verdicts first, then files, each in the order '
@@ -2433,10 +3124,27 @@ def build_parser():
                         'text may instead ride after the token in '
                         '--stop-condition; giving it twice, differently, is '
                         'refused. Stored as entry["stop_reason"].')
+    r.add_argument('--parent', default=None, metavar='BOARD_OR_SHA',
+                   help='the board this lap was MADE FROM: a board path, or '
+                        'a recorded result_sha (a unique prefix will do). '
+                        'Stored as entry["parent_sha"], with '
+                        'entry["parent_source"]="parent". Omitted: the first '
+                        'existing .kicad_pcb in --argv whose sha is already '
+                        'stored (source "argv"), else the last ACCEPTED row '
+                        'with a NOTE (source "last_accepted"). Parallel '
+                        'lineages MUST pass it (#1034). A value that is '
+                        'neither is refused (exit 2), nothing written. Must '
+                        'come before --argv, which takes the rest of the line.')
     r.add_argument('--argv', nargs=argparse.REMAINDER, default=None,
                    help='the command that produced it -- what makes replay '
                         'possible. Refused (exit 2) when its first token is '
-                        'neither an existing file nor on PATH.')
+                        'neither an existing file nor on PATH, and when a '
+                        'net-list value set LOOKS shell-expanded (two or more '
+                        'values are existing files, or one has a path '
+                        'separator or a file extension). KNOWN FALSE REFUSAL: '
+                        'two real rooted net names that are BOTH root '
+                        'directories on this machine (e.g. /BOOT /Recovery on '
+                        'Windows) read as a glob; there is no override.')
     r.set_defaults(fn=cmd_record)
 
     s = sub.add_parser('step-back', help='check out an earlier board, exactly')
@@ -2461,9 +3169,15 @@ def build_parser():
     v.add_argument('--ledger', required=True)
     v.add_argument('--score', required=True,
                    help="the current board's score JSON (board_score --json)")
+    v.add_argument('--board',
+                   help='the board being closed out. Optional: the score '
+                        "already carries board_sha and that is read first. "
+                        'Pass it when the score is pre-B4 or hand-built, so an '
+                        'exhaustion declared about a board that no longer '
+                        'exists can still be named. Given BOTH and they '
+                        'disagree, nothing is judged (exit 2).')
     v.add_argument('--budget', type=int, default=100,
-                   help='ledger entries this run may write (default 100, the '
-                        'figure convergence.md already states)')
+                   help='ledger entries this run may write (default 100)')
     v.add_argument('--flat', type=int, default=5,
                    help='RECORDED laps -- accepted OR rejected -- a half may go '
                         'without improving before it counts as blocked '

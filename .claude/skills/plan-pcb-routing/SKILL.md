@@ -13,13 +13,11 @@ When this skill is invoked with a KiCad PCB file, perform a comprehensive analys
 emits the plan as an executable artifact and then PROVES it, with a checker
 that refuses by name rather than a paragraph you are trusted to have read.
 
-There is no driver here, and that is deliberate. The placement half stages its
-work behind one because the AI is deciding there and a refusal is what keeps a
-decision honest. Routing's failure mode is different -- the CHAIN being wrong,
-not a judgement being wrong -- so what this half needs is a checker over the
-plan, and it gets one. Placement stages encode a decision order over levers
-and are stable; routing stages encode the copper chain, which the engine moves
-underneath them.
+There is no driver here, and that is deliberate (the staged placement drivers
+were retired too, for `/pcb-free-agent`). Routing's failure mode is the CHAIN
+being wrong, not a judgement being wrong, so what this half needs is a checker
+over the plan, and it gets one: routing stages encode the copper chain, which
+the engine moves underneath them.
 
 ### Who is in the seat here
 
@@ -28,8 +26,8 @@ chain, the nets and the parameters, and you read the failures; `route.py` and
 its siblings lay the copper. You do not hand-place copper, and you do not work
 around a checker that refuses.
 
-That is the opposite of the placement half, where YOU DECIDE -- which parts
-move, where, and why -- and the scripts legalize and measure. The test for
+That is the opposite of placement (`/pcb-free-agent place`), where YOU DECIDE
+-- which parts move, where, and why -- and the scripts legalize and measure. The test for
 which mode you are in: **if the work replays from a recorded command list
 without judgement, it is script work.** Routing passes it, which is why every
 run here leaves a `redo_commands.sh` that replays with no model in the loop.
@@ -40,8 +38,16 @@ The tools are of two kinds, and the difference decides how you use one:
 | | **ACTOR** | **INSTRUMENT** |
 |---|---|---|
 | what it does | changes the board | says what is wrong with it |
-| here | `route.py`, `route_diff.py`, `route_planes.py`, `repair_planes.py`, `bga_fanout.py`, `qfn_fanout.py` | `check_connected.py`, `check_drc.py`, `check_complete.py`, `board_score.py`, `check_weird.py`, `check_cycles.py` |
+| here | `route.py`, `route_diff.py`, `route_planes.py`, `repair_planes.py`, `bga_fanout.py`, `qfn_fanout.py` | `check_connected.py`, `check_drc.py`, `check_complete.py`, `board_score.py`, `check_weird.py`, `check_cycles.py`, `tests/stress/kicad_drc_compare.py` |
 | how you use it | name it in the plan and let it run | run it -- never optional |
+
+`tests/stress/kicad_drc_compare.py` grades the board with KiCad's own DRC beside
+`check_drc` and names the copper findings only one of them makes. It was never run
+in run 29, where KiCad's DRC was the only channel that saw copper against a
+part's own net-0 tab (#962, #994). It needs `kicad-cli`,
+and `krt_registry` does not list it because it lives under `tests/`. Without
+`kicad-cli` it prints SKIP and `NOT RUN`, compares 0 boards and exits 2: record
+that as NOT RUN, never as agreement.
 
 Every runnable tool in this clone declares which door it serves and which of
 those two kinds it is. The routing door's own view, with each tool's purpose:
@@ -60,7 +66,7 @@ because its nets cannot be routed at all.
 ```bash
 mkdir -p wk        # neither tool creates it, and both write into it
 python3 -X utf8 py_tools/check_assembly.py board.kicad_pcb --json wk/assembly0.json
-python3 -X utf8 .claude/skills/plan-pcb-placement-and-routing/scripts/board_score.py board.kicad_pcb --json wk/score0.json --quiet
+python3 -X utf8 py_tools/board_score.py board.kicad_pcb --json wk/score0.json --quiet
 ```
 
 **What each one is for.** `check_assembly` decides this gate: read its
@@ -74,17 +80,14 @@ the end of the chain.
 Classify from the JSON fields, not from exit status: `check_assembly` exits 4
 for any of its five conjuncts and its VERDICT line already says which one.
 
-- **NOT BUILDABLE** -> stop. This is placement work. Use `/plan-pcb-placement`
-  for the placement half alone, or `/plan-pcb-placement-and-routing` when the
-  board needs both.
+- **NOT BUILDABLE** -> stop. This is placement work. Use `/pcb-free-agent place`
+  for the placement alone, or `/pcb-free-agent full` when the board needs both.
 - **buildable** -> go to Step 1.
 
-**Run both commands every time.** They cost seconds. When you arrive from
-`/plan-pcb-placement-and-routing`, its L2 stage has already run these same two
-instruments before handing the board over — so ALSO quote that placement
-close-out beside your own reading, and the gate is shown satisfied twice rather
-than assumed once. Never skip the commands on the grounds that the loop must
-have run them.
+**Run both commands every time.** They cost seconds. A board handed over by a
+placement run may come with that run's own grade; quote it beside your reading
+so the gate is shown satisfied twice rather than assumed once. Never skip the
+commands on the grounds that the placement run must have run them.
 
 ## Step 1: Load and Analyze PCB Structure
 
@@ -1502,6 +1505,30 @@ signatures:
   stitcher) — if a net still ships bare, check the rescue log lines
   before reaching for manual surgery.
 
+When the all-nets passes stop descending and you switch to SCOPED laps (a few
+named nets per call), five lessons from run 32 (#1039) apply. That run spent
+about 190 scoped laps, and most of the waste traced to these:
+
+1. **Carry the poured nets in `--nets`** on a board with pours (`--nets /D2
+   GND`). Without them the finalize excludes the pours, but the improvement
+   gate still counts the plane pads the lap cut (#1032).
+2. **Rip the named blocker alone.** For each failing net, rip only the rail or
+   protected pair its `Hint:` names, in its own lap, with that rail's
+   `--power-nets` / `--power-nets-widths` in the same call. Name a protected
+   pair exactly (`/IO_Banks/Z6_P`). This rung sits between "rip set" and
+   "grid". In run 32 it took the oracle joins from 27 to 21.
+3. **One `'*'` pass before concluding a plateau.** After a round of scoped
+   laps accepts nothing, run one whole-board pass from the best board. It took
+   run 32 from 21 to 19.
+4. **Check the lap's own `CMD:` line** for the intended nets, rip set and grid
+   before judging the lap. Run 32 had 24 laps whose grid value landed in the
+   rip set, and all 24 read as a fake plateau.
+5. **Never expand a recorded argv unquoted.** Use a bash array or `set -f`, so
+   `--nets *` is not globbed into file names, and read the recorded argv back.
+
+Each rule above was measured in a recorded run; the stop rules they feed are
+`.claude/skills/pcb-free-agent/SKILL.md` §5.
+
 #### Octolinear smoothing is ON by default -- leave it alone
 
 `route.py` collapses grid-A* staircase micro-jogs into octolinear shortcuts
@@ -2173,12 +2200,22 @@ leaves a `<board>_routetrace.json` beside each routed board; a step without one
 reveals its board-to-board delta in chunks instead — which is what a hand-driven
 run gets by default.
 
+A long trace no longer holds the film in memory: frames are spooled to disk,
+and a trace over its share of the `--max-frames` budget falls back to the
+chunked reveal, printing `TRACE OVER BUDGET` (#1036). If the chain starts with
+placement boards whose parts MOVE, `make_movie` turns its camera on by itself
+and glides the parts in first. `--camera off` keeps a copper-only film, and the
+movie then names the copper-free boards it skipped.
+
 Two optional panels, both off by default and both costing real time:
-`--panels xray+iso` stacks a 3D isometric `kicad-cli` render under the board
-view (~2-4 s per render, and it shows the parts and the board turning — copper
-is under soldermask, so the 3D view shows no routing progress), and a run wrapped
-in `tests/stress/tee_cmd.py` gets a run-clock overlay read from its
-`cmd_timing.jsonl`.
+`--panels xray+iso` adds a 3D isometric `kicad-cli` render (~2-4 s per render,
+and it shows the parts and the board turning — copper is under soldermask, so
+the 3D view shows no routing progress). With `--layout split`, `stacked` or
+`sidebar` it goes into the layout's own panel and the frame keeps its declared
+`--aspect`; otherwise it stacks under the board view. A run wrapped in
+`tests/stress/tee_cmd.py` gets a run-clock overlay read from its
+`cmd_timing.jsonl`. `--theme light` is for a figure going into a
+light-background document.
 
 ### Capture Logs for Analysis
 
@@ -2233,10 +2270,14 @@ The JSON_SUMMARY line contains structured data including:
 one per outermost run, printed last, and it carries the MERGED tally in under a
 kilobyte: `routed`, `failed`, `failed_single`, `open_single`,
 `multipoint_deficit`, `pad_pairs_open`, `terminal_restores_broken`,
-`min_clearance_used`, `vias`, `main_loop_time_s`, and `finalize_excluded_nets`
-when the finalize declined plane nets by plan. The big `JSON_SUMMARY` lines are
-several kB each and run-scope rather than merged — they are forensics, not your
-read. Four things about it that are easy to get wrong:
+`min_clearance_used`, `vias`, `main_loop_time_s`, `regraded_nets`, and
+`finalize_excluded_nets` when the finalize declined plane nets by plan. Its
+failure state comes from a re-grade of the board the run wrote, over every net
+the run's passes worked on or disturbed (#1069, the `JSON_REGRADE` line), so a
+net an earlier reconciliation lap or finalize sub-run left broken stays
+counted. The big `JSON_SUMMARY` lines are several kB each and cover one pass
+each — they are forensics, not your read. Four things about it that are easy
+to get wrong:
 
 - **It says NOTHING about whether the DRC floors held.** The `.kicad_pro`
   writeback runs AFTER this line prints and reports on its own (in one measured
@@ -2268,11 +2309,10 @@ read. Four things about it that are easy to get wrong:
 
 **A note on vocabulary, because this section imports it.** `blocking`,
 `quality`, `unrouted` and `broken` are keys of
-`.claude/skills/plan-pcb-placement-and-routing/scripts/board_score.py`, not of
+`py_tools/board_score.py`, not of
 `route.py` — `board_score` grades a written board, `route.py` reports on its own
 run, and the classification table below reads BOTH. The *ledger* and the
-*verifier lens* belong to `py_placer/converge.py` and are the combined
-placement-and-routing loop's machinery; this skill only needs to know that
+*verifier lens* belong to `py_placer/converge.py`; this skill only needs to know that
 `blocking == 0` is not by itself a stop condition.
 
 - **`failed_single` is HALF the answer — read `failed_multipoint` too, and read
@@ -2387,10 +2427,9 @@ placement-and-routing loop's machinery; this skill only needs to know that
      gone. Prefer `--score-file` over `--score "$(cat …)"`.
 
   When a step you launched is genuinely long, do not sit on it: the delegation
-  half of this rule — hand back with LOG, MARKER and NEXT rather than blocking
-  on a detached process — is orchestration doctrine and lives in
-  `.claude/skills/plan-pcb-placement-and-routing/scripts/loop_driver.py`, which
-  is the thing that has teammates to hand back to.
+  half of this rule — never leave a background job unwatched for long, and kill
+  a search that stopped improving — is `.claude/skills/pcb-free-agent/SKILL.md`
+  §5's "watch long jobs" stop rule.
 
 ### Tune mode (issue #153) — opt-in per-board feedback loop
 
@@ -2470,9 +2509,10 @@ suffices — its in-run finalize welds and verifies against KiCad's fill).
 ### Retrying a failed net
 
 Re-enter at the FAILING STEP rather than re-running the chain, and read the
-router's hint before choosing a lever: both are set out in `.claude/skills/plan-pcb-placement-and-routing/SKILL.md`
-(9.3a and 9.3b). Two things that section does not yet say, and that cost a lap
-each:
+router's `Hint:` line before choosing a lever: it names the flag and the
+nets, and it is usually right. For the blocker report,
+`diagnose-routing-failures` classifies the failure modes. Two things neither
+says, and that cost a lap each:
 
 **A scoped `--nets` retry on a net that is ALREADY CONNECTED is a no-op.** The
 router has nothing to improve there: the escalation ladder never fires and the
@@ -2480,6 +2520,13 @@ copper comes back byte-identical. To change the geometry of copper the router is
 happy with you must **rip** it (`--rip-existing-nets <exact names>`) or route the
 whole board. Run 20 spent a lap discovering this — a targeted via fix produced
 vias at identical coordinates in both boards.
+
+**When the hint names a rail or a protected pair, rip THAT ONE, alone** (#1039),
+with its `--power-nets` / `--power-nets-widths` in the same call and a
+protected pair named exactly. It is a rung of its own between "rip set" and
+"grid". The rule against collateral rail rips is about rails ripped as a
+side effect, not about the one the hint names. And on a board with pours, the
+retry's `--nets` carries the poured nets too (#1032).
 
 **The hint's suggested values are an EXAMPLE, not a derivation — read its
 `(current: ...)` tail.** On a board already routing at 0.15/0.15 the box-in hint
@@ -2694,25 +2741,23 @@ Example cleanup prompt:
 >
 > Would you like me to delete the intermediate files?"
 
-### The box-in row needs one qualification
+### A boxed-in net: parameters, until the geometry is at the floor
 
-The blocker-classification table — which evidence means floorplan, which means
-placement detail, which means parameters — is in `.claude/skills/plan-pcb-placement-and-routing/SKILL.md`
-(9.3d), and it is the same table for both skills. Follow it, with ONE
-qualification to the boxed-in row.
+When a failed net's `blockers` list is empty and the log says it was boxed in
+by static obstacles, the default reading is PARAMETERS: stay in routing and
+change the grid, the ripup budget or the width, because placement is not the
+lever. (`diagnose-routing-failures` classifies the other failure modes.)
 
-That row reads *"`blockers` empty; the log says boxed in by static obstacles |
-parameters | stay here — grid, ripup budget, width. Placement is not the
-lever."* That is right only while the geometry still has somewhere to go, and
-the row does not say how to tell. **Read `boxed_in[].geometry` first**: it
+That is right only while the geometry still has somewhere to go, and the
+rule does not say how to tell. **Read `boxed_in[].geometry` first**: it
 carries the grid, clearance, track width and via diameter the run was actually
 using. Compare those against the board's own floor — its `.kicad_dru` rules and
 the fab minimums — yourself, because no summary key makes that comparison for
 you.
 
-- **Geometry still above the floor:** the row applies. Shrink it, and pair a
+- **Geometry still above the floor:** the parameters reading holds. Shrink it, and pair a
   finer grid **with** the shrink rather than spending the grid alone.
-- **Geometry already at the floor:** the row's advice is exhausted, and this is
+- **Geometry already at the floor:** the parameters reading is exhausted, and this is
   a placement question after all. A finer grid resolves the same obstacles more
   precisely; it does not make a gap wider, and there is nothing left to pair it
   with. Measured (run 20): `0.05 -> 0.025 -> 0.0125`, about 40 minutes, left
@@ -2786,14 +2831,13 @@ without reading a plan.
 
 ### Stop conditions
 
-There are four, they are listed in `.claude/skills/plan-pcb-placement-and-routing/SKILL.md`
-(9.5), and the rule is to say which one fired. Two of them bite in a
-routing-only run: `blocking == 0` **plus** the repo's own spec checker **plus**
-every verifier lens (`board_score` exits 0 at `blocking == 0` even on a board
-with ten HARD clauses violated, because a repo checker's clauses are not
-`board_score` components), and a blocker that is geometrically unsatisfiable,
-which is a finding about the REQUIREMENT and needs the measurement that proves
-it.
+Say which one fired. **DONE** is `blocking == 0` **plus** `check_complete.py`
+DONE **plus** an independent verifier's PASS (`board_score` exits 0 at
+`blocking == 0` even on a board with ten HARD clauses violated, because a repo
+checker's clauses are not `board_score` components). A blocker that is
+geometrically unsatisfiable is a finding about the REQUIREMENT and needs the
+measurement that proves it. The plateau, "no approach left" and time-cap rules
+are `.claude/skills/pcb-free-agent/SKILL.md` §5.
 
 "This is taking a long time" is not one of them, for the reason given under
 the budget doctrine above.

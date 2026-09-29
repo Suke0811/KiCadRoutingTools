@@ -168,5 +168,157 @@ class ChainCarryTest(unittest.TestCase):
         self.assertIn('ORIGINAL 0.5', out)
 
 
+class MidRunWriterSeedsOriginTest(unittest.TestCase):
+    """The #650 mid-run copper writer must seed the origin too.
+
+    `apply_routed_floors` runs BEFORE the authoritative writeback (route.py
+    calls it so the in-run plane/oracle audit grades what ships), and it can
+    lower `min_hole_clearance`. It did that without recording
+    `fab_floor_origin`, so the writeback then seeded the origin from the
+    ALREADY-LOWERED value and compared it against itself.
+
+    Measured on eurorack_pmod (6-layer, declares min_hole_clearance 0.25): the
+    mid-run pass took it straight to 0.127, the origin recorded 0.127, and
+    `FAB FLOOR RELAXED` said NOTHING about a real 0.25 -> 0.127 relaxation. On
+    rp2350_dev the mid-run pass stopped at 0.2, so the banner fired but
+    understated the relaxation as "0.2 -> 0.127".
+
+    MUTATION: drop the seed_fab_floor_origin call from `apply_routed_floors` --
+    both arms below die.
+    """
+
+    BOARD = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='ffo650_')
+        self.pcb = os.path.join(self.tmp, 'm.kicad_pcb')
+        shutil.copyfile(self.BOARD, self.pcb)
+        with open(os.path.join(self.tmp, 'm.kicad_pro'), 'w') as f:
+            json.dump(_proj({"min_hole_clearance": 0.25}), f)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _origin(self):
+        with open(os.path.join(self.tmp, 'm.kicad_pro')) as f:
+            pro = json.load(f)
+        return (pro.get('kicad_routing_tools') or {}).get(ORIGIN_KEY) or {}
+
+    def test_mid_run_pass_records_the_declared_floor_before_lowering_it(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            changes = F.apply_routed_floors(self.pcb, clearance=0.127,
+                                            verbose=True)
+        self.assertTrue(changes, 'the mid-run pass lowered nothing to test')
+        self.assertEqual(
+            self._origin().get('min_hole_clearance'), 0.25,
+            'the mid-run pass lowered a fab floor without recording the '
+            'board ORIGINAL, so the writeback will baseline on its own output')
+
+    def test_the_relaxation_is_still_disclosed_after_the_mid_run_pass(self):
+        """End to end: mid-run pass, then the writeback. The banner must name
+        the board's 0.25, which is the half that went silent."""
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            F.apply_routed_floors(self.pcb, clearance=0.127, verbose=False)
+            F.fix_project_for_output(self.pcb, clearance=0.127, verbose=True)
+        out = buf.getvalue()
+        self.assertIn('FAB FLOOR RELAXED', out,
+                      'a real 0.25 -> 0.127 relaxation shipped with no banner')
+        self.assertIn('ORIGINAL 0.25', out,
+                      'the banner must baseline on the board 0.25, not on the '
+                      'value the mid-run pass had already written')
+
+    def test_a_second_mid_run_pass_does_not_re_seed(self):
+        """Once recorded, the origin is the board's, not each pass's input."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            F.apply_routed_floors(self.pcb, clearance=0.127, verbose=False)
+            F.apply_routed_floors(self.pcb, clearance=0.1, verbose=False)
+        self.assertEqual(self._origin().get('min_hole_clearance'), 0.25)
+
+
+class LiveBoardOriginTest(unittest.TestCase):
+    """The GUI's live-board writers (apply_targets_to_board, then
+    gui_utils.update_live_drc_floors) lowered the same floors with no origin
+    recorded, so a manual GUI run that relaxed a fab floor said nothing and a
+    later CLI step baselined on the already-lowered value. Fakes stand in for
+    pcbnew (design settings in nm); the real board runs in
+    tests/gui_parity/test_live_fab_floor_origin.py."""
+
+    class _BDS:
+        def __init__(self, track, via):
+            self.m_TrackMinWidth = int(track * 1e6)
+            self.m_ViasMinSize = int(via * 1e6)
+
+    class _Board:
+        def __init__(self, path, bds):
+            self.path, self.bds = path, bds
+
+        def GetFileName(self):
+            return self.path
+
+        def GetDesignSettings(self):
+            return self.bds
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.pcb = os.path.join(self.tmp, 'b.kicad_pcb')
+        with open(self.pcb, 'w') as f:
+            f.write('(kicad_pcb)\n')
+        F._LIVE_FAB_ORIGIN.clear()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        F._LIVE_FAB_ORIGIN.clear()
+
+    def _write_pro(self, origin=None):
+        with open(self.pcb[:-len('.kicad_pcb')] + '.kicad_pro', 'w') as f:
+            json.dump(_proj({"min_via_diameter": 0.5}, origin), f)
+
+    def _pro_origin(self):
+        with open(self.pcb[:-len('.kicad_pcb')] + '.kicad_pro') as f:
+            return (json.load(f).get('kicad_routing_tools') or {}).get(ORIGIN_KEY)
+
+    def test_the_live_floors_are_recorded_before_they_are_lowered(self):
+        self._write_pro()
+        bds = self._BDS(0.2, 0.5)
+        board = self._Board(self.pcb, bds)
+        origin = F.seed_live_fab_floor_origin(board)
+        self.assertEqual(origin, {'min_track_width': 0.2, 'min_via_diameter': 0.5})
+        self.assertEqual(self._pro_origin(), origin, 'recorded in the project')
+        bds.m_ViasMinSize = int(0.3 * 1e6)          # the step lowers it
+        again = F.seed_live_fab_floor_origin(board)
+        self.assertEqual(again['min_via_diameter'], 0.5,
+                         'a second writer must not re-seed from the lowered value')
+        self.assertEqual(self._pro_origin()['min_via_diameter'], 0.5)
+
+    def test_an_origin_already_in_the_project_wins(self):
+        """A GUI step after a CLI chain keeps the chain's original."""
+        self._write_pro(origin={'min_via_diameter': 0.8})
+        board = self._Board(self.pcb, self._BDS(0.2, 0.3))
+        self.assertEqual(F.seed_live_fab_floor_origin(board)['min_via_diameter'], 0.8)
+
+    def test_a_board_with_no_project_keeps_it_for_the_session(self):
+        bds = self._BDS(0.2, 0.5)
+        board = self._Board(self.pcb, bds)
+        F.seed_live_fab_floor_origin(board)
+        bds.m_ViasMinSize = int(0.3 * 1e6)
+        self.assertEqual(F.seed_live_fab_floor_origin(board)['min_via_diameter'], 0.5)
+        self.assertFalse(os.path.exists(self.pcb[:-len('.kicad_pcb')] + '.kicad_pro'),
+                         'no project is created just to hold the record')
+
+    def test_the_live_disclosure_names_the_original_and_counts(self):
+        origin = {'min_track_width': 0.2, 'min_via_diameter': 0.5}
+        after = {'min_track_width': 0.2, 'min_via_diameter': 0.3}
+        out = ' '.join(F.live_fab_floor_disclosure(
+            origin, after, {'min_via_diameter': [0.3, 0.45, 0.6]}))
+        self.assertIn('FAB FLOOR RELAXED', out)
+        self.assertIn('via diameter: 0.5 -> 0.3 mm', out)
+        self.assertIn('2 of 3 object(s)', out)
+        self.assertNotIn('track width', out, 'an unmoved floor is not reported')
+        self.assertEqual(F.live_fab_floor_disclosure(origin, dict(origin), {}), [],
+                         'nothing under its origin -> silent')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

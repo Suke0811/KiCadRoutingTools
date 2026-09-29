@@ -142,8 +142,7 @@ class TestB3GradedAtAlways(unittest.TestCase):
                 r.stdout, r'Grading at clearance 0\.15 mm \(--clearance\)')
 
     def test_graded_at_parses_for_board_score(self):
-        sys.path.insert(0, os.path.join(
-            ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts'))
+        sys.path.insert(0, os.path.join(ROOT, 'py_tools'))
         import importlib
         bs = importlib.import_module('board_score')
         with tempfile.TemporaryDirectory() as td:
@@ -162,8 +161,7 @@ class TestRun5RemainingBanners(unittest.TestCase):
     def test_board_score_composed_single_pair(self):
         with tempfile.TemporaryDirectory() as td:
             board = _write_tiny(td)
-            r = _run(os.path.join('.claude', 'skills', 'plan-pcb-placement-and-routing',
-                                  'scripts', 'board_score.py'), board, '-q')
+            r = _run(os.path.join('py_tools', 'board_score.py'), board, '-q')
             self.assertTrue(r.stdout.startswith('CMD: '), r.stdout[:120])
             self.assertEqual(
                 len(re.findall(r'^CMD: ', r.stdout, re.M)), 1)

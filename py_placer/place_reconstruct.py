@@ -599,7 +599,11 @@ Examples:
             tmp = board_path + '.legalize'
             write_placed_output(board_path, tmp, rep['moves'])
             os.replace(tmp, board_path)
+        # #1066: `unresolved` too. A violator the honesty re-grade keeps out
+        # of `repaired` is in neither of the other two lists, so leaving it
+        # out made the line add up to less than the violators it was run on.
         print(f"  legalize: {len(rep['repaired'])} repaired, "
+              f"{len(rep.get('unresolved') or [])} unresolved, "
               f"{len(rep['unrepairable'])} unrepairable")
         return rep
 
@@ -630,6 +634,7 @@ Examples:
                     report['legalize'] = {
                         'preview': True,
                         'repaired': _rep['repaired'],
+                        'unresolved': _rep.get('unresolved') or [],
                         'unrepairable': _rep['unrepairable'],
                         'would_move': sorted(m['reference']
                                              for m in _rep['moves']),
@@ -656,6 +661,7 @@ Examples:
     if 'legalize' in stages:
         rep = _run_legalize(staged)
         report['legalize'] = {'repaired': rep['repaired'],
+                              'unresolved': rep.get('unresolved') or [],
                               'unrepairable': rep['unrepairable']}
 
     _promote_staged(staged, args.output_file)

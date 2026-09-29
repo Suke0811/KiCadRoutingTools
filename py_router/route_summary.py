@@ -16,17 +16,56 @@ This module owns that reduction, in two forms:
 reconciliation raised, so it needs neither a regex nor a marker string).
 `place_route_loop.py` uses the second, because it only ever sees a log file.
 Both were the same 110 lines in two places until they were not.
+
+THE FINAL RE-GRADE (#1069). A merge of summaries can only report what some
+summary recorded, and each summary grades ITS OWN scope at ITS OWN moment:
+pass 1 before the plane finalize, a finalize repair sub-run its casualties, a
+reconciliation lap its retry set. A net one of them left broken that no later
+one looked at fell out of the merged tally (glasgow run34: 19 reported, 40
+disconnected on disk). So the outermost route grades the board it SHIPS, once,
+over every net the run owns (`regrade_record`), prints the result as a
+`JSON_REGRADE:` line, and both merges apply it on top of the summaries: the
+failure state then describes the final board rather than the last lap.
 """
 import json
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 __all__ = ['merge_summaries', 'merge_route_summaries', 'summary_min',
-           'write_summary_file', 'SUMMARY_RE', 'SUMMARY_MIN_RE',
-           'RECONCILE_ABORTED', 'EFFORT_KEYS']
+           'write_summary_file', 'SUMMARY_RE', 'SUMMARY_MIN_RE', 'REGRADE_RE',
+           'RECONCILE_ABORTED', 'EFFORT_KEYS', 'SUMMARY_SINK',
+           'RECONCILE_RAISED', 'FINAL_REGRADE', 'reset_run_state',
+           'named_nets', 'regrade_record']
 
 SUMMARY_RE = re.compile(r'JSON_SUMMARY: (\{.*\})')
+# #962: `fab_notes`' ship-time via_in_pad record, printed after the summaries
+VIA_IN_PAD_RE = re.compile(r'VIA_IN_PAD_JSON: (\{.*\})')
+# #1069: the outermost run's final-board re-grade, printed once, after every
+# JSON_SUMMARY of that run and before --json-out is written.
+REGRADE_RE = re.compile(r'JSON_REGRADE: (\{.*\})')
+
+# ONE summary sink per PROCESS (#1069). It used to live in route.py, which is
+# `__main__` when run from the CLI -- and the plane finalize reaches its repair
+# sub-runs through `repair_planes`' `from route import batch_route`, which
+# loads a SECOND copy of route.py with a sink of its own. Those sub-runs
+# printed a JSON_SUMMARY that `merge_route_summaries(log)` folded in while
+# `--json-out` never saw it, so the file and the log merge disagreed (#830's
+# one-document rule), and the second copy's empty sink also stamped them
+# scope='run' and reset the outer run's protected-net refusal record. This
+# module is imported under ONE name by every copy, so its lists are shared.
+# Mutate them in place only (`.clear()`, `.append()`, `[0] = ...`): a
+# rebinding would split them again.
+SUMMARY_SINK: List[dict] = []
+RECONCILE_RAISED = [False]
+FINAL_REGRADE: List[Optional[dict]] = [None]
+
+
+def reset_run_state() -> None:
+    """Start an OUTERMOST run clean (a nested sub-run must never call this)."""
+    SUMMARY_SINK.clear()
+    RECONCILE_RAISED[0] = False
+    FINAL_REGRADE[0] = None
 
 # The one-line compact tally route.py prints at the end of every OUTERMOST
 # run (CLI and GUI alike): the merged verdict in <1KB, where the big
@@ -46,18 +85,24 @@ RECONCILE_ABORTED = 'final reconciliation pass failed:'
 EFFORT_KEYS = ('total_iterations', 'total_vias', 'total_time')
 
 
-def merge_summaries(summaries: List[Dict], aborted: bool = False) -> Optional[Dict]:
+def merge_summaries(summaries: List[Dict], aborted: bool = False,
+                    regrade: Optional[Dict] = None) -> Optional[Dict]:
     """Reduce one-or-more summary dicts to a single tally.
 
     Per field class:
 
-    * FAILURE STATE (failed_single / open_single / failed_multipoint /
-      multipoint_pads_*) comes from the LAST summary, and is exact rather
-      than a delta. Every net
-      with a nonzero failure term is in the retry set by construction, and the
-      sub-run re-derives each retried net's pad counts over ALL of that net's
-      pads from the final-board union-find, so the last summary's numbers are
-      absolute. Summing pad counts would double-count.
+    * FAILURE STATE (routed_single / failed_single / open_single /
+      failed_multipoint / multipoint_pads_* / successful / failed) comes from
+      `regrade` when there is one -- the outermost run's grade of the board it
+      shipped (`regrade_record`), which is the only reading that covers every
+      summary's scope at once. Without one (a log from before #1069, or a
+      re-grade that raised) it falls back to the LAST summary. That fallback
+      is exact only for the nets the last summary graded: a reconciliation lap
+      retries every net pass 1 left failing and re-derives their pad counts
+      over the final union-find, but a net a plane-finalize sub-run or an
+      earlier lap left broken outside that retry set is invisible to it --
+      which is the hole the re-grade closes. Summing pad counts would
+      double-count either way.
     * EFFORT is SUMMED: both passes are work this run cost the router, and an
       iteration tiebreak should see all of it. Taking effort from the last
       summary would make a badly failing candidate look cheap, since the
@@ -66,9 +111,13 @@ def merge_summaries(summaries: List[Dict], aborted: bool = False) -> Optional[Di
       summary but reconcile-subset-scoped in the sub-run's.
     * Anything else is last-wins.
 
+    `scope` is stamped 'merged' whenever the result is more than one
+    summary's word -- several summaries, or a re-grade.
+
     `aborted` means the reconciliation raised AFTER printing its summary: it
     claims recoveries the board write may never have committed, so fall back to
-    the first pass, which is what is definitely on disk.
+    the first pass, which is what is definitely on disk. A re-grade still
+    applies: it read the board that is on disk.
 
     Degrades to the single-summary case unchanged. Returns None for an empty
     list.
@@ -166,6 +215,15 @@ def merge_summaries(summaries: List[Dict], aborted: bool = False) -> Optional[Di
         if ('finalize_excluded_nets' in first
                 and 'finalize_excluded_nets' not in merged):
             merged['finalize_excluded_nets'] = first['finalize_excluded_nets']
+        # `power_widths` (#1033) carries WHOLE for the same reason: the
+        # outermost run measures it on the board it SHIPS, after the
+        # reconciliation sub-run returned, and stamps it on `first` -- the
+        # sub-run's own summary has none. A sub-run that ever measured one
+        # would be measuring a slice, so first always wins.
+        for _k in ('power_widths', 'power_widths_measured_on',
+                   'power_widths_run_scope'):
+            if _k in first:
+                merged[_k] = first[_k]
 
     # DISTURBED-BUT-UNOWNED NETS ARE STICKY (#622 yw1: SA1 shipped with ZERO
     # copper, SA2/SA6 open, and the merged MIN said failed:2 deficit:0). A
@@ -173,9 +231,13 @@ def merge_summaries(summaries: List[Dict], aborted: bool = False) -> Optional[Di
     # victims OUTSIDE that pass's --nets scope, verified broken against real
     # copper at emission time -- and a later, narrower sub-run's summary
     # carries neither key, so last-wins erased the only record of them.
-    # Union them across all passes, dropping any net a LATER summary
-    # CLASSIFIED (routed_single = recovered; failed/open/multipoint = that
-    # pass took ownership and already counts it), so nothing double-counts.
+    # Union them across all passes, dropping a net only when its LAST
+    # classification after the flag makes the flag redundant: routed_single
+    # there (recovered), or a failure bucket of the FINAL summary (last-wins
+    # already counts it). A failure bucket of a MIDDLE summary does not: that
+    # summary's buckets are overwritten by last-wins, so dropping the flag on
+    # its word lost the net entirely (#1069: gate in lap 1, failed_single in
+    # a middle sub-run, a last lap that never looked at it -> in no bucket).
     # terminal_restores merges the same way (per-net) so summary_min's
     # terminal_restores_broken survives the merge -- and a restore mark can
     # be superseded WITHIN its own pass: the reroute loop re-routes the
@@ -187,24 +249,28 @@ def merge_summaries(summaries: List[Dict], aborted: bool = False) -> Optional[Di
     # classification. This applies to SINGLE-summary logs too. When aborted,
     # only pass 1 (what is on disk) participates.
     _use = summaries[:1] if aborted else summaries
+    _last_i = len(_use) - 1
 
-    def _classified_names(s):
-        names = set(s.get('routed_single') or [])
-        names |= set(s.get('failed_single') or [])
-        names |= set(s.get('open_single') or [])
-        names |= {d.get('net_name') if isinstance(d, dict) else d
-                  for d in (s.get('failed_multipoint') or [])}
-        return names
+    def _flag_is_redundant(name, after):
+        """Is a sticky flag on `name`, raised in summary `after`, carried by
+        a later classification? Walks backwards to the LAST summary that
+        classified the net."""
+        for _j in range(_last_i, after, -1):
+            _c = _classify(_use[_j]).get(name)
+            if _c is None:
+                continue
+            return _c == 'routed' or _j == _last_i
+        return False
 
     _gate_all: List[str] = []
     _tr_merged: Dict = {}
     for _i, _s in enumerate(_use):
         _later: set = set()
         for _t in _use[_i + 1:]:
-            _later |= _classified_names(_t)
+            _later |= set(_classify(_t))
         for _n in (list(_s.get('coverage_gate_nets') or [])
                    + list(_s.get('ripped_open_uncounted') or [])):
-            if _n not in _later and _n not in _gate_all:
+            if _n not in _gate_all and not _flag_is_redundant(_n, _i):
                 _gate_all.append(_n)
         _own_routed = set(_s.get('routed_single') or [])
         for _n, _v in (_s.get('terminal_restores') or {}).items():
@@ -216,6 +282,55 @@ def merge_summaries(summaries: List[Dict], aborted: bool = False) -> Optional[Di
     if _tr_merged or 'terminal_restores' in merged:
         merged['terminal_restores'] = _tr_merged
 
+    if len(summaries) > 1 or regrade:
+        merged['scope'] = 'merged'
+
+    if regrade:
+        _apply_regrade(merged, regrade, summaries)
+        return merged
+
+    # FALLBACK CARRY (no re-grade). A MIDDLE summary -- a plane-finalize
+    # repair sub-run, printed between pass 1 and the reconciliation laps --
+    # can leave a net failing that no later summary classifies: the laps
+    # retry pass 1's failures, not the finalize's. Last-wins overwrote its
+    # buckets, so carry each such net in the bucket it was left in. Pass 1 is
+    # deliberately NOT carried: the laps retry every net it left failing, so
+    # one they did not classify was already connected when they started. The
+    # sticky flags above already carry theirs, so they are skipped here.
+    if not aborted and len(_use) > 2:
+        _gate_set = set(_gate_all)
+        _fs = list(merged.get('failed_single') or [])
+        _os = list(merged.get('open_single') or [])
+        _fm = list(merged.get('failed_multipoint') or [])
+        _carried = False
+        for _i in range(1, _last_i):
+            _s = _use[_i]
+            _later = set()
+            for _t in _use[_i + 1:]:
+                _later |= set(_classify(_t))
+            _entries = {_fm_name(d): d for d in (_s.get('failed_multipoint')
+                                                 or [])}
+            for _n, _b in _classify(_s).items():
+                if _b == 'routed' or _n in _later or _n in _gate_set:
+                    continue
+                _carried = True
+                if _b == 'failed_single':
+                    _fs.append(_n)
+                    continue
+                if _b == 'open_single':
+                    _os.append(_n)
+                if _n in _entries:
+                    _fm.append(_entries[_n])
+                if _b == 'multipoint':
+                    _k = len((_entries.get(_n) or {}).get('failed_pads')
+                             or []) or 1
+                    merged['multipoint_pads_total'] = (
+                        merged.get('multipoint_pads_total', 0) + _k)
+        if _carried:
+            merged['failed_single'] = _fs
+            merged['open_single'] = _os
+            merged['failed_multipoint'] = _fm
+
     # Coverage-gate nets have NO routed result, so their pads never reach
     # multipoint_pads_total and a caller's
     # failures = len(failed_single) + pad-deficit weighs them ZERO, though they
@@ -225,12 +340,200 @@ def merge_summaries(summaries: List[Dict], aborted: bool = False) -> Optional[Di
     # this cannot double-count. It matters most on the LAST summary: those are
     # nets the reconciliation pass ITSELF broke through its rip escalation, and
     # without this a loop can read failures=0 on a board shipping disconnected
-    # copper and stop.
+    # copper and stop. (A re-graded merge returned above: its pad tallies are
+    # rebuilt from the board, so the gate nets are already in them.)
     gate = merged.get('coverage_gate_nets') or []
     if gate:
         merged['multipoint_pads_total'] = (
             merged.get('multipoint_pads_total', 0) + len(gate))
     return merged
+
+
+def _fm_name(entry) -> str:
+    return entry.get('net_name') if isinstance(entry, dict) else entry
+
+
+def _classify(summary: Dict) -> Dict[str, str]:
+    """{net: bucket} for every net `summary` CLASSIFIED, one bucket per net.
+
+    Precedence follows the emitter: an open_single net is also listed in
+    failed_multipoint, and a coverage-gate net only there. 'multipoint' means
+    failed_multipoint and neither single bucket.
+    """
+    out: Dict[str, str] = {}
+    for n in summary.get('routed_single') or []:
+        out[n] = 'routed'
+    for d in summary.get('failed_multipoint') or []:
+        out[_fm_name(d)] = 'multipoint'
+    for n in summary.get('open_single') or []:
+        out[n] = 'open_single'
+    for n in summary.get('failed_single') or []:
+        out[n] = 'failed_single'
+    return out
+
+
+def named_nets(summaries: Iterable[Dict]) -> List[str]:
+    """Every net any summary NAMES -- classified, flagged or disclosed.
+
+    The re-grade's net set: a summary names exactly the nets its pass worked
+    on or found broken, so their union is what the run owns -- pass 1's scope,
+    every finalize casualty sub-run's, every lap's, and the out-of-scope
+    victims each one disclosed. Order: first appearance.
+    """
+    seen: Dict[str, None] = {}
+
+    def _add(names):
+        for n in names or []:
+            if isinstance(n, str) and n:
+                seen.setdefault(n, None)
+
+    for s in summaries:
+        _add(s.get('routed_single'))
+        _add(s.get('failed_single'))
+        _add(s.get('open_single'))
+        _add([_fm_name(d) for d in (s.get('failed_multipoint') or [])])
+        for k in ('coverage_gate_nets', 'ripped_open',
+                  'ripped_open_uncounted', 'fragmented_nets'):
+            _add(s.get(k))
+        for k in ('terminal_restores', 'preexisting_rips', 'oracle_open'):
+            v = s.get(k)
+            if isinstance(v, dict):
+                _add(list(v))
+            elif isinstance(v, list):
+                _add([e.get('net') if isinstance(e, dict) else e for e in v])
+        _add([e.get('net') for e in (s.get('pad_pairs_open') or [])
+              if isinstance(e, dict)])
+    return list(seen)
+
+
+def regrade_record(summaries: List[Dict], grades: Dict[str, Dict],
+                   routing_scope: Iterable[str], *, board: str,
+                   seconds: float = 0.0,
+                   disturbed_only: Iterable[str] = ()) -> Dict:
+    """The final failure state, rebuilt from a grade of the shipped board.
+
+    `grades` is {net: {'pads': P, 'broken': bool, 'copper': bool,
+    'failed_pads': [{x, y, component_ref, pad_number}, ...]}} for every net the
+    run owns (`named_nets` of its summaries, plus nets whose copper it
+    changed). `routing_scope` is the outermost pass's routing scope (its
+    single-ended net list), which `successful` / `failed` count, as the
+    router always has. `disturbed_only` names the nets graded ONLY because the
+    run changed their copper; the caller has already dropped those that were
+    no worse than on the input board.
+
+    Each broken net keeps the bucket meanings route.py emits (CLAUDE.md, "Read
+    the failure buckets by their real definitions"), decided by the LAST
+    summary that classified it:
+
+    * failed_single there -> failed_single ("no result at all", weight 1).
+    * open_single there -> open_single (weight 1), plus a failed_multipoint
+      entry carrying its pads, as the emitter lists it.
+    * failed_multipoint only there, or a net of 3+ pads the last word on
+      which was 'routed' or nothing -> failed_multipoint, its disconnected
+      pads priced in the multipoint pad deficit.
+    * otherwise a two-pad net: open_single if it still has copper of its own,
+      failed_single if it has none.
+
+    So `len(failed_single) + len(open_single) + pad deficit` counts every
+    broken net exactly once. The pad tallies cover every graded multipoint
+    net, connected ones included, so they are a whole-run denominator.
+    """
+    last: Dict[str, str] = {}
+    for s in summaries:
+        last.update(_classify(s))
+    scope = list(dict.fromkeys(routing_scope or []))
+    failed_single: List[str] = []
+    open_single: List[str] = []
+    failed_mp: List[Dict] = []
+    mp_total = mp_conn = 0
+    for name in sorted(grades):
+        g = grades[name]
+        pads = int(g.get('pads') or 0)
+        cls = last.get(name)
+        if not g.get('broken'):
+            if cls == 'multipoint' or (pads >= 3 and cls != 'failed_single'):
+                mp_total += pads
+                mp_conn += pads
+            continue
+        fp = list(g.get('failed_pads') or [])
+        entry = {'net_name': name, 'failed_pads': fp}
+        if cls == 'failed_single':
+            failed_single.append(name)
+        elif cls == 'open_single':
+            open_single.append(name)
+            failed_mp.append(entry)
+        elif cls == 'multipoint' or pads >= 3:
+            failed_mp.append(entry)
+            mp_total += pads
+            mp_conn += max(0, pads - max(1, len(fp)))
+        elif g.get('copper'):
+            open_single.append(name)
+            failed_mp.append(entry)
+        else:
+            failed_single.append(name)
+    broken = {n for n, g in grades.items() if g.get('broken')}
+    routed = [n for n in scope if n in grades and n not in broken]
+    was_failing = set()
+    for s in summaries:
+        was_failing |= {n for n, c in _classify(s).items() if c != 'routed'}
+        was_failing |= set(s.get('coverage_gate_nets') or [])
+    return {
+        'board': board,
+        'graded_nets': len(grades),
+        'seconds': round(float(seconds), 2),
+        'routed_single': routed,
+        'failed_single': failed_single,
+        'open_single': open_single,
+        'failed_multipoint': failed_mp,
+        'multipoint_pads_total': mp_total,
+        'multipoint_pads_connected': mp_conn,
+        'successful': len(routed),
+        'failed': len(scope) - len(routed),
+        # Disclosure: broken nets NO summary classified (caught only because
+        # the run changed their copper), and nets some summary left failing
+        # that the shipped board has connected.
+        'unowned_broken': sorted(broken & set(disturbed_only) - set(last)),
+        'recovered': sorted(was_failing & set(grades) - broken),
+    }
+
+
+def _apply_regrade(merged: Dict, regrade: Dict, summaries: List[Dict]) -> None:
+    """Overwrite the merged failure state with the re-grade (in place)."""
+    for k in ('routed_single', 'failed_single', 'open_single',
+              'failed_multipoint', 'multipoint_pads_total',
+              'multipoint_pads_connected', 'successful', 'failed'):
+        if k in regrade:
+            merged[k] = json.loads(json.dumps(regrade[k]))
+    broken = (set(merged.get('failed_single') or [])
+              | set(merged.get('open_single') or [])
+              | {_fm_name(d) for d in (merged.get('failed_multipoint') or [])})
+    # Disclosure lists keep their meaning, narrowed to what still ships broken.
+    for k in ('coverage_gate_nets', 'ripped_open', 'ripped_open_uncounted'):
+        if k in merged:
+            merged[k] = [n for n in (merged.get(k) or []) if n in broken]
+    if merged.get('terminal_restores'):
+        merged['terminal_restores'] = {
+            n: v for n, v in merged['terminal_restores'].items()
+            if v == 'full' or n in broken}
+    # Per-net attribution, newest entry per net across every summary, kept for
+    # the nets that are still failing (the old path kept pass 1's only).
+    for k, key in (('blockers', 'net'), ('boxed_in', 'net'),
+                   ('pad_pairs_open', 'net')):
+        if not any(k in s for s in summaries):
+            continue
+        by_net: Dict[str, Dict] = {}
+        for s in summaries:
+            for e in s.get(k) or []:
+                if isinstance(e, dict) and e.get(key):
+                    by_net[e[key]] = e
+        merged[k] = [e for n, e in by_net.items() if n in broken]
+    if 'pad_pairs_total' in merged and 'pad_pairs_open' in merged:
+        _deficit = sum(e.get('pairs_total', 0) - e.get('pairs_connected', 0)
+                       for e in merged['pad_pairs_open'])
+        merged['pad_pairs_connected'] = max(
+            0, merged['pad_pairs_total'] - _deficit)
+    merged['regrade'] = {k: regrade.get(k) for k in (
+        'board', 'graded_nets', 'seconds', 'unowned_broken', 'recovered')}
 
 
 def merge_route_summaries(log: str) -> Optional[Dict]:
@@ -243,7 +546,20 @@ def merge_route_summaries(log: str) -> Optional[Dict]:
         return None
     summaries = [json.loads(s) for s in raw]
     aborted = log.rfind(RECONCILE_ABORTED) > log.rfind(raw[-1])
-    return merge_summaries(summaries, aborted)
+    # #1069: the re-grade belongs to this run only if it follows the run's
+    # last summary; one printed before it describes an earlier run.
+    regrade = None
+    rg = list(REGRADE_RE.finditer(log))
+    if rg and rg[-1].start() > log.rfind(raw[-1]):
+        regrade = json.loads(rg[-1].group(1))
+    merged = merge_summaries(summaries, aborted, regrade)
+    # #962: the ship-time Type VII record runs after every JSON_SUMMARY line,
+    # so it is printed on its own line; route.py sets the same record on the
+    # merged `--json-out` document. The last one is the shipped board's.
+    vip = VIA_IN_PAD_RE.findall(log)
+    if merged is not None and vip:
+        merged['via_in_pad'] = json.loads(vip[-1])
+    return merged
 
 
 def summary_min(merged: Dict, name_cap: int = 20) -> Dict:
@@ -306,6 +622,10 @@ def summary_min(merged: Dict, name_cap: int = 20) -> Dict:
     if merged.get('finalize_excluded_nets'):
         out['finalize_excluded_nets'] = _names(
             merged['finalize_excluded_nets'])
+    # #1069: how many nets the final-board re-grade read. Absent when the
+    # tally rests on the summaries alone (no re-grade ran).
+    if isinstance(merged.get('regrade'), dict):
+        out['regraded_nets'] = merged['regrade'].get('graded_nets')
     return out
 
 

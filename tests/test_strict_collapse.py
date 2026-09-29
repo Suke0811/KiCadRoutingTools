@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Regression test for collapse_strict_redundant (#217 classes 1-2).
 
-Superseded parallel chains and pad/via-buried tails are redundant under the
-STRICT width-clamped graph: removal must leave coincident-connected copper
-(never manufacture a soft joint), drop the longer leftover run of a twin,
-keep in-pad wiggles (Andy's choice), and refuse to touch nets whose strict
-base is already split (removal could take load-bearing copper there).
+Superseded parallel chains, pad/via-buried tails and in-pad wiggles are
+redundant under the STRICT width-clamped graph: removal must leave
+coincident-connected copper (never manufacture a soft joint), drop the longer
+leftover run of a twin, remove in-pad wiggles (#1063 reversed #217's choice to
+keep them), and refuse to touch nets whose strict base is already split
+(removal could take load-bearing copper there).
 
     python3 tests/test_strict_collapse.py
 """
@@ -65,13 +66,18 @@ def main():
     n, _ = collapse_strict_redundant([], pcb, None)
     results.append(("load-bearing chain untouched", n == 0))
 
-    # 3. In-pad wiggle kept: both endpoints inside the pad's copper.
+    # 3. In-pad wiggle: both endpoints inside the pad's copper. #217 kept it
+    #    by choice; #1063 removes it (check_weird counts it, and
+    #    check_complete blocks DONE on check_weird). The live track stays.
     pads = [_pad('U1', 0, 0, sx=2.0, sy=2.0), _pad('U2', 10, 0)]
     wiggle = _seg(-0.5, 0.3, 0.5, 0.3)
-    pcb = _pcb([_seg(0, 0, 10, 0), wiggle], [], pads)
+    trunk = _seg(0, 0, 10, 0)
+    pcb = _pcb([trunk, wiggle], [], pads)
     n, _ = collapse_strict_redundant([], pcb, None)
-    results.append(("in-pad wiggle kept by choice",
-                    n == 0 and wiggle in pcb.segments))
+    r = check_net_connectivity(7, pcb.segments, [], pads, [])
+    results.append(("in-pad wiggle removed, trunk kept, net connected",
+                    n == 1 and wiggle not in pcb.segments
+                    and trunk in pcb.segments and r['connected']))
 
     # 4. Buried superseded tail (class 2): one end coincident on the live
     #    path, the other buried in a same-net via barrel that ALSO hosts the

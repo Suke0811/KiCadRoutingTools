@@ -493,13 +493,21 @@ def make_track(net_map: NetMap, start_x_mm: float, start_y_mm: float,
 
 def make_via(net_map: NetMap, x_mm: float, y_mm: float, size_mm: float,
              drill_mm: float, top_layer: str = "F.Cu",
-             bottom_layer: str = "B.Cu", net_name: Optional[str] = None):
+             bottom_layer: str = "B.Cu", net_name: Optional[str] = None,
+             tenting_attrs: Optional[dict] = None):
     """Build a kipy Via ready to be added to a commit.
 
     Note: kipy doesn't expose a simple `SetLayerPair`; through-hole vias
     work out-of-the-box (default padstack spans F.Cu→B.Cu). Blind/buried
     vias may need padstack customisation — see TODO in plan's open
     questions.
+
+    `tenting_attrs` is the via's protection spec (#489 s8 / #741 / #962), the
+    same `{token: raw inner s-expr}` the parsers produce: an input via's own
+    spec when this re-places it, or #962's Type VII stamp. It is written onto
+    the padstack (`kicad_parser.kipy_set_via_protection`); empty or None
+    writes nothing, so the via inherits the board's `(setup ...)` -- what
+    pcbnew does for a via the GUI adds.
     """
     v = _ensure_kipy().Via()
     v.position = vec_mm(x_mm, y_mm)
@@ -530,7 +538,81 @@ def make_via(net_map: NetMap, x_mm: float, y_mm: float, size_mm: float,
             print(f"Warning: non-through-hole via ({top_layer}→{bottom_layer}) "
                   f"not supported on this kipy version ({e}); "
                   f"falling back to through via")
+    if tenting_attrs:
+        from kicad_parser import kipy_set_via_protection
+        # What cannot be written is reported by disclose_unwritten_via_protection,
+        # which the apply paths call once per commit rather than once per via.
+        kipy_set_via_protection(v, tenting_attrs)
     return v
+
+
+def _via_spec(via) -> dict:
+    """The protection spec (`tenting_attrs`) a via carries, engine dict or
+    kicad_parser.Via alike; {} when it carries none."""
+    spec = (via.get('tenting_attrs') if isinstance(via, dict)
+            else getattr(via, 'tenting_attrs', None))
+    return dict(spec or {})
+
+
+def disclose_unwritten_via_protection(vias, net_name_for, pcb_data,
+                                      context: str) -> int:
+    """Say which of `vias` this front laid WITHOUT part of the protection
+    they carry. Returns the number of vias reported.
+
+    `make_via` writes a via's spec onto its padstack -- a re-placed via's own
+    (#489 s8, #741) or #962's IPC-4761 Type VII stamp -- through
+    `kicad_parser.kipy_set_via_protection`. What that cannot write (every
+    token, on a kicad-python older than 0.7; a token or value it does not
+    know) the via INHERITS from the board's `(setup ...)` instead, which is a
+    silent fab change unless it is said. The tokens are found by writing each
+    spec onto a throwaway Via, so this can never disagree with the writer.
+
+    A lost part that FABRICATES the same as inheriting (it restates the
+    board's own setup) is not reported: dropping it changes nothing. Accepts
+    engine dicts and kicad_parser.Via objects.
+    """
+    from fab_notes import effective_via_protection, is_filled_and_capped
+    from kicad_parser import kipy_set_via_protection
+    setup = getattr(getattr(pcb_data, 'board_info', None),
+                    'via_protection_setup', None) or {}
+    inherited = effective_via_protection({}, setup)
+    lost = []
+    for v in vias or ():
+        spec = _via_spec(v)
+        if not spec:
+            continue
+        try:
+            unwritten = kipy_set_via_protection(_ensure_kipy().Via(), spec)
+        except Exception:                                        # noqa: BLE001
+            unwritten = sorted(spec)
+        if not unwritten:
+            continue
+        dropped = {t: spec[t] for t in unwritten}
+        if effective_via_protection(dropped, setup) == inherited:
+            continue
+        get = v.get if isinstance(v, dict) else (lambda k, _v=v: getattr(_v, k, None))
+        lost.append((get('x'), get('y'), net_name_for(get('net_id')),
+                     unwritten,
+                     is_filled_and_capped(effective_via_protection(spec, setup))))
+    if not lost:
+        return 0
+    n_vii = sum(1 for e in lost if e[4])
+    print(f"  WARNING ({context}): {len(lost)} via(s) carry protection this "
+          f"front could not write, so those tokens INHERIT the board's "
+          f"(setup ...) instead (#489 s8 / #741 / #962). kicad-python 0.7+ "
+          f"writes all five.")
+    if n_vii:
+        print(f"    {n_vii} of them declare IPC-4761 Type VII (filled + "
+              f"capped), which a via in a pad or paste opening needs: declare "
+              f"it on each via in KiCad's via properties, or on the fab "
+              f"drawing.")
+    for x, y, net, toks, _vii in lost[:6]:
+        where = (f"({x:.3f}, {y:.3f})" if x is not None and y is not None
+                 else "(?)")
+        print(f"    {where} on {net or 'no net'}: {'/'.join(toks)}")
+    if len(lost) > 6:
+        print(f"    ... and {len(lost) - 6} more")
+    return len(lost)
 
 
 def make_debug_line(start_xy: tuple[float, float], end_xy: tuple[float, float],
@@ -935,6 +1017,14 @@ def apply_routing_results(board, results_data: dict, *,
         # Optional debug lines on User layers
         if add_debug_lines:
             counts["debug_lines"] = _add_debug_lines(commit, results_data)
+    # The fanouts stamp Type VII on a via they put in a pad or paste opening
+    # (#962), and a re-placed via carries its own spec (#741): neither reaches
+    # the board through make_via, so say which ones.
+    counts["protection_unwritten"] = disclose_unwritten_via_protection(
+        [v for r in results_data.get("results", [])
+         for v in (r.get("new_vias") or [])]
+        + list(results_data.get("all_swap_vias") or []),
+        net_name_for, pcb_data, "route apply")
     return counts
 
 
@@ -999,6 +1089,7 @@ def apply_planes_results(board, *, pcb_data,
                 vd['x'], vd['y'], vd['size'], vd['drill'],
                 top_layer=top, bottom_layer=bot,
                 net_name=name_for(vd.get('net_id')),
+                tenting_attrs=vd.get('tenting_attrs'),
             ))
             counts["vias"] += 1
 
@@ -1035,6 +1126,10 @@ def apply_planes_results(board, *, pcb_data,
                 print(f"Warning: skipped zone for '{net_name}' on {layer}: {e}")
 
     counts["_skipped_keys"] = skipped
+    # GND return vias the planes tab stamped Type VII (#962), and re-placed
+    # vias carrying their own spec: make_via writes neither.
+    counts["protection_unwritten"] = disclose_unwritten_via_protection(
+        new_vias, name_for, pcb_data, "planes apply")
     return counts
 
 
@@ -1103,6 +1198,21 @@ def apply_oracle_reconnect(board, *, nets, config, pcb_data,
     new_vias = orc.get('new_vias') or []
     removed_segments = orc.get('removed_segments') or []
     removed_vias = orc.get('removed_vias') or []
+    # #962: the oracle's vias are new copper. One placed in a pad or paste
+    # opening needs Type VII, decided by the core the CLI fronts use
+    # (fab_notes.via_protection_stamps), as the SWIG front's
+    # run_kicad_oracle_on_live_board does. Pads do not move during routing, so
+    # pcb_data's pads and paste openings are the board's.
+    if new_vias and pcb_data is not None:
+        try:
+            from fab_notes import (via_protection_stamps, apply_stamps_in_memory,
+                                   print_via_protection_record)
+            _st962, _rec962 = via_protection_stamps(new_vias, [], pcb_data)
+            apply_stamps_in_memory(_st962)
+            print_via_protection_record(_rec962, 'KiCad-oracle (IPC)')
+            orc['via_in_pad'] = _rec962
+        except Exception as _e962:                               # noqa: BLE001
+            print(f"KiCad-oracle (IPC): via protection stamp skipped: {_e962}")
     if new_segments or new_vias or removed_segments or removed_vias:
         with begin_commit(board, message) as commit:
             # #508 finding 15: the oracle strips its stranded fragments from the
@@ -1141,7 +1251,10 @@ def apply_oracle_reconnect(board, *, nets, config, pcb_data,
                 commit.add(make_via(
                     commit.net_map, v.x, v.y, v.size, v.drill,
                     top_layer=layers[0], bottom_layer=layers[-1],
-                    net_name=name_for(v.net_id)))
+                    net_name=name_for(v.net_id),
+                    tenting_attrs=getattr(v, 'tenting_attrs', None)))
+        disclose_unwritten_via_protection(new_vias, name_for, pcb_data,
+                                          "KiCad-oracle apply")
     return orc
 
 
@@ -1399,25 +1512,20 @@ def apply_footprint_moves(board, placements, via_moves=None, new_segments=None,
         # match could delete a DIFFERENT net's via sitting within a micron of the
         # moved via's old spot (parity with
         # placement/writer._remove_vias_at_positions).
-        # The protection spec of every via this nudge will re-place. kipy can
-        # write NONE of it back: its padstack exposes `solder_mask_mode` and
-        # not covering / plugging / capping / filling, so `make_via` below
-        # emits a via that INHERITS the board's `(setup ...)`. For a via that
-        # was inheriting anyway that is exactly right; for one carrying an
-        # explicit spec -- via-in-pad's IPC-4761 Type VII, say -- it is a
-        # silent fab change. Say it instead of shipping it quietly (#489 s8,
-        # #741). Read once: the scan walks the whole board file.
-        _specs = {}
-        if via_moves:
-            try:
-                from kicad_parser import (kipy_via_protection_attrs,
-                                          via_protection_attrs_from_path)
-                _specs = via_protection_attrs_from_path(get_board_full_path())
-            except Exception:                                    # noqa: BLE001
-                _specs = {}
+        # The nudge deletes the via and re-places an identical one a fraction
+        # of a mm away, so it must carry the via's protection spec across or
+        # it silently re-tents it (#489 s8). The ENGINE populates
+        # vd['tenting_attrs'] (#741) -- legitimately {} for a via that inherits
+        # the board's setup -- and the old live via is the fallback, as on the
+        # SWIG front. make_via writes it; disclose_unwritten_via_protection
+        # says what could not be written.
+        from kicad_parser import kipy_via_protection_attrs
+        _file_specs = None
+        nudged = []
         for old_x, old_y, vd in via_moves:
             old_key = pos_key(old_x, old_y)
             want_net = _net_name_of(vd)
+            spec = dict(vd.get('tenting_attrs') or {})
             for vv in board.get_vias():
                 vname = ((getattr(vv.net, "name", "") or "")
                          if vv.net is not None else "")
@@ -1425,22 +1533,26 @@ def apply_footprint_moves(board, placements, via_moves=None, new_segments=None,
                     continue
                 vx, vy = _vec_xy_mm(vv.position)
                 if pos_key(vx, vy) == old_key:
-                    if _specs:
-                        spec = kipy_via_protection_attrs(vv, _specs)
-                        if spec:
-                            print(f"  WARNING: the via at ({vx:.3f}, {vy:.3f}) "
-                                  f"on {vname or 'no net'} declares "
-                                  f"{'/'.join(sorted(spec))} protection; the "
-                                  f"IPC front cannot write that back, so the "
-                                  f"nudged via will INHERIT the board's "
-                                  f"(setup ...) instead (#489 s8 / #741)")
+                    if not spec:
+                        if _file_specs is None:
+                            # Only an older kipy reads the file (the live read
+                            # answers otherwise); scanned once, lazily.
+                            from kicad_parser import (
+                                _kipy_protection_enums,
+                                via_protection_attrs_from_path)
+                            _file_specs = ({} if _kipy_protection_enums()
+                                           else via_protection_attrs_from_path(
+                                               get_board_full_path()))
+                        spec = kipy_via_protection_attrs(vv, _file_specs)
                     commit.remove(vv)
                     break
             layers = vd.get('layers') or ['F.Cu', 'B.Cu']
             commit.add(make_via(
                 commit.net_map, vd['x'], vd['y'], vd['size'], vd['drill'],
                 top_layer=layers[0], bottom_layer=layers[-1],
-                net_name=want_net))
+                net_name=want_net, tenting_attrs=spec))
+            nudged.append({'x': vd['x'], 'y': vd['y'],
+                           'net_id': vd.get('net_id'), 'tenting_attrs': spec})
 
         # Reconnect copper from the same repair (stub start -> nudged via).
         for nsd in new_segments:
@@ -1451,7 +1563,57 @@ def apply_footprint_moves(board, placements, via_moves=None, new_segments=None,
                 nsd['width'], nsd['layer'],
                 net_name=_net_name_of(nsd),
             ))
+    disclose_unwritten_via_protection(
+        nudged, lambda nid: _net_name_of({'net_id': nid}), pcb_data,
+        "via nudge")
     return moved
+
+
+def apply_via_protection_stamps(board, stamps, net_name_for, pcb_data=None,
+                                message: str = "KiCadRoutingTools: via protection"
+                                ) -> int:
+    """Write #962's Type VII stamps onto vias ALREADY on the live board.
+
+    `stamps` is `fab_notes.via_protection_stamps`' list of `(via, spec)`, for
+    vias the board has (the cap moves put solder on them); the SWIG front's
+    twin is `gui_utils.apply_via_protection` on the live PCB_VIA. Each live via
+    is matched by position AND net, its spec written through
+    `kicad_parser.kipy_set_via_protection`, and all of them updated in ONE
+    commit. Returns the number of vias updated; a stamp that finds no live via,
+    or a token that cannot be written, is said, not dropped.
+    """
+    from routing_utils import pos_key
+    from kicad_parser import kipy_set_via_protection
+    stamps = list(stamps or [])
+    if not stamps:
+        return 0
+    get = lambda v, k: v.get(k) if isinstance(v, dict) else getattr(v, k, None)  # noqa: E731
+    want = {}
+    for v, spec in stamps:
+        want[(pos_key(get(v, 'x'), get(v, 'y')),
+              net_name_for(get(v, 'net_id')) or '')] = (v, dict(spec))
+    done, unwritten = 0, []
+    with begin_commit(board, message) as commit:
+        for vv in board.get_vias():
+            vname = ((getattr(vv.net, "name", "") or "")
+                     if vv.net is not None else "")
+            vx, vy = _vec_xy_mm(vv.position)
+            hit = want.pop((pos_key(vx, vy), vname), None)
+            if hit is None:
+                continue
+            if kipy_set_via_protection(vv, hit[1]):
+                unwritten.append(hit[0])
+            commit.update(vv)
+            done += 1
+    if want:
+        print(f"  WARNING: {len(want)} via(s) to be declared Type VII were not "
+              f"found on the live board (#962): "
+              + ', '.join(f"({get(v, 'x'):.3f}, {get(v, 'y'):.3f})"
+                          for v, _s in list(want.values())[:6]))
+    if unwritten:
+        disclose_unwritten_via_protection(unwritten, net_name_for, pcb_data,
+                                          "Type VII stamp")
+    return done
 
 
 def _via_from_obj(net_map: NetMap, via, net_name_for) -> object:
@@ -1463,6 +1625,7 @@ def _via_from_obj(net_map: NetMap, via, net_name_for) -> object:
         net_map, via.x, via.y, via.size, via.drill,
         top_layer=top, bottom_layer=bot,
         net_name=net_name_for(via.net_id),
+        tenting_attrs=getattr(via, "tenting_attrs", None),
     )
 
 

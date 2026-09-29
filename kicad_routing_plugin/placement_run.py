@@ -1,8 +1,8 @@
 """
 KiCad Routing Tools - headless placement-run contracts (Placement tab).
 
-The Placement tab drives Claude Code headless with the /plan-pcb-placement or
-/plan-pcb-placement-and-routing skill. Unlike the "Ask AI" analysis skills,
+The Placement tab drives Claude Code headless with the /pcb-free-agent skill,
+in its `place` or `full` mode. Unlike the "Ask AI" analysis skills,
 those runs WRITE (lap boards, a converge ledger, REPORT.md, the movie), take
 minutes to hours, and must be observable from the outside while they run.
 
@@ -17,6 +17,8 @@ import json
 import os
 import re
 import shutil
+import stat
+import sys
 import tempfile
 import time
 
@@ -31,8 +33,12 @@ import time
 # permission rule matches the canonical name only. This line has said `Task`
 # alone since #633; on 2.1.251 the dispatch event carries `"name":"Agent"`, so
 # the close-out verification this comment claims may never have been granted.
+#
+# Monitor, because /pcb-free-agent's stop rules require watching long jobs
+# (never unwatched for more than 20 minutes); without it a headless run can
+# only poll with Bash.
 PLACEMENT_ALLOWED_TOOLS = (
-    "Bash,Read,Glob,Grep,Write,Edit,WebSearch,Agent,Task,TodoWrite")
+    "Bash,Read,Glob,Grep,Write,Edit,WebSearch,Agent,Task,TodoWrite,Monitor")
 
 # The machine-readable completion contract, appended to the instructions.
 # Same last-RESULT=-line convention as ai_plan.PLAN_RESULT_SCHEMA, parsed by
@@ -46,9 +52,15 @@ PLACEMENT_RESULT_SCHEMA = (
     '"blocking": <final board_score blocking count as an integer, or null>, '
     '"summary": "<one line>"}')
 
+# Tab mode -> (skill, the skill's own mode argument). Both tab modes run the
+# one free-agent skill; the keys also name the run folders (_RUN_DIR_RE).
 PLACEMENT_SKILLS = {
-    "place": "plan-pcb-placement",
-    "place_route": "plan-pcb-placement-and-routing",
+    "place": "pcb-free-agent",
+    "place_route": "pcb-free-agent",
+}
+PLACEMENT_SKILL_MODES = {
+    "place": "place",
+    "place_route": "full",
 }
 
 # Backends that can drive a placement run today. The tab shows ALL backends
@@ -58,37 +70,22 @@ PLACEMENT_SKILLS = {
 # allowlist handling in build_cmd) is the whole cost of adding a harness.
 PLACEMENT_SUPPORTED_BACKENDS = ("claude",)
 
-# Driver stage ids -> human progress text ("which type of work"), from the two
-# skills' driver --list output (placement_driver.py P*, loop_driver.py L*).
-STAGE_LABELS = {
-    "P-brief": "P-brief: what the board is FOR",
-    "P0": "P0 gate: should placement be touched",
-    "P1": "P1 seeding an unplaced board",
-    "P2": "P2 locking mechanical parts",
-    "P3": "P3 reconstructing the placement",
-    "P4": "P4 fix loop: measure/change/verify",
-    "P5": "P5 arrangement slate",
-    "P6": "P6 floorplan intent",
-    "P-close": "P-close: close-out + film",
-    "L1": "L1 placing",
-    "L2": "L2 freeze + route",
-    "L3": "L3 classifying the failure",
-    "L4": "L4 re-entering at the named point",
-    "L5": "L5 close-out",
-}
-
-# Tolerates --stage P4 / --stage=P4 / --stage "P4" spellings.
-#
-# EVERY id the two drivers register, or the GUI reports "working..." for a
-# stage that is running. P-brief was missing here for the same reason it was
-# missing from placement_driver --list (#936 C2): it is the one id that is
-# neither P<digit> nor P-close, so a hand-written tuple and this pattern
-# skipped it alike -- and it is the stage that records the declared design
-# brief (#711). tests/test_placement_run.py derives the expected set by
-# importing both drivers, so a new stage id fails there rather than degrading
-# to "working..." in the GUI.
-_STAGE_RE = re.compile(
-    r"--stage[=\s]+[\"']?(P-brief|P-close|P[0-6]|L[1-5])\b")
+# The folder beside the board that holds one directory per run (#1057).
+RUNS_DIRNAME = "krt_placement"
+# `*` ignores the .gitignore itself too, so the whole folder stays out of the
+# user's repository. Written once, never over a file the user already has.
+_RUNS_GITIGNORE = (
+    "# KiCad Routing Tools placement runs: scratch, never version it.\n*\n")
+# Per-run record of the board the run was started on: several boards can
+# share one folder, and a run's own files do not say which one it served.
+RUN_MARKER = ".krt_run.json"
+# How many runs of one board the folder keeps, the new run included.
+KEEP_RUNS = 3
+# Only directories named the way create_workdir names them are ever pruned,
+# so nothing else a user keeps in the folder can be touched.
+_RUN_DIR_RE = re.compile(
+    r"^(\d{8}_\d{6})_(?:%s)(?:_(\d+))?$"
+    % "|".join(sorted(PLACEMENT_SKILLS, key=len, reverse=True)))
 
 
 def create_workdir(board_filename, mode):
@@ -96,7 +93,9 @@ def create_workdir(board_filename, mode):
 
     Lives next to the board file (krt_placement/<stamp>_<mode>/) so the movie
     and REPORT.md survive the session and are easy to find; falls back to the
-    system temp dir when the board has no on-disk file yet.
+    system temp dir when the board has no on-disk file yet. The folder gets a
+    .gitignore and the run a RUN_MARKER naming its board, which is what lets
+    prune_runs keep the folder bounded (#1057).
     """
     base = None
     if board_filename:
@@ -105,19 +104,203 @@ def create_workdir(board_filename, mode):
             base = d
     if base is None:
         base = tempfile.gettempdir()
+    root = os.path.join(base, RUNS_DIRNAME)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     # exist_ok=False + suffix retry: a same-second restart must NOT reuse a
     # dirty workdir (its leftover final.kicad_pcb/REPORT.md would be
     # scavenged as the new run's outputs).
     for n in range(1, 100):
         suffix = "" if n == 1 else f"_{n}"
-        workdir = os.path.join(base, "krt_placement", f"{stamp}_{mode}{suffix}")
+        workdir = os.path.join(root, f"{stamp}_{mode}{suffix}")
         try:
             os.makedirs(workdir, exist_ok=False)
-            return workdir
         except FileExistsError:
             continue
+        _ensure_gitignore(root)
+        _write_run_marker(workdir, board_filename, mode)
+        return workdir
     raise OSError(f"could not create a fresh workdir under {base}")
+
+
+def _ensure_gitignore(root):
+    path = os.path.join(root, ".gitignore")
+    if os.path.lexists(path):
+        return
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(_RUNS_GITIGNORE)
+    except OSError:
+        pass  # a read-only project dir still gets its run
+
+
+def _write_run_marker(workdir, board_filename, mode):
+    # Best effort: a run without a marker is attributed to no board, and
+    # prune_runs never deletes an unattributed run.
+    try:
+        with open(os.path.join(workdir, RUN_MARKER), "w",
+                  encoding="utf-8") as f:
+            json.dump({
+                "board": (os.path.abspath(board_filename)
+                          if board_filename else None),
+                "mode": mode,
+                "started": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }, f)
+    except OSError:
+        pass
+
+
+def _board_key(path):
+    return os.path.normcase(os.path.abspath(path)) if path else None
+
+
+def _run_board(run_dir, sole_board):
+    """(attributed, board key) for one run directory.
+
+    A run from before RUN_MARKER existed names no board. It is attributed to
+    the folder's board when that board is the ONLY one beside the folder --
+    it cannot have served another -- and otherwise stays unattributed.
+    """
+    try:
+        with open(os.path.join(run_dir, RUN_MARKER), encoding="utf-8") as f:
+            return True, _board_key(json.load(f).get("board"))
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, AttributeError):
+        return False, None      # unreadable marker: leave the run alone
+    if sole_board is None:
+        return False, None
+    return True, sole_board
+
+
+def _sole_board(board_dir):
+    """The one .kicad_pcb in board_dir (KiCad autosaves excluded), or None."""
+    try:
+        boards = [n for n in os.listdir(board_dir)
+                  if n.endswith(".kicad_pcb") and not n.startswith("_autosave-")
+                  and os.path.isfile(os.path.join(board_dir, n))]
+    except OSError:
+        return None
+    return _board_key(os.path.join(board_dir, boards[0])) \
+        if len(boards) == 1 else None
+
+
+def _is_link(path):
+    isjunction = getattr(os.path, "isjunction", None)   # Python 3.12+
+    return os.path.islink(path) or bool(isjunction and isjunction(path))
+
+
+def _tree_bytes(path):
+    total = 0
+    for dirpath, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _remove_tree(path):
+    """rmtree that clears read-only bits; True when the tree is gone."""
+    def _retry(func, p, _exc):
+        if func not in (os.unlink, os.remove, os.rmdir):
+            return
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass    # judged below by whether the tree is still there
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_retry)
+    else:
+        shutil.rmtree(path, onerror=_retry)
+    return not os.path.lexists(path)
+
+
+def prune_runs(workdir, board_filename, keep):
+    """Delete this board's oldest run directories beyond `keep` (#1057).
+
+    `workdir` is the run just created by create_workdir: it counts as one of
+    the `keep` and is never deleted. keep <= 0 keeps every run. Only this
+    board's runs are candidates (see _run_board); another board's runs in the
+    same folder, unattributed runs, links and anything not named like a run
+    are left alone.
+
+    Returns {"root", "pruned": [(path, bytes)], "failed": [path],
+    "kept": [(path, bytes)], "unattributed": int}.
+    """
+    root = os.path.dirname(os.path.abspath(workdir))
+    result = {"root": root, "pruned": [], "failed": [], "kept": [],
+              "unattributed": 0}
+    if keep <= 0 or os.path.basename(root) != RUNS_DIRNAME:
+        return result
+    me = _board_key(board_filename)
+    sole = _sole_board(os.path.dirname(root))
+    this_run = os.path.normcase(os.path.abspath(workdir))
+    runs = []
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return result
+    for name in names:
+        m = _RUN_DIR_RE.match(name)
+        path = os.path.join(root, name)
+        if (m is None or os.path.normcase(path) == this_run
+                or _is_link(path) or not os.path.isdir(path)):
+            continue
+        attributed, board = _run_board(path, sole)
+        if not attributed:
+            result["unattributed"] += 1
+        elif board == me:
+            runs.append(((m.group(1), int(m.group(2) or 1)), path))
+    runs.sort(reverse=True)                     # newest first
+    keep_others = [p for _k, p in runs[:keep - 1]]
+    for path in [workdir] + keep_others:
+        result["kept"].append((path, _tree_bytes(path)))
+    for _key, path in runs[keep - 1:]:
+        size = _tree_bytes(path)
+        if _remove_tree(path):
+            result["pruned"].append((path, size))
+        else:
+            # rmtree may have taken the marker before failing on an open
+            # file; without it the next run could not retry this one.
+            if not os.path.exists(os.path.join(path, RUN_MARKER)):
+                _write_run_marker(path, board_filename, None)
+            result["failed"].append(path)
+    return result
+
+
+def _fmt_bytes(n):
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.1f} GB"
+    if n >= 1024 ** 2:
+        return f"{n / 1024 ** 2:.1f} MB"
+    return f"{n / 1024:.0f} KB"
+
+
+def format_prune_note(result):
+    """prune_runs' result as log lines ('' when there is nothing to say)."""
+    lines = []
+    root = result["root"]
+    if result["pruned"]:
+        kept = result["kept"]
+        lines.append(
+            f"Placement: removed {len(result['pruned'])} older run(s) of this "
+            f"board from {root} "
+            f"({_fmt_bytes(sum(b for _p, b in result['pruned']))} freed); "
+            f"keeping the newest {len(kept)} "
+            f"({_fmt_bytes(sum(b for _p, b in kept))}).")
+    if result["failed"]:
+        lines.append(
+            f"Placement: could not fully remove {len(result['failed'])} old "
+            f"run folder(s) (a file may be open); retried at the next run: "
+            + ", ".join(result["failed"]))
+    if result["unattributed"]:
+        lines.append(
+            f"Placement: {result['unattributed']} run folder(s) in {root} "
+            f"name no board, so they are never pruned; delete them by hand "
+            f"if unneeded.")
+    return "".join(line + "\n" for line in lines)
 
 
 def stage_inputs(workdir, snapshot_path, board_filename):
@@ -146,6 +329,18 @@ def stage_inputs(workdir, snapshot_path, board_filename):
             sibling = stem + ext
             if os.path.isfile(sibling):
                 shutil.copyfile(sibling, os.path.join(workdir, "input" + ext))
+        # mechanical.json is a DIRECTORY file, not a stem sibling:
+        # reconcile.discover_mechanical reads <board dir>/mechanical.json, and
+        # the run's board is <workdir>/input.kicad_pcb. Unstaged, every
+        # declared mechanical fact beside the user's board was invisible to a
+        # run launched from this tab, while the same skill run in place saw it.
+        try:
+            from placement.reconcile import MECHANICAL_NAME
+        except Exception:                                  # noqa: BLE001
+            MECHANICAL_NAME = "mechanical.json"
+        mech = os.path.join(os.path.dirname(stem), MECHANICAL_NAME)
+        if os.path.isfile(mech):
+            shutil.copyfile(mech, os.path.join(workdir, MECHANICAL_NAME))
     return staged
 
 
@@ -180,10 +375,11 @@ def build_placement_instructions(workdir, mode, extra=""):
         "If a gate refuses (for example the board already carries routed "
         'copper), stop and report status "refused" instead of stripping '
         "copper.",
+        # The GUI's progress line is the newest ledger row, so the skill's
+        # milestone rows are what the user sees while the run works.
+        "Record every milestone board in that ledger as you go (the skill's "
+        "`converge.py record` step): it is the only progress this GUI shows.",
     ]
-    if mode == "place_route":
-        lines.append("Run every loop_driver.py stage with --no-delegate "
-                     "(single process; this is a headless run).")
     if extra and extra.strip():
         lines.append(extra.strip())
     lines.append("After the report, end your reply with exactly one line of "
@@ -194,7 +390,8 @@ def build_placement_instructions(workdir, mode, extra=""):
 def build_placement_prompt(backend, workdir, staged_board, mode, extra=""):
     """The full skill prompt for a placement run (via backend.skill_prompt)."""
     return backend.skill_prompt(
-        PLACEMENT_SKILLS[mode], _fwd(staged_board),
+        PLACEMENT_SKILLS[mode],
+        f"{PLACEMENT_SKILL_MODES[mode]} {_fwd(staged_board)}",
         build_placement_instructions(workdir, mode, extra))
 
 
@@ -235,8 +432,13 @@ def parse_placement_result(value):
     if data.get("report") and report is None:
         errors.append(f"report path not found: {data.get('report')!r}")
     blocking = data.get("blocking")
-    if blocking is not None and not isinstance(blocking, int):
-        errors.append(f"blocking is not an integer: {blocking!r}")
+    # `isinstance(True, int)` holds, so the bool test is not redundant: a
+    # `false` or a `-1` used to pass validation and reach the status line as
+    # "blocking False" (#1075).
+    if blocking is not None and (isinstance(blocking, bool)
+                                 or not isinstance(blocking, int)
+                                 or blocking < 0):
+        errors.append(f"blocking is not a non-negative integer: {blocking!r}")
         blocking = None
     return {
         "status": status,
@@ -362,14 +564,11 @@ def _row_label(row):
 def derive_stage(transcript_tail, ledger_row, newest_artifact_name):
     """Best human answer to "what is it doing right now".
 
-    Priority: the last driver --stage the agent invoked (the drivers are the
-    skills' tape heads, so this is authoritative when present) -> the newest
-    converge ledger row -> artifact-name heuristics -> a generic fallback.
+    Priority: the newest converge ledger row (the skill records a row per
+    milestone) -> artifact-name heuristics -> a generic fallback.
+    `transcript_tail` is kept in the signature for the caller; there is no
+    staged driver whose `--stage` ids it could name any more.
     """
-    for line in reversed(list(transcript_tail or ())):
-        m = _STAGE_RE.search(line)
-        if m:
-            return STAGE_LABELS.get(m.group(1), m.group(1))
     if ledger_row:
         lap = ledger_row.get("iteration")
         kind = ledger_row.get("kind") or "?"

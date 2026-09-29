@@ -49,6 +49,7 @@ import krt_capabilities as K                                   # noqa: E402
 
 #: The docs this gate holds to the engine's actual surface.
 #:
+#: (History: the staged placement skill, since retired for pcb-free-agent.)
 #: `plan-pcb-placement/SKILL.md` was excluded (#923) over two rows that came
 #: back, on the reasoning that neither was a defect and a gate shipping two
 #: standing false positives stops being read. #936 resolved both instead, so
@@ -74,10 +75,19 @@ import krt_capabilities as K                                   # noqa: E402
 #: what makes the coverage real rather than asserted.
 DOCS = (
     os.path.join('.claude', 'skills', 'plan-pcb-routing', 'SKILL.md'),
-    os.path.join('.claude', 'skills', 'plan-pcb-placement-and-routing',
-                 'SKILL.md'),
-    os.path.join('.claude', 'skills', 'plan-pcb-placement', 'SKILL.md'),
+    # The free-agent skill replaced the staged placement and combined skills
+    # (#923 had enrolled those after a number they quoted was pinned nowhere);
+    # it inherits their place in the list, verifier brief included.
+    os.path.join('.claude', 'skills', 'pcb-free-agent', 'SKILL.md'),
+    os.path.join('.claude', 'skills', 'pcb-free-agent', 'references',
+                 'verifier.md'),
     os.path.join('docs', 'api-routing-config.md'),
+    # #946: this file was in NO gate at all -- not this one, not
+    # test_doc_constants, not run_doc_examples -- while quoting flags and
+    # constants throughout. Added here rather than to run_doc_examples,
+    # which EXECUTES its ```python blocks: a render block there would need
+    # Pillow and a board and would write PNGs into the repo root.
+    os.path.join('docs', 'route-animation.md'),
 )
 
 #: What counts as LIVE: any non-test source file that registers the flag with
@@ -285,6 +295,9 @@ EXTERNAL = {
     '--name-only', '--porcelain', '--short', '--set-upstream', '--amend',
     '--no-pager', '--follow', '--patch', '--word-diff', '--color',
     '--recurse-submodules', '--depth', '--branch', '--tags',
+    # `gh issue list --search` (pcb-free-agent's hand-back: check the open
+    # issues before filing a tool gap).
+    '--search',
     # Prose placeholders, not flags: "`--flag`" in a worked example, and
     # "`--stitch-`" as the prefix of a family.
     '--flag', '--stitch-',
@@ -389,6 +402,13 @@ def main():
           len(live) > 100, f'only {len(live)} flags found by the add_argument scan')
     check('the script scan found a plausible file surface',
           len(scripts) > 100, f'only {len(scripts)} .py files found')
+    # POSITIVE CONTROL on the composed-flag resolver. It used to be held down
+    # only by the retired placement skill citing `--no-ratsnest`; with that
+    # skill gone no doc here cites a composed flag, so a blinded resolver
+    # would pass every row above. `render_placement.py --help` prints both.
+    check('the composed-flag resolver finds render_placement\'s --ratsnest pair',
+          {'--ratsnest', '--no-ratsnest'} <= live,
+          'the f-string registrar (_bool_pair) is no longer resolved')
 
     for rel in DOCS:
         if not os.path.exists(os.path.join(ROOT, rel)):

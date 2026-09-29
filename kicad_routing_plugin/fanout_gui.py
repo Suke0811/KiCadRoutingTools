@@ -1947,6 +1947,9 @@ class FanoutTab(wx.Panel):
                         vd['x'], vd['y'], vd['size'], vd['drill'],
                         top_layer=top, bottom_layer=bot,
                         net_name=name_for(vd.get('net_id')),
+                        # #962: the engine's Type VII stamp on a via it put
+                        # in a pad or paste opening.
+                        tenting_attrs=vd.get('tenting_attrs'),
                     ))
                     vias_added += 1
         except Exception as e:
@@ -1955,6 +1958,11 @@ class FanoutTab(wx.Panel):
                 "Apply error", wx.OK | wx.ICON_ERROR,
             )
             return
+        # #962: make_via wrote each via's Type VII stamp; say which tokens it
+        # could not write (an older kipy) rather than let the FAB NOTE stand.
+        from kicad_ipc_adapter import disclose_unwritten_via_protection
+        disclose_unwritten_via_protection(vias, name_for, self.pcb_data,
+                                          f"{fanout_kind} fanout")
 
         self.status_text.SetLabel(
             f"Complete: {tracks_added} tracks, {vias_added} vias added")
@@ -2104,6 +2112,10 @@ class FanoutTab(wx.Panel):
             wx.Yield()
 
             pcb_data = build_pcb_data_from_board(board)
+            # #962: which vias are under solder BEFORE any cap moves (the
+            # CLI twin is in place_fanout_clearance.main).
+            from fab_notes import via_snapshot as _via_snapshot962
+            _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)
             # #966: routing retains a declared zero then fab-floors it, but
             # placement treats that declaration as unset (fallback 0.25).
             # Preserve omission so the cap engine resolves its own contract;
@@ -2192,6 +2204,28 @@ class FanoutTab(wx.Panel):
                 via_moves=via_moves,
                 new_segments=result.get('new_segments', []) or [],
                 pcb_data=self.pcb_data)
+            # #962: a via the moves put under a pad or paste opening needs
+            # Type VII, as place_fanout_clearance.main decides for the file.
+            # Decided on the board AS MOVED, re-read from the live board after
+            # the commit, and written onto the live vias at those spots in one
+            # more commit (the SWIG front's apply_via_protection).
+            try:
+                from fab_notes import (via_protection_stamps,
+                                       print_via_protection_record)
+                from kicad_ipc_adapter import apply_via_protection_stamps
+                _post962 = build_pcb_data_from_board(board)
+                _st962, _rec962 = via_protection_stamps(
+                    _post962.vias, _input_vias962, _post962)
+                print_via_protection_record(_rec962, "cap optimization")
+
+                def _name962(nid):
+                    n = _post962.nets.get(nid)
+                    return n.name if n is not None else None
+                apply_via_protection_stamps(
+                    board, _st962, _name962, _post962,
+                    message="KiCadRoutingTools: Type VII for cap-moved vias")
+            except Exception as _e962:                          # noqa: BLE001
+                print(f"  Via protection after the cap moves: skipped ({_e962})")
             # The SHARED wording (#746): says which mechanism freed each cap
             # (`via_resolved`) and names caps the nudge REGRAZED, and drops the
             # old line's "could not clear a foreign via" -- the verdict has

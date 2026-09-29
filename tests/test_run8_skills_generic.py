@@ -22,8 +22,9 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS = os.path.join(ROOT, '.claude', 'skills')
-OWNED = ('plan-pcb-placement', 'plan-pcb-routing',
-         'plan-pcb-placement-and-routing')
+#: The staged placement and combined skills were retired for pcb-free-agent.
+#: The banlist applies to it unchanged: it is meant to work on ANY board.
+OWNED = ('plan-pcb-routing', 'pcb-free-agent')
 
 FAILURES = []
 
@@ -64,7 +65,7 @@ def skill_files():
 
 def main():
     files = list(skill_files())
-    check('the three skills exist', len(files) >= 3,
+    check('the owned skills exist', len(files) >= 3,
           str([os.path.relpath(f, SKILLS) for f in files]))
 
     banned = corpus_names()
@@ -87,48 +88,22 @@ def main():
           '\n        '.join(hits[:12]))
 
     print('the skills stay separable')
-    place = os.path.join(SKILLS, 'plan-pcb-placement', 'SKILL.md')
     route = os.path.join(SKILLS, 'plan-pcb-routing', 'SKILL.md')
-    both = os.path.join(SKILLS, 'plan-pcb-placement-and-routing', 'SKILL.md')
-    for p in (place, route, both):
+    free = os.path.join(SKILLS, 'pcb-free-agent', 'SKILL.md')
+    for p in (route, free):
         check(f'{os.path.basename(os.path.dirname(p))} has front matter',
               open(p, encoding='utf-8').read().startswith('---\n'))
 
-    ptext = open(place, encoding='utf-8').read()
     rtext = open(route, encoding='utf-8').read()
-    btext = open(both, encoding='utf-8').read()
-
-    check('the placement skill owns the placement gate',
-          '## Step 0: Placement gate' in ptext)
-    # ca6bb455 deliberately reshaped both of these, so the old expectations
-    # are stale rather than violated:
-    #   * the routing skill is now main's file VERBATIM (it had grown from
-    #     2293 to 5479 lines with placement-domain sections). It therefore does
-    #     NOT point at /plan-pcb-placement -- the COMBINED skill owns the
-    #     cross-references, which is what we check instead.
-    #   * the combined skill absorbed Step 9's 892-line convergence loop, the
-    #     hub of the place->route cycle, so "thin" no longer describes it. The
-    #     property that still matters -- it must not RESTATE either half -- is
-    #     checked separately just below and is left untouched.
-    check('the combined skill points at both halves',
-          '/plan-pcb-placement' in btext and '/plan-pcb-routing' in btext)
+    ftext = open(free, encoding='utf-8').read()
     check('the routing skill kept its routing half',
           'Step 1: Load and Analyze PCB Structure' in rtext)
-    check('the combined skill does not restate either half',
-          'Step 0a-0' not in btext and 'Load and Analyze' not in btext)
 
+    # The placement-gate, outline, polish-pass and invalidation wordings were
+    # the retired placement and combined skills'; their checks left with them.
     print('the load-bearing rules survived the cut')
     for label, needle, where in [
-            ('outline prohibition', 'OUTLINE IS NOT YOURS TO CHANGE',
-             ptext + rtext),
-            ('the placement gate is a measurement, not a default',
-             'measure first, then decide', ptext + rtext),
-            ('a clean placement is left alone, as a CONSEQUENCE of measuring',
-             'WORSE by a polish pass', ptext),
-            ('locks are never the tool\'s to move', 'locked yes', ptext),
-            ('crossings is not a gate', 'crossings', ptext),
-            ('placement invalidates downstream boards', 'invalidates',
-             ptext + rtext + btext)]:
+            ("locks are never the tool's to move", 'locked yes', ftext)]:
         check(f'{label} is still stated', needle in where)
 
     print()

@@ -10,8 +10,9 @@ that was never committed. `wk/` is gitignored, `wk/calibration/RESULT.md` was
 authored in a throwaway worktree, and three of those eleven citations are
 **printed to the operator at runtime** — so a run emitted a refusal naming a file
 its reader could not open. The reasoning below is the only record of *why*
-`placement_driver.py`'s disposition gate has the shape it has, which makes it
-load-bearing rather than a stale comment. #803 is that finding; this file is the
+`placement_driver.py`'s disposition gate had the shape it had (the driver was
+retired with the staged skills for `/pcb-free-agent`; the calibration it rests
+on is kept here). #803 is that finding; this file is the
 repair.
 
 > **The rows ARE committed here, and they are small.** 4.4 KB of blobs:
@@ -50,9 +51,10 @@ ratio shipped at **0.25 — a number that was chosen, not measured.**
 without it:** the comparison only happens when `halo_gain >= 0.25`. Below that
 the arm is treated as having barely moved and passes untested — what the tables
 call **"pass (early-out)"**. It is `calibrate_congestion_ratio.py:202-203`, and
-it is live today as `if halo_gain >= 0.25 and hpwl_gain < 0.25 * halo_gain` in
-`placement_driver.py`. Without it urchin's partial repair (halo_gain 0.0026,
-hpwl_gain −0.1583) would read as a REFUSE rather than the early-out it is.
+it was live as `if halo_gain >= 0.25 and hpwl_gain < 0.25 * halo_gain` in the
+retired `placement_driver.py`. Without it urchin's partial repair (halo_gain
+0.0026, hpwl_gain −0.1583) would read as a REFUSE rather than the early-out it
+is.
 
 Three populations per board were built to find where, or whether, a ratio
 separates a healthy repair from a legality-only pass:
@@ -201,9 +203,10 @@ section overturns.
 **"hpwl behaves — its minimum is at the truth"** is not universally true, and
 `loop_driver.py` asserted it as the reason hpwl is the metric that can carry a
 gate. On piantor the *damaged* board scores lower hpwl than the truth (1965.07
-against 2263.61), so hpwl's minimum is not at the truth there. That comment now
-carries the caveat and points here. This does not make hpwl useless — it makes it
-a metric whose direction must be checked per board rather than assumed.
+against 2263.61), so hpwl's minimum is not at the truth there. That comment
+carried the caveat and pointed here until the driver was retired. This does not
+make hpwl useless — it makes it a metric whose direction must be checked per
+board rather than assumed.
 
 ## What this does not claim
 

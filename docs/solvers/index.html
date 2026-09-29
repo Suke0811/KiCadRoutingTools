@@ -1,0 +1,1237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CP-SAT and HiGHS in the whole route</title>
+<meta name="description" content="Interactive explainer: how CP-SAT and HiGHS plan a whole bus route in KiCadRoutingTools.">
+<style>
+:root{--F:#d9483b;--B:#2f6fd0;--ink:#1d2330;--mut:#5b6577;--line:#d8dde6;--bg:#f6f7fa;--card:#fff;--acc:#6a3fc4;--ok:#2e9d4c;--warn:#e3a008}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:24px 18px 80px}
+h1{font-size:28px;margin:8px 0 4px}
+h2{font-size:22px;margin:44px 0 6px;padding-top:10px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:26px 0 4px}
+p{margin:8px 0}
+.lede{color:var(--mut);font-size:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:12px 0}
+.callout{border-left:4px solid var(--acc);background:#f1ecfb;padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:#fdf3dc}
+code{background:#eceff5;border-radius:4px;padding:1px 5px;font-size:13px}
+svg,canvas{max-width:100%;height:auto;display:block}
+.row{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin:8px 0}
+button{font:inherit;padding:5px 12px;border:1px solid #b9c0cf;background:#fff;color:var(--ink);border-radius:6px;cursor:pointer}
+select,input{color:var(--ink)}
+select{font:inherit;background:#fff;border:1px solid #b9c0cf;border-radius:6px;padding:2px 6px}
+button:hover{background:#eef1f8}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.primary:hover{background:#5a33a8}
+label{color:var(--mut);font-size:14px}
+input[type=range]{vertical-align:middle}
+.stat{font-variant-numeric:tabular-nums;background:#eef1f8;border-radius:6px;padding:2px 9px;font-size:14px;color:var(--ink)}
+.stat b{color:var(--acc)}
+.log{font:13px/1.45 ui-monospace,Consolas,monospace;color:var(--mut);min-height:38px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+th{background:#eef1f8}
+.F{color:var(--F);font-weight:600}.B{color:var(--B);font-weight:600}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:760px){.two{grid-template-columns:1fr}}
+details{margin:8px 0}summary{cursor:pointer;color:var(--acc)}
+nav.toc{position:sticky;top:0;z-index:5;background:rgba(246,247,250,.94);backdrop-filter:blur(4px);border-bottom:1px solid var(--line);padding:8px 18px;font-size:14px;display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center}
+nav.toc a{color:var(--acc);text-decoration:none}nav.toc a:hover{text-decoration:underline}
+nav.toc .home{font-weight:600;margin-right:8px}
+h2,h3{scroll-margin-top:52px}
+dl.gl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin:6px 0}
+dl.gl dt{font-weight:600}dl.gl dd{margin:0;color:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--mut);margin:6px 0}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:4px}
+.steps{counter-reset:s;list-style:none;padding:0;margin:8px 0}
+.steps li{counter-increment:s;margin:6px 0;padding-left:34px;position:relative}
+.steps li:before{content:counter(s);position:absolute;left:0;top:0;width:24px;height:24px;border-radius:50%;background:var(--acc);color:#fff;text-align:center;font-size:13px;line-height:24px;font-weight:700}
+footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:var(--mut);font-size:14px}
+.tag{display:inline-block;font-size:12px;padding:0 7px;border-radius:9px;background:#e6e0f6;color:#4a2a9a;margin-right:4px}
+.vid{position:relative;aspect-ratio:16/9;background:#11141b;border-radius:8px;overflow:hidden;margin:8px 0}
+.vid iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+</style>
+</head>
+<body>
+<nav class="toc"><a class="home" href="../">&larr; KiCadRoutingTools</a>
+<a href="#sec-films">Films</a><a href="#pipeline">Pipeline</a><a href="#ends">Ends</a><a href="#cpsat">CP-SAT</a><a href="#sec-lp">HiGHS LP</a><a href="#simplex">How an LP is solved</a><a href="dual/">The dual as forces &rarr;</a><a href="#sec-loop">Negotiation</a><a href="#sec-after">Polish &middot; snap &middot; audit &middot; route</a><a href="#summary">Side by side</a></nav>
+<main>
+
+<h1>What CP-SAT and HiGHS actually do in the whole route</h1>
+<p class="lede">The whole route (<code>awx/whole_chain.sh</code>, on <code>bus622-take5</code>) plans every lane's complete path before it routes anything. That plan is built by <b>two solvers with different jobs</b>. CP-SAT settles <i>discrete</i> questions: who crosses whom, and on which layer. HiGHS then solves a <i>continuous</i> question: how far sideways each lane sits at every point along the way. Everything below is interactive. The toys use the same ideas and constraint shapes as the code, at toy scale.</p>
+
+<h3>The words you will meet</h3>
+<dl class="gl">
+<dt>lane</dt><dd>one net's planned path through the bus, from the source BGA to the destination BGA.</dd>
+<dt>trunk</dt><dd>the long, parallel stretch of the bus between the two BGAs, where lanes run side by side and may cross.</dd>
+<dt>tooth / berth</dt><dd>where a lane escapes at the source (tooth) and arrives at the destination (berth). Each fixes the layer the lane starts and ends on.</dd>
+<dt>crossing</dt><dd>a pair of lanes whose order is swapped between source and destination. They must pass through each other, so at that point they sit on different layers.</dd>
+<dt>via</dt><dd>a layer change. Vias are what the discrete plan tries to minimise.</dd>
+<dt>cut</dt><dd>a "not this combination" rule sent back to CP-SAT after the LP found a plan that cannot be drawn.</dd>
+<dt>convex</dt><dd>a region with no dents, holes or separate pieces: every point between two allowed points is allowed too. An LP's region always is, which is why the LP finds the best answer overall and not just the best nearby (<a href="#sec-lp">section 2</a>).</dd>
+</dl>
+<div class="legend"><span><i style="background:var(--F)"></i>F.Cu (top layer)</span><span><i style="background:var(--B)"></i>B.Cu (bottom layer)</span><span><i style="background:#fff;border:2px solid #1d2330"></i>via</span></div>
+
+<div class="callout warn"><b>One correction to the framing.</b> In the whole route HiGHS is a plain <b>LP</b> (continuous, via <code>scipy.optimize.linprog</code> in <code>whole_geo.py</code>), not a MILP. HiGHS <i>is</i> used as a MILP (<code>scipy.optimize.milp</code>) in the older braid-chain code and its instruments: <code>schedule.exact_pages</code>, <code>joint_floor.py</code>, <code>synth_bus.cap_floor</code>. Those are covered at the end.</div>
+
+<!-- ======================= FILMS ======================= -->
+<h2 id="sec-films">Watch a whole run</h2>
+<p>Two films of real <code>whole_chain.sh</code> runs on the H3-to-DDR3 bench (BGA <code>U1</code> to DDR3 <code>DU1</code>), made by <code>awx/whole_movie.py</code>. Each walks the stages in order: the ends, the frame, the solve, the geometry, the polish, the snap, the audit and the route. Beside the board it draws what each solver decides:</p>
+<ul>
+ <li><b>The solve (CP-SAT)</b> is a braid under the board, sharing its x axis. Each strand is a lane, its height is the lane's order, and its colour is its layer. Two strands that cross differ in colour, and a white ring is a via. The search is replayed from the plans CP-SAT really found, in the order it found them, with the bound that proved the last one. On the board above, the lanes swap exactly where the solve put each crossing.</li>
+ <li><b>The geometry (HiGHS LP)</b> is drawn as forces on the board. Every rule that holds a lane where it is has a <b>shadow price</b> in the LP's dual, and the price is how hard it pushes: a neighbour on the same layer, a via's room, a pad, the board edge, a turn limit.</li>
+</ul>
+<p>Neither solver is re-implemented for the film. Each is run again under the chain's own settings and watched, and the film is refused unless the re-run writes what the chain wrote, byte for byte.</p>
+<div class="card">
+  <h3 style="margin-top:0">K28: the plan passes on the first round</h3>
+  <p style="margin-top:0">25 lanes (28 nets, 3 of them differential pairs). CP-SAT finds three plans in 0.14 s and proves the last one optimal, and the plan passes every audit check on the first loop round. Routed: every net connected, DRC clean, 30 vias and 589 mm, against the human's 48 vias and 678 mm on the same nets (the human's copper includes its length-matching meanders).</p>
+  <div class="vid"><iframe src="https://drive.google.com/file/d/1T5S_PyLtYb8HodUSI5uSRaG6z0yAwfPH/preview" title="K28 whole route film" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe></div>
+  <p style="font-size:14px;color:var(--mut)">2 min 38 s, 1080p. <a href="https://drive.google.com/file/d/1T5S_PyLtYb8HodUSI5uSRaG6z0yAwfPH/view">Open in Google Drive</a></p>
+</div>
+<div class="card">
+  <h3 style="margin-top:0">K51: one round of negotiation</h3>
+  <p style="margin-top:0">48 lanes (51 nets, 3 of them differential pairs). CP-SAT proves its plan optimal in 19 s, but the first loop round does not pass: the audit finds 3 places short, and the polish finds 2 lanes with no room on their side of an island. The film stops to show what goes back (<a href="#sec-loop">section 3</a>): side flips to the geometry, and cuts and history to the solve, which solves again with the same vias and the crossings moved out of the short places. Routed: every net connected, DRC clean, 80 vias and 1220 mm, against the human's 88 vias and 1337 mm.</p>
+  <div class="vid"><iframe src="https://drive.google.com/file/d/1gVCKe98gpvDGrCZCJjovikLR8IRmTc7i/preview" title="K51 whole route film" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe></div>
+  <p style="font-size:14px;color:var(--mut)">2 min 50 s, 1080p. <a href="https://drive.google.com/file/d/1gVCKe98gpvDGrCZCJjovikLR8IRmTc7i/view">Open in Google Drive</a></p>
+</div>
+
+<!-- ======================= 0. PIPELINE ======================= -->
+<h2 id="pipeline">0 &nbsp; The pipeline, and where the two solvers sit</h2>
+<p>Click a stage. Dashed arrows are the feedback that makes this a negotiation instead of a one-way pipe. <code>whole_chain.sh</code> repeats the fanout up to 3 rounds, and <code>whole_loop.sh</code> repeats geometry, polish and audit up to 6 rounds.</p>
+<div class="card">
+  <svg id="pipe" viewBox="0 0 1000 300"></svg>
+  <div class="row"><button id="pipePlay" class="primary">Play the flow</button><span class="stat" id="pipeStat"></span></div>
+  <div id="pipeDetail" style="min-height:70px"></div>
+</div>
+
+<!-- ======================= 1. CP-SAT ======================= -->
+<h3 id="ends">0a &nbsp; Ends and fanout: the ends decide the braid (<code>fanout_from_plan.py</code>, <code>whole_ends.py</code>)</h3>
+<p>Before any solver runs, the fanout decides where every lane <i>leaves</i> the source BGA (its <b>tooth</b>) and where it <i>arrives</i> at the destination (its <b>berth</b>), including which layer it is on at each end. Those choices fix the whole puzzle: the <b>order</b> of teeth around the source and of berths around the destination decides which pairs must cross, and the end layers decide what each crossing costs. That is why the fanout is not a separate chore. <code>whole_ends</code> scores candidate ends by the vias the resulting braid would need (an estimate from the ends alone), and the fanout picks the cheapest. Crowded ends found later by the audit come back here as feedback.</p>
+<div class="card">
+  <p style="margin-top:0">Five lanes leave the source (left, fixed order) and must be given berths at the destination (right). Press a <b>&#8645;</b> button to swap two neighbouring berths, and click a <b>layer badge</b> to flip an end's layer. The counters give the crossings your choice forces and the <i>minimum</i> vias for them (found exactly, as in 1a). Then press <b>Best ends</b>: it tries all 120 berth orders for the layers you set, which is what the fanout's ends model does with its escape menus.</p>
+  <svg id="eSvg" viewBox="0 0 800 260"></svg>
+  <div class="row"><button id="eBest" class="primary">Best ends</button><button id="eRev">Reverse berths</button><button id="eLay">New layers</button><button id="eId">Same order</button>
+   <span class="stat">crossings: <b id="eCross">0</b></span><span class="stat">minimum vias: <b id="eVias">0</b></span></div>
+  <div class="log" id="eLog"></div>
+</div>
+
+<h3 id="ends-search">0b &nbsp; How the ends are searched: exchange moves and random kicks</h3>
+<p>The real menu is far too big to try every combination, so <code>whole_ends</code> uses a <b>local search</b>. One <b>move</b> changes one lane's tooth or berth to another option. If that option is already taken by <i>one</i> other lane, that lane is <b>ejected</b> to its best free option, and the two changes are scored together (an <b>exchange</b>). A move is taken as soon as it lowers the objective, and it sweeps until no single move helps. That reaches a <b>local optimum</b>, which is not always the best. So it is <b>iterated</b>: a few lanes are kicked to random options, searched again, and the result kept only if better. The kicks use a fixed seed, so every machine gets the same answer.</p>
+<div class="card">
+  <p style="margin-top:0">Five lanes must each take one of seven exits at the destination (right). An exit is fixed to a layer, so the choice of exit also chooses the end layer. The number is the minimum vias (found exactly, as before) plus a small tie-break for crossings. Try it yourself: click a <b>lane</b> on the right, then click an <b>exit</b> to move it there (the lane in the way is ejected to its best free exit). Or let the search work: <b>Take a move</b> once at a time, then <b>Kick</b> when it is stuck.</p>
+  <svg id="kSvg" viewBox="0 0 800 340"></svg>
+  <div class="row"><button id="kStep" class="primary">Take a move</button><button id="kRun">Search to a local optimum</button><button id="kKick" class="primary" style="background:#c07a00;border-color:#c07a00">Kick</button><button id="kAuto">Kick until 4 fail in a row</button>
+   <button id="kNew">New instance</button><button id="kRst">Restart</button><button id="kOpt">Reveal the true optimum</button></div>
+  <div class="row"><span class="stat">vias now <b id="kV">-</b></span><span class="stat">moves taken <b id="kM">0</b></span><span class="stat">kicks: <b id="kK">0</b> tried, <b id="kKf">0</b> in a row failed</span><span class="stat" id="kSt"></span></div>
+  <div class="log" id="kLog" style="min-height:56px"></div>
+  <details><summary>How this maps onto the real search</summary>
+  <ul>
+   <li>The real objective is more than vias: nets over two vias (100 each), vias of the ends and the estimated route, ride length at a fixed exchange rate per via, trunk congestion, and the audits' feedback. The crossings' count is the last tie-break, exactly as here.</li>
+   <li>Options that conflict are never taken (<code>select_moves._conflict</code>). An option with two or more conflicts is skipped, not ejected.</li>
+   <li>Here the teeth are fixed. In the real run the search is done twice: berths against the teeth as laid, then with the teeth free too (a tooth move must save more than half a via, because it costs a re-fanout).</li>
+   <li>The kick moves 3 lanes to random options and stops after 4 kicks in a row that find nothing (at most 12). The finalists are re-ranked by the exact CP-SAT route.</li>
+  </ul></details>
+</div>
+<p><b>Why a local search here, when the rest of the pipeline uses CP-SAT and an LP.</b> The search starts from the fanout's own greedy choice of berths (every berth clear of the others), or on a re-plan from the previous round's, and improves it by the moves above. CP-SAT is still used, but as the final judge rather than the search: the best few ends the search reaches are re-ranked on the exact route (<code>best_exact</code>). The ends are hard to put in one exact model, for three reasons:</p>
+<ul>
+ <li><b>Scoring one choice of ends is itself a solve.</b> What a set of ends really costs is the via count of the route they force, and that is the whole CP-SAT solve of section 1: seconds to tens of seconds for each candidate. A model that chose the ends and the route together would be that solve with every lane's menu of exits added to it. So the search steers by an <b>estimate</b> that takes milliseconds and is exact in its parts: on each layer, the crossings a lane must leave the layer for are a permutation graph, whose least cover is found exactly by a chain.</li>
+ <li><b>Much of what the fanout can lay is a check, not an equation</b>: two exits that conflict, another net's copper between a pair's tips, a move the fanout refused. A search simply skips such a move, where a model would need each one written as a constraint.</li>
+ <li><b>Some terms are not linear</b>: congestion is priced by the square of the overload, and whether a lane's one layer change can serve all of its crossings depends on the order it meets them in.</li>
+</ul>
+<p>What it gives up is a proof. CP-SAT proves the fewest vias <i>for the ends it is given</i>, and the LP the best geometry for that plan, but nothing proves the ends themselves are the best. The search stops at a local optimum. The kicks and the exact re-ranking make a poor one less likely, but do not rule it out.</p>
+
+<h2 id="cpsat">1 &nbsp; CP-SAT: the discrete plan (<code>whole_solve.py</code>)</h2>
+<p>Bus lanes leave the source BGA in one order (the <b>launch order</b>, set by each lane's <i>tooth</i>) and must arrive at the destination in another (the <b>berth order</b>). Every pair that is inverted between the two <b>has to cross</b>. Two copper lanes cannot cross on the same layer, so at each crossing one lane is on <span class="F">F.Cu</span> and the other on <span class="B">B.Cu</span>. Each layer change costs a <b>via</b>. Each lane also starts on a fixed layer (its tooth) and ends on a fixed layer (its berth).</p>
+<p>The CP-SAT model is exactly that puzzle: booleans for "which lane is on top at this crossing", integers for "where along the trunk the crossing happens", and constraints tying them together. It <b>minimises vias and proves the minimum</b>. Below, an instance of that puzzle with the numbers shrunk to 5 lanes.</p>
+
+<h3>1a &nbsp; The layer puzzle, and how a solver searches it</h3>
+<div class="card">
+  <p style="margin-top:0">Click a <b>&times;</b> to swap which lane is on which layer at that crossing and watch the via count. Then press <b>Solve</b> and watch the search. Coloured lane pieces show the layer; a white circle marks a via. The boxes at the ends are the fixed tooth layer (left) and berth layer (right).</p>
+  <svg id="braid" viewBox="0 0 760 290"></svg>
+  <div class="row">
+    <button id="bNew">New instance</button>
+    <button id="bRun" class="primary">Solve</button>
+    <button id="bPause">Pause</button>
+    <button id="bStep" title="advance the search by one node">Step</button>
+    <button id="bReset">Clear</button>
+    <label>speed <input type="range" id="bSpeed" min="1" max="60" value="7"> <span class="stat" id="bSpeedV"></span></label>
+    <label><input type="checkbox" id="bBound" checked> prune with a bound</label>
+    <label><input type="checkbox" id="bEarly" checked> stop once vias are proved</label>
+  </div>
+  <div class="row">
+    <span class="stat">vias now: <b id="bVias">0</b></span>
+    <span class="stat">best found: <b id="bBest">-</b></span>
+    <span class="stat">proven lower bound: <b id="bLB">-</b></span>
+    <span class="stat">nodes visited: <b id="bNodes">0</b></span>
+    <span class="stat">branches pruned: <b id="bPruned">0</b></span>
+    <span class="stat">of <b id="bTotal">0</b> full-tree nodes</span>
+  </div>
+  <div class="log" id="bLog"></div>
+  <canvas id="tree" width="900" height="250"></canvas>
+  <p style="font-size:13px;color:var(--mut);margin:4px 0 0">The tree: each level decides one crossing (left branch = lane A of the pair on F.Cu, right = on B.Cu). Grey <span style="color:#c0392b">&times;</span> = a whole subtree thrown away without looking, because its cost so far plus the cheapest possible finish already cannot beat the best plan found. Green = a new best plan.</p>
+  <details><summary>What the real solver does beyond this toy</summary>
+  <p>The toy is a depth-first branch &amp; bound with one bound (each lane still on the wrong layer needs at least one more via). OR-tools CP-SAT runs the same idea but much harder:</p>
+  <ul>
+   <li><b>Propagation.</b> Every constraint prunes domains as soon as a variable is fixed. Two crossing lanes on opposite layers is a boolean <code>XOR</code>; a lane's change count has to match its start/end layer mismatch (<code>AddBoolXOr(act + [1 if tooth==berth])</code>), so fixing one boolean can force many others with no search.</li>
+   <li><b>Conflict learning.</b> When a branch fails, it works out <i>why</i> and adds a new clause ruling out every assignment with that same reason, not just this one. The same dead end is never entered twice.</li>
+   <li><b>LP relaxation and core-based bounds.</b> Extra sub-solvers (<code>default_lp, max_lp, core, objective_lb_search</code>) compute lower bounds on vias, which is what lets it stop with a <i>proof</i>. <code>whole_solve</code> stops as soon as <code>floor(best/W_V) &lt;= floor(bound/W_V)</code>: the via count is proved, and only the smaller tie-break term is left.</li>
+   <li><b>Determinism.</b> Budgets are counted in work (<code>max_num_deterministic_batches=100</code>), never in seconds; clause sharing is off. The same board gives the same plan on every machine. Only a proved plan is passed on.</li>
+  </ul></details>
+</div>
+
+<h3>1b &nbsp; Where along the trunk: time-window constraints</h3>
+<p>Booleans decide <i>who</i> crosses. Integers decide <i>where</i>. Each crossing gets an integer position <code>t</code> along the trunk, limited to a window (the stretch where both lanes exist and have finished their earlier crossings). Crossings that compete for the same lanes must be at least a lane pitch apart. That is the <code>AddNoOverlap</code> constraint on optional intervals in <code>whole_solve.py</code>.</p>
+<div class="card">
+  <p style="margin-top:0">Drag the blue bars. Green rails are the allowed windows. The bottom lane is the trunk, where overlaps show up red. <b>Solve</b> tries the orderings of the four crossings and places each as early as its window allows. Raise the pitch until no ordering fits: that is what "infeasible" means, and it is the situation that becomes a <b>cut</b> in section 3.</p>
+  <svg id="nov" viewBox="0 0 760 250"></svg>
+  <div class="row"><label>lane pitch <input type="range" id="novP" min="4" max="34" value="12"></label><span class="stat" id="novPV"></span><button id="novSolve" class="primary">Solve</button><button id="novReset">Scatter</button></div>
+  <div class="log" id="novLog"></div>
+</div>
+
+<h3>1c &nbsp; What "best" means: a lexicographic objective</h3>
+<p>The objective is <code>W_OVER&middot;(#nets over two vias) + W_V&middot;(total vias) + (history congestion)</code>. The weights are chosen so that each term dominates the next. Fewer vias always beats less congestion, and congestion only breaks ties between plans with equal vias. The congestion term is PathFinder-style history: places where earlier audits found trouble get a price, so the solver steers around them.</p>
+<div class="card">
+  <div class="row">
+    <div style="min-width:280px"><b>Plan X</b>: <b id="wXv">12</b> vias &nbsp;&middot;&nbsp; congestion <input type="range" id="wXc" min="0" max="900000" value="600000" step="1000" style="width:180px"> <span class="stat" id="wXcv"></span></div>
+    <div><b>Plan Y</b>: <b>13</b> vias, congestion 0</div>
+  </div>
+  <div class="row"><span class="stat">X = <span id="wX"></span></span><span class="stat">Y = <span id="wY"></span></span><span id="wWin" style="font-weight:600"></span></div>
+  <div class="log">W_V = 1,000,000 per via. Slide the congestion all the way up: X still wins as long as congestion stays under one via's weight. The tie-break never buys an extra via.</div>
+</div>
+
+<!-- ======================= 2. LP ======================= -->
+<h2 id="sec-lp">2 &nbsp; HiGHS: the continuous geometry (<code>whole_geo.py</code>)</h2>
+<p>CP-SAT has fixed the <b>topology</b>: the order of lanes at every column, where each pair crosses, and each lane's layer, so where along its route each via sits. What is still unknown is <b>real numbers</b>: how far off the centreline each lane sits at each column (one column every 4 router grid steps). That question is a linear program.</p>
+<p>The unknown is one number per (lane, column): its sideways offset <code>o[lane][col]</code>. The rows are:</p>
+<ul>
+<li><b>Pitch</b> (hard): neighbours on the same layer are at least <code>P_MIN</code> apart, plus half a pair's pitch for diff pairs. The real code adds tangent cuts of <code>sqrt(1+k&sup2;)</code> so slope is priced correctly.</li>
+<li><b>Static copper</b> (hard): a lane passes each pad box or island on one side, with clearance. The <code>split</code> below is that choice.</li>
+<li><b>Via rooms, board edge, 45&deg; turn limit, slope cap</b> (hard).</li>
+<li><b>Length, bends, and pitch short of comfortable</b> (soft): the price of sideways moves, kinks, and squeezing lanes closer than two lane pitches.</li>
+</ul>
+<p>Every "hard" row is really <b>elastic</b>: it carries a slack variable priced at <code>W_HARD=10&#8308;</code>. So the LP is always feasible, and if the plan cannot be drawn, the LP does not fail. It <i>pays</i>, and the rows it paid on are reported. Those become cuts for CP-SAT.</p>
+<div class="callout"><b>Why every either-or choice is made before the LP.</b> A lane can pass a pad box below it or above it, and those are two separate pieces of space: between a position below the box and one above it lies the box itself. An LP cannot say "below <i>or</i> above". Every row is a straight wall that says "stay on this side of this line", so an LP's region is always <b>convex</b>: one piece, with no dents. That is what makes its answer trustworthy. In one piece, a lane whose forces balance is at the best answer overall. With both sides of a box allowed, a lane could settle against the wrong side with every force balanced, and never see the better answer on the far side. So CP-SAT fixes the order and the crossings, and <code>static_sides</code> fixes each lane's side of each island (the <code>split</code> below), before the LP runs. The dual page draws it: <a href="dual/#sec-convex">why the region must be convex</a>.</div>
+
+<div class="card">
+  <p style="margin-top:0">Three lanes run left to right (order fixed: bottom to top). Lanes are pinned at both ends. A pad box (grey) sits in the middle, and each lane must pass it above or below. <b>Drag the interior dots</b> to route by hand and see what it costs. <b>Solve LP</b> runs a real simplex solver (my own port, a few dozen lines) on the same rows and moves the lanes to the optimum. Between lanes, the coloured ticks show pitch: <span style="color:#d33">red</span> below the minimum, <span style="color:#d39a00">amber</span> below comfortable, <span style="color:#2e9d4c">green</span> fine.</p>
+  <svg id="lp" viewBox="0 0 930 350" style="touch-action:none"></svg>
+  <div class="row">
+    <button id="lpSolve" class="primary">Solve LP</button><button id="lpReset">Straight lines</button><button id="lpScribble">Scribble</button>
+    <label>board height <input type="range" id="lpH" min="18" max="32" value="24"></label><span class="stat" id="lpHV"></span>
+    <label>lanes below box (<code>split</code>) <select id="lpSplit"><option>0</option><option selected>1</option><option>2</option><option>3</option></select></label>
+  </div>
+  <div class="row">
+    <span class="stat">your cost <b id="lpMine">-</b></span>
+    <span class="stat">LP optimum <b id="lpOpt">-</b></span>
+    <span class="stat">length <b id="lpLen">-</b> &nbsp; bends <b id="lpBend">-</b> &nbsp; comfort <b id="lpComf">-</b> &nbsp; hard <b id="lpHard">-</b></span>
+  </div>
+  <div class="log" id="lpLog"></div>
+  <details><summary>Try this</summary>
+  <ul>
+   <li>Press <b>Solve LP</b>, then squeeze the board height. The optimum starts to <i>pay</i> on a hard row, and the log names which. That is the message that goes back to CP-SAT as a cut.</li>
+   <li>Move the <code>split</code>: it changes which side of the box each lane is forced to. Some splits are cheap, some force awful detours. In the code this is <code>static_sides</code>, one split per island, pinned by the lanes' own ends.</li>
+   <li>Drag a lane into a wrong-side pose, then Solve. The LP always gets a cost at or below yours. It finds the <i>global</i> minimum because, with the split fixed, its region is convex (one piece), so there are no local minima to fall into.</li>
+  </ul></details>
+</div>
+
+<h3 id="simplex">2b &nbsp; How an LP is solved: walking the corners, or cutting through the middle</h3>
+<p>Picture an LP with only <b>two unknowns</b> (<code>x</code>, <code>y</code>) so it fits on a screen. Every row is a straight wall, and together the walls fence in a polygon of allowed answers. The polygon is <b>convex</b>, with no dents, because straight walls cannot make one. The cost is a slope: the polygon is shaded from <span style="color:#b5651d"><b>expensive</b></span> to <span style="color:#2e9d4c"><b>cheap</b></span>. The best answer is always at a <b>corner</b> (or along a whole side, if the slope happens to line up with it). The real LP is the same picture with tens of thousands of unknowns. HiGHS has two ways to find that corner:</p>
+<ul><li><b>Simplex</b> (<code>highs-ds</code>) starts at a corner and hops to a cheaper neighbouring corner, again and again, until no neighbour is cheaper. Because the polygon is convex, a corner with no cheaper neighbour is the cheapest corner of all. In a region with a dent, it could be a dead end.</li>
+<li><b>Interior point</b> (<code>highs-ipm</code>) starts in the middle of the polygon. The walls push it back with a force that grows as it gets close (a "barrier"). That push is slowly weakened, so the point drifts toward the cheap corner without ever touching a wall.</li></ul>
+<div class="card">
+  <ol class="steps">
+   <li>Pick a direction with the slider (or press <b>Tie</b> to see the special case below).</li>
+   <li>Press <b>Simplex: next step</b> a few times. Read the log under the picture after each press.</li>
+   <li>Press <b>Interior point: next step</b> the same way, then compare. Or press <b>Play both</b> to watch them race.</li>
+  </ol>
+  <div class="two">
+   <canvas id="sx" width="520" height="440" aria-label="A polygon of feasible points, shaded by cost"></canvas>
+   <div>
+     <div class="row"><label>which way is cheaper <input type="range" id="sxA" min="0" max="359" value="215"></label></div>
+     <div class="row"><button id="sxSimplex" class="primary" style="background:#d9483b;border-color:#d9483b">Simplex: next step</button></div>
+     <div class="row"><button id="sxIPM" class="primary" style="background:#0f8a7a;border-color:#0f8a7a">Interior point: next step</button></div>
+     <div class="row"><button id="sxPlay">Play both</button><button id="sxClear">Start over</button></div>
+     <div class="row"><button id="sxPar">Tie: point along a side</button><label><input type="checkbox" id="sxTie"> add tie-break (<code>lp_tie_break</code>)</label></div>
+     <div class="log" id="sxLog" style="min-height:120px"></div>
+   </div>
+  </div>
+  <div class="legend"><span><i style="background:#d9483b"></i>simplex path (corners)</span><span><i style="background:#0f8a7a"></i>interior point path (centre outward)</span><span>&#9733; = the true optimum</span><span>the numbered walls are the LP's rows</span></div>
+  <div class="callout" style="margin-bottom:0"><b>Why this matters here.</b> Press <b>Tie</b>, then run both methods to the end. When the cost slope lines up with a side of the polygon, <i>every point on that side is equally good</i>. Simplex stops at whichever end it reaches first. Interior point stops in the <i>middle</i> of the side. Which answer you get can change with the platform's floating-point rounding, but the plan must be identical on every machine. So <code>detmath.lp_tie_break</code> adds a tiny distinct cost to every column, making the optimum a single corner. <code>detmath.lp_round</code> then snaps the answer. Now tick the tie-break box and run again: both methods land on the same corner.</div>
+</div>
+<p style="font-size:14px;color:var(--mut)"><code>whole_geo.lp_by_dual</code> has one further trick: it solves the <b>dual</b> LP. This LP has many more rows than columns, so its dual has a row per column and every slack is a plain inequality. HiGHS's interior point runs it about 6&times; faster (K51 pass 2: 31 s instead of 188 s). The lane offsets come back in the same answer: HiGHS returns a multiplier for every balance equation of the dual, and those multipliers are the offsets. If the interior point doesn't converge (it once ran 2329 iterations on zynq K18), it falls back to dual simplex, which lands on the same point. What that dual <i>is</i>: its prices are the forces that hold each lane where it is, and a rule that pushes must be touching, which is how the forces place the lanes. See <a href="dual/">Shadow prices as forces</a>.</p>
+
+<!-- ======================= 3. LOOP ======================= -->
+<h2 id="sec-loop">3 &nbsp; The two solvers negotiate</h2>
+<p>CP-SAT proves a plan is optimal in vias, but it knows nothing about millimetres. The LP knows the millimetres but can't change topology. When the LP has to pay on a hard row, it says which lane and which place. That becomes a <b>cut</b> (a boolean disjunction) added to the CP-SAT model, and CP-SAT solves again. Audits after the polish and snap do the same and also feed the congestion history.</p>
+<div class="card">
+  <div class="row"><button id="lpStepPrev">&larr; back</button><button id="lpStepNext" class="primary">next &rarr;</button><span class="stat" id="stepLbl"></span></div>
+  <svg id="loop" viewBox="0 0 800 250"></svg>
+  <div id="loopTxt" style="min-height:64px"></div>
+</div>
+
+<!-- ======================= 4. SUMMARY ======================= -->
+<h2 id="sec-after">4 &nbsp; After the plan: polish, snap, audit, route</h2>
+<p>The solvers give a plan that is correct on paper. The remaining stages make it something the router can lay, and check it against the router's own rules before a single track is routed.</p>
+
+<h3 id="polish">4a &nbsp; Polish: meet the audit's numbers exactly (<code>whole_polish.py</code>)</h3>
+<p>The geometry LP measures in its own curved frames and linearises slopes, so its lanes come out a few micrometres short of the audit's bars in dozens of places. The polish works on the lanes' real board polylines. Every near-violation becomes a linear constraint on small vertex moves, a small LP finds the least movement that meets them all, and it repeats (re-linearised) until the audit's measures hold. The toy below uses a simple push in place of that LP, but shows the same behaviour: <b>tiny targeted moves, a few rounds, ends pinned</b>.</p>
+<div class="card">
+  <p style="margin-top:0">Two lanes and a round pad. Red rings mark vertices that are closer than the bar (the lane-to-lane pitch, or the clearance to the pad). The LP's shortfall is exaggerated here so you can see it. Press <b>One polish round</b> repeatedly, or <b>Run to done</b>.</p>
+  <svg id="pSvg" viewBox="0 0 760 270"></svg>
+  <div class="row"><button id="pRound" class="primary">One polish round</button><button id="pRun">Run to done</button><button id="pRe">New LP output</button>
+   <label>how short the LP left it <input type="range" id="pShort" min="2" max="14" value="7"></label>
+   <span class="stat">round <b id="pN">0</b></span><span class="stat">worst shortfall <b id="pW">-</b></span><span class="stat">moved so far <b id="pMv">0</b></span></div>
+  <div class="log" id="pLog"></div>
+</div>
+
+<h3 id="snap">4b &nbsp; Snap: land the line on the router's grid (<code>whole_snap.py</code>)</h3>
+<p>The router draws only on its grid, in 0&deg;, 45&deg; and 90&deg; segments. The snap takes each lane's smooth line and finds an <b>octilinear path on grid points</b> in a band around it, one lane at a time, with hard clearance to everything already placed. The cost is length + bends + distance from the smooth line. Because the polish left every lane a grid step of room, the snap of one lane never steals the room the next needs.</p>
+<div class="card">
+  <p style="margin-top:0">The dashed grey line is the smooth plan and the pale strip is the allowed band. The coloured path is the snapped result. <b>Click any grid point</b> to add or remove an obstacle (already-placed copper) and watch the path go around it. The sliders are the cost terms.</p>
+  <svg id="nSvg" viewBox="0 0 860 420" style="touch-action:none"></svg>
+  <div class="row"><label>bend penalty <input type="range" id="nB" min="0" max="40" value="10"></label><label>hug the smooth line <input type="range" id="nD" min="0" max="30" value="6"></label><label>band width <input type="range" id="nW" min="1" max="6" value="3"></label><button id="nClr">Clear obstacles</button></div>
+  <div class="row"><span class="stat">length <b id="nLen">-</b></span><span class="stat">bends <b id="nBd">-</b></span><span class="stat">furthest from the smooth line <b id="nDev">-</b></span></div>
+  <div class="log" id="nLog"></div>
+</div>
+
+<h3 id="audit">4c &nbsp; Audit, gate and feedback (<code>whole_audit.py</code>, <code>whole_gate.py</code>, <code>whole_feedback.py</code>)</h3>
+<p>The audit checks the plan against the <b>router's own rules</b>: pitch, dive room, clearance to static copper, shape, and that every lane's band joins its tooth to its berth. The gate turns it into a pass or fail, and writes every finding's position. Where the finding is decides who can fix it:</p>
+<ul><li><b>Between the arrays</b>: the solve's problem. The place becomes <b>history</b> (a price on the next solve) and a <b>cut</b>.</li>
+<li><b>At the ends</b> (beside or in front of an array): the solve cannot move it, because it comes from where the teeth and berths stand. <code>whole_feedback</code> names the pair of ends not to choose together again, and the <b>fanout</b> re-chooses. If the same finding stands in two rounds, the loop stops instead of paying for another solve.</li></ul>
+<div class="card">
+  <p style="margin-top:0">Two lanes run from a source array (left) to a destination array (right). Move the <b>pinch</b> to squeeze the gap between them, then <b>Run audit</b>. Try it once in the middle and once near an end. Then use the two fix buttons and audit again.</p>
+  <svg id="aSvg" viewBox="0 0 800 250"></svg>
+  <div class="row"><label>pinch position <input type="range" id="aPos" min="0" max="100" value="50"></label><label>depth <input type="range" id="aDep" min="0" max="30" value="20"></label>
+   <button id="aRun" class="primary">Run audit</button><button id="aSolve">Re-solve (history + cut)</button><button id="aFan">Re-fanout (avoid flagged ends)</button></div>
+  <div class="row"><span class="stat" id="aGate">gate: not run</span></div>
+  <div class="log" id="aLog"></div>
+</div>
+
+<h3 id="route">4d &nbsp; Route all lanes, each in its band (<code>route_lanes.py</code>)</h3>
+<p>Finally the router lays every lane from the audited plan (<code>--plan</code>): pairs first, then the singles, each <b>confined to its own band</b> around the plan and routed against every earlier lane's copper. Then <code>check_connected</code> and <code>check_drc</code> grade the board (a lane reported "routed" is not proof its net connects). The plan is what makes the order unimportant: it already decided which lanes pass which side of an obstacle.</p>
+<div class="card">
+  <p style="margin-top:0">Four lanes must get past a block. Each is routed in turn as a shortest path that keeps clear of what is already laid. With <b>follow the plan's bands</b> off, the router is on its own: whether all four fit depends on the <b>order</b>. Turn it on and every order works.</p>
+  <svg id="rSvg" viewBox="0 0 880 340"></svg>
+  <div class="row"><label><input type="checkbox" id="rBand" checked> follow the plan's bands</label><label>order <select id="rOrd"></select></label><button id="rStep" class="primary">Route next lane</button><button id="rAll">Route all</button><button id="rClr">Clear</button>
+   <span class="stat">routed <b id="rN">0</b> / 4</span></div>
+  <div class="log" id="rLog"></div>
+</div>
+
+<h2 id="summary">5 &nbsp; Side by side</h2>
+<table>
+<tr><th></th><th>CP-SAT <span class="tag">whole_solve.py</span></th><th>HiGHS LP <span class="tag">whole_geo.py</span></th></tr>
+<tr><td><b>Question</b></td><td>Which pairs cross, at which position along the route, and on which layer does each lane sit at each crossing? How many vias are unavoidable?</td><td>Given that order and those layers, what sideways offset does each lane have at each column?</td></tr>
+<tr><td><b>Unknowns</b></td><td>Booleans (layer, order, change active), small integers (crossing position, up to 3 changes per lane)</td><td>Real offsets (tens of thousands of columns of them), plus elastic slacks</td></tr>
+<tr><td><b>Structure</b></td><td>Combinatorial. Search + propagation + clause learning + LP bounds, in parallel sub-solvers, deterministic.</td><td>Convex: one piece, because CP-SAT and <code>static_sides</code> have made every either-or choice. Simplex or interior point on a sparse system (often dual), with a tie-break for a unique optimum.</td></tr>
+<tr><td><b>Objective</b></td><td>Lexicographic: nets over two vias, total vias, history congestion.</td><td>Length + bends + squeeze below comfortable pitch, plus 10&#8308;&times; anything hard it had to break.</td></tr>
+<tr><td><b>Guarantee</b></td><td>Proves the via minimum. If it cannot, there is no plan and the chain stops (exit 2).</td><td>Global optimum of its LP, always feasible. Whatever it pays on hard rows is reported.</td></tr>
+<tr><td><b>Failure feedback</b></td><td>Receives cuts (LP could not draw this) and history (audit found this place hot).</td><td>Produces cuts, and flips a static side when the polish found no room.</td></tr>
+<tr><td><b>Scale</b></td><td>K51 proved in 22-37 s. Cost tracks the number of crossings.</td><td>One LP per geometry pass; seconds to tens of seconds.</td></tr>
+</table>
+
+<h3>Where else these solvers appear (older braid chain and instruments)</h3>
+<ul>
+<li><b>HiGHS MILP</b>: <code>schedule.exact_pages</code> assigns each net to a page (binary <code>x[i,p]</code>, with <code>x[i,p]+x[j,p] &le; 1</code> for inverted pairs, minimising swimmers, then page vias). <code>joint_floor.py</code> and <code>synth_bus.cap_floor</code> put a binary layer at each crossing (<code>y_a+y_b=1</code>) and count layer changes. That is the same puzzle as 1a, and an infeasible model there means an odd parity cycle. <code>braid._prime_highs_threads</code> pins it to one thread for determinism.</li>
+<li><b>CP-SAT</b>: <code>pages_first.py</code> picks each net's destination move, source move and page in one model (a "swimmer" is priced at 100 vias), and <code>synth_bus.cap_sat_feasible</code> / <code>escape_move_floor</code> check feasibility. <code>whole_ends.py</code> uses it on one worker to rank end states exactly. <code>solve_memo.py</code> caches a solve by hashing the model text plus parameters, and replays a hit by fixing every variable to its stored value. That works because the solve is deterministic.</li>
+</ul>
+
+<footer>
+Source: <a href="https://github.com/drandyhaas/KiCadRoutingTools/tree/bus622-take5/awx"><code>awx/</code> on the <code>bus622-take5</code> branch</a> (<code>whole_solve.py</code>, <code>whole_geo.py</code>, <code>whole_chain.sh</code>, <code>whole_loop.sh</code>). The interactive toys are simplified re-implementations, not the real solvers.
+&nbsp;&middot;&nbsp; <a href="../">KiCadRoutingTools home</a> &nbsp;&middot;&nbsp; <a href="https://github.com/drandyhaas/KiCadRoutingTools">GitHub</a>
+</footer>
+</main>
+
+<script>
+/* ================= helpers ================= */
+const $=(s,r=document)=>r.querySelector(s);
+const NS='http://www.w3.org/2000/svg';
+function S(tag,at,par){const e=document.createElementNS(NS,tag);for(const k in (at||{}))e.setAttribute(k,at[k]);if(par)par.appendChild(e);return e}
+function T(par,x,y,txt,at){const e=S('text',Object.assign({x,y,'font-size':13,fill:'#1d2330'},at||{}),par);e.textContent=txt;return e}
+function rng(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const CF='#d9483b',CB='#2f6fd0',CG='#a9b0be';
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ================= 0. pipeline ================= */
+(function(){
+  const svg=$('#pipe');
+  const st=[
+   {t:['Ends +','fanout'],f:'fanout_from_plan.py',c:'#8a94a8',d:'Chooses each net\'s <b>tooth</b> (escape at the source BGA) and <b>berth</b> (escape at the destination) with the whole route\'s ends model. <code>whole_ends</code> ranks end states exactly with CP-SAT on one worker. Crowded ends found later come back here as <code>FEEDBACK</code>, and the fanout re-chooses <i>incrementally</i>.'},
+   {t:['CP-SAT','solve'],f:'whole_solve.py',c:'#6a3fc4',d:'<b>The discrete plan.</b> One model decides every crossing, its position along the trunk, every layer change, and the ring assignment. Minimises vias with a proof. Takes in cuts from the LP and audits, plus history congestion. No proved plan means exit 2.'},
+   {t:['HiGHS LP','geometry'],f:'whole_geo.py',c:'#0f8a7a',d:'<b>The continuous geometry.</b> Takes the fixed order and layers and finds each lane\'s sideways offset at each column with one joint LP (trunk + both rings). Elastic hard rows: what it has to pay is written as cuts for the solve. Run as the dual through HiGHS IPM.'},
+   {t:['Polish','xy per round'],f:'whole_polish.py',c:'#8a94a8',d:'Re-runs the LP each round on the measured data. When a lane has no room on its side of an island, it is flipped to the other side and sent back to geometry.'},
+   {t:['Snap','to grid'],f:'whole_snap.py',c:'#8a94a8',d:'Lands the planned lines on the router\'s own grid, so what is audited is what the router can draw.'},
+   {t:['Audit','gate / lint'],f:'whole_gate.py',c:'#c07a00',d:'Checks the plan against the router\'s own rules. "Hot" places become <b>history</b> for the next solve, and unfixable ones become <b>cuts</b>. Crowded ends (exit 4) go through <code>whole_feedback</code> back to the fanout.'},
+   {t:['Route','all lanes'],f:'route_lanes.py',c:'#2e9d4c',d:'Routes every lane at once from the audited plan (<code>--plan</code>), then <code>check_connected</code> and <code>check_drc</code> grade the board.'}];
+  const W=118,GAP=24,X0=8,Y0=70,H=76;
+  const bx=st.map((s,i)=>X0+i*(W+GAP));
+  const defs=S('defs',{},svg);
+  const mk=S('marker',{id:'ah',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,orient:'auto-start-reverse'},defs);S('path',{d:'M0 0L10 5L0 10z',fill:'#8a94a8'},mk);
+  const mk2=S('marker',{id:'ah2',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,orient:'auto-start-reverse'},defs);S('path',{d:'M0 0L10 5L0 10z',fill:'#c07a00'},mk2);
+  for(let i=0;i<6;i++)S('line',{x1:bx[i]+W,y1:Y0+H/2,x2:bx[i+1],y2:Y0+H/2,stroke:'#8a94a8','stroke-width':2,'marker-end':'url(#ah)'},svg);
+  const cx=i=>bx[i]+W/2;
+  const fb=(a,b,depth,lab,lx)=>{S('path',{d:`M${cx(a)} ${Y0+H} C ${cx(a)} ${Y0+H+depth}, ${cx(b)} ${Y0+H+depth}, ${cx(b)} ${Y0+H+4}`,fill:'none',stroke:'#c07a00','stroke-width':2,'stroke-dasharray':'6 4','marker-end':'url(#ah2)'},svg);T(svg,lx,Y0+H+depth*0.75+12,lab,{'font-size':12,fill:'#8a5a00','text-anchor':'middle'})};
+  fb(2,1,58,'cuts: "this can\'t be drawn"',cx(1)+70);
+  fb(5,1,110,'cuts + history congestion from audits',cx(3));
+  fb(5,0,160,'crowded ends (exit 4) -> whole_feedback -> fanout again',cx(2)-20);
+  const boxes=st.map((s,i)=>{
+    const g=S('g',{style:'cursor:pointer'},svg);
+    const r=S('rect',{x:bx[i],y:Y0,width:W,height:H,rx:10,fill:'#fff',stroke:s.c,'stroke-width':i==1||i==2?3:1.5},g);
+    T(g,cx(i),Y0+30,s.t[0],{'text-anchor':'middle','font-weight':700,'font-size':i==1||i==2?15:13.5,fill:s.c});
+    T(g,cx(i),Y0+48,s.t[1],{'text-anchor':'middle','font-size':12,fill:'#5b6577'});
+    T(g,cx(i),Y0+66,s.f,{'text-anchor':'middle','font-size':10,fill:'#8a94a8'});
+    g.addEventListener('click',()=>{stop();sel(i)});return{g,r,s}});
+  const tok=S('circle',{r:9,fill:'#e3a008',stroke:'#fff','stroke-width':2,cx:cx(0),cy:Y0+H/2,opacity:0},svg);
+  T(svg,500,26,'plan -> geometry -> polish -> snap -> audit -> route, with two feedback loops back to the discrete solver',{'text-anchor':'middle','font-size':13,fill:'#5b6577'});
+  let cur=-1,timer=null,pos=0;
+  const DEMO=['#ends','#cpsat','#sec-lp','#polish','#snap','#audit','#route'];
+  function sel(i){cur=i;boxes.forEach((b,k)=>{b.r.setAttribute('fill',k===i?'#f1ecfb':'#fff')});
+    $('#pipeDetail').innerHTML=`<div class="callout"><b>${st[i].t.join(' ')}</b> <span class="tag">${st[i].f}</span><br>${st[i].d}<br><a href="${DEMO[i]}">Jump to the demo &darr;</a></div>`}
+  function stop(){if(timer){clearInterval(timer);timer=null;$('#pipePlay').textContent='Play the flow';tok.setAttribute('opacity',0)}}
+  $('#pipePlay').onclick=()=>{
+    if(timer){stop();return}
+    $('#pipePlay').textContent='Stop';tok.setAttribute('opacity',1);pos=0;
+    let tt=0;
+    timer=setInterval(()=>{
+      tt+=0.022;const i=Math.floor(tt)%7,f=tt%1;
+      const x=cx(i)+(i<6?f*(W+GAP):0);
+      tok.setAttribute('cx',x);
+      if(f<0.05)sel(i);
+      $('#pipeStat').textContent='stage '+(i+1)+' of 7';
+    },30)};
+  sel(1);
+})();
+
+/* ================= 1a. braid puzzle + branch&bound ================= */
+(function(){
+  const N=5,names='ABCDE',X0=64,XE=700,Y=s=>46+s*50;
+  let inst,ys,gen=null,timer=null,best,bestYs,nodes,pruned,paused=false,running=false,seedC=7;
+  const svg=$('#braid'),cv=$('#tree'),cx=cv.getContext('2d');
+  function make(seed){
+    const R=rng(seed);
+    for(let tries=0;tries<500;tries++){
+      const rank=[0,1,2,3,4];
+      for(let i=4;i>0;i--){const j=Math.floor(R()*(i+1));[rank[i],rank[j]]=[rank[j],rank[i]]}
+      const cur=[0,1,2,3,4],cross=[];
+      let r=0;
+      for(;r<24;r++){
+        let any=false;
+        for(let i=r%2;i<4;i+=2)if(rank[cur[i]]>rank[cur[i+1]]){cross.push({r,slot:i,a:cur[i],b:cur[i+1]});[cur[i],cur[i+1]]=[cur[i+1],cur[i]];any=true}
+        if(cur.every((l,i)=>rank[l]===i))break;
+      }
+      if(cross.length<5||cross.length>8)continue;
+      // compress round indices
+      const rs=[...new Set(cross.map(c=>c.r))].sort((a,b)=>a-b);cross.forEach(c=>c.rr=rs.indexOf(c.r));
+      const start=[0,1,2,3,4].map(()=>R()<0.5?0:1),end=[0,1,2,3,4].map(()=>R()<0.5?0:1);
+      return{rank,cross,start,end,R:rs.length};
+    }
+  }
+  const layerOf=(c,ci,n)=>{const y=ys[ci];if(y<0)return null;return (c.a===n?y:1-y)}; // y=0 -> a on F(0)
+  function laneEvents(n){
+    const ev=[{x:X0,L:inst.start[n]}];
+    inst.cross.forEach((c,ci)=>{if(c.a===n||c.b===n)ev.push({x:xr(c.rr),L:layerOf(c,ci,n),ci})});
+    ev.push({x:XE,L:inst.end[n]});
+    return ev;
+  }
+  const xr=r=>140+(r+0.5)*(500/inst.R);
+  function pts(n){
+    let p=[[X0,Y(n)]];
+    inst.cross.forEach(c=>{if(c.a===n||c.b===n){const bef=c.a===n?c.slot:c.slot+1,aft=c.a===n?c.slot+1:c.slot;const x=xr(c.rr);p.push([x-16,Y(bef)],[x+16,Y(aft)])}});
+    p.push([XE,Y(inst.rank[n])]);return p;
+  }
+  const yAt=(p,x)=>{for(let i=0;i<p.length-1;i++){const a=p[i],b=p[i+1];if(x>=a[0]&&x<=b[0])return b[0]===a[0]?a[1]:a[1]+(b[1]-a[1])*(x-a[0])/(b[0]-a[0])}return p[p.length-1][1]};
+  function sub(p,xa,xb){const o=[[xa,yAt(p,xa)]];for(const q of p)if(q[0]>xa+0.01&&q[0]<xb-0.01)o.push(q);o.push([xb,yAt(p,xb)]);return o}
+  function vias(){let v=0;for(let n=0;n<N;n++){const ev=laneEvents(n);for(let i=0;i<ev.length-1;i++)if(ev[i].L!==null&&ev[i+1].L!==null&&ev[i].L!==ev[i+1].L)v++}return v}
+  function draw(){
+    svg.innerHTML='';
+    const list=[];
+    for(let n=0;n<N;n++){
+      const ev=laneEvents(n),p=pts(n);
+      for(let i=0;i<ev.length;i++){
+        const xa=i===0?X0:(ev[i-1].x+ev[i].x)/2,xb=i===ev.length-1?XE:(ev[i].x+ev[i+1].x)/2;
+        list.push({L:ev[i].L,pts:sub(p,xa,xb)});
+      }
+      for(let i=0;i<ev.length-1;i++)if(ev[i].L!==null&&ev[i+1].L!==null&&ev[i].L!==ev[i+1].L){const m=(ev[i].x+ev[i+1].x)/2;list.push({via:[m,yAt(p,m)]})}
+    }
+    // draw B first, then F, then grey
+    for(const want of [null,1,0])for(const s of list)if(!s.via&&s.L===want)S('polyline',{points:s.pts.map(q=>q.join(',')).join(' '),fill:'none',stroke:want===null?CG:want?CB:CF,'stroke-width':want===null?3:4.5,'stroke-linecap':'round','stroke-linejoin':'round',opacity:want===null?0.7:0.95},svg);
+    for(const s of list)if(s.via){S('circle',{cx:s.via[0],cy:s.via[1],r:6,fill:'#fff',stroke:'#1d2330','stroke-width':2},svg)}
+    // crossings
+    inst.cross.forEach((c,ci)=>{
+      const x=xr(c.rr),y=(Y(c.slot)+Y(c.slot+1))/2;
+      const g=S('g',{style:running?'':'cursor:pointer'},svg);
+      S('circle',{cx:x,cy:y,r:11,fill:ys[ci]<0?'#fff':'#fff',stroke:ys[ci]<0?'#a9b0be':'#1d2330','stroke-width':2,'stroke-dasharray':ys[ci]<0?'3 2':''},g);
+      T(g,x,y+5,'×',{'text-anchor':'middle','font-size':16,'font-weight':700,fill:ys[ci]<0?'#a9b0be':'#1d2330'});
+      if(!running)g.addEventListener('click',()=>{ys[ci]=ys[ci]<=0?1:0;refresh()});
+    });
+    // end labels
+    for(let n=0;n<N;n++){
+      const badge=(x,L,txt)=>{S('rect',{x:x-14,y:Y(n)-11,width:28,height:22,rx:5,fill:L?CB:CF},svg);T(svg,x,Y(n)+5,L?'B':'F',{'text-anchor':'middle',fill:'#fff','font-weight':700})};
+      badge(X0-20,inst.start[n]);T(svg,X0-48,Y(n)+5,names[n],{'font-weight':700,'text-anchor':'middle'});
+      const slot=inst.rank[n];
+      S('rect',{x:XE+8,y:Y(slot)-11,width:28,height:22,rx:5,fill:inst.end[n]?CB:CF},svg);T(svg,XE+22,Y(slot)+5,inst.end[n]?'B':'F',{'text-anchor':'middle',fill:'#fff','font-weight':700});
+      T(svg,XE+50,Y(slot)+5,names[n],{'font-weight':700,'text-anchor':'middle'});
+    }
+    T(svg,X0-20,16,'tooth (source)',{'text-anchor':'middle','font-size':11,fill:'#5b6577'});
+    T(svg,XE+22,16,'berth (dest)',{'text-anchor':'middle','font-size':11,fill:'#5b6577'});
+    T(svg,380,280,'trunk →',{'text-anchor':'middle','font-size':12,fill:'#8a94a8'});
+  }
+  function refresh(){
+    draw();const c=ys.every(v=>v>=0);
+    $('#bVias').textContent=c?vias():'?';
+    $('#bLB').textContent=lb0();
+  }
+  const lb0=()=>{let s=0;for(let n=0;n<N;n++)s+=inst.start[n]!==inst.end[n]?1:0;return s};
+  /* --- search (generator) --- */
+  function* search(useBound,early){
+    const C=inst.cross.length,y=new Array(C).fill(-1),last=inst.start.slice();
+    const root=lb0();best=Infinity;bestYs=null;nodes=0;pruned=0;
+    const miss=()=>{let s=0;for(let n=0;n<N;n++)s+=last[n]!==inst.end[n]?1:0;return s};
+    let stop=false;
+    function* rec(d,cost,pv){
+      nodes++;
+      if(d===C){const tot=cost+miss();
+        if(tot<best){best=tot;bestYs=y.slice();yield{k:'best',d,pv,ys:y.slice(),msg:`new best: ${tot} vias`};if(early&&best<=root){stop=true}}
+        else yield{k:'leaf',d,pv,ys:y.slice(),msg:`leaf costs ${tot}; not better than ${best}`};
+        return}
+      yield{k:'visit',d,pv,ys:y.slice(),msg:`crossing ${d+1}/${C}: ${names[inst.cross[d].a]}×${names[inst.cross[d].b]}, cost so far ${cost}`};
+      const c=inst.cross[d];
+      for(const v of [0,1]){
+        if(stop)return;
+        const la=v===0?0:1,lbb=1-la;
+        const pa=last[c.a],pb=last[c.b],delta=(pa!==la?1:0)+(pb!==lbb?1:0);
+        last[c.a]=la;last[c.b]=lbb;y[d]=v;
+        const lb=cost+delta+miss();
+        if(useBound&&lb>=best){pruned++;yield{k:'prune',d:d+1,pv:pv*2+v,ys:y.slice(),msg:`prune: at least ${lb} vias even in the best case, but best is ${best}`};}
+        else yield*rec(d+1,cost+delta,pv*2+v);
+        last[c.a]=pa;last[c.b]=pb;y[d]=-1;
+      }
+    }
+    yield*rec(0,0,0);
+    return{done:true,root};
+  }
+  /* tree canvas */
+  const TW=880,TX=10;
+  function tpos(d,pv,C){return[TX+(pv+0.5)/Math.pow(2,d)*TW,14+d*(220/C)]}
+  function treeReset(){cx.clearRect(0,0,cv.width,cv.height)}
+  function treeEvent(e,C){
+    const [x,y]=tpos(e.d,e.pv,C);
+    if(e.d>0){const [px,py]=tpos(e.d-1,e.pv>>1,C);cx.strokeStyle='#c8cfdb';cx.lineWidth=1;cx.beginPath();cx.moveTo(px,py);cx.lineTo(x,y);cx.stroke()}
+    cx.fillStyle=e.k==='prune'?'#c0392b':e.k==='best'?'#2e9d4c':e.k==='leaf'?'#a9b0be':'#7aa2e3';
+    const r=e.k==='best'?5:e.k==='prune'?3.2:2.6;
+    if(e.k==='prune'){cx.strokeStyle='#c0392b';cx.lineWidth=1.6;cx.beginPath();cx.moveTo(x-3,y-3);cx.lineTo(x+3,y+3);cx.moveTo(x+3,y-3);cx.lineTo(x-3,y+3);cx.stroke()}
+    else{cx.beginPath();cx.arc(x,y,r,0,7);cx.fill()}
+  }
+  function treeBest(C){
+    if(!bestYs)return;cx.strokeStyle='#2e9d4c';cx.lineWidth=3;cx.beginPath();let pv=0;let [x,y]=tpos(0,0,C);cx.moveTo(x,y);
+    for(let d=0;d<C;d++){pv=pv*2+bestYs[d];[x,y]=tpos(d+1,pv,C);cx.lineTo(x,y)}cx.stroke();
+  }
+  function setStats(){
+    $('#bNodes').textContent=nodes;$('#bPruned').textContent=pruned;$('#bBest').textContent=best===Infinity?'-':best;
+  }
+  function stopTimer(){if(timer)cancelAnimationFrame(timer);timer=null;running=false;gen=null}
+  function newInst(){
+    stopTimer();seedC++;inst=make(seedC);ys=inst.cross.map(()=>0);best=Infinity;nodes=pruned=0;
+    $('#bTotal').textContent=Math.pow(2,inst.cross.length+1)-1;setStats();treeReset();refresh();$('#bLog').textContent=`${inst.cross.length} crossings, so ${Math.pow(2,inst.cross.length)} possible layer assignments. Click × to try one by hand, or press Solve.`;
+  }
+  let acc=0,last=0,curC=0;
+  function finish(){
+    stopTimer();ys=bestYs.slice();treeBest(curC);refresh();setStats();
+    const lb=lb0();
+    $('#bLog').innerHTML=`<b>done.</b> Optimum = <b>${best}</b> vias. `+(best<=lb?`The best plan hit the lower bound (${lb}), so it is <b>proved optimal</b> without looking further.`:`Every other branch was either searched or pruned by the bound, so ${best} is <b>proved optimal</b>.`);
+    $('#bPause').textContent='Pause';paused=false;gen=null}
+  function advance(){
+    if(!gen)return false;
+    const r=gen.next();
+    if(r.done){finish();return false}
+    const e=r.value;ys=e.ys;treeEvent(e,curC);$('#bLog').textContent=e.msg;setStats();refresh();return true}
+  function start(){
+    stopTimer();treeReset();curC=inst.cross.length;
+    ys=new Array(curC).fill(-1);paused=false;$('#bPause').textContent='Pause';
+    gen=search($('#bBound').checked,$('#bEarly').checked);
+    $('#bTotal').textContent=Math.pow(2,curC+1)-1;nodes=0;pruned=0;best=Infinity;setStats()}
+  function run(){
+    start();running=true;acc=0;last=performance.now();
+    $('#bLog').textContent='searching...';
+    const tick=now=>{
+      if(!running)return;
+      if(!paused){
+        const rate=+$('#bSpeed').value;               // search steps per second
+        acc+=Math.min(now-last,200)/1000*rate;
+        while(acc>=1&&running){acc-=1;if(!advance())return}
+      }
+      last=now;timer=requestAnimationFrame(tick)};
+    timer=requestAnimationFrame(tick)}
+  $('#bStep').onclick=()=>{
+    if(!gen){run();paused=true;$('#bPause').textContent='Resume'}   // first press: begin, paused
+    else if(!paused){paused=true;$('#bPause').textContent='Resume'}
+    advance()};
+  const spd=()=>{$('#bSpeedV').textContent=$('#bSpeed').value+' steps/s'};
+  $('#bSpeed').oninput=spd;spd();
+  $('#bRun').onclick=run;
+  $('#bPause').onclick=()=>{paused=!paused;$('#bPause').textContent=paused?'Resume':'Pause'};
+  $('#bReset').onclick=()=>{stopTimer();ys=inst.cross.map(()=>0);treeReset();best=Infinity;nodes=pruned=0;setStats();refresh();$('#bLog').textContent='Cleared.'};
+  $('#bNew').onclick=newInst;
+  newInst();
+})();
+
+/* ================= 1b. no-overlap ================= */
+(function(){
+  const svg=$('#nov'),W=[[5,42],[12,52],[20,58],[8,66]],SC=6.6,X0=50,RH=42;
+  const names=['A×B','B×C','A×C','C×D'];
+  let t=[5,12,20,8],drag=-1;
+  const P=()=>+$('#novP').value;
+  function overl(){const p=P(),o=t.map(()=>false);for(let i=0;i<4;i++)for(let j=i+1;j<4;j++)if(Math.abs(t[i]-t[j])<p){o[i]=o[j]=true}return o}
+  function draw(){
+    svg.innerHTML='';const p=P(),o=overl();
+    $('#novPV').textContent=p+' units';
+    W.forEach((w,i)=>{
+      const y=14+i*RH;
+      T(svg,6,y+22,names[i],{'font-size':13,'font-weight':600});
+      S('rect',{x:X0+w[0]*SC,y:y+8,width:(w[1]-w[0]+p)*SC,height:20,rx:4,fill:'#dff3e4',stroke:'#9fd3ad'},svg);
+      const bad=t[i]<w[0]||t[i]>w[1];
+      const r=S('rect',{x:X0+t[i]*SC,y:y+6,width:p*SC,height:24,rx:5,fill:o[i]?'#e89a92':'#7aa2e3',stroke:bad?'#e3a008':o[i]?'#c0392b':'#2f6fd0','stroke-width':bad?3:1.5,style:'cursor:ew-resize'},svg);
+      r.addEventListener('pointerdown',e=>{drag=i;r.setPointerCapture(e.pointerId)});
+      r.addEventListener('pointermove',e=>{if(drag!==i)return;const b=svg.getBoundingClientRect(),x=(e.clientX-b.left)/b.width*760;t[i]=clamp(Math.round((x-X0)/SC-p/2),0,95);draw()});
+      r.addEventListener('pointerup',()=>{drag=-1});
+    });
+    const y=14+4*RH;
+    T(svg,6,y+22,'trunk',{'font-size':13,'font-weight':600});
+    S('rect',{x:X0,y:y+8,width:640,height:20,fill:'#eef1f8',stroke:'#d8dde6'},svg);
+    t.forEach((v,i)=>S('rect',{x:X0+v*SC,y:y+8,width:p*SC,height:20,fill:o[i]?'rgba(192,57,43,.55)':'rgba(47,111,208,.35)',stroke:o[i]?'#c0392b':'#2f6fd0'},svg));
+    const ok=!o.some(x=>x)&&t.every((v,i)=>v>=W[i][0]&&v<=W[i][1]);
+    T(svg,X0+650,y+22,ok?'✓ feasible':'✗',{'font-size':14,'font-weight':700,fill:ok?'#2e9d4c':'#c0392b'});
+  }
+  function perms(a){if(a.length<=1)return[a];const o=[];a.forEach((x,i)=>perms(a.filter((_,j)=>j!==i)).forEach(p=>o.push([x,...p])));return o}
+  $('#novP').oninput=draw;
+  $('#novSolve').onclick=()=>{
+    const p=P();let found=null,tried=0;
+    for(const ord of perms([0,1,2,3])){tried++;let end=-1e9;const nt=[0,0,0,0];let ok=true;
+      for(const i of ord){const s=Math.max(W[i][0],end);if(s>W[i][1]){ok=false;break}nt[i]=s;end=s+p}
+      if(ok){found=nt;break}}
+    if(found){t=found;$('#novLog').textContent=`Solved after trying ${tried} of 24 orderings: place each crossing as early as its window and its predecessor allow.`}
+    else $('#novLog').innerHTML=`<b>Infeasible.</b> All 24 orderings tried; none fits the windows at pitch ${p}. In the real model this is a dead branch. CP-SAT learns the reason and the LP's later "cannot draw" reports arrive in the same form (section 3).`;
+    draw()};
+  $('#novReset').onclick=()=>{t=W.map(w=>w[0]+Math.floor(Math.random()*(w[1]-w[0])));draw();$('#novLog').textContent='Scattered. Overlaps are red; a bar outside its rail has an amber edge.'};
+  draw();
+})();
+
+/* ================= 1c. weights ================= */
+(function(){
+  const WV=1e6,f=n=>n.toLocaleString('en-US');
+  function u(){const c=+$('#wXc').value,X=12*WV+c,Y=13*WV;$('#wXcv').textContent=f(c);$('#wX').textContent=f(X);$('#wY').textContent=f(Y);
+    $('#wWin').textContent=X<Y?'→ X wins (fewer vias)':'→ Y wins';$('#wWin').style.color=X<Y?'#2e9d4c':'#c0392b'}
+  $('#wXc').oninput=u;u();
+})();
+
+/* ================= LP: simplex ================= */
+function simplex(cost,rows){
+  const n=cost.length,m=rows.length;let nart=0;for(const r of rows)if(r.b<0)nart++;
+  const N=n+m+nart,Tb=[],basis=[];let ai=0;
+  for(let i=0;i<m;i++){const r=rows[i],row=new Float64Array(N+1),neg=r.b<0,s=neg?-1:1;
+    for(const j in r.t)row[j]=s*r.t[j];row[n+i]=s;row[N]=s*r.b;
+    if(neg){row[n+m+ai]=1;basis.push(n+m+ai);ai++}else basis.push(n+i);Tb.push(row)}
+  const pivot=(pr,pc)=>{const row=Tb[pr],pv=row[pc];for(let j=0;j<=N;j++)row[j]/=pv;
+    for(let i=0;i<m;i++){if(i===pr)continue;const f=Tb[i][pc];if(Math.abs(f)>1e-12){const R=Tb[i];for(let j=0;j<=N;j++)R[j]-=f*row[j]}}basis[pr]=pc};
+  const run=(c,maxc)=>{let it=0;
+    for(;;){if(++it>30000)return false;
+      const z=new Float64Array(maxc);for(let j=0;j<maxc;j++)z[j]=c[j];
+      for(let i=0;i<m;i++){const cb=c[basis[i]];if(cb!==0){const R=Tb[i];for(let j=0;j<maxc;j++)z[j]-=cb*R[j]}}
+      let pc=-1,bz=-1e-9;
+      if(it<4000){for(let j=0;j<maxc;j++)if(z[j]<bz){bz=z[j];pc=j}}else{for(let j=0;j<maxc;j++)if(z[j]<-1e-9){pc=j;break}}
+      if(pc<0)return true;
+      let pr=-1,br=Infinity;
+      for(let i=0;i<m;i++){const a=Tb[i][pc];if(a>1e-9){const q=Tb[i][N]/a;if(q<br-1e-12||(Math.abs(q-br)<=1e-12&&pr>=0&&basis[i]<basis[pr])){br=q;pr=i}}}
+      if(pr<0)return false;pivot(pr,pc)}};
+  if(nart){const c1=new Float64Array(N);for(let j=n+m;j<N;j++)c1[j]=1;run(c1,N);
+    for(let i=0;i<m;i++)if(basis[i]>=n+m){for(let j=0;j<n+m;j++)if(Math.abs(Tb[i][j])>1e-9){pivot(i,j);break}}}
+  const c2=new Float64Array(N);for(let j=0;j<n;j++)c2[j]=cost[j];
+  const ok=run(c2,n+m);
+  const x=new Float64Array(n);for(let i=0;i<m;i++)if(basis[i]<n)x[basis[i]]=Tb[i][N];
+  return{ok,x};
+}
+
+/* ================= 2. lane LP ================= */
+(function(){
+  const NL=3,NC=8,G=1.0,PMIN=0.25,PCOMF=0.5,CLR=0.1,BM=0.1,WL=1,WB=3,WC=1,WH=1000;
+  const T0=[0.3,0.75,1.2],T1=[0.4,0.9,1.4],BOX={k0:3,k1:4,lo:1.0,hi:1.4};
+  const cols=['#d9483b','#2f6fd0','#0f8a7a'],SC=100,BASE=335;
+  const px=k=>60+k*115,py=o=>BASE-o*SC,pyi=y=>(BASE-y)/SC;
+  const svg=$('#lp');
+  let H=2.4,split=1,o=null,opt=null,optCost=null,drag=null,anim=null;
+  const straight=()=>[0,1,2].map(l=>Array.from({length:NC},(_,k)=>T0[l]+(T1[l]-T0[l])*k/(NC-1)));
+  o=straight();
+  function evalCost(o){
+    let len=0,bend=0,comf=0,hard=0;
+    for(let l=0;l<NL;l++){for(let k=0;k<NC-1;k++)len+=Math.hypot(G,o[l][k+1]-o[l][k]);
+      for(let k=1;k<NC-1;k++)bend+=Math.abs(o[l][k+1]-2*o[l][k]+o[l][k-1]);
+      for(let k=1;k<NC-1;k++){if(o[l][k]>H-BM)hard+=o[l][k]-(H-BM);if(o[l][k]<BM)hard+=BM-o[l][k]}}
+    for(let l=0;l<NL-1;l++)for(let k=0;k<NC;k++){const g=o[l+1][k]-o[l][k];comf+=Math.max(0,PCOMF-g);hard+=Math.max(0,PMIN-g)}
+    for(let k=BOX.k0;k<=BOX.k1;k++)for(let l=0;l<NL;l++){hard+=l<split?Math.max(0,o[l][k]-(BOX.lo-CLR-BM)):Math.max(0,(BOX.hi+CLR+BM)-o[l][k])}
+    return{len:WL*len,bend:WB*bend,comf:WC*comf,hard:WH*hard,total:WL*len+WB*bend+WC*comf+WH*hard}
+  }
+  function solveLP(){
+    const cost=new Array(NL*NC).fill(0),rows=[],tags=[];
+    const ov=(l,k)=>l*NC+k,nv=()=>cost.length;
+    const le=(t,b,w,tag)=>{const t2=Object.assign({},t);if(w){const e=nv();cost.push(w);t2[e]=-1;tags.push({e,tag})}rows.push({t:t2,b})};
+    for(let l=0;l<NL;l++){le({[ov(l,0)]:1},T0[l]);le({[ov(l,0)]:-1},-T0[l]);le({[ov(l,NC-1)]:1},T1[l]);le({[ov(l,NC-1)]:-1},-T1[l]);
+      for(let k=1;k<NC-1;k++){le({[ov(l,k)]:-1},-BM);le({[ov(l,k)]:1},H-BM)}}
+    for(let l=0;l<NL-1;l++)for(let k=0;k<NC;k++){
+      le({[ov(l,k)]:1,[ov(l+1,k)]:-1},-PMIN,WH,{kind:'pitch',l,k});
+      le({[ov(l,k)]:1,[ov(l+1,k)]:-1},-PCOMF,WC*G,{kind:'comf',l,k})}
+    for(let k=BOX.k0;k<=BOX.k1;k++)for(let l=0;l<NL;l++){
+      if(l<split)le({[ov(l,k)]:1},BOX.lo-CLR-BM,WH,{kind:'box',l,k,side:'below'});
+      else le({[ov(l,k)]:-1},-(BOX.hi+CLR+BM),WH,{kind:'box',l,k,side:'above'})}
+    const TA=[0,1,-1,2.5,-2.5];
+    for(let l=0;l<NL;l++)for(let k=0;k<NC-1;k++){const e=nv();cost.push(WL);
+      for(const t of TA){const s=Math.sqrt(1+t*t);le({[e]:-1,[ov(l,k+1)]:t/s,[ov(l,k)]:-t/s},-G/s)}}
+    for(let l=0;l<NL;l++)for(let k=1;k<NC-1;k++){const d=nv();cost.push(WB);
+      le({[ov(l,k+1)]:1,[ov(l,k)]:-2,[ov(l,k-1)]:1,[d]:-1},0);le({[ov(l,k+1)]:-1,[ov(l,k)]:2,[ov(l,k-1)]:-1,[d]:-1},0)}
+    const t0=performance.now(),r=simplex(cost,rows),ms=performance.now()-t0;
+    if(!r.ok)return null;
+    const res=[0,1,2].map(l=>Array.from({length:NC},(_,k)=>r.x[ov(l,k)]));
+    const paid=tags.filter(t=>r.x[t.e]>1e-4&&t.tag.kind!=='comf').map(t=>({...t.tag,v:r.x[t.e]}));
+    return{o:res,paid,rows:rows.length,vars:cost.length,ms}
+  }
+  function draw(){
+    svg.innerHTML='';
+    S('rect',{x:30,y:py(H),width:880,height:BASE-py(H)+0,fill:'#fff',stroke:'#cfd5e1'},svg);
+    S('rect',{x:30,y:py(3.4),width:880,height:py(H)-py(3.4),fill:'#eceef3'},svg);
+    T(svg,40,py(H)-6,'outside the board',{'font-size':11,fill:'#8a94a8'});
+    S('rect',{x:px(BOX.k0),y:py(BOX.hi),width:px(BOX.k1)-px(BOX.k0),height:(BOX.hi-BOX.lo)*SC,fill:'#b7bdca',stroke:'#7d8699'},svg);
+    T(svg,(px(BOX.k0)+px(BOX.k1))/2,py((BOX.lo+BOX.hi)/2)+4,'pad box',{'text-anchor':'middle','font-size':12,fill:'#3d4557'});
+    for(let k=0;k<NC;k++)S('line',{x1:px(k),y1:py(H),x2:px(k),y2:BASE,stroke:'#eef1f6'},svg);
+    // gap ticks
+    for(let l=0;l<NL-1;l++)for(let k=0;k<NC;k++){const g=o[l+1][k]-o[l][k];const c=g<PMIN-1e-4?'#d33':g<PCOMF-1e-4?'#d39a00':'#2e9d4c';
+      S('line',{x1:px(k)+9,y1:py(o[l][k]),x2:px(k)+9,y2:py(o[l+1][k]),stroke:c,'stroke-width':4,'stroke-linecap':'butt'},svg)}
+    for(let l=0;l<NL;l++){
+      S('polyline',{points:o[l].map((v,k)=>px(k)+','+py(v)).join(' '),fill:'none',stroke:cols[l],'stroke-width':4,'stroke-linejoin':'round'},svg);
+      T(svg,px(0)-30,py(o[l][0])+5,'L'+l,{'font-weight':700,fill:cols[l],'text-anchor':'middle'});
+      o[l].forEach((v,k)=>{const fixed=k===0||k===NC-1;
+        const c=S(fixed?'rect':'circle',fixed?{x:px(k)-5,y:py(v)-5,width:10,height:10,fill:cols[l]}:{cx:px(k),cy:py(v),r:8,fill:'#fff',stroke:cols[l],'stroke-width':3,style:'cursor:ns-resize'},svg);
+        if(!fixed){c.addEventListener('pointerdown',e=>{drag={l,k};c.setPointerCapture(e.pointerId);if(anim){cancelAnimationFrame(anim);anim=null}});
+          c.addEventListener('pointermove',e=>{if(!drag||drag.l!==l||drag.k!==k)return;const b=svg.getBoundingClientRect(),y=(e.clientY-b.top)/b.height*350;o[l][k]=clamp(pyi(y),0,3.3);upd()});
+          c.addEventListener('pointerup',()=>{drag=null})}})
+    }
+    // split hint
+    T(svg,px(BOX.k0)-2,py(BOX.lo)+20+0,'below: L0'+(split>1?'..L'+(split-1):'')+(split===0?' (none)':''),{'font-size':11,fill:'#5b6577'});
+    T(svg,px(BOX.k0)-2,py(BOX.hi)-8,'above: '+(split>=NL?'(none)':'L'+split+(split<NL-1?'..L'+(NL-1):'')),{'font-size':11,fill:'#5b6577'});
+  }
+  const f=v=>v.toFixed(2);
+  function upd(msg){
+    draw();const c=evalCost(o);$('#lpMine').textContent=f(c.total);
+    $('#lpLen').textContent=f(c.len);$('#lpBend').textContent=f(c.bend);$('#lpComf').textContent=f(c.comf);$('#lpHard').textContent=f(c.hard);
+    if(msg!==undefined)$('#lpLog').innerHTML=msg;
+  }
+  function tween(to,done){
+    const from=o.map(r=>r.slice()),t0=performance.now();
+    const step=now=>{const u=Math.min(1,(now-t0)/700),e=u<.5?2*u*u:1-Math.pow(-2*u+2,2)/2;
+      o=from.map((r,l)=>r.map((v,k)=>v+(to[l][k]-v)*e));upd();
+      if(u<1)anim=requestAnimationFrame(step);else{anim=null;done&&done()}};
+    anim=requestAnimationFrame(step)}
+  $('#lpSolve').onclick=()=>{
+    const r=solveLP();if(!r){$('#lpLog').textContent='LP solver failed (numerical).';return}
+    tween(r.o,()=>{const c=evalCost(o);$('#lpOpt').textContent=f(c.total);
+      let m=`Solved: ${r.rows} rows, ${r.vars} columns, ${r.ms.toFixed(0)} ms. `;
+      if(r.paid.length){m+='<b style="color:#c0392b">The LP had to pay on hard rows:</b> '+r.paid.map(p=>p.kind==='pitch'?`pitch L${p.l}/L${p.l+1} at col ${p.k} short ${p.v.toFixed(3)}`:`box L${p.l} at col ${p.k} (${p.side}) short ${p.v.toFixed(3)}`).join('; ')+'. <b>These are what would go back to CP-SAT as cuts.</b>'}
+      else m+='Nothing hard paid: this topology can be drawn. Amber ticks are the price of length, bends and squeezing below comfortable pitch.';
+      $('#lpLog').innerHTML=m})};
+  $('#lpReset').onclick=()=>{if(anim)cancelAnimationFrame(anim);o=straight();$('#lpOpt').textContent='-';upd('Straight lines between the pinned ends. Most of the hard rows are broken at the box.')};
+  $('#lpScribble').onclick=()=>{o=o.map((r,l)=>r.map((v,k)=>k===0||k===NC-1?v:clamp(v+(Math.random()-0.5)*1.2,0.1,H-0.1)));upd('Scribbled. Compare your cost to the LP optimum.')};
+  $('#lpH').oninput=()=>{H=+$('#lpH').value/10;$('#lpHV').textContent=H.toFixed(1)+' mm';$('#lpOpt').textContent='-';upd()};
+  $('#lpSplit').onchange=()=>{split=+$('#lpSplit').value;$('#lpOpt').textContent='-';upd()};
+  $('#lpHV').textContent=H.toFixed(1)+' mm';
+  upd('Drag the hollow dots. Ticks between lanes show the pitch. Then press Solve LP.');
+})();
+
+/* ================= 2b. simplex vs IPM on a 2-D polygon ================= */
+(function(){
+  const cv=$('#sx'),c=cv.getContext('2d'),W=cv.width,Hh=cv.height,R=10,M=30;
+  // the polygon is defined by its corners; each side becomes one row a.x<=b (outward normal a)
+  const CORN=[[0.8,1.6],[3,0.6],[6.6,0.9],[9.2,3.6],[8.6,7],[5.6,9.4],[2.2,8.6],[0.6,5]];
+  const A=CORN.map((p,i)=>{const q=CORN[(i+1)%CORN.length],a=q[1]-p[1],b=p[0]-q[0],n=Math.hypot(a,b);return[a/n,b/n,(a*p[0]+b*p[1])/n]});
+  const sx=x=>M+x/R*(W-2*M),sy=y=>Hh-M-y/R*(Hh-2*M);
+  function verts(){const v=[];for(let i=0;i<A.length;i++)for(let j=i+1;j<A.length;j++){
+    const [a1,b1,c1]=A[i],[a2,b2,c2]=A[j],d=a1*b2-a2*b1;if(Math.abs(d)<1e-9)continue;
+    const x=(c1*b2-c2*b1)/d,y=(a1*c2-a2*c1)/d;
+    if(A.every(([a,b,cc])=>a*x+b*y<=cc+1e-7)&&!v.some(p=>Math.hypot(p[0]-x,p[1]-y)<1e-6))v.push([x,y])}
+    const cx=v.reduce((s,p)=>s+p[0],0)/v.length,cy=v.reduce((s,p)=>s+p[1],0)/v.length;
+    return v.sort((p,q)=>Math.atan2(p[1]-cy,p[0]-cx)-Math.atan2(q[1]-cy,q[0]-cx))}
+  const V=verts();
+  let ang=215;                       // direction of "cheaper", degrees (exact, so a tie can be exact)
+  let S_=null,I_=null,timer=null;    // per-method state: {path, k}
+  function cost(){const a=ang*Math.PI/180;let v=[-Math.cos(a),-Math.sin(a)];   // minimise c.x, c = -(cheaper direction)
+    if($('#sxTie').checked)v=[v[0]+0.03,v[1]+0.011];return v}
+  const val=(p,cc)=>cc[0]*p[0]+cc[1]*p[1];
+  const f2=v=>v.toFixed(2),pt=p=>`(${f2(p[0])}, ${f2(p[1])})`;
+  function best(cc){let b=V[0];for(const p of V)if(val(p,cc)<val(b,cc)-1e-9)b=p;return b}
+  function draw(){
+    const cc=cost();
+    c.clearRect(0,0,W,Hh);c.fillStyle='#fff';c.fillRect(0,0,W,Hh);
+    c.strokeStyle='#e9ecf2';c.lineWidth=1;for(let i=0;i<=10;i++){c.beginPath();c.moveTo(sx(i),sy(0));c.lineTo(sx(i),sy(10));c.moveTo(sx(0),sy(i));c.lineTo(sx(10),sy(i));c.stroke()}
+    // polygon shaded by cost: brown (expensive) -> green (cheap), clipped to the polygon
+    const vals=V.map(p=>val(p,cc)),lo=Math.min(...vals),hi=Math.max(...vals);
+    const pa=V.reduce((b,p)=>val(p,cc)>val(b,cc)?p:b,V[0]),pb=best(cc);
+    const g=c.createLinearGradient(sx(pa[0]),sy(pa[1]),sx(pb[0]),sy(pb[1]));
+    g.addColorStop(0,'#f0d9c2');g.addColorStop(1,'#bfe6c9');
+    c.save();c.beginPath();V.forEach((p,i)=>i?c.lineTo(sx(p[0]),sy(p[1])):c.moveTo(sx(p[0]),sy(p[1])));c.closePath();c.fillStyle=g;c.fill();c.clip();
+    c.strokeStyle='rgba(60,60,60,.25)';c.lineWidth=1;c.setLineDash([4,4]);            // equal-cost lines, inside the polygon only
+    for(let k=1;k<8;k++){const v=lo+(hi-lo)*k/8,n2=cc[0]*cc[0]+cc[1]*cc[1],x0=cc[0]*v/n2,y0=cc[1]*v/n2,dx=-cc[1],dy=cc[0];
+      c.beginPath();c.moveTo(sx(x0-dx*30),sy(y0-dy*30));c.lineTo(sx(x0+dx*30),sy(y0+dy*30));c.stroke()}
+    c.restore();c.setLineDash([]);
+    c.strokeStyle='#6a3fc4';c.lineWidth=2.5;c.beginPath();V.forEach((p,i)=>i?c.lineTo(sx(p[0]),sy(p[1])):c.moveTo(sx(p[0]),sy(p[1])));c.closePath();c.stroke();
+    V.forEach(p=>{c.fillStyle='#6a3fc4';c.beginPath();c.arc(sx(p[0]),sy(p[1]),3.5,0,7);c.fill()});
+    // wall numbers at side midpoints
+    c.font='bold 12px system-ui';c.textAlign='center';c.fillStyle='#4a2a9a';
+    V.forEach((p,i)=>{const q=V[(i+1)%V.length],mx=(p[0]+q[0])/2,my=(p[1]+q[1])/2;
+      const dx=q[0]-p[0],dy=q[1]-p[1],n=Math.hypot(dx,dy),ox=dy/n,oy=-dx/n;   // outward for counter-clockwise order
+      c.fillText('wall '+(i+1),sx(mx+ox*0.55),sy(my+oy*0.55)+4)});
+    // true optimum star
+    c.fillStyle='#e3a008';c.font='22px system-ui';c.fillText('★',sx(pb[0]),sy(pb[1])+7);
+    // direction arrow
+    const ux=-cc[0],uy=-cc[1],nn=Math.hypot(ux,uy),ox=W-78,oy=58,L=38;
+    c.strokeStyle='#8a5a00';c.fillStyle='#8a5a00';c.lineWidth=4;c.lineCap='round';
+    c.beginPath();c.moveTo(ox-ux/nn*L,oy+uy/nn*L);c.lineTo(ox+ux/nn*L,oy-uy/nn*L);c.stroke();
+    c.beginPath();c.arc(ox+ux/nn*L,oy-uy/nn*L,6,0,7);c.fill();
+    c.font='12px system-ui';c.fillText('cheaper this way',ox,oy+L+22);c.textAlign='start';
+    // paths
+    const dp=(st,col)=>{if(!st)return;const p=st.path,n=st.k;
+      c.strokeStyle=col;c.lineWidth=3;c.beginPath();
+      for(let i=0;i<=n;i++)i?c.lineTo(sx(p[i][0]),sy(p[i][1])):c.moveTo(sx(p[i][0]),sy(p[i][1]));c.stroke();
+      for(let i=0;i<=n;i++){c.fillStyle=i===n?'#fff':col;c.strokeStyle=col;c.lineWidth=3;c.beginPath();c.arc(sx(p[i][0]),sy(p[i][1]),i===n?7:4,0,7);c.fill();if(i===n)c.stroke()}};
+    dp(S_,'#d9483b');dp(I_,'#0f8a7a');
+    c.fillStyle='#5b6577';c.font='12px system-ui';c.fillText('x',W-14,sy(0)-6);c.fillText('y',sx(0)+6,14);
+  }
+  function simplexPath(){
+    const cc=cost();let i=V.reduce((b,_,k)=>val(V[k],cc)>val(V[b],cc)?k:b,0);const path=[V[i]];
+    for(;;){const n=V.length,a=(i+1)%n,b=(i+n-1)%n;const nx=val(V[a],cc)<val(V[b],cc)?a:b;
+      if(val(V[nx],cc)<val(V[i],cc)-1e-9){i=nx;path.push(V[i])}else break}
+    return path}
+  function ipmPath(){
+    const cc=cost();let p=[V.reduce((s,q)=>s+q[0],0)/V.length,V.reduce((s,q)=>s+q[1],0)/V.length];
+    const path=[p.slice()],mus=[];let t=0.1;
+    for(let k=0;k<14;k++){
+      for(let it=0;it<3;it++){let g=[t*cc[0],t*cc[1]],Hm=[[0,0],[0,0]];
+        for(const [a,b,cn] of A){const s=cn-a*p[0]-b*p[1];g[0]+=a/s;g[1]+=b/s;Hm[0][0]+=a*a/(s*s);Hm[0][1]+=a*b/(s*s);Hm[1][1]+=b*b/(s*s)}Hm[1][0]=Hm[0][1];
+        const d=Hm[0][0]*Hm[1][1]-Hm[0][1]*Hm[1][0];const dx=-(Hm[1][1]*g[0]-Hm[0][1]*g[1])/d,dy=-(-Hm[1][0]*g[0]+Hm[0][0]*g[1])/d;
+        let al=1;for(const [a,b,cn] of A){const s=cn-a*p[0]-b*p[1],r=a*dx+b*dy;if(r>0)al=Math.min(al,0.9*s/r)}
+        p=[p[0]+al*dx,p[1]+al*dy]}
+      path.push(p.slice());mus.push(1/t);t*=2.2}
+    path.mus=mus;return path}
+  const say=h=>{$('#sxLog').innerHTML=h};
+  function stepSimplex(){
+    if(!S_)S_={path:simplexPath(),k:0};
+    const cc=cost(),st=S_,n=st.path.length-1;
+    if(st.k>=n){const e=st.path[n];
+      say(`<b>Simplex finished</b> after ${n} hop${n===1?'':'s'}. At ${pt(e)} (cost ${f2(val(e,cc))}) neither neighbouring corner is cheaper, so this corner is optimal. It ends <i>exactly on a corner</i>.`+tieNote(e,cc));draw();return}
+    st.k++;const p=st.path[st.k],q=st.path[st.k-1];
+    say(`<b>Simplex, hop ${st.k} of ${n}.</b> ${st.k===1?'It starts at the most expensive corner. ':''}From ${pt(q)} (cost ${f2(val(q,cc))}) it slides along a wall to the cheaper neighbouring corner ${pt(p)} (cost ${f2(val(p,cc))}). Every hop lowers the cost.`);
+    draw()}
+  function tieNote(e,cc){
+    const bv=val(best(cc),cc);
+    // is another vertex equally good?  (a whole side is optimal)
+    const tied=V.filter(p=>Math.abs(val(p,cc)-bv)<1e-9);
+    return tied.length>1?` <b style="color:#c0392b">Tie:</b> the neighbouring corner ${pt(tied.find(p=>Math.hypot(p[0]-e[0],p[1]-e[1])>1e-6)||e)} is exactly as cheap, so the whole side between them is optimal. Simplex reports whichever end it met first.`:''}
+  function stepIPM(){
+    if(!I_)I_={path:ipmPath(),k:0};
+    const cc=cost(),st=I_,n=st.path.length-1;
+    if(st.k>=n){const e=st.path[n];
+      say(`<b>Interior point finished</b> after ${n} rounds. It arrives at ${pt(e)}, within about 0.01 of the optimum, and never touched a wall.`+(V.filter(p=>Math.abs(val(p,cc)-val(best(cc),cc))<1e-9).length>1?` <b style="color:#c0392b">Tie:</b> a whole side is optimal, so it settles in the <i>middle</i> of it, which is not where simplex stopped.`:''));draw();return}
+    st.k++;const p=st.path[st.k],mu=st.path.mus[st.k-1];
+    say(`<b>Interior point, round ${st.k} of ${n}.</b> ${st.k===1?'It starts in the middle of the polygon. ':''}Barrier strength is now <b>${mu>=0.01?mu.toFixed(2):mu.toExponential(1)}</b>: the walls push back with force proportional to that divided by distance, so a smaller value lets the point get closer to a wall. It moves to ${pt(p)} (cost ${f2(val(p,cc))}). Each round is 3 Newton iterations.`);
+    draw()}
+  function reset(){clearInterval(timer);timer=null;S_=null;I_=null;say('Choose a direction, then press a step button. The star marks where the answer should end up.');draw()}
+  $('#sxA').oninput=()=>{ang=+$('#sxA').value;reset()};
+  $('#sxTie').onchange=reset;$('#sxClear').onclick=reset;
+  $('#sxSimplex').onclick=()=>{clearInterval(timer);timer=null;stepSimplex()};
+  $('#sxIPM').onclick=()=>{clearInterval(timer);timer=null;stepIPM()};
+  $('#sxPlay').onclick=()=>{
+    if(timer){clearInterval(timer);timer=null;return}
+    if(S_&&I_&&S_.k>=S_.path.length-1&&I_.k>=I_.path.length-1)reset();
+    timer=setInterval(()=>{
+      const sd=S_&&S_.k>=S_.path.length-1,id=I_&&I_.k>=I_.path.length-1;
+      if(sd&&id){clearInterval(timer);timer=null;return}
+      if(!sd){stepSimplex()}if(!id){const keep=$('#sxLog').innerHTML;stepIPM();if(!sd)$('#sxLog').innerHTML=keep+'<br>'+$('#sxLog').innerHTML}
+    },1100)};
+  $('#sxPar').onclick=()=>{
+    const bt=$('#sxPar');bt.n=(bt.n||0);const j=bt.n++%A.length,[a,b]=A[j];
+    ang=(Math.atan2(b,a)*180/Math.PI+360)%360;$('#sxA').value=Math.round(ang);$('#sxTie').checked=false;reset();
+    say('The cheap direction now points straight out of one side of the polygon, so <b>that whole side is optimal</b> (see the star and the shading). Step both methods to the end and compare where they stop. Press this button again to try another side.')};
+  reset();
+})();
+
+/* ================= 3. negotiation loop ================= */
+(function(){
+  const svg=$('#loop');let step=0;
+  const frames=[
+   {lab:'1 CP-SAT proposes',t:'CP-SAT proves a plan with the fewest vias: lanes <b>A and B cross</b> at s=5.0 mm, and lane <b>C dives</b> (changes layer) at s=5.3 mm. It knows the order and layers. It has no notion of how wide the corridor is.'},
+   {lab:'2 LP tries to draw it',t:'The LP places the lanes. C\'s via needs a <b>room</b> around it and A, B have to spread to cross, but the corridor is too narrow. The LP does not fail. It <b>pays</b> on the elastic "via room" row (0.06 mm short) and reports which lane, which row, which place.'},
+   {lab:'3 the cut',t:'The shortfall becomes a <b>cut</b>, a boolean disjunction added to the CP-SAT model: <code>NOT (A×B crossing near C\'s dive)</code>, i.e. move the crossing, or move the dive, or give C its via elsewhere. History congestion at that place is raised too.'},
+   {lab:'4 CP-SAT re-solves',t:'Same objective, same proof of optimality, now under the cut. The proved minimum is still <b>2 vias</b>: C dives later, at s=8.4 mm, where the corridor is wide. No extra vias were needed. Had the cut cost one, the plan would have paid one more via.'},
+   {lab:'5 LP is content',t:'The LP finds a drawing that pays on no hard row. The plan continues to the polish (LP per round), then the snap to the router\'s grid, then the audit. If the audit finds a still-hot place, the loop goes around again (up to 6 geometry rounds, 3 fanout rounds).'}];
+  const XA=40,XB=760;
+  function lane(y0,y1,x0,x1,col,w=5){S('line',{x1:x0,y1:y0,x2:x1,y2:y1,stroke:col,'stroke-width':w,'stroke-linecap':'round'},svg)}
+  function draw(){
+    svg.innerHTML='';
+    S('rect',{x:XA,y:60,width:XB-XA,height:130,fill:'#f2f4f9',stroke:'#d8dde6'},svg);
+    T(svg,XA+6,54,'corridor (trunk)',{'font-size':12,fill:'#5b6577'});
+    for(let i=0;i<=15;i++)T(svg,XA+i*48,205,i*1+'',{'font-size':10,fill:'#a9b0be','text-anchor':'middle'});
+    T(svg,XB-8,222,'s [mm] →',{'font-size':11,fill:'#a9b0be','text-anchor':'end'});
+    const sxf=s=>XA+s*48;
+    const YA=90,YB=125,YC=165;
+    const dive=(f>=3)?8.4:5.3;
+    // lanes B,A cross at 5.0
+    lane(YA,YA,sxf(0),sxf(4),CF);lane(YA,YB,sxf(4),sxf(6),CF);lane(YB,YB,sxf(6),XB-40,CF);
+    lane(YB,YB,sxf(0),sxf(4),CB);lane(YB,YA,sxf(4),sxf(6),CB);lane(YA,YA,sxf(6),XB-40,CB);
+    // C
+    lane(YC,YC,sxf(0),sxf(dive),CF);lane(YC,YC,sxf(dive),XB-40,CB);
+    S('circle',{cx:sxf(dive),cy:YC,r:9,fill:'#fff',stroke:'#1d2330','stroke-width':2},svg);
+    T(svg,sxf(0)-10,YA+4,'A',{'text-anchor':'end','font-weight':700});T(svg,sxf(0)-10,YB+4,'B',{'text-anchor':'end','font-weight':700});T(svg,sxf(0)-10,YC+4,'C',{'text-anchor':'end','font-weight':700});
+    S('circle',{cx:sxf(5),cy:(YA+YB)/2,r:11,fill:'#fff',stroke:'#1d2330','stroke-width':2},svg);T(svg,sxf(5),(YA+YB)/2+5,'×',{'text-anchor':'middle','font-size':16,'font-weight':700});
+    if(f===1){
+      S('circle',{cx:sxf(5.3),cy:YC,r:50,fill:'rgba(192,57,43,.14)',stroke:'#c0392b','stroke-dasharray':'5 4'},svg);
+      S('line',{x1:sxf(5.3),y1:YC-50,x2:sxf(5.3),y2:YB+20,stroke:'#c0392b','stroke-width':1.5},svg);
+      T(svg,sxf(5.3)+58,YC-30,'via room overlaps the crossing:',{'font-size':12,fill:'#c0392b'});T(svg,sxf(5.3)+58,YC-16,'elastic row pays 0.06 mm',{'font-size':12,fill:'#c0392b','font-weight':700});
+    }
+    if(f===2){
+      S('rect',{x:sxf(3.7),y:52,width:sxf(7.2)-sxf(3.7),height:150,fill:'rgba(227,160,8,.15)',stroke:'#e3a008','stroke-dasharray':'5 4'},svg);
+      T(svg,sxf(5.45),42,'cut: forbid A×B and the dive of C here',{'text-anchor':'middle','font-size':12,fill:'#8a5a00','font-weight':700});
+      S('path',{d:`M${sxf(5.45)} 40 C ${sxf(5.45)} 12, 700 12, 730 12`,fill:'none',stroke:'#8a5a00','stroke-width':2,'marker-end':'url(#ah2)'},svg);
+    }
+    if(f===3){
+      S('rect',{x:sxf(3.7),y:52,width:sxf(7.2)-sxf(3.7),height:150,fill:'rgba(227,160,8,.10)',stroke:'#e3a008','stroke-dasharray':'2 4'},svg);
+      T(svg,sxf(8.4),YC+30,'dive moved to s = 8.4',{'text-anchor':'middle','font-size':12,fill:'#2e9d4c','font-weight':700});
+    }
+    if(f===4){
+      S('circle',{cx:sxf(8.4),cy:YC,r:50,fill:'rgba(46,157,76,.12)',stroke:'#2e9d4c'},svg);
+      T(svg,sxf(8.4),YC-58,'✓ room fits: nothing paid',{'text-anchor':'middle','font-size':13,fill:'#2e9d4c','font-weight':700});
+    }
+    T(svg,sxf(5.3),YC+30,f>=3?'':'C dives at 5.3',{'text-anchor':'middle','font-size':12,fill:'#5b6577'});
+  }
+  let f=0;
+  function show(){$('#stepLbl').textContent=frames[f].lab;$('#loopTxt').innerHTML='<div class="callout" style="margin:6px 0">'+frames[f].t+'</div>';draw()}
+  $('#lpStepNext').onclick=()=>{f=(f+1)%frames.length;show()};
+  $('#lpStepPrev').onclick=()=>{f=(f+frames.length-1)%frames.length;show()};
+  // reuse marker defs
+  const defs=S('defs',{},svg);
+  show();
+  // markers live in pipeline svg; add a local one
+})();
+/* ================= 0a. ends ================= */
+(function(){
+  const N=5,names='ABCDE',cols=['#d9483b','#2f6fd0','#0f8a7a','#c07a00','#8a3fc4'];
+  const svg=$('#eSvg'),X0=110,X1=640,Y=i=>34+i*48;
+  let seed=11,sl,el,bp;
+  function init(){const R=rng(seed);sl=[...Array(N)].map(()=>R()<.5?0:1);el=[...Array(N)].map(()=>R()<.5?0:1);bp=[0,1,2,3,4]}
+  function cross(b){const cur=[0,1,2,3,4],out=[];let ch=true;while(ch){ch=false;for(let i=0;i<N-1;i++)if(b[cur[i]]>b[cur[i+1]]){out.push({a:cur[i],b:cur[i+1]});[cur[i],cur[i+1]]=[cur[i+1],cur[i]];ch=true}}return out}
+  function minVias(cr){let best=1e9;const last=sl.slice();
+    (function rec(d,cost){if(cost>=best)return;
+      if(d===cr.length){let t=cost;for(let n=0;n<N;n++)if(last[n]!==el[n])t++;if(t<best)best=t;return}
+      const {a,b}=cr[d];for(const v of [0,1]){const pa=last[a],pb=last[b];last[a]=v;last[b]=1-v;rec(d+1,cost+(pa!==v?1:0)+(pb!==1-v?1:0));last[a]=pa;last[b]=pb}})(0,0);
+    return best}
+  const perms=a=>a.length<2?[a]:a.flatMap((x,i)=>perms(a.filter((_,j)=>j!==i)).map(p=>[x,...p]));
+  const badge=(x,y,L,fn)=>{const g=S('g',{style:'cursor:pointer'},svg);S('rect',{x:x-14,y:y-11,width:28,height:22,rx:5,fill:L?CB:CF},g);T(g,x,y+5,L?'B':'F',{'text-anchor':'middle',fill:'#fff','font-weight':700});g.addEventListener('click',fn)};
+  function draw(){
+    svg.innerHTML='';
+    T(svg,X0-40,14,'source teeth',{'text-anchor':'middle','font-size':11,fill:'#5b6577'});T(svg,X1+40,14,'destination berths',{'text-anchor':'middle','font-size':11,fill:'#5b6577'});
+    const inv=[];for(let i=0;i<N;i++)for(let j=i+1;j<N;j++)if(bp[i]>bp[j])inv.push([i,j]);
+    for(let i=0;i<N;i++)S('line',{x1:X0,y1:Y(i),x2:X1,y2:Y(bp[i]),stroke:cols[i],'stroke-width':4,'stroke-linecap':'round',opacity:.85},svg);
+    for(const [i,j] of inv){const d=(Y(bp[i])-Y(i))-(Y(bp[j])-Y(j)),t=(Y(j)-Y(i))/d,x=X0+(X1-X0)*t,y=Y(i)+(Y(bp[i])-Y(i))*t;
+      S('circle',{cx:x,cy:y,r:9,fill:'#fff',stroke:'#1d2330','stroke-width':2},svg);T(svg,x,y+5,'×',{'text-anchor':'middle','font-size':15,'font-weight':700})}
+    for(let i=0;i<N;i++){T(svg,X0-70,Y(i)+5,names[i],{'font-weight':700,'text-anchor':'middle',fill:cols[i]});badge(X0-30,Y(i),sl[i],()=>{sl[i]^=1;draw()})}
+    for(let s_=0;s_<N;s_++){const l=bp.indexOf(s_);badge(X1+22,Y(s_),el[l],()=>{el[l]^=1;draw()});T(svg,X1+58,Y(s_)+5,names[l],{'font-weight':700,'text-anchor':'middle',fill:cols[l]})}
+    for(let s_=0;s_<N-1;s_++){const g=S('g',{style:'cursor:pointer'},svg);S('rect',{x:X1+80,y:Y(s_)+13,width:34,height:22,rx:5,fill:'#fff',stroke:'#b9c0cf'},g);T(g,X1+97,Y(s_)+29,'⇅',{'text-anchor':'middle','font-size':15});
+      g.addEventListener('click',()=>{const a=bp.indexOf(s_),b=bp.indexOf(s_+1);bp[a]=s_+1;bp[b]=s_;draw()})}
+    const cr=cross(bp),v=minVias(cr);$('#eCross').textContent=cr.length;$('#eVias').textContent=v;
+    const mis=[...Array(N)].filter((_,n)=>sl[n]!==el[n]).length;
+    $('#eLog').innerHTML=`${cr.length} crossing${cr.length===1?'':'s'} are forced by this order. ${mis} lane${mis===1?'':'s'} start${mis===1?'s':''} and end${mis===1?'s':''} on different layers, which already costs one via each. The rest of the ${v} comes from crossings between lanes that stay on one layer end to end.`}
+  $('#eBest').onclick=()=>{
+    const before=minVias(cross(bp));let bb=null,bv=1e9,bc=1e9;
+    for(const p of perms([0,1,2,3,4])){const cr=cross(p),v=minVias(cr);if(v<bv||(v===bv&&cr.length<bc)){bv=v;bc=cr.length;bb=p}}
+    bp=bb.slice();draw();
+    $('#eLog').innerHTML=`<b>Searched all 120 berth orders.</b> Best: ${bv} via${bv===1?'':'s'} with ${bc} crossing${bc===1?'':'s'} (yours was ${before}). `+(bv===before?'You had already found a best order.':'The fanout would lay these ends.')}
+  $('#eRev').onclick=()=>{bp=bp.map(s_=>N-1-s_);draw()};
+  $('#eId').onclick=()=>{bp=[0,1,2,3,4];draw()};
+  $('#eLay').onclick=()=>{seed++;const keep=bp;init();bp=keep;draw()};
+  init();bp=[3,0,4,1,2];draw();
+})();
+
+/* ================= 4a. polish ================= */
+(function(){
+  const svg=$('#pSvg'),NV=14,BAR=30,PADR=42,W=760;
+  const px=i=>40+i*(W-80)/(NV-1);
+  let L,pad,R,rounds=0,moved=0,timer=null;
+  function build(){
+    R=rng(5);const sh=+$('#pShort').value;rounds=0;moved=0;
+    L=[[],[]];
+    for(let i=0;i<NV;i++)L[0].push([px(i),190-16*Math.sin(i/NV*Math.PI*1.5)+(R()-.5)*3]);
+    for(let i=0;i<NV;i++){const end=i===0||i===NV-1;L[1].push([px(i),L[0][i][1]-(end?BAR:BAR-sh*(0.4+0.6*R()))])}
+    const m=7;pad=[px(m)+12,L[1][m][1]-(PADR-sh*0.8)];
+  }
+  function segNear(p,a,b){const dx=b[0]-a[0],dy=b[1]-a[1],t=clamp(((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(dx*dx+dy*dy),0,1),q=[a[0]+dx*t,a[1]+dy*t];return{d:Math.hypot(p[0]-q[0],p[1]-q[1]),q}}
+  function near(p,lane){let b={d:1e9};for(let i=0;i<lane.length-1;i++){const r=segNear(p,lane[i],lane[i+1]);if(r.d<b.d)b=r}return b}
+  function shortfalls(){ // per vertex: worst shortfall and push vector
+    const out=[];
+    for(let l=0;l<2;l++)for(let i=1;i<NV-1;i++){const v=L[l][i];let sf=0,pu=[0,0];
+      const o=near(v,L[1-l]);if(o.d<BAR){const d=Math.max(o.d,1e-6);sf=Math.max(sf,BAR-o.d);
+        const w=(l===0?0.75:0.25)*1.5;                                     // the two vertices share the gap (the lane with room to spare yields most)
+        pu[0]+=(v[0]-o.q[0])/d*(BAR-o.d)*w;pu[1]+=(v[1]-o.q[1])/d*(BAR-o.d)*w}
+      const dp=Math.hypot(v[0]-pad[0],v[1]-pad[1]);if(dp<PADR){sf=Math.max(sf,PADR-dp);pu[0]+=(v[0]-pad[0])/dp*(PADR-dp)*1.5;pu[1]+=(v[1]-pad[1])/dp*(PADR-dp)*1.5}
+      out.push({l,i,sf,pu})}
+    return out}
+  const worst=()=>Math.max(0,...shortfalls().map(s=>s.sf));
+  function draw(){
+    svg.innerHTML='';const sf=shortfalls();
+    S('circle',{cx:pad[0],cy:pad[1],r:PADR,fill:'rgba(192,57,43,.06)',stroke:'#c0392b','stroke-dasharray':'4 3'},svg);
+    S('circle',{cx:pad[0],cy:pad[1],r:PADR*0.42,fill:'#b7bdca',stroke:'#7d8699'},svg);T(svg,pad[0],pad[1]+4,'pad',{'text-anchor':'middle','font-size':11,fill:'#3d4557'});
+    const cols=[CB,CF];
+    L.forEach((ln,l)=>{const pts=ln.map(q=>q.join(',')).join(' ');
+      S('polyline',{points:pts,fill:'none',stroke:cols[l],'stroke-width':BAR,opacity:.10,'stroke-linejoin':'round'},svg);
+      S('polyline',{points:pts,fill:'none',stroke:cols[l],'stroke-width':4,'stroke-linejoin':'round'},svg);
+      ln.forEach((q,i)=>{const end=i===0||i===NV-1;S(end?'rect':'circle',end?{x:q[0]-5,y:q[1]-5,width:10,height:10,fill:cols[l]}:{cx:q[0],cy:q[1],r:3.5,fill:'#fff',stroke:cols[l],'stroke-width':2},svg)})});
+    for(const s_ of sf)if(s_.sf>0.05)S('circle',{cx:L[s_.l][s_.i][0],cy:L[s_.l][s_.i][1],r:10,fill:'none',stroke:'#d33','stroke-width':2.5},svg);
+    T(svg,40,20,'lane ends are pinned (squares)',{'font-size':12,fill:'#5b6577'});
+    const w=Math.max(0,...sf.map(x=>x.sf));$('#pN').textContent=rounds;$('#pW').textContent=w<0.05?'0 (meets every bar)':w.toFixed(1)+' units';$('#pMv').textContent=moved.toFixed(0)+' units'}
+  function round(){
+    const sf=shortfalls();let any=false;
+    for(const s_ of sf)if(s_.sf>0.05){any=true;const v=L[s_.l][s_.i];v[0]+=s_.pu[0];v[1]+=s_.pu[1];moved+=Math.hypot(...s_.pu)}
+    rounds++;draw();
+    const w=worst();
+    $('#pLog').innerHTML=any?(w<0.05?`Round ${rounds}: <b>every bar is met.</b> Only vertices near a violation moved, and only by their shortfall.`:`Round ${rounds}: the moves for one violation can create another (pushing a lane off the pad squeezes it against its neighbour), so it linearises again. Worst shortfall now ${w.toFixed(1)}.`):'Nothing to do: every bar is met.';
+    return w<0.05}
+  $('#pRound').onclick=()=>{clearInterval(timer);round()};
+  $('#pRun').onclick=()=>{clearInterval(timer);timer=setInterval(()=>{if(round()||rounds>40)clearInterval(timer)},450)};
+  $('#pRe').onclick=()=>{clearInterval(timer);R=null;build();draw();$('#pLog').textContent='A fresh LP output, short of the bars in several places.'};
+  $('#pShort').oninput=()=>{clearInterval(timer);build();draw()};
+  build();draw();$('#pLog').textContent='The LP left the lanes short of the bars. Red rings mark where.';
+})();
+
+/* ================= 4b. snap ================= */
+(function(){
+  const svg=$('#nSvg'),GX=26,GY=12,C=32,OX=30,OY=26,Y0=2,Y1=9;
+  const blocked=new Set(),key=(x,y)=>x+','+y;
+  const ss=t=>t*t*(3-2*t);
+  const sm=x=>Y0+(Y1-Y0)*ss(x/(GX-1));
+  const samp=[];for(let i=0;i<=300;i++){const x=(GX-1)*i/300;samp.push([x,sm(x)])}
+  const dev=(x,y)=>{let m=1e9;for(const q of samp){const d=Math.hypot(q[0]-x,q[1]-y);if(d<m)m=d}return m};
+  const dirs=[[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
+  const preset=()=>{blocked.clear();for(let y=3;y<=6;y++)blocked.add(key(11,y));for(let y=5;y<=8;y++)blocked.add(key(17,y))};
+  function solve(){
+    const B=+$('#nB').value/10,D=+$('#nD').value/10,W=+$('#nW').value;
+    const dist=new Map(),prev=new Map(),k3=(x,y,d)=>x+','+y+','+d,q=[[0,0,Y0,-1]];dist.set(k3(0,Y0,-1),0);
+    let goal=null;
+    const okc=(x,y)=>x>=0&&y>=0&&x<GX&&y<GY&&!blocked.has(key(x,y))&&dev(x,y)<=W;
+    while(q.length){let bi=0;for(let i=1;i<q.length;i++)if(q[i][0]<q[bi][0])bi=i;const [d,x,y,dr]=q.splice(bi,1)[0];
+      if(d>dist.get(k3(x,y,dr))+1e-9)continue;
+      if(x===GX-1&&y===Y1){goal=k3(x,y,dr);break}
+      for(let d2=0;d2<8;d2++){const [dx,dy]=dirs[d2];let turn=0;if(dr>=0){turn=Math.abs(d2-dr);turn=Math.min(turn,8-turn);if(turn>2)continue}
+        const nx=x+dx,ny=y+dy;if(!okc(nx,ny))continue;if(dx&&dy&&(!okc(x+dx,y)||!okc(x,y+dy)))continue;
+        const nd=d+(dx&&dy?1.4142:1)+B*turn+D*dev(nx,ny),kk=k3(nx,ny,d2);
+        if(nd<(dist.get(kk)??1e9)-1e-9){dist.set(kk,nd);prev.set(kk,k3(x,y,dr));q.push([nd,nx,ny,d2])}}}
+    if(!goal)return null;
+    const path=[];let c=goal;while(c){const [x,y]=c.split(',').map(Number);path.push([x,y]);c=prev.get(c)}
+    return path.reverse()}
+  function draw(){
+    svg.innerHTML='';const W=+$('#nW').value,P=(x,y)=>[OX+x*C,OY+y*C];
+    S('polyline',{points:samp.map(q=>P(q[0],q[1]).join(',')).join(' '),fill:'none',stroke:'#dfe6f5','stroke-width':W*2*C,'stroke-linejoin':'round','stroke-linecap':'butt',opacity:.8},svg);
+    for(let x=0;x<GX;x++)for(let y=0;y<GY;y++){const [cx,cy]=P(x,y);
+      if(blocked.has(key(x,y)))S('rect',{x:cx-C/2+2,y:cy-C/2+2,width:C-4,height:C-4,rx:4,fill:'#7d8699'},svg);
+      else S('circle',{cx,cy,r:2,fill:'#b9c0cf'},svg);
+      const hit=S('rect',{x:cx-C/2,y:cy-C/2,width:C,height:C,fill:'transparent',style:'cursor:pointer'},svg);
+      hit.addEventListener('click',()=>{const k=key(x,y);if(blocked.has(k))blocked.delete(k);else blocked.add(k);upd()})}
+    S('polyline',{points:samp.map(q=>P(q[0],q[1]).join(',')).join(' '),fill:'none',stroke:'#8a94a8','stroke-width':2,'stroke-dasharray':'6 5'},svg);
+    const path=solve();
+    if(path){S('polyline',{points:path.map(q=>P(q[0],q[1]).join(',')).join(' '),fill:'none',stroke:CF,'stroke-width':5,'stroke-linejoin':'round','stroke-linecap':'round'},svg);
+      let bends=0,len=0,md=0;path.forEach((q,i)=>{md=Math.max(md,dev(q[0],q[1]));if(i){len+=Math.hypot(q[0]-path[i-1][0],q[1]-path[i-1][1])}
+        if(i>0&&i<path.length-1){const a=[q[0]-path[i-1][0],q[1]-path[i-1][1]],b=[path[i+1][0]-q[0],path[i+1][1]-q[1]];if(a[0]!==b[0]||a[1]!==b[1]){bends++;const [cx,cy]=P(q[0],q[1]);S('circle',{cx,cy,r:5,fill:'#fff',stroke:CF,'stroke-width':2.5},svg)}}});
+      $('#nLen').textContent=len.toFixed(1)+' steps';$('#nBd').textContent=bends;$('#nDev').textContent=md.toFixed(2)+' steps';
+      $('#nLog').textContent='Every piece runs at 0, 45 or 90 degrees between grid points. Hollow dots are the bends.'}
+    else{$('#nLen').textContent='-';$('#nBd').textContent='-';$('#nDev').textContent='-';
+      $('#nLog').innerHTML='<b style="color:#c0392b">No path fits in the band.</b> In the real snap this lane is reported as one it could not lay, and the audit turns that into a finding. Widen the band or clear an obstacle.'}
+    const [sx,sy]=P(0,Y0),[ex,ey]=P(GX-1,Y1);T(svg,sx-6,sy-14,'tooth',{'font-size':12,fill:'#5b6577'});T(svg,ex-6,ey+28,'berth',{'font-size':12,fill:'#5b6577'})}
+  const upd=()=>draw();
+  ['nB','nD','nW'].forEach(i=>$('#'+i).oninput=upd);
+  $('#nClr').onclick=()=>{blocked.clear();upd()};
+  preset();draw();
+})();
+
+/* ================= 4c. audit / gate / feedback ================= */
+(function(){
+  const svg=$('#aSvg'),X=x=>50+x*7,EZ=14,G0=0.42,BAR=0.25,SC=190;   // gap in mm, bar in mm
+  let pos=50,dep=0.20,prev=null;
+  const gap=x=>G0-dep*Math.exp(-Math.pow((x-pos)/7,2));
+  function findings(){const out=[];let run=null;
+    for(let x=0;x<=100;x+=0.5){if(gap(x)<BAR-1e-6){if(!run)run={a:x,b:x,min:gap(x),xm:x};run.b=x;if(gap(x)<run.min){run.min=gap(x);run.xm=x}}else if(run){out.push(run);run=null}}
+    if(run)out.push(run);
+    return out.map(r=>({x:r.xm,a:r.a,b:r.b,short:BAR-r.min,end:r.xm<EZ?'source':r.xm>100-EZ?'dest':null}))}
+  function draw(fs){
+    svg.innerHTML='';
+    S('rect',{x:X(0),y:30,width:X(EZ)-X(0),height:170,fill:'rgba(227,160,8,.13)'},svg);S('rect',{x:X(100-EZ),y:30,width:X(100)-X(100-EZ),height:170,fill:'rgba(227,160,8,.13)'},svg);
+    T(svg,X(EZ/2),24,'at the source',{'text-anchor':'middle','font-size':11,fill:'#8a5a00'});T(svg,X(100-EZ/2),24,'at the destination',{'text-anchor':'middle','font-size':11,fill:'#8a5a00'});T(svg,X(50),24,'between the arrays',{'text-anchor':'middle','font-size':11,fill:'#5b6577'});
+    S('rect',{x:X(-6),y:40,width:X(-1)-X(-6)+8,height:150,rx:4,fill:'#eceef3',stroke:'#c9cfdb'},svg);S('rect',{x:X(101)-8,y:40,width:X(106)-X(101)+8,height:150,rx:4,fill:'#eceef3',stroke:'#c9cfdb'},svg);
+    const yA=x=>115-gap(x)*SC/2,yB=x=>115+gap(x)*SC/2,pts=f=>{const a=[];for(let x=0;x<=100;x+=1)a.push(X(x)+','+f(x));return a.join(' ')};
+    // bar shading: where gap < bar
+    for(const f of fs||findings())S('rect',{x:X(f.a)-3,y:60,width:X(f.b)-X(f.a)+6,height:110,fill:'rgba(211,51,51,.13)',stroke:'#d33','stroke-dasharray':'3 3'},svg);
+    S('polyline',{points:pts(yA),fill:'none',stroke:CB,'stroke-width':5,'stroke-linecap':'round'},svg);S('polyline',{points:pts(yB),fill:'none',stroke:CF,'stroke-width':5,'stroke-linecap':'round'},svg);
+    T(svg,X(50),230,'gap between the two lanes: '+gap(pos).toFixed(2)+' mm at the pinch (bar: '+BAR.toFixed(2)+' mm)',{'text-anchor':'middle','font-size':12,fill:'#5b6577'});
+    if(fs)for(const f of fs){const c=f.end?'#c07a00':'#6a3fc4';S('circle',{cx:X(f.x),cy:115,r:9,fill:c,stroke:'#fff','stroke-width':2},svg);T(svg,X(f.x),119,'!',{'text-anchor':'middle',fill:'#fff','font-weight':700,'font-size':13})}
+  }
+  function audit(){
+    const fs=findings(),sig=fs.map(f=>(f.end||'mid')+':'+Math.round(f.x/3)).join('|');draw(fs);
+    if(!fs.length){$('#aGate').innerHTML='gate: <b style="color:#2e9d4c">PASS</b> (exit 0)';$('#aLog').textContent='No pitch, dive, static or shape finding. The plan goes on to the route.';prev=sig;return}
+    const ends=fs.filter(f=>f.end),mid=fs.filter(f=>!f.end);
+    $('#aGate').innerHTML='gate: <b style="color:#c0392b">FAIL</b> ('+fs.length+' finding'+(fs.length>1?'s':'')+')';
+    let m='';
+    for(const f of fs)m+=`<div>&bull; <b>pitch</b> short by ${f.short.toFixed(2)} mm at ${f.end?`the ${f.end} array's ends`:'s = '+f.x.toFixed(0)+' (between the arrays)'} &rarr; `+(f.end?'<b style="color:#8a5a00">whole_feedback: avoid this pair of ends; the fanout re-chooses</b>':'<b style="color:#4a2a9a">history congestion here + a cut for the solve</b>')+'</div>';
+    if(ends.length&&prev===sig)m+='<div style="margin-top:6px"><b style="color:#c0392b">The same finding at the ends stands in both rounds.</b> The solve had its round and did not move it, so <code>whole_loop</code> stops here: only the fanout can.</div>';
+    $('#aLog').innerHTML=m;prev=sig}
+  const setp=()=>{pos=+$('#aPos').value;dep=+$('#aDep').value/100;prev=null;$('#aGate').textContent='gate: not run';$('#aLog').textContent='';draw()};
+  $('#aPos').oninput=setp;$('#aDep').oninput=setp;$('#aRun').onclick=audit;
+  $('#aSolve').onclick=()=>{const fs=findings(),mid=fs.filter(f=>!f.end);
+    if(!fs.length){$('#aLog').textContent='Nothing to re-solve: the audit found no finding.';return}
+    if(!mid.length){$('#aLog').innerHTML='The solve\'s cut cannot help: these findings come from where the ends stand. Run the audit again and the same finding stands.';return}
+    dep*=0.25;$('#aDep').value=Math.round(dep*100);draw();$('#aLog').innerHTML='The solve priced the hot place and obeyed the cut: the crossing and the dive moved elsewhere, so this pinch is gone. Run the audit again.'};
+  $('#aFan').onclick=()=>{const fs=findings(),ends=fs.filter(f=>f.end);
+    if(!ends.length){$('#aLog').textContent='No finding at the ends, so there is no end to avoid. (A finding between the arrays is the solve\'s to fix.)';return}
+    dep*=0.25;$('#aDep').value=Math.round(dep*100);draw();$('#aLog').innerHTML='The fanout chose other teeth and berths, no longer crowded together. Run the audit again.'};
+  draw();
+})();
+
+/* ================= 4d. route all lanes in their bands ================= */
+(function(){
+  const svg=$('#rSvg'),GX=44,GY=16,C=20,OX=20,OY=10,RA=4,RB=10,PORTS=[2,7,9,12],TARGET=[0,2,13,15],BW=1.5;
+  const names='ABCD',cols=['#d9483b','#2f6fd0','#0f8a7a','#8a3fc4'];
+  const ORD={'top to bottom':[0,1,2,3],'bottom to top':[3,2,1,0],'B, C, A, D':[1,2,0,3],'C, B, A, D':[2,1,0,3]};
+  const sel=$('#rOrd');Object.keys(ORD).forEach(k=>{const o=document.createElement('option');o.textContent=k;sel.appendChild(o)});
+  const rock=(x,y)=>x>=16&&x<=27&&y>=RA&&y<=RB;
+  const rowAt=(l,x)=>{const r0=PORTS[l],r1=TARGET[l],a=8,b=GX-9;if(x<=a)return r0+(r1-r0)*x/a;if(x>=b)return r0+(r1-r0)*(GX-1-x)/a;return r1};
+  const k=(x,y)=>x+','+y;
+  let occ,paths,next,msgs;
+  const P=(x,y)=>[OX+x*C,OY+y*C];
+  function reset(){occ=new Set();paths={};next=0;msgs=[];draw();$('#rLog').textContent='Press Route next lane, or Route all.'}
+  function routeLane(l,band){
+    const pc=new Set();PORTS.forEach(r=>{pc.add(k(0,r));pc.add(k(GX-1,r))});
+    const sx=0,sy=PORTS[l],ex=GX-1,ey=PORTS[l];
+    const ok=(x,y)=>x>=0&&y>=0&&x<GX&&y<GY&&!rock(x,y)&&!occ.has(k(x,y))&&(!pc.has(k(x,y))||(y===PORTS[l]&&(x===0||x===GX-1)))&&(!band||Math.abs(y-rowAt(l,x))<=BW);
+    const dist=new Map(),prev=new Map(),q=[[0,sx,sy]];dist.set(k(sx,sy),0);let f=false;
+    while(q.length){let bi=0;for(let i=1;i<q.length;i++)if(q[i][0]<q[bi][0])bi=i;const [d,x,y]=q.splice(bi,1)[0];
+      if(d>dist.get(k(x,y)))continue;if(x===ex&&y===ey){f=true;break}
+      for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]){const nx=x+dx,ny=y+dy;if(!ok(nx,ny))continue;if(dx&&dy&&(!ok(x+dx,y)||!ok(x,y+dy)))continue;
+        const nd=d+(dx&&dy?1.4142:1);if(nd<(dist.get(k(nx,ny))??1e9)){dist.set(k(nx,ny),nd);prev.set(k(nx,ny),k(x,y));q.push([nd,nx,ny])}}}
+    if(!f)return null;
+    const path=[];let c=k(ex,ey);while(c){path.push(c.split(',').map(Number));c=prev.get(c)}
+    for(const [x,y] of path)for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++)occ.add(k(x+dx,y+dy));   // its copper + clearance
+    return path}
+  function draw(){
+    svg.innerHTML='';const band=$('#rBand').checked;
+    for(let x=0;x<GX;x++)for(let y=0;y<GY;y++)if(rock(x,y)){const [cx,cy]=P(x,y);S('rect',{x:cx-C/2,y:cy-C/2,width:C,height:C,fill:'#b7bdca'},svg)}
+    const [rx,ry]=P(21.5,7);T(svg,rx,ry+4,'block (pad / keep-out)',{'text-anchor':'middle','font-size':12,fill:'#3d4557'});
+    if(band)for(let l=0;l<4;l++){const pts=[];for(let x=0;x<GX;x++){const [px_,py_]=P(x,rowAt(l,x));pts.push(px_+','+py_)}
+      S('polyline',{points:pts.join(' '),fill:'none',stroke:cols[l],'stroke-width':(2*BW+1)*C,opacity:.10,'stroke-linejoin':'round'},svg)}
+    for(let l=0;l<4;l++){const [ax,ay]=P(0,PORTS[l]),[bx,by]=P(GX-1,PORTS[l]);
+      S('circle',{cx:ax,cy:ay,r:6,fill:cols[l]},svg);S('circle',{cx:bx,cy:by,r:6,fill:cols[l]},svg);
+      T(svg,ax+2,ay-10,names[l],{'font-weight':700,fill:cols[l],'font-size':13});T(svg,bx-4,by-10,names[l],{'font-weight':700,fill:cols[l],'font-size':13,'text-anchor':'end'})}
+    for(const l in paths)S('polyline',{points:paths[l].map(q=>P(q[0],q[1]).join(',')).join(' '),fill:'none',stroke:cols[l],'stroke-width':5,'stroke-linejoin':'round','stroke-linecap':'round'},svg);
+    for(const m of msgs)if(!m.ok){const [ax,ay]=P(0,PORTS[m.l]);S('rect',{x:ax+12,y:ay-11,width:82,height:22,rx:5,fill:'#fff',stroke:'#c0392b'},svg);T(svg,ax+53,ay+5,'REFUSED',{'text-anchor':'middle','font-size':12,'font-weight':700,fill:'#c0392b'})}
+    $('#rN').textContent=Object.keys(paths).length}
+  function step(){
+    const ord=ORD[sel.value];if(next>=4)return false;
+    const l=ord[next++],band=$('#rBand').checked,p=routeLane(l,band);
+    if(p)paths[l]=p;msgs.push({l,ok:!!p});draw();
+    const done=next>=4,n=Object.keys(paths).length;
+    let t=`Lane ${names[l]}: `+(p?(band?'<b style="color:#2e9d4c">in band</b>, laid inside its planned corridor.':'<b style="color:#2e9d4c">routed</b> by shortest path.'):(band?'<b style="color:#c0392b">refused</b>: no path in its band.':'<b style="color:#c0392b">refused</b>: every way past the block is already taken by earlier lanes\' copper.'));
+    if(done)t+=` <br><b>${n} of 4 lanes laid.</b> `+(n===4?'<code>check_connected</code> and <code>check_drc</code> would now grade the board.':band?'':'Earlier lanes took room a later lane needed, because nothing said who should pass which side. Try another order, or turn the bands on.');
+    $('#rLog').innerHTML=t;return true}
+  $('#rStep').onclick=()=>{if(next>=4)reset();step()};
+  $('#rAll').onclick=()=>{reset();while(step());};
+  $('#rClr').onclick=reset;$('#rBand').onchange=reset;sel.onchange=reset;
+  reset();
+})();
+
+/* ================= 0b. ends search: exchange moves + kicks ================= */
+(function(){
+  const N=5,M=7,names='ABCDE',cols=['#d9483b','#2f6fd0','#0f8a7a','#c07a00','#8a3fc4'];
+  const INST=[32,61,80,56,71];                       // seeds whose plain local search gets stuck a via above the best
+  const svg=$('#kSvg'),X0=110,X1=560,Yl=i=>34+i*52,Ys=j=>26+j*44;
+  let ii=0,sl,SL,bp,start0,K,moves,kicks,fails,sel_=null,timer=null,optShown=null,ALL=null;
+  function cross(o){const cur=[...Array(N).keys()],out=[];let ch=true;while(ch){ch=false;for(let i=0;i<N-1;i++)if(o[cur[i]]>o[cur[i+1]]){out.push({a:cur[i],b:cur[i+1]});[cur[i],cur[i+1]]=[cur[i+1],cur[i]];ch=true}}return out}
+  function minVias(cr,el){let best=1e9;const last=sl.slice();
+    (function rec(d,cost){if(cost>=best)return;if(d===cr.length){let t=cost;for(let n=0;n<N;n++)if(last[n]!==el[n])t++;if(t<best)best=t;return}
+      const {a,b}=cr[d];for(const v of [0,1]){const pa=last[a],pb=last[b];last[a]=v;last[b]=1-v;rec(d+1,cost+(pa!==v?1:0)+(pb!==1-v?1:0));last[a]=pa;last[b]=pb}})(0,0);return best}
+  const vias=o=>minVias(cross(o),o.map(s_=>SL[s_]));
+  const score=o=>vias(o)+0.01*cross(o).length;
+  const fmt=v=>Math.round(v)+(v-Math.round(v)>0.001?' (+ crossings)':'');
+  function moveWithEject(o,l,s_){                    // lane l takes slot s_; its occupant (if any) goes to its best free slot
+    const t=o.slice(),occ=t.indexOf(s_);t[l]=s_;let ej=null;
+    if(occ>=0){const used=new Set(t.filter((_,i)=>i!==occ));let bv=1e9,bs=-1;
+      for(let j=0;j<M;j++){if(used.has(j))continue;const t2=t.slice();t2[occ]=j;const v=score(t2);if(v<bv){bv=v;bs=j}}
+      if(bs<0)return null;t[occ]=bs;ej={lane:occ,to:bs}}
+    return{t,ej}}
+  function firstImprovement(o){const cur=score(o);
+    for(let l=0;l<N;l++)for(let s_=0;s_<M;s_++){if(o[l]===s_)continue;const r=moveWithEject(o,l,s_);if(!r)continue;const v=score(r.t);if(v<cur-1e-9)return{l,s:s_,r,v,from:cur}}
+    return null}
+  function localOpt(o){o=o.slice();for(;;){const m=firstImprovement(o);if(!m)return o;o=m.r.t}}
+  function init(){
+    const seed=INST[ii%INST.length],R=rng(seed);
+    sl=[...Array(N)].map(()=>R()<.5?0:1);SL=[...Array(M)].map(()=>R()<.5?0:1);
+    ALL=null;optShown=null;
+    // a fixed, poor starting assignment: the greedy's (the seeds above were found from the same draw)
+    const all=allAssign();start0=all[Math.floor(R()*all.length)];
+    restart()}
+  function allAssign(){const out=[];(function rec(p,used){if(p.length===N){out.push(p.slice());return}for(let s_=0;s_<M;s_++)if(!used.has(s_)){used.add(s_);p.push(s_);rec(p,used);p.pop();used.delete(s_)}})([],new Set());return out}
+  function restart(){clearInterval(timer);timer=null;bp=start0.slice();moves=0;kicks=0;fails=0;sel_=null;optShown=null;K=rng(622);draw();
+    $('#kLog').innerHTML='This is the starting assignment. Take a move, or click a lane then an exit to try one yourself.'}
+  function badge(x,y,L){S('rect',{x:x-14,y:y-11,width:28,height:22,rx:5,fill:L?CB:CF},svg);T(svg,x,y+5,L?'B':'F',{'text-anchor':'middle',fill:'#fff','font-weight':700})}
+  function draw(hl){
+    svg.innerHTML='';
+    T(svg,X0-40,14,'source teeth (fixed)',{'text-anchor':'middle','font-size':11,fill:'#5b6577'});T(svg,X1+60,14,'exits at the destination',{'text-anchor':'middle','font-size':11,fill:'#5b6577'});
+    const inv=[];for(let i=0;i<N;i++)for(let j=i+1;j<N;j++)if(bp[i]>bp[j])inv.push([i,j]);
+    for(let i=0;i<N;i++)S('line',{x1:X0,y1:Yl(i),x2:X1,y2:Ys(bp[i]),stroke:cols[i],'stroke-width':hl&&hl.includes(i)?7:4,'stroke-linecap':'round',opacity:.85},svg);
+    for(const [i,j] of inv){const d=(Ys(bp[i])-Yl(i))-(Ys(bp[j])-Yl(j)),t=(Yl(j)-Yl(i))/d,x=X0+(X1-X0)*t,y=Yl(i)+(Ys(bp[i])-Yl(i))*t;
+      S('circle',{cx:x,cy:y,r:8,fill:'#fff',stroke:'#1d2330','stroke-width':2},svg);T(svg,x,y+5,'×',{'text-anchor':'middle','font-size':14,'font-weight':700})}
+    for(let i=0;i<N;i++){T(svg,X0-72,Yl(i)+5,names[i],{'font-weight':700,fill:cols[i]});badge(X0-30,Yl(i),sl[i])}
+    for(let j=0;j<M;j++){const l=bp.indexOf(j),g=S('g',{style:'cursor:pointer'},svg);
+      S('rect',{x:X1+6,y:Ys(j)-16,width:120,height:32,rx:7,fill:l>=0?'#fff':'#f4f6fa',stroke:l>=0?cols[l]:'#c9cfdb','stroke-width':l>=0?2.5:1.2,'stroke-dasharray':l>=0?'':'4 3'},g);
+      badge(X1+30,Ys(j),SL[j]);
+      T(g,X1+86,Ys(j)+5,l>=0?'lane '+names[l]:'free',{'text-anchor':'middle',fill:l>=0?cols[l]:'#8a94a8','font-weight':l>=0?700:400});
+      g.addEventListener('click',()=>{
+        if(sel_==null){if(l>=0){sel_=l;$('#kLog').innerHTML=`Lane ${names[l]} selected. Click the exit to move it to.`}return}
+        const lane=sel_;sel_=null;if(bp[lane]===j){draw();return}
+        const r=moveWithEject(bp,lane,j);if(!r){$('#kLog').textContent='No free exit for the lane in the way.';draw();return}
+        const before=score(bp);bp=r.t;moves++;draw([lane]);
+        $('#kLog').innerHTML=`You moved lane ${names[lane]} to exit ${j+1}`+(r.ej?`, ejecting lane ${names[r.ej.lane]} to exit ${r.ej.to+1}`:'')+`: ${fmt(before)} &rarr; ${fmt(score(bp))} vias.`})}
+    const v=vias(bp);$('#kV').textContent=v;$('#kM').textContent=moves;$('#kK').textContent=kicks;$('#kKf').textContent=fails;
+    const lo=!firstImprovement(bp);$('#kSt').innerHTML=lo?'<b style="color:#c0392b">local optimum: no single move helps</b>':'a move still helps';
+    if(sel_!=null)S('rect',{x:X0-88,y:Yl(sel_)-16,width:118,height:32,rx:7,fill:'none',stroke:'#1d2330','stroke-dasharray':'4 3'},svg);
+    if(optShown!=null){T(svg,X0+150,334,'true optimum for this instance: '+optShown+' via'+(optShown===1?'':'s'),{'font-size':13,fill:'#2e9d4c','font-weight':700})}
+  }
+  function step(){
+    const m=firstImprovement(bp);if(!m){draw();return false}
+    const before=m.from;bp=m.r.t;moves++;draw([m.l]);
+    $('#kLog').innerHTML=`<b>Move:</b> lane ${names[m.l]} to exit ${m.s+1}`+(m.r.ej?`, which ejects lane ${names[m.r.ej.lane]} to its best free exit (${m.r.ej.to+1})`:' (a free exit)')+`. Objective ${fmt(before)} &rarr; ${fmt(m.v)} vias. Taken at once, because it improves.`;return true}
+  function kick(quiet){
+    const cur=score(bp),t=bp.slice();
+    const ls=[...Array(N).keys()].sort(()=>K()-.5).slice(0,3);
+    const free=[...Array(M).keys()].filter(s_=>!t.some((x,i)=>x===s_&&!ls.includes(i)));
+    for(const l of ls){const j=Math.floor(K()*free.length);t[l]=free.splice(j,1)[0]}
+    const kicked=score(t),res=localOpt(t),after=score(res);kicks++;
+    const ok=after<cur-1e-9;
+    if(ok){bp=res;fails=0}else fails++;
+    draw();
+    $('#kLog').innerHTML=`<b>Kick ${kicks}:</b> lanes ${ls.map(l=>names[l]).sort().join(', ')} thrown to random exits (${fmt(kicked)} vias), then searched again down to ${fmt(after)}. `+(ok?`<b style="color:#2e9d4c">Better than ${fmt(cur)}: kept.</b>`:`<b style="color:#8a94a8">Not better than ${fmt(cur)}: discarded, the earlier assignment stands.</b>`);
+    return ok}
+  $('#kStep').onclick=()=>{clearInterval(timer);if(!step())$('#kLog').innerHTML='<b>Local optimum.</b> No single move (with at most one lane ejected) lowers the objective. The search alone stops here. Try a kick.'};
+  $('#kRun').onclick=()=>{clearInterval(timer);timer=setInterval(()=>{if(!step()){clearInterval(timer);timer=null;$('#kLog').innerHTML+=' <b>Now at a local optimum.</b>'}},800)};
+  $('#kKick').onclick=()=>{clearInterval(timer);kick()};
+  $('#kAuto').onclick=()=>{clearInterval(timer);fails=0;timer=setInterval(()=>{if(fails>=4||kicks>=12){clearInterval(timer);timer=null;$('#kLog').innerHTML+=` <b>Stopped: ${fails>=4?'4 kicks in a row found nothing':'kick limit reached'}.</b>`;return}kick()},1100)};
+  $('#kNew').onclick=()=>{ii++;init()};$('#kRst').onclick=restart;
+  $('#kOpt').onclick=()=>{if(!ALL)ALL=allAssign();let b=1e9;for(const p of ALL){const v=vias(p);if(v<b)b=v}optShown=b;draw();
+    $('#kLog').innerHTML=`Tried all ${ALL.length} assignments: the best is ${b} via${b===1?'':'s'}. You are at ${vias(bp)}. `+(vias(bp)===b?'That is optimal.':'The gap is what the kicks are for.')};
+  init();
+})();
+</script>
+</body>
+</html>

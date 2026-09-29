@@ -61,21 +61,11 @@ for _pkg in ('py_router', 'py_tools', 'py_placer'):
     _d = os.path.join(ROOT, _pkg)
     if os.path.isdir(_d):
         sys.path.insert(0, _d)
-# The scripts moved when plan-pcb-routing and plan-pcb-placement merged into
-# plan-pcb-placement-and-routing. Pointing at the old directory made every run
-# report "board_score produced no score" -- an INCOMPLETE verdict caused by a
-# missing file rather than by the board. Resolve the new home, falling back to
-# the old one so a checkout that still has it keeps working.
-def _skill_scripts():
-    for skill in ('plan-pcb-placement-and-routing', 'plan-pcb-routing'):
-        d = os.path.join(ROOT, '.claude', 'skills', skill, 'scripts')
-        if os.path.isfile(os.path.join(d, 'board_score.py')):
-            return d
-    return os.path.join(ROOT, '.claude', 'skills',
-                        'plan-pcb-placement-and-routing', 'scripts')
-
-
-SKILL_SCRIPTS = _skill_scripts()
+# board_score is a repo instrument, in py_tools/ with the checkers it runs. It
+# used to live inside a skill's scripts/ dir, and every time that skill moved
+# this lookup broke with "board_score produced no score" -- an INCOMPLETE
+# verdict caused by a missing file rather than by the board.
+SKILL_SCRIPTS = os.path.join(ROOT, 'py_tools')
 PY = [sys.executable, '-X', 'utf8']
 
 DONE, USAGE, BOARD_STATE, INCOMPLETE, UNSOUND = 0, 2, 3, 4, 5
@@ -84,6 +74,21 @@ DONE, USAGE, BOARD_STATE, INCOMPLETE, UNSOUND = 0, 2, 3, 4, 5
 TIMED_OUT = 124                     # the shell's code, and deliberately so:
                                     # a caller reading 124 is reading "killed
                                     # by a clock", which is what happened.
+
+
+def _score_names(score, key):
+    """`score[key]` as sorted names, and why not when it is not a list.
+
+    board_score writes a list. Anything else names no component -- the rule
+    converge's verdict follows (#1076): `sorted("abc")` read as three
+    components nobody examined, and `sorted(5)` raised.
+    """
+    v = score.get(key)
+    if v is None:
+        return [], None
+    if isinstance(v, (list, tuple, set)):
+        return sorted(str(x) for x in v), None
+    return [], f'board_score wrote an `{key}` that is not a list ({v!r})'
 
 
 def _run(args, timeout=3600):
@@ -211,8 +216,8 @@ def _grade(a, doc):
     # than by path, reusing the sha board_score already computed.
     doc['board_sha'] = score.get('board_sha')
     blocking = score.get('blocking')
-    ungraded = sorted(score.get('ungraded') or [])
-    unknown = sorted(score.get('unknown') or [])
+    ungraded, ungraded_bad = _score_names(score, 'ungraded')
+    unknown, unknown_bad = _score_names(score, 'unknown')
     score_failed = (code == TIMED_OUT or not score)
 
     # ---- 1b. is there a board here at all? ---------------------------------
@@ -287,7 +292,14 @@ def _grade(a, doc):
     if unknown:
         reasons.append('a component RAN and could not answer: '
                        + ', '.join(unknown))
-    if blocking is None and not score_failed:
+    reasons += [r for r in (ungraded_bad, unknown_bad) if r]
+    # ONE rule for what a `blocking` is (`converge.blocking_defect`, #1075):
+    # `false` is falsy, so it used to read as a clean board and exit DONE.
+    from converge import blocking_defect
+    _bdef = blocking_defect(blocking)
+    if _bdef:
+        reasons.append(f'blocking is {_bdef}')
+    elif blocking is None and not score_failed:
         reasons.append('blocking is null -- something was not graded, and a '
                        'null is not a zero')
     elif blocking:

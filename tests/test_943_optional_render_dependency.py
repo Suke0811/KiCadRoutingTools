@@ -7,14 +7,15 @@ branch**: the IPC port deleted it along with `action_plugin.py`, because
 KiCad 10 provisions a per-plugin venv from `requirements.txt` on the first
 action invocation. There is no import-name probe here, no `OPTIONAL_PACKAGES`
 table and no one-click pip offer, so main's A (the `import Pillow` probe that
-could never pass), B (the generated blocking list) and D (#944's PEP 668
-install path) have no counterpart to test and are deliberately absent.
+could never pass), B (the generated blocking list) and the DIALOG half of D
+(#944's PEP 668 install offer) have no counterpart to test and are
+deliberately absent.
 
 What DOES carry over, and is tested here:
 
-  B'. The dialog's own hand-written gate. `routing_dialog.py` (this branch's
-      `swig_gui.py`) re-implements `startup_checks.check_python_dependencies`
-      BY HAND and must mirror that list and no more. Pillow is not on it --
+  B'. The dialog's own gate. `routing_dialog.py` (this branch's
+      `swig_gui.py`) calls `startup_checks.dependency_problems` over
+      `ROUTING_PACKAGES`, and that table must not carry Pillow --
       the GUI's only raster consumers, the movie recorder and the placement
       preview, both disable themselves -- so a venv that resolved everything
       except Pillow still opens a routing dialog. Nothing in the plugin may
@@ -26,6 +27,8 @@ What DOES carry over, and is tested here:
       walked past it. It raises RenderDependencyError now, which is both.
 
   B2. Placement GRADING does not need the raster stack.
+
+  D'. The PEP 668 probe and distro tables in `startup_checks` (shared code).
 
 Run with:  python3 tests/test_943_optional_render_dependency.py
 """
@@ -77,11 +80,21 @@ def _module_scope_imports(path):
 def test_the_dialog_gate_does_not_block_on_pillow():
     dlg = os.path.join(PLUGIN_DIR, 'routing_dialog.py')
     src = open(dlg, encoding='utf-8').read()
+    # The gate CALLS the shared probe now, over ROUTING_PACKAGES, instead of
+    # hand-mirroring a package list -- so "does not block on Pillow" is a
+    # property of that table, and the call is what makes the table the gate.
+    import startup_checks
+    check('dependency_problems(ROUTING_PACKAGES)' in src,
+          "routing_dialog.py's dependency gate no longer calls the shared "
+          "probe over ROUTING_PACKAGES -- a hand-written list is how it "
+          "drifted before")
+    check('Pillow' not in startup_checks.ROUTING_PACKAGES,
+          "Pillow is in ROUTING_PACKAGES, so the dialog gate blocks on it -- "
+          "routing does not need it, and this would refuse a board this GUI "
+          "can route (#943 B, #887)")
     check("missing.append('Pillow')" not in src
           and 'missing.append("Pillow")' not in src,
-          "routing_dialog.py's hand-written dependency gate blocks on Pillow, "
-          "which routing does not need -- it would refuse a board this GUI "
-          "can route (#943 B, #887)")
+          "routing_dialog.py grew a hand-written gate that blocks on Pillow")
 
     # And the gate cannot be bypassed by an import that reaches it first.
     offenders = sorted(
@@ -157,10 +170,79 @@ def test_render_placement_imports_without_pillow():
             sys.modules['PIL'] = saved_pil
 
 
+# ---------------------------------------------------------------------------
+# D. PEP 668 (#944)
+# ---------------------------------------------------------------------------
+def test_pep668_probe_and_message():
+    """Both arms of the probe, against a PLANTED marker.
+
+    Reading only the real interpreter would make this vacuous on every machine
+    that is not a PEP 668 distro -- which is every machine this repo is
+    developed on, and the one arm that matters would never run.
+
+    The probe and the distro tables live in `startup_checks` since #1026,
+    shared with main's install_plugin.py and deps_check.py. Neither calls them
+    on this branch (the IPC installer pip-installs nothing, and deps_check is
+    gone), but the module is shared, so its half of #944 is still graded here.
+    main's other half -- deps_check's PEP 668 DIALOG -- has no counterpart.
+    """
+    import sysconfig as _sysconfig
+    import tempfile
+    import startup_checks
+
+    real = startup_checks.externally_managed_marker()
+    check(real is None or os.path.isfile(real),
+          f"externally_managed_marker returned {real!r}, which is not a file")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        planted = os.path.join(tmp, "EXTERNALLY-MANAGED")
+        with open(planted, "w") as fh:
+            fh.write("[externally-managed]\n")
+        saved_get_path = _sysconfig.get_path
+        saved_prefix, saved_base = sys.prefix, sys.base_prefix
+        try:
+            _sysconfig.get_path = (
+                lambda key, *a, **k: tmp if key in ("stdlib", "platstdlib")
+                else saved_get_path(key, *a, **k))
+
+            sys.prefix = sys.base_prefix = "/usr"      # a system interpreter
+            check(startup_checks.externally_managed_marker() == planted,
+                  "externally_managed_marker did not find a planted PEP 668 "
+                  "marker, so the #944 branch can never fire")
+
+            sys.prefix = "/usr/venv-943"              # prefix != base_prefix
+            check(startup_checks.externally_managed_marker() is None,
+                  "externally_managed_marker claims a venv is externally "
+                  "managed; PEP 668 exempts venvs and pip installs into them "
+                  "fine, so this would withhold a working one-click install "
+                  "(#944)")
+        finally:
+            _sysconfig.get_path = saved_get_path
+            sys.prefix, sys.base_prefix = saved_prefix, saved_base
+
+    names = ['scipy', 'shapely', 'Pillow']
+    apt = startup_checks.distro_command(names, startup_checks.DISTRO_PACKAGES)
+    dnf = startup_checks.distro_command(names, startup_checks.FEDORA_PACKAGES)
+    arch = startup_checks.distro_command(names, startup_checks.ARCH_PACKAGES)
+    check('python3-pil ' not in dnf + ' ' and dnf.endswith('python3-pillow'),
+          f"the Fedora spelling of Pillow is python3-pillow, got: {dnf}")
+    check(apt.endswith('python3-pil'),
+          f"the Debian spelling of Pillow is python3-pil, got: {apt}")
+    check(arch == 'python-scipy python-shapely python-pillow',
+          f"the Arch spelling is python-<name>, got: {arch}")
+    for n in names:
+        for label, table in (('Debian', startup_checks.DISTRO_PACKAGES),
+                             ('Arch', startup_checks.ARCH_PACKAGES)):
+            check(n in table,
+                  f"{n} has no {label} package name, so the #944 message "
+                  f"would offer `{n.lower()}`")
+
+
 def run():
     test_the_dialog_gate_does_not_block_on_pillow()
     test_render_gate_is_an_import_error()
     test_render_placement_imports_without_pillow()
+    test_pep668_probe_and_message()
 
     if FAILS:
         for f in FAILS:

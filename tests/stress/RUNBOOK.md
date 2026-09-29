@@ -436,7 +436,12 @@ harmless.
    Record the kicad count and any KICAD-ONLY items in the results JSON
    (`drc.kicad_violations`, `drc.kicad_only`); KICAD-ONLY shorting_items are a
    red-alert finding (check_drc false negative -- the #324 offset-pad class
-   shipped real shorts on boards check_drc graded clean). Two caveats: a
+   shipped real shorts on boards check_drc graded clean). The one exception is
+   KiCad's `<no net>` item on a part's own graphic copper against the net of
+   that part's own pad (a SOT-89 tab its pad's net routes onto, #995): not a
+   short, listed by check_drc under WARNINGS as `footprint own copper`, and
+   reported by the cross-check on its own `#995` channel. A `<no net>` item on
+   any other net stays KICAD-ONLY and is real. Two caveats: a
    kicad-cli "0" does NOT clear an *overlap/short* finding (KiCad 10
    net-unifies touching copper on load -- verified minimal repro, #260/#264;
    check_drc stays authoritative for touching-copper overlaps), and
@@ -780,6 +785,30 @@ boards" and "which commit broke connectivity".
   differ by more than the knob — the arm name records the sha it was launched
   at, so check that both wave dirs carry the same one.
 
+  **The upload stage now checks two things before anything is spent
+  (2026-09-19).** A set already on the volume was never re-uploaded, so a
+  board repaired locally after its set went up replayed the OLD manifest in
+  every later arm, silently (butterstick: a 3-command manifest that dies on a
+  file no command produces, while the local 11-command chain verified fine).
+  The stage lists each present set's run dir on the volume once and compares
+  every manifest's SIZE with the local one -- a stale or absent board is
+  named and re-uploaded (`upload_corpus.py --sets S --boards ...`; `--dry-run`
+  only reports; `--no-verify-corpus` skips). Size is a proxy: an edit that
+  keeps the byte count exactly is invisible to it. A re-upload changes the
+  chain those boards replay, so every EARLIER arm is chain-mismatched on
+  them from then on -- re-run the baseline arm as well. The first live run
+  of the check (2026-09-19) found the volume's sets 6-10 still carried the
+  manifests from before the 09-03 `--clearance` -> `--clearance-ceiling`
+  rewrite: every cloud arm since, the v0.22.1 validation included, replayed
+  those sets under the old bare-clearance semantics (both arms of each A/B
+  alike, so the deltas stand; the absolute numbers do not match a local
+  replay). And a local manifest with
+  no `# cwd=<stress>/runs_<set>/<board>` line is REFUSED by name: the cloud
+  placer stages the corpus at that path, so such a board raises inside its
+  container after the arm is launched and paid for -- a manifest re-recorded
+  from somewhere else (a scratchpad) carries that directory as its cwd, and
+  the fix is to rewrite the line(s) to the board's own run dir.
+
   **Manifests recorded before #530 read `--clearance` as a ceiling.** Since
   decision 2 an explicit `--clearance` IS the Default class for the run;
   before, it capped every class at `min(class, value)`, so a late chain step
@@ -846,6 +875,15 @@ boards" and "which commit broke connectivity".
    have been checked to agree (drandyhaas, 2026-08-31). `--no-local-regrade` is
    therefore the faster path on such a wave, and it does not violate this rule:
    the rule is same-TERMS, and same terms is exactly what a shared grader gives.
+
+   **The baseline arm can be re-graded in the cloud too.** `--regrade-baseline`
+   re-grades on this machine; `modal_sweep/regrade_arm.py` runs the same
+   `ab_replay_grade.py --regrade` per kept board on Modal, in the image built
+   from a checkout's HEAD (`KICAD_REGRADE_REPO` picks the checkout, i.e. the
+   grader), and writes a new arm on the results volume that `pair_arms.py`
+   pairs like any other. Use it when the change under test touches a grader
+   (`check_drc`, the connectivity checker) and the baseline arm was graded by
+   an older one.
 
    What the rule still forbids is mixing GRADERS, and that is what the "+40
    worse / -37 better" incident actually was -- a wave whose `drc_real` had
@@ -1088,10 +1126,12 @@ questions are cheap to ask up front and nobody was asking them.
 ### 0. You need UNROUTED candidates, and the corpus is nearly empty
 
 `boards_unrouted_set1/` currently holds exactly one board. Qualify against
-unrouted twins, not against `boards_set1/`: a routed board is refused by
-`placement_driver --stage P0`, and its copper encodes the original poses (run 14
-measured 301 of 569 pads sitting within 5 um of their own track endpoint, which
-`fence_audit` cannot see because it compares poses and never opens copper).
+unrouted twins, not against `boards_set1/`: a routed board is refused by the
+placement CLIs (`place_optimize`, `place_portfolio`, `place_route_loop` and
+`check_floorplan` without `--allow-routed`), and its copper encodes the original
+poses (run 14 measured 301 of 569 pads sitting within 5 um of their own track
+endpoint, which `fence_audit` cannot see because it compares poses and never
+opens copper).
 
 ```bash
 python3 -X utf8 tests/stress/strip_copper_only.py \
@@ -1379,14 +1419,19 @@ per event so they can be armed once and left alone:
 ```bash
 python3 -X utf8 tests/stress/run_watch.py bugs   --workdir wk/run12/tigard
 python3 -X utf8 tests/stress/run_watch.py cheats --workdir wk/run12/tigard \
-    --truthdir wk/run12/_truth/tigard --done wk/run12/tigard/DONE
+    --truthdir wk/run12/_truth/tigard --done wk/run12/tigard/DONE \
+    --report-done wk/run12/tigard/REPORT_DONE --report-wait 5400
 ```
 
 `bugs` reports new problems as they appear and runs until you stop it.
 `cheats` reports the ways the run could report success without earning it (a
-scope narrowed to the failing nets, a grader floor overridden, a waiver spent)
-and ends when the `DONE` marker appears, running `fence_audit` and
-`provenance_audit` as it goes. Neither budgets on a clock.
+scope narrowed to the failing nets, a grader floor overridden, a waiver spent).
+At `DONE` it runs `fence_audit` and `provenance_audit` — the audits that read
+the BOARD — and then KEEPS GOING to `REPORT_DONE`, where it audits `REPORT.md`
+itself and re-runs those two if `DONE` changed in between. `--report-done ''`
+restores the old exit-at-DONE contract, which is what you want when replaying
+over a finished run. Neither watcher grades on a clock; `--report-wait` bounds
+how long the last marker is waited for and changes only what is printed.
 
 `RESTAGE` counts invocations of EITHER stager, from two sources: a teed `CMD:`
 line, and a pose-provenance row. The second is the one that works -- neither
@@ -1447,10 +1492,18 @@ Split what arming actually PROTECTS from what it costs:
    is a brief tailored to it. The boundary verification's contemporaneity check
    reads exactly this kind of timestamp, so the prompts are checkable by an
    instrument that already exists.
-2. **Spawn at the end, once, as ONE agent with one section per brief.** Three
-   agents re-reading the same logs derive the same numbers three times and bind
-   to nothing; one agent with three headed sections produces three verdicts from
-   one preamble and one read.
+2. **Spawn at the end, once, as ONE agent with one section per brief** — into
+   ONE file, never over a `watch/<name>.md` that already exists. Three agents
+   re-reading the same logs derive the same numbers three times and bind to
+   nothing; one agent with three headed sections produces three verdicts from
+   one preamble and one read. "At the end" means at the SECOND marker,
+   `REPORT_DONE`, not at `DONE`: `DONE` means the copper is frozen and
+   `REPORT.md` is written after it, carrying verdicts that do not exist until
+   then. Measured (run 29): dispatched from a run prompt that specified the
+   mechanism differently, four watchers ran twice, `cheats.md` was written
+   twice with the second overwriting the first, and `tool_usage.md` never
+   landed. The skill is the single specification; a run prompt names the briefs
+   and defers to it.
 3. **Override the model.** Reading a report and a JSONL and reporting
    discrepancies is not the task the largest model exists for; set the Agent
    tool's `model` field to a smaller one for that spawn. It is one field.

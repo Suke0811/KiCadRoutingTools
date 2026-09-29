@@ -40,9 +40,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DOC = 'docs/placement-predictors.md'
 HARVEST = 'tests/stress/harvest_predictor_rows.py'
-LOOP = ('.claude/skills/plan-pcb-placement-and-routing/scripts/'
-        'loop_driver.py')
-DRIVER = '.claude/skills/plan-pcb-placement/scripts/placement_driver.py'
+# The L2 gate (loop_driver) and placement_driver's guidance were retired with
+# their skills, so the behavioural and driver-guidance checks left with them.
 LEGALITY = 'py_placer/placement/legality.py'
 ASSEMBLY = 'py_tools/check_assembly.py'
 RENDER = 'py_tools/render_placement.py'
@@ -116,26 +115,6 @@ def t_the_harvest_comment_agrees_with_the_doc():
           f'{HARVEST} names the key the gate actually refuses on')
 
 
-def t_the_gate_really_does_read_oob_pad_count():
-    """Behavioural, not documentary: the claim is about code, so read the code.
-
-    If a later change moved the L2 gate onto the render channel, the doc
-    correction would become wrong again and every check above would still
-    pass -- they only assert what the DOC says.
-    """
-    src = read(LOOP)
-    if not src:
-        return
-    check("_count('oob_pad_count')" in src,
-          'loop_driver reads oob_pad_count through the vetted _count rule')
-    check('a_off_outline' not in src,
-          'loop_driver does not read render_placement\'s off-outline channel')
-    for key in ("_count('blocking')", "_count('locked_contacts')"):
-        check(key in src, f'loop_driver still refuses via {key}')
-    check("rep.get('buildable')" in src,
-          'loop_driver still reads buildable')
-
-
 def t_both_censuses_still_exist_and_are_distinct():
     """The correction claims two producers. Prove both are still there.
 
@@ -158,22 +137,10 @@ def t_both_censuses_still_exist_and_are_distinct():
           'the basis string still points at the other census by name')
 
 
-def t_the_driver_guidance_points_at_both():
-    src = read(DRIVER)
-    if not src:
-        return
-    check('oob_pad_count' in src,
-          'placement_driver names the number that refuses downstream')
-    check('a_off_outline.pad_copper' in src,
-          'placement_driver still names the render channel it also uses')
-
-
 def main():
     for fn in (t_the_doc_names_the_census_that_refuses,
                t_the_harvest_comment_agrees_with_the_doc,
-               t_the_gate_really_does_read_oob_pad_count,
-               t_both_censuses_still_exist_and_are_distinct,
-               t_the_driver_guidance_points_at_both):
+               t_both_censuses_still_exist_and_are_distinct):
         print(fn.__name__ + ':')
         fn()
     if FAILURES:

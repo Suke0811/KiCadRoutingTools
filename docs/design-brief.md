@@ -44,8 +44,10 @@ already grade and the existing seat search already honours — ordinarily an
 | `interfaces[]` with `edge: "unknown"` | an entry with **no** `edge` key | `source: "brief"`, a `note` naming the unknown |
 | `keepouts[]` | `keepouts[]`, verbatim; `kind` and `why` move into `context` | `context.source` |
 | `proximity[]` | `proximity[]`, one row per member of a list `ref`; `why` and `requirement` move into `context` | `source: "brief"`, `context.proximity_note` |
-| `fixed[]` | `context.brief.fixed` — carried, never asserted (see below) | — |
-| `product`, `unknown[]`, `mount_mode`, `cable_entry` | `context` | — |
+| `fixed[]` | `context.brief.fixed` — carried; a row with a `pose` also compiles to `fixed_poses[]` (see below) | `basis: "declared"` |
+| `arrays[]` | `arrays[]`, one intent row per brief row, validated by the intent's own loader; `requirement` moves into `context` | `source: "brief"`, `context.brief_row` |
+| `mount_mode`, `cable_entry`, `cable_envelope_mm`, `product.user_top_side` | compiled by `connector_consequences` into `max_setback_mm`, `side` and cable `keepouts[]` -- see [below](#connector-declarations-compile-to-clauses-959) | `context.basis`, `context.compiled_from` |
+| `product`, `unknown[]` | `context` | — |
 
 ### The one key the compiler adds, and why that is the rule rather than an exception
 
@@ -99,8 +101,9 @@ it.
       "along_edge": "center",                // "center" | {"from":f, "to":f} | "unknown"
       "along_edge_tolerance_mm": 0.5,        // REQUIRED with "center"
       "overhang_mm": { "min": 0.0, "max": 0.65 },
-      "mount_mode": "edge_mount",            // carried, not graded
-      "cable_entry": "in_plane",             // carried, not graded
+      "mount_mode": "edge_mount",            // compiled -- see below
+      "cable_entry": "in_plane",             // compiled -- see below
+      "cable_envelope_mm": { "depth": 2.0 }, // or "unknown"; NO default
       "requirement": "PROG-CONN01",
       "why": "the board IS the plug body" }
   ],
@@ -128,9 +131,11 @@ it.
 not the intent's `assembly.sides` (#837), which is which faces the **fab
 populates**. The two are independent and cannot contradict each other: a
 back-populated board whose front carries the label is `assembly.sides: "B"`
-with `user_top_side: "F"`, and that is coherent. `user_top_side` is carried and
-graded by nothing, and the brief report says so under `not_graded`;
-`assembly.sides` is graded by `rule_assembly_side` and charged by
+with `user_top_side: "F"`, and that is coherent. With a perpendicular-cable
+connector, `user_top_side` compiles to the face that cable plugs into, graded as `edge_connector_side` at a fixed WARN that no search reads (see
+below); on its own it is carried and graded by nothing, and the brief report
+says so under `not_graded`. `assembly.sides` is graded by `rule_assembly_side`
+and charged by
 `options.grow_board` — which since
 [#878](https://github.com/drandyhaas/KiCadRoutingTools/issues/878) also charges
 a through-hole part's leads against the face it is *not* mounted on, so the
@@ -332,7 +337,35 @@ different ways: the grade charges *both*, the repair dispatch keeps the *last*,
 and the seeder's even distribution shifts *every other connector on that edge*.
 `blocks` already refuses a duplicate name for the same reason.
 
-## `fixed[]` is carried, never asserted, and never `must_lock`
+## `fixed[]` is carried, a `pose` compiles, and it is never `must_lock`
+
+Since [#1054](https://github.com/drandyhaas/KiCadRoutingTools/issues/1054) a
+`fixed[]` row may carry the exact pose the part is to be placed at:
+
+```jsonc
+"fixed": [ { "ref": "H1", "why": "M3 enclosure standoff",
+             "pose": { "x": 103.5, "y": 61.0, "rot": 0, "side": "F" } } ]
+```
+
+`x` and `y` are required (a pose with no position is not a pose -- drop `pose`
+to carry the part as fixed without one); `rot` and `side` may be `"unknown"`,
+which is reported as a declared unknown. The row compiles to an intent
+`fixed_poses[]` entry with `basis: "declared"` and `min_reader` 7, which the
+grade anchors exactly as it anchors a `mechanical.json` pose (the
+`fixed_poses[]` section of [floorplan-intent.md](floorplan-intent.md)) and
+the seeder's stage 0 SEATS: exactly at that pose, refused with its reasons and
+never nudged when the pose is illegal, and stamped `(locked yes)`. Its
+clause id is `fixed[REF].pose`, graded by that anchor. A ref with a pose that
+is also a declared `interfaces[]` row is refused by name: the interface
+compiles to an edge connector the seeder seats at its band, and a pose seats it
+exactly. A row with a pose may also carry `accept_courtyard_overlap: [refs]`
+(#1060), passed through to the intent entry as written -- a named waiver of
+COURTYARD overlap only, with a required `why`, for a human pose that overlaps a
+part it is designed to (see the fixed-poses section of
+[floorplan-intent.md](floorplan-intent.md)); on a row with no pose it is
+refused. A pose never becomes `must_lock`; merging over an emitted intent drops
+an edge entry the EMITTER inferred for the same ref, and says so under
+`context.brief.contradictions`.
 
 #711 asks for fixed poses to become `place_fixed` ops plus `must_lock`. Neither
 is available here, and both refusals are deliberate:
@@ -348,15 +381,92 @@ is available here, and both refusals are deliberate:
   inside the quench, so a brief-declared connector is already pinned where it
   matters.
 
-So `fixed[]` reaches `context.brief.fixed`, where a reader and a later tool can
-see it, and no engine acts on it.
+So every `fixed[]` row reaches `context.brief.fixed`, where a reader and a
+later tool can see it; only a `pose` reaches an engine, through `fixed_poses[]`.
+
+## `arrays[]`: parts that form one row (#1051)
+
+```jsonc
+"arrays": [ { "name": "rn_bus_a", "members": ["RN1", "RN2", "RN3", "RN4"],
+              "serves": "U30", "order": "pin", "rotation": "shared",
+              "why": "series terminations on U30's data bus" } ]
+```
+
+The same row the intent's `arrays[]` carries, plus the prose slot
+`requirement` -- validated by the INTENT's own loader, so a row the brief
+accepts is a row the compiled intent loads. It compiles 1:1, with `min_reader`
+7, is graded by `array_formation`, and is seated by the seeder as one row
+where stage 2.45 finds a pose for it -- else member by member, named in
+`array_unseated` -- and moves in the quench as a rigid group while it is a
+formed row (an unformed one is not held: `rigid.unformed`; a member leaves
+only by a disclosed release). Which rows to declare is the
+author's decision: `check_floorplan --suggest-arrays` lists candidates with
+their evidence, and the ones it `declined` with why. `serves` and `order` may be
+`"unknown"` (the author looked and does not know), `rotation` too; each is
+reported as a declared unknown, apart from a key nobody wrote. Clause ids are
+`arrays[NAME].members` / `.serves` / `.order` / `.rotation` / `.pitch_mm` /
+`.axis`, and `--intent` drift compares every field at its effective value. A
+member that is also a declared interface or a fixed pose is refused by name.
+Merged over an emitted intent, a row drops any edge entry the emitter inferred
+for a member, and says so.
+
+## Connector declarations compile to clauses (#959)
+
+Before #959 `mount_mode`, `cable_entry` and `user_top_side` were carried into
+`context` and graded by nothing: the #959 comment changed each one and no
+measurement moved. They now compile, in `design_brief.connector_consequences`,
+which every tool that reads a brief against a board calls -- `check_floorplan`
+on both its emit and grade paths, `--plan-only`, and `board_brief` -- so the
+grade and drift see exactly what the emit wrote.
+
+The mapping is the one the evidence supports, **not** the issue's literal one.
+It was measured on five as-built boards (esp_prog, tigard, splitflap_driver,
+glasgow_revC, ulx3s -- their briefs are `tests/fixtures/959/asbuilt/`), which
+must gain no ERROR from it:
+
+| declaration | compiles to | basis |
+|---|---|---|
+| `mount_mode: edge_mount` | `max_setback_mm` 0.75, on the drawn body (the courtyard when the library drew no fab or silk outline) | `derived_default` -- two shipping edge-mount bodies sit past the receptacle seat's 0.5 mm: tigard J7 at 0.60, rp2350 J3 at 0.614. As built the seat binds on neither, because each courtyard reaches the edge and the seat is asked only of a part whose courtyard sits a margin inside; 0.75 admits those bodies wherever it does bind |
+| `mount_mode: through_edge` | the same `max_setback_mm` 0.75: the part reaches the edge, read on the drawn body when the entry is an edge receptacle (the class `user_facing`, the emitter's classifier or a declared edge assigns) and on the courtyard otherwise. How far PAST it is `overhang_mm`, declared or emitted, never derived -- an overhang floor of 0 is vacuous (a body inside the board reads 0 overhang), and writing one replaced the emitted `overhang_mm` and dropped its `max` | `derived_default` |
+| `mount_mode: top_mount` / `bottom_mount` | an exemption, reported `carried`: NOT held to the edge-receptacle seat; its declared edge and overhang still grade it, and nothing measures the mount itself | declared -- `user_facing` made 8 vertical headers edge receptacles and failed them all on the as-built boards |
+| `cable_entry: perpendicular_top` / `_bottom`, with `product.user_top_side` | `side`: the face the cable plugs into, graded as `edge_connector_side` | declared; a fixed **WARN** an intent cannot raise, read by no seat search, quench or repair |
+| `cable_entry: in_plane` | reported `carried`: the declared `edge` is already a clause and in-plane adds none; with `edge: "unknown"` it is reported unmeasured | declared |
+| `cable_envelope_mm: {depth}` (in-plane) or `{clear}` (perpendicular) | a `cable:<REF>` keep-out -- a band `depth` in from the edge across the body, or the body plus `clear` on the cable's face -- ONLY for a FILE-locked part (off an unlocked one it would move with every seed), and for an in-plane band only when the body reaches within `depth` of its declared edge. A `cable:<REF>` keep-out the brief declares itself wins | declared |
+
+`user_facing` compiles no face. That the user reaches a part says nothing
+about which face it sits on, and reading it as the viewing face put three
+B-side connectors on shipping boards (a DSUB-9, a JST-SH, a microSD) on the
+wrong one.
+
+**There is no default cable envelope.** No clearance passed every as-built
+control, and the in-plane band the literal mapping proposed lay inside each
+connector's own body. An envelope that is `"unknown"` or absent is reported
+`unmeasured`, naming the dimension. z-height and insertion travel are never
+measured: a keep-out is a 2D projection, and the row says so.
+
+Each consequence is a row in the check's `consequences` list and in the
+declaration ledger (`derived:<clause id>`), with its basis. `JSON_SUMMARY`
+lists `derived_default_clauses` apart, so a default is never read as a
+validated claim. A value the brief declares itself always wins over a derived
+one, and drift is attributed to the declaration a key came from: the setback
+to `mount_mode`, the face to `cable_entry`. A compiled key the brief no
+longer produces also drifts, and so does a derived keep-out whose envelope the
+brief no longer states. A `side` needs `min_reader` 6.
+
+In the ledger, a clause about a keep-out is judged by the keep-out's NAME (a
+keep-out finding names the part that intrudes, never the connector), a fired
+`edge_connector_side` WARN reads `graded_warn`, a withheld envelope reads
+`abstained` and keeps coverage incomplete, and a `derived_default` number
+carries authority `assumption`: the declaration is the author's, the number is
+this code's.
 
 ## Deferred, and named rather than silently absent
 
-Height limits as geometry, thermal, panel/depanel, deriving a cable-shadow
-keep-out from `cable_entry`, asserting a fixed coordinate, subsystem
-decomposition, a side policy, a mounting datum as a coordinate frame, and
-HARD/SOFT as a severity axis. Each is expressible today only as an `unknown[]`
+Height limits as geometry, thermal, panel/depanel, a cable keep-out WITHOUT a
+declared envelope (a declared `cable_envelope_mm` derives one since #959),
+subsystem decomposition,
+a side POLICY beyond the advisory connector face, a mounting datum as a
+coordinate frame, and HARD/SOFT as a severity axis. Each is expressible today only as an `unknown[]`
 entry or a `context` note. HARD/SOFT in particular needs a precedence decision
 against the intent's existing per-rule `severity` and `connector_affinity`'s
 forced WARN, and that is a decision to take deliberately rather than in passing.

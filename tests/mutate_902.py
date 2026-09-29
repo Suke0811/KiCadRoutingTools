@@ -26,9 +26,10 @@ courtyard-vs-body read.
 
 Four MORE such branches exist and are deliberately NOT rows here -- the bool
 check, longest-match waiver resolution, the `+ ':'` suffix guard and the whole
-DRIFTED arm all live in `.claude/skills/plan-pcb-placement/scripts/
-placement_driver.py`, which this battery does not target, and they are killed
-by that driver's own `--self-test`. Saying "nine rows" would have credited this
+DRIFTED arm all lived in the staged placement driver
+(`plan-pcb-placement/scripts/placement_driver.py`), which this battery never
+targeted; they were killed by that driver's own `--self-test`, and left the
+tree with it when the skill was retired for pcb-free-agent. Saying "nine rows" would have credited this
 file with four kills it does not perform, which is the kind of arithmetic a
 reader has no way to check without opening TARGETS.
 """
@@ -329,8 +330,11 @@ ROWS = [
      "        angle = math.radians(tilt)",
      (T961,), KILLED),
     ('seat-copper-tolerated-to-half-a-mm', 'sd',
-     "        if off > 1e-9:",
-     "        if off > 0.5:",
+     # Single-line and unique (#1051 phase 5): `if off > 1e-9:` now also
+     # sits in stage 0's fixed-pose check. Shifting the SEAT predicate's
+     # measured overhang by 0.5 is the same mutant as `off > 0.5` there.
+     "        off = pad_copper_outside(geometry, zero, part.ref, (x, y, part.rot))",
+     "        off = pad_copper_outside(geometry, zero, part.ref, (x, y, part.rot)) - 0.5",
      (T961,), KILLED),
     ('ev-shortfall-is-the-smallest', 'fp',
      "            'shortfall_mm': round(max((f['shortfall_mm'] for f in findings),",
@@ -389,9 +393,10 @@ ROWS = [
      "            subset = copy(self.pcb)\n            subset.footprints = {",
      "            subset = self.pcb\n            _unused = {",
      (T961,), KILLED),
+    # #975: the loop moved into `EdgeCopperContext.grade`, one indent in; same mutation.
     ('per-part-minimum-last-wins', 'lg',
-     "            minimum_by_ref[ref] = min(minimum_by_ref.get(ref, gap), gap)",
-     "            minimum_by_ref[ref] = gap",
+     "                minimum_by_ref[ref] = min(minimum_by_ref.get(ref, gap), gap)",
+     "                minimum_by_ref[ref] = gap",
      (T961,), KILLED),
     # Round 3: five branches round 2 covered with a test but no row.
     ('fab-falls-back-to-silk', 'cg',

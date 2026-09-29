@@ -1,8 +1,8 @@
 """
 KiCad Routing Tools - Placement sub-tab (AI tab notebook).
 
-Two Claude-Code-driven actions ("Place" via /plan-pcb-placement, "Place +
-Route" via /plan-pcb-placement-and-routing) plus the non-AI "Beautify Labels"
+Two Claude-Code-driven actions ("Place" via /pcb-free-agent place, "Place +
+Route" via /pcb-free-agent full) plus the non-AI "Beautify Labels"
 action (issue #481). The AI runs are headless, write into a persistent
 workdir (placement_run.create_workdir), take minutes to hours, and are
 observed from outside: a 1 s monitor timer merges the stream-json transcript,
@@ -29,10 +29,10 @@ import wx
 from .ai_backend import BACKENDS, BACKEND_IDS
 from . import placement_run
 from .placement_run import (
-    PLACEMENT_ALLOWED_TOOLS, PLACEMENT_SUPPORTED_BACKENDS,
-    build_placement_prompt, create_workdir, derive_stage,
+    KEEP_RUNS, PLACEMENT_ALLOWED_TOOLS, PLACEMENT_SUPPORTED_BACKENDS,
+    build_placement_prompt, create_workdir, derive_stage, format_prune_note,
     list_board_artifacts, newest_stable_board, parse_placement_result,
-    read_ledger_tail, scan_workdir_outputs, stage_inputs,
+    prune_runs, read_ledger_tail, scan_workdir_outputs, stage_inputs,
 )
 
 # Same path setup as ai_gui/swig_gui: the engine modules live in py_router/,
@@ -520,7 +520,7 @@ class PlacementTab(wx.Panel):
             sw, choices=[BACKENDS[bid].label for bid in BACKEND_IDS])
         self.backend_choice.SetSelection(BACKEND_IDS.index(self.backend.id))
         self.backend_choice.SetToolTip(
-            "Harness that drives the placement skills. Only Claude Code is "
+            "Harness that runs the /pcb-free-agent skill. Only Claude Code is "
             "supported today (placement runs must WRITE, and the other "
             "harnesses' agents deny edits); more harnesses later.")
         self.backend_choice.Bind(wx.EVT_CHOICE, self._on_backend_choice)
@@ -550,17 +550,19 @@ class PlacementTab(wx.Panel):
 
         self.place_btn = wx.Button(sw, label="Place (AI)")
         self.place_btn.SetToolTip(
-            "Claude Code runs the /plan-pcb-placement skill headless on a "
+            "Claude Code runs /pcb-free-agent place headless on a "
             "snapshot of this board. Runs minutes to hours; artifacts land "
-            "in a krt_placement folder next to the board file.")
+            "in a krt_placement folder next to the board file, which keeps "
+            f"this board's newest {KEEP_RUNS} runs.")
         ai_sizer.Add(self.place_btn, 0,
                      wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         self.place_route_btn = wx.Button(sw, label="Place + Route (AI)")
         self.place_route_btn.SetToolTip(
-            "Claude Code runs the /plan-pcb-placement-and-routing skill "
-            "headless (place, then route, looping on the outcome). Runs "
+            "Claude Code runs /pcb-free-agent full headless (it places "
+            "and routes, choosing its own steps). Runs "
             "minutes to hours; artifacts land in a krt_placement folder "
-            "next to the board file.")
+            f"next to the board file, which keeps this board's newest "
+            f"{KEEP_RUNS} runs.")
         ai_sizer.Add(self.place_route_btn, 0,
                      wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         right.Add(ai_sizer, 0, wx.EXPAND | wx.BOTTOM, 6)
@@ -747,6 +749,10 @@ class PlacementTab(wx.Panel):
         self.last_workdir = workdir
         self._mode = mode
         self._pending_result = None
+        # This run's frames and outputs only: the previous run's files may be
+        # pruned (KEEP_RUNS) the moment this one launches.
+        self.preview.set_frames([])
+        self.preview.set_outputs()
         prompt = build_placement_prompt(
             self.backend, workdir, staged, mode,
             extra=self.extra_instructions.GetValue())
@@ -786,6 +792,32 @@ class PlacementTab(wx.Panel):
             return
         self._monitor = PlacementRunMonitor(self, workdir, mode)
         self._monitor.start()
+        self._start_prune(workdir)
+
+    def _start_prune(self, workdir):
+        """Delete this board's run folders beyond KEEP_RUNS (#1057).
+
+        Called only once the new run has launched, so a run that never
+        started cannot cost the user an old one. Off the UI thread: a run
+        folder's converge board store can hold thousands of files.
+        """
+        board = self.board_filename
+
+        def work():
+            try:
+                note = format_prune_note(prune_runs(workdir, board, KEEP_RUNS))
+            except Exception as e:                         # noqa: BLE001
+                note = f"Placement: pruning old runs failed: {e}\n"
+            if note:
+                wx.CallAfter(self._prune_done, note)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _prune_done(self, note):
+        if not self:
+            return
+        self._append_transcript(note)
+        self.append_log(note)
 
     def _set_running_ui(self, running):
         self.place_btn.Enable(not running and self.backend.find_cli() is not None)
@@ -963,10 +995,7 @@ class PlacementTab(wx.Panel):
                          "Arc tracks come back as short straight segments "
                          "(the parser linearizes arcs) and blind/buried vias "
                          "as through vias - if the input board carried "
-                         "either, open the result board file instead. "
-                         "Per-via tenting/plugging specs (#489 s8) are NOT "
-                         "carried: kipy has no via-protection writer, so "
-                         "re-placed vias take the board's default.")
+                         "either, open the result board file instead.")
         lines.append("The live board may have changed since the run started - "
                      "this diff is against its state right now. Continue?")
         if wx.MessageBox("\n\n".join(lines), "Apply Placement Result",
@@ -1159,17 +1188,19 @@ class PlacementTab(wx.Panel):
                 layers = getattr(via, "layers", None) or ["F.Cu", "B.Cu"]
                 v = make_via(commit.net_map, via.x, via.y, via.size, via.drill,
                              top_layer=layers[0], bottom_layer=layers[-1],
-                             net_name=name_for(via.net_id))
+                             net_name=name_for(via.net_id),
+                             # #489 s8 / #962: the via's own protection spec,
+                             # as the result board declares it.
+                             tenting_attrs=getattr(via, "tenting_attrs", None))
                 try:
                     v.locked = bool(getattr(via, "locked", False))  # #521
                 except Exception:
                     pass
-                # NOTE: the via's own tenting/plugging spec (#489 s8) is NOT
-                # carried - kipy exposes no via-protection writer, the same
-                # IPC gap planes_gui records for teardrops. Disclosed in the
-                # Apply confirmation rather than dropped silently.
                 commit.add(v)
                 vias_added += 1
+        from kicad_ipc_adapter import disclose_unwritten_via_protection
+        disclose_unwritten_via_protection(
+            result_pcb.vias, name_for, result_pcb, "placement apply")
         return tracks_added, vias_added
 
     # ------------------------------------------------------ beautify labels

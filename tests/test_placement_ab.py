@@ -65,7 +65,10 @@ BOARDS = os.path.join(ROOT, 'kicad_files')
 # much again, and #916's four `body-*` rows add two large boards (ulx3s,
 # orangecrab) plus two cheap ones (esp_prog 21 parts, watchy 86). Declared with
 # headroom so a slower box reports FAIL, not TIME.
-RUN_ALL_TIMEOUT = 3600
+# #1051 added 12 rows (arrays-auto, tethers, rigid-blocks); a full table
+# with four more measured 36.5 min on a box also running a second full
+# table and three place_seed arms (8 cores).
+RUN_ALL_TIMEOUT = 5400
 
 DEFAULT_BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 'placement_ab_baseline.json')
@@ -89,8 +92,11 @@ GROUP_SOURCES = ('kicad', 'sheet')
 BASELINE_INT_KEYS = ('crossings', 'health_bus_foreign_crossings',
                      'inversions', 'body_blocking', 'body_advisory',
                      'intent_errors', 'intent_errors_enforced',
-                     'intent_errors_other', 'edge_facing_pads', 'unseated')
-BASELINE_FLOAT_KEYS = ('hpwl', 'health_block_displacement_max_mm')
+                     'intent_errors_other', 'edge_facing_pads', 'unseated',
+                     # #1044: parts with pad copper in a rule-area band.
+                     'oob_keepout_copper_count')
+BASELINE_FLOAT_KEYS = ('hpwl', 'health_block_displacement_max_mm',
+                       'oob_keepout_copper_amount')
 BASELINE_DICT_KEYS = ('intent_errors_by_rule',)
 
 # Recorded as EVIDENCE, deliberately not graded: `health_block_displacement_max_mm`
@@ -515,6 +521,241 @@ ROWS = [
     },
 ]
 
+# #959 (#1002): `check_floorplan --emit-intent`'s decap derivation, OFF vs
+# AUTO. The product path the default would change: a PLACED board is
+# emitted (auto derives `decaps.max_distance_mm` = ceil(max) of its own
+# tethers), place_seed re-seeds from that intent, and stage 2.5 pulls the
+# tethered caps. Both arms are graded against the SAME auto intent, so the
+# signal is how many intent errors each SEED leaves under one ruler.
+#
+# The flat boards do not move: stage 2.5 reads its pins off PLACED ICs and
+# none is placed before it on a flat seed.
+_FLAT = ('esp_prog.kicad_pcb', 'splitflap_driver.kicad_pcb',
+         'tigard.kicad_pcb')
+ROWS += [
+    {
+        'name': f'decaps-auto-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'corridors': [],
+        'engine': 'seed',
+        'seed_intents': {'off': 'off', 'on': 'auto', 'grade': 'auto'},
+        'ignore_nets': ['GND'],
+        'signal': 'intent_errors',
+        'guard': ('crossings', 'hpwl', 'inversions', 'body_blocking'),
+        # REJECTED (#1002): the default flip improved no board. On the flat
+        # boards the limit moves nothing; on the zoned ones it pulls the
+        # tethered caps out of zone packing, which regressed every one. So
+        # `check_floorplan.DECLARE_DECAPS_DEFAULT` stays 'off'. Kept as a
+        # change detector with its measured mark; the numbers are in the
+        # baseline, not here.
+        'rejected': True,
+        'expect': 'neutral' if b in _FLAT else 'regress',
+        'why': (('MECHANISM: the ON arm seeds from an intent carrying the '
+                 'observed decap limit, so seeder stage 2.5 seats each '
+                 'tethered cap at a supply pin of an IC its zone placed '
+                 'first; the OFF arm packs them with their zone. Graded under '
+                 'ONE auto intent. Since #1043 decap_distance is an ENFORCED '
+                 'rule, so its errors moved from intent_errors_other to '
+                 'intent_errors_enforced on both arms -- a relabel, not a '
+                 'change in either seed.')
+                if b not in _FLAT else
+                ('MECHANISM: structurally neutral -- stage 2.5 seats a '
+                 'cap at the rail pads of PLACED ICs, and with no zoned '
+                 'block none is placed before it, so the limit moves '
+                 'nothing (it says so in decap_stage.reason). Same '
+                 'enforced/other relabel as the zoned rows.')),
+    }
+    # The first three emit NO zoned block (flat schematics); the last three
+    # do, which is where the doc says a decap limit moves caps: out of zone
+    # packing into the pin stage.
+    for b in ('esp_prog.kicad_pcb', 'splitflap_driver.kicad_pcb',
+              'tigard.kicad_pcb', 'ulx3s.kicad_pcb',
+              'orangecrab_ext_pll.kicad_pcb', 'glasgow_revC.kicad_pcb')
+]
+
+# --- #1051 / #1053 / #1043 / #1052: declared structure, OFF vs ON ----------
+#
+# Every row below varies ONE emitter parameter between its arms
+# (`seed_intent_param`), graded under one fixed intent, and every arm's intent
+# is checked to carry exactly what the row claims (`_intent_claims`) before a
+# part is seated. Marks and `rejected` are what the full table MEASURED; the
+# numbers are in the baseline.
+_A_BOARDS = ('glasgow_revC.kicad_pcb', 'ulx3s.kicad_pcb',
+             'splitflap_driver.kicad_pcb',
+             'kit-dev-coldfire-xilinx_5213.kicad_pcb')
+ROWS += [
+    {
+        # (a) the detector's rows, declared, then seeded (#1051). ON also arms
+        # stage 2.4 (a declared array does), which is the product path: an
+        # intent with arrays seeds this way and no other.
+        'name': f'arrays-auto-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'corridors': [],
+        'engine': 'seed',
+        'seed_intent_param': 'derive_arrays',
+        'seed_intents': {'off': 'off', 'on': 'auto', 'grade': 'auto'},
+        'ignore_nets': ['GND'],
+        'signal': 'crossings',
+        'guard': ('hpwl', 'unseated', 'intent_errors_sans_array'),
+        # REJECTED as a default (#1051 Phase 6): regressed on all four boards
+        # -- on a guard everywhere, and on the signal itself on three. So
+        # `emit_intent(derive_arrays=)` stays 'off' and an array reaches an
+        # intent only when the author accepts a suggestion. Kept as a change
+        # detector; the numbers are in the baseline. Re-measured after the
+        # rows stopped taking the pin tier early (hosts only, e1f325789):
+        # splitflap now IMPROVES (crossings 556 -> 452, hpwl 3094 -> 2816),
+        # the other three still regress -- still rejected, 3 of 4.
+        'expect': ('improve' if b == 'splitflap_driver.kicad_pcb'
+                   else 'regress'),
+        'rejected': True,
+        'why': ('MECHANISM: the ON arm seeds each suggested row as one '
+                'rigid strip (stage 2.45; a non-zoned row in stage 2.4, '
+                'right after the part it serves) aimed at its members\' '
+                'placed partners; the OFF '
+                'arm seats the same parts one by one. Graded under ONE '
+                'intent carrying the rows, so array_formation is charged to '
+                'the OFF arm by construction -- which is why the guard is '
+                'every OTHER error, and the signal is crossings, which the '
+                'rows do not grade. A row seated early is an obstacle every '
+                'later part routes around; the suggestions are accepted '
+                'WHOLESALE here, including two-member rows no author would '
+                'declare, which is the harshest reading of the feature.'),
+    }
+    for b in _A_BOARDS
+]
+ROWS += [
+    {
+        # (b) #1043: the quench holds the declared decap tethers. Both arms
+        # are GATED (zones, keep-outs) by their own intent; only the ON
+        # intent declares `decaps.max_distance_mm`, which arms the tether
+        # gate and the IC+caps rigid clusters.
+        'name': f'tethers-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'corridors': [],
+        'seed_intent_param': 'derive_decaps',
+        'gate_intents': {'off': 'off', 'on': 'auto', 'grade': 'auto'},
+        'ignore_nets': ign,
+        'signal': 'intent_errors_enforced',
+        'guard': ('crossings', 'hpwl', 'intent_errors_other'),
+        # PINNED as a CONSTRAINT's price, like the intent-* rows -- not an
+        # objective term on trial. Armed only by a DECLARED limit at error
+        # severity. Measured (#1051 Phase 6): the signal falls on three
+        # boards and holds on tigard (nothing to hold there); the one
+        # regress mark is a GUARD (ulx3s crossings), not the signal.
+        'expect': {'splitflap_driver.kicad_pcb': 'improve',
+                   'watchy.kicad_pcb': 'improve',
+                   'tigard.kicad_pcb': 'neutral',
+                   'ulx3s.kicad_pcb': 'regress'}[b],
+        'why': ('MECHANISM: the auto limit is the board\'s own worst '
+                'tether, so a cap the OFF quench nudges away from its IC '
+                'is a decap_distance error; the ON gate refuses that move '
+                'and moves the IC with its caps instead. A CONSTRAINT, like '
+                'the intent-* rows: its price is on the guards.'),
+    }
+    for b, ign in (('splitflap_driver.kicad_pcb', ['GND']),
+                   ('watchy.kicad_pcb', ['GND']),
+                   ('tigard.kicad_pcb', ['GND']),
+                   ('ulx3s.kicad_pcb', ['GND', '+3V3', '+5V']))
+]
+ROWS += [
+    {
+        # (c) #1052: `rigid: true` on every ZONED block (a rule, as
+        # `zone_flags` is applied), written by `emit_intent(rigid_blocks=)`
+        # -- not arrays-as-groups. Both arms gated by their own intent.
+        'name': f'rigid-blocks-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'corridors': [],
+        'seed_intent_param': 'rigid_blocks',
+        'gate_intents': {'off': 'none', 'on': 'zoned', 'grade': 'none'},
+        'ignore_nets': ign,
+        'quench_base': qb,
+        'signal': 'crossings',
+        'guard': ('hpwl', 'intent_errors_other'),
+        # PINNED as a price: rigidity is opt-in by declaration only (no
+        # emitter default writes it), and the measured cost is crossings on
+        # all four boards (#1051 Phase 6). A change that makes a rigid block
+        # cheaper shows up here as a moved mark.
+        'expect': 'regress',
+        'why': ('MECHANISM: a rigid block moves only as one piece -- its '
+                'members sit out the single nudge and the cross-member '
+                'swaps. A PRICE row: rigidity is a declared design fact, so '
+                'what it costs the objective is recorded, not traded.'),
+    }
+    for b, ign, qb in (
+        ('ulx3s.kicad_pcb', ['GND', '+3V3', '+5V'], None),
+        ('orangecrab_ext_pll.kicad_pcb', ['GND', '+3V3', '+1V1', 'VCC*'],
+         None),
+        ('kit-dev-coldfire-xilinx_5213.kicad_pcb',
+         ['GND', 'VCC*', '+3.3V', '+5V'], None),
+        ('rp2350_fpga_eensy_prePlane.kicad_pcb', [],
+         {'max_displacement': 10.0}))
+]
+
+ROWS += [
+    {
+        # #1044: `edge_seat_ok`'s rule-area band conjunct, OFF in the OFF arm.
+        # The two committed boards with a tracks-forbidden band do not reach
+        # the edge path (glasgow's edge connectors are file-locked or
+        # through-hole; rp2350's band is an interior sliver), so these rows
+        # are a change detector for "the conjunct costs nothing where it has
+        # nothing to refuse" -- the refusal itself is measured on a
+        # semi-synthetic board in tests/test_1044_edge_seat_band.py.
+        'name': f'band-edge-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'engine': 'seed',
+        'corridors': [],
+        'seeder_flags': {'off': {'_edge_band_gate': False}, 'on': {}},
+        'ignore_nets': ign,
+        'signal': 'oob_keepout_copper_count',
+        'guard': ('crossings', 'hpwl', 'unseated', 'intent_errors_other'),
+        'expect': 'neutral',
+        'why': ('MECHANISM: an edge connector whose band pose puts pad '
+                'copper in a rule-area band is refused at the edge seat '
+                'and left to the later stages, instead of seated where no '
+                'track can reach the pad.'),
+    }
+    for b, ign in (('glasgow_revC.kicad_pcb', ['GND', '+3V3']),
+                   ('rp2350_fpga_eensy_prePlane.kicad_pcb', []))
+]
+ROWS += [
+    {
+        # #1066 (b): `place_seed --repair --repair-decaps`. Both arms repair
+        # ONE seed of the board from its own emitted intent, whose decap
+        # limits are the board's own worst tethers (`derive_decaps='auto'`),
+        # so the human board is clean and the seed is not.
+        'name': f'repair-decaps-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'engine': 'repair',
+        'corridors': [],
+        'derive_decaps': 'auto',
+        'repair_on': {'repair_decaps': True},
+        'ignore_nets': ign,
+        'signal': 'intent_errors_enforced',
+        'guard': ('crossings', 'hpwl', 'intent_errors_other',
+                  'body_blocking'),
+        # REJECTED as a default, rows kept (the flag stays opt-in): it
+        # improves the boards whose seed leaves a repairable decap error and
+        # regresses none, but three of five seeds leave nothing it may fix --
+        # none charged, or only a cap whose fixing pose is disproportionate
+        # -- so it fails "improve on N-1". `derive_decaps='strict'` measured
+        # identically on all five, so those rows were not kept.
+        'expect': ('improve' if b in ('watchy.kicad_pcb', 'tigard.kicad_pcb')
+                   else 'neutral'),
+        'rejected': True,
+        'why': ('MECHANISM: the ordinary repair seat is `_try_place` at '
+                'the part\'s CURRENT pose, which has no decap target, so '
+                'a decap violator is never moved; the ON arm seats each '
+                'charged cap toward its IC\'s pin and keeps the pose only '
+                'when the charged finding is gone, no finding is new or '
+                'worse, and the move is proportionate.'),
+    }
+    for b, ign in (('esp_prog.kicad_pcb', ['GND']),
+                   ('splitflap_driver.kicad_pcb', ['GND']),
+                   ('watchy.kicad_pcb', ['GND']),
+                   ('tigard.kicad_pcb', ['GND']),
+                   ('glasgow_revC.kicad_pcb', ['GND', '+3V3']))
+]
+
 QUENCH_BASE = dict(
     max_displacement=3.0, step=1.0, grid_step=0.1, clearance=0.2,
     board_edge_clearance=0.55, crossing_penalty=30.0, length_weight=0.3,
@@ -522,7 +763,85 @@ QUENCH_BASE = dict(
     edge_weight=2.0, max_passes=4, verbose=False)
 
 
-def _intent_for(board_path, corridors, workdir, zone_flags=None):
+#: The emitter parameters a row may vary between its arms (#1051), and the
+#: values each accepts. `seed_intent_param` names ONE of them; the row's
+#: `seed_intents` (seed engine) or `gate_intents` (quench engine) give its
+#: value per arm. `rigid_blocks` takes a RULE, never a list of names: 'zoned'
+#: marks every block the emitter gave a zone, exactly as `zone_flags` applies
+#: -- a row that named its own blocks would be fitted to the arrangement it
+#: is measuring.
+SEED_INTENT_PARAMS = {
+    'derive_decaps': ('off', 'auto', 'strict'),
+    'derive_arrays': ('off', 'auto'),
+    'rigid_blocks': ('none', 'zoned'),
+}
+
+
+def _emit_kwargs(param, value, board_path):
+    """`emit_intent` kwargs for one arm: `{param: value}`, with a
+    `rigid_blocks` RULE resolved to the block names this board emits."""
+    if param not in SEED_INTENT_PARAMS:
+        raise AssertionError(f"seed_intent_param {param!r}: expected one of "
+                             f"{', '.join(SEED_INTENT_PARAMS)}")
+    if value not in SEED_INTENT_PARAMS[param]:
+        raise AssertionError(f"{param}={value!r}: expected one of "
+                             f"{', '.join(SEED_INTENT_PARAMS[param])}")
+    if param != 'rigid_blocks':
+        return {param: value}
+    if value == 'none':
+        return {}
+    from kicad_parser import parse_kicad_pcb
+    from placement import floorplan
+    doc = floorplan.emit_intent(parse_kicad_pcb(board_path), board_path)
+    return {'rigid_blocks': tuple(b['name'] for b in doc['blocks']
+                                  if b.get('zone'))}
+
+
+def _intent_claims(param, value, doc):
+    """What an emitted intent `doc` must carry when its arm sets `param` to
+    `value`, as problem strings (empty = it carries exactly that).
+
+    A row whose ON intent does not contain the feature it claims to measure
+    compares the same run twice and reads like a term with no effect; one
+    whose OFF intent carries it measures nothing either. Both are refused
+    before a single seat is paid for."""
+    from placement import floorplan
+    on = value not in ('off', 'none')
+    probs = []
+    if param == 'derive_arrays':
+        has = bool(doc.get('arrays'))
+        what = 'arrays[]'
+    elif param == 'rigid_blocks':
+        has = any(b.get('rigid') is True for b in doc.get('blocks') or ())
+        what = 'a rigid:true block'
+    elif param == 'derive_decaps':
+        has = (doc.get('decaps') or {}).get('max_distance_mm') is not None
+        what = 'decaps.max_distance_mm'
+    else:
+        return [f"unknown seed_intent_param {param!r}"]
+    if on and not has:
+        probs.append(f"{param}={value!r} but the intent carries no {what}")
+    if not on and has:
+        probs.append(f"{param}={value!r} but the intent carries {what}")
+    if param == 'derive_decaps' and on and has:
+        # The quench's tether gate is armed off the LOADED intent, by rule
+        # severity -- the key alone is not the claim a tethers row makes.
+        import tempfile as _tf
+        with _tf.NamedTemporaryFile('w', suffix='.json', delete=False) as fh:
+            json.dump(doc, fh)
+        try:
+            spec = floorplan.tether_gate_spec(floorplan.load_intent(fh.name))
+        finally:
+            os.unlink(fh.name)
+        if 'decap_distance' not in spec:
+            probs.append(f"{param}={value!r}: decaps.max_distance_mm is "
+                         f"declared but the tether gate does not arm "
+                         f"decap_distance (severity below error?)")
+    return probs
+
+
+def _intent_for(board_path, corridors, workdir, zone_flags=None,
+                derive_decaps='off', name='intent.json', emit_kw=None):
     """An intent for `board_path` with `corridors` declared.
 
     Emitted from the board itself rather than hand-written, so the blocks the
@@ -543,8 +862,10 @@ def _intent_for(board_path, corridors, workdir, zone_flags=None):
     """
     from kicad_parser import parse_kicad_pcb
     from placement import floorplan
-    path = os.path.join(workdir, 'intent.json')
-    doc = floorplan.emit_intent(parse_kicad_pcb(board_path), board_path)
+    path = os.path.join(workdir, name)
+    kw = {'derive_decaps': derive_decaps}
+    kw.update(emit_kw or {})
+    doc = floorplan.emit_intent(parse_kicad_pcb(board_path), board_path, **kw)
     if corridors:
         # Guarded: an unconditional assignment plants an empty `bus_corridors`
         # on a row that declares none, which makes
@@ -634,6 +955,17 @@ def _edge_facing(pcb_data, board_path, intent):
         return None
 
 
+def _keepout_copper(graded, out_path):
+    """#1044: `oob_keepout_copper_count` / `_amount` of the WRITTEN board --
+    the parts whose pad copper lies in a `(tracks not_allowed)` rule-area
+    band -- at QUENCH_BASE's clearance. 0 / 0.0 on a board with no band."""
+    from placement import legality
+    g = legality.board_keepout_findings(graded, QUENCH_BASE['clearance'],
+                                        out_path)
+    return {'oob_keepout_copper_count': g['oob_keepout_copper_count'],
+            'oob_keepout_copper_amount': g['oob_keepout_copper_amount']}
+
+
 def _ignore_ids(pcb, patterns):
     """Net ids whose name matches any of `patterns` (fnmatch), or None."""
     import fnmatch
@@ -643,7 +975,7 @@ def _ignore_ids(pcb, patterns):
 
 
 def _run_seed(board_path, out_path, intent, seed_kw,
-              group_sources=GROUP_SOURCES, ignore_nets=()):
+              group_sources=GROUP_SOURCES, ignore_nets=(), grade_intent=None):
     """One SEED (from the intent, every part re-seated) + write + the same
     independent grade `_run` applies. The engine switch for a row that
     measures the seeder rather than the quench: `place_seed`'s path, minus
@@ -659,9 +991,8 @@ def _run_seed(board_path, out_path, intent, seed_kw,
     """
     import random
     from kicad_parser import parse_kicad_pcb
-    from placement import floorplan, seeder
+    from placement import seeder
     from placement.writer import write_placed_output
-    import pose_score
 
     pcb = parse_kicad_pcb(board_path)
     t0 = time.time()
@@ -675,9 +1006,23 @@ def _run_seed(board_path, out_path, intent, seed_kw,
         src = os.path.splitext(board_path)[0] + ext
         if os.path.exists(src):
             shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
+    return _grade_row(out_path, grade_intent or intent, group_sources,
+                      ignore_nets, t0, len(res.get('unseated') or ()))
+
+
+def _grade_row(out_path, grade_intent, group_sources, ignore_nets, t0,
+               unseated):
+    """The measured row for a WRITTEN board -- the seed and repair engines'
+    shared independent grade (`_run` has its own, from the quench metrics)."""
+    from kicad_parser import parse_kicad_pcb
+    from placement import floorplan
+    import pose_score
     graded = parse_kicad_pcb(out_path)
-    result = floorplan.grade(intent, graded, out_path, with_health=True,
-                             group_sources=group_sources)
+    # #959 (#1002): the arms may SEED from different intents, and are then
+    # graded against ONE -- otherwise each arm grades itself against the
+    # claim it seeded to, and the comparison measures two rulers.
+    result = floorplan.grade(grade_intent, graded, out_path,
+                             with_health=True, group_sources=group_sources)
     summary = floorplan.summary(result)
     cost = pose_score.make_state(
         graded, out_path,
@@ -689,6 +1034,7 @@ def _run_seed(board_path, out_path, intent, seed_kw,
     enforced = sum(n for r, n in by_rule.items() if r in INTENT_ENFORCED_RULES)
     _bb, _ba = _body_overlap(graded, out_path, QUENCH_BASE['clearance'])
     return {
+        **_keepout_copper(graded, out_path),
         'seconds': round(time.time() - t0, 1),
         'crossings': cost.get('crossings'),
         'hpwl': None if cost.get('hpwl') is None
@@ -705,13 +1051,65 @@ def _run_seed(board_path, out_path, intent, seed_kw,
         'intent_errors_by_rule': by_rule,
         'intent_errors_enforced': enforced,
         'intent_errors_other': (summary.get('errors') or 0) - enforced,
+        # #1051: every error EXCEPT the row-formation rule -- the guard of a
+        # row that declares arrays, so forming rows cannot be bought with
+        # errors elsewhere. Not a baseline key: `intent_errors_by_rule`
+        # already pins every rule it is summed from.
+        'intent_errors_sans_array':
+            (summary.get('errors') or 0) - by_rule.get('array_formation', 0),
         'intent_gate_rejected': None,
-        'edge_facing_pads': _edge_facing(graded, out_path, intent),
-        'unseated': len(res.get('unseated') or ()),
+        'edge_facing_pads': _edge_facing(graded, out_path, grade_intent),
+        'unseated': unseated,
     }
 
 
-def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES):
+def _seed_once(board_path, out_path, intent, group_sources=GROUP_SOURCES):
+    """The REPAIR engine's input: one seed of `board_path` from `intent`
+    (`random.Random('0')`, `QUENCH_BASE`'s floors), written once and shared
+    by both arms, so the arms differ only in the repair."""
+    import random
+    from kicad_parser import parse_kicad_pcb
+    from placement import seeder
+    from placement.writer import write_placed_output
+    if os.path.exists(out_path):
+        return out_path
+    res = seeder.seed_from_intent(
+        parse_kicad_pcb(board_path), board_path, intent, random.Random('0'),
+        group_sources=group_sources, clearance=QUENCH_BASE['clearance'],
+        board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
+        grid_step=QUENCH_BASE['grid_step'])
+    write_placed_output(board_path, out_path, res['placements'])
+    for ext in ('.kicad_pro', '.kicad_dru'):
+        src = os.path.splitext(board_path)[0] + ext
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
+    return out_path
+
+
+def _run_repair(seeded_path, out_path, intent, repair_kw,
+                group_sources=GROUP_SOURCES, ignore_nets=()):
+    """One `place_seed --repair` pass over the SEEDED board + write + the
+    seed engine's independent grade (#1066 b). `repair_kw` is the arm's
+    `repair_placement` kwarg set -- `{'repair_decaps': True}` on the ON arm."""
+    from kicad_parser import parse_kicad_pcb
+    from placement import seeder
+    from placement.writer import write_placed_output
+    t0 = time.time()
+    res = seeder.repair_placement(
+        parse_kicad_pcb(seeded_path), seeded_path, intent,
+        group_sources=group_sources, clearance=QUENCH_BASE['clearance'],
+        board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
+        grid_step=QUENCH_BASE['grid_step'], **repair_kw)
+    write_placed_output(seeded_path, out_path, res['moves'])
+    for ext in ('.kicad_pro', '.kicad_dru'):
+        src = os.path.splitext(seeded_path)[0] + ext
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
+    return _grade_row(out_path, intent, group_sources, ignore_nets, t0, 0)
+
+
+def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES,
+         grade_intent=None):
     """One quench + write + independent grade. Returns the measured row.
 
     `group_sources` is NOT optional in spirit, only in signature. Every block
@@ -744,8 +1142,10 @@ def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES):
     # here come from the final poses, not from the frozen model the optimizer
     # minimised against.
     graded = parse_kicad_pcb(out_path)
-    result = floorplan.grade(intent, graded, out_path, with_health=True,
-                             group_sources=group_sources)
+    # #1051: arms gated by DIFFERENT intents are graded against ONE, as the
+    # seed engine's `grade_intent` is (#959).
+    result = floorplan.grade(grade_intent or intent, graded, out_path,
+                             with_health=True, group_sources=group_sources)
     summary = floorplan.summary(result)
     after = metrics.get('after') or {}
     # ERRORS only, by rule. `summary()['violations_by_rule']` counts warnings
@@ -767,6 +1167,7 @@ def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES):
     gate = metrics.get('intent_gate')
     _bb, _ba = _body_overlap(graded, out_path, quench_kw.get('clearance', 0.2))
     return {
+        **_keepout_copper(graded, out_path),
         'seconds': round(time.time() - t0, 1),
         'crossings': after.get('crossings'),
         # NOT `or 0.0`: a key the optimizer stopped reporting would be recorded
@@ -810,12 +1211,15 @@ def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES):
         'intent_errors_by_rule': by_rule,
         'intent_errors_enforced': enforced,
         'intent_errors_other': (summary.get('errors') or 0) - enforced,
+        'intent_errors_sans_array':
+            (summary.get('errors') or 0) - by_rule.get('array_formation', 0),
         # 0 when a gate was built and refused nothing; None when NO gate was
         # built at all. The distinction is the point -- see quench.py.
         'intent_gate_rejected': None if gate is None else gate['rejected'],
         # Run 26's facing number, carried on every row as evidence so the
         # quench rows say what they do to it too.
-        'edge_facing_pads': _edge_facing(graded, out_path, intent),
+        'edge_facing_pads': _edge_facing(graded, out_path,
+                                         grade_intent or intent),
         # The seed engine's column (`_run_seed`); a quench moves nothing
         # it has not seated, so the key is present and empty here.
         'unseated': None,
@@ -862,6 +1266,32 @@ def _verdict(off, on, row):
     return 'neutral', [f"{key} unchanged at {a}"]
 
 
+class _seeder_flags:
+    """Set `placement.seeder` module flags for one arm, and restore them.
+    For a behaviour the engine holds as module state rather than a kwarg --
+    #1044's `_edge_band_gate`, which every edge-seat caller reads -- so a row
+    can state its OFF arm without an engine parameter a CLI could reach."""
+
+    def __init__(self, flags):
+        self.flags = dict(flags or {})
+        self.saved = {}
+
+    def __enter__(self):
+        from placement import seeder
+        for k, v in self.flags.items():
+            if not hasattr(seeder, k):
+                raise AssertionError(f"seeder has no flag {k!r}")
+            self.saved[k] = getattr(seeder, k)
+            setattr(seeder, k, v)
+        return self
+
+    def __exit__(self, *exc):
+        from placement import seeder
+        for k, v in self.saved.items():
+            setattr(seeder, k, v)
+        return False
+
+
 def run_row(row, workdir):
     board = os.path.join(BOARDS, row['board'])
     if not os.path.exists(board):
@@ -871,19 +1301,85 @@ def run_row(row, workdir):
     os.makedirs(d, exist_ok=True)
     intent = _intent_for(board, row['corridors'], d, row.get('zone_flags'))
 
+    # Per-arm intents and one fixed GRADING intent (#959, #1051): the row's
+    # `seed_intent_param` is the emitter parameter the arms differ in
+    # (default `derive_decaps`), and `seed_intents` / `gate_intents` its
+    # value per arm. Every arm's intent is checked to carry exactly what its
+    # value claims (`_intent_claims`) before anything is seated.
+    param = row.get('seed_intent_param', 'derive_decaps')
+
+    def _mk(value, tag):
+        i = _intent_for(board, row['corridors'], d, row.get('zone_flags'),
+                        name=f'intent_{tag}.json',
+                        emit_kw=_emit_kwargs(param, value, board))
+        with open(os.path.join(d, f'intent_{tag}.json')) as fh:
+            probs = _intent_claims(param, value, json.load(fh))
+        if probs:
+            raise AssertionError(f"{row['name']} ({tag} intent): "
+                                 + '; '.join(probs))
+        return i
+
+    if row.get('engine') == 'repair':
+        # The REPAIR engine (#1066 b): one seed of the board from its intent,
+        # shared, then `repair_placement` twice -- `repair_off` / `repair_on`
+        # kwargs -- each written and graded like a seed row.
+        if not row.get('repair_on') and not row.get('repair_off'):
+            raise AssertionError(f"{row['name']}: a repair row states "
+                                 f"neither repair_on nor repair_off")
+        _ign = list(row.get('ignore_nets') or ())
+        intent = _intent_for(board, row['corridors'], d,
+                             row.get('zone_flags'),
+                             derive_decaps=row.get('derive_decaps', 'off'),
+                             name='intent_repair.json')
+        seeded = _seed_once(board, os.path.join(d, 'seeded.kicad_pcb'),
+                            intent)
+        off = _run_repair(seeded, os.path.join(d, 'off.kicad_pcb'), intent,
+                          dict(row.get('repair_off') or {}),
+                          ignore_nets=_ign)
+        on = _run_repair(seeded, os.path.join(d, 'on.kicad_pcb'), intent,
+                         dict(row.get('repair_on') or {}), ignore_nets=_ign)
+        mark, notes = _verdict(off, on, row)
+        expected = row.get('expect')
+        tag = mark.upper()
+        if expected and mark == expected:
+            tag = f"{mark.upper()} (as measured)"
+        elif expected:
+            tag = f"{mark.upper()} != expected {expected.upper()}"
+        print(f"  {row['name']:<24} {tag:<32} "
+              f"({off['seconds']}s / {on['seconds']}s)  [repair engine]")
+        for k in ('crossings', 'hpwl', 'body_blocking', row['signal']):
+            print(f"      {k:<32} {off.get(k)!s:>12} -> {on.get(k)!s:>12}")
+        for n in notes:
+            print(f"      {n}")
+        if expected and mark != expected and row.get('why'):
+            print(f"      recorded reason: {row['why']}")
+        return mark, notes, off, on
+
     if row.get('engine') == 'seed':
         # The SEED engine: both arms re-seat every part from the intent; the
-        # ON arm carries `seed_on` (a `seed_from_intent` kwarg set). Same
-        # verdict rule, same independent grade, same print.
-        if not row.get('seed_on'):
-            raise AssertionError(f"{row['name']}: a seed row states no "
-                                 f"seed_on -- it would measure the same seed "
-                                 f"twice")
+        # ON arm carries `seed_on` and the OFF arm `seed_off` (each a
+        # `seed_from_intent` kwarg set). Same verdict rule, same independent
+        # grade, same print.
+        si = row.get('seed_intents')
+        flags = row.get('seeder_flags') or {}
+        if (not row.get('seed_on') and not row.get('seed_off') and not si
+                and not flags):
+            raise AssertionError(f"{row['name']}: a seed row states neither "
+                                 f"seed_on/seed_off nor seed_intents -- it "
+                                 f"would measure the same seed twice")
         _ign = list(row.get('ignore_nets') or ())
-        off = _run_seed(board, os.path.join(d, 'off.kicad_pcb'), intent, {},
-                        ignore_nets=_ign)
-        on = _run_seed(board, os.path.join(d, 'on.kicad_pcb'), intent,
-                       dict(row['seed_on']), ignore_nets=_ign)
+        i_off = i_on = i_grade = intent
+        if si:
+            i_off, i_on = _mk(si['off'], 'off'), _mk(si['on'], 'on')
+            i_grade = _mk(si['grade'], 'grade')
+        with _seeder_flags(flags.get('off')):
+            off = _run_seed(board, os.path.join(d, 'off.kicad_pcb'), i_off,
+                            dict(row.get('seed_off') or {}),
+                            ignore_nets=_ign, grade_intent=i_grade)
+        with _seeder_flags(flags.get('on')):
+            on = _run_seed(board, os.path.join(d, 'on.kicad_pcb'), i_on,
+                           dict(row.get('seed_on') or {}), ignore_nets=_ign,
+                           grade_intent=i_grade)
         mark, notes = _verdict(off, on, row)
         expected = row.get('expect')
         tag = mark.upper()
@@ -905,7 +1401,22 @@ def run_row(row, workdir):
     kw_off.update(row.get('quench_base') or {})
     kw_off['ignore_nets'] = list(row.get('ignore_nets') or ())
     kw_on = dict(kw_off)
-    kw_on.update(row['quench_on'])
+    kw_on.update(row.get('quench_on') or {})
+    gi = row.get('gate_intents')
+    i_grade = None
+    if gi:
+        # #1051/#1043/#1052: BOTH arms are gated, each by its own intent, so
+        # the one difference is the declared feature -- not "gated vs the
+        # engine that shipped", which would charge the zones to the feature.
+        from kicad_parser import parse_kicad_pcb
+        from placement import floorplan
+        _pcb = parse_kicad_pcb(board)
+        i_off, i_on = _mk(gi['off'], 'off'), _mk(gi['on'], 'on')
+        i_grade = _mk(gi['grade'], 'grade')
+        kw_off['intent_gate'], _p = floorplan.resolve_intent_gate(
+            i_off, _pcb, GROUP_SOURCES)
+        kw_on['intent_gate'], _p = floorplan.resolve_intent_gate(
+            i_on, _pcb, GROUP_SOURCES)
     # #702: the row declares the intent it wants gated with a sentinel, so the
     # table stays plain data and `_intent_for` stays the only place an intent
     # is built. The OFF arm must NOT get one, or "off" would mean "resolved
@@ -918,17 +1429,20 @@ def run_row(row, workdir):
     # The ON run needs the corridors the flag prices; the OFF run must NOT get
     # them, or "off" would mean "built and multiplied by zero" rather than
     # "the objective that shipped".
-    if 'corridor_weight' in row['quench_on']:
+    if 'corridor_weight' in (row.get('quench_on') or {}):
         kw_on['corridor_specs'] = row['corridors']
     # A row that states no difference measures nothing, and reads exactly like
     # a flag that never reached the engine.
     if kw_on == kw_off:
         raise AssertionError(
-            f"{row['name']}: quench_on {row['quench_on']} leaves the ON kwargs "
-            f"identical to OFF -- the row would measure the same run twice")
+            f"{row['name']}: quench_on {row.get('quench_on')} / gate_intents "
+            f"{row.get('gate_intents')} leave the ON kwargs identical to OFF"
+            f" -- the row would measure the same run twice")
 
-    off = _run(board, os.path.join(d, 'off.kicad_pcb'), intent, kw_off)
-    on = _run(board, os.path.join(d, 'on.kicad_pcb'), intent, kw_on)
+    off = _run(board, os.path.join(d, 'off.kicad_pcb'), intent, kw_off,
+               grade_intent=i_grade)
+    on = _run(board, os.path.join(d, 'on.kicad_pcb'), intent, kw_on,
+              grade_intent=i_grade)
     mark, notes = _verdict(off, on, row)
     expected = row.get('expect')
     tag = mark.upper()
@@ -1292,7 +1806,8 @@ def _self_test():
             'inversions': 40, 'body_blocking': 2, 'body_advisory': 9,
             'intent_errors_enforced': 4, 'intent_errors_other': 10,
             'intent_gate_rejected': None, 'edge_facing_pads': 3,
-            'unseated': 0,
+            'unseated': 0, 'oob_keepout_copper_count': 0,
+            'oob_keepout_copper_amount': 0.0,
             'intent_errors_by_rule': {'block_unresolved': 10,
                                       'zone_containment': 4}}
     von = {'crossings': 90, 'hpwl': 9.0, 'corridor_cut': 800.0, 'seconds': 1,
@@ -1302,7 +1817,8 @@ def _self_test():
            'inversions': 38, 'body_blocking': 2, 'body_advisory': 7,
            'intent_errors_enforced': 7, 'intent_errors_other': 10,
            'intent_gate_rejected': None, 'edge_facing_pads': 2,
-           'unseated': 0,
+           'unseated': 0, 'oob_keepout_copper_count': 0,
+           'oob_keepout_copper_amount': 0.0,
            'intent_errors_by_rule': {'block_unresolved': 10,
                                      'zone_containment': 7}}
 
@@ -1445,6 +1961,80 @@ def _self_test():
     assert ok, lines
     assert not any('on trial' in x for x in lines), lines
 
+    # --- #1051: per-arm intents claim what they carry ---
+    # 30. every table row that varies an emitter parameter names a known one,
+    #     with known values, and its ON arm is not the OFF arm unless an
+    #     engine kwarg (seed_off / seed_on) is the difference instead.
+    for r in ROWS:
+        per_arm = r.get('seed_intents') or r.get('gate_intents')
+        if not per_arm:
+            assert 'seed_intent_param' not in r, r['name']
+            continue
+        param = r.get('seed_intent_param', 'derive_decaps')
+        assert param in SEED_INTENT_PARAMS, (r['name'], param)
+        for arm in ('off', 'on', 'grade'):
+            assert per_arm[arm] in SEED_INTENT_PARAMS[param], (r['name'], arm)
+        assert (per_arm['off'] != per_arm['on'] or r.get('seed_off')
+                or r.get('seed_on')), r['name']
+        assert not (r.get('gate_intents') and r.get('engine') == 'seed'), r
+    # 31. `_intent_claims` passes an intent that carries exactly the claim,
+    #     and names BOTH failures: the ON feature missing, the OFF one present.
+    arr = {'arrays': [{'name': 'x', 'members': ['R1', 'R2']}], 'blocks': []}
+    assert _intent_claims('derive_arrays', 'auto', arr) == []
+    assert _intent_claims('derive_arrays', 'off', {'blocks': []}) == []
+    assert any('carries no arrays' in p for p in
+               _intent_claims('derive_arrays', 'auto', {'arrays': []}))
+    assert any('carries arrays' in p for p in
+               _intent_claims('derive_arrays', 'off', arr))
+    rig = {'blocks': [{'name': 'a'}, {'name': 'b', 'rigid': True}]}
+    assert _intent_claims('rigid_blocks', 'zoned', rig) == []
+    assert any('no a rigid:true block' in p for p in _intent_claims(
+        'rigid_blocks', 'zoned', {'blocks': [{'name': 'a'}]}))
+    assert any('carries a rigid:true block' in p
+               for p in _intent_claims('rigid_blocks', 'none', rig))
+    assert any('carries no decaps' in p for p in
+               _intent_claims('derive_decaps', 'auto', {'decaps': {}}))
+    assert any('carries decaps' in p for p in _intent_claims(
+        'derive_decaps', 'off', {'decaps': {'max_distance_mm': 3.0}}))
+    # 32. an unknown parameter or value refuses rather than emitting a default
+    #     intent the row would then mistake for its ON arm.
+    for bad in (('derive_nothing', 'auto'), ('derive_arrays', 'strict'),
+                ('rigid_blocks', ['U1'])):
+        try:
+            _emit_kwargs(bad[0], bad[1], 'unused.kicad_pcb')
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f'_emit_kwargs{bad} must refuse')
+
+
+def _self_test_live():
+    """`--self-test` only: EMIT every per-arm intent on its real board and
+    hold it to `_intent_claims` -- the tether arm through the loaded intent's
+    armed gate. Seconds per board, so not run at the top of a table run
+    (`run_row` makes the same check on the intents it actually seeds)."""
+    tmp = tempfile.mkdtemp(prefix='placement_ab_selftest_')
+    bad = []
+    for r in ROWS:
+        per_arm = r.get('seed_intents') or r.get('gate_intents')
+        board = os.path.join(BOARDS, r['board'])
+        if not per_arm or not os.path.exists(board):
+            continue
+        param = r.get('seed_intent_param', 'derive_decaps')
+        for arm in ('off', 'on'):
+            _intent_for(board, r['corridors'], tmp, r.get('zone_flags'),
+                        name='x.json',
+                        emit_kw=_emit_kwargs(param, per_arm[arm], board))
+            with open(os.path.join(tmp, 'x.json')) as fh:
+                doc = json.load(fh)
+            bad += [f"{r['name']} {arm}: {p}"
+                    for p in _intent_claims(param, per_arm[arm], doc)]
+        print(f"  intent claims ok: {r['name']}" if not any(
+            b.startswith(r['name'] + ' ') for b in bad)
+            else f"  intent claims BAD: {r['name']}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    assert not bad, '\n'.join(bad)
+
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
@@ -1473,13 +2063,22 @@ def main(argv=None):
     # nine minutes of quenching.
     _self_test()
     if args.self_test:
+        _self_test_live()
         print('self-test OK')
         return 0
 
     if args.list:
         for r in ROWS:
+            # A seed row has no `quench_on` (the KeyError this printed on).
+            per_arm = r.get('seed_intents') or r.get('gate_intents')
+            arm = ' '.join(
+                f"{k}={r[k]}" for k in ('quench_on', 'seed_on', 'seed_off')
+                if r.get(k))
+            if per_arm:
+                arm = (f"{r.get('seed_intent_param', 'derive_decaps')}="
+                       f"{per_arm} {arm}").strip()
             print(f"{r['name']:<24} {r['board']:<28} "
-                  f"{r['quench_on']} -> {r['signal']}")
+                  f"{arm} -> {r['signal']}")
         return 0
 
     names = [r['name'] for r in ROWS]

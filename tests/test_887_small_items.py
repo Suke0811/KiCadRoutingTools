@@ -31,9 +31,10 @@ TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 
 SKILLS = os.path.join(ROOT, '.claude', 'skills')
-PLACE_SKILL = os.path.join(SKILLS, 'plan-pcb-placement', 'SKILL.md')
+# pcb-free-agent replaced the placement and the combined skill (#1009); it
+# drives placement runs, so it carries their movie mandate.
+FREE_SKILL = os.path.join(SKILLS, 'pcb-free-agent', 'SKILL.md')
 ROUTE_SKILL = os.path.join(SKILLS, 'plan-pcb-routing', 'SKILL.md')
-BOTH_SKILL = os.path.join(SKILLS, 'plan-pcb-placement-and-routing', 'SKILL.md')
 LOOP = os.path.join(ROOT, 'py_placer', 'place_route_loop.py')
 REQS = os.path.join(ROOT, 'requirements.txt')
 RUNBOOK = os.path.join(ROOT, 'tests', 'stress', 'RUNBOOK.md')
@@ -100,11 +101,11 @@ def _section(text, heading):
     return ''
 
 
-def test_the_placement_skill_mandates_the_movie_with_a_runnable_command():
-    text = open(PLACE_SKILL, encoding='utf-8').read()
+def test_the_free_agent_skill_mandates_the_movie_with_a_runnable_command():
+    text = open(FREE_SKILL, encoding='utf-8').read()
     tools = _fenced_tools(text)
     want('make_film.py' in tools or 'make_movie.py' in tools,
-         'the placement skill carries a FENCED command that builds the movie -- '
+         'the free-agent skill carries a FENCED command that builds the movie -- '
          'a fence, because prose quoting a command in backticks satisfies a '
          'naive grep and has done so in this repo before',
          [t for t in tools if 'm' in t][:8])
@@ -120,12 +121,11 @@ def test_the_routing_skill_mandates_the_movie_after_routing_completes():
          _fenced_tools(sec)[:8])
 
 
-def test_the_movie_mandate_is_in_all_three_skills():
-    """Asserted PER FILE. The existing skill gate concatenates all three via
-    _all_skill_text(), which would pass with only the combined skill carrying
-    it -- and the combined skill has carried it alone all along."""
+def test_the_movie_mandate_is_in_every_run_skill():
+    """Asserted PER FILE: a concatenated scan passes with only one skill
+    carrying it -- and the combined skill once carried it alone."""
     missing = []
-    for path in (PLACE_SKILL, ROUTE_SKILL, BOTH_SKILL):
+    for path in (FREE_SKILL, ROUTE_SKILL):
         tools = _fenced_tools(open(path, encoding='utf-8').read())
         if not ({'make_movie.py', 'make_film.py'} & set(tools)):
             missing.append(os.path.basename(os.path.dirname(path)))
@@ -393,9 +393,9 @@ def test_the_gui_dep_check_mirrors_the_routing_gate_and_no_more():
 TESTS_TO_RUN = [
     test_place_route_loop_passes_its_movie_tween_through,
     test_the_movie_tween_flag_still_exists_to_be_passed,
-    test_the_placement_skill_mandates_the_movie_with_a_runnable_command,
+    test_the_free_agent_skill_mandates_the_movie_with_a_runnable_command,
     test_the_routing_skill_mandates_the_movie_after_routing_completes,
-    test_the_movie_mandate_is_in_all_three_skills,
+    test_the_movie_mandate_is_in_every_run_skill,
     test_the_runbook_names_the_audit_tool_not_a_subagent,
     test_every_module_scope_third_party_import_is_declared,
     test_the_requirements_file_declares_pillow,

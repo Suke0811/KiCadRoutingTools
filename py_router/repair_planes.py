@@ -47,7 +47,7 @@ from startup_checks import exit_on_error_if_main
 # (#457 item 3).
 exit_on_error_if_main(__name__)
 
-from kicad_parser import parse_kicad_pcb, PCBData, Segment, Via, KICAD_10_MIN_VERSION, pad_is_plated_through
+from kicad_parser import parse_kicad_pcb, PCBData, Segment, Via, pcb_uses_name_nets, pad_is_plated_through
 from kicad_writer import (generate_segment_sexpr, generate_gr_line_sexpr,
                           generate_via_sexpr, via_net_name)
 from routing_config import GridRouteConfig
@@ -2336,7 +2336,7 @@ def repair_planes(
                     suffix='.kicad_pcb', delete=False)
                 _tmp.close()
                 _nm10 = (pcb_data.net_id_to_name
-                         if pcb_data.kicad_version >= KICAD_10_MIN_VERSION
+                         if pcb_uses_name_nets(pcb_data)
                          else None)
                 _reconcile_write_list_vs_board('pre-oracle')
                 _write_output(input_file, _tmp.name, all_new_segments,
@@ -2982,7 +2982,7 @@ def repair_planes(
     except Exception as _e:
         print(f"  (soft-joint close skipped: {_e})")
 
-    kv10_names = pcb_data.net_id_to_name if pcb_data.kicad_version >= KICAD_10_MIN_VERSION else None
+    kv10_names = pcb_data.net_id_to_name if pcb_uses_name_nets(pcb_data) else None
 
     # GUI (return_results): hand the plane/repair copper + the ripped net ids
     # back; the partial-restore kept pieces were emitted (and the in-memory
@@ -3338,7 +3338,7 @@ Examples:
     parser.add_argument("--same-net-pad-clearance", type=float, default=None,
                         help="Edge-to-edge clearance (mm) between repair vias (taps, joins, "
                              "reconnects) and same-net pads (#581). > 0 keeps vias off "
-                             "same-net pads; -1 explicitly allows via-in-pad. Default: the "
+                             "same-net pads and the net's solder-paste openings (#962); -1 explicitly allows via-in-pad. Default: the "
                              "project's recorded value, else -1.")
 
     # Via options (for config)
@@ -3660,6 +3660,25 @@ Examples:
             print(f"NOTE: {_orc.get('why', 'the oracle could not run')} -- "
                   f"the oracle reconnect pass did not run; output may differ "
                   f"from machines where it can (replay-determinism caveat).")
+
+    # #962: declare Type VII on every via this run put in a pad or a paste
+    # opening -- AFTER the oracle reconnect above, which lays vias of its own,
+    # so the record describes the board that ships. GUI twin: the planes tab's
+    # engine call stamps its dicts inside repair (route_planes/plane_io), and
+    # gui_utils.run_kicad_oracle_on_live_board stamps the oracle's vias with
+    # the same fab_notes.via_protection_stamps.
+    if not args.dry_run and args.output_file and os.path.isfile(args.output_file):
+        try:
+            from kicad_parser import parse_kicad_pcb as _parse962
+            from fab_notes import via_snapshot, ship_via_protection_file
+            _rec962 = ship_via_protection_file(
+                args.output_file, via_snapshot(_parse962(args.input_file).vias),
+                'repair_planes')
+            if _rec962 and _rec962.get('count'):
+                import json as _json962
+                print('VIA_IN_PAD_JSON: ' + _json962.dumps(_rec962))
+        except Exception as _e962:                              # noqa: BLE001
+            print(f"  (via protection stamp skipped: {type(_e962).__name__}: {_e962})")
 
     # Make the output project's DRC design rules consistent with the floors we
     # just routed to (issue #160), mirroring route_planes.py, so a manual DRC in

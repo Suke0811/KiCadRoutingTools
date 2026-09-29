@@ -67,7 +67,7 @@ import itertools
 import math
 import random
 import re
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 # Ring-search enumeration: nearest-first out to this radius, then a FINE ring
 # near the target, then a coarse whole-board sweep. The fine pass exists
@@ -1112,6 +1112,107 @@ def _facing_rank(state, ref: str, tx: float, ty: float, rot: float,
         pitch=pitch_of((x, y) for x, y, _ in pads_all))['to_edge']
 
 
+def seat_clearances(full: float) -> Tuple[float, float, float]:
+    """The courtyard-clearance ladder every seat search walks: the full
+    clearance, then half, then a 0.02mm floor (`_try_place`'s docstring says
+    why a dense board needs the floor). One tuple, so a single-part seat and
+    a row seat (#1051) relax in the same steps."""
+    return (full, full / 2.0, min(0.02, full))
+
+
+def _set_seat_clearance(state, clr: float) -> None:
+    """Set the state's clearance for one rung of `seat_clearances`.
+    candidate_valid reads state.clearance; the incumbent-violation cache is
+    keyed on it implicitly, so clear it on every change."""
+    state.clearance = clr
+    state._inc_violation.clear()
+
+
+_RING_CACHE: Dict[Tuple[float, float], Tuple[Tuple[float, float], ...]] = {}
+
+
+def _ring_offsets(radius: float, step: float):
+    """`pose_score._offsets(radius, step)`, built once per (radius, step).
+    Pure and pose-free, so caching it changes no order; it is ~40ms a call
+    and a seed makes one per ring per rotation per clearance rung."""
+    key = (float(radius), float(step))
+    got = _RING_CACHE.get(key)
+    if got is None:
+        from pose_score import _offsets
+        got = tuple(_offsets(radius, step))
+        _RING_CACHE[key] = got
+    return got
+
+
+def seat_candidates(state, tx: float, ty: float, *,
+                    max_disp: Optional[float] = None, sweep: bool = True):
+    """Yield candidate (x, y) seats around (tx, ty), nearest-first, in the
+    order the seat search has always tried them: a 1.0mm ring out to
+    SEARCH_RADIUS_MM, a FINE ring near the target, an XFINE (grid-step) ring,
+    then -- when `sweep` and no `max_disp` cap -- a whole-board sweep at
+    FALLBACK_STEP_MM, nearest the target first.
+
+    Lifted out of `_try_place`'s `_first_fit` closure (#1051) so the row seat
+    (`_seat_block`) walks the SAME offsets for a row's anchor rather than a
+    second copy that drifts. Lazy: a caller that stops at the first fit pays
+    only for the candidates it looked at, as the closure did. Positions are
+    rounded to 3dp, the pose `apply_move` writes.
+
+    `sweep` is False for a zone-constrained search (a part stays in its
+    zone); `max_disp` (a capped repair) never sweeps the whole board either.
+    """
+    for _name, band in seat_candidate_bands(state, tx, ty, max_disp=max_disp,
+                                            sweep=sweep):
+        yield from band()
+
+
+def seat_candidate_bands(state, tx: float, ty: float, *,
+                         max_disp: Optional[float] = None,
+                         sweep: bool = True):
+    """`[(name, band)]`: `seat_candidates`' bands, each a zero-argument
+    callable yielding its positions lazily -- 'ring' (1.0mm), 'fine',
+    'xfine', then 'sweep' when it applies. `seat_candidates` chains them in
+    that order; the row seat (`_seat_block`) walks the SAME bands in its own
+    order, so the offsets are shared and only the order differs."""
+    out = []
+    xfine = max(0.05, getattr(state, 'grid_step', 0.1) or 0.1)
+    for name, radius, step in (('ring', SEARCH_RADIUS_MM, SEARCH_STEP_MM),
+                               ('fine', SEARCH_FINE_RADIUS_MM,
+                                SEARCH_FINE_STEP_MM),
+                               ('xfine', SEARCH_XFINE_RADIUS_MM, xfine)):
+        if max_disp is not None and max_disp < step - 1e-9:
+            # run-7 A3: a ring whose step exceeds the cap can contribute
+            # nothing but used to burn a full sweep
+            continue
+
+        def _ring(radius=radius, step=step):
+            for dx, dy in _ring_offsets(radius, step):
+                if (max_disp is not None
+                        and math.hypot(dx, dy) > max_disp + 1e-9):
+                    continue
+                yield round(tx + dx, 3), round(ty + dy, 3)
+        out.append((name, _ring))
+    if sweep and max_disp is None:
+        out.append(('sweep', lambda: _sweep_positions(state, tx, ty)))
+    return out
+
+
+def _sweep_positions(state, tx: float, ty: float):
+    """The whole-board sweep at FALLBACK_STEP_MM, nearest the target first."""
+    u = state.usable
+    grid = []
+    nx = max(1, int((u[2] - u[0]) / FALLBACK_STEP_MM))
+    ny = max(1, int((u[3] - u[1]) / FALLBACK_STEP_MM))
+    for i in range(nx + 1):
+        for j in range(ny + 1):
+            x = round(u[0] + i * FALLBACK_STEP_MM, 3)
+            y = round(u[1] + j * FALLBACK_STEP_MM, 3)
+            grid.append(((x - tx) ** 2 + (y - ty) ** 2, x, y))
+    grid.sort()
+    for _, x, y in grid:
+        yield x, y
+
+
 def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
                constraint=None, tol: float = 0.5,
                max_disp: Optional[float] = None,
@@ -1156,7 +1257,6 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
     deliberately packs would fail real boards. Courtyards carry their own
     margin, so a small courtyard-to-courtyard gap is not a copper hazard. A
     relaxed placement is a NOTE for the caller, never silent."""
-    from pose_score import _offsets
     part = state.parts[ref]
 
     def _ok(x, y, rot):
@@ -1168,11 +1268,8 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
 
     full = state.clearance
     try:
-        for clr in (full, full / 2.0, min(0.02, full)):
-            # candidate_valid reads state.clearance; the incumbent-violation
-            # cache is keyed on it implicitly, so clear it on every change.
-            state.clearance = clr
-            state._inc_violation.clear()
+        for clr in seat_clearances(full):
+            _set_seat_clearance(state, clr)
             # #893. `rotations` is the DECLARED ladder when an intent gave
             # this ref one -- a single angle for `blocks[].rotation`, the
             # author's set for `rotation_candidates` -- in the author's order,
@@ -1208,58 +1305,23 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
             # default and stays opt-in for a caller who has read that
             # trade. The numbers are in the baseline file.
             _pref = getattr(state, 'rotation_prefer', None)
-            xfine = max(0.05, getattr(state, 'grid_step', 0.1) or 0.1)
 
             def _first_fit(rot):
-                """The first legal (x, y) for `rot` in the ring order this
-                search has always used, or None. The search body, lifted
-                into a closure so the preferred-rotation path below can ask
-                it once per angle without a second copy of the rings."""
-                for radius, step in ((SEARCH_RADIUS_MM, SEARCH_STEP_MM),
-                                     (SEARCH_FINE_RADIUS_MM,
-                                      SEARCH_FINE_STEP_MM),
-                                     (SEARCH_XFINE_RADIUS_MM, xfine)):
-                    if max_disp is not None and max_disp < step - 1e-9:
-                        # run-7 A3: a ring whose step exceeds the cap can
-                        # contribute nothing but used to burn a full sweep
+                """The first legal (x, y) for `rot` in the order
+                `seat_candidates` yields, or None. A closure so the
+                preferred-rotation path below can ask it once per angle; the
+                ORDER lives in `seat_candidates`, which the row seat
+                (`_seat_block`, #1051) walks too."""
+                # The rings, then (unconstrained and uncapped only) the
+                # whole-board sweep -- PER ANGLE. The sweep is part of "first
+                # fit": the first lift of the rings into a closure left it
+                # outside the OFF path, and splitflap's default seed went from
+                # 0 to 6 unseated parts. `_in_zone` is trivially true on the
+                # sweep, which is only reached with no constraint.
+                for x, y in seat_candidates(state, tx, ty, max_disp=max_disp,
+                                            sweep=constraint is None):
+                    if not _in_zone(x, y, rot):
                         continue
-                    # Budget check at the RING head (36 per call: 3 clearance
-                    # levels x 4 rotations x 3 bands) -- negligible, and it
-                    # bounds one pathological part's overrun to a single ring
-                    # sweep instead of a whole cap ladder. Deliberately NOT in
-                    # the `for dx, dy in _offsets(...)` loop below: that is the
-                    # innermost loop and _offsets already materialises ~3700
-                    # tuples per call, so the band check bounds it adequately.
-                    for dx, dy in _offsets(radius, step):
-                        if (max_disp is not None
-                                and math.hypot(dx, dy) > max_disp + 1e-9):
-                            continue
-                        x, y = round(tx + dx, 3), round(ty + dy, 3)
-                        if not _in_zone(x, y, rot):
-                            continue
-                        if _ok(x, y, rot):
-                            return x, y
-                # The rings found nothing at this angle. A zone-constrained
-                # part stays in its zone and a capped repair never sweeps the
-                # whole board; everything else falls back to a whole-board
-                # sweep, nearest the target first -- PER ANGLE, exactly as the
-                # loop did before the rings were lifted into this closure.
-                # The first lift left this sweep outside the OFF path, and the
-                # review measured it: splitflap's default seed went from 0 to
-                # 6 unseated parts. The sweep is part of "first fit".
-                if constraint is not None or max_disp is not None:
-                    return None
-                u = state.usable
-                grid = []
-                nx = max(1, int((u[2] - u[0]) / FALLBACK_STEP_MM))
-                ny = max(1, int((u[3] - u[1]) / FALLBACK_STEP_MM))
-                for i in range(nx + 1):
-                    for j in range(ny + 1):
-                        x = round(u[0] + i * FALLBACK_STEP_MM, 3)
-                        y = round(u[1] + j * FALLBACK_STEP_MM, 3)
-                        grid.append(((x - tx) ** 2 + (y - ty) ** 2, x, y))
-                grid.sort()
-                for _, x, y in grid:
                     if _ok(x, y, rot):
                         return x, y
                 return None
@@ -1295,8 +1357,7 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
                     state.apply_move(ref, best[1], best[2], best[3])
                     return clr
     finally:
-        state.clearance = full
-        state._inc_violation.clear()
+        _set_seat_clearance(state, full)
     return None
 
 
@@ -1414,6 +1475,13 @@ def _body_band_correct(state, ref: str, edge: str, x: float, y: float,
                   and abs(target - row['body_outside_mm']) < 0.02)
 
 
+#: #1044: `edge_seat_ok`'s rule-area band conjunct. On in every production
+#: path; `tests/test_placement_ab.py` turns it off for its OFF arm only
+#: (`seed_from_intent(_edge_band_gate=False)`), which is why it is module
+#: state rather than a parameter threaded through every edge caller.
+_edge_band_gate = True
+
+
 def edge_seat_ok(state, part, x: float, y: float, edge: str,
                  lo: float, hi: float,
                  reasons: Optional[List[str]] = None) -> bool:
@@ -1443,6 +1511,9 @@ def edge_seat_ok(state, part, x: float, y: float, edge: str,
 
     An edge connector's BODY overhangs by design; its PADS do not. That
     asymmetry is what makes this checkable at all.
+
+    Five conjuncts in all: the band, pads on the board, and (below) a
+    declared keep-out, an exclusive zone and a rule-area band (#1044).
 
     A THIRD conjunct, since #701: a declared KEEP-OUT. An edge connector's
     body may leave the outline; it may not enter a region the intent
@@ -1514,6 +1585,25 @@ def edge_seat_ok(state, part, x: float, y: float, edge: str,
         if reasons is not None:
             reasons.extend(f"exclusive zone of block {n!r}" for n in _zblockers)
         return False
+    # A FIFTH conjunct (#1044), for the same reason as the fourth: this
+    # predicate bypasses `pose_ok`, and so bypassed `pads_ok`'s #1031 check
+    # of the board's rule-area keep-out bands. Stage 1 and `_seat_edge` could
+    # put an SMD connector's pad copper in a `(tracks not_allowed)` band --
+    # a pad no track can reach -- and the polish quench then took that pose
+    # as the seed's licence. ABSOLUTE, like `_fixed_pose_check`'s: an edge
+    # seat is chosen, not inherited, so a band pose has no incumbent to be
+    # "no worse than". The trade is the keep-out conjunct's: a connector
+    # whose whole band lies in the rule area is left to the later stages,
+    # named in `reasons`.
+    if _edge_band_gate:
+        ctx = getattr(state, 'legality_ctx', None)
+        if ctx is not None and getattr(ctx, 'keepouts', None) is not None:
+            ko = ctx.keepout_amount(part.ref, x, y, part.rot)
+            if ko > 1e-6:
+                if reasons is not None:
+                    reasons.append(f"pad copper {ko:.3f}mm into a rule-area "
+                                   f"keep-out band")
+                return False
     gate = state.edge_gate
     for px, py, _sz in part.pad_globals(x, y, part.rot):
         # A zero-size rect at the pad centre: "is this point on the board",
@@ -1521,6 +1611,737 @@ def edge_seat_ok(state, part, x: float, y: float, edge: str,
         if gate.rect_outside_amount((px, py, px, py)) > 1e-9:
             return False
     return True
+
+
+# ---- #975: the pad-copper edge floor, as a PREFERENCE of the edge seat ------
+#
+# `edge_seat_ok` never measured pad copper against the board-edge floor: its
+# pad conjunct asks whether each pad CENTRE is on the board at the gate margin,
+# so a seat could leave a connector's shield tabs inside the floor that
+# `grade_pad_legality`'s `pad_edge` then reports (tigard J7 0.073 mm short,
+# ulx3s AUDIO1 0.385). It is not added as a fifth conjunct. A refusal turns a
+# DRC shortfall into an unseated connector, and an unseated connector is an
+# unrouted one, so the seat PREFERS a pose whose copper clears the floor and
+# otherwise keeps the pose it always chose, disclosed in `edge_floor_fallback`.
+#
+# The reading is `legality.EdgeCopperContext.pose_copper`, the grader's own
+# per-pad arithmetic at the trial pose with the board's files read once per
+# state, so the seat and `pad_edge` agree by construction. A pad whose amount
+# cannot be measured (an unsupported shape) keeps only the checks it had.
+
+#: The grader names sides by coordinate (min-y is 'bottom'); the seeder names
+#: them by compass (min-y is north). One table, so no call site re-derives it.
+_GRADE_SIDE = {'left': 'west', 'right': 'east', 'bottom': 'north', 'top': 'south'}
+#: The unit step that moves a part INTO the board from each edge.
+_INWARD = {'north': (0.0, 1.0), 'south': (0.0, -1.0),
+           'west': (1.0, 0.0), 'east': (-1.0, 0.0)}
+#: Added to a derived shift so it survives `apply_move`'s 3-dp rounding, which
+#: can take back up to half a micron per axis.
+_FLOOR_SHIFT_GUARD_MM = 0.001
+#: #983: the step a rung is moved along its edge when the pose it would
+#: WRITE falls outside its declared window. A rung clamped to a window end
+#: puts the courtyard centre exactly on it, and `round(x, 3)` then moves it up
+#: to half a micron either way against the grade's 1 nm EPS; one step of the
+#: 0.001 mm grid the pose is written on puts it back at least half a micron
+#: inside.
+_WINDOW_GUARD_MM = 0.001
+#: A record names at most this many pads; the counts beside it are complete.
+_FLOOR_RECORD_PADS = 4
+#: The same bound for `grade_delta` ROWS, which are not pads: a row is a
+#: rule the move would break, and `n_grade_delta` counts them all, so a
+#: fifth one is summarised rather than silently dropped.
+_FLOOR_ROWS = 4
+#: The reasons a first seat stays short for which the ladder WALKS to later
+#: rungs. A shortfall on another side than the seated one (a pad past its
+#: courtyard at a corner), or on a sampled outline, is one only an along-edge
+#: rung can change. Every other reason -- the inward move refused by the band,
+#: a setback, a keep-out, a neighbour, still short, the grade's nearest edge
+#: or along-edge window -- is about the MOVE. A later rung can still help
+#: there, by having a different move accepted: away from a corner its gap to
+#: the seated edge is the same, but near one `_edge_correct` converges on the
+#: sum of every side and the gap varies from rung to rung. A random search
+#: found grade-clean seats given up on 153 of 20,000 inputs (51 of them within
+#: 1 mm; 102 were nearest-edge refusals, 23 still short). But walking trades
+#: the connector's along-edge position for 0.1 mm-scale copper, and the first
+#: version of this ladder, walking on every reason, slid one connector 10 mm
+#: to clear 0.03 mm. So this is a CHOICE to stay put, not a claim that nothing
+#: along the edge would do.
+_SLIDE_HELPS = frozenset(('along_edge', 'outline_sampled'))
+
+
+class _Floor(NamedTuple):
+    """The floor reading of one pose: `short` is `(amount, index, side,
+    gap, pad_number)` per measured pad over the floor, worst first."""
+    required: float
+    short: Tuple
+    unmeasured: Tuple[int, ...]
+
+
+def _floor_at(state, ref: str, x: float, y: float, rot: float):
+    """`_Floor` for `ref` at the pose `apply_move` would WRITE, or None when the
+    board's constants cannot be read (the seat then behaves as it always did).
+    """
+    from .legality import EPS, edge_copper_for
+    ctx, _err = edge_copper_for(state, state.pcb_data, state.pcb_file,
+                                state.clearance, state.board_edge_clearance)
+    fp = state.pcb_data.footprints.get(ref) if ctx is not None else None
+    if fp is None:
+        return None
+    reading = ctx.pose_copper(fp, (round(x, 3), round(y, 3), rot))
+    short = sorted(((r.amount_mm, r.index, _GRADE_SIDE.get(r.edge), r.gap_mm,
+                     r.pad.pad_number)
+                    for r in reading.pads
+                    if r.amount_mm is not None and r.amount_mm > EPS),
+                   key=lambda s: (-s[0], s[1]))
+    return _Floor(ctx.required, tuple(short), reading.fallback)
+
+
+def _floor_context_note(state, notes: List[str]) -> None:
+    """Say ONCE per state that the floor preference is off, and why."""
+    from .legality import edge_copper_for
+    ctx, err = edge_copper_for(state, state.pcb_data, state.pcb_file,
+                               state.clearance, state.board_edge_clearance)
+    if ctx is None and not getattr(state, '_edge_floor_noted', False):
+        state._edge_floor_noted = True
+        notes.append(f"edge seats: the board-edge copper floor could not be "
+                     f"read ({err}), so seats were chosen without it")
+
+
+def _faces_its_edge(state, part, entry: Dict, edge: str, x: float, y: float) -> bool:
+    """Does `rule_edge_connector` read this pose as nearest its declared edge?
+
+    Asked of every pose the floor preference picks over the seat the ladder
+    always chose, because that seat is the only one the grade has already been
+    measured against. The rect and its basis are the rule's own
+    (`floorplan.edge_seat_rect`, the drawn body of a receptacle) at the pose
+    `apply_move` writes."""
+    from .floorplan import _nearest_edge, drawn_body_rect, edge_seat_rect
+    bounds = state.pcb_data.board_info.board_bounds
+    if not bounds:
+        return True
+    px, py = round(x, 3), round(y, 3)
+
+    def body():
+        bodies = getattr(state, '_edge_seat_bodies', None)
+        if bodies is None:
+            from .body import board_bodies
+            try:
+                bodies = board_bodies(state.pcb_data, state.pcb_file)
+            except Exception:                                 # noqa: BLE001
+                bodies = {}
+            state._edge_seat_bodies = bodies
+        fp = state.pcb_data.footprints.get(part.ref)
+        if fp is None:
+            return None, 'none'
+        from copy import copy
+        moved = copy(fp)
+        moved.x, moved.y, moved.rotation = px, py, part.rot
+        return drawn_body_rect(bodies.get(part.ref), moved)
+
+    rect, _basis = edge_seat_rect(entry, part.rect(px, py, part.rot), body)
+    return _nearest_edge(rect, tuple(round(v, 6) for v in bounds)) == edge
+
+
+def _carries_setback(entry: Dict) -> bool:
+    """Does `rule_edge_connector` grade this entry's SETBACK? It does for an
+    explicit `max_setback_mm` and for the `edge_receptacle` and
+    `connector_affinity` classes, and only once the part has no overhang."""
+    return (entry.get('max_setback_mm') is not None
+            or entry.get('class') in ('edge_receptacle', 'connector_affinity'))
+
+
+def _band_reading(state, part, edge: str, x: float, y: float):
+    """`(amount, basis, occupancy)` at the pose `apply_move` WRITES: the band
+    reading `rule_edge_connector` grades -- the drawn body's overhang where it
+    can be measured, else the occupancy reading at the gate margin -- and that
+    occupancy reading itself, which is what gates the setback."""
+    from .connector_geometry import band_amount, geometry_for
+    px, py = round(x, 3), round(y, 3)
+    legacy = state.edge_gate.rect_outside_amount(part.rects(px, py, part.rot)[0])
+    amount, basis, _row = band_amount(
+        geometry_for(state, state.pcb_data, state.pcb_file), part.ref, edge,
+        legacy, state.edge_gate.margin, pose=(px, py, part.rot))
+    return amount, basis, legacy
+
+
+def _grade_band_refuses(state, part, entry: Dict, edge: str, lo: float,
+                        x: float, y: float):
+    """`(reason, detail)`: would `rule_edge_connector` refuse this pose's
+    overhang band, or charge its setback? `reason` is None when it would not.
+
+    Asked of every pose the floor preference picks over the seat the ladder
+    always chose. The ladder's own band test (`edge_seat_ok`) allows 0.02 mm
+    either side of the band, and a moved pose or a later rung can land in
+    that margin where the first seat did not (measured: a later rung read
+    0.23 on a 0.25 minimum and turned `--repair` from rc 0 to rc 4). A FIRST
+    seat could sit there too; since #987 every rung is settled into the band
+    at the grade's own bounds first (`_band_settle`), and this remains the
+    check on what the settle could not move.
+    The setback is charged only once the occupancy reading is <= EPS, which
+    an inward move is exactly what produces, so any such pose on an entry
+    that carries one is refused -- conservatively, since the grade then also
+    needs the body too far in.
+    """
+    from .legality import EPS
+    amount, basis, legacy = _band_reading(state, part, edge, x, y)
+    detail = {'overhang_after_mm': round(amount, 4), 'band_min_mm': lo,
+              'basis': basis}
+    hi = (entry.get('overhang_mm') or {}).get('max')
+    if amount < lo - EPS:
+        return 'band_min', detail
+    if hi is not None and amount > float(hi) + EPS:
+        return 'band_max', detail
+    if _carries_setback(entry) and legacy <= EPS:
+        return 'setback', detail
+    return None, detail
+
+
+def _outside_its_along_edge_claim(state, part, entry: Dict, edge: str,
+                                  x: float, y: float) -> bool:
+    """Would `rule_edge_connector`'s along-edge conjunct flag this pose?
+
+    Asked by CALLING the rule's own conjunct (`floorplan._grade_along_edge`)
+    on the pose `apply_move` writes, with the edge span the seat ladder
+    already uses (`_declared_edge_span`'s outline stand-in), so the two
+    cannot disagree about the window. The ladder clamps its rungs to the
+    declared window, but a rung ON a window end is written to 3 decimals and
+    can land half a micron outside it, where the grade's EPS is 1 nm --
+    measured: a one-footprint board whose seed went rc 0 -> 4, and 70 of
+    2880 blocker positions in #983. `_window_nudge` asks this of every rung
+    and steps the ones it flags inside the window; what is still flagged at
+    the written pose is named by `_window_miss_note`."""
+    if entry.get('center_on_edge') is None and entry.get('along_edge_band') is None:
+        return False
+    from types import SimpleNamespace
+    from placement import floorplan as _fp
+    bounds = state.pcb_data.board_info.board_bounds
+    if not bounds:
+        return False
+    outline = {'simple_rectangle': not getattr(state.edge_gate, 'rings', None),
+               'cutouts': 0, 'edge_segments': 0}
+    ctx = SimpleNamespace(gate=state.edge_gate, outline=outline,
+                          outline_bounds=tuple(round(v, 6) for v in bounds),
+                          edge_seating=[], abstain=lambda key, why: None)
+    probe = SimpleNamespace(rect=part.rect(round(x, 3), round(y, 3), part.rot))
+    return any(True for _ in _fp._grade_along_edge(ctx, dict(entry, edge=edge),
+                                                   part.ref, probe, 'error'))
+
+
+#: #987: the furthest `_band_settle` moves a seat along its edge normal: the
+#: seat's own 0.02 mm band tolerance plus the half micron the write rounds
+#: away, rounded up to the 0.001 mm grid (0.021), plus one grid step. It can
+#: only close the gap that tolerance opened.
+_BAND_SETTLE_CAP_MM = 0.022
+
+
+def _band_settle(state, part, entry: Dict, edge: str, lo: float, x: float, y: float,
+                 seats=None) -> Tuple[float, float]:
+    """#987: `(x, y)`, unless the pose it WRITES reads outside the declared
+    overhang band; then that pose moved along the edge normal until it reads
+    inside, by whole 0.001 mm grid steps and one step more.
+
+    The seat accepts a band reading within 0.02 mm of the band
+    (`_body_band_correct`, `edge_seat_ok`) and stops the overhang walk within
+    0.02 mm of its target (`_edge_correct`); the grade accepts one only within
+    EPS. So a seat could be written up to 0.02 mm outside its band -- a drawn
+    body past its courtyard, a target ON a band end (`max(lo, 0.5)` with no
+    `max`), a gate margin under 0.02 mm. The reading here is the grade's own
+    (`_band_reading`) at the written pose, so a rung it accepts is returned
+    BIT-IDENTICAL. The along-edge coordinate is not touched.
+
+    A PREFERENCE, and a narrow one:
+      * only a rung that already seats is moved (`seats(x, y)` is not None),
+        so a correction never makes a seat of a rung the seat refused;
+      * the move is at most `_BAND_SETTLE_CAP_MM`;
+      * the moved pose must seat, and `_no_worse` must accept it: no pad
+        further inside the #975 floor (measured, moving a body 0.01 mm out to
+        meet a 0.3 minimum put two pads 0.006 mm inside it), no courtyard
+        overlap the grade would newly report, pair by pair, and none doubled
+        (measured: 0.0072 mm2 bought with a locked part), and with a grader
+        no intent-grade error it did not have;
+      * an INWARD move that takes the occupancy reading to <= EPS is refused
+        on an entry that carries a setback, because that is exactly when the
+        grade starts charging it (measured: a courtyard-only receptacle on a
+        {0, 0} band traded "past the declared maximum" for "seated 0.55mm
+        from the nearest edge with no overhang");
+      * the moved pose must still face its edge if the raw one did.
+    Anything that fails, or raises, leaves the raw pose, which the grade then
+    reports as it always did. It is not asked `_grade_worse`, whose
+    unconditional off-board reading would refuse every outward move; the
+    overlap and grade halves are asked through `_no_worse` instead.
+    """
+    from .legality import EPS
+    try:
+        hi = (entry.get('overhang_mm') or {}).get('max')
+        top = None if hi is None else float(hi) + EPS
+
+        def inside(a):
+            return a >= lo - EPS and (top is None or a <= top)
+        amount, _basis, _legacy = _band_reading(state, part, edge, x, y)
+        if inside(amount):
+            return x, y
+        raw = seats(x, y) if seats is not None else (0, 0.0, {}, None, None)
+        if raw is None:
+            return x, y
+        # Outward (more overhang) when short of the minimum, inward past the max.
+        sign = 1.0 if amount > lo else -1.0
+        ix, iy = _INWARD[edge]
+        rx, ry = round(x, 3), round(y, 3)
+        moved, reading = 0.0, amount
+        for _ in range(3):
+            gap = (reading - float(hi)) if sign > 0 else (lo - reading)
+            moved += (math.ceil(gap / _WINDOW_GUARD_MM - 1e-9) + 1) * _WINDOW_GUARD_MM
+            if moved > _BAND_SETTLE_CAP_MM + 1e-9:
+                return x, y
+            nx = round(rx + sign * ix * moved, 3) if ix else x
+            ny = round(ry + sign * iy * moved, 3) if iy else y
+            reading, _basis, legacy = _band_reading(state, part, edge, nx, ny)
+            if inside(reading):
+                break
+        else:
+            return x, y
+        if sign > 0 and _carries_setback(entry) and legacy <= EPS:
+            return x, y
+        if (_faces_its_edge(state, part, entry, edge, x, y)
+                and not _faces_its_edge(state, part, entry, edge, nx, ny)):
+            return x, y
+        if seats is not None:
+            new = seats(nx, ny)
+            if new is None or (raw is not None and not _no_worse(new, raw)):
+                return x, y
+        return nx, ny
+    except Exception:                                   # noqa: BLE001
+        return x, y
+
+
+#: The courtyard overlap a pair must reach to count as one: `overlap_area`
+#: is reported to 4 decimals, so below this the grade prints 0.0000 and a
+#: pair the correction pushes past it is NEW overlap in the grade's own words.
+_OVERLAP_REPORTED_MM2 = 5e-5
+
+
+def _overlap_at(state, part, x: float, y: float, others) -> Dict[str, float]:
+    """{neighbour: courtyard overlap (mm^2)} of `part` at the pose `apply_move`
+    WRITES, for every part in `others` it touches -- side-aware, in the
+    currency of `legality_metrics`' `overlap_area`
+    (`legality.pair_overlap_area`). PER PAIR: a sum lets an overlap one
+    neighbour already has hide a new one with another."""
+    from .legality import pair_overlap_area
+    px, py = round(x, 3), round(y, 3)
+    rect, tht = part.rect(px, py, part.rot), part.tht_rect(px, py, part.rot)
+    out: Dict[str, float] = {}
+    for ref in others:
+        q = state.parts.get(ref)
+        if q is None or q is part:
+            continue
+        area = pair_overlap_area(part.sides, part.side, rect, tht,
+                                 q.sides, q.side, q.rect(), q.tht_rect())
+        if area > 0.0:
+            out[ref] = area
+    return out
+
+
+def _seat_reading(state, part, ref: str, x: float, y: float, rot: float,
+                  others, grade=None, exclude=()):
+    """What a #983/#987 correction compares, at the pose `apply_move` WRITES:
+    `(pads short of the floor, worst shortfall, {neighbour: courtyard
+    overlap} over `others`, intent-grade errors, interior-contour split)`. The
+    last two are None without a grader."""
+    floor = _floor_key(_floor_at(state, ref, x, y, rot))
+    overlap = _overlap_at(state, part, x, y, others)
+    if grade is None:
+        return floor + (overlap, None, None)
+    pose = {ref: (round(x, 3), round(y, 3), rot)}
+    return floor + (overlap, grade.violations(exclude=exclude, poses=pose),
+                    grade.interior_split(pose))
+
+
+def _no_worse(new, raw) -> bool:
+    """May a correction trade `raw` for `new` (`_seat_reading` tuples)?
+
+    Only if it costs NOTHING the seat already had, each count on its own:
+      * no more pads short of the #975 floor, and the worst no shorter;
+      * pair by pair, no courtyard overlap the grade would newly report: a
+        pair under `_OVERLAP_REPORTED_MM2` (the resolution `overlap_area` is
+        printed at) may not cross it, nor grow past EPS of float slack; one
+        the grade already reports may deepen, but never to double (measured
+        on #983's whole lattice through `repair_placement`: of the 655 seats
+        already overlapping the blocker, 16 deepen, by 0.0002-0.0020 mm2 on
+        0.014-0.35 mm2, at most 2.7 %) -- refusing that would keep the
+        grade ERROR the correction exists to remove. The comparison is
+        against the rung as the ladder found it, so a settle and a step on
+        one rung together still may not double it;
+      * with a grader, no intent-grade error the raw pose does not have
+        (`floorplan.grade_delta`, as #975's `_grade_worse`) -- which also
+        refuses an existing overlap deepened past a declared budget -- and
+        the two poses must read the board's interior contours alike, or they
+        are not comparable at all.
+    """
+    from .legality import EPS
+    n_pads, n_worst, n_ov, n_err, n_split = new
+    r_pads, r_worst, r_ov, r_err, r_split = raw
+    if n_pads > r_pads or n_worst > r_worst + EPS:
+        return False
+    for ref, grown in n_ov.items():
+        was = r_ov.get(ref, 0.0)
+        if was < _OVERLAP_REPORTED_MM2 <= grown:
+            return False
+        if grown <= was + EPS:
+            continue
+        if was < _OVERLAP_REPORTED_MM2 or grown >= 2.0 * was:
+            return False
+    if n_err is not None and r_err is not None:
+        from placement import floorplan as _fp
+        if n_split != r_split or list(_fp.grade_delta(r_err, n_err)):
+            return False
+    return True
+
+
+def _floor_key(floor) -> Tuple[int, float]:
+    """(pads short of the floor, worst shortfall): smaller is better, and a
+    reading that could not be taken counts as clear -- the seat then behaves
+    as it always did."""
+    if floor is None or not floor.short:
+        return (0, 0.0)
+    return (len(floor.short), floor.short[0][0])
+
+
+def _window_nudge(state, part, entry: Dict, edge: str, x: float, y: float,
+                  seats=None, origin=None) -> Tuple[float, float]:
+    """#983: `(x, y)`, unless the pose it WRITES is outside the declared
+    along-edge window; then that pose one 0.001 mm grid step along the edge,
+    into the window.
+
+    A rung clamped to a window END puts the courtyard centre exactly on it,
+    and `round(x, 3)` then lands it up to half a micron outside, where the
+    grade's EPS is 1 nm. The window is asked through the grade's own conjunct
+    at the written pose, so a rung the grade accepts is returned
+    BIT-IDENTICAL -- including a window-end rung that already lands on the
+    grid. Only the along-edge coordinate moves, from its written value by
+    exactly one grid step (`_WINDOW_GUARD_MM`), so it is the same micron at
+    every rotation and on a notched outline, and the normal coordinate the
+    overhang walk converged on is untouched: re-deriving it would move the
+    part by a rounding step AWAY from the edge floor as often as towards it
+    (measured: a pad already past the outline went 0.132 -> 0.133 mm).
+
+    A PREFERENCE, so it may not cost a seat or anything else the seat had:
+    `seats(x, y)`, when given, is None for a pose that does not seat (off
+    the board, crowding a neighbour) and its `_seat_reading` otherwise. Only
+    a rung that already seats is moved, and the nudged pose is taken only
+    when it seats and `_no_worse` accepts it (floor, new overlap, grade). A window no
+    grid pose meets (one step is not enough: `center_on_edge` with
+    `tolerance_mm: 0` and a courtyard centre off the grid) keeps the raw pose
+    too; `_window_miss_note` names what is left. So does anything raised.
+    """
+    try:
+        return _window_step(state, part, entry, edge, x, y, seats, origin)
+    except Exception:                                   # noqa: BLE001
+        # A preference may not cost a seat: anything raised while asking
+        # leaves the rung as the ladder had it, which the grade then reports.
+        return x, y
+
+
+def _window_step(state, part, entry, edge, x, y, seats, origin=None):
+    """`_window_nudge`'s body, outside its catch-all. `origin`, when given,
+    is the rung before `_band_settle` moved it: what the step is judged
+    against, so the two corrections together cost no more than one may."""
+    if not _outside_its_along_edge_claim(state, part, entry, edge, x, y):
+        return x, y
+    e_lo, e_hi, _ = _declared_edge_span(state, state.board, edge)
+    win = _declared_frac_window(entry, e_hi - e_lo)
+    if win is None:
+        return x, y
+    ax = _axis_of(edge)
+    r = part.rect(round(x, 3), round(y, 3), part.rot)
+    centre = (r[ax] + r[ax + 2]) / 2.0
+    mid = e_lo + (win[0] + win[1]) / 2.0 * (e_hi - e_lo)
+    step = _WINDOW_GUARD_MM if mid > centre else -_WINDOW_GUARD_MM
+    if ax == 0:
+        nx, ny = round(round(x, 3) + step, 3), y
+    else:
+        nx, ny = x, round(round(y, 3) + step, 3)
+    if _outside_its_along_edge_claim(state, part, entry, edge, nx, ny):
+        return x, y
+    if seats is not None:
+        raw = seats(*(origin or (x, y)))
+        new = seats(nx, ny)
+        if raw is None or new is None or not _no_worse(new, raw):
+            return x, y
+    return nx, ny
+
+
+def _window_miss_note(state, part, entry: Dict, edge: str, prefix: str):
+    """The NOTE for a pose WRITTEN outside its declared along-edge window, or
+    None. What is left after `_window_nudge` is a window the 0.001 mm grid a
+    pose is written on cannot meet (`center_on_edge` with `tolerance_mm: 0`
+    and a courtyard centre off that grid), or a rung whose step was refused
+    -- it would not seat, or `_no_worse` refused it, or asking raised -- or
+    one that never seated to be stepped (a crowding fallback); either way
+    the grade reports it, and this says so at the seat rather than leaving
+    the reader to find it in the grade."""
+    if not _outside_its_along_edge_claim(state, part, entry, edge, part.x, part.y):
+        return None
+    return (f"{prefix}{part.ref}: written outside its declared along-edge "
+            f"window on the {edge} edge, and the grade reports it -- the "
+            f"window is narrower than the 0.001mm grid a pose is written on, "
+            f"or one grid step inside it would have cost the seat something")
+
+
+def _grade_accepts(state, part, entry: Dict, edge: str, lo: float,
+                   x: float, y: float) -> bool:
+    """The grade's own conjuncts a preferred pose must pass beyond the seat
+    predicate (which already holds the pad copper past the outline): the band
+    and setback at the grade's bounds, the nearest edge, and the declared
+    along-edge window."""
+    return (_grade_band_refuses(state, part, entry, edge, lo, x, y)[0] is None
+            and _faces_its_edge(state, part, entry, edge, x, y)
+            and not _outside_its_along_edge_claim(state, part, entry, edge, x, y))
+
+
+def _grade_worse(grade, ref: str, rot: float, first, seat, exclude, memo):
+    """What the intent grade adds when `ref` sits at `seat` instead of `first`
+    -- the seat the ladder always chose -- or () when nothing.
+
+    Asked of every pose the floor preference would take over that seat, after
+    its own conjuncts pass, because those conjuncts are a LIST and a list
+    misses a rule: a move that clears the floor can raise the courtyard
+    overlap budget, leave the part's own zone, or break a proximity claim, and
+    place_seed then exits 4 on a board the first seat would have passed. The
+    grade is `floorplan.PoseGrader`: the RULES `grade` runs, on this search's
+    own board at the two poses, with `exclude` (the pile, whose coordinates
+    mean nothing yet) left out of both so the difference is this part's. A
+    pose the grade cannot be asked about is not taken. `memo` keeps the first
+    seat's grade for one rotation.
+
+    It is asked PER SEAT, at the moment of that seat, so an error only a later
+    part's seat will produce -- two connectors sharing an edge, where this
+    move leaves room the next one then wants -- is outside it by construction.
+    `place_seed`'s own end-of-run grade still reports that one, and still sets
+    the exit code from it.
+
+    Beside the grade, the placement's own legality numbers (courtyard overlap
+    and off-board) are compared UNCONDITIONALLY through `legality_at`, because
+    the `legality` rule is skipped when the intent declares no
+    `legality_budget` -- and `emit_intent` withholds that budget on exactly the
+    boards where the risk is real. Without that, a move could buy courtyard
+    interpenetration with a locked part and raise nothing: measured on a
+    fixture, 0.18 mm2, which no pad or hole predicate can see.
+
+    The two grades are comparable only while they describe the same board, and
+    they stop doing so when the poses fall on opposite sides of the parser's
+    two-pad-centre threshold for an interior Edge.Cuts contour: the grader
+    holds the classification its state was built with, while a grade of the
+    board that would be WRITTEN re-derives it (`PoseGrader.interior_split`).
+    That is not a delta of zero, it is a delta of nothing, so it is reported
+    unavailable and the seat is kept. Measured by a verifier on a synthetic
+    board: a sub-millimetre move of the declared connector (0.5 mm on each
+    axis) took the written board's `oob_count` 2 -> 0 while the masked reading
+    held at 2."""
+    if grade is None:
+        return ()
+    from placement import floorplan as _fp
+
+    def at(pose):
+        return (round(pose[0], 3), round(pose[1], 3), rot)
+    try:
+        if (grade.interior_split({ref: at(first)})
+                != grade.interior_split({ref: at(seat)})):
+            return ({'unavailable': "the two poses do not classify the board's "
+                                    "interior contours alike"},)
+        if memo.get('pose') != at(first):
+            memo['errors'] = grade.violations(exclude=exclude, poses={ref: at(first)})
+            memo['legality'] = grade.legality_at(exclude=exclude,
+                                                 poses={ref: at(first)})
+            memo['pose'] = at(first)
+        after = grade.violations(exclude=exclude, poses={ref: at(seat)})
+        rows = list(_fp.grade_delta(memo['errors'], after))
+        # The grade alone is not enough: `legality` is skipped when the intent
+        # declares no `legality_budget`, and `emit_intent` withholds
+        # `overlap_area` on exactly the boards where courtyard interpenetration
+        # is the live risk, so a move could buy overlap with a LOCKED part and
+        # raise no error at all (measured on a fixture: 0.18mm2, undisclosed).
+        # These numbers are read whatever the intent says.
+        from .legality import EPS as _eps
+        moved = grade.legality_at(exclude=exclude, poses={ref: at(seat)})
+        # Whatever the armed `legality` rule already said, said once: a budget
+        # it reported growing is the same finding as the reading below.
+        said = {r.get('budget') for r in rows if r.get('rule') == 'legality'}
+        for key in ('overlap_area', 'oob_amount', 'oob_count'):
+            if key in said:
+                continue
+            was, now = memo['legality'].get(key), moved.get(key)
+            if not (isinstance(was, (int, float))
+                    and isinstance(now, (int, float))):
+                continue
+            if now > was + (0 if isinstance(now, int) else _eps):
+                rows.append({'rule': 'legality', 'budget': key,
+                             'before': round(float(was), 4),
+                             'after': round(float(now), 4)})
+        return tuple(rows)
+    except Exception as exc:                                   # noqa: BLE001
+        return ({'unavailable': f'{type(exc).__name__}: {exc}'},)
+
+
+def _floor_rung(state, part, entry: Dict, edge: str, lo: float, hi: float,
+                x: float, y: float, crowds):
+    """One ladder rung, already a legal conflict-free seat, asked about the
+    floor. Returns `(seat, floor, why)`:
+
+    * `seat` -- `(x, y)` when this rung, or this rung moved inward, clears the
+      floor, else None;
+    * `floor` -- the reading at the rung itself (None: no floor context);
+    * `why` -- when `seat` is None, a dict saying why moving inward did not
+      help, for the disclosure.
+
+    The inward move is DERIVED, not searched. On a rectangular outline every
+    copper gap to the seated edge grows by exactly the distance the part moves
+    inward, so the largest shortfall on that edge is the distance to move.
+    Nothing else about the pose changes, and the move is then re-checked: the
+    band and setback at the grade's own bounds (`_grade_band_refuses`),
+    `edge_seat_ok`, the neighbours, the floor again, the grade's nearest edge
+    and along-edge window. The caller then asks the whole intent grade
+    (`_grade_worse`), which is what a list of conjuncts cannot promise.
+    """
+    floor = _floor_at(state, part.ref, x, y, part.rot)
+    if floor is None or not floor.short:
+        return (x, y), floor, None
+    sides = {s[2] for s in floor.short}
+    if sides != {edge}:
+        return None, floor, {'why': ('along_edge' if None not in sides
+                                     else 'outline_sampled'),
+                             'sides': sorted(str(s) for s in sides)}
+    shift = max(s[0] for s in floor.short) + _FLOOR_SHIFT_GUARD_MM
+    ux, uy = _INWARD[edge]
+    sx, sy = round(x + ux * shift, 3), round(y + uy * shift, 3)
+    reason, detail = _grade_band_refuses(state, part, entry, edge, lo, sx, sy)
+    why = dict({'shift_mm': round(shift, 4)}, **detail)
+    if reason is not None:
+        return None, floor, dict(why, why=reason)
+    refused: List[str] = []
+    if not edge_seat_ok(state, part, sx, sy, edge, lo, hi, reasons=refused):
+        return None, floor, dict(why, why='refused',
+                                 refused_by=sorted(set(refused))[:3])
+    if crowds(sx, sy):
+        return None, floor, dict(why, why='crowds')
+    moved = _floor_at(state, part.ref, sx, sy, part.rot)
+    if moved is None or moved.short:
+        return None, floor, dict(why, why='still_short')
+    if not _faces_its_edge(state, part, entry, edge, sx, sy):
+        return None, floor, dict(why, why='nearest_edge')
+    if _outside_its_along_edge_claim(state, part, entry, edge, sx, sy):
+        return None, floor, dict(why, why='along_edge_window')
+    return (sx, sy), floor, None
+
+
+def _floor_record(ref: str, edge: str, kept: str, pose, floor: _Floor,
+                  why: Optional[Dict]) -> Optional[Dict]:
+    """The `edge_floor_fallback` record for a KEPT pose that is short on a
+    measured pad, or None when it is not. Bounded: at most
+    `_FLOOR_RECORD_PADS` pads by name, with the full counts beside them."""
+    if floor is None or not floor.short:
+        return None
+    worst = floor.short[0]
+    record = {
+        'edge': edge, 'kept': kept,
+        'pose': [round(pose[0], 3), round(pose[1], 3), pose[2]],
+        'required_mm': floor.required,
+        'shortfall_mm': worst[0], 'min_gap_mm': worst[3],
+        'n_pads_short': len(floor.short),
+        'pads': [{'pad_ref': f'{ref}.{num}', 'pad_index': index, 'side': side,
+                  'gap_mm': gap, 'shortfall_mm': amount}
+                 for amount, index, side, gap, num
+                 in floor.short[:_FLOOR_RECORD_PADS]],
+        'n_unmeasured_pads': len(floor.unmeasured),
+        'unmeasured_pads': list(floor.unmeasured[:_FLOOR_RECORD_PADS]),
+    }
+    record.update(why or {'why': kept})
+    return record
+
+
+def _grade_delta_phrase(entry: Dict) -> str:
+    """One `grade_delta` row in words."""
+    if 'unavailable' in entry:
+        return f"the grade could not be asked ({entry['unavailable']})"
+    if 'budget' in entry:
+        return (f"{entry['rule']} {entry['budget']} {entry['before']} -> "
+                f"{entry['after']}")
+    who = entry.get('ref') or entry.get('block') or 'board'
+    return f"{entry['added']} more {entry['rule']} on {who}"
+
+
+def _floor_note(prefix: str, ref: str, record: Dict) -> str:
+    """One NOTE for a disclosed floor shortfall, shared by every seat path."""
+    pad = record['pads'][0]
+    gap = ('' if pad['gap_mm'] is None
+           else f" is {pad['gap_mm']:.3f}mm from the {pad['side']} edge")
+    why = record.get('why')
+    because = {
+        'band_min': (f"clearing it would take the overhang to "
+                     f"{record.get('overhang_after_mm', 0.0):.3f}mm, under the "
+                     f"declared minimum {record.get('band_min_mm', 0.0):g}mm"),
+        'setback': ("clearing it would leave the part with no overhang, where "
+                    "its seat setback is graded"),
+        'along_edge': ("the short copper faces a side that moving the part "
+                       "inward does not clear"),
+        'outline_sampled': ("the outline is sampled, so no inward distance can "
+                            "be derived"),
+        'refused': ("the pose that clears it is refused by "
+                    + ', '.join(record.get('refused_by') or ['the seat'])),
+        'crowds': "the pose that clears it crowds a part already placed",
+        'still_short': "moving the part inward did not clear it",
+        'band_max': ("the pose that clears it would overhang past the declared "
+                     "maximum"),
+        'along_edge_window': ("the pose that clears it would sit outside the "
+                              "declared along-edge window"),
+        # Not "error(s) this seat does not have": the same channel carries a
+        # budget this seat is already over and the move would grow -- an error
+        # the seat DOES have -- and a grade that could not be asked at all.
+        # Each row says which; the sentence must not overwrite them.
+        'grade_delta': (("the pose that clears it could not be compared with "
+                         "this seat: "
+                         if any('unavailable' in d
+                                for d in record.get('grade_delta') or [])
+                         else "the pose that clears it does not pass the intent "
+                              "grade beside this seat: ")
+                        + '; '.join(_grade_delta_phrase(d)
+                                    for d in record.get('grade_delta') or [])),
+        'nearest_edge': ("the pose that clears it would read nearest another "
+                         "edge than the declared one"),
+        'crowding': ("no seat on this band clears the parts already placed, so "
+                     "the floor was not searched"),
+    }.get(why, str(why))
+    return (f"{prefix}{ref}: its seat on the {record['edge']} edge leaves pad "
+            f"copper inside the {record['required_mm']:g}mm board-edge floor -- "
+            f"{pad['pad_ref']}{gap} ({record['shortfall_mm']:.3f}mm short); "
+            f"{because}. Kept the seat rather than leave the connector "
+            f"unseated, which leaves its nets unrouted (edge_floor_fallback)")
+
+
+def _floor_records_at_final_pose(state, records: Dict[str, Dict]) -> Dict[str, Dict]:
+    """The records whose part still sits at the pose each describes. A later
+    stage (stage 3b's anchor rounds) can re-seat a part, and a record about a
+    pose that was not written would describe copper that is not there."""
+    return floor_records_at_poses(
+        records, {ref: (p.x, p.y, p.rot) for ref, p in state.parts.items()})
+
+
+def floor_records_at_poses(records: Dict[str, Dict], poses) -> Dict[str, Dict]:
+    """The `edge_floor_fallback` records whose ref sits, in `poses`
+    ({ref: (x, y, rot)}), at the pose the record describes. `place_seed` asks
+    it of the WRITTEN board, after passes the seeder never saw."""
+    out = {}
+    for ref, record in sorted((records or {}).items()):
+        pose = poses.get(ref)
+        if pose is None:
+            continue
+        x, y, rot = record['pose']
+        turn = ((pose[2] or 0.0) - rot) % 360.0
+        # 1e-3 degrees, not float equality: the writer prints an angle with
+        # `%g`, so a part seated at 0.1234567 degrees is WRITTEN at 0.123457.
+        if ((round(pose[0], 3), round(pose[1], 3)) == (x, y)
+                and min(turn, 360.0 - turn) < 1e-3):
+            out[ref] = record
+    return out
 
 
 def _edge_frac_bounds(part, bounds, edge: str) -> Tuple[float, float]:
@@ -1644,6 +2465,42 @@ def _centre_offset_mm(part, edge: str) -> float:
     return (a + b) / 2.0
 
 
+class _AtRotation:
+    """`part` as it would stand at `rot`, for READING its geometry only.
+
+    `_edge_frac_bounds`, `declared_to_ladder_frac` and
+    `ladder_to_declared_frac` read exactly two things off a part: `rot`, and
+    `rect(x, y, rot)`. This answers both for another angle without turning the
+    part in the state, so a caller that measures and then skips the part has
+    not moved it. (An off-lattice angle's rotated box is cached by
+    `_materialise_rotation` first, as the #893 block would cache it anyway.)
+    """
+    __slots__ = ('_part', 'rot')
+
+    def __init__(self, part, rot):
+        self._part, self.rot = part, rot
+
+    def rect(self, x, y, rot):
+        return self._part.rect(x, y, rot)
+
+
+def _stage1_geometry_rot(part, claim):
+    """#988: the rotation stage 1 measures an edge connector's geometry at.
+
+    Stage 1 applies a DECLARED rotation (#893) only after it has converted the
+    declared window and clamped by the part's extents -- all of which turn
+    with the part. Measured at the input rotation, splitflap_driver's J5
+    (input 180, `center_on_edge` 1.0 mm) was written 10.00 mm off centre when
+    declared at 0, 5.65 mm at 90 and 4.60 mm at 270, and a part that fits the
+    edge only at its declared angle was refused as "wider than the edge". So:
+    the declared angle when one is declared, else the part's own. A candidate
+    SET is not applied by stage 1, so it measures at `part.rot` too.
+    """
+    if claim is not None and claim[0] is not None:
+        return claim[0] % 360.0
+    return part.rot
+
+
 def declared_to_ladder_frac(part, bounds, edge, e_lo, e_hi, declared):
     """A DECLARED fraction -> the fraction the seat ladder works in.
 
@@ -1733,7 +2590,7 @@ def _already_on_its_edge(state, part) -> bool:
 
 def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
                notes: List[str], target=None, exclude=None,
-               rotations=None) -> bool:
+               rotations=None, disclose=None, grade=None) -> bool:
     """Seat a DECLARED edge part on its edge band, minimal-move (run-4 B-6).
 
     Repair could never do this: `_try_place._ok` demands full containment,
@@ -1748,7 +2605,15 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
     REPLACES the part's incoming angle rather than backing it up: the seat is
     tried at each declared angle in the author's order and the part is refused
     by name if none of them seats. The part's own angle is a candidate only
-    when the author declared it."""
+    when the author declared it.
+
+    #975: at each rotation the ladder PREFERS a seat whose pad copper clears
+    the board-edge floor -- a rung, or a rung moved inward by the derived
+    distance (`_floor_rung`) -- and otherwise keeps the first seat it would
+    always have kept. A rotation is never changed to clear the floor, so which
+    rotations seat is exactly what it was. A kept seat that is short of the
+    floor gets a NOTE and, when `disclose` is a dict, an `edge_floor_fallback`
+    record under `ref`."""
     part = state.parts[ref]
     edge = entry['edge']
     band = entry.get('overhang_mm') or {}
@@ -1896,7 +2761,22 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
                             reasons=refused)
 
     def try_rot(rot):
-        """The seat ladder at one rotation. (x, y) or None.
+        """The seat ladder at one rotation. (x, y, record) or None; `record` is
+        the `edge_floor_fallback` record when the seat is short of the floor.
+
+        #975: ONE walk. Every rung is tested as it always was, and the first
+        conflict-free one is the seat the ladder always chose. It is kept if
+        its copper clears the floor, or replaced by its inward move when that
+        move passes every re-check (`_floor_rung`). Otherwise the walk goes on
+        only when the shortfall is one a later rung can change
+        (`_SLIDE_HELPS`), and takes a later rung, or its move, only when it
+        clears the floor and passes the grade's edge conjuncts
+        (`_grade_accepts`: band, setback, nearest edge, along-edge window).
+        Every pose other than the first seat must then add no intent-grade
+        error to that seat's (`_grade_worse`). Failing all that, the first
+        seat is kept and disclosed. A rung that is not already a conflict-free
+        seat is never asked, so a rotation that seated nowhere still seats
+        nowhere.
 
         `part.rot` is SET for the duration, and that is the whole point rather
         than a shortcut. `_edge_pose`, `_edge_correct` and `edge_seat_ok` all
@@ -1918,19 +2798,91 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
             if geom is None:
                 return None
             cur, f_lo, f_hi, step = geom
+
+            def seats(sx, sy):
+                # What `_band_settle` and `_window_nudge` compare: None when
+                # the pose is not a seat, else how far short of the floor it
+                # leaves the copper and how much courtyard it overlaps -- the
+                # neighbours `conflict_free` asks about, pile left out.
+                if not (edge_seat_ok(state, part, sx, sy, edge, lo, hi_eff)
+                        and conflict_free(sx, sy, rot)):
+                    return None
+                return _seat_reading(state, part, ref, sx, sy, rot,
+                                     [o for o in state.parts if o != ref and o not in ex],
+                                     grade, ex - {ref})
+            first = None
+            graded = {}
             for df in (0.0, 0.05, -0.05, 0.1, -0.1, 0.15, -0.15,
                        0.2, -0.2, 0.3, -0.3, 0.4, -0.4):
                 frac = min(f_hi, max(f_lo, cur + df * step))
                 x, y = _edge_pose(part, state.board, edge, frac, overhang)
                 x, y, converged = _edge_correct(state, ref, edge, x, y,
                                                 overhang, band=(lo, hi_eff))
+                if converged:
+                    rung = (x, y)
+                    x, y = _band_settle(state, part, entry, edge, lo, x, y, seats)
+                    x, y = _window_nudge(state, part, entry, edge, x, y, seats, rung)
                 if not converged or not on_board(x, y):
                     continue
-                if conflict_free(x, y, rot):
-                    return x, y
-            return None
+                if not conflict_free(x, y, rot):
+                    continue
+                if first is not None and first[3] not in _SLIDE_HELPS:
+                    break
+                try:
+                    seat, floor, why = _floor_rung(
+                        state, part, entry, edge, lo, hi_eff, x, y,
+                        lambda a, b: not conflict_free(a, b, rot))
+                except Exception as exc:               # noqa: BLE001
+                    # A PREFERENCE may not cost a seat. Anything raised while
+                    # measuring the floor leaves this rung exactly as the
+                    # ladder had it before #975 -- today's pose, kept -- rather
+                    # than propagating out of `_seat_edge` and abandoning the
+                    # part, which would be worse than the shortfall.
+                    notes.append(f"{ref}: the board-edge copper floor could "
+                                 f"not be measured at this seat "
+                                 f"({type(exc).__name__}: {exc}); the seat is "
+                                 f"unchanged")
+                    seat, floor, why = None, None, None
+                # The first seat, unmoved, is the one the ladder always chose,
+                # and is taken without asking anything more.
+                if seat is not None and first is None and seat == (x, y):
+                    return x, y, None
+                # Anything else is a pose the grade has not been measured on:
+                # the grade's own edge conjuncts are asked of it (a move asked
+                # them already), then the whole intent grade against the
+                # first seat's.
+                if seat is not None and (first is None or seat != (x, y)
+                                         or _grade_accepts(state, part, entry,
+                                                           edge, lo, x, y)):
+                    worse = _grade_worse(grade, ref, rot,
+                                         (x, y) if first is None else first[:2],
+                                         seat, ex - {ref}, graded)
+                    if not worse:
+                        return seat[0], seat[1], None
+                    if first is None:
+                        why = dict(why or {}, why='grade_delta',
+                                   n_grade_delta=len(worse),
+                                   grade_delta=list(worse[:_FLOOR_ROWS]))
+                if first is None:
+                    first = (x, y, _floor_record(
+                        ref, edge, 'conflict_free', (x, y, rot), floor, why),
+                        (why or {}).get('why'))
+            return first[:3] if first is not None else None
         finally:
             part.rot = saved
+
+    def keep(seat, rot):
+        """Apply a seat, disclosing a floor shortfall it carries."""
+        state.apply_move(ref, round(seat[0], 3), round(seat[1], 3), rot)
+        missed = _window_miss_note(state, part, entry, edge, '')
+        if missed:
+            notes.append(missed)
+        if seat[2] is not None:
+            notes.append(_floor_note('', ref, seat[2]))
+            if disclose is not None:
+                disclose[ref] = seat[2]
+
+    _floor_context_note(state, notes)
 
     # #893, the REPAIR half, and it has to run before the minimal-move seat
     # below rather than after it. Wiring `rotations` into the #706 fallback
@@ -1967,7 +2919,7 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
             seat = try_rot(rot)
             if seat is None:
                 continue
-            state.apply_move(ref, round(seat[0], 3), round(seat[1], 3), rot)
+            keep(seat, rot)
             if abs((rot - was_rot) % 360.0) > 1e-9:
                 notes.append(
                     f"{ref}: seated on the declared {edge} edge at the "
@@ -1978,10 +2930,7 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
             return True
         if refused:
             notes.append(f"{ref}: every position on the declared {edge} edge "
-                         f"band is refused by "
-                         + ', '.join(sorted(set(refused)))
-                         + " -- move the keep-out, or add this ref to its "
-                           "`allow`")
+                         f"band is refused by " + _edge_refusal_tail(refused))
         notes.append(
             f"{ref}: no seat exists on the declared {edge} edge at any "
             f"declared rotation ({', '.join(f'{r:g}' for r in ladder)}deg) "
@@ -1991,7 +2940,7 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
 
     seat = try_rot(part.rot)
     if seat is not None:
-        state.apply_move(ref, round(seat[0], 3), round(seat[1], 3), part.rot)
+        keep(seat, part.rot)
         return True
 
     # #706, the rotation half. THREE gates, and the third is a deliberate
@@ -2034,7 +2983,7 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
             seat = try_rot(rot)
             if seat is None:
                 continue
-            state.apply_move(ref, round(seat[0], 3), round(seat[1], 3), rot)
+            keep(seat, rot)
             notes.append(
                 f"{ref}: no seat existed on the declared {edge} edge at its "
                 f"own rotation {was_rot:g}deg; seated at {rot:g}deg. CHECK "
@@ -2045,9 +2994,30 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
         # Sorted+deduped: the ladder tries up to 13 fractions and would
         # otherwise name the same keep-out 13 times.
         notes.append(f"{ref}: every position on the declared {edge} edge band "
-                     f"is refused by " + ', '.join(sorted(set(refused)))
-                     + " -- move the keep-out, or add this ref to its `allow`")
+                     f"is refused by " + _edge_refusal_tail(refused))
     return False
+
+
+def _edge_refusal_tail(refused) -> str:
+    """The reasons an edge band was refused, deduplicated, and the next move
+    each kind has. A declared keep-out has an `allow` list; a board rule-area
+    band (#1044) does not, so its advice differs -- and it is reported ONCE,
+    at its deepest, rather than once per ladder rung's depth."""
+    band = [r for r in refused if 'rule-area keep-out band' in r]
+    other = sorted(set(r for r in refused if r not in band))
+    parts = list(other)
+    if band:
+        depth = max(float(r.split('pad copper ')[1].split('mm')[0])
+                    for r in band)
+        parts.append(f"pad copper up to {depth:.3f}mm into a rule-area "
+                     f"keep-out band")
+    advice = []
+    if any(r.startswith('keep-out ') for r in other):
+        advice.append("move the keep-out, or add this ref to its `allow`")
+    if band:
+        advice.append("move the board's rule area, or the connector's "
+                      "declared edge / band")
+    return ', '.join(parts) + (" -- " + '; '.join(advice) if advice else '')
 
 
 def _partner_centroid(state, ref: str, placed: Set[str],
@@ -2087,6 +3057,818 @@ def _partner_centroid(state, ref: str, placed: Set[str],
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
+#: #1051: the most ROW poses (an anchor position at one rotation, axis and
+#: clearance rung) one array's seat may try. A COUNT, never a clock (the
+#: maintainer's rule: determinism over deadlines), and the only bound on the
+#: row search's cost: each pose costs up to one `pose_ok` per member but
+#: exits at the first member that fails, which near the target is almost
+#: always the first. One ring ladder at one angle is ~27k anchors
+#: (`seat_candidates`), so the cap lets a row walk well past the rings at its
+#: first angle and axis while a row that fits nowhere stops at a known cost.
+#: Hitting it is disclosed (`array_unseated[name].capped`).
+ARRAY_SEAT_POSE_CAP = 20000
+
+#: #1051: `pitch_mm: auto` is the widest member's courtyard extent along the
+#: row plus the board clearance plus THIS, rounded up to 0.01mm. Measured,
+#: not cosmetic: at exactly extent + clearance the siblings' courtyard gap is
+#: the clearance to within float noise (0.19999... < 0.2), the with-siblings
+#: re-check refuses every anchor at the full rung, and on glasgow 11 of 24
+#: rows burned the whole pose cap that way.
+ROW_PITCH_MARGIN_MM = 0.01
+
+
+def _row_offsets(state, members: Sequence[str], rot: float, axis: str,
+                 pitch: float) -> List[Tuple[float, float]]:
+    """Origin offsets from the row's centre that put each member's COURTYARD
+    centre on one line along `axis`, `pitch` apart, in `members` order.
+
+    The courtyard centre, not the footprint origin, because that is what
+    `arrays.formation` measures in the grade (`rule_array_formation` reads
+    the grader's own rect): a part whose origin is off its courtyard centre
+    would otherwise sit on the line by origin and off it by the grade."""
+    n = len(members)
+    out = []
+    for i, m in enumerate(members):
+        b = state.parts[m].rect(0.0, 0.0, rot)
+        cx, cy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+        s = (i - (n - 1) / 2.0) * pitch
+        out.append((s - cx, -cy) if axis == 'x' else (-cx, s - cy))
+    return out
+
+
+def _row_extent(state, members: Sequence[str], rot: float, axis: str) -> float:
+    """The largest member courtyard extent ALONG the row at `rot`."""
+    ext = 0.0
+    for m in members:
+        b = state.parts[m].rect(0.0, 0.0, rot)
+        ext = max(ext, (b[2] - b[0]) if axis == 'x' else (b[3] - b[1]))
+    return ext
+
+
+def _seat_block(state, members: Sequence[str], rot_options: Sequence[float],
+                pitch_spec, axes: Sequence[str], target: Tuple[float, float],
+                exclude: Set[str], *, constraint=None, tol: float = 0.5,
+                cap: int = ARRAY_SEAT_POSE_CAP,
+                reverse_for=None) -> Dict[str, object]:
+    """Seat `members` as ONE row (#1051): a common axis, `members` order, one
+    rotation, one pitch. Applies the moves on success.
+
+    For each rung of `seat_clearances`, BAND-major over the SAME offsets a
+    single part walks (`seat_candidate_bands`: the 1mm ring, then the
+    whole-board sweep, then the fine and grid-step rings), and within each
+    band rotation-major: each rotation in `rot_options`, each axis in
+    `axes`, the row's centre walks the band around `target`. (Why band-
+    major rather than a single part's per-angle order: see the loop.) At each anchor the members are checked in order with
+    `pose_ok` and the pose is abandoned at the first that fails (EARLY EXIT).
+    Every member's check EXCLUDES its unplaced siblings (they are in
+    `exclude`, as the pile always is), so no member vetoes another at its
+    pile coordinate; the sibling-vs-sibling question is the cheap PITCH
+    pre-check instead -- a pitch below the courtyard extent plus the rung's
+    clearance cannot seat at any anchor and is refused once, not per pose --
+    and, on a hit, every member is re-checked with its siblings SEATED
+    before the row is kept (a hit that fails that is reverted and the walk
+    goes on).
+
+    `pitch_spec` 'auto' is the largest courtyard extent along the axis plus
+    the state's (full) clearance plus `ROW_PITCH_MARGIN_MM`, rounded up to
+    0.01mm, so the gaps clear the board clearance at the widest member; a
+    number is used as declared. `reverse_for(axis, order)`
+    may flip the order along an axis (the served pins' direction).
+    `constraint`/`tol`: a zone the whole row must sit in, through
+    `zone_gate`, per member.
+
+    The pose count is capped at `cap` (anchors tried, over every rung,
+    rotation and axis). Returns `{'ok', 'poses_tried', 'capped', 'rot',
+    'axis', 'pitch_mm', 'anchor', 'order', 'clearance', 'reasons'}`.
+    """
+    full = state.clearance
+    gates = {m: zone_gate(state.parts[m], constraint, tol)[0]
+             for m in members}
+    tried = 0
+    reasons: List[str] = []
+    out = {'ok': False, 'poses_tried': 0, 'capped': False, 'reasons': reasons}
+    for rot in rot_options:
+        for m in members:
+            _materialise_rotation(state.parts[m], rot)
+    # The (rotation, axis) combos, rotation-major, each with its order,
+    # offsets and pitch -- or skipped once by the pitch pre-check.
+    def _combos(clr):
+        got = []
+        for rot in rot_options:
+            for axis in axes:
+                ext = _row_extent(state, members, rot, axis)
+                pitch = (math.ceil((ext + full + ROW_PITCH_MARGIN_MM)
+                                   * 100.0 - 1e-6) / 100.0
+                         if pitch_spec == 'auto' else float(pitch_spec))
+                if pitch - ext < clr + 1e-6:
+                    why = (f"pitch {pitch:g}mm is below the courtyard "
+                           f"extent {ext:.3f}mm + clearance {clr:g} along "
+                           f"{axis} at {rot:g}deg")
+                    if why not in reasons:
+                        reasons.append(why)
+                    continue
+                order = list(members)
+                if reverse_for is not None and reverse_for(axis, order):
+                    order.reverse()
+                got.append((rot, axis, pitch, order,
+                            _row_offsets(state, order, rot, axis, pitch)))
+        return got
+
+    bands = dict(seat_candidate_bands(state, target[0], target[1],
+                                      sweep=constraint is None))
+    try:
+        for clr in seat_clearances(full):
+            _set_seat_clearance(state, clr)
+            combos = _combos(clr)
+            # BAND-major: the coarse ring at every angle and axis, then the
+            # whole-board sweep, then the fine rings. A single part walks
+            # ring -> fine -> xfine -> sweep at ONE angle before the next;
+            # a row that did the same spent the whole pose cap on its first
+            # angle's 16k-position fine ring (splitflap U4:47k, 7 members,
+            # capped at 20000 once 2.4 seated the bigger parts first). The
+            # fine rings exist for sub-mm windows a single part can use; a
+            # row needs a strip, which the coarse bands find.
+            for bname in ('ring', 'sweep', 'fine', 'xfine'):
+                if bname not in bands:
+                    continue
+                for rot, axis, pitch, order, offs in combos:
+                    for ax, ay in bands[bname]():
+                        if tried >= cap:
+                            out['capped'] = True
+                            out['poses_tried'] = tried
+                            return out
+                        tried += 1
+                        poses = []
+                        for m, (ox, oy) in zip(order, offs):
+                            x, y = round(ax + ox, 3), round(ay + oy, 3)
+                            if not gates[m](x, y, rot) or not pose_ok(
+                                    state, m, x, y, rot, exclude - {m}):
+                                poses = None
+                                break
+                            poses.append((m, x, y))
+                        if poses is None:
+                            continue
+                        before = {m: (state.parts[m].x, state.parts[m].y,
+                                      state.parts[m].rot) for m in order}
+                        for m, x, y in poses:
+                            state.apply_move(m, x, y, rot)
+                        if _siblings_ok(state, poses, rot,
+                                        exclude - set(order)):
+                            out.update(ok=True, poses_tried=tried, rot=rot,
+                                       axis=axis, pitch_mm=pitch,
+                                       anchor=[ax, ay], order=order,
+                                       clearance=clr)
+                            return out
+                        for m, (bx, by, br) in before.items():
+                            state.apply_move(m, bx, by, br)
+    finally:
+        _set_seat_clearance(state, full)
+    out['poses_tried'] = tried
+    if not reasons:
+        reasons.append('no anchor seats every member')
+    return out
+
+
+def _siblings_ok(state, poses, rot: float, exclude: Set[str]) -> bool:
+    """The row's re-check with its siblings SEATED: every member `pose_ok`
+    at its applied pose against the rest of the row. The per-member check
+    during the walk excludes the unplaced siblings, so this is the only
+    place sibling pads and courtyards meet; `_seat_block` reverts the row
+    and walks on when it fails."""
+    return all(pose_ok(state, m, x, y, rot, exclude) for m, x, y in poses)
+
+
+def _formation_at(state, pcb_data, spec: Dict, members: Sequence[str]
+                  ) -> Dict[str, object]:
+    """`arrays.formation` over `members` at their CURRENT state poses, in the
+    grade's own measurement (courtyard centre, board rotation, copper pad
+    count) -- the seeder's self-check that the row it just seated is the row
+    the grader will call formed. One predicate, called, never copied."""
+    from . import arrays as arr
+    return arr.formation_at_state(state, pcb_data, spec, members)
+
+
+def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],
+                unplaced: Set[str], center, rot_ladder, cap: int,
+                formed: Dict[str, Dict], unseated: Dict[str, Dict],
+                notes: List[str]) -> None:
+    """Stage 2.45 for one declared array (#1051): resolve the row's order,
+    rotations, axes and target, then `_seat_block`.
+
+    * ORDER: the served part's pin order for `order: "pin"` (members the
+      pin order cannot place follow, in declared order; the grade discloses
+      them), the declared list for `"declared"` and for `"unknown"`.
+    * ROTATION: a number is binding. `"shared"` and `"unknown"` both seat
+      ONE angle for the row -- the seeder owns the shared rotation -- tried
+      in the first member's `_rot_ladder` order (its declared ladder, else
+      its own 90-degree lattice), narrowed to the angles every member's
+      declared ladder allows (`arrays.allowed_angles`), and deduplicated
+      modulo 180 when every member is a <= 2-pad part.
+    * AXIS: a declared `x` / `y` is used alone. `"auto"` tries both, in a
+      DETERMINISTIC order: the row is first laid ACROSS the line from the
+      served part to the TARGET (below) -- the target's offset from the
+      host's courtyard centre, |dx| >= |dy| (east or west of it) giving 'y'
+      first, else 'x' -- and then the other axis. With members that have no
+      far-side partner the target is on the host's pin side, so the row
+      lies parallel to that side. With no placed host, or no member
+      reaching its pads, 'x' then 'y'.
+    * DIRECTION: along the chosen axis the order is flipped when the first
+      member's served pins lie further along the axis than the last's, so
+      the row runs the way the pins do.
+    * TARGET: the mean of the members' `_partner_centroid`s (every placed
+      partner, host and far side alike); with none, the centroid of the
+      served part's pads the members reach by their OWN nets (a net every
+      member shares is a rail, and lands on every supply pin); else the
+      board centre. A zoned row's target is clamped into its zone, and the
+      whole row must sit in it.
+    """
+    from . import arrays as arr
+    name = spec['name']
+    members = list(spec['present'])
+    order_refs = spec.get('order_refs')
+    if spec['order'] in ('pin', 'declared') and order_refs:
+        order = ([m for m in order_refs if m in members]
+                 + [m for m in members if m not in order_refs])
+    else:
+        order = list(members)
+    pads = {m: arr._copper_pad_count(pcb_data.footprints[m]) for m in members}
+    if arr.is_number(spec['rotation']):
+        rots = [float(spec['rotation']) % 360.0]
+    else:
+        p0 = state.parts[order[0]]
+        base = rot_ladder(order[0]) or (
+            [p0.rot] + [(p0.rot + d) for d in (90.0, 180.0, 270.0)])
+        rots = []
+        for r in base:
+            r = float(r) % 360.0
+            if r not in rots:
+                rots.append(r)
+        common = None
+        for m in members:
+            lad = rot_ladder(m)
+            if lad is not None:
+                a = arr.allowed_angles(lad, pads[m])
+                common = a if common is None else (common & a)
+        if common is not None:
+            rots = ([r for r in rots
+                     if any(arr._ang_diff(r, c) < 1e-6 for c in common)]
+                    or sorted(common))
+        if all(arr.rotation_period(pads[m]) == 180.0 for m in members):
+            ded: List[float] = []
+            for r in rots:
+                if not any(arr._ang_diff(r, d, 180.0) < 1e-6 for d in ded):
+                    ded.append(r)
+            rots = ded
+
+    serves = spec.get('serves')
+    host = (serves if serves not in (None, 'unknown') and serves in placed
+            and serves in state.parts else None)
+    host_pin: Dict[str, Tuple[float, float]] = {}
+    if host is not None:
+        nets = {m: set(state.parts[m].nets) for m in members}
+        hpads = state.parts[host].pad_globals()
+        for m in members:
+            others = set().union(*(nets[o] for o in members if o != m))
+            use = (nets[m] - others) or nets[m]
+            pts = [(gx, gy) for gx, gy, pn in hpads if pn and pn in use]
+            if pts:
+                host_pin[m] = (sum(p[0] for p in pts) / len(pts),
+                               sum(p[1] for p in pts) / len(pts))
+    # The target is the mean of the members' `_partner_centroid`s -- ALL
+    # their placed partners, the host pins AND each member's far side --
+    # which is what a member seated alone would aim at. The host pins alone
+    # (the first form) pulled the row off its far-side nets: on glasgow the
+    # airwire length on the members' nets rose 3264 -> 3718mm (phase-3
+    # verifier). The host pins still decide the DIRECTION; the axis is laid
+    # across the host-to-target line (AXIS, above).
+    cs = [c for c in (_partner_centroid(state, m, placed) for m in members)
+          if c is not None]
+    if cs:
+        tx = sum(c[0] for c in cs) / len(cs)
+        ty = sum(c[1] for c in cs) / len(cs)
+    elif host_pin:
+        tx = sum(p[0] for p in host_pin.values()) / len(host_pin)
+        ty = sum(p[1] for p in host_pin.values()) / len(host_pin)
+    else:
+        tx, ty = center
+    constraint, tol = None, 0.5
+    if zone is not None:
+        constraint, tol = zone.rect, intent.zone_tolerance(zone)
+        tx = min(max(tx, zone.rect[0]), zone.rect[2])
+        ty = min(max(ty, zone.rect[1]), zone.rect[3])
+    tx, ty = round(tx, 3), round(ty, 3)
+    if spec['axis'] in ('x', 'y'):
+        axes = [spec['axis']]
+    else:
+        first = 'x'
+        if host is not None and host_pin:
+            hr = state.parts[host].rect()
+            dx = tx - (hr[0] + hr[2]) / 2.0
+            dy = ty - (hr[1] + hr[3]) / 2.0
+            first = 'y' if abs(dx) >= abs(dy) else 'x'
+        axes = [first, 'y' if first == 'x' else 'x']
+
+    def _reverse(axis, seq):
+        k = 0 if axis == 'x' else 1
+        ends = [host_pin[m][k] for m in seq if m in host_pin]
+        return len(ends) >= 2 and ends[0] > ends[-1]
+
+    res = _seat_block(state, order, rots, spec['pitch_mm'], axes, (tx, ty),
+                      set(unplaced), constraint=constraint, tol=tol, cap=cap,
+                      reverse_for=_reverse)
+    if not res['ok']:
+        why = (f"the pose cap ({cap}) was reached before any anchor seated "
+               f"every member" if res['capped']
+               else '; '.join(res['reasons']))
+        unseated[name] = {'members': members,
+                          'poses_tried': res['poses_tried'],
+                          'capped': res['capped'], 'reason': why,
+                          'target': [tx, ty]}
+        notes.append(f"array {name}: NOT seated as a row after "
+                     f"{res['poses_tried']} pose(s) -- {why}; its members "
+                     f"are seated one by one")
+        if zone is not None:
+            # Stage 2 stepped aside for this row; put its members into their
+            # zone one by one, as stage 2 would have, rather than leave them
+            # to the unconstrained centroid stage.
+            zx = (zone.rect[0] + zone.rect[2]) / 2.0
+            zy = (zone.rect[1] + zone.rect[3]) / 2.0
+            missed = []
+            for ref in sorted(members, key=lambda r: (
+                    -state.parts[r].pin_count, r)):
+                if _try_place(state, ref, zx, zy, unplaced - {ref},
+                              constraint=zone.rect, tol=tol,
+                              rotations=rot_ladder(ref)) is not None:
+                    placed.add(ref)
+                    unplaced.discard(ref)
+                else:
+                    missed.append(ref)
+                    notes.append(f"{ref}: array {name}'s zone fallback "
+                                 f"found no pose in zone {zone.name!r} -- "
+                                 f"left to the centroid stage")
+            if missed:
+                unseated[name]['zone_unseated'] = missed
+        return
+    for m in res['order']:
+        placed.add(m)
+        unplaced.discard(m)
+    v = _formation_at(state, pcb_data, spec, res['order'])
+    rects = [state.parts[m].rect() for m in res['order']]
+    cxs = [(r[0] + r[2]) / 2.0 for r in rects]
+    cys = [(r[1] + r[3]) / 2.0 for r in rects]
+    formed[name] = {
+        'serves': serves, 'members': list(res['order']),
+        'rot': res['rot'], 'pitch_mm': res['pitch_mm'], 'axis': res['axis'],
+        'anchor': [round(sum(cxs) / len(cxs), 3),
+                   round(sum(cys) / len(cys), 3)],
+        'target': [tx, ty], 'zone': getattr(zone, 'name', None),
+        'poses_tried': res['poses_tried'], 'clearance': res['clearance'],
+        'verdict': 'formed' if v['formed'] else 'broken',
+        'failed': list(v['failed']), 'unchecked': list(v['unchecked'])}
+    notes.append(
+        f"array {name}: seated {len(members)} member(s) as one row along "
+        f"{res['axis']} at {res['rot']:g}deg, pitch {res['pitch_mm']:g}mm, "
+        f"after {res['poses_tried']} pose(s)"
+        + (f" at reduced courtyard clearance {res['clearance']:g}"
+           if res['clearance'] < state.clearance else '')
+        + (" -- formation self-check PASSED" if v['formed'] else
+           f" -- formation self-check FAILED: {', '.join(v['failed'])}"))
+
+
+#: #1054: how close a part already standing where a fixed pose puts it must
+#: be to count as AT that pose -- the writer's 3dp rounding, not a tolerance.
+FIXED_POSE_EPS_MM = 1e-3
+
+
+def _holes_outside(state, gate, ref: str, x: float, y: float,
+                   rot: float) -> Tuple[int, int]:
+    """`(holes, outside)`: how many drill holes (plated and NPTH) `ref` has,
+    and how many leave `gate`'s outline at (x, y, rot) -- the hole's whole
+    bounding square, so a hole straddling the edge counts. The pad frame
+    transform is `connector_geometry.pad_copper_outside`'s own."""
+    fp = (state.pcb_data.footprints or {}).get(ref)
+    if fp is None:
+        return 0, 0
+    c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+    n = out = 0
+    for p in fp.pads:
+        d = float(getattr(p, 'drill', 0) or 0)
+        if d <= 0:
+            continue
+        n += 1
+        lx, ly = float(p.local_x), float(p.local_y)
+        px, py = x + c * lx + s * ly, y - s * lx + c * ly
+        h = d / 2.0
+        if gate.rect_outside_amount((px - h, py - h, px + h, py + h)) > 1e-9:
+            out += 1
+    return n, out
+
+
+#: #1054: a courtyard overlap AREA (mm^2) above this is an overlap; below it
+#: is float noise on two courtyards that abut. KiCad's `courtyards_overlap`
+#: is an intersection test, so abutting courtyards (gap 0) are legal.
+FIXED_OVERLAP_EPS_MM2 = 1e-6
+
+
+def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
+    """`(area mm^2, w, h)` of the courtyard overlap of `a` at `pose_a` with
+    `b` at `pose_b`. The VERDICT is `legality.pair_overlap_area` -- the
+    side-aware measure `legality_metrics`' `overlap_area` and the seeder's
+    `_overlap_at` use -- called, not re-derived; `w` x `h` is the courtyard
+    rects' intersection, for the refusal's text only."""
+    from .legality import pair_overlap_area
+    pa, pb = state.parts[a], state.parts[b]
+    ra, ta = pa.rect(*pose_a), pa.tht_rect(*pose_a)
+    rb, tb = pb.rect(*pose_b), pb.tht_rect(*pose_b)
+    area = pair_overlap_area(pa.sides, pa.side, ra, ta,
+                             pb.sides, pb.side, rb, tb)
+    w = max(0.0, min(ra[2], rb[2]) - max(ra[0], rb[0]))
+    h = max(0.0, min(ra[3], rb[3]) - max(ra[1], rb[1]))
+    return area, w, h
+
+
+def _drill_conflict(state, a: str, pose_a, b: str, pose_b) -> Optional[str]:
+    """The closest pair of DRILL holes of `a` and `b` (plated or not) at their
+    poses, as a refusal, when they are closer than the board's own
+    `min_hole_to_hole` (else touching). None when clear.
+
+    The courtyard branch of `_fixed_pose_check` was the only thing that
+    caught two holes stacked on each other -- `pair_shortfall` checks a hole
+    against the other part's COPPER, never against its hole -- so a courtyard
+    waiver must re-ask it (#1060, phase-4 verifier: two coincident NPTH drills
+    seated under `accept_courtyard_overlap`)."""
+    from .legality import footprint_at_pose
+
+    def drills(ref, pose):
+        fp = (state.pcb_data.footprints or {}).get(ref)
+        if fp is None:
+            return []
+        out = []
+        for p in footprint_at_pose(fp, pose).pads:
+            d = max(float(getattr(p, 'drill', 0) or 0),
+                    float(getattr(p, 'drill_w', 0) or 0),
+                    float(getattr(p, 'drill_h', 0) or 0))
+            if d <= 0:
+                continue
+            hx = p.hole_x if getattr(p, 'hole_x', None) is not None \
+                else p.global_x
+            hy = p.hole_y if getattr(p, 'hole_y', None) is not None \
+                else p.global_y
+            out.append((hx, hy, d / 2.0, str(p.pad_number)))
+        return out
+    da, db = drills(a, pose_a), drills(b, pose_b)
+    if not da or not db:
+        return None
+    floor = 0.0
+    try:
+        from list_nets import board_constraint
+        floor = float(board_constraint(state.pcb_file, 'min_hole_to_hole')
+                      or 0.0)
+    except Exception:                                      # noqa: BLE001
+        floor = 0.0
+    worst = None
+    for ax, ay, ar, an in da:
+        for bx, by, br, bn in db:
+            gap = math.hypot(ax - bx, ay - by) - ar - br
+            if gap < floor - 1e-6 and (worst is None or gap < worst[0]):
+                worst = (gap, an, bn)
+    if worst is None:
+        return None
+    def name(ref, num):
+        return f"{ref}.{num}" if num else f"{ref}'s hole"
+    return (f"drill {name(a, worst[1])} is {worst[0]:.3f}mm from "
+            f"{name(b, worst[2])} (hole-to-hole floor {floor:g}mm; a negative "
+            f"gap is holes overlapping)")
+
+
+def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
+                      waived=frozenset(),
+                      waived_out: Optional[Dict[str, Dict]] = None
+                      ) -> Tuple[Optional[str], List[str], Dict[str, str]]:
+    """`(how, reasons, conflicts)` for seating `ref` EXACTLY at `pose`.
+
+    A CHECK, never a search (#1054): the pose is a mechanical fact, so a
+    pose that fails is refused with its reasons and never nudged.
+
+    `obstacles` is `{ref: pose}`: every part already placed, at its pose,
+    AND every other declared fixed pose at ITS declared pose -- so two
+    declarations are judged against each other symmetrically, whatever
+    order they are seated in. `conflicts` is `{other: reason}` for the
+    obstacles this pose collides with, so the caller can refuse both halves
+    of a clash between two declarations.
+
+    COURTYARDS, the way KiCad judges them: an OVERLAP (area above
+    `FIXED_OVERLAP_EPS_MM2`, `legality.pair_overlap_area`) is illegal;
+    courtyards that ABUT (gap >= 0) are legal. Only for a DECLARED pose:
+    every searched seat keeps the board clearance and its 0.02mm floor
+    (`seat_clearances`), which buy margin where the seeder chooses. A
+    human layout packs courtyards edge to edge (glasgow's RN banks and
+    SN74LVC1T45 buffers: 14 pairs at exactly 0.000mm, which kicad-cli's DRC
+    accepts) and a fixed pose exists to express THAT arrangement -- under
+    the searched-seat floor stage 0 refused 15 of 30 human glasgow poses,
+    each "within 0.02mm".
+
+    Everything else at its normal rule, ABSOLUTE (a declared pose has no
+    incumbent to be "no worse than"): the outline (containment at the
+    board-edge margin), declared keep-outs and exclusive zones, #1031's
+    rule-area keep-out band (`legality_ctx.keepout_amount`), and to every
+    obstacle `legality_ctx.pair_shortfall`'s pad clearance, hole clearance,
+    pad short and cross-part pad stack -- `pads_ok`'s conjuncts, called.
+
+    `waived` (#1060) is a set of unordered pairs `frozenset({a, b})` whose
+    COURTYARD overlap is declared -- `fixed_poses[].accept_courtyard_overlap`
+    and `overlap_waivers[]`. For such a pair the courtyard branch alone is
+    skipped, and the measurement is recorded in `waived_out[other]` instead
+    of refusing; pad clearance, pad shorts, hole clearance, the keep-out band
+    and the outline stay absolute, because a waiver is a claim about two
+    courtyards and nothing else.
+
+    * `'contained'`: inside the outline, and nothing above fails.
+    * `'overhang'`: the courtyard leaves the outline -- a connector or a
+      mounting part may overhang by design, which is stage 1's exemption --
+      accepted only when every pad's copper is on the board at zero margin
+      and every drill hole (NPTH included) too, and a part with neither is
+      judged by its courtyard at zero margin (the pad test is vacuous for a
+      part with no copper).
+
+    `how` None means refused; `reasons` then says why, with the measurement.
+    """
+    part = state.parts[ref]
+    x, y, rot = pose
+    reasons: List[str] = []
+    conflicts: Dict[str, str] = {}
+    r, tht = part.rects(x, y, rot)
+    outside = state.edge_gate.rect_outside_amount(r) > 1e-9
+    reasons.extend(f"keep-out {n!r}"
+                   for n in state.keepout_blockers(ref, (r, tht)))
+    reasons.extend(f"exclusive zone {n!r}"
+                   for n in state.exclusive_blockers(ref, (r, tht)))
+    containers = getattr(state, 'container_refs', ()) or ()
+    ctx = state.legality_ctx
+    for other in sorted(obstacles):
+        if other == ref or other not in state.parts:
+            continue
+        opose = obstacles[other]
+        if ref not in containers and other not in containers:
+            area, w, h = _courtyard_overlap(state, ref, pose, other, opose)
+            if area > FIXED_OVERLAP_EPS_MM2:
+                if frozenset((ref, other)) in waived:
+                    if waived_out is not None:
+                        waived_out[other] = {'area_mm2': round(area, 4),
+                                             'w_mm': round(w, 3),
+                                             'h_mm': round(h, 3)}
+                    # The courtyard is waived; its holes are not.
+                    _dh = _drill_conflict(state, ref, pose, other, opose)
+                    if _dh:
+                        conflicts[other] = _dh
+                else:
+                    conflicts[other] = (f"courtyard overlaps {other} by "
+                                        f"{w:.2f}x{h:.2f}mm ({area:.3f}mm2)")
+        if ctx is not None:
+            sf = ctx.pair_shortfall(ref, other, pose_a=pose, pose_b=opose)
+            # `pads_ok`'s conjuncts, ABSOLUTE rather than seed-relative: a
+            # declared pose has no incumbent to be "no worse than".
+            what = []
+            if sf.pad_overlap:
+                what.append(f"pads short {other}'s (different-net copper "
+                            f"intersects)")
+            elif sf.stack:
+                what.append(f"pads stack on {other}'s copper")
+            if sf.pad > 1e-6:
+                what.append(f"pad clearance to {other} short by "
+                            f"{sf.pad:.3f}mm")
+            if sf.hole > 1e-6:
+                what.append(f"hole clearance to {other} short by "
+                            f"{sf.hole:.3f}mm")
+            if what:
+                conflicts[other] = '; '.join(
+                    ([conflicts[other]] if other in conflicts else [])
+                    + what)
+    reasons.extend(conflicts[o] for o in sorted(conflicts))
+    # #1031's rule-area keep-out band, ABSOLUTE (`keepout_ok` is seed-
+    # relative, and a pile seed is no licence): pad copper the band forbids
+    # at this pose refuses it, measured in the band's own currency. Without
+    # it stage 0 seated test_1031's R2 at (37.6, 15) -- a pose place_pose
+    # refuses and grade_pad_legality reports under oob_keepout_copper_refs.
+    if ctx is not None:
+        ko = ctx.keepout_amount(ref, x, y, rot)
+        if ko > 1e-6:
+            reasons.append(f"pad copper {ko:.3f}mm into a rule-area "
+                           f"keep-out band")
+    if outside:
+        from .connector_geometry import (geometry_for, pad_boxes,
+                                         pad_copper_outside)
+        from .legality import BoardOutlineGate
+        zero = getattr(state, '_zero_edge_gate', None)
+        if zero is None:
+            zero = BoardOutlineGate(state.pcb_data.board_info, 0.0)
+            state._zero_edge_gate = zero
+        geometry = geometry_for(state, state.pcb_data, state.pcb_file)
+        # A pad-less part is judged by its HOLES (the whole drill circle,
+        # zero margin), else by its courtyard at zero margin -- not by the
+        # margin-gated courtyard: a mounting hole's courtyard legitimately
+        # crosses the edge (tigard H1 at its own human pose is 1.3mm past
+        # the margin gate, and must seat). Without this a part with no copper
+        # passed "every pad on the board" vacuously (tigard H1 at (300, 300)).
+        n_holes, holes_out = _holes_outside(state, zero, ref, x, y, rot)
+        if not pad_boxes(geometry, ref) and not n_holes:
+            amt = zero.rect_outside_amount(r)
+            if amt > 1e-9:
+                reasons.append(f"no copper pad or hole to anchor an "
+                               f"overhang, and its courtyard is {amt:.3f}mm "
+                               f"past the outline")
+        off = pad_copper_outside(geometry, zero, ref, (x, y, rot))
+        if off > 1e-9:
+            reasons.append(f"pad copper {off:.3f}mm past the outline")
+        if holes_out:
+            reasons.append(f"{holes_out} of {n_holes} drill hole(s) past "
+                           f"the outline")
+        return (None if reasons else 'overhang'), reasons, conflicts
+    return (None if reasons else 'contained'), reasons, conflicts
+
+
+def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
+                     held: Set[str], seated: Dict[str, Dict],
+                     refused: Dict[str, Dict], lock: Set[str],
+                     notes: List[str]):
+    """The per-entry half of stage 0: resolve one `fixed_poses[]` entry's
+    pose, and settle the entries no geometry check is needed for. Returns
+    `(ref, pose, rec)` for an entry to check, else None.
+
+    `rot` / `side` absent or `"unknown"` keep the part's CURRENT rotation /
+    side, and the record says so (`rot_kept`, `side_kept`) -- the author
+    declared that they do not know, so nothing is guessed. A declared side
+    the part is not on is REFUSED: this search has no flip move, and seating
+    the front-side geometry at a back-side pose would grade a part that is
+    not the one written.
+    """
+    from .legality import footprint_side
+    ref = str(f['ref'])
+    x, y = round(float(f['x']), 3), round(float(f['y']), 3)
+    if ref not in state.parts:
+        why = ('not on this board' if ref not in (pcb_data.footprints or {})
+               else 'the placement state carries no geometry for it '
+                    '(pad-less)')
+        refused[ref] = {'reason': why, 'pose': [x, y, f.get('rot')]}
+        notes.append(f"fixed pose {ref}: REFUSED -- {why}")
+        return None
+    # #1060: a waiver of a part the board does not have waives nothing, and
+    # a typo there would read as a pose that seated clean.
+    absent = [o for o in (f.get('accept_courtyard_overlap') or ())
+              if o not in (pcb_data.footprints or {})]
+    if absent:
+        why = (f"accept_courtyard_overlap names {', '.join(absent)}, which "
+               f"{'is' if len(absent) == 1 else 'are'} not on this board")
+        refused[ref] = {'reason': why, 'pose': [x, y, f.get('rot')]}
+        notes.append(f"fixed pose {ref}: REFUSED -- {why}")
+        return None
+    part = state.parts[ref]
+    rot_decl = f.get('rot')
+    rot_kept = rot_decl is None or rot_decl == 'unknown'
+    rot = (part.rot % 360.0) if rot_kept else float(rot_decl) % 360.0
+    side_decl = f.get('side')
+    side_kept = side_decl is None or side_decl == 'unknown'
+    side_now = footprint_side(pcb_data.footprints[ref])
+    rec = {'x': x, 'y': y, 'rot': rot, 'side': side_now,
+           'basis': f.get('basis'), 'rot_kept': rot_kept,
+           'side_kept': side_kept}
+    if f.get('accept_courtyard_overlap'):
+        rec['waives'] = sorted(f['accept_courtyard_overlap'])
+    if not side_kept and side_decl != side_now:
+        held.add(ref)
+        refused[ref] = dict(rec, reason=(
+            f"declared side {side_decl}, and the part is on {side_now}: the "
+            f"seeder has no flip move, so it cannot seat it there"))
+        notes.append(f"fixed pose {ref}: REFUSED -- {refused[ref]['reason']}"
+                     f"; flip the part on the board first")
+        return None
+    if ref in placed:
+        # Authoritative already: locked in the FILE, or outside an explicit
+        # `seed_refs` scope. Not this stage's to move -- the file lock is the
+        # user's. At the pose it is simply recorded; anywhere else is a
+        # contradiction to name, never to resolve by force.
+        at = (math.hypot(part.x - x, part.y - y) <= FIXED_POSE_EPS_MM
+              and _ang_close(part.rot, rot))
+        if at:
+            seated[ref] = dict(rec, how='already_there')
+            if not part.locked:
+                lock.add(ref)
+            return None
+        refused[ref] = dict(rec, reason=(
+            f"already placed at ({part.x:g}, {part.y:g}, {part.rot:g}deg) -- "
+            + ("locked in the board file" if part.locked
+               else "outside the seed scope")
+            + ", and not this stage's to move"))
+        notes.append(f"fixed pose {ref}: REFUSED -- {refused[ref]['reason']}"
+                     f" (declared ({x:g}, {y:g}, {rot:g}deg))")
+        return None
+    rot = _materialise_rotation(part, rot)
+    return ref, (x, y, rot), rec
+
+
+def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
+                      unplaced: Set[str], held: Set[str],
+                      seated: Dict[str, Dict], refused: Dict[str, Dict],
+                      lock: Set[str], notes: List[str],
+                      waived=frozenset()) -> None:
+    """Stage 0 (#1054): every `fixed_poses[]` entry, judged as ONE batch.
+
+    ORDER-INDEPENDENT. Each declared pose is checked against the parts
+    already placed AND every other declared pose at its declared pose, and
+    only then are the survivors seated -- so the verdict on A never depends
+    on whether B's ref sorts first. Seating in ref order and checking each
+    against the ones already seated refused glasgow's human poses in an
+    alternating pattern (phase-6 verifier).
+
+    A clash between two DECLARATIONS refuses BOTH, each naming the other
+    and the measurement. Neither declaration outranks the other -- both are
+    the author's statement of where a part IS -- so keeping one would pick
+    a winner by reference name, and a refusal that names the pair is what
+    the author needs to fix the one that is wrong.
+
+    `waived` (#1060): the declared courtyard waivers as unordered pairs, so
+    a waiver on EITHER entry of a pair covers both checks -- checked one way
+    only, FID8 declared beside U30 would still refuse both halves.
+    """
+    declared: Dict[str, Tuple] = {}
+    recs: Dict[str, Dict] = {}
+    for f in sorted(entries, key=lambda f: str(f['ref'])):
+        got = _fixed_pose_prep(state, pcb_data, f, placed, held, seated,
+                               refused, lock, notes)
+        if got is not None:
+            ref, pose, rec = got
+            declared[ref] = pose
+            recs[ref] = rec
+    fixed_obstacles = {r: (state.parts[r].x, state.parts[r].y,
+                           state.parts[r].rot) for r in placed
+                       if r in state.parts}
+    verdicts = {}
+    waived_hits: Dict[str, Dict[str, Dict]] = {}
+    for ref in sorted(declared):
+        obstacles = dict(fixed_obstacles)
+        obstacles.update({o: p for o, p in declared.items() if o != ref})
+        waived_hits[ref] = {}
+        verdicts[ref] = _fixed_pose_check(state, ref, declared[ref],
+                                          obstacles, waived=waived,
+                                          waived_out=waived_hits[ref])
+    for ref in sorted(declared):
+        how, reasons, conflicts = verdicts[ref]
+        x, y, rot = declared[ref]
+        rec = recs[ref]
+        clash = sorted(o for o in conflicts if o in declared)
+        if how is None:
+            held.add(ref)
+            refused[ref] = dict(rec, reason='; '.join(reasons),
+                                conflicts_with_declared=clash)
+            notes.append(
+                f"fixed pose {ref}: REFUSED at ({x:g}, {y:g}, {rot:g}deg) -- "
+                f"{refused[ref]['reason']}."
+                + (f" {', '.join(clash)} {'is' if len(clash) == 1 else 'are'}"
+                   f" ALSO a declared fixed pose, so both declarations are "
+                   f"refused: they cannot both be true" if clash else '')
+                + " The pose is a fact, so it is never nudged: fix the pose "
+                  "or what it collides with")
+            continue
+        state.apply_move(ref, x, y, rot)
+        placed.add(ref)
+        unplaced.discard(ref)
+        lock.add(ref)
+        seated[ref] = dict(rec, how=how)
+        if waived_hits.get(ref):
+            # Disclosed, never silent: the measured overlap each waiver
+            # accepted, in the record `JSON_SUMMARY.fixed_seated` carries.
+            seated[ref]['courtyard_waived'] = waived_hits[ref]
+            notes.append(
+                f"fixed pose {ref}: courtyard overlap WAIVED with "
+                + ', '.join(f"{o} ({m['w_mm']:.2f}x{m['h_mm']:.2f}mm, "
+                            f"{m['area_mm2']:.3f}mm2)"
+                            for o, m in sorted(waived_hits[ref].items()))
+                + " -- declared by accept_courtyard_overlap / "
+                  "overlap_waivers; pads, holes, keep-outs and the outline "
+                  "were still checked")
+        unused = sorted(o for o in (recs[ref].get('waives') or ())
+                        if o not in waived_hits.get(ref, {}))
+        if unused:
+            notes.append(f"fixed pose {ref}: accept_courtyard_overlap names "
+                         f"{', '.join(unused)}, and stage 0 measured no "
+                         f"courtyard overlap with "
+                         f"{'it' if len(unused) == 1 else 'them'} (not yet "
+                         f"placed, or not overlapping: the grade reports "
+                         f"which)")
+        notes.append(f"fixed pose {ref}: seated exactly at ({x:g}, {y:g}, "
+                     f"{rot:g}deg)"
+                     + (" overhanging the outline (pads on the board)"
+                        if how == 'overhang' else '')
+                     + (" at its current rotation (declared unknown)"
+                        if rec['rot_kept'] else '')
+                     + " -- locked")
+
+
+def _ang_close(a: float, b: float, eps: float = 1e-6) -> bool:
+    d = abs(float(a) - float(b)) % 360.0
+    return min(d, 360.0 - d) <= eps
+
+
 def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      group_sources: Sequence[str] = (),
                      clearance: float = 0.25,
@@ -2099,7 +3881,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      decap_owner_chips: bool = False,
                      immovable_extra: Sequence[str] = (),
                      body_model: bool = False,
-                     rotate_by_facing: bool = False) -> Dict:
+                     rotate_by_facing: bool = False,
+                     array_pose_cap: int = ARRAY_SEAT_POSE_CAP) -> Dict:
     """Compute a full placement for an unplaced board from its intent.
 
     Returns {'placements': [...], 'lock_refs': [...], 'unseated': [...],
@@ -2158,6 +3941,11 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         # #916. Reaches `pose_ok` through the state, which is the search
         # this issue is actually about. False by default.
         body_model=body_model)
+    # #975: the grade a preferred edge seat is compared on (`_grade_worse`).
+    # Reads nothing until a seat is short of the floor.
+    pose_grader = floorplan.PoseGrader(
+        intent, state, blocks=blocks, clearance=clearance,
+        board_edge_clearance=board_edge_clearance)
     bounds = state.board
     refs_all = sorted(pcb_data.footprints)
     notes: List[str] = []
@@ -2177,6 +3965,11 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # of anything better. The angle is held by handing `_try_place` a
     # one-element ladder instead.
     declared_rot = floorplan.rotations_for_ref(intent, blocks) if intent else {}
+    # #1051: the declared rows, resolved against the board by the gate's own
+    # resolver (members present, expected order). Empty unless declared.
+    arrays_resolved = (floorplan.resolved_arrays(intent, pcb_data)
+                       if intent is not None and getattr(intent, 'arrays', ())
+                       else ())
 
     # Opt-in (OFF by default until `tests/test_placement_ab.py` pins its
     # rows): `_try_place` reads `state.rotation_prefer` and, when set, ranks
@@ -2213,6 +4006,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # both "nothing is near it" and "everything near it is locked".
     no_pose_verdict: Dict[str, str] = {}
     no_pose_census: Dict[str, Dict] = {}
+    # #975: stage 1's edge seats that keep pad copper inside the board-edge
+    # floor because no pose the ladder tried clears it -- see `_floor_rung`.
+    edge_floor_fallback: Dict[str, Dict] = {}
     # A part locked IN THE FILE is already authoritatively placed -- a caller
     # that pre-placed its spec-fixed parts and stamped them (locked yes) must
     # not have the seeder re-derive them. Treated as placed from the start:
@@ -2228,13 +4024,41 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # stream never depends on set iteration.
     tiebreak = {r: rng.random() for r in sorted(state.parts)}
 
+    # #1054: a fixed pose the seeder REFUSED. The part stays in `unplaced`
+    # (so its pile coordinate never vetoes anyone's seat) but no later stage
+    # may seat it: a refused mechanical fact placed "somewhere near" is the
+    # nudge the refusal exists to prevent. Empty unless `fixed_poses` is.
+    held: Set[str] = set()
+
     def _order(refs):
-        return sorted((r for r in refs if r in unplaced),
+        return sorted((r for r in refs if r in unplaced and r not in held),
                       key=lambda r: (-state.parts[r].pin_count, tiebreak[r]))
 
     def _jitter():
         return (rng.uniform(-TARGET_JITTER_MM, TARGET_JITTER_MM),
                 rng.uniform(-TARGET_JITTER_MM, TARGET_JITTER_MM))
+
+    # ---- 0. fixed poses (#1054): the EXACT pose, checked, never searched ---
+    # Before every other stage, so stage 1's edge ladder (`_shorted_by`, its
+    # slide arming) and every later seat see these parts as placed obstacles.
+    # Refs go to `fixed_lock` -> the returned `lock_refs` -> `stamp_locked`,
+    # NOT into `lock_refs` here: that list drives stage 1.5's must_lock
+    # re-seat and the eviction rung's 'must_lock' label, and a fixed pose is
+    # deliberately not must_lock (docs/design-brief.md: filling must_lock
+    # made `--repair` lift the user's locks). A file-locked part is outside
+    # `--repair`'s reach and `--force`'s re-derivation alike, which is what
+    # keeps a seated fixed pose where it was put.
+    fixed_seated: Dict[str, Dict] = {}
+    fixed_refused: Dict[str, Dict] = {}
+    fixed_lock: Set[str] = set()
+    _waiver_pairs = getattr(intent, 'courtyard_waiver_pairs', None)
+    _seat_fixed_poses(state, pcb_data,
+                      getattr(intent, 'fixed_poses', ()) or (), placed,
+                      unplaced, held, fixed_seated, fixed_refused,
+                      fixed_lock, notes,
+                      waived=frozenset(frozenset(p) for p in
+                                       (_waiver_pairs() if _waiver_pairs
+                                        else ())))
 
     # ---- 1. edge connectors: spec geometry, no legality gate ---------------
     # edge_claims(), not the raw key: a connector_affinity entry declares a
@@ -2257,6 +4081,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                              f"to south) -- the centroid stage places it")
                 continue
             by_edge.setdefault(c['edge'], []).append(c)
+    if by_edge:
+        _floor_context_note(state, notes)
     for edge in sorted(by_edge):
         specs = sorted(by_edge[edge], key=lambda c: c['ref'])
         for k, c in enumerate(specs):
@@ -2270,7 +4096,20 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # 3 connectors on one edge get fracs 0.25/0.5/0.75, and a wide
             # part at 0.25 hangs off the end. This stage runs no legality
             # gate at all (by design), so nothing downstream would catch it.
-            f_lo, f_hi = _edge_frac_bounds(part, bounds, edge)
+            #
+            # Everything measured below turns with the part -- its extents, the
+            # offset from its origin to its courtyard centre, so the declared
+            # start and window too -- and a DECLARED rotation is only applied
+            # further down (#893). `_geo` is the part at the rotation this
+            # stage will write, read-only, so a part skipped before that
+            # block has not been turned (`_stage1_geometry_rot` says why this
+            # matters). An angle the part already has is read exactly as
+            # before, cache and all: only a declared one is materialised.
+            _geo_rot = _stage1_geometry_rot(part, declared_rot.get(ref))
+            if _geo_rot != part.rot:
+                _geo_rot = _materialise_rotation(part, _geo_rot)
+            _geo = _AtRotation(part, _geo_rot)
+            f_lo, f_hi = _edge_frac_bounds(_geo, bounds, edge)
             # #706/#712. A DECLARED position outranks the even distribution.
             # Stage 1 is the from-scratch path and it never calls `_seat_edge`,
             # so without this a declared `center_on_edge` would be seated at
@@ -2293,7 +4132,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             #    that is not the bounding box -- the reason `edge_span`
             #    exists at all.
             _e_lo, _e_hi, _ = _declared_edge_span(state, bounds, edge)
-            frac = ((declared_to_ladder_frac(part, bounds, edge,
+            frac = ((declared_to_ladder_frac(_geo, bounds, edge,
                                              _e_lo, _e_hi, _dec))
                     if _dec is not None else (k + 1) / (len(specs) + 1))
             if f_lo > f_hi:
@@ -2302,9 +4141,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 continue
             _win = _declared_frac_window(c, _e_hi - _e_lo)
             if _win is not None:
-                _w_lo = declared_to_ladder_frac(part, bounds, edge,
+                _w_lo = declared_to_ladder_frac(_geo, bounds, edge,
                                                 _e_lo, _e_hi, _win[0])
-                _w_hi = declared_to_ladder_frac(part, bounds, edge,
+                _w_hi = declared_to_ladder_frac(_geo, bounds, edge,
                                                 _e_lo, _e_hi, _win[1])
                 _n_lo, _n_hi = max(f_lo, _w_lo), min(f_hi, _w_hi)
                 if _n_lo > _n_hi:
@@ -2312,8 +4151,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                         f"edge connector {ref}: the declared along-edge window "
                         f"[{_win[0]:.3f}, {_win[1]:.3f}] does not intersect "
                         f"the legal one ["
-                        f"{ladder_to_declared_frac(part, bounds, edge, _e_lo, _e_hi, f_lo):.3f}, "
-                        f"{ladder_to_declared_frac(part, bounds, edge, _e_lo, _e_hi, f_hi):.3f}] "
+                        f"{ladder_to_declared_frac(_geo, bounds, edge, _e_lo, _e_hi, f_lo):.3f}, "
+                        f"{ladder_to_declared_frac(_geo, bounds, edge, _e_lo, _e_hi, f_hi):.3f}] "
                         f"on the {edge} edge, so stage 1 leaves it to the "
                         f"later stages")
                     continue
@@ -2436,6 +4275,17 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # +/-0.05 rung clamps to an end -- three distinct positions, the
             # defect `_seat_edge`'s `step` comment documents, in this path.
             _sstep = ((f_hi - f_lo) / 0.8) if _win is not None else 1.0
+
+            def _s1_seats(sx, sy):
+                # As `_seat_edge`'s `seats`, for `_band_settle` (#987) and
+                # `_window_nudge` (#983): None when the pose is not a seat
+                # clear of what is placed.
+                _hi = float(hi) if hi is not None else max(2.0 * overhang, lo + 1.0)
+                if (not edge_seat_ok(state, part, sx, sy, edge, lo, _hi)
+                        or _shorted_by(sx, sy)):
+                    return None
+                return _seat_reading(state, part, ref, sx, sy, part.rot, sorted(placed),
+                                     pose_grader, set(unplaced) - {ref})
             _base_frac = frac
             _why: List[str] = []
             # The FIRST rung that is a legal seat but crowds a placed part --
@@ -2446,6 +4296,25 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # named on the record and `place_seed`'s gate refuses it; trading
             # the declared edge for it would lose both.
             _fallback = None
+            # #975, the order of preference, tier by tier:
+            #   1. a conflict-free rung, or that rung moved inward, whose pad
+            #      copper clears the board-edge floor -- the first in rung
+            #      order (`_pick`);
+            #   2. the first conflict-free rung, which is what this ladder
+            #      always kept (`_kept`), disclosed when it is short;
+            #   3. the crowding `_fallback` above, unchanged: with no clear
+            #      seat anywhere the floor is not searched, only reported.
+            # A floor shortfall does not ARM the slide (an unarmed slide has
+            # one rung and no later ones), a later rung is only walked to when
+            # the first seat's shortfall is one a rung can change
+            # (`_SLIDE_HELPS`), and any pose other than the first seat must
+            # also pass the grade's edge conjuncts (`_grade_accepts`) and add
+            # no intent-grade error to the first seat's (`_grade_worse`, with
+            # the pile -- everything stage 1 has not placed -- left out).
+            _kept = None
+            _kept_xy = None
+            _pick = None
+            _graded = {}
             for _df in _slide:
                 frac = min(f_hi, max(f_lo, _base_frac + _df * _sstep))
                 _x, _y = _edge_pose(part, bounds, edge, frac, overhang)
@@ -2453,6 +4322,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     state, ref, edge, _x, _y, overhang,
                     band=(lo, float(hi) if hi is not None
                           else max(2.0 * overhang, lo + 1.0)))
+                if _conv:
+                    _rung = (_x, _y)
+                    _x, _y = _band_settle(state, part, c, edge, lo, _x, _y, _s1_seats)
+                    _x, _y = _window_nudge(state, part, c, edge, _x, _y, _s1_seats, _rung)
                 _why = []
                 if _conv and edge_seat_ok(state, part, _x, _y, edge, lo,
                                           float(hi) if hi is not None
@@ -2460,11 +4333,44 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                                           reasons=_why):
                     _hit = _shorted_by(_x, _y)
                     if not _hit:
-                        break
+                        if (_kept is not None and (_kept[2] or {}).get('why')
+                                not in _SLIDE_HELPS):
+                            break
+                        _seat, _floor, _fwhy = _floor_rung(
+                            state, part, c, edge, lo,
+                            float(hi) if hi is not None
+                            else max(2.0 * overhang, lo + 1.0),
+                            _x, _y, lambda a, b: bool(_shorted_by(a, b)))
+                        if _seat is not None and _kept is None and _seat == (_x, _y):
+                            _pick = _seat
+                            break
+                        if _seat is not None and (
+                                _kept is None or _seat != (_x, _y)
+                                or _grade_accepts(state, part, c, edge, lo, _x, _y)):
+                            # The pile is everything stage 1 has not placed.
+                            _worse = _grade_worse(
+                                pose_grader, ref, part.rot,
+                                (_x, _y) if _kept is None else _kept_xy, _seat,
+                                set(unplaced) - {ref}, _graded)
+                            if not _worse:
+                                _pick = _seat
+                                break
+                            if _kept is None:
+                                _fwhy = dict(_fwhy or {}, why='grade_delta',
+                                             n_grade_delta=len(_worse),
+                                             grade_delta=list(_worse[:_FLOOR_ROWS]))
+                        if _kept is None:
+                            _kept = (frac, _floor, _fwhy)
+                            _kept_xy = (_x, _y)
+                        continue
                     if _fallback is None:
                         _fallback = (frac, _hit)
-            else:
-                if _fallback is not None:
+            # Without a pick the only early exit leaves `_kept` set, so this is
+            # the old `for ... else`: the loop ran out, or tier 2 stopped it.
+            if _pick is None:
+                if _kept is not None:
+                    frac = _kept[0]
+                elif _fallback is not None:
                     frac, _hit = _fallback
                     notes.append(
                         f"edge connector {ref}: no seat on the {edge} band "
@@ -2477,6 +4383,16 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 state, ref, edge, x, y, overhang,
                 band=(lo, float(hi) if hi is not None
                       else max(2.0 * overhang, lo + 1.0)))
+            if converged and _pick is not None:
+                # The same rung, moved inward when that is what cleared it --
+                # the walk above already checked this exact pose.
+                x, y = _pick
+            elif converged and _kept is not None:
+                # Likewise the kept rung: the pose the ladder chose, not one
+                # re-derived from `frac`, which would drop a #983 window step
+                # or a #987 band settle. (The crowding fallback needs no such
+                # line: neither correction moves a rung that does not seat.)
+                x, y = _kept_xy
             if not converged:
                 # The walk diverged (it drives a scalar SUM along one axis, so
                 # an along-edge overshoot never cancels). It used to
@@ -2507,8 +4423,23 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                              + ", so stage 1 left it for the later stages")
                 continue
             state.apply_move(ref, round(x, 3), round(y, 3), part.rot)
+            _missed = _window_miss_note(state, part, c, edge, 'edge connector ')
+            if _missed:
+                notes.append(_missed)
             placed.add(ref)
             unplaced.discard(ref)
+            if _pick is None:
+                if _kept is not None:
+                    _record = _floor_record(ref, edge, 'conflict_free',
+                                            (x, y, part.rot), _kept[1], _kept[2])
+                else:
+                    _record = _floor_record(
+                        ref, edge, 'crowding', (x, y, part.rot),
+                        _floor_at(state, ref, x, y, part.rot),
+                        {'why': 'crowding'} if _fallback is not None else None)
+                if _record is not None:
+                    edge_floor_fallback[ref] = _record
+                    notes.append(_floor_note('edge connector ', ref, _record))
 
     # ---- 1.5 must_lock parts seat FIRST, in place when possible ------------
     # Under --force, previously-good must_lock parts used to be re-derived at
@@ -2610,6 +4541,64 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                        if r in state.parts
                        and not any(fnmatch.fnmatch(r, pat) for pat in exempt)}
 
+    # ---- #1051: which declared rows stage 2.45 will seat ----------------------
+    # Decided HERE, before stage 2, because two earlier stages must step
+    # aside for a row: stage 2 does not zone-pack the members of a row whose
+    # members all sit in one zoned block (the row is seated into that zone
+    # whole, through `zone_gate`), and the decap pin stage does not claim a
+    # row member (the array wins; disclosed in `decap_stage`). A row the
+    # intent check refuses (`floorplan.array_problems`: a missing or
+    # file-locked member, mixed footprints, a rotation or zone conflict), or
+    # one with a member already placed, is not attempted; its members are
+    # ordinary parts and the reason is in `array_unseated`.
+    arrays_formed: Dict[str, Dict] = {}
+    array_unseated: Dict[str, Dict] = {}
+    array_try: List[Dict] = []
+    array_zone: Dict[str, object] = {}
+    array_members: Set[str] = set()
+    decap_array_skipped: List[str] = []
+    if arrays_resolved:
+        _aprobs: Dict[str, List[str]] = {}
+        for _v in floorplan.array_problems(intent, pcb_data, blocks):
+            _aprobs.setdefault(str(_v.block), []).append(_v.message)
+        for spec in arrays_resolved:
+            _an = spec['name']
+            _am = list(spec['present'])
+            if _an in _aprobs:
+                array_unseated[_an] = {
+                    'members': _am, 'poses_tried': 0, 'capped': False,
+                    'reason': ('refused by the intent check: '
+                               + '; '.join(_aprobs[_an]))}
+            elif any(m not in unplaced or m in held for m in _am):
+                _gone = [m for m in _am if m not in unplaced or m in held]
+                array_unseated[_an] = {
+                    'members': _am, 'poses_tried': 0, 'capped': False,
+                    'reason': (f"member(s) {', '.join(_gone)} already placed "
+                               f"(locked in the file or outside the seed "
+                               f"scope) -- a row is seated as one piece")}
+            else:
+                _zs = [zn for zn in sorted(zones_by_name)
+                       if _am[0] in blocks.get(zn, ())]
+                if _zs:
+                    array_zone[_an] = zones_by_name[_zs[0]]
+                array_try.append(spec)
+                array_members.update(_am)
+                continue
+            notes.append(f"array {_an}: not seated as a row -- "
+                         f"{array_unseated[_an]['reason']}; its members are "
+                         f"seated one by one")
+        decap_array_skipped = sorted(decap_scope & array_members)
+        if decap_array_skipped:
+            decap_scope -= array_members
+            notes.append(f"decap stage: {len(decap_array_skipped)} cap(s) "
+                         f"are declared array members, and the array wins -- "
+                         f"the pin stage skips "
+                         + ', '.join(decap_array_skipped))
+    array_zoned_members = {m for spec in array_try
+                           if spec['name'] in array_zone
+                           for m in spec['present']}
+    center = ((bounds[0] + bounds[2]) / 2.0, (bounds[1] + bounds[3]) / 2.0)
+
     # ---- 2. zoned blocks: radial pack from the zone center -----------------
     # A single-member zone is the spec-coordinate pattern (a rect a few
     # hundred microns wide around where the spec pins the part), so it gets
@@ -2617,8 +4606,20 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # seeds pack differently.
     for name in sorted(zones_by_name):
         z = zones_by_name[name]
+        # #1051: a row zoned HERE is seated before the zone's other members
+        # -- a row needs a contiguous strip, and the radial pack fills the
+        # zone around it (measured on glasgow: RN5+RN6 seated into a packed
+        # sheet zone only at clearance 0.1, after 243k poses; into the
+        # empty one first). It aims at `_seat_array`'s target (its members'
+        # placed partners, else the served pins, else the board centre),
+        # clamped into the zone.
+        for spec in array_try:
+            if getattr(array_zone.get(spec['name']), 'name', None) == name:
+                _seat_array(state, pcb_data, intent, spec, z, placed,
+                            unplaced, center, _rot_ladder, array_pose_cap,
+                            arrays_formed, array_unseated, notes)
         members = [r for r in _order(blocks.get(name, ()))
-                   if r not in decap_scope]
+                   if r not in decap_scope and r not in array_zoned_members]
         if not members:
             continue
         cx = (z.rect[0] + z.rect[2]) / 2.0
@@ -2650,6 +4651,80 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 unseated_ctx[ref] = (cx + jx, cy + jy, z.rect, tol)
                 notes.append(f"{ref}: no legal pose inside zone {name!r}")
 
+    # ---- the connectivity-centroid seat, shared by 2.4 and 3 --------------
+    # ONE body, so stage 2.4 seats an IC exactly as stage 3 would have, only
+    # earlier (#1053: "the two paths cannot diverge"). The target, the jitter
+    # draw, the ladder and the notes are stage 3's, in stage 3's order.
+
+    def _centroid_seat(ref):
+        """`(clearance or None, target, jx, jy)`; seats on success."""
+        target = _partner_centroid(state, ref, placed) or center
+        jx, jy = _jitter()
+        rot_before = state.parts[ref].rot
+        clr = _try_place(state, ref, target[0] + jx, target[1] + jy,
+                         unplaced - {ref},
+                         rotations=_rot_ladder(ref))
+        if clr is not None:
+            placed.add(ref)
+            unplaced.discard(ref)
+            if state.parts[ref].rot != rot_before:
+                notes.append(f"{ref}: rotated {rot_before:g} -> "
+                             f"{state.parts[ref].rot:g} (no contained pose "
+                             f"at the input rotation)")
+            if clr < state.clearance:
+                notes.append(f"{ref}: placed at reduced courtyard clearance "
+                             f"{clr:g} (none at {state.clearance:g})")
+        return clr, target, jx, jy
+
+    # ---- 2.4 declared rows: each row's served part, then the row ---------
+    # A non-zoned declared row aims at the part it serves, so that part is
+    # seated first, in STAGE 3's order and with stage 3's own seat
+    # (`_centroid_seat`: "the two paths cannot diverge"), and each row at its
+    # members' rank in that order. Zoned rows are seated in stage 2.
+    #
+    # A ROW MEMBER is never seated alone here, whatever else it is. A part
+    # that finds no seat is left to stage 3, which reports it. No non-zoned
+    # row declared: skipped, and the seed is bit-identical.
+    served_first: List[str] = []
+    early_order: List[str] = []
+    rows_early = [sp for sp in array_try if sp['name'] not in array_zone]
+    if rows_early:
+        # Only rows this seed will actually seat: a refused row's host is
+        # an ordinary part and keeps its stage-3 turn.
+        want24: Set[str] = {str(a['serves']) for a in rows_early
+                            if a.get('serves') not in (None, 'unknown')}
+        # A ROW MEMBER is never seated alone here, even when it is another
+        # row's host: it is seated with its row.
+        want24 -= array_members
+        # (key, kind, payload): parts in `_order`'s key, rows at their rank.
+        items = [((-state.parts[r].pin_count, tiebreak[r]), 0, r)
+                 for r in _order(sorted(r for r in want24
+                                        if r in state.parts))]
+        items += [((-max(state.parts[m].pin_count for m in sp['present']),
+                    tiebreak[sp['present'][0]]), 1, k)
+                  for k, sp in enumerate(rows_early)]
+        items.sort(key=lambda it: (it[0], it[1]))
+        for _key, kind, what in items:
+            if kind == 1:
+                sp = rows_early[what]
+                early_order.append(f"array:{sp['name']}")
+                _seat_array(state, pcb_data, intent, sp, None, placed,
+                            unplaced, center, _rot_ladder, array_pose_cap,
+                            arrays_formed, array_unseated, notes)
+                continue
+            early_order.append(what)
+            clr, _t, _jx, _jy = _centroid_seat(what)
+            if clr is not None:
+                served_first.append(what)
+            else:
+                notes.append(f"{what}: stage 2.4 (a declared row's served "
+                             f"part) found no seat -- left to the centroid "
+                             f"stage")
+        if served_first:
+            notes.append(f"stage 2.4: seated {len(served_first)} part(s) "
+                         f"that declared rows serve, before the decap/array "
+                         f"stages (" + ', '.join(served_first) + ")")
+
     # ---- 2.5 decap-governed caps: one cap per supply PIN -------------------
     # A 100nF's two nets are a rail and GND -- both usually above the fanout
     # cap -- so the generic centroid stage would park every decap mid-board
@@ -2662,6 +4737,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # under 1mm share one cap by design), biggest owner first; each pin
     # takes a matching-rail cap, preferring one whose declared zone CONTAINS
     # the pin so a zone-member cap serves its own block.
+    # #1053: what the pin stage did, and WHY when it claimed nothing. A
+    # silent zero is the defect this record exists to end.
+    decap_claimed: List[str] = []
+    decap_put_back: List[str] = []
+    decap_pins = 0
+    decap_rails = 0
     if decap_scope:
         avail = [r for r in _order(sorted(unplaced)) if r in decap_scope]
         rail_of: Dict[str, int] = {}
@@ -2714,6 +4795,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     pins.append((-o.pin_count, owner, round(gx, 3),
                                  round(gy, 3), pn))
         pins.sort()
+        decap_pins = len(pins)
+        decap_rails = len(rails)
         zone_of_cap = {}
         for name in sorted(zones_by_name):
             for r in blocks.get(name, ()):
@@ -2732,6 +4815,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             avail.remove(ref)
             placed.add(ref)
             unplaced.discard(ref)
+            decap_claimed.append(ref)
             p2 = state.parts[ref]
             net = getattr(pcb_data.nets.get(pn), 'name', pn)
             notes.append(f"{ref}: decap for {owner} pad(s) near ({tx}, {ty})"
@@ -2860,8 +4944,41 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             unplaced.discard(ref)
             if ref in avail:
                 avail.remove(ref)
+            decap_put_back.append(ref)
             notes.append(f"{ref}: zone-packed into {z.name!r} after the pin "
                          f"stage declined it")
+
+    if decap_spec.get('max_distance_mm') is None:
+        decap_stage = {'armed': False, 'scope': 0, 'claimed': 0,
+                       'reason': 'decaps.max_distance_mm is not declared'}
+    else:
+        _why = None
+        if not decap_scope:
+            _why = 'no cap in scope elects a tether (or every one is exempt)'
+        elif not decap_claimed:
+            if not decap_rails:
+                _why = 'no cap in scope carries a rail net'
+            elif not decap_pins:
+                _why = ("no PLACED IC carries a scoped cap's rail (pins 0) "
+                        "-- no owner IC is seated before this stage (a "
+                        "fixed pose, must_lock, a zoned block or a declared "
+                        "row's `serves` seats one earlier)"
+                        + ('' if decap_owner_chips else
+                           '; owners must be U-prefixed unless '
+                           'decap_owner_chips'))
+            else:
+                _why = (f"{decap_pins} pin(s) found, and no cap found a "
+                        f"legal seat at any of them")
+        decap_stage = {'armed': True, 'scope': len(decap_scope),
+                       'claimed': len(decap_claimed),
+                       'put_back': len(decap_put_back),
+                       'pins': decap_pins, 'reason': _why,
+                       'served_first': list(served_first),
+                       'array_members_skipped': list(decap_array_skipped)}
+        if decap_scope and not decap_claimed:
+            notes.append(f"decap stage 2.5: {len(decap_scope)} cap(s) in "
+                         f"scope, 0 claimed at a supply pin -- {_why}. They "
+                         f"fall through to the centroid stage")
 
     # ---- 3. the rest: connectivity centroid --------------------------------
     # --anchors-first (run-4 C): the default queue is pin-count descending,
@@ -2872,37 +4989,28 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # same tiering reconstruct uses) by DESCENDING EXTENT first; the smalls
     # are already parked as non-obstacles by the existing `exclude` set, so
     # anchors place against anchors only. Everything else is unchanged.
-    center = ((bounds[0] + bounds[2]) / 2.0, (bounds[1] + bounds[3]) / 2.0)
     queue = _order(sorted(unplaced))
     if anchors_first and unplaced:
         from placement.reconstruct import part_extent_mm
         exts = sorted(part_extent_mm(state, r) for r in unplaced)
         thr = max(3.5, exts[int(0.75 * (len(exts) - 1))]) if exts else 3.5
+        # `held` (#1054): a REFUSED fixed pose stays in `unplaced` so its
+        # pile coordinate never vetoes a seat, and must not become an anchor
+        # -- this queue is built from `unplaced` directly, not `_order`.
+        # Ties broken by ref: `unplaced` is a SET, and equal-extent parts
+        # (identical footprints, the common case) otherwise came out in
+        # string-hash order -- a different seed per PYTHONHASHSEED.
         anchors = sorted((r for r in unplaced
-                          if part_extent_mm(state, r) >= thr),
-                         key=lambda r: -part_extent_mm(state, r))
+                          if r not in held
+                          and part_extent_mm(state, r) >= thr),
+                         key=lambda r: (-part_extent_mm(state, r), r))
         notes.append(f"anchors-first: {len(anchors)} anchor(s) (extent >= "
                      f"{thr:.2f}mm) seed before {len(unplaced) - len(anchors)}"
                      f" small(s): {', '.join(anchors)}")
         queue = anchors + [r for r in queue if r not in set(anchors)]
     for ref in queue:
-        target = _partner_centroid(state, ref, placed) or center
-        jx, jy = _jitter()
-        rot_before = state.parts[ref].rot
-        clr = _try_place(state, ref, target[0] + jx, target[1] + jy,
-                         unplaced - {ref},
-                         rotations=_rot_ladder(ref))
-        if clr is not None:
-            placed.add(ref)
-            unplaced.discard(ref)
-            if state.parts[ref].rot != rot_before:
-                notes.append(f"{ref}: rotated {rot_before:g} -> "
-                             f"{state.parts[ref].rot:g} (no contained pose "
-                             f"at the input rotation)")
-            if clr < state.clearance:
-                notes.append(f"{ref}: placed at reduced courtyard clearance "
-                             f"{clr:g} (none at {state.clearance:g})")
-        else:
+        clr, target, jx, jy = _centroid_seat(ref)
+        if clr is None:
             unseated.append(ref)
             # setdefault: a zone member that failed its zone stage keeps THAT
             # context, so the rung retries it inside its zone rather than at
@@ -2957,6 +5065,13 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                           for c in intent.edge_claims() if c.get('edge')})
         immovable.update({r: 'lock-glob' for r in immovable_extra
                           if r not in immovable})
+        # #1054: a seated fixed pose is a fact, not a neighbour to trade.
+        immovable.update({r: 'fixed_pose' for r in fixed_seated
+                          if r not in immovable})
+        # #1051: a formed row's member moves only with its row; evicting one
+        # alone would break the row the seed just formed, silently.
+        immovable.update({m: f"array:{n}" for n, rec in arrays_formed.items()
+                          for m in rec['members'] if m not in immovable})
         still: List[str] = []
         # DEDUPED, and placed-aware. A zone member that fails its zone stage
         # stays in `unplaced`, so stage 3 tries it again and appends it a
@@ -3190,6 +5305,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # centroids over the FULL placement, and is kept only if the
     # reconstruct gate tuple does not worsen -- otherwise the whole round
     # reverts. Stops early when a round moves nothing.
+    # #1051: the anchor rounds re-seat ONE part at a time, which would pull a
+    # formed row apart; its members sit the rounds out.
+    row_members = {m for rec in arrays_formed.values() for m in rec['members']}
     if anchors_first and anchor_rounds > 1 and placed:
         from placement.reconstruct import measure, part_extent_mm
         for rnd in range(2, max(2, anchor_rounds) + 1):
@@ -3197,10 +5315,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             snapshot = {r: (state.parts[r].x, state.parts[r].y,
                             state.parts[r].rot) for r in placed}
             moved_n = 0
+            # Tie-broken by ref, for the reason given at the anchors queue.
             order2 = sorted(placed,
-                            key=lambda r: -part_extent_mm(state, r))
+                            key=lambda r: (-part_extent_mm(state, r), r))
             for ref in order2:
-                if state.parts[ref].locked:
+                if (state.parts[ref].locked or ref in fixed_seated
+                        or ref in row_members):
                     continue
                 target = _partner_centroid(state, ref, placed - {ref})
                 if target is None:
@@ -3233,8 +5353,40 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # Deduped: a zone member that also fails stage 3 is appended twice, and
     # `unseated: 2` for one part is a miscount every consumer inherits --
     # place_seed's summary, its exit code, and any gate reading the number.
-    return {'placements': placements, 'lock_refs': lock_refs,
+    # #1054: a refused fixed pose is UNSEATED -- added here, after the
+    # eviction rung, which has no target for it and must not trade for it.
+    unseated = list(unseated) + sorted(held)
+    return {'placements': placements,
+            'lock_refs': sorted(set(lock_refs) | fixed_lock),
             'unseated': sorted(set(unseated)), 'notes': notes,
+            # #1054: {ref: {x, y, rot, side, basis, how, rot_kept,
+            # side_kept}} for every fixed pose this seed honoured (`how`:
+            # 'contained', 'overhang', or 'already_there' for a part the file
+            # already held at it), and {ref: {..., reason,
+            # conflicts_with_declared}} for every one it refused (the other
+            # DECLARED poses it clashes with; each of those is refused too).
+            # Both empty when nothing is declared.
+            'fixed_seated': fixed_seated,
+            'fixed_refused': fixed_refused,
+            # #1053: {armed, scope, claimed, put_back, pins, reason,
+            # served_first} -- the pin stage's own count and, whenever it
+            # claimed nothing with a non-empty scope, why.
+            'decap_stage': decap_stage,
+            # #1051: {name: {serves, members (in row order), rot, pitch_mm,
+            # axis, anchor, target, zone, poses_tried, clearance, verdict,
+            # failed, unchecked}} for every declared row seated whole;
+            # `verdict` is `arrays.formation`'s at the SEEDED poses (a later
+            # polish can move them -- place_seed re-grades at the written
+            # ones). And {name: {members, reason, poses_tried, capped}} for
+            # every row not seated whole, whose members were seated one by one
+            # (with `zone_unseated`: the members a zoned row's fallback could
+            # not seat in its zone).
+            'arrays_formed': arrays_formed,
+            'array_unseated': array_unseated,
+            # Stage 2.4's seat order: each declared row's served part, and
+            # `array:<name>` where each row fell among them. Empty when no
+            # non-zoned row is declared.
+            'early_order': early_order,
             # #629: a no-pose verdict that NAMES its blockers, with the count
             # each one frees. Present at every evict_depth. An empty dict for
             # a ref means the census ran and found no movable neighbour; a
@@ -3262,7 +5414,13 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 r: (declared_rot[r][0] if declared_rot[r][0] is not None
                     else list(declared_rot[r][1]))
                 for r in unseated if r in declared_rot},
-            'no_pose_census': no_pose_census}
+            'no_pose_census': no_pose_census,
+            # #975. Declared edge connectors seated with pad copper inside the
+            # board-edge floor because no pose the ladder tried clears it, by ref: the
+            # pose, the floor, the worst pads and why the seat could not move.
+            # Only records still describing the written pose are kept.
+            'edge_floor_fallback': _floor_records_at_final_pose(
+                state, edge_floor_fallback)}
 
 
 def stamp_locked(board_file: str, refs: Sequence[str]) -> int:
@@ -3364,6 +5522,260 @@ def stamp_unlocked(board_file: str, refs: Sequence[str]) -> int:
 CONTAINMENT_CHARGE_MM = 2.0
 
 REPAIR_CAPS_MM = (0.5, 1.0, 2.0, 5.0)
+
+#: The rules `--repair-decaps` (#1066) seats a cap FOR. Each names its cap and
+#: its IC (`decap_distance`: ref = the cap, measured `ic`;
+#: `decap_pin_distance`: ref = the IC, measured `cap` and `pad`).
+DECAP_RUNG_RULES = ('decap_distance', 'decap_pin_distance')
+
+
+def _decap_target(state, pcb_data, cap: str, ic: str, pad_number=None):
+    """`(x, y)` the decap rung seats `cap` toward: the IC's declared supply
+    pad (`decap_pin_distance`), or the IC pad on the cap's RAIL nearest the
+    cap (`decap_distance`) -- the rail being the cap's smallest multi-ref
+    net, stage 2.5's own choice (`rail_of`). That keeps the main ground
+    off the target, not every ground: on a split-ground board the smallest
+    net can be a local one (glasgow's C76 -> /GNDPLL0), and a non-decoupling
+    cap aims at a signal pad -- harmless, since the grade decides what is
+    kept. None when the IC carries no such pad."""
+    from .legality import footprint_at_pose
+    part, chip = state.parts[cap], state.parts[ic]
+    fp = footprint_at_pose(pcb_data.footprints[ic], (chip.x, chip.y, chip.rot))
+    if pad_number is not None:
+        pads = [p for p in fp.pads if str(p.pad_number) == str(pad_number)]
+    else:
+        rail = min((nid for nid in part.nets
+                    if len(state.net_refs.get(nid, ())) >= 2),
+                   key=lambda nid: (len(state.net_refs[nid]), nid),
+                   default=None)
+        pads = [p for p in fp.pads if rail is not None and p.net_id == rail]
+        if not pads:
+            # The cap's smallest net is not on this IC (watchy C14: its
+            # smallest net is an LED's, and it decouples U1 on +3V3): aim at
+            # the smallest net the two DO share -- the grade decides.
+            shared = sorted((len(state.net_refs.get(p.net_id, ())), p.net_id)
+                            for p in fp.pads if p.net_id in part.nets
+                            and len(state.net_refs.get(p.net_id, ())) >= 2)
+            if shared:
+                pads = [p for p in fp.pads if p.net_id == shared[0][1]]
+    if not pads:
+        return None
+    best = min(pads, key=lambda p: (math.hypot(p.global_x - part.x,
+                                               p.global_y - part.y),
+                                    str(p.pad_number)))
+    return best.global_x, best.global_y
+
+
+def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
+                       notes) -> Dict[str, Dict]:
+    """#1066 (b): seat each cap a decap rule charges at its IC's pin.
+
+    `repair_placement`'s ordinary seat is `_try_place` at the part's CURRENT
+    pose, which knows nothing of a decap target and accepts the pose it
+    stands at -- which is why a decap violator never moved. This is the
+    missing actor: for every `decap_distance` / `decap_pin_distance` error,
+    the CAP (never the IC, which carries every other claim on its pins) is
+    searched for the nearest legal pose within the rule's own limit of its
+    target pad (`_decap_target`), by the same `_try_place` every seat uses.
+
+    Accepted only when the grade says it is a fix: the charged claim is gone
+    AND no finding is new or worse (`new_or_worse`, per finding -- stricter
+    than `floorplan.grade_delta`, which counts claims) AND the placement's own
+    overlap / off-board numbers did not grow, taken on the whole board before
+    and after. Anything else is reverted, and said.
+    A claim an earlier seat already cleared is skipped. Opt-in
+    (`repair_decaps`), because it moves parts the repair did not move before.
+
+    Returns `{cap: {'moved': bool, 'tried': [row, ...]}}`."""
+    from placement import floorplan as _fp
+    from .legality import EPS as _eps
+    tasks = []
+    for v in graded.errors:
+        if v.rule not in DECAP_RUNG_RULES or not v.ref:
+            continue
+        m = v.measured or {}
+        if v.rule == 'decap_distance':
+            cap, ic, pad = v.ref, m.get('ic'), None
+        else:
+            cap, ic, pad = m.get('cap'), v.ref, m.get('pad')
+        if cap in state.parts and ic in state.parts:
+            amt = m.get('distance_mm', m.get('gap_mm'))
+            excess = (float(amt) - float(limits.get(v.rule, 0.0))
+                      if isinstance(amt, (int, float)) else 0.0)
+            # The FINDING, not the claim: every uncovered pin of one IC
+            # shares a claim, so asking the claim whether THIS pin is fixed
+            # read a cap that cleared pin 1 as failing while pin 6 was still
+            # charged -- two caps serving two pins of one IC reverted each
+            # other (phase-3 verifier: glasgow C14/C16 on U36, 11 such).
+            tasks.append((str(cap), str(ic), pad, finding_key(v),
+                          max(0.0, excess)))
+    out: Dict[str, Dict] = {}
+    for cap, ic, pad, claim, excess in sorted(
+            tasks, key=lambda t: (t[0], t[1], str(t[2]))):
+        rec = out.setdefault(cap, {'moved': False, 'tried': []})
+        row = {'rule': claim[0], 'ref': claim[1], 'ic': ic, 'pad': pad}
+        rec['tried'].append(row)
+        part = state.parts[cap]
+        if part.locked:
+            row['result'] = 'locked'
+            continue
+        try:
+            before = grader.violations()
+            leg0 = grader.legality_at()
+        except (_fp.UntrustworthyOutline, ValueError) as exc:
+            row['result'] = f'unavailable: {type(exc).__name__}'
+            notes.append(f"decap rung: the grade is unavailable "
+                         f"({type(exc).__name__}: {exc}) -- nothing seated")
+            break
+        if claim not in findings_of(before):
+            row['result'] = 'already_cleared'
+            continue
+        target = _decap_target(state, pcb_data, cap, ic, pad)
+        if target is None:
+            row['result'] = 'no_target_pad'
+            continue
+        ox, oy, orot = part.x, part.y, part.rot
+        # The rule measures to the chip's pad BOX (or the cap's own pads),
+        # not to the target pad's centre, so a pose farther than the limit
+        # from that centre can satisfy it: the search widens once, to twice
+        # the limit, and the grade below is what decides.
+        got = None
+        for disp in (float(limits[claim[0]]), 2.0 * float(limits[claim[0]])):
+            got = _try_place(state, cap, target[0], target[1], set(),
+                             max_disp=disp, rotations=rot_ladder(cap))
+            if got is not None:
+                break
+        if got is None:
+            row['result'] = 'no_legal_pose_within_limit'
+            continue
+        after = grader.violations()
+        leg1 = grader.legality_at()
+        # Per FINDING (`new_or_worse`), not per claim: `grade_delta` cannot
+        # see a second pin stranded under a claim its IC already carries, or
+        # a finding that only grew -- the two ways a cap moved TO one pin
+        # can hurt another.
+        added = sorted({f"{v.rule} on {v.ref}"
+                        + ('' if how == 'new' else ' (worse)')
+                        for v, how in new_or_worse(findings_of(before),
+                                                   after)})
+        for key in ('overlap_area', 'oob_amount', 'oob_count'):
+            was, now = leg0.get(key), leg1.get(key)
+            if (isinstance(was, (int, float)) and isinstance(now, (int, float))
+                    and now > was + (0 if isinstance(now, int) else _eps)):
+                added.append(f'legality.{key}')
+        # Past the decap search radius the finding is not cleared, it stops
+        # being GRADED: `decap_distance` (error) becomes `decap_ungraded`
+        # (warn), which `findings_of` does not read. Still open, as the
+        # honesty re-grade already says (round-2 verifier: tigard C18 moved
+        # 0.85mm to 5.21mm from U3 and read "cleared").
+        still = (claim in findings_of(after)
+                 or (claim[0] == 'decap_distance'
+                     and any(v.rule == 'decap_ungraded' and v.ref == cap
+                             for v in after)))
+        d = math.hypot(part.x - ox, part.y - oy)
+        # The ordinary repair's proportion rule, in the violation's own
+        # currency: a cap 0.125mm past its limit is not moved 9.9mm to fix
+        # it (esp_prog C3, measured) -- that is a different placement.
+        budget = max(DISPROPORTION_FLOOR_MM, DISPROPORTION_RATIO * excess)
+        if d > budget:
+            state.apply_move(cap, ox, oy, orot)
+            row['result'] = 'disproportionate'
+            row['moved_mm'] = round(d, 3)
+            notes.append(
+                f"{cap}: decap rung's only fixing pose is {d:.2f}mm away, "
+                f"disproportionate to the {excess:.3f}mm it is past its "
+                f"limit (budget {budget:.2f}mm) -- left in place")
+            continue
+        if added or still:
+            state.apply_move(cap, ox, oy, orot)
+            row['result'] = 'reverted'
+            row['added'] = added
+            row['still'] = still
+            notes.append(
+                f"{cap}: decap rung found a pose {d:.2f}mm away at {ic}"
+                + (f" pad {pad}" if pad is not None else '')
+                + " and REVERTED it -- "
+                + '; '.join(([f"it would add {', '.join(added)}"]
+                             if added else [])
+                            + ([f"{claim[0]} would remain"] if still
+                               else [])))
+            continue
+        rec['moved'] = True
+        row['result'] = 'seated'
+        row['moved_mm'] = round(d, 3)
+        notes.append(f"{cap}: decap rung seated it {d:.2f}mm from its pose, "
+                     f"toward {ic}" + (f" pad {pad}" if pad is not None
+                                       else '')
+                     + f" -- {claim[0]} cleared, nothing added")
+    return out
+
+#: The measured value a grade finding gets WORSE along, first key found
+#: (#1066). A distance or an escape: larger is worse.
+FINDING_AMOUNT_KEYS = ('gap_mm', 'distance_mm', 'outside_mm', 'area_mm2',
+                       'intrusion_mm2', 'overlap_mm2')
+
+#: A finding's amount must grow by more than this to be "worse": the grade
+#: rounds its measurements to 3-4 decimals.
+FINDING_WORSE_EPS_MM = 1e-3
+
+
+def finding_key(v) -> Tuple:
+    """One grade FINDING's identity: `floorplan.violation_claim` plus the
+    pad and net it is about. The claim alone is per (rule, ref, block), so
+    an IC with one supply pin already past its limit reads a SECOND pin
+    stranded by a move as the same claim -- a new finding, invisible (the
+    phase-1 round-2 verifier: watchy U4 pad 20, created by moving C5, hidden
+    behind U4 pad 46)."""
+    from placement import floorplan as _fp
+    m = v.measured or {}
+    return _fp.violation_claim(v) + (str(m.get('pad', '')),
+                                     str(m.get('net', '')))
+
+
+def finding_amount(v) -> Optional[float]:
+    m = v.measured or {}
+    for k in FINDING_AMOUNT_KEYS:
+        x = m.get(k)
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            return float(x)
+    return None
+
+
+def findings_of(violations) -> Dict[Tuple, Optional[float]]:
+    """{finding_key: amount} over the ERRORS in `violations` (the largest
+    amount when a key repeats)."""
+    from placement import floorplan as _fp
+    out: Dict[Tuple, Optional[float]] = {}
+    for v in violations:
+        if v.severity != _fp.ERROR:
+            continue
+        k, a = finding_key(v), finding_amount(v)
+        if k not in out or (a is not None and (out[k] is None or a > out[k])):
+            out[k] = a
+    return out
+
+
+def new_or_worse(before: Dict[Tuple, Optional[float]], after_violations
+                 ) -> List[Tuple[object, str]]:
+    """`[(violation, 'new' | 'worse')]`: every ERROR in `after_violations`
+    that `before` (a `findings_of`) does not have, or has with a smaller
+    amount. Stricter than `floorplan.grade_delta`, which counts claims and so
+    is blind to a second finding under one claim and to a finding that only
+    grew -- a cap moved further from the only IC it decouples (watchy C12,
+    U3 VBUS 7.78 -> 11.10mm) is a regression, not a repair."""
+    from placement import floorplan as _fp
+    out = []
+    for v in after_violations:
+        if v.severity != _fp.ERROR:
+            continue
+        k = finding_key(v)
+        if k not in before:
+            out.append((v, 'new'))
+            continue
+        a, b = finding_amount(v), before[k]
+        if a is not None and b is not None and a > b + FINDING_WORSE_EPS_MM:
+            out.append((v, 'worse'))
+    return out
 # A repair move must be PROPORTIONATE to the violation it clears. The cap
 # ladder escalates 0.5 -> 5.0mm hunting any legal seat, and on a board damaged
 # by ~1.2mm it relocated parts 4.3-5.8mm: those few parts carried the whole of
@@ -3381,7 +5793,8 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                      clearance: float = 0.25,
                      board_edge_clearance: float = 0.55,
                      grid_step: float = 0.1,
-                     caps: Sequence[float] = REPAIR_CAPS_MM) -> Dict:
+                     caps: Sequence[float] = REPAIR_CAPS_MM,
+                     repair_decaps: bool = False) -> Dict:
     """Violation-driven minimal-move repair of a PLACED board (#place_seed
     --repair). Everything clean freezes; only violators move, worst first,
     each seated by the seeder's own search targeted at its CURRENT pose with
@@ -3398,6 +5811,12 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     re-stamping is needed). A file-locked ref OUTSIDE must_lock is not this
     tool's to move: reported in `unrepairable`.
 
+    `repair_decaps` (#1066 b, `--repair-decaps`, off by default) adds the
+    decap rung, `_repair_decap_rung`: each cap a decap rule charges is seated
+    at its IC's pin, kept only when the grade calls it a fix. Without it a
+    decap violator is never moved (the ordinary seat has no decap target),
+    and the honesty re-grade reports it `unresolved`.
+
     NOTE this sweep has no internal bound -- its cost is violators x caps x 36
     ring sweeps x O(parts) per candidate, and on a 217-part board it ran 46
     minutes (run 9). Scope it with the violator set, not with a clock.
@@ -3413,6 +5832,13 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     # (the unrepairable filter, and reseat's refusal list) pick it up for free.
     _extra_locked = {r for pat in (lock_globs or [])
                      for r in fnmatch.filter(sorted(pcb_data.footprints), pat)}
+    # #1054: a `fixed_poses[]` ref is a mechanical fact the seed put at its
+    # exact pose and stamped (locked yes). A repair never nudges one, stamped
+    # or not: an unstamped copy of the board must not turn the fact into a
+    # violator to move. It lands in `unrepairable` if it violates anything.
+    _extra_locked |= {str(f['ref'])
+                      for f in (getattr(intent, 'fixed_poses', ()) or ())
+                      if str(f['ref']) in (pcb_data.footprints or {})}
     # Hoisted above `make_state` (#797), as in `seed_from_intent`; the
     # `ref_zone` join below reads the same `blocks`.
     blocks, _probs = floorplan.resolve_blocks(intent, pcb_data, group_sources) \
@@ -3447,6 +5873,11 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         # the quench lacks and why the quench's gate has to be monotone.
         exclusive_zones=(floorplan.zone_entries(intent, blocks)
                          if intent else ()))
+    # #975: see `seed_from_intent`. Without an intent there is no grade to
+    # compare on, and an edge seat keeps today's preference guards only.
+    pose_grader = (floorplan.PoseGrader(
+        intent, state, blocks=blocks, clearance=clearance,
+        board_edge_clearance=board_edge_clearance) if intent else None)
     refs_all = sorted(pcb_data.footprints)
     notes: List[str] = []
     must_lock = {r for pat in intent.must_lock
@@ -3538,6 +5969,10 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 state.parts[r].pin_count, r)
 
     graded = None
+    # #1066: every grade error a ref is CHARGED for, by `violation_claim`, so
+    # the honesty re-grade after the moves can ask whether THAT finding is
+    # still on the board -- not merely whether the part moved.
+    charged_claims: Dict[str, List[Tuple]] = {}
     if intent is not None:
         graded = floorplan.grade(intent, pcb_data, pcb_file,
                                  group_sources=group_sources,
@@ -3547,6 +5982,27 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             if v.ref:
                 _charge(v.ref, float((v.measured or {}).get('outside_mm', 1.0)
                                      or 1.0))
+                if v.ref in state.parts:
+                    charged_claims.setdefault(v.ref, []).append(
+                        floorplan.violation_claim(v))
+    # The claims the POSE grader reproduces at the input poses. A charged
+    # claim it does not reproduce comes from a part of `grade` outside the
+    # rules loop (intent validation, block resolution), which no move can
+    # clear -- so after the moves it is counted as still present. Measured
+    # before any move, while the state still holds the input poses; also the
+    # BASELINE a move's NEW finding is told apart by (see the re-grade).
+    claims_regradable = None
+    findings_before = None
+    regrade_error = None
+    if pose_grader is not None:
+        try:
+            _before = pose_grader.violations()
+            claims_regradable = {floorplan.violation_claim(v)
+                                 for v in _before
+                                 if v.severity == floorplan.ERROR}
+            findings_before = findings_of(_before)
+        except (floorplan.UntrustworthyOutline, ValueError) as exc:
+            regrade_error = exc
 
     # worst_n=0: the FULL pair census (run-4 F5). The default cap of 10
     # bounded one repair pass at 10 pair-movers on a 20-pair board -- the
@@ -3739,6 +6195,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     failed: List[str] = []
     zero_move: List[str] = []   # run-7 A2: honesty re-grade candidates
     moves: List[Dict] = []
+    edge_floor_fallback: Dict[str, Dict] = {}   # #975, see `_floor_rung`
     for ref in violators:
         part = state.parts[ref]
         was_locked = part.locked      # always False here: locked refs are
@@ -3766,7 +6223,8 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 tgt = ((zt.rect[0] + zt.rect[2]) / 2.0,
                        (zt.rect[1] + zt.rect[3]) / 2.0)
             ok = _seat_edge(state, ref, ec, must_lock, notes, target=tgt,
-                            rotations=_rot_ladder(ref))
+                            rotations=_rot_ladder(ref),
+                            disclose=edge_floor_fallback, grade=pose_grader)
             if ok:
                 d = math.hypot(part.x - part.seed_x, part.y - part.seed_y)
                 moves.append({'reference': ref, 'new_x': part.x,
@@ -3873,6 +6331,30 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             repaired.append(ref)
             zero_move.append(ref)
 
+    # #1066 (b): the decap rung, opt-in. After the ordinary seats, so it
+    # measures the board they left; before both re-grades, which then judge
+    # its seats like any other move.
+    decap_rung: Dict[str, Dict] = {}
+    if repair_decaps and graded is not None and pose_grader is not None:
+        _dc = dict(getattr(intent, 'decaps', None) or {})
+        _limits = {'decap_distance': _dc.get('max_distance_mm'),
+                   'decap_pin_distance': _dc.get('max_pin_distance_mm')}
+        decap_rung = _repair_decap_rung(
+            state, pcb_data, graded, pose_grader,
+            {k: v for k, v in _limits.items() if v is not None},
+            _rot_ladder, notes)
+        for cap, rec in sorted(decap_rung.items()):
+            if not rec['moved']:
+                continue
+            p = state.parts[cap]
+            moves[:] = [m for m in moves if m['reference'] != cap]
+            moves.append({'reference': cap, 'new_x': p.x, 'new_y': p.y,
+                          'new_rotation': p.rot})
+            zero_move[:] = [r for r in zero_move if r != cap]
+            failed[:] = [r for r in failed if r != cap]
+            if cap not in repaired:
+                repaired.append(cap)
+
     # Run-7 A2: honesty re-grade. A violator counts as repaired only if the
     # charged violation classes actually IMPROVED; zero-move violators on a
     # board whose pad/body census did not move are UNRESOLVED, so the fix
@@ -3923,13 +6405,157 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                     f"{ref}: UNRESOLVED -- pose is courtyard-legal but the "
                     f"charged pad/body violation persists (metric mismatch; "
                     f"was reported 'repaired' before run-7 A2)")
+
+    # #1066: the INTENT half of the same honesty re-grade. The loop above
+    # re-checks pads, holes and containment only, so a part charged for a
+    # grade error -- a decap too far from its IC, a part out of its zone --
+    # that `_try_place` left where it stood (it searches for the nearest
+    # LEGAL pose and has no intent target) was reported repaired while the
+    # finding stayed on the board: glasgow, 33 repaired, 0 moved, errors
+    # 46 -> 46. Every charged ref is re-graded, MOVED OR NOT: a cap moved
+    # 0.3mm and still too far from its IC is no more repaired than one that
+    # did not move. A ref is repaired only when every claim it was charged
+    # for is gone.
+    #
+    # And the move must not have MADE one. A cap charged for a pad conflict,
+    # moved off it and out of its decap limit, cleared its charge and read
+    # repaired while the board gained an error (phase-1 verifier: watchy
+    # 9 -> 19 errors, splitflap C8 re-seated 2.00mm to 3.29mm from U9). An
+    # error the input poses did not have is attributed to every MOVED ref it
+    # names -- its own ref, or the cap / IC / partner its measurement names,
+    # since `decap_pin_distance` is charged to the IC a moved cap stranded.
+    unresolved_claims: Dict[str, List[str]] = {}
+    moved_refs = {m['reference'] for m in moves}
+    check_refs = [r for r in dict.fromkeys(repaired)
+                  if r in charged_claims or r in moved_refs]
+    if check_refs and pose_grader is not None:
+        after = None
+        if regrade_error is None and claims_regradable is not None:
+            try:
+                after = pose_grader.violations()
+            except (floorplan.UntrustworthyOutline, ValueError) as exc:
+                regrade_error = exc
+        after_claims = ({floorplan.violation_claim(v) for v in after
+                         if v.severity == floorplan.ERROR}
+                        if after is not None else None)
+        # A cap pushed past the decap search radius does not clear its
+        # `decap_distance` charge, it stops being GRADED: the finding becomes
+        # `decap_ungraded` (warn) under a different claim key. Read as the
+        # charge persisting, or leaving the radius would be a way to be fixed.
+        ungraded = ({v.ref for v in after if v.rule == 'decap_ungraded'}
+                    if after is not None else set())
+        # A finding the input poses did not have, or had SMALLER, charged to
+        # the moved ref that caused it. The ref it NAMES is not enough: a pin
+        # a cap's move stranded names the IC and whichever cap is now
+        # nearest, never the cap that left (round-2 verifier: watchy C5). So
+        # a finding naming no moved ref is attributed by COUNTERFACTUAL --
+        # each moved ref restored alone to its input pose, the finding
+        # disappearing or shrinking back names the move that made it.
+        created: Dict[str, List[str]] = {}
+        unattributed: List[str] = []
+        restored: Dict[str, Dict[Tuple, Optional[float]]] = {}
+        for v, how in (new_or_worse(findings_before, after)
+                       if after is not None else ()):
+            label = v.rule if how == 'new' else f"{v.rule} (made worse)"
+            m = v.measured or {}
+            names = {v.ref} | {m.get(k) for k in ('cap', 'ic', 'near')}
+            who = sorted(names & moved_refs)
+            if not who:
+                k, amt = finding_key(v), finding_amount(v)
+                for r in sorted(moved_refs):
+                    if r not in restored:
+                        fp0 = pcb_data.footprints[r]
+                        try:
+                            restored[r] = findings_of(pose_grader.violations(
+                                poses={r: (fp0.x, fp0.y,
+                                           (fp0.rotation or 0.0) % 360.0)}))
+                        except (floorplan.UntrustworthyOutline,
+                                ValueError):
+                            restored[r] = None
+                    got = restored[r]
+                    if got is None:
+                        continue
+                    if k not in got or (
+                            amt is not None and got[k] is not None
+                            and got[k] < amt - FINDING_WORSE_EPS_MM):
+                        who.append(r)
+            if not who:
+                unattributed.append(f"{label} on {v.ref}")
+            for r in who:
+                created.setdefault(r, []).append(label)
+        if unattributed:
+            notes.append(
+                "repair: " + '; '.join(sorted(set(unattributed)))
+                + " -- not present before the repair, and no single move "
+                  "restored alone clears it (a joint effect of several)")
+        for ref in check_refs:
+            charged = charged_claims.get(ref, ())
+            made: List[str] = []
+            if after_claims is None:
+                if not charged:
+                    continue
+                still = sorted({c[0] for c in charged})
+                why = (f"the grade could not be re-run after the repair "
+                       f"({regrade_error.__class__.__name__}: "
+                       f"{regrade_error})" if regrade_error is not None
+                       else "the grade could not be re-run after the repair")
+            else:
+                still = sorted({c[0] for c in charged
+                                if c in after_claims
+                                or c not in claims_regradable
+                                or (c[0] == 'decap_distance'
+                                    and ref in ungraded)})
+                made = sorted(set(created.get(ref, ()))
+                              - {r for r in still})
+                why = None
+                if ('decap_distance' in still and ref in ungraded
+                        and ('decap_distance', ref) not in
+                        {(c[0], c[1]) for c in after_claims}):
+                    still = [r if r != 'decap_distance' else
+                             'decap_distance (moved past the decap search '
+                             'radius: now decap_ungraded, not cleared)'
+                             for r in still]
+            if not still and not made:
+                continue
+            repaired[:] = [r for r in repaired if r != ref]
+            if ref not in unresolved:
+                unresolved.append(ref)
+            unresolved_claims[ref] = sorted(
+                {r.split(' ')[0] for r in list(still) + list(made)})
+            said = []
+            if why:
+                said.append(f"{why}, so the charged {', '.join(still)} "
+                            f"cannot be shown cleared")
+            elif still:
+                said.append(f"still carries {', '.join(still)} after the "
+                            f"repair")
+            if made:
+                said.append(f"its move created {', '.join(made)}, which the "
+                            f"input poses did not have at that size")
+            notes.append(
+                f"{ref}: UNRESOLVED -- " + '; '.join(said)
+                + ((" (it moved, and the move did not clear it)" if still
+                    else " (it moved)") if ref in moved_refs
+                   else " (it did not move)")
+                + " -- NOT reported repaired")
     return {'moves': moves, 'repaired': repaired, 'unrepairable':
             unrepairable + failed, 'unresolved': unresolved,
             'violators': violators, 'notes': notes,
+            # #1066: {ref: [rule, ...]} -- the grade claims that kept each
+            # unresolved ref out of `repaired`: charged ones still present,
+            # and ones its move created. Refs the run-7 pad/body re-grade
+            # made unresolved are in `unresolved` but not here.
+            'unresolved_claims': unresolved_claims,
             'pad_report_before': {k: pads[k] for k in
                                   ('pad_conflicts', 'hole_conflicts',
                                    'oob_pad_count')},
-            'grade_errors_before': len(graded.errors) if graded else None}
+            'grade_errors_before': len(graded.errors) if graded else None,
+            # #975: edge seats kept short of the board-edge floor, by ref.
+            'edge_floor_fallback': _floor_records_at_final_pose(
+                state, edge_floor_fallback),
+            # #1066 (b): {cap: {moved, tried: [...]}}; {} when the rung is
+            # off or nothing was charged to a decap rule.
+            'decap_rung': decap_rung}
 
 
 def eviction_licence_ok(before: Sequence[float],
@@ -4113,6 +6739,9 @@ def basis_skeleton(scope_source: str, *, policy: str,
         # does not run these leaves them None rather than reporting a clean
         # pass over nothing.
         'safety': None, 'intent_licence': None,
+        # #1068: the rules the `intent` basis counts -- what `intent 0->0`
+        # is a count OF. Empty where no probe ran.
+        'intent_rules': [],
     }
 
 
@@ -4503,7 +7132,7 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
                 # different schemas and a reader could not tell "the census
                 # found nothing" from "no census ran".
                 'no_pose_blockers': {}, 'no_pose_verdict': {},
-                'no_pose_census': {}, 'evicted': [],
+                'no_pose_census': {}, 'evicted': [], 'edge_floor_fallback': {},
                 'evictions': 0, 'evictions_reverted': 0,
                 'gate_before': list(_empty_gate),
                 'gate_after': list(_empty_gate),
@@ -4621,7 +7250,14 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
         # gate term moves, and the pass is accepted having created the
         # violation it was run to remove. Only claim-bound refs get terms, so
         # on a board that declares nothing this is still empty.
-        probe = _q.IntentProbe(state, zones=_bundle['zones'])
+        #
+        # #1068: and the TETHER rules (decap_distance, decap_pin_distance,
+        # proximity) the quench's gate holds -- the same `_bundle['tethers']`.
+        # Without them the `intent` basis read 0 -> 0 on a board printing
+        # decap GRADE ERRORs on the very refs re-seated, and prune reverted a
+        # seat made for a decap reason as a pure hpwl loss.
+        probe = _q.IntentProbe(state, zones=_bundle['zones'],
+                               tethers=_bundle.get('tethers'))
 
     # ---- seat ---------------------------------------------------------------
     before = _recon.measure(state, gate_bands)
@@ -4714,6 +7350,8 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
         witnesses_before=witnesses_before, witnesses_after=witnesses_after,
         bases_before=bases_before, bases_after=bases_after,
         intent_risen=_risen, min_gain=min_gain)
+    if probe is not None:
+        accept_basis['intent_rules'] = list(probe.rules)
     if evicted and not eviction_licence_ok(before, after):
         accepted = False
         accept_basis['fired'] = None
@@ -4791,6 +7429,13 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
             'no_pose_census': {r: v for r, v in
                                (res.get('no_pose_census') or {}).items()
                                if r in scope},
+            # #975, same filter, and only for a board this pass wrote. Empty
+            # in practice: re-seat drops its scope's edge declarations, so no
+            # stage-1 seat reaches a scope ref. Carried so both paths, and
+            # every place_seed summary, have the key.
+            'edge_floor_fallback': ({r: v for r, v in
+                                     (res.get('edge_floor_fallback') or {}).items()
+                                     if r in scope} if accepted else {}),
             'evictions': sum(1 for e in (res.get('evictions') or [])
                              if e.get('accepted')),
             'evictions_reverted': sum(1 for e in (res.get('evictions') or [])

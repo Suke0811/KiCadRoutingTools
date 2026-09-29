@@ -568,9 +568,11 @@ def main():
         # fixing #722: routing it through the shared predicate flips 0 of the
         # terminal ends in kicad_files/, so this is a recorded scope choice.
         '_check_terminal_web',
-        # _check_unsupported_vias asks the same question about a BARREL and is
-        # the next site to fold in; #695 fixed its margin in place.
-        '_check_unsupported_vias',
+        # via_support_parts asks the same question about a BARREL and is the
+        # next site to fold in; #695 fixed its margin in place. (#1063 moved
+        # it out of _check_unsupported_vias so the removal model grades vias
+        # by the same function; the question did not change.)
+        'via_support_parts',
     }
     results.append(("the pad-geometry guard is not vacuous",
                     len(_pad_geometry_askers()) >= 1))

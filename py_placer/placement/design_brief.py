@@ -62,6 +62,7 @@ than ignored, because an author who wrote one believes it is being honoured:
 from __future__ import annotations
 
 import fnmatch
+import glob
 import json
 import math
 import os
@@ -101,7 +102,7 @@ class BriefError(fp.IntentError):
 
 _TOP_LEVEL_KEYS = {'schema', 'kind', 'board', 'units', 'min_reader',
                    'product', 'interfaces', 'keepouts', 'fixed', 'unknown',
-                   'proximity', 'context'}
+                   'proximity', 'context', 'arrays'}
 
 #: Keys refused BY NAME, with the reason, rather than as merely unknown.
 _REFUSED_TOP_LEVEL = {
@@ -119,12 +120,28 @@ _REFUSED_TOP_LEVEL = {
 _PRODUCT_KEYS = {'form_factor', 'primary_axis', 'held_by', 'user_top_side'}
 _INTERFACE_KEYS = {'ref', 'role', 'user_facing', 'edge', 'along_edge',
                    'along_edge_tolerance_mm', 'overhang_mm', 'mount_mode',
-                   'cable_entry', 'requirement', 'why', 'note', 'context'}
+                   'cable_entry', 'cable_envelope_mm', 'requirement', 'why',
+                   'note', 'context'}
+#: #959 (#1000): the space a cable needs, declared. `depth` is how far an
+#: in-plane plug reaches in from the edge; `clear` is the margin around a
+#: perpendicular one. There are NO defaults: measured on five as-built boards
+#: (Phase-0 P3), no clearance passed every control and the in-plane band was
+#: vacuous, so an undeclared envelope is reported unmeasured, never guessed.
+_ENVELOPE_KEYS = {'depth', 'clear'}
 #: The intent's own keep-out shape, plus two slots for reasoning that has
 #: nowhere else to go. Both land in the compiled entry's `context`.
 _KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow', 'kind', 'why',
                  'note', 'context'}
-_FIXED_KEYS = {'ref', 'why', 'requirement', 'context'}
+_FIXED_KEYS = {'ref', 'why', 'requirement', 'context', 'pose',
+               'accept_courtyard_overlap'}
+#: #1054. The exact pose a `fixed[]` part is to be SEATED at. `rot` and
+#: `side` may be "unknown"; `x`/`y` may not -- a pose with no position is
+#: not a pose, and the row stays carried without one.
+_POSE_KEYS = {'x', 'y', 'rot', 'side'}
+#: #1051. One declared row of identical parts: the intent's `arrays[]` entry,
+#: plus the brief's own prose slot `requirement`. Validated by the intent's
+#: own loader, so the two documents cannot disagree about a row.
+_ARRAY_KEYS = (fp._ARRAY_KEYS - {'source'}) | {'requirement'}
 _BAND_KEYS = {'from', 'to'}
 _OVERHANG_KEYS = {'min', 'max'}
 
@@ -171,6 +188,19 @@ _MOUNT_MODES = ('edge_mount', 'top_mount', 'bottom_mount', 'through_edge',
 _CABLE_ENTRY = ('in_plane', 'perpendicular_top', 'perpendicular_bottom',
                 'none', UNKNOWN)
 
+#: #959 (#1000): what an edge- or through-mounted part may sit in from its
+#: edge (the seat reads the drawn body for an `edge_mount` or receptacle
+#: entry, else the courtyard). Measured, not mapped: the literal mapping would
+#: reuse the receptacle seat tolerance (0.5 mm), and two shipping edge-mount
+#: bodies sit past it -- tigard J7 0.60 mm, rp2350 J3 0.614 mm. As built,
+#: the seat binds on neither (each courtyard reaches the edge, and the seat
+#: is asked only of a part whose courtyard sits a margin inside), so no
+#: as-built grade tells 0.75 from 0.5; this is the margin that admits those
+#: bodies wherever the seat does bind. `test_959_connector_clauses` checks
+#: that it still admits the widest body on its five as-built boards (J7;
+#: rp2350 is not one of them).
+EDGE_MOUNT_SETBACK_MM = 0.75
+
 #: The tier-0 questions. Named so a report can say which were answered, which
 #: were answered "I do not know", and which nobody touched -- the three states
 #: this module exists to keep apart.
@@ -193,12 +223,14 @@ class Brief:
     proximity: Tuple[Dict[str, object], ...] = ()
     context: Dict[str, object] = field(default_factory=dict)
     source_path: str = ''
+    #: #1051. Declared rows. Defaulted, like `proximity`.
+    arrays: Tuple[Dict[str, object], ...] = ()
 
 
 def empty_brief(board: str = '') -> Brief:
     return Brief(schema=SCHEMA_VERSION, kind=KIND, board=board, units='mm',
                  product={}, interfaces=(), keepouts=(), fixed=(),
-                 unknown=(), proximity=(), context={})
+                 unknown=(), proximity=(), context={}, arrays=())
 
 
 # --------------------------------------------------------------------------
@@ -627,6 +659,25 @@ def _brief_from_dict(raw: Dict, source_path: str = '') -> Brief:
         _enum(c.get('edge'), fp._EDGES + (UNKNOWN,), f"{where}.edge")
         _enum(c.get('mount_mode'), _MOUNT_MODES, f"{where}.mount_mode")
         _enum(c.get('cable_entry'), _CABLE_ENTRY, f"{where}.cable_entry")
+        env = c.get('cable_envelope_mm')
+        if env is not None and env != UNKNOWN:
+            if not isinstance(env, dict) or not env:
+                raise BriefError(
+                    f"{where}.cable_envelope_mm: expected {{'depth': mm, "
+                    f"'clear': mm}} or {UNKNOWN!r}, got {env!r}")
+            fp._reject_unknown(env, _ENVELOPE_KEYS,
+                               f"{where}.cable_envelope_mm")
+            for k_ in sorted(env):
+                v_ = fp._number(env[k_], f"{where}.cable_envelope_mm.{k_}")
+                if v_ <= 0:
+                    raise BriefError(
+                        f"{where}.cable_envelope_mm.{k_}: {v_:g} is not a "
+                        f"dimension -- write {UNKNOWN!r} if it is not known")
+        if env is not None and c.get('cable_entry') in (None, 'none',
+                                                         UNKNOWN):
+            raise BriefError(
+                f"{where}.cable_envelope_mm describes a cable, and this "
+                f"interface declares no cable_entry it could apply to")
         uf = c.get('user_facing')
         if uf is not None and uf is not True and uf is not False \
                 and uf != UNKNOWN:
@@ -694,7 +745,20 @@ def _brief_from_dict(raw: Dict, source_path: str = '') -> Brief:
         fp._entry_context(f, where)
         if not f.get('ref'):
             raise BriefError(f"{where}: expected an object with a `ref`")
+        if 'pose' in f:
+            _fixed_pose(f, f"{where} ({f['ref']})", seen_refs)
+        elif f.get('accept_courtyard_overlap') is not None:
+            raise BriefError(
+                f"{where} ({f['ref']}): accept_courtyard_overlap waives an "
+                f"overlap at a declared POSE, and this row declares none")
         fixed.append(dict(f))
+    posed = [str(f['ref']) for f in fixed if 'pose' in f]
+    dup = sorted({r for r in posed if posed.count(r) > 1})
+    if dup:
+        raise BriefError(f"fixed: {', '.join(dup)} carries two poses -- one "
+                         f"part, one pose")
+
+    arrays = _array_rows(raw, interfaces, set(posed))
 
     unknown = fp._str_tuple(raw.get('unknown'), 'unknown')
     return Brief(schema=SCHEMA_VERSION, kind=KIND,
@@ -703,7 +767,58 @@ def _brief_from_dict(raw: Dict, source_path: str = '') -> Brief:
                  keepouts=tuple(keepouts), fixed=tuple(fixed),
                  unknown=unknown, proximity=tuple(proximity),
                  context=fp._obj(raw.get('context'), 'context'),
-                 source_path=source_path)
+                 source_path=source_path, arrays=tuple(arrays))
+
+
+def _fixed_pose(f: Dict, where: str, interface_refs) -> None:
+    """Validate one `fixed[].pose` (#1054). Refused BY NAME when the same ref
+    is a declared interface: an interface compiles to an `edge_connectors`
+    entry, which the seeder seats at its edge band, and a pose seats it
+    exactly -- two placements for one part, which the intent loader refuses
+    too. Refusing here sends the author to the brief they wrote."""
+    pose = f['pose']
+    if not isinstance(pose, dict):
+        raise BriefError(f"{where}.pose: expected {{x, y, rot, side}}, got "
+                         f"{pose!r}")
+    fp._reject_unknown(pose, _POSE_KEYS, f"{where}.pose")
+    for k in ('x', 'y'):
+        if k not in pose:
+            raise BriefError(f"{where}.pose: needs `{k}` -- a pose with no "
+                             f"position is not a pose; drop `pose` to carry "
+                             f"the part as fixed without one")
+        v = fp._number(pose[k], f"{where}.pose.{k}")
+        if not math.isfinite(v):
+            raise BriefError(f"{where}.pose.{k}: {pose[k]!r} is not a finite "
+                             f"coordinate")
+    rot = pose.get('rot')
+    if rot is not None and rot != UNKNOWN:
+        fp._rotation(rot, f"{where}.pose.rot")
+    _enum(pose.get('side'), _SIDES, f"{where}.pose.side")
+    if str(f['ref']) in interface_refs:
+        raise BriefError(
+            f"{where}.pose: {f['ref']} is also declared in interfaces[], "
+            f"which compiles to an edge_connectors entry the seeder seats at "
+            f"its edge band. A fixed pose seats it exactly -- keep one")
+
+
+def _array_rows(raw: Dict, interfaces, fixed_refs) -> List[Dict]:
+    """Validate the brief's `arrays[]` (#1051) with the INTENT's own loader,
+    so a row the brief accepts is a row the compiled intent loads.
+
+    `requirement` is the brief's prose slot and is set aside for the check;
+    the interfaces stand in for the `edge_connectors` they compile to."""
+    got = raw.get('arrays')
+    if got is None:
+        return []
+    if not isinstance(got, list):
+        raise BriefError(f"arrays: expected a list, got {type(got).__name__}")
+    for i, a in enumerate(got):
+        if isinstance(a, dict):
+            fp._reject_unknown(a, _ARRAY_KEYS, f"arrays[{i}]")
+    stripped = [({k: v for k, v in a.items() if k != 'requirement'}
+                 if isinstance(a, dict) else a) for a in got]
+    fp._array_entries({'arrays': stripped}, interfaces, (), fixed_refs)
+    return [dict(a) for a in got]
 
 
 # --------------------------------------------------------------------------
@@ -819,6 +934,16 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
             ctx[key] = v
             declared.append(f"interfaces[{ref}].{key}")
             not_graded.append(f"interfaces[{ref}].{key}")
+        env = c.get('cable_envelope_mm')
+        if env == UNKNOWN:
+            # Kept in context so the consequence step can tell "the author
+            # looked and does not know" from "nobody said".
+            ctx['cable_envelope_mm'] = UNKNOWN
+            unknown.append(f"interfaces[{ref}].cable_envelope_mm")
+        elif env is not None:
+            ctx['cable_envelope_mm'] = dict(env)
+            declared.append(f"interfaces[{ref}].cable_envelope_mm")
+            not_graded.append(f"interfaces[{ref}].cable_envelope_mm")
 
         if c.get('note'):
             entry['note'] = ((entry.get('note', '') + '; ') if entry.get('note')
@@ -918,6 +1043,70 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
             declared.append(f"{claim}.max_mm")
             prox.append(entry)
 
+    # #1051. Compiled 1:1 into the intent's own `arrays[]`: the brief row IS
+    # the intent row (the intent loader validated it), plus provenance. Every
+    # key the author answered is `declared`, every "unknown" is reported as
+    # one, and an absent key is neither -- the three states this module keeps
+    # apart.
+    arrs: List[Dict[str, object]] = []
+    for i, a in enumerate(brief.arrays):
+        name = str(a['name'])
+        entry = {k: v for k, v in a.items()
+                 if k not in ('requirement', 'context')}
+        entry['source'] = 'brief'
+        ctx = dict(a.get('context') or {})
+        ctx['brief_row'] = i
+        if a.get('requirement'):
+            ctx['requirement'] = a['requirement']
+        entry['context'] = ctx
+        declared.append(f"arrays[{name}].members")
+        for key in ('serves', 'order', 'rotation', 'pitch_mm', 'axis'):
+            if key not in a:
+                continue
+            (unknown if a[key] == UNKNOWN else declared).append(
+                f"arrays[{name}].{key}")
+        for m in [str(x) for x in a['members']] + (
+                [str(a['serves'])] if _known(a.get('serves')) else []):
+            if refs_known and refset and m not in refset:
+                unmatched.append(m)
+        arrs.append(entry)
+
+    # #1054. A `fixed[]` row with a `pose` compiles to `fixed_poses[]`, basis
+    # `declared`, for the seeder to SEAT and the grade to anchor. A row with
+    # no pose is carried in `report['fixed']` as before -- never turned into
+    # `must_lock` (see the note on `fixed` below).
+    fposes: List[Dict[str, object]] = []
+    for f in brief.fixed:
+        pose = f.get('pose')
+        if not isinstance(pose, dict):
+            continue
+        ref = str(f['ref'])
+        row: Dict[str, object] = {'ref': ref, 'x': float(pose['x']),
+                                  'y': float(pose['y']),
+                                  'basis': 'declared'}
+        declared.append(f"fixed[{ref}].pose")
+        for key in ('rot', 'side'):
+            if key not in pose:
+                continue
+            row[key] = pose[key]
+            if pose[key] == UNKNOWN:
+                unknown.append(f"fixed[{ref}].{key}")
+        if f.get('why'):
+            row['why'] = str(f['why'])
+        if f.get('accept_courtyard_overlap') is not None:
+            # #1060: passed through as written; the intent loader validates
+            # it (literal refs, not the entry's own, a `why`) and the seeder
+            # refuses a ref the board does not have.
+            row['accept_courtyard_overlap'] = f['accept_courtyard_overlap']
+        ctx = dict(f.get('context') or {})
+        if f.get('requirement'):
+            ctx['requirement'] = f['requirement']
+        if ctx:
+            row['context'] = ctx
+        if refs_known and refset and ref not in refset:
+            unmatched.append(ref)
+        fposes.append(row)
+
     fragment: Dict[str, object] = {}
     if conns:
         fragment['edge_connectors'] = conns
@@ -925,6 +1114,10 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         fragment['keepouts'] = keeps
     if prox:
         fragment['proximity'] = prox
+    if arrs:
+        fragment['arrays'] = arrs
+    if fposes:
+        fragment['fixed_poses'] = fposes
     # A RUNNING MAX, not a literal, since #902: a brief carrying both an
     # along-edge claim and a proximity row needs the HIGHER of the two readers,
     # and writing whichever branch ran last would understate it. `min_reader`
@@ -939,6 +1132,9 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         # Same argument one version on: a reader that predates #902 must refuse
         # a document carrying `proximity[]` rather than grade it without.
         need_reader = max(need_reader, 4)
+    if arrs or fposes:
+        # #1051/#1054: reader 7 introduced both keys.
+        need_reader = max(need_reader, 7)
     if need_reader:
         fragment['min_reader'] = need_reader
 
@@ -968,6 +1164,11 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
                        'proximity_claims': len(prox),
                        'proximity_expanded': expanded,
                        'proximity_dropped': dropped})
+    # Added only when declared, for `proximity`'s reason above.
+    if brief.arrays:
+        counts['arrays'] = len(brief.arrays)
+    if fposes:
+        counts['fixed_poses'] = len(fposes)
     report = {
         'path': brief.source_path,
         'declared': sorted(declared),
@@ -984,9 +1185,10 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         'contradictions': [],
         'counts': counts,
         # #711 asks for `place_fixed` ops. There is no plan-op implementation
-        # in this tree -- `place_fixed` is named only in comments -- so a
-        # fixed pose is CARRIED and reported, never asserted, and never turned
-        # into `must_lock`: filling must_lock made `place_seed --repair` treat
+        # in this tree -- `place_fixed` is named only in comments. Since #1054
+        # a row carrying a `pose` compiles to `fixed_poses[]` (above); every
+        # row is still CARRIED here, and none is ever turned into
+        # `must_lock`: filling must_lock made `place_seed --repair` treat
         # those refs as seeder-owned and LIFT the user's locks (measured on
         # two run-7 boards, see emit_intent's own comment). It buys nothing
         # either, since `resolve_intent_gate` already freezes every edge claim
@@ -995,6 +1197,306 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         'product': dict(brief.product),
     }
     return fragment, report
+
+
+def connector_consequences(fragment: Dict, report: Dict, pcb=None,
+                           board_path: str = ''):
+    """The connector declarations `compile_brief` only CARRIES, compiled
+    into clauses a rule grades (#959, #1000). `(fragment, report)`, both NEW
+    -- `compile_brief` stays the pure compile -- with `report['consequences']`
+    listing one row per consequence:
+
+      `{id, ref, status: compiled|unmeasured|withheld, compiled_to, grader,
+        basis: declared|derived_default|None, value, why}`
+
+    Measured on five as-built boards before it was built (Phase-0 P3), and
+    therefore NOT the issue's literal mapping:
+
+      * `mount_mode: edge_mount` -> `max_setback_mm` 0.75 on the drawn body
+        (`derived_default`; two shipping edge-mount bodies sit 0.60 and
+        0.614 in);
+      * `mount_mode: through_edge` -> the same setback: the part reaches
+        the edge, read on the drawn body for an edge receptacle and on the
+        courtyard otherwise (how far PAST it is `overhang_mm`, declared or
+        emitted, never derived);
+      * `mount_mode: top_mount` / `bottom_mount` -> an EXEMPTION, carried:
+        the edge-receptacle seat does not apply to a part standing off a
+        face (`floorplan.VERTICAL_MOUNTS`; the default seat false-failed 8
+        vertical headers on the as-built boards);
+      * `cable_entry: perpendicular_*` with a declared
+        `product.user_top_side` -> the face the part is on, graded as
+        `edge_connector_side` at a fixed WARN that steers no search.
+        `user_facing` compiles NO face: reaching a part says nothing about
+        which face it sits on;
+      * `cable_entry: in_plane` -> carried: the declared edge is already a
+        clause, and unmeasured without one;
+      * a cable keep-out ONLY from a declared `cable_envelope_mm`, and only
+        for a FILE-locked part (a keep-out off an unlocked part moves with
+        every seed) that reaches its declared edge when the band is
+        in-plane. No default dimension: none passed the controls.
+
+    Row statuses: `compiled` (a rule grades it), `carried` (an exemption or
+    a restatement -- nothing of its own is graded), `unmeasured` (a
+    dimension nobody declared), `withheld` (declared, but not derivable on
+    this board). A value the brief declares itself always wins over a
+    derived one, a declared `cable:<ref>` keep-out included. z-height and
+    insertion travel are never measured -- a keep-out is a 2D projection --
+    and the rows say so.
+    """
+    import copy
+    frag = copy.deepcopy(fragment or {})
+    rep = copy.deepcopy(report or {})
+    rows: List[Dict[str, object]] = []
+    uts = (rep.get('product') or {}).get('user_top_side')
+    uts = uts if uts in ('F', 'B') else None
+    other = {'F': 'B', 'B': 'F'}
+    locked = ({k for k, f in (pcb.footprints or {}).items()
+               if getattr(f, 'locked', False)} if pcb is not None else set())
+    keeps = list(frag.get('keepouts') or [])
+    #: Keep-out names the BRIEF declares itself. A declared value wins over
+    #: a derived one, so an envelope never replaces one of these.
+    declared_ko = {k.get('name') for k in keeps}
+    need_side = False
+    used_uts = False
+    geo = None
+
+    def _row(ref, key, status, why, *, compiled_to=None, grader=None,
+             basis=None, value=None):
+        rows.append({'id': f"interfaces[{ref}].{key}", 'ref': ref,
+                     'status': status, 'compiled_to': compiled_to,
+                     'grader': grader, 'basis': basis, 'value': value,
+                     'why': why})
+
+    for e in frag.get('edge_connectors') or []:
+        ref = str(e['ref'])
+        ctx = e.setdefault('context', {})
+        basis = ctx.setdefault('basis', {})
+        src = ctx.setdefault('compiled_from', {})
+        mm, ce = ctx.get('mount_mode'), ctx.get('cable_entry')
+        if mm == 'edge_mount':
+            if 'max_setback_mm' not in e:
+                e['max_setback_mm'] = EDGE_MOUNT_SETBACK_MM
+                basis['max_setback_mm'] = 'derived_default'
+            src['max_setback_mm'] = 'mount_mode'
+            _row(ref, 'mount_mode', 'compiled',
+                 'the drawn body must sit within this of its edge (two '
+                 'shipping edge-mount bodies sit 0.60 and 0.614 mm in)',
+                 compiled_to=f"edge_connectors[{ref}].max_setback_mm",
+                 grader='edge_connector',
+                 basis=basis.get('max_setback_mm', 'declared'),
+                 value=e['max_setback_mm'])
+        elif mm == 'through_edge':
+            # "Reaches the edge": past it, or within the edge-mount setback
+            # of it -- the same clause `edge_mount` compiles to. An overhang
+            # floor of 0 would add nothing (a body inside the board reads 0
+            # overhang and passes it), and writing one REPLACED the emitted
+            # `overhang_mm` wholesale on merge, dropping its `max` -- and
+            # with it the part's off-outline exemption, so a through-edge
+            # connector hanging correctly past the edge graded as an
+            # off-board part (Phase-5 verifier B1). What would tell the two
+            # apart -- how FAR past the edge -- is a dimension nobody
+            # declared, so the row says so rather than inventing one.
+            if 'max_setback_mm' not in e:
+                e['max_setback_mm'] = EDGE_MOUNT_SETBACK_MM
+                basis['max_setback_mm'] = 'derived_default'
+            src['max_setback_mm'] = 'mount_mode'
+            _row(ref, 'mount_mode', 'compiled',
+                 'the body reaches the edge: past it, or within the '
+                 'edge-mount setback of it (read on the drawn body for an '
+                 'edge receptacle, on the courtyard otherwise); how far '
+                 'past the edge it may reach is declared by overhang_mm, '
+                 'never derived',
+                 compiled_to=f"edge_connectors[{ref}].max_setback_mm",
+                 grader='edge_connector',
+                 basis=basis.get('max_setback_mm', 'declared'),
+                 value=e['max_setback_mm'])
+        elif mm in fp.VERTICAL_MOUNTS:
+            # An EXEMPTION, not a clause: nothing measures that a part
+            # stands off its face, so the row is `carried` -- it relaxes
+            # the receptacle seat and grades nothing of its own.
+            _row(ref, 'mount_mode', 'carried',
+                 'the part stands off a face, so the edge-receptacle seat '
+                 '(the mating face reaching the edge) does not apply to '
+                 'it; nothing measures the mount itself, and its declared '
+                 'edge and overhang are graded as before',
+                 compiled_to=f"edge_connectors[{ref}].context.mount_mode",
+                 basis='declared', value=mm)
+
+        # The face, from a PERPENDICULAR cable only: the cable leaves the
+        # face it plugs into. `user_facing` says the user reaches the part,
+        # not which face it sits on -- it compiled a face once and put three
+        # shipping B-side connectors (a DSUB, a JST-SH, a microSD) on the
+        # wrong one (Phase-5 verifier S3).
+        perp = ce in ('perpendicular_top', 'perpendicular_bottom')
+        if perp:
+            if uts is None:
+                _row(ref, 'cable_entry', 'unmeasured',
+                     'which face is the top is not declared '
+                     '(product.user_top_side), so no face follows from it')
+            else:
+                side = uts if ce == 'perpendicular_top' else other[uts]
+                if 'side' not in e:
+                    e['side'] = side
+                    basis['side'] = 'declared'
+                    need_side = True
+                src['side'] = 'cable_entry'
+                used_uts = True
+                _row(ref, 'cable_entry', 'compiled',
+                     f"a {ce} cable leaves by the face it plugs into, and "
+                     f"product.user_top_side {uts} is the top; the finding "
+                     f"is advisory (WARN) and steers no search",
+                     compiled_to=f"edge_connectors[{ref}].side",
+                     grader='edge_connector_side', basis='declared',
+                     value=e['side'])
+        if ce == 'in_plane':
+            if not e.get('edge'):
+                _row(ref, 'cable_entry', 'unmeasured',
+                     'an in-plane cable leaves by an edge, and this '
+                     'interface declares none (edge "unknown")')
+            else:
+                # The declared edge is ALREADY a clause; in_plane restates
+                # it and adds none, so it is not counted as a second one.
+                _row(ref, 'cable_entry', 'carried',
+                     f"the cable leaves in the board plane, by the declared "
+                     f"edge -- graded only through interfaces[{ref}].edge, "
+                     f"which in_plane adds nothing to",
+                     compiled_to=f"edge_connectors[{ref}].edge",
+                     basis='declared', value=e['edge'])
+
+        # The cable keep-out, only from a declared envelope.
+        if ce in ('in_plane', 'perpendicular_top', 'perpendicular_bottom'):
+            env = ctx.get('cable_envelope_mm')
+            dim = 'depth' if ce == 'in_plane' else 'clear'
+            tail = ('; z-height and insertion travel are not measured either '
+                    '-- a keep-out is a 2D projection')
+            if env is None or env == UNKNOWN:
+                _row(ref, 'cable_envelope_mm', 'unmeasured',
+                     ('declared "unknown"' if env == UNKNOWN else
+                      'no cable_envelope_mm is declared, and no default is '
+                      'used: none passed the as-built controls (#959 P3)')
+                     + f" -- the cable's {dim} is not measured" + tail)
+                continue
+            if dim not in env:
+                _row(ref, 'cable_envelope_mm', 'unmeasured',
+                     f"cable_envelope_mm declares no `{dim}`, which a {ce} "
+                     f"cable needs" + tail)
+                continue
+            face = None
+            if ce != 'in_plane':
+                face = (uts if ce == 'perpendicular_top'
+                        else other[uts]) if uts else None
+                if face is None:
+                    _row(ref, 'cable_envelope_mm', 'unmeasured',
+                         'which face the cable leaves from needs '
+                         'product.user_top_side' + tail)
+                    continue
+            if ce == 'in_plane' and not e.get('edge'):
+                _row(ref, 'cable_envelope_mm', 'unmeasured',
+                     'an in-plane band runs in from a declared edge, and '
+                     'none is declared' + tail)
+                continue
+            name = f"cable:{ref}"
+            if name in declared_ko:
+                # The brief states this keep-out ITSELF: declared wins, so
+                # the envelope derives nothing (Phase-5 verifier S4:
+                # replacing it dropped 3 hits to 0). CARRIED, not compiled:
+                # the keep-out is its own clause, and the envelope's
+                # dimension grades nothing -- counting it too would count one
+                # keep-out as two clauses (round-2 verifier).
+                _row(ref, 'cable_envelope_mm', 'carried',
+                     f"the brief declares keepouts[{name}] itself, which is "
+                     f"graded as its own clause and wins over the one this "
+                     f"envelope would derive; the envelope's dimension "
+                     f"grades nothing" + tail,
+                     compiled_to=f"keepouts[{name}]", basis='declared',
+                     value=next(k.get('rect') or k.get('circle')
+                                for k in keeps if k.get('name') == name))
+                continue
+            if pcb is None or ref not in (pcb.footprints or {}):
+                _row(ref, 'cable_envelope_mm', 'withheld',
+                     'no board to place the keep-out against' + tail)
+                continue
+            if ref not in locked:
+                _row(ref, 'cable_envelope_mm', 'withheld',
+                     f"lock {ref} to derive its cable keep-out: a keep-out "
+                     f"off an unlocked part would move with every seed"
+                     + tail)
+                continue
+            if geo is None:
+                from .reconcile import _Geometry
+                geo = _Geometry(pcb, board_path)
+            body = geo.body_rect(ref)
+            bounds = pcb.board_info.board_bounds if pcb.board_info else None
+            if body is None or (ce == 'in_plane' and bounds is None):
+                _row(ref, 'cable_envelope_mm', 'withheld',
+                     'the part or the outline has no measurable geometry'
+                     + tail)
+                continue
+            d = float(env[dim])
+            if ce == 'in_plane':
+                edge = e['edge']
+                # The band guards the path a cable takes OUT of the board
+                # from the part. A locked part that does not reach its
+                # declared edge (the edge clause fails it) has no such path
+                # there, and a band on that edge would only flag bystanders
+                # (fixture 711's east band hit Q1, Q2, R3, R4; verifier N8).
+                gap = {'west': body[0] - bounds[0],
+                       'east': bounds[2] - body[2],
+                       'north': body[1] - bounds[1],
+                       'south': bounds[3] - body[3]}[edge]
+                if gap > d:
+                    _row(ref, 'cable_envelope_mm', 'withheld',
+                         f"{ref}'s body sits {gap:.2f} mm from its declared "
+                         f"{edge} edge, beyond the {d:g} mm band, so the "
+                         f"band would guard no path of its cable; the edge "
+                         f"clause reports the part" + tail)
+                    continue
+                rect = {'west': [bounds[0], body[1], bounds[0] + d, body[3]],
+                        'east': [bounds[2] - d, body[1], bounds[2], body[3]],
+                        'north': [body[0], bounds[1], body[2], bounds[1] + d],
+                        'south': [body[0], bounds[3] - d, body[2],
+                                  bounds[3]]}[edge]
+                sides = ['F', 'B']
+            else:
+                rect = [body[0] - d, body[1] - d, body[2] + d, body[3] + d]
+                sides = [face]
+            rect = [round(v, 4) for v in rect]
+            keeps.append({'name': name, 'rect': rect, 'sides': sides,
+                          'allow': [glob.escape(ref)],
+                          'context': {'source': 'brief',
+                                      'derived_from':
+                                      f"interfaces[{ref}].cable_envelope_mm",
+                                      'basis': 'declared',
+                                      'dimension': {dim: d}}})
+            _row(ref, 'cable_envelope_mm', 'compiled',
+                 f"the {ce} cable's declared {dim} of {d:g} mm around "
+                 f"{ref}'s drawn body" + tail,
+                 compiled_to=f"keepouts[{name}]", grader='keepout',
+                 basis='declared', value=rect)
+    if keeps:
+        frag['keepouts'] = keeps
+    if need_side:
+        frag['min_reader'] = max(int(frag.get('min_reader') or 0), 6)
+    compiled = {r['id'] for r in rows if r['status'] == 'compiled'}
+    if used_uts:
+        # The viewing face now decides a graded `side` (verifier S8).
+        compiled.add('product.user_top_side')
+    rep['not_graded'] = [x for x in (rep.get('not_graded') or ())
+                         if x not in compiled]
+    rep['consequences'] = rows
+    return frag, rep
+
+
+def compile_with_consequences(brief: 'Brief', pcb=None,
+                              board_path: str = ''):
+    """`compile_brief` and then `connector_consequences`: what every CLI
+    that reads a brief against a board calls, so the emit path, the grade
+    path, `--plan-only`, `board_brief` and P1 derive the SAME clauses -- a
+    consequence only the emit path derived would never reach drift."""
+    frag, rep = compile_brief(
+        brief, board_refs=sorted((pcb.footprints or {}) if pcb else ()),
+        refs_known=pcb is not None)
+    return connector_consequences(frag, rep, pcb, board_path)
 
 
 def merge_into_intent(emitted: Dict, fragment: Dict, report: Dict) -> Dict:
@@ -1059,7 +1561,37 @@ def merge_into_intent(emitted: Dict, fragment: Dict, report: Dict) -> Dict:
             base['class'] = 'edge_receptacle'
             merged_ctx['was_class'] = 'connector_affinity'
         by_ref[ref] = base
-    if by_ref:
+    # #1051/#1054: a part the brief puts in a row, or fixes at a pose, loses
+    # an edge entry the EMITTER inferred for it. The intent loader refuses a
+    # ref under both claims, the declared claim outranks the inference, and
+    # the drop is REPORTED -- the same resolution as a contradicting edge.
+    # (A brief-declared interface cannot collide: the brief refuses that.)
+    placed = {str(f['ref']): 'fixes its pose'
+              for f in (fragment.get('fixed_poses') or ())}
+    for a in (fragment.get('arrays') or ()):
+        for m in a.get('members') or ():
+            placed.setdefault(str(m), f"puts it in array {a.get('name')!r}")
+    for ref in [r for r in order if r in placed and r in by_ref]:
+        if by_ref[ref].get('source') == 'brief':
+            continue
+        report['contradictions'].append(
+            f"{ref}: the brief {placed[ref]}, the board observes an edge "
+            f"connector -- the brief wins, and the observed entry is dropped")
+        del by_ref[ref]
+        order = [r for r in order if r != ref]
+    if placed and out.get('must_lock'):
+        kept = []
+        for pat in out['must_lock']:
+            hit = sorted(r for r in placed if fnmatch.fnmatchcase(r, pat))
+            if hit:
+                report['contradictions'].append(
+                    f"must_lock {pat!r} names {', '.join(hit)}, which the "
+                    f"brief places -- the brief wins, and the pattern is "
+                    f"dropped")
+                continue
+            kept.append(pat)
+        out['must_lock'] = kept
+    if by_ref or emitted.get('edge_connectors'):
         out['edge_connectors'] = [by_ref[r] for r in sorted(set(order),
                                                             key=order.index)]
     if fragment.get('keepouts'):
@@ -1074,6 +1606,12 @@ def merge_into_intent(emitted: Dict, fragment: Dict, report: Dict) -> Dict:
     if fragment.get('proximity'):
         out['proximity'] = list(emitted.get('proximity') or []) \
             + list(fragment['proximity'])
+    # #1051/#1054. APPENDED, for proximity's reason: `emit_intent` writes no
+    # `arrays` and no `fixed_poses` by default, so there is no inference to
+    # outrank.
+    for key in ('arrays', 'fixed_poses'):
+        if fragment.get(key):
+            out[key] = list(emitted.get(key) or []) + list(fragment[key])
     if fragment.get('min_reader'):
         # A MAX here too, and for the same reason it is one inside the
         # fragment: an emitted document that already declares a reader must not
@@ -1092,6 +1630,26 @@ def merge_into_intent(emitted: Dict, fragment: Dict, report: Dict) -> Dict:
                     ('path', 'declared', 'unknown', 'absent', 'not_graded',
                      'unmatched', 'unmatched_checked', 'contradictions',
                      'counts', 'fixed', 'product')}
+    if report.get('consequences') is not None:
+        ctx['brief']['consequences'] = report['consequences']
+    # #959 comment 3.2: a key the brief states is no longer an observation.
+    # The emitter labelled every number it chose `observed_baseline`; each
+    # one the brief overwrote is re-labelled with the brief's own basis --
+    # `declared`, or `derived_default` for a consequence's default.
+    bmap = dict(ctx.get('basis') or {})
+    for c in (fragment.get('edge_connectors') or []):
+        cb = (c.get('context') or {}).get('basis') or {}
+        if (c.get('context') or {}).get('edge_declared_unknown'):
+            # The merge dropped the observed edge; its label goes with it.
+            bmap.pop(f"edge_connectors[{c['ref']}].edge", None)
+        for key in ('edge', 'overhang_mm', 'center_on_edge',
+                    'along_edge_band', 'max_setback_mm', 'side'):
+            if key in c:
+                own = cb.get(key) or (cb.get('overhang_mm.min')
+                                      if key == 'overhang_mm' else None)
+                bmap[f"edge_connectors[{c['ref']}].{key}"] = own or 'declared'
+    if bmap:
+        ctx['basis'] = bmap
     if fragment.get('keepouts'):
         ctx['keepouts_note'] = (
             f"{len(fragment['keepouts'])} keep-out(s) DECLARED by the design "
@@ -1126,6 +1684,14 @@ def _drift_clause_id(kind, ref, key, *, near=None, fragment=None):
         # claim the brief calls `along_edge`, and the report names that.
         if key in ('center_on_edge', 'along_edge_band'):
             key = 'along_edge'
+        # #959 (#1000): a key the consequence step COMPILED belongs to the
+        # declaration it came from -- the setback to `mount_mode`, the face
+        # to `cable_entry` or `user_facing`, a derived overhang floor to
+        # `mount_mode`.
+        entry = next((c for c in ((fragment or {}).get('edge_connectors')
+                                  or ()) if c.get('ref') == ref), None)
+        src = ((entry or {}).get('context') or {}).get('compiled_from') or {}
+        key = src.get(key, key)
         return f"interfaces[{ref}].{key}"
     if kind == 'proximity' and fragment is not None:
         for p in (fragment.get('proximity') or ()):
@@ -1160,17 +1726,63 @@ def drift_pairs(intent_doc: Dict, fragment: Dict) -> List[Tuple[str, str]]:
             out.append(('', f"{ref}: the brief declares this connector; "
                             f"the intent has no entry for it"))
             continue
-        for key in ('edge', 'center_on_edge', 'along_edge_band', 'overhang_mm'):
+        for key in ('edge', 'center_on_edge', 'along_edge_band',
+                    'overhang_mm', 'max_setback_mm', 'side'):
             if key in c and cur.get(key) != c[key]:
                 out.append((
-                    _drift_clause_id('interfaces', ref, key),
+                    _drift_clause_id('interfaces', ref, key,
+                                     fragment=fragment),
                     f"{ref}.{key}: brief says {c[key]!r}, the intent "
                     f"{'says ' + repr(cur[key]) if key in cur else 'does not declare it'}"))
-    names = {k.get('name') for k in (intent_doc.get('keepouts') or [])}
+        # #959 (#1000): a compiled key the brief no longer produces, or a
+        # vertical mount the two read differently, is drift too -- the
+        # intent would grade a declaration the brief stopped making.
+        csrc = ((cur.get('context') or {}).get('compiled_from') or {})
+        # `overhang_mm` too: an intent written before through_edge stopped
+        # deriving an overhang floor carries `{min: 0}` with no `max`, which
+        # costs the part its off-outline exemption (round-2 verifier).
+        for key in ('max_setback_mm', 'side', 'overhang_mm'):
+            if key in cur and key not in c and key in csrc:
+                out.append((f"interfaces[{ref}].{csrc[key]}",
+                            f"{ref}.{key}: the intent carries "
+                            f"{cur[key]!r}, which the brief no longer "
+                            f"compiles"))
+        bm = (c.get('context') or {}).get('mount_mode')
+        im = (cur.get('context') or {}).get('mount_mode')
+        if bm != im and (bm in fp.VERTICAL_MOUNTS
+                         or im in fp.VERTICAL_MOUNTS):
+            out.append((f"interfaces[{ref}].mount_mode",
+                        f"{ref}.mount_mode: brief says {bm!r}, the intent "
+                        f"{im!r}"))
+    have_k = {k.get('name'): k for k in (intent_doc.get('keepouts') or [])}
     for k in (fragment.get('keepouts') or []):
-        if k.get('name') not in names:
-            out.append(('', f"keepout {k.get('name')!r}: declared by the "
-                            f"brief, absent from the intent"))
+        kctx = k.get('context') or {}
+        # A keep-out the consequence step derived belongs to the interface
+        # clause it came from; a declared one to its own id.
+        kid = (kctx.get('derived_from') or f"keepouts[{k.get('name')}]")
+        cur = have_k.get(k.get('name'))
+        if cur is None:
+            out.append((kid if kctx.get('derived_from') else '',
+                        f"keepout {k.get('name')!r}: declared by the "
+                        f"brief, absent from the intent"))
+            continue
+        # By SHAPE, not only by name: a face change keeps the name (#959).
+        for field_name in ('rect', 'circle', 'sides', 'allow'):
+            if field_name in k and cur.get(field_name) != k[field_name]:
+                out.append((kid, f"keepout {k.get('name')!r}.{field_name}: "
+                                 f"brief says {k[field_name]!r}, the intent "
+                                 f"{cur.get(field_name)!r}"))
+    # A keep-out the intent carries because an envelope DERIVED it, which the
+    # brief no longer derives (envelope removed, set "unknown", or its cable
+    # changed): the seat search and the quench still enforce it, so it is a
+    # stale consequence and drifts (Phase-5 verifier S5).
+    frag_k = {k.get('name') for k in (fragment.get('keepouts') or [])}
+    for name, cur in sorted(have_k.items(), key=lambda kv: str(kv[0])):
+        src = (cur.get('context') or {}).get('derived_from')
+        if src and name not in frag_k:
+            out.append((src, f"keepout {name!r}: the intent carries it, "
+                             f"derived from {src}, which the brief no "
+                             f"longer derives it from"))
     # #902. Keyed on the ORDERED (ref, near) pair, which is the row's identity
     # in the brief too, so the two halves cannot disagree about what "the same
     # claim" means. The list `ref` was expanded by `compile_brief`, so both
@@ -1210,6 +1822,51 @@ def drift_pairs(intent_doc: Dict, fragment: Dict) -> List[Tuple[str, str]]:
                     + ', the intent '
                     + (f"says {theirs!r}" if theirs is not None
                        else 'does not declare it')))
+    # #1051. Keyed on the array NAME; every field at its EFFECTIVE value, for
+    # proximity's reason above (an absent `pitch_mm` IS 'auto').
+    have_arr = {str(a.get('name')): a for a in (intent_doc.get('arrays')
+                                                or [])}
+    _adef = {'pitch_mm': 'auto', 'axis': 'auto', 'allow_mixed': False}
+    for a in (fragment.get('arrays') or []):
+        name = str(a.get('name'))
+        cur = have_arr.get(name)
+        if cur is None:
+            out.append((f"arrays[{name}].members",
+                        f"array {name!r}: the brief declares this row; the "
+                        f"intent has no array of that name"))
+            continue
+        for field_name in ('members', 'serves', 'order', 'rotation',
+                           'pitch_mm', 'axis', 'allow_mixed'):
+            mine = a.get(field_name, _adef.get(field_name))
+            theirs = cur.get(field_name, _adef.get(field_name))
+            if mine != theirs:
+                out.append((
+                    f"arrays[{name}]."
+                    f"{field_name if field_name != 'allow_mixed' else 'members'}",
+                    f"array {name!r}.{field_name}: brief "
+                    + (f"says {mine!r}" if mine is not None
+                       else 'declares none')
+                    + ', the intent '
+                    + (f"says {theirs!r}" if theirs is not None
+                       else 'does not declare it')))
+    # #1054. Keyed on the ref.
+    have_fp = {str(f.get('ref')): f for f in (intent_doc.get('fixed_poses')
+                                              or [])}
+    for f in (fragment.get('fixed_poses') or []):
+        ref = str(f.get('ref'))
+        cur = have_fp.get(ref)
+        if cur is None:
+            out.append((f"fixed[{ref}].pose",
+                        f"{ref}: the brief fixes its pose; the intent has no "
+                        f"fixed_poses entry for it"))
+            continue
+        for field_name in ('x', 'y', 'rot', 'side', 'basis',
+                           'accept_courtyard_overlap'):
+            if f.get(field_name) != cur.get(field_name):
+                out.append((f"fixed[{ref}].pose",
+                            f"{ref}.pose.{field_name}: brief says "
+                            f"{f.get(field_name)!r}, the intent "
+                            f"{cur.get(field_name)!r}"))
     return out
 
 
@@ -1231,19 +1888,24 @@ def drifted_clause_ids(intent_doc: Dict, fragment: Dict) -> List[str]:
 # --------------------------------------------------------------------------
 
 #: Which rule grades a clause of each kind. `product` is graded by nothing and
-#: says so; `fixed` never reaches a rule at all (it is carried into `context`).
+#: says so. `fixed` (#1054) is a `fixed[REF].pose` clause: graded by the
+#: anchor `floorplan.fixed_pose_violations` compiles from the intent's
+#: `fixed_poses[]`, outside the RULES loop -- so its "rule" is the grader's
+#: name, and `_clause_state` does not ask `rules_run` about it.
 _CLAUSE_RULE = {'interfaces': 'edge_connector',
                 'keepouts': 'keepout',
                 'proximity': 'proximity',
+                'arrays': 'array_formation',
+                'fixed': 'fixed_pose',
                 'product': None}
 
 #: Interface keys that are CARRIED and graded by nothing, by design. They are
 #: already in `report['not_graded']`; naming them here too keeps the coverage
 #: verdict from depending on a list that exists for a different purpose.
-_CLAUSE_CARRIED = {'mount_mode', 'cable_entry'}
+_CLAUSE_CARRIED = {'mount_mode', 'cable_entry', 'cable_envelope_mm'}
 
 _CLAUSE_RE = re.compile(
-    r'^(?P<kind>interfaces|keepouts|proximity|product)'
+    r'^(?P<kind>interfaces|keepouts|proximity|arrays|fixed|product)'
     r'(?:\[(?P<inner>.*)\])?'
     r'(?:\.(?P<key>[a-z_]+))?$')
 
@@ -1288,7 +1950,29 @@ def parse_clause_id(cid: str) -> Optional[Dict[str, object]]:
     return out
 
 
-def _clause_state(rec, intent_doc, rules_run, abstained):
+def _intent_has(intent_doc, path: str) -> bool:
+    """Does the intent carry `edge_connectors[REF].key[.sub]` or
+    `keepouts[NAME]` -- the path a consequence row compiled to."""
+    m = re.match(r'^(edge_connectors|keepouts)\[(.*?)\](?:\.(.*))?$',
+                 path or '')
+    if not m:
+        return False
+    kind, name, rest = m.groups()
+    if kind == 'keepouts':
+        return any(k.get('name') == name
+                   for k in (intent_doc.get('keepouts') or ()))
+    node = next((c for c in (intent_doc.get('edge_connectors') or ())
+                 if c.get('ref') == name), None)
+    for part in (rest or '').split('.'):
+        if not part:
+            continue
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return node is not None
+
+
+def _clause_state(rec, intent_doc, rules_run, abstained, cons=None):
     """The verdict for ONE declared clause. Five states, kept apart.
 
     `graded` is the only one that means a rule reached a verdict. Collapsing
@@ -1298,8 +1982,51 @@ def _clause_state(rec, intent_doc, rules_run, abstained):
     """
     kind, ref, near, key = rec['kind'], rec['ref'], rec['near'], rec['key']
     rule = _CLAUSE_RULE.get(kind)
-    if rule is None or (kind == 'interfaces' and key in _CLAUSE_CARRIED):
+    if kind == 'interfaces' and key in _CLAUSE_CARRIED:
+        # #959 (#1000): graded when `connector_consequences` compiled it
+        # and the intent carries what it compiled to; otherwise carried,
+        # and an UNMEASURED one says which dimension nobody declared.
+        row = (cons or {}).get(f"interfaces[{ref}].{key}")
+        if row is None:
+            return 'carried', '', rule
+        if row['status'] == 'withheld':
+            # Declared, and derivable once the board allows it (a lock, an
+            # outline): an ABSTENTION, which keeps coverage incomplete --
+            # not a fact carried by design (Phase-5 verifier S6).
+            return ('abstained', f"withheld: {row['why']}",
+                    row.get('grader') or 'keepout')
+        if row['status'] != 'compiled':
+            return 'carried', f"{row['status']}: {row['why']}", None
+        if not _intent_has(intent_doc, row['compiled_to']):
+            return ('uncovered', f"the intent does not carry "
+                                 f"{row['compiled_to']}, which the brief's "
+                                 f"{key} compiles to", rule)
+        rule = 'edge_connector' if row['grader'] in (
+            'edge_connector', 'edge_connector_side') else row['grader']
+        if rule not in rules_run:
+            return ('uncovered', f"`{rule}`, which grades what {key} "
+                                 f"compiles to, did not run", rule)
+        return 'graded', '', rule
+    if kind == 'product' and key == 'user_top_side':
+        # Graded once a perpendicular cable turns it into a `side` (S8).
+        sides = [r for r in (cons or {}).values()
+                 if r.get('status') == 'compiled'
+                 and r.get('grader') == 'edge_connector_side'
+                 and _intent_has(intent_doc, r.get('compiled_to'))]
+        if sides and 'edge_connector' in rules_run:
+            return 'graded', '', 'edge_connector'
+    if rule is None:
         return 'carried', '', rule
+    if kind == 'interfaces' and key == 'user_facing':
+        entry = next((c for c in (intent_doc.get('edge_connectors') or [])
+                      if c.get('ref') == ref), None)
+        mm = ((entry or {}).get('context') or {}).get('mount_mode')
+        if mm in fp.VERTICAL_MOUNTS:
+            # What grades `user_facing` is the receptacle seat, and a
+            # vertical mount is exempt from it (Phase-5 verifier S2).
+            return ('carried', f"a {mm} part is exempt from the "
+                               f"edge-receptacle seat, which is what grades "
+                               f"user_facing", None)
     if kind == 'interfaces':
         entry = next((c for c in (intent_doc.get('edge_connectors') or [])
                       if c.get('ref') == ref), None)
@@ -1326,6 +2053,19 @@ def _clause_state(rec, intent_doc, rules_run, abstained):
                    for p in (intent_doc.get('proximity') or [])):
             return ('uncovered', f"the intent carries no proximity claim for "
                                  f"{ref} near {near}", rule)
+    elif kind == 'arrays':
+        if not any(str(a.get('name')) == ref
+                   for a in (intent_doc.get('arrays') or [])):
+            return ('uncovered', f"the intent carries no array named "
+                                 f"{ref!r}", rule)
+    elif kind == 'fixed':
+        # Graded by the grade itself whenever the intent carries the entry:
+        # `fixed_pose_violations` runs on every grade, armed by nothing.
+        if not any(str(f.get('ref')) == ref
+                   for f in (intent_doc.get('fixed_poses') or [])):
+            return ('uncovered', f"the intent carries no fixed_poses entry "
+                                 f"for {ref}", rule)
+        return 'graded', '', rule
     if rule not in rules_run:
         return ('uncovered', f"`{rule}` did not run on this grade", rule)
     for akey, why in sorted((abstained or {}).items()):
@@ -1349,6 +2089,9 @@ def _abstention_is_about(akey, kind, ref, near, intent_doc) -> bool:
     """
     if kind == 'interfaces':
         return akey.startswith(f"edge_connectors[{ref}].")
+    if kind == 'arrays':
+        return (akey == f"arrays[{ref}]"
+                or akey.startswith(f"arrays[{ref}]."))
     if kind != 'proximity':
         return False
     m = _ABSTAIN_PROX_RE.match(akey)
@@ -1386,6 +2129,7 @@ def clause_coverage(report: Dict, intent_doc: Dict, *,
     the same reason -- it is testable against a hand-built intent document.
     """
     drift_set = set(drifted_ids or ())
+    cons = {r['id']: r for r in (report.get('consequences') or ())}
     clauses = []
     counts = {'graded': 0, 'abstained': 0, 'uncovered': 0,
               'not_claimed': 0, 'carried': 0, 'drifted': 0}
@@ -1394,10 +2138,26 @@ def clause_coverage(report: Dict, intent_doc: Dict, *,
         if rec is None:
             continue
         state, why, rule = _clause_state(rec, intent_doc, tuple(rules_run),
-                                         abstained)
+                                         abstained, cons)
         row = {'id': cid, 'kind': rec['kind'], 'ref': rec['ref'],
                'rule': rule, 'state': state, 'why': why,
                'drifted': cid in drift_set}
+        # The FINDING that grades it, where it differs from the rule that
+        # runs it (the side finding runs inside `edge_connector`), and the
+        # keep-out a cable envelope compiled to -- so the ledger attributes
+        # a verdict to this clause, not to whatever else the rule flagged.
+        crow = cons.get(cid) or {}
+        if state == 'graded' and crow.get('grader'):
+            row['grader'] = crow['grader']
+            if crow['grader'] == 'keepout':
+                row['keepout'] = str(crow.get('compiled_to') or '')[
+                    len('keepouts['):-1]
+        if rec['kind'] == 'product' and state == 'graded':
+            row['grader'] = 'edge_connector_side'
+        if why.startswith('unmeasured: '):
+            row['unmeasured'] = why.split(': ', 1)[1]
+        elif why.startswith('withheld: '):
+            row['withheld'] = why.split(': ', 1)[1]
         clauses.append(row)
         counts[state] += 1
         if row['drifted']:
@@ -1410,12 +2170,17 @@ def clause_coverage(report: Dict, intent_doc: Dict, *,
             # reported by `brief_unknown_keys` already; it is not a clause and
             # must not be counted as one.
             continue
+        # Drift still counts on an "unknown" clause: an intent that carries a
+        # consequence the author has since said they do not know (an envelope
+        # set "unknown" under a derived keep-out) drifts from the brief.
         clauses.append({'id': cid, 'kind': rec['kind'], 'ref': rec['ref'],
                         'rule': _CLAUSE_RULE.get(rec['kind']),
                         'state': 'not_claimed',
                         'why': 'the brief declares this "unknown"',
-                        'drifted': False})
+                        'drifted': cid in drift_set})
         counts['not_claimed'] += 1
+        if cid in drift_set:
+            counts['drifted'] += 1
     for cid in list(report.get('not_graded') or ()):
         rec = parse_clause_id(cid)
         if rec is None or any(c['id'] == cid for c in clauses):
@@ -1423,8 +2188,27 @@ def clause_coverage(report: Dict, intent_doc: Dict, *,
         clauses.append({'id': cid, 'kind': rec['kind'], 'ref': rec['ref'],
                         'rule': None, 'state': 'carried',
                         'why': 'carried into context; nothing grades it',
-                        'drifted': False})
+                        'drifted': cid in drift_set})
         counts['carried'] += 1
+        if cid in drift_set:
+            counts['drifted'] += 1
+    # A drift id no row above names: the intent carries a consequence of a
+    # clause the brief no longer states at all -- a derived keep-out whose
+    # envelope was removed, a setback whose mount_mode was. Without a row it
+    # reached neither P1's refusal nor P-close's, which both read these rows,
+    # while the seat search and the quench kept enforcing it (round-2
+    # verifier, S5).
+    have = {c['id'] for c in clauses}
+    for cid in sorted(drift_set - have):
+        rec = parse_clause_id(cid) or {}
+        clauses.append({'id': cid, 'kind': rec.get('kind'),
+                        'ref': rec.get('ref'), 'rule': None,
+                        'state': 'carried',
+                        'why': ('the intent carries a consequence of this '
+                                'clause, which the brief no longer states'),
+                        'drifted': True})
+        counts['carried'] += 1
+        counts['drifted'] += 1
     clauses.sort(key=lambda c: c['id'])
     out = {'schema': 1, 'brief': os.path.basename(report.get('path') or '')
            or None, 'clauses': clauses}
@@ -1465,7 +2249,11 @@ def format_report(report: Dict, *, path: str = '') -> str:
         bits.append(f"{c['proximity']} proximity row(s)"
                     + (f" -> {claims} claim(s)" if moved else ''))
     if c.get('fixed'):
-        bits.append(f"{c['fixed']} fixed pose(s), carried not asserted")
+        bits.append(f"{c['fixed']} fixed part(s)"
+                    + (f", {c['fixed_poses']} with a pose to seat"
+                       if c.get('fixed_poses') else ', carried not asserted'))
+    if c.get('arrays'):
+        bits.append(f"{c['arrays']} array(s)")
     if report.get('unknown'):
         bits.append(f"{len(report['unknown'])} declared UNKNOWN")
     if report.get('absent'):

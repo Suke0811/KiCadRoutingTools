@@ -283,7 +283,7 @@ ROWS = [
      (T_PANEL,), 'KILLED'),
     ('the-failure-reason-is-not-drawn-into-the-panel', 'p',
      "            _wrapped_text(d, font, drawn_error,\n"
-     "                          10, max(8, H // 3), W - 20, (196, 128, 128))",
+     "                          10, max(8, H // 3), W - 20, error_fg)",
      "            pass",
      (T_PANEL,), 'KILLED'),
     ('the-temp-dir-failure-escapes-as-a-traceback', 'p',
@@ -370,9 +370,14 @@ ROWS = [
      (T_CLOCK,), 'KILLED'),
     # ---- the two defects a reviewer saw in the first published image -------
     ('the-clock-is-drawn-over-the-board-again', 't',
-     "    out = Image.new('RGB', (W, H + int(band_h)), (0, 0, 0))\n"
+     # Re-anchored by #1011, which made the band's black a theme role
+     # (`chrome_band`, value-for-value). The MUTATION is unchanged: paste the
+     # frame below the band instead of above it, so the clock covers the board.
+     "    out = Image.new('RGB', (W, H + int(band_h)), "
+     "_TH.rgb('chrome_band'))\n"
      "    out.paste(frame, (0, 0))",
-     "    out = Image.new('RGB', (W, H + int(band_h)), (0, 0, 0))\n"
+     "    out = Image.new('RGB', (W, H + int(band_h)), "
+     "_TH.rgb('chrome_band'))\n"
      "    out.paste(frame, (0, int(band_h)))",
      (T_CLOCK,), 'KILLED'),
     ('the-band-is-sized-per-frame-again', 't',

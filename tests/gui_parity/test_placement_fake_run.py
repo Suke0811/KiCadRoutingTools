@@ -3,8 +3,8 @@
 
 Proves the whole runner -> monitor -> completion loop headless: the tab
 launches the CLI with the placement contract (write-capable allowlist, one
---add-dir, staged board), streams the transcript, derives the stage from a
---stage tool line, renders a live preview frame from a mid-run lap board,
+--add-dir, staged board), streams the transcript, derives the progress line from
+the converge ledger row a milestone writes, renders a live preview frame from a mid-run lap board,
 parses the terminal RESULT= JSON, surfaces REPORT.md + movie buttons, and
 re-arms its buttons. The fake CLI is a real .cmd shim on Windows, so the
 npm-install path is under test end to end: the runner must strip the
@@ -14,6 +14,7 @@ and hand it to the CLI on stdin.
 Run: python3 tests/gui_parity/test_placement_fake_run.py
 (re-execs into KiCad's bundled python automatically, like its siblings)
 """
+import glob
 import os
 import subprocess
 import sys
@@ -25,11 +26,17 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(
 FAKE_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        'fixtures', 'fake_claude.py')
 
+# Every versioned install, newest first by NUMERIC version (a string sort
+# puts KiCad\9.0 above KiCad\10.0).
+sys.path.insert(0, os.path.join(REPO, 'py_router'))
+from kicad_locate import path_version_key  # noqa: E402
+del sys.path[0]    # this file orders its own sys.path further down
 KICAD_PYTHONS = [
     '/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/'
     'Versions/Current/bin/python3',
     '/usr/bin/python3',
-    r'C:\Program Files\KiCad\10.0\bin\python.exe',
+    *sorted(glob.glob(r"C:\Program Files\KiCad\*\bin\python.exe"),
+           key=path_version_key, reverse=True),
 ]
 
 
@@ -191,9 +198,12 @@ def main():
     transcript = tab.transcript_ctrl.GetValue()
     check("transcript flowed (init line)", "fake-model" in transcript)
     check("transcript shows the tool line (description preferred)",
-          "placement driver" in transcript, transcript[:400])
-    check("stage derived from the RAW event's command",
-          any("P4" in s for s in statuses), str(statuses))
+          "Record the milestone board" in transcript, transcript[:400])
+    # The staged driver's `--stage P4` line is retired with that skill; the
+    # pcb-free-agent run records milestones in the converge ledger, and the
+    # tab's progress line is derived from the newest LEDGER ROW.
+    check("progress derived from the ledger row",
+          any("lap 1: quench/nudge" in s for s in statuses), str(statuses))
     check("elapsed/mode in status",
           any(s.startswith("Place —") for s in statuses), str(statuses))
     if pil_ok:
@@ -246,6 +256,38 @@ def main():
         check("beautify applied 0 (no live board headless)",
               " 0 applied" in label, label)
         check("beautify re-armed", tab.action_btn.IsEnabled())
+
+    # --- KEEP_RUNS (#1057): a second run through the tab prunes this
+    # board's oldest run folders, keeps the newest, and says so in the log.
+    # With KEEP_RUNS older runs beside the first run, exactly the oldest two
+    # go: the new run plus the KEEP_RUNS - 1 newest others stay.
+    import json as _json
+    from kicad_routing_plugin.placement_run import KEEP_RUNS
+    runs_root = os.path.dirname(workdir)
+    check("krt_placement carries a .gitignore",
+          os.path.isfile(os.path.join(runs_root, ".gitignore")))
+    old_runs = []                                   # oldest first
+    for i in range(1, KEEP_RUNS + 1):
+        d = os.path.join(runs_root, f"20000101_{i:06d}_place")
+        os.makedirs(os.path.join(d, "boards"))
+        with open(os.path.join(d, ".krt_run.json"), "w") as f:
+            _json.dump({"board": board, "mode": "place"}, f)
+        old_runs.append(d)
+    tab._start_ai_run("place")
+    second = tab.last_workdir
+    check("second run accepted", tab._runner is not None and second != workdir)
+    check("preview cleared for the new run",
+          not tab.preview._frames and tab.preview._movie is None)
+    check("second run finished before timeout",
+          pump_until(lambda: tab._runner is None
+                     and any("older run(s)" in t for t in logged), 90))
+    check("KEEP_RUNS pruned the board's two oldest run folders",
+          not any(os.path.exists(d) for d in old_runs[:2]))
+    check("KEEP_RUNS kept the newest runs, the new one included",
+          all(os.path.isdir(d) for d in old_runs[2:] + [workdir, second]))
+    check("the prune is disclosed in the log",
+          any("removed 2 older run(s)" in t for t in logged),
+          "".join(t for t in logged if "Placement:" in t))
 
     # Deterministic wx teardown (headless_plan.py precedent: leaving pending
     # timers/windows to interpreter shutdown corrupts the heap and crashes

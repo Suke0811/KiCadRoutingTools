@@ -26,17 +26,25 @@ branch grades it against a live KiCad. Measure it there before trusting it.
 import copy
 import hashlib
 import math
+import glob
 import os
 import subprocess
 from pathlib import Path
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))), 'py_router'))
+from kicad_locate import path_version_key as _path_version_key  # noqa: E402
+del sys.path[0]    # this file orders its own sys.path further down
 KICAD_PYTHONS = [
     '/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/'
     'Versions/Current/bin/python3',
     '/usr/bin/python3',
-    r'C:\Program Files\KiCad\10.0\bin\python.exe',
+    # Every versioned install, newest first by NUMERIC version (a string
+    # sort puts KiCad\9.0 above KiCad\10.0).
+    *sorted(glob.glob(r"C:\Program Files\KiCad\*\bin\python.exe"),
+           key=_path_version_key, reverse=True),
 ]
 
 try:

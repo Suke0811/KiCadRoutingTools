@@ -168,9 +168,16 @@ def copy_plugin(source_dir: Path, dest_dir: Path):
         shutil.rmtree(dest_dir)
 
     # Copy everything, excluding unnecessary files
-    def ignore_patterns(_directory, files):
+    def ignore_patterns(directory, files):
         ignored = []
         for f in files:
+            # Of .claude/, keep only skills/: a dev checkout also holds Claude
+            # Code's worktrees/ (whole repo copies) and the user's
+            # settings.local.json. package_pcm.py ships the same subset.
+            if os.path.basename(directory) == '.claude':
+                if f != 'skills':
+                    ignored.append(f)
+                continue
             # Keep .claude/ (routing skills) for use from the installed plugin.
             if f == '.claude':
                 continue
@@ -180,6 +187,12 @@ def copy_plugin(source_dir: Path, dest_dir: Path):
             elif f.startswith('test_') or f == 'docs':
                 ignored.append(f)
             elif f == 'kicad_files':
+                ignored.append(f)
+            # Skip the cargo build dir a --from-source build leaves behind
+            # (#1061): >100 MB of intermediates, while the plugin loads only
+            # the grid_router binary build_router.py copies next to Cargo.toml.
+            # package_pcm.py strips it from the PCM zip the same way.
+            elif f == 'target' and os.path.basename(directory) == 'rust_router':
                 ignored.append(f)
         return ignored
 

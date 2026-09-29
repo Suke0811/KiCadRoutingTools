@@ -17,7 +17,7 @@ hits a genuinely too-small board can only stop, and the person reading it has
 to go and measure by hand what to change.
 
 THIS REPORTS; IT NEVER REFUSES AND NEVER ACTS. That is the house pattern from
-`placement_driver._guard_congestion:779-823` -- "ok is False ONLY when the
+the retired `placement_driver._guard_congestion` -- "ok is False ONLY when the
 evidence is missing; the numbers themselves never refuse... The executor
 decides" -- and from `lock_advisor`, which prints a paste-ready `--lock` and
 locks nothing, because a wrong auto-action fails invisibly.

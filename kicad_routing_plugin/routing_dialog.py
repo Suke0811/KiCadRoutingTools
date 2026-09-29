@@ -1362,7 +1362,7 @@ class RoutingDialog(wx.Dialog):
         self.same_net_pad_clearance.SetDigits(_snpc_r['digits'])
         self.same_net_pad_clearance.SetToolTip(
             "Edge-to-edge clearance between placed vias and same-net SMD "
-            "pads. Active only while 'Allow via-in-pad' is unchecked.")
+            "pads and the net's solder-paste openings (#962). Active only while 'Allow via-in-pad' is unchecked.")
         self.same_net_pad_clearance.Enable(False)  # sync with default-checked box
         self.via_in_pad_check.Bind(
             wx.EVT_CHECKBOX,
@@ -3530,36 +3530,29 @@ class RoutingDialog(wx.Dialog):
                 # SystemExit here would turn the friendly dependency dialog below
                 # into a raw traceback in the plugin.
                 captured_output = captured.getvalue() if 'captured' in dir() else ''
-                # Check which dependencies are missing
-                missing = []
-                try:
-                    import numpy
-                except ImportError:
-                    missing.append('numpy')
-                try:
-                    import scipy
-                except ImportError:
-                    missing.append('scipy')
-                try:
-                    from shapely.geometry import Polygon
-                except ImportError:
-                    missing.append('shapely')
-                # Pillow is deliberately NOT probed here (#887). This block
-                # re-implements startup_checks.check_python_dependencies BY
-                # HAND, so it must mirror that list and no more -- and Pillow
-                # is not on it, because routing does not need Pillow. The GUI's
-                # only raster consumer is the movie recorder, which is inert
-                # until the Advanced tab's checkbox is ticked (unchecked by
-                # default), so blocking the whole routing dialog on it would
+                # Which dependencies are missing -- or present and TOO OLD,
+                # which is the same failure wearing a different face and used
+                # to be invisible here: this block probed with `except
+                # ImportError` alone, so a numpy from before 1.22 reported
+                # nothing and the user was left with scipy's numpy-version
+                # warning and `'numpy._DTypeMeta' object is not subscriptable`.
+                #
+                # It CALLS the shared probe rather than restating it. The list
+                # was hand-mirrored from startup_checks for exactly as long as
+                # it took to drift. Pillow stays out of it because
+                # ROUTING_PACKAGES leaves it out (#887): the GUI's only raster
+                # consumer is the movie recorder, inert until the Advanced tab's
+                # checkbox is ticked, so blocking the routing dialog on it would
                 # refuse a board this GUI can route. The raster gate lives in
-                # startup_checks.check_render_dependencies, at the render entry
-                # points.
-
-                if missing:
-                    msg = f"Missing Python dependencies: {', '.join(missing)}\n\n"
-                    msg += "Install them using KiCad's Python interpreter:\n"
-                    msg += f"  {sys.executable} -m pip install " + " ".join(missing)
-                    raise RuntimeError(msg)
+                # startup_checks.check_render_dependencies, at the render sites.
+                from startup_checks import (ROUTING_PACKAGES,
+                                            dependency_problems,
+                                            format_problems)
+                problems = dependency_problems(ROUTING_PACKAGES)
+                if problems:
+                    raise RuntimeError(format_problems(
+                        problems,
+                        "Python dependencies missing or too old:"))
 
                 # Check if Rust router is the problem
                 try:
@@ -4048,15 +4041,21 @@ class RoutingDialog(wx.Dialog):
                 # as run_kicad_oracle_on_live_board kwargs; this front builds
                 # the config itself, so they have to be set here.
                 #
-                # Added only when the engine actually sent a value: these three
-                # are dataclass FACTORY fields, so an explicit None is not the
+                # #1033: the per-net widths too, mirroring route.py's _ocfg, so
+                # the weld's width ladder climbs to the same net width on both
+                # fronts.
+                #
+                # Added only when the engine actually sent a value: these are
+                # dataclass FACTORY fields, so an explicit None is not the
                 # same as leaving them out -- `layers=None` would replace the
                 # ['F.Cu','B.Cu'] default with None rather than fall back to it.
                 _okw = {}
-                for _k in ('layers', 'layer_costs', 'power_net_widths'):
+                for _k in ('layers', 'layer_costs', 'power_net_widths',
+                           'net_track_widths', 'net_layer_widths'):
                     if _pfo.get(_k):
-                        _okw[_k] = (dict(_pfo[_k]) if _k == 'power_net_widths'
-                                    else list(_pfo[_k]))
+                        _okw[_k] = (list(_pfo[_k])
+                                    if _k in ('layers', 'layer_costs')
+                                    else dict(_pfo[_k]))
                 _ocfg = GridRouteConfig(
                     clearance=_pfo.get('clearance') or defaults.CLEARANCE,
                     track_width=_pfo.get('track_width') or defaults.TRACK_WIDTH,

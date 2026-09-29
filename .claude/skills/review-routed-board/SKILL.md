@@ -32,6 +32,24 @@ fine-pitch taps), so the bare invocation above already grades at the true routed
 floor. Pass `--clearance <value>` only to override (e.g. to grade a hand-routed
 board with no routed-floor `.kicad_pro`).
 
+When the board was routed from an input you have, add `--baseline <the input
+board>`. `VIA-IN-PASTE` rows are vias whose barrel sits in a solder-paste
+opening of their own net without IPC-4761 Type VII (filled AND capped); solder
+wicks into such a barrel. KiCad has no such check, so check_drc is the only
+instrument that reports them. On a KiCad 10-format board the router stamps
+Type VII onto every via it adds in a pad or paste opening, so these are almost
+always vias the input already had: `--baseline` accepts those (a via the input
+had under solder, unprotected) as `inherited-via-in-paste` and the console line
+counts them. A file older than KiCad 10 (version < 20250000) cannot carry
+the tokens at all, so there every such via `--baseline` does not inherit is
+accepted `undeclarable-via-in-paste` and counted on the same line: Type VII
+belongs on the fab drawing. Report whatever still fires as a fab defect: the
+via needs filled+capped on the fab drawing, or it must move out of the opening.
+Without `--baseline`, every pre-existing one reads as a violation
+(one corpus board carries 136). The same flag grades a graze of footprint graphic copper that a
+part MOVE created (`graphic-board-edge`); `graphic-off-board` (copper past the
+outline) is reported either way.
+
 **Important caveat to include in the report:** `check_drc.py` does not check zone copper, minimum trace width, or netclass compliance. If the board has copper zones/planes, recommend the zone-aware check:
 
 ```bash
@@ -59,6 +77,13 @@ drop={'via_dangling','track_dangling','silk_overlap','silk_over_copper',\
 c=[x for x in v if x['type'] not in drop];\
 print(f'{len(c)} copper/connectivity violations ({len(v)-len(c)} silk/dangling ignored)')"
 ```
+
+A `shorting_items` between `<no net>` and a net, on a part's own graphic copper
+("Polygon [<no net>] of U2"), is not a short when that net is the part's own
+pad's: a SOT-89 tab its pad's net was routed onto. `check_drc.py` lists each one
+under WARNINGS as `footprint own copper` (#995). Report them as KiCad errors the
+user will see, not as shorts. A `<no net>` item with any OTHER net is a real
+short.
 
 The cross-check is one-directional (#260): kicad-cli can refute a borderline
 check_drc *near-miss* (a sub-clearance gap), but a kicad-cli "0" does NOT clear
@@ -217,7 +242,7 @@ For each differential pair (from `list_nets.py --diff-pairs`):
 routing skill loops on:
 
 ```bash
-python3 -X utf8 .claude/skills/plan-pcb-placement-and-routing/scripts/board_score.py \
+python3 -X utf8 py_tools/board_score.py \
     board.kicad_pcb --intent wk/floorplan.json \
     --min-track-width <spec> --min-via-diameter <spec> --min-via-drill <spec>
 ```
@@ -259,4 +284,4 @@ UNGRADED (not scored, not passed): impedance, length
 2. Re-run route_planes.py --add-gnd-vias for the 3 uncovered signal vias
 ```
 
-When connectivity or routing failures are found, recommend `/diagnose-routing-failures` as the follow-up rather than diagnosing inline here.
+When connectivity or routing failures are found, recommend `/diagnose-routing-failures` as the follow-up rather than diagnosing inline here. If they trace to part positions (pad copper off the outline, unreachable pads, `check_assembly` not buildable), recommend `/pcb-free-agent full` instead of a router retry.

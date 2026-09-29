@@ -205,6 +205,9 @@ def refresh() -> None:
     g['DYNAMIC_ITERATIONS_GRACE'] = _i('KICAD_DYNAMIC_ITERATIONS_GRACE', 0)
     g['MULTIPOINT_DENSE_FIRST'] = _opt_in('KICAD_MULTIPOINT_DENSE_FIRST')
     g['FANOUT_DIRECT'] = _opt_in('KICAD_FANOUT_DIRECT')
+    # served-under-the-part deferral (2026-09-19): a ball whose net's every
+    # off-footprint pad lies inside the ball field gets no escape stub
+    g['FANOUT_SKIP_UNDER'] = _opt_in('KICAD_FANOUT_SKIP_UNDER')
     g['FANOUT_TOWARD_TARGETS'] = _opt_in('KICAD_FANOUT_TOWARD_TARGETS')
     # '' = follow the --plane-drop param (default auto); '0'/'off' forces the
     # plane-ball drop pass OFF, '1'/'auto' forces it ON -- the manifest-replay
@@ -287,6 +290,42 @@ def refresh() -> None:
     # `make_movie(boards, out=out, quiet=True)`), so one variable is how a
     # feature with no dialog control of its own reaches every front end at once.
     g['MOVIE_PANELS'] = _s('KICAD_MOVIE_PANELS', 'xray')
+
+    # #946/#1012: the render theme. 'dark' (default) is the domain convention
+    # -- KiCad's own canvas, and what every existing pixel-probing test
+    # assumes. Same shape and same reason as MOVIE_CAMERA and MOVIE_PANELS
+    # above: the GUI recorder passes no render parameters at all
+    # (movie_recorder.py:160 is `make_movie(boards, out=out, quiet=True)`), so
+    # one variable is how a feature with no dialog control of its own reaches
+    # every front end at once. The knob is for a PRODUCER making a figure for a
+    # light-background document, not for a viewer -- a rendered file's ground
+    # cannot be changed afterwards.
+    g['RENDER_THEME'] = _s('KICAD_RENDER_THEME', 'dark')
+
+    # #946/#1018: the named frame layout, and the target aspect. 'legacy'
+    # (default) is EXACTLY the frame every movie has always had -- the frame IS
+    # the board's bounding box -- so every existing artifact stays bit-for-bit
+    # what it was. 'auto' is the adaptive stacked-vs-sidebar rule, read from
+    # board_bounds. Same shape and same reason as MOVIE_CAMERA and
+    # MOVIE_PANELS: one variable reaches every front end at once.
+    g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'legacy')
+    g['MOVIE_ASPECT'] = _s('KICAD_MOVIE_ASPECT', '')
+
+    # #1036: the routing movie's FRAME BUDGET. A per-segment route trace
+    # (KICAD_ROUTE_TRACE=1) plays one frame per event, and run 32's 22-board
+    # chain over ~9000 segments made ~6100 frames -- a 17-minute film at
+    # 6 fps. Over budget, a traced step falls back to the chunked
+    # board-to-board reveal and the movie SAYS so. 2400 frames is 400 s at
+    # the default 6 fps. 0 = no budget. Same shape and same reason as
+    # MOVIE_CAMERA: one variable reaches every front end at once.
+    g['MOVIE_MAX_FRAMES'] = _i('KICAD_MOVIE_MAX_FRAMES', 2400)
+
+    # #1036 review: the least footprint displacement (mm) that counts as a
+    # PLACEMENT move for the movie. Below it a pose change is drift -- a
+    # 0.05 mm nudge a router or a writer left behind -- and it turns no
+    # camera on and glides nothing; the per-step substrate still draws it. A
+    # rotation always counts. Same shape and reason as MOVIE_CAMERA.
+    g['MOVIE_MOVE_MIN_MM'] = _f('KICAD_MOVIE_MOVE_MIN_MM', 0.5)
 
     # --- truthy diagnostics / overrides -------------------------------------
     g['UNBLOCK_DEBUG'] = _truthy('KICAD_UNBLOCK_DEBUG')

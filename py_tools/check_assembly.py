@@ -343,6 +343,38 @@ def main():
                   "bounding box against an outline inflated by the grading "
                   "clearance -- an edge-mounted part reports a breach its "
                   "copper does not make.")
+    # #962: the second off-outline channel, footprint GRAPHIC copper (a drawn
+    # SOT-89 tab, an antenna). Pads can all be inside while the tab hangs off
+    # the board: esp_prog U2 at 115.34 reported blocking 0 with its tab
+    # 1.11 mm past the outline. Printed, and in JSON; it is not a
+    # `not_buildable` conjunct (the same decision as the pad channel above,
+    # #937), and check_drc grades it as graphic-off-board.
+    _g_refs = leg.get('oob_graphic_copper_refs') or []
+    if _g_refs:
+        print("    footprint GRAPHIC copper past the outline (margin 0): "
+              + ', '.join(f'{r} ({a}mm)' for r, a in _g_refs))
+    _g_un = leg.get('oob_graphic_copper_unmeasured') or []
+    if _g_un:
+        print("    footprint copper NOT measured against the outline: "
+              + ', '.join(f'{u[0]} ({u[1]})' for u in _g_un[:6]))
+    # #1031: pads in a board rule-area keep-out band, where the router can
+    # land no track. Printed and in JSON; like the two channels above it is
+    # NOT a `not_buildable` conjunct (#937) -- place_pose and
+    # render_placement --gate are what gate on it.
+    _k_pads = leg.get('keepout_copper_pads') or []
+    if _k_pads:
+        print(f"    pads in a rule-area keep-out band "
+              f"({leg.get('keepout_copper_band_mm')}mm band, no track can "
+              f"land): "
+              + ', '.join(f'{r[0]}.{r[1]} {r[2]} ({r[3]}mm)'
+                          for r in _k_pads[:12])
+              + (f" ... +{len(_k_pads) - 12} more" if len(_k_pads) > 12
+                 else ''))
+    _k_tht = leg.get('keepout_copper_tht_refs') or []
+    if _k_tht:
+        print("    through-hole pads in a keep-out band, reachable on an "
+              "uncovered layer (reported, not failed): "
+              + ', '.join(sorted({f'{r[0]}.{r[1]}' for r in _k_tht})[:12]))
     # ONE predicate, used verbatim at all three sites (verdict, JSON
     # `buildable`, exit code). Three re-derivations of `blocking or
     # locked_contact` is how the coincident-origin channel would have reached
@@ -522,9 +554,10 @@ def main():
 
     # A FOURTH conjunct, and `g['blocking']` is deliberately NOT touched.
     # `blocking` means "pad intersections" to board_score, to the seeder's
-    # repair census, and -- with INVERTED polarity -- to placement_driver's
-    # _guard_damage, which refuses to run the repair stages when `not
-    # blocking`. Folding containment into that count would change all three.
+    # repair census, and -- with INVERTED polarity -- to the retired
+    # placement_driver's _guard_damage, which refused to run the repair stages
+    # when `not blocking`. Folding containment into that count would have
+    # changed all three.
     # This is the same shape the coincident-origin channel used.
     # `courtyard_gating` is the FIFTH conjunct (run-23): the moved-vs-baseline
     # subset of the courtyard census -- see the currency comment above for
@@ -611,17 +644,17 @@ def main():
             'hole_conflicts': leg['hole_conflicts'],
             'oob_pad_count': leg['oob_pad_count'],
             'oob_pad_amount': leg['oob_pad_amount'],
-            # The MACHINE path, which is the one that matters here: this doc is
-            # what loop_driver's L2 gate reads, and that gate refuses with "N
+            # The MACHINE path, which is the one that matters here: this doc
+            # is what the retired loop_driver's L2 gate read, refusing with "N
             # part(s) carry pad copper OFF the board -- their nets cannot be
             # routed at all". It could not name the part, and the count it
             # gates on moves with --clearance, so a clearance-band graze reads
             # as copper in the air. Both facts now travel with the number.
             'oob_pad_refs': leg.get('oob_pad_refs') or [],
             'oob_pad_basis': leg.get('oob_pad_basis'),
-            # The PER-PAD channel beside the AABB one (#937). The gate in
-            # loop_driver's L2 reads `oob_pad_count` and is right to -- it is
-            # justified over 119 graded rows -- but a consumer holding only
+            # The PER-PAD channel beside the AABB one (#937). The retired
+            # loop_driver's L2 gate read `oob_pad_count` and was right to -- it
+            # was justified over 119 graded rows -- but a consumer holding only
             # this document could not tell a real off-outline pad from the
             # bounding box of an edge part, and the refusal it writes says
             # "their nets cannot be routed at all", which is true of one and
@@ -629,6 +662,25 @@ def main():
             'oob_pad_copper_count': leg.get('oob_pad_copper_count', 0),
             'oob_pad_copper_refs': leg.get('oob_pad_copper_refs') or [],
             'oob_pad_copper_basis': leg.get('oob_pad_copper_basis'),
+            # #962: footprint GRAPHIC copper against the outline -- the second
+            # off-outline channel, same non-gating contract as the pad one.
+            'oob_graphic_copper_count': leg.get('oob_graphic_copper_count', 0),
+            'oob_graphic_copper_amount': leg.get('oob_graphic_copper_amount', 0.0),
+            'oob_graphic_copper_refs': leg.get('oob_graphic_copper_refs') or [],
+            'oob_graphic_copper_waived': leg.get('oob_graphic_copper_waived') or [],
+            'oob_graphic_copper_unmeasured': leg.get('oob_graphic_copper_unmeasured') or [],
+            'oob_graphic_copper_basis': leg.get('oob_graphic_copper_basis'),
+            'graphic_edge_shortfall_refs': leg.get('graphic_edge_shortfall_refs') or [],
+            # #1031: pads in a board rule-area keep-out band -- the same
+            # non-gating contract as the two off-outline channels.
+            'oob_keepout_copper_count': leg.get('oob_keepout_copper_count', 0),
+            'oob_keepout_copper_amount': leg.get('oob_keepout_copper_amount', 0.0),
+            'oob_keepout_copper_refs': leg.get('oob_keepout_copper_refs') or [],
+            'keepout_copper_pads': leg.get('keepout_copper_pads') or [],
+            'keepout_copper_tht_refs': leg.get('keepout_copper_tht_refs') or [],
+            'keepout_copper_exempt': leg.get('keepout_copper_exempt') or [],
+            'keepout_copper_unmeasured': leg.get('keepout_copper_unmeasured') or [],
+            'keepout_copper_basis': leg.get('keepout_copper_basis'),
             'locked_contact_pairs': [q._asdict() for q in locked_contact],
             # run-19: parts stacked at one origin, marker classes exonerated.
             # Groups, not fake N*(N-1)/2 pair entries -- a stack is one

@@ -45,10 +45,32 @@ Three things to know before you trust its output:
   container that OOMs prints no summary line at all, and a driver that decided
   on parsed counts would read that silence as zero failures. A shard that
   never reported fails the run and is named.
-- **The cloud image has NO KiCad**, so every test needing pcbnew/wx self-skips
-  (exit 77). Those are reported in their own bucket and are *not* passes -- and
-  the wx/pcbnew parity gates in `tests/gui_parity/` are not collected by
-  `run_all` at all, so they still need a local KiCad-python session.
+- **THIS image -- the SUITE image -- has no KiCad**, so every test needing
+  pcbnew/wx self-skips (exit 77). Those are reported in their own bucket and
+  are *not* passes -- and the wx/pcbnew parity gates in `tests/gui_parity/`
+  are not collected by `run_all` at all, so they still need a local
+  KiCad-python session.
+
+  **Do not read that as "the cloud has no KiCad".** It is true of
+  `modal_suite/run_all_modal.py` (plain `debian_slim`, no switch) and of
+  nothing else. The STRESS app has carried KiCad since 2026-08-23:
+  `cloud_replay_sets.py` passes `--with-kicad` **by default**
+  (`--no-kicad` opts out), which sets `KICAD_SWEEP_WITH_KICAD=1` and builds
+  `modal_sweep/modal_app.py` on `kicad/kicad:10.0.0`, proving `import pcbnew`
+  and `kicad-cli version` during the image build so a missing binding kills
+  the BUILD rather than quietly deadening the oracle legs. Note the two
+  defaults differ: `modal_app.py` read on its own defaults the env var OFF,
+  while the CLI you actually launch defaults it ON, and a KiCad wave labels
+  itself `-kc`.
+
+  Only **two** of `run_all`'s self-skips would be recovered by giving the
+  suite image KiCad -- `test_887_iso_render` (wants the `kicad-cli` binary;
+  Pillow, its other precondition, IS in `requirements.txt`) and
+  `test_910_fill_for_delivery` (wants KiCad's bundled python). The other two,
+  `test_887_run24_regression` and `test_run8_starved_face_gate`, want recorded
+  artifacts under `wk/` -- gitignored, 0 files tracked -- so they self-skip on
+  ANY clean clone, with or without KiCad. Verified 2026-09-20 by running all
+  four locally WITH KiCad present.
 
 The image is a clean checkout of HEAD (reproducible, and you can keep editing
 while it runs); `KICAD_SWEEP_DIRTY=1` ships the working tree instead and stamps
@@ -63,7 +85,7 @@ are listed here because each is a trap that will come back:
 |---|---|
 | a git **index** | `run_utils.corpus_boards()` asks `git ls-files`, and `git archive` ships no `.git`, so it returned `[]` and 9 corpus-walking tests graded an EMPTY corpus instead of skipping |
 | `Pillow` | `startup_checks.check_render_dependencies` raised; 3 render tests died |
-| `pytest` | 2 tests import it for fixtures; it is a test-only dep, so it is correctly absent from `requirements.txt` |
+| `pytest` | 2 tests imported it for fixtures (a test-only dep, correctly absent from `requirements.txt`). No test needs it now, so the image no longer installs it, and `test_718_static_test_hygiene.py` refuses a test file that imports pytest or that only pytest can run |
 | the right **Python version** | 2 tests behave differently on 3.12 vs 3.13+ |
 
 Three of those deserve spelling out:

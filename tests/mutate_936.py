@@ -22,16 +22,16 @@ mid-run prints a wall of meaningless `KILLED ok`.
 Refuses to start on a dirty target tree, because it restores the ORIGINAL text
 from disk and would write committed text over uncommitted work.
 
-Four rows mutate a GATE rather than the thing it guards
-(`list-hand-tuple`, `of-hardcoded`, `composed-flags-blinded`,
-`better-line-pinned`). That is deliberate: those gates are the only reason the
-corresponding claims cannot drift, so a battery that never breaks them would be
-reporting on a claim nobody tested.
+Two rows mutate a GATE rather than the thing it guards
+(`composed-flags-blinded`, `exit3-scanner-blinded`). That is deliberate: those
+gates are the only reason the corresponding claims cannot drift, so a battery
+that never breaks them would be reporting on a claim nobody tested.
 
-`better-line-pinned` runs `test_431_skill_commands.py`, which costs ~170 s.
-It is the one slow row and it earns it: it is the acceptance criterion for B6,
-and the defect it re-creates is a gate pinning the stale citation it exists to
-prevent.
+Retired with the staged placement skills (pcb-free-agent replaced them): the
+driver's stage-count rows, its `Next:` hand-off rows, its off-outline gate
+row, the GUI stage-pattern row, the evidence-map heading row and B6's
+`better-line-pinned` (whose assertion lived in a test_431 check of the
+retired skill's text).
 """
 import argparse
 import os
@@ -43,27 +43,23 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KILLED, SURVIVED, BROKEN = 'KILLED', 'SURVIVED', 'BROKEN'
 
 TARGETS = {
-    'pd': os.path.join(REPO, '.claude', 'skills', 'plan-pcb-placement',
-                       'scripts', 'placement_driver.py'),
-    'bs': os.path.join(REPO, '.claude', 'skills',
-                       'plan-pcb-placement-and-routing', 'scripts',
-                       'board_score.py'),
-    'em': os.path.join(REPO, '.claude', 'skills',
-                       'plan-pcb-placement-and-routing', 'references',
-                       'evidence-map.md'),
-    'pr': os.path.join(REPO, 'kicad_routing_plugin', 'placement_run.py'),
+    'bs': os.path.join(REPO, 'py_tools', 'board_score.py'),
+    'bst': os.path.join(REPO, 'py_placer', 'board_store.py'),
     'cv': os.path.join(REPO, 'py_placer', 'converge.py'),
     'dfl': os.path.join(REPO, 'tests', 'test_doc_flag_liveness.py'),
     't431': os.path.join(REPO, 'tests', 'test_431_skill_commands.py'),
+    'prun': os.path.join(REPO, 'kicad_routing_plugin', 'placement_run.py'),
+    'rw': os.path.join(REPO, 'tests', 'stress', 'run_watch.py'),
+    'cc': os.path.join(REPO, 'check_complete.py'),
 }
 
 T_WORKLIST = 'tests/test_broken_worklist.py'
-T_DRIVERS = 'tests/test_run8_skill_drivers.py'
-T_RUN = 'tests/test_placement_run.py'
 T_CONVERGE = 'tests/test_converge.py'
 T_DFL = 'tests/test_doc_flag_liveness.py'
-T_923 = 'tests/test_923_output_key_claims.py'
 T_431 = 'tests/test_431_skill_commands.py'
+T_PRUN = 'tests/test_placement_run.py'
+T_RW = 'tests/test_run20_run_watch.py'
+T_CC = 'tests/test_run9_check_complete.py'
 
 #: (name, target, old, new, tests that must notice, expectation)
 ROWS = [
@@ -73,50 +69,13 @@ ROWS = [
      "        v['handler'] = ('route_disconnected_planes' if name in poured",
      (T_WORKLIST,), KILLED),
 
-    # ---- C2: one procedure, one stage count ---------------------------------
-    # The defect itself: a hand-written tuple beside the real registry, which
-    # had silently lost P-brief -- the only stage that records a design fact.
-    ('list-hand-tuple', 'pd',
-     "        for key in STAGES:\n",
-     "        for key in ('P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P-close'):\n",
-     (T_DRIVERS,), KILLED),
-    # ...and the `of=` count a model reads as its progress. This one MUST be
-    # checked on the stage BODY: measured on the cheap arm, P4 refuses, a
-    # refusal carries no `of=` tag, and the check passed unconditionally.
-    ('of-hardcoded', 'pd',
-     '<stage_instructions stage="P4" name="fix loop" of="{len(STAGES)}">',
-     '<stage_instructions stage="P4" name="fix loop" of="7">',
-     (T_DRIVERS,), KILLED),
-    # The GUI half of the same defect: P-brief is the one id that is neither
-    # P<digit> nor P-close, so a hand tuple and this pattern skipped it alike
-    # and the GUI showed "working..." for the whole stage.
-    ('stage-re-drops-p-brief', 'pr',
-     '(P-brief|P-close|P[0-6]|L[1-5])',
-     '(P-close|P[0-6]|L[1-5])',
-     (T_RUN,), KILLED),
-
-    # ---- C3: every Next: line reaches its stage -----------------------------
-    # A handoff that names a stage without the flags that stage requires. P4
-    # refuses without --render-json, so the reader following it gets exit 4.
-    ('next-underspecified', 'pd',
-     "      --before {a.board} --render-json <the adopted board's render>",
-     "      --before {a.board}",
-     (T_DRIVERS,), KILLED),
-    # ...and a handoff naming a wk/ file no stage tells the reader to produce.
-    # Reaching the stage is not enough if the recipe is missing, and the
-    # flag-set arm cannot see this by construction.
-    ('next-artifact-orphan', 'pd',
-     "      --before {a.board} --render-json <the seed's render>",
-     '      --before {a.board} --render-json wk/render_seed.json',
-     (T_DRIVERS,), KILLED),
-
-    # ---- C4: the evidence map attributes its rows ---------------------------
-    # Attribution is by TOOL NAME ON THE HEADING LINE. Drop it and ~15 rows
-    # stop being checked while the page still looks right.
-    ('evidence-map-heading-untooled', 'em',
-     '## E2. `check_floorplan.py BOARD --intent ... --json wk/floorplan.json`',
-     '## E2. The --json PATH document',
-     (T_923,), KILLED),
+    # ---- C2, C3, C4: RETIRED -------------------------------------------------
+    # The stage registry and `of=` count, the `Next:` hand-offs, the GUI's
+    # stage pattern and the evidence map's heading attribution were all
+    # properties of the staged placement driver, its skill pages and the tab's
+    # stage parser. Those left the tree when the staged skills were retired
+    # for pcb-free-agent (the tab now reads progress from ledger rows), and so
+    # did these six rows and their killers.
 
     # ---- D1: a null `blocking` is reported, not raised ----------------------
     # Restores the unguarded `blocking = key[0]` by disabling the guard.
@@ -131,25 +90,126 @@ ROWS = [
      "        elif score.get('unknown') is not None \\\n",
      (T_CONVERGE,), KILLED),
 
+    # ---- #1071 #1075 #1076 #1078: `blocking` is a count, or unmeasured ------
+    # The #1071 crash itself: a per-term dict ranked, and the plateau test
+    # compared two dicts.
+    ('score-key-ranks-any-json', 'cv',
+     "    b = blocking_value(score.get('blocking'))\n",
+     "    b = score.get('blocking')\n",
+     (T_CONVERGE,), KILLED),
+    # One row per clause of the rule: each lets one kind of non-count rank.
+    ('blocking-bool-is-a-count', 'cv',
+     "    if isinstance(b, bool):\n        return (f'the boolean",
+     "    if False:\n        return (f'the boolean",
+     (T_CONVERGE,), KILLED),
+    ('blocking-nonfinite-is-a-count', 'cv',
+     "    if isinstance(b, float) and not math.isfinite(b):\n",
+     "    if False:\n",
+     (T_CONVERGE,), KILLED),
+    ('blocking-past-float-is-a-count', 'cv',
+     "    if b > sys.float_info.max:\n        return (f'an integer",
+     "    if False:\n        return (f'an integer",
+     (T_CONVERGE,), KILLED),
+    # `isfinite` converts an int to float: a 400-digit count raised.
+    ('isfinite-on-an-int-again', 'cv',
+     "    if isinstance(b, float) and not math.isfinite(b):\n",
+     "    if not math.isfinite(b):\n",
+     (T_CONVERGE,), KILLED),
+    ('blocking-negative-is-a-count', 'cv',
+     "    if b < 0:\n        return f'negative",
+     "    if False:\n        return f'negative",
+     (T_CONVERGE,), KILLED),
+    # The append-only ledger's only door.
+    ('record-accepts-a-non-count-blocking', 'cv',
+     "    if _bad_blocking:\n",
+     "    if False:\n",
+     (T_CONVERGE,), KILLED),
+    ('record-accepts-a-non-object-score', 'cv',
+     "    if _score_doc is not None and not isinstance(_score_doc, dict):\n",
+     "    if False:\n",
+     (T_CONVERGE,), KILLED),
+    # `false` as a --score: NO-SCORE must say what it is, never "null".
+    ('verdict-calls-a-non-count-null', 'cv',
+     "        elif blocking_defect(score.get('blocking')):\n",
+     "        elif False:\n",
+     (T_CONVERGE,), KILLED),
+    # TWO lines: the first alone is also a substring of `_no_score`'s deeper
+    # indented copy; the newline + 11 spaces before `'unknown'` is not.
+    ('verdict-ungraded-unguarded-again', 'cv',
+     "           'ungraded': _names('ungraded'),\n           'unknown'",
+     "           'ungraded': sorted(score.get('ungraded') or []),\n"
+     "           'unknown'",
+     (T_CONVERGE,), KILLED),
+    ('verdict-unknown-unguarded-again', 'cv',
+     "           'unknown': _names('unknown'),\n",
+     "           'unknown': sorted(score.get('unknown') or []),\n",
+     (T_CONVERGE,), KILLED),
+    ('quality-ranks-a-bool-or-nan', 'cv',
+     "                    and not isinstance(v, bool)\n"
+     "                    and (isinstance(v, int) or math.isfinite(v))\n",
+     "                    and True\n",
+     (T_CONVERGE,), KILLED),
+    ('quality-isfinite-on-an-int-again', 'cv',
+     "                    and (isinstance(v, int) or math.isfinite(v))\n",
+     "                    and math.isfinite(v)\n",
+     (T_CONVERGE,), KILLED),
+    ('unknown-not-a-list-claims-a-component-ran', 'cv',
+     "    if doc['unknown'] and isinstance(score.get('unknown'),\n",
+     "    if doc['unknown'] and (score.get('unknown'),\n",
+     (T_CONVERGE,), KILLED),
+    ('ungraded-not-a-list-reads-unexamined', 'cv',
+     "    if doc['ungraded'] and not isinstance(score.get('ungraded'),\n",
+     "    if False and not isinstance(score.get('ungraded'),\n",
+     (T_CONVERGE,), KILLED),
+    # The GUI's result document: `isinstance(True, int)` holds.
+    ('placement-result-takes-a-bool', 'prun',
+     "    if blocking is not None and (isinstance(blocking, bool)\n",
+     "    if blocking is not None and (False\n",
+     (T_PRUN,), KILLED),
+    ('placement-result-takes-a-negative', 'prun',
+     "                                 or blocking < 0):\n",
+     "                                 or False):\n",
+     (T_PRUN,), KILLED),
+    ('ledger-keeps-a-non-object-line', 'bst',
+     "                    if isinstance(doc, dict):\n",
+     "                    if True:\n",
+     (T_CONVERGE,), KILLED),
+    # #1078's leftover: numbering by the count repeats an iteration after a
+    # skipped line.
+    ('record-numbers-by-count', 'cv',
+     "    entry = {'iteration': lg.next_iteration(), 'kind': a.kind,\n",
+     "    entry = {'iteration': len(lg.entries()), 'kind': a.kind,\n",
+     (T_CONVERGE,), KILLED),
+    ('next-iteration-is-the-count', 'bst',
+     "        return max([len(rows)] + [i + 1 for i in used\n",
+     "        return max([len(rows)] + [0 for i in used\n",
+     (T_CONVERGE,), KILLED),
+    # The two readers outside the rule (#1071).
+    # The old test, which let `false` and NaN through as counts. (Not `blk =
+    # raw`: that dies comparing a dict, killed by a traceback, not a witness.)
+    ('watcher-ranks-a-non-count', 'rw',
+     "        blk = None if defect else raw\n",
+     "        blk = raw if isinstance(raw, (int, float)) else None\n",
+     (T_RW,), KILLED),
+    ('close-out-takes-false-as-done', 'cc',
+     "    if _bdef:\n",
+     "    if False:\n",
+     (T_CC,), KILLED),
+    ('close-out-splits-a-string-ungraded', 'cc',
+     "        return sorted(str(x) for x in v), None\n",
+     "        return sorted(str(x) for x in v), None\n"
+     "    if isinstance(v, str):\n"
+     "        return sorted(v), None\n",
+     (T_CC,), KILLED),
+
     # ---- the registration holes, and what they were hiding ------------------
     # `--no-ratsnest` is real and composed from an f-string, so no literal
-    # exists for the text scan to find. Blinding the resolver must make the
-    # placement skill's citation read as dead.
+    # exists for the text scan to find. The placement skill that cited it was
+    # retired, so the gate's own positive control is what must go red now.
     ('composed-flags-blinded', 'dfl',
      '            out |= _composed_flags(text)\n',
      '            out |= set()\n',
      (T_DFL,), KILLED),
-
-    # ---- the placement door gates off-outline pad copper --------------------
-    # The top-priority placement defect, checked at one door of three until now.
-    # Deliberately on the PER-PAD channel: check_assembly's `oob_pad_count` is a
-    # part-level AABB that reads non-zero on two HUMAN boards whose pads are
-    # fine (glasgow_revC 0.03mm, watchy 0.17mm), so gating on that count would
-    # refuse them. Blinding the read must redden the driver's own self-test.
-    ('off-outline-gate-blinded', 'pd',
-     "    _oob = (chk.get('a_off_outline') or {}).get('pad_copper')\n",
-     "    _oob = None\n",
-     (T_DRIVERS,), KILLED),
 
     # ---- test_431's exit-code scanner, its only live half -------------------
     # The corpus has 0 annotated commands, so a scanner that stopped matching
@@ -159,13 +219,6 @@ ROWS = [
      "            blk = ''\n",
      (T_431,), KILLED),
 
-    # ---- B6: a gate must not pin the citation it exists to keep correct -----
-    # `def better` moved from 358 to 564. The gate hardcoded 358, so correcting
-    # the skill FAILED the test whose job is keeping the skill correct.
-    ('better-line-pinned', 't431',
-     "    assert 'better()' in skill and f'place_route_loop.py:{_better}' in skill, \\\n",
-     "    assert 'better()' in skill and 'place_route_loop.py:358' in skill, \\\n",
-     (T_431,), KILLED),
 ]
 
 

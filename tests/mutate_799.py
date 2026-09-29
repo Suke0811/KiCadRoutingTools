@@ -40,9 +40,7 @@ _TESTS = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_TESTS)
 
 FLOORPLAN = os.path.join(_ROOT, 'py_placer', 'placement', 'floorplan.py')
-SCORE = os.path.join(_ROOT, '.claude', 'skills',
-                     'plan-pcb-placement-and-routing', 'scripts',
-                     'board_score.py')
+SCORE = os.path.join(_ROOT, 'py_tools', 'board_score.py')
 TARGETS = {'fp': FLOORPLAN, 'bs': SCORE}
 
 T793 = os.path.join(_TESTS, 'test_793_keepout_allow_unresolved.py')

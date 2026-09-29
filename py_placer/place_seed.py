@@ -20,7 +20,8 @@ place_portfolio.py to diversify and rank what this emits.
 Exit codes: 0 seeded and graded clean; 2 bad arguments; 3 the board cannot be
 seeded (no Edge.Cuts outline -- the outline is spec-owned and will not be
 invented -- or the board is already placed / carries copper); 4 the seed was
-written but parts could not be seated or the intent grade has errors ON
+written but parts could not be seated, a declared fixed pose was not
+honoured (`fixed_refused`, #1054), or the intent grade has errors ON
 PARTS THE SEED PLACED. A grade error on a part the seed was told not to move
 -- `(locked yes)` in the file, or matched by the intent's `must_lock` -- is
 printed and counted in `grade_errors_pinned`, and does not fail the gate:
@@ -29,10 +30,40 @@ author can settle. Measured, run 27: a fixed USB socket declared
 `along_edge: center` within 0.6 mm sits 1.75 mm off centre, and every one of
 ten seeds failed on it, so nothing the seeder did could ever be ranked.
 
+Exit 5 (#959): the PLAN is refused before anything is written --
+`floorplan.plan_check` found an ERROR no arrangement can satisfy and the
+seeder has no per-member answer for (`floorplan.PLAN_SEED_REFUSES`: a zone
+smaller than its members' summed area, a part longer than its edge, a board
+too small by area, a real reference used as a glob). Fix the zone plan; the
+board is untouched. `JSON_SUMMARY.refused` is `plan_check` and the findings
+ride with it. Every other plan finding is PRINTED (`PLAN [...]`) and the seed
+proceeds: a zone a keep-out or a stranger's exclusive zone swallows is seeded
+so the seeder can name the member it could not seat and why (#701, #797), and
+a FILE-locked member already outside its zone keeps the pinned-part contract
+above. `--repair` / `--reseat` REPORT everything and proceed, since a repair
+works from a placement rather than a plan.
+
 Every JSON_SUMMARY also carries `connector_requirements` (#974): which declared
 edge-connector requirements were graded and on what basis, which were not
 measured, and the connector errors on each side of the pinned split. It
 reports; it never withholds the board and never changes an exit code.
+
+The pad conflicts in the written board are reported in three buckets that
+PARTITION `pad_conflicts_after` (#982): `pad_conflicts_seeded` is the seed's
+own, a pair with a part it moved on at least one side; `pad_conflicts_unseated`
+is a pair against a part it could NOT seat, which was written at the pose it
+came in with, so whether anything lands on it is incidental to the seed;
+`pad_conflicts_inherited` is the board's own. Only the first fails the gate,
+and only when nothing is unseated -- an unseated part already fails it for a
+better reason. All three are named on the console, because every one of them
+is copper a fab will see.
+
+It also carries `edge_floor_fallback` (#975): the declared edge connectors whose
+seat leaves pad copper inside the board-edge floor because no pose the seat
+ladder tried clears it, by ref, with the pads and why the seat could not move.
+An edge seat prefers a pose that clears the floor and otherwise keeps the seat
+it always chose, since an unseated connector is an unrouted one. Like
+`connector_requirements`, it never changes an exit code.
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -44,6 +75,12 @@ import argparse
 import json
 import os
 import sys
+
+#: #959 (#998): the zone plan is refused before anything is written -- a
+#: plan no arrangement can satisfy. Distinct from 3 (the BOARD cannot be
+#: seeded) and 4 (a seed WAS written and its grade failed): a caller acting
+#: on 3 stops, on 4 inspects the board, and on 5 fixes the plan.
+PLAN_REFUSED_EXIT = 5
 
 
 def _split_pinned(graded, output_file, intent):
@@ -85,7 +122,173 @@ def _print_grade(own, pinned):
             print(f"  GRADE ERROR (pinned) [{v.rule}] {v.message}")
 
 
-def gate_reason(unseated, own, my_pads, hole_delta):
+def split_pad_pairs(worst, seeded, unseated):
+    """Split the written board's pad pairs into the seed's and the unseated's.
+
+    Returns `(mine, against_unseated)`, both in `worst` order. A pair is the
+    seed's when either member is a ref it MOVED, and lands in the second list
+    instead when the other member is a ref it could not seat. Pairs with
+    neither member moved are in neither list: they are the board's own, counted
+    from the total by the caller -- and a pair between TWO unseated parts is one
+    of those, since the seed moved neither of them.
+
+    #982. A part the seed cannot seat keeps the pose it came in with, and THAT
+    pose is what gets written -- `placements` has no row for it and the writer
+    leaves its block alone. Later stages pass the pile as `exclude`
+    (`seeder._try_place`: "the pile they still form at their meaningless input
+    coordinates must not veto real poses"), so they pack onto that copper, and
+    the pair then reaches the count through the partner the seed DID move. It
+    is real copper -- on ulx3s SEED 1, `py_tools/check_assembly.py` grades
+    `H4 <-> J1` a 1.5089 mm2 `pad_intersection`, BLOCKING, and the board NOT
+    BUILDABLE -- so it stays named and counted. A pair in this bucket is not
+    always that severe: ulx3s seed 0's H4-J2 is a 0.191 mm graze on a board
+    `check_assembly` still grades buildable. What it is not is the seed's answer
+    for the parts it placed: whether a hole lands on an unseated part is
+    incidental to the seed, and the count swung 0 -> 1 at seed 0 and 5 -> 8 over
+    seeds 0..9 when AUDIO1 was seated 0.386 mm further inward for a board-edge
+    copper fix (#975's A/B; a sham nudge of the same size on the unmodified
+    engine reproduces it, so the cause is the displacement, not the fix). Its
+    own bucket keeps `pad_conflicts_seeded` a number the seed can be held to.
+
+    How widespread this is, measured over seven boards at seed 0 (19 charged
+    pairs, 17 of them against a part that could not be seated) plus ulx3s at ten
+    seeds (5 of 5): ulx3s 5 of 5, rp2350 15 of 16, orangecrab 2 of 3, and
+    nothing at all on the four boards that seat everything. On rp2350 those
+    fifteen are ONE unseated part, U6, whose 75 pads sit at the designer's pose.
+    Every number here is re-measured by `tests/measure_982_unseated_pairs.py`,
+    which prepares its boards the way the issue does; read that file's
+    docstring for the recipe, because these numbers do NOT reproduce from a
+    board prepared some other way.
+
+    The exit code cannot move by this split: `gate_reason` returns the intent
+    arm whenever anything is unseated, and when nothing is unseated the second
+    list is empty by construction. A ref that is somehow BOTH moved and
+    unseated is charged to the seed, the direction that keeps the gate honest;
+    the seeder keeps the two disjoint, so this is a tie-break nothing reaches.
+
+    The alternative reading -- treat the written pose as an obstacle for later
+    stages -- was prototyped and MEASURED WORSE. It unseats parts that were
+    seated: ulx3s 20 -> 25 unseated over ten seeds (H4 at seeds 1 and 4, H1, H2
+    and H3 at seed 7), rp2350 1 -> 3, and hole conflicts up on two boards. It
+    does not even buy stability, because at ulx3s seed 7 it swapped three pairs
+    against J1/J2 for three against the H1/H2/H3 it had just unseated -- the
+    seat predicate is courtyard-level, so an unseated part's whole courtyard
+    (14.5 x 52 mm for ulx3s J1/J2) becomes a keep-out. It also ran about 20%
+    slower. Trading seats for a cleaner count is the wrong way round when an
+    unseated part's nets cannot be routed at all, so the search is left alone
+    here; this judgement is the branch's, not a rule quoted from CLAUDE.md.
+    """
+    if isinstance(unseated, str) or isinstance(seeded, str):
+        # A bare ref would split by CHARACTER and mis-sort every pair in
+        # silence, which is the kind of thing a summary key hides for a year.
+        raise TypeError('seeded and unseated are collections of refs, not a ref')
+    unseated, seeded = set(unseated), set(seeded)
+    mine, against_unseated = [], []
+    for w in worst:
+        if not (w[0] in seeded or w[1] in seeded):
+            continue
+        charged = {w[0], w[1]} & seeded
+        (against_unseated if (unseated & {w[0], w[1]}) - charged
+         else mine).append(w)
+    return mine, against_unseated
+
+
+def seed_structure_summary(result, graded, written):
+    """The #1051 / #1053 / #1054 keys, judged at the WRITTEN poses.
+
+    The seeder records what it did at the poses it SEEDED; the polish (and
+    the post-polish zone re-seat) can move those parts afterwards, so each
+    record is re-read against the board actually written, the way
+    `edge_floor_fallback` is. A row the seeder formed and the polish broke
+    must read broken:
+
+    * `arrays_formed[name].verdict` is the GRADER's reading on the written
+      board (`graded.array_measured`, the `array_formation` rule's own
+      measurement -- called, not mirrored); `verdict_at_seed` is the
+      seeder's self-check; `failed` is the written failure list.
+    * `fixed_seated[ref].at_written_pose` compares the written pose with
+      the seated one (a stamped part is frozen in the polish, so False
+      means something else moved it).
+    * `array_unseated`, `fixed_refused` and `decap_stage` are about what the
+      SEEDER did and are passed through.
+
+    Prints a `NOTE:` line for every row the seed formed that is not formed
+    as written, every fixed pose not at its written pose, and a one-line
+    tally of each key that is non-empty.
+    """
+    measured = {str(a.get('name')): a
+                for a in (getattr(graded, 'array_measured', None) or ())}
+    formed = {}
+    for name, rec in sorted((result.get('arrays_formed') or {}).items()):
+        m = measured.get(name) or {}
+        w = m.get('formed')
+        verdict = ('formed' if w else 'broken' if w is False
+                   else 'unmeasured')
+        formed[name] = dict(rec, verdict_at_seed=rec.get('verdict'),
+                            verdict=verdict,
+                            failed=list(m.get('failed') or ()))
+        if verdict != 'formed':
+            print(f"  NOTE: array {name} was seated as a row and is "
+                  f"{verdict.upper()} at the written poses"
+                  + (f" (failed: {', '.join(m.get('failed') or ())})"
+                     if m.get('failed') else '')
+                  + " -- the polish moved its members; place_seed "
+                    "--no-polish keeps the seeded row")
+    fixed = {}
+    for ref, rec in sorted((result.get('fixed_seated') or {}).items()):
+        f = written.get(ref)
+        at = (f is not None and abs(f.x - rec['x']) <= 1e-3
+              and abs(f.y - rec['y']) <= 1e-3
+              and abs(((f.rotation or 0.0) - rec['rot'] + 180.0) % 360.0
+                      - 180.0) <= 1e-6)
+        fixed[ref] = dict(rec, at_written_pose=at)
+        if not at:
+            print(f"  NOTE: fixed pose {ref} is NOT at its declared pose on "
+                  f"the written board")
+    unseated_rows = dict(result.get('array_unseated') or {})
+    refused = dict(result.get('fixed_refused') or {})
+    decap = result.get('decap_stage')
+    if formed or unseated_rows:
+        n_ok = sum(1 for r in formed.values() if r['verdict'] == 'formed')
+        print(f"  NOTE: arrays: {n_ok} formed at the written poses, "
+              f"{len(formed) - n_ok} seated but not formed as written, "
+              f"{len(unseated_rows)} not seated as rows"
+              + (f" ({', '.join(sorted(unseated_rows))})"
+                 if unseated_rows else ''))
+    if fixed or refused:
+        print(f"  NOTE: fixed poses: {len(fixed)} seated, {len(refused)} "
+              f"refused" + (f" ({', '.join(sorted(refused))})"
+                            if refused else ''))
+    if decap and decap.get('armed'):
+        print(f"  NOTE: decap stage: {decap.get('claimed')} of "
+              f"{decap.get('scope')} cap(s) claimed at a supply pin"
+              + (f" -- {decap['reason']}" if decap.get('reason') else ''))
+    return {'arrays_formed': formed, 'array_unseated': unseated_rows,
+            'fixed_seated': fixed, 'fixed_refused': refused,
+            'decap_stage': decap}
+
+
+def fixed_pose_reason(summary):
+    """The stderr line for a declared fixed pose this seed did NOT honour
+    (#1054), or None. Every `fixed_refused` entry, and every `fixed_seated`
+    one not at its written pose, fails the gate: a pose the intent declares
+    is a fact, and a seed that leaves it unmet is not the seed that intent
+    asked for. `gate_reason` already fires for a refusal the seeder counted
+    UNSEATED (an illegal pose); this is the rest -- a ref the board does not
+    have or that carries no pads, and a part locked in the FILE off its
+    declared pose, none of which is unseated (Phase-5 fact-check: those
+    exited 0)."""
+    bad = sorted(set(summary.get('fixed_refused') or ())
+                 | {r for r, rec in (summary.get('fixed_seated') or {}).items()
+                    if not rec.get('at_written_pose', True)})
+    if not bad:
+        return None
+    return (f"place_seed: {len(bad)} declared fixed pose(s) NOT honoured "
+            f"({', '.join(bad)}) -- see fixed_refused / fixed_seated in the "
+            f"JSON_SUMMARY. It was still written, for inspection.")
+
+
+def gate_reason(unseated, own, my_pads, hole_delta, band=()):
     """The one stderr line that says WHY this seed did not pass its gate.
 
     Two failures reach exit 4 and they are not the same failure, so the line
@@ -100,7 +303,7 @@ def gate_reason(unseated, own, my_pads, hole_delta):
     named the wrong channel and pointed at output that is not printed in
     that case.
     """
-    if not (unseated or own or my_pads or hole_delta):
+    if not (unseated or own or my_pads or hole_delta or band):
         return None
     tail = " It was still written, for inspection."
     if unseated or own:
@@ -113,6 +316,9 @@ def gate_reason(unseated, own, my_pads, hole_delta):
     if hole_delta:
         ch.append(f"{hole_delta} hole conflict(s) the board did not come in "
                   f"with")
+    if band:
+        ch.append(f"pad copper in a rule-area keep-out band on "
+                  f"{', '.join(sorted(band))}, where no track can reach it")
     return ("place_seed: the seed satisfies its intent but leaves "
             + " and ".join(ch) + "." + tail)
 
@@ -221,6 +427,15 @@ Examples:
                         "legality move, worst first, each seated nearest its "
                         "current pose with an escalating displacement cap. "
                         "The opposite contract of --force")
+    p.add_argument("--repair-decaps", action="store_true",
+                   help="With --repair (#1066): also seat each cap a "
+                        "decap_distance / decap_pin_distance error charges "
+                        "at its IC's pin -- the nearest legal pose within the "
+                        "rule's limit of that pin (then twice it), kept only "
+                        "when that finding is gone, no finding is new or "
+                        "worse, and the move is proportionate. Off by "
+                        "default: without it a decap violator is not moved, "
+                        "and is reported unresolved")
     p.add_argument("--reseat", nargs="*", default=None, metavar="REF",
                    help="LIFT the named parts and re-seat them FROM SCRATCH "
                         "at their net centroids, holding every other part "
@@ -318,6 +533,8 @@ Examples:
         p.error("--repair/--reseat and --force are mutually exclusive (they "
                 "move only the parts that need it; force re-derives "
                 "everything)")
+    if args.repair_decaps and not args.repair:
+        p.error("--repair-decaps only applies to --repair")
     if args.dry_run and not (args.repair or args.reseat is not None):
         p.error("--dry-run only applies to --repair / --reseat")
     if args.reseat_min_gain and args.reseat is None:
@@ -369,6 +586,35 @@ Examples:
               f"{st.vias} via(s); seeding moves footprints and would strand "
               f"every track. Seed the unrouted board.", file=sys.stderr)
         return UNPLACED_EXIT
+    # #959 (#998): the plan, checked against itself and the board BEFORE the
+    # first write. Run 29 found its zone plan's errors at lap 5 because the
+    # only check ran after the seed had been written.
+    try:
+        _plan_found, _plan_meas = floorplan.plan_check(
+            intent, pcb, args.input_file, group_sources=sources or (),
+            clearance=args.clearance,
+            board_edge_clearance=args.board_edge_clearance)
+    except floorplan.UntrustworthyOutline:
+        _plan_found, _plan_meas = [], {}
+    # Only the findings the seeder has no per-member answer for refuse
+    # here (`PLAN_SEED_REFUSES` says which and why); the rest are printed.
+    _plan_err = [v for v in _plan_found if v.severity == floorplan.ERROR
+                 and v.rule in floorplan.PLAN_SEED_REFUSES]
+    for _v in _plan_found:
+        print(f"  PLAN [{'ERROR' if _v.severity == floorplan.ERROR else 'warn'}]"
+              f" {_v.rule}: {_v.message}")
+    if _plan_err and not (args.repair or args.reseat is not None):
+        print(f"place_seed: the zone plan is refused before anything is "
+              f"written -- {len(_plan_err)} finding(s) no arrangement can "
+              f"satisfy. Fix the plan and re-run; "
+              f"`check_floorplan.py {args.input_file} --intent {args.intent} "
+              f"--plan-only` checks it without seeding.", file=sys.stderr)
+        print("JSON_SUMMARY: " + json.dumps({
+            'refused': 'plan_check', 'exit_code': PLAN_REFUSED_EXIT,
+            'output': None, 'written': False,
+            'plan_findings': [_v.to_dict() for _v in _plan_found],
+            'plan_measured': _plan_meas}, sort_keys=True, default=str))
+        return PLAN_REFUSED_EXIT
     if args.repair or args.reseat is not None:
         import math as _math
         import tempfile
@@ -377,7 +623,9 @@ Examples:
                   "one is unplaced -- seed it instead).", file=sys.stderr)
             return UNPLACED_EXIT
         summary = {'dry_run': args.dry_run,
-                   'output': None if args.dry_run else args.output_file}
+                   'output': None if args.dry_run else args.output_file,
+                   # #975: filled by whichever pass seats an edge part below.
+                   'edge_floor_fallback': {}}
 
         # Both passes stage into a temp dir and the finished board is copied
         # to the output path once, at the end. That keeps --dry-run honest
@@ -525,10 +773,18 @@ Examples:
             # how this pass came to refuse on a term the operator never asked
             # about for a whole release.
             _ab = reseat.get('accept_basis') or {}
+            # #1068: `intent` is labelled with the rules it counts, so
+            # `intent 0->0` cannot read as a measurement of the WHOLE intent
+            # while the grade below prints errors of a rule the count never
+            # had.
+            _ir = ','.join(_ab.get('intent_rules') or ()) or 'none declared'
+
+            def _label(term):
+                return f"intent[{_ir}]" if term == 'intent' else term
             if _ab.get('fired'):
                 _t = next((t for t in _ab.get('terms') or []
                            if t['term'] == _ab['fired']), {})
-                print(f"  accepted on {_ab['fired']}: "
+                print(f"  accepted on {_label(_ab['fired'])}: "
                       f"{_t.get('before')} -> {_t.get('after')} "
                       f"({_t.get('units')}); {_ab.get('policy')}")
             elif _ab.get('policy') == 'explicit:one-term-strict':
@@ -540,7 +796,7 @@ Examples:
                                if t.get('first')), None)
                 print(("  refused despite " + _first + " improving: "
                        if _first else "  no basis improved: ") + ", ".join(
-                    f"{t['term']} {t['before']}->{t['after']}"
+                    f"{_label(t['term'])} {t['before']}->{t['after']}"
                     for t in (_ab.get('terms') or [])))
             summary.update({
                 'reseat': True,
@@ -577,6 +833,8 @@ Examples:
                 'reseat_min_gain': args.reseat_min_gain,
                 'reseat_max_move_mm': round(_rmax, 3),
             })
+            summary['edge_floor_fallback'].update(
+                reseat.get('edge_floor_fallback') or {})
             _advance(reseat['moves'], 'reseat')
             if reseat['edge_bands_dropped']:
                 # Grade against what the pass actually honoured. Keeping the
@@ -598,7 +856,8 @@ Examples:
                 cur_pcb, cur, intent, group_sources=sources,
                 clearance=args.clearance,
                 board_edge_clearance=args.board_edge_clearance,
-                grid_step=args.grid_step)
+                grid_step=args.grid_step,
+                repair_decaps=args.repair_decaps)
             for note in result['notes']:
                 print(f"  NOTE: {note}")
             max_move = 0.0
@@ -612,12 +871,31 @@ Examples:
                   f"({len(result['moves'])} moved, max {max_move:.2f}mm), "
                   f"{len(result.get('unresolved') or [])} unresolved, "
                   f"{len(result['unrepairable'])} unrepairable")
+            # #1066: the refs behind every count. `unresolved` was printed and
+            # never written, so a caller reading JSON_SUMMARY could not tell
+            # a repaired violator from one still carrying its finding. An
+            # unresolved ref does NOT set exit 4 -- that code stays reserved
+            # for a violator this tool may not move (`unrepairable`).
+            _unres = list(result.get('unresolved') or [])
+            _by_rule: dict = {}
+            for _rules in (result.get('unresolved_claims') or {}).values():
+                for _rule in _rules:
+                    _by_rule[_rule] = _by_rule.get(_rule, 0) + 1
             summary.update({
+                'violators': len(result['violators']),
                 'repaired': len(result['repaired']),
+                'repaired_refs': list(result['repaired']),
+                'unresolved': len(_unres),
+                'unresolved_refs': _unres,
+                'unresolved_by_rule': _by_rule,
+                # #1066 (b): what the decap rung did per cap; {} when off.
+                'decap_rung': result.get('decap_rung') or {},
                 'unrepairable': len(result['unrepairable']),
                 'moved_refs': [m['reference'] for m in result['moves']],
                 'max_move_mm': round(max_move, 3),
             })
+            summary['edge_floor_fallback'].update(
+                result.get('edge_floor_fallback') or {})
             summary.update({f'{k}_before': v
                             for k, v in result['pad_report_before'].items()})
             _advance(result['moves'], 'repair')
@@ -962,8 +1240,9 @@ Examples:
     #
     # Attribution, so the seed answers for its own work and not the board's
     # (the same split `_split_pinned` makes for the intent grade): a PAD pair
-    # is the seed's when either member is a part it placed -- precise, by ref.
-    # A hole conflict cannot be attributed that way, because
+    # is the seed's when either member is a part it placed -- precise, by ref
+    # -- and not when the other member is a part it could not seat (#982,
+    # below). A hole conflict cannot be attributed that way, because
     # `grade_pad_legality` counts holes without recording the pair, so it is
     # judged on the DELTA against the input board: a count that rose is the
     # seed's, one that was already there is not.
@@ -989,15 +1268,18 @@ Examples:
             or abs(p['new_y'] - fp_in.y) > 1e-6
             or abs((p['new_rotation'] - fp_in.rotation) % 360.0) > 1e-6)
     _seeded = {p['reference'] for p in result['placements'] if _moved(p)}
-    _my_pads = [w for w in (_pads_out.get('worst') or ())
-                if w[0] in _seeded or w[1] in _seeded]
+    # #982: the pairs against a part that could not be seated are the seed's
+    # doing only incidentally -- see `split_pad_pairs`.
+    _my_pads, _unseated_pads = split_pad_pairs(
+        _pads_out.get('worst') or (), _seeded, result['unseated'])
     # From the COUNT, not from `len(worst)`: `worst` is capped by `worst_n`
     # (10 by default, 0 above meaning uncapped), and subtracting a capped list
     # from itself would report 0 inherited on a board with 50 shorts. This way
-    # the two numbers always sum to `pad_conflicts` whatever the cap is, and a
+    # the three numbers always sum to `pad_conflicts` whatever the cap is, and a
     # cap that ever came back would cost detail in the NAMES rather than
     # silence in the totals.
-    _their_pads = max(0, (_pads_out.get('pad_conflicts') or 0) - len(_my_pads))
+    _their_pads = max(0, (_pads_out.get('pad_conflicts') or 0)
+                      - len(_my_pads) - len(_unseated_pads))
     _hole_delta = max(0, (_pads_out.get('hole_conflicts') or 0)
                       - (_pads_in.get('hole_conflicts') or 0))
     if _my_pads:
@@ -1007,12 +1289,35 @@ Examples:
                           for a, b, mm in _my_pads[:10])
               + ("" if len(_my_pads) <= 10 else
                  f" ... and {len(_my_pads) - 10} more"))
+    if _unseated_pads:
+        print(f"  {len(_unseated_pads)} pad conflict(s) against a part this "
+              f"seed could NOT seat, which was written at the pose it came in "
+              f"with: "
+              + '; '.join(f"{a} <-> {b} ({mm:.3f}mm)"
+                          for a, b, mm in _unseated_pads[:10])
+              + ("" if len(_unseated_pads) <= 10 else
+                 f" ... and {len(_unseated_pads) - 10} more")
+              + " -- reported not charged; seat the part and they go with it")
     if _their_pads:
         print(f"  {_their_pads} further pad conflict(s) between parts this seed "
               f"did not place -- the board's own, reported not charged")
     if _hole_delta:
         print(f"  hole conflicts rose {_pads_in.get('hole_conflicts')} -> "
               f"{_pads_out.get('hole_conflicts')} across this seed")
+    # #1044: pad copper in a `(tracks not_allowed)` rule-area band that THIS
+    # seed put there -- a part it moved whose band reach grew past its input
+    # pose's. An inherited band pad (the part came in that way, or the seed
+    # never touched it) is reported, not charged, like an inherited short.
+    _band_in = {r: a for r, a in (_pads_in.get('oob_keepout_copper_refs')
+                                  or ())}
+    _band_out = [(r, a) for r, a in (_pads_out.get('oob_keepout_copper_refs')
+                                     or ())]
+    _band_seeded = [(r, a) for r, a in _band_out
+                    if r in _seeded and a > _band_in.get(r, 0.0) + 1e-6]
+    if _band_seeded:
+        print(f"  {len(_band_seeded)} part(s) this seed placed with pad copper "
+              f"in a rule-area keep-out band: "
+              + '; '.join(f"{r} ({a:.3f}mm)" for r, a in _band_seeded))
     after = ratsnest.get('after', {})
     summary = {'placed': len(result['placements']),
                'unseated': len(result['unseated']),
@@ -1023,6 +1328,13 @@ Examples:
                # sees only `unseated_refs` cannot tell a declaration it must
                # revisit from a board that is simply full.
                'rotation_unseated': result.get('rotation_unseated') or {},
+               # #975: declared edge connectors seated with pad copper inside
+               # the board-edge floor because no pose the seat ladder tried
+               # clears it -- the alternative was not seating them.
+               # `pad_edge_after` grades the copper; this says which seats
+               # chose it, and why. Filtered below against the WRITTEN poses:
+               # the post-polish re-seat can move a stage-1 connector.
+               'edge_floor_fallback': result.get('edge_floor_fallback') or {},
                'no_pose_blockers': result.get('no_pose_blockers') or {},
                # WHY each of them has no pose, not just who is nearby (#699).
                # "nothing is near it" and "everything near it is locked" were
@@ -1046,8 +1358,22 @@ Examples:
                'pad_conflicts_seeded': len(_my_pads),
                'pad_conflicts_seeded_pairs': [[a, b, mm]
                                               for a, b, mm in _my_pads],
+               # #982: against a part it could not seat, at that part's input
+               # pose. Real copper, reported apart so the seeded count does
+               # not swing with poses that have nothing to do with it.
+               'pad_conflicts_unseated': len(_unseated_pads),
+               'pad_conflicts_unseated_pairs': [[a, b, mm]
+                                                for a, b, mm in _unseated_pads],
                'pad_conflicts_inherited': _their_pads,
+               # The total the three buckets partition, so a reader can check
+               # the arithmetic instead of trusting it. The repair path
+               # publishes the same key from the same grade.
+               'pad_conflicts_after': _pads_out.get('pad_conflicts') or 0,
                'hole_conflicts_added': _hole_delta,
+               # #1044: the band pads this seed caused, and the board total.
+               'keepout_copper_seeded': [[r, a] for r, a in _band_seeded],
+               'oob_keepout_copper_count':
+                   _pads_out.get('oob_keepout_copper_count') or 0,
                'grade_warnings': len(graded.warnings),
                'crossings': after.get('crossings'),
                'hpwl': (round(after['hpwl'], 3)
@@ -1055,11 +1381,23 @@ Examples:
                'output': args.output_file}
     summary['pad_edge_before'] = _pads_in['pad_edge']
     summary['pad_edge_after'] = _pads_out['pad_edge']
+    _written = parse_kicad_pcb(args.output_file).footprints
+    summary['edge_floor_fallback'] = seeder.floor_records_at_poses(
+        summary['edge_floor_fallback'],
+        {r: (f.x, f.y, f.rotation) for r, f in _written.items()})
+    summary.update(seed_structure_summary(result, graded, _written))
+    # #1043/#1051/#1052: what the polish's rigid groups and tethers did,
+    # each key only when the intent declared its channel.
+    from placement.quench import disclosure as _disclosure
+    summary.update(_disclosure(ratsnest))
     # #974: after the split above, from the lists gate_reason reads below.
     summary['connector_requirements'] = floorplan.connector_requirements(
         graded, own, pinned)
     print("JSON_SUMMARY: " + json.dumps(summary, sort_keys=True))
-    _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta)
+    _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta,
+                          band=[r for r, _a in _band_seeded])
+    if _reason is None:
+        _reason = fixed_pose_reason(summary)
     if _reason is not None:
         print(_reason, file=sys.stderr)
         return 4

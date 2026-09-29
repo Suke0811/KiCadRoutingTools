@@ -72,6 +72,135 @@ def load_intent_or_exit(args):
         return None, 2
 
 
+def add_mechanical_arg(parser) -> None:
+    """`--mechanical` / `--no-mechanical`: the RECORDED mechanical facts (#959).
+
+    `mechanical.json` is what `stage_unaided` writes next to the staged board:
+    the poses carried over from the source because they are mechanical facts
+    a real new board would already know. Nothing read it until #959 -- run 29
+    moved a fiducial off its declared pose and no gate objected. Discovered in
+    the board's own directory, like the design brief; `--no-mechanical` is
+    the OFF arm.
+    """
+    parser.add_argument(
+        "--mechanical", metavar="JSON", default=None,
+        help="mechanical.json: poses (and, in the declaration form, edges) a "
+             "run did not choose. Auto-discovered in the board's directory "
+             "when omitted. Reconciled against the brief and the board, "
+             "compiled at GRADE time into grade-only anchor blocks (never "
+             "written into a plan), and graded as mechanical_drift (#959)")
+    parser.add_argument(
+        "--no-mechanical", action="store_true",
+        help="Do not read mechanical.json, even if one sits beside the board. "
+             "The OFF arm for an auto-discovered input (#959)")
+
+
+def _same(a: str, b: str) -> bool:
+    """Two spellings of one path, compared the way the filesystem does
+    (case-folded on Windows)."""
+    import os
+    return (os.path.normcase(os.path.abspath(a))
+            == os.path.normcase(os.path.abspath(b)))
+
+
+def _relocated(recorded: str, sha: str, board_path: str):
+    """The recorded mechanical file under its new home, if the run dir
+    moved: the same basename beside the regime manifest or beside the board,
+    with the recorded sha. None otherwise -- a file with other bytes is not
+    the declaration, whatever it is called."""
+    import os
+    from placement import provenance as PV
+    from placement import reconcile
+    if not sha:
+        return None
+    wd = PV.regime_for(board_path)
+    cands = [os.path.join(wd, os.path.basename(recorded)) if wd else None,
+             reconcile.discover_mechanical(board_path) or None]
+    for c in cands:
+        if c and os.path.isfile(c) and reconcile._sha256(c) == sha:
+            return c
+    return None
+
+
+def load_mechanical_or_exit(args, board_path: str):
+    """(mechanical, path, exit_code). `exit_code` is 2 when an explicit
+    `--mechanical` names nothing, or the file found is not a mechanical
+    declaration this build reads -- a file by that name that reads as "no
+    mechanical facts" would be the silent absence #959 is about.
+
+    UNDER AN UNAIDED REGIME whose manifest recorded a `mechanical.json`, that
+    file is an input the run was handed, and the run cannot make it
+    disappear: `--no-mechanical`, another `--mechanical`, a deleted file and
+    a rewritten one (its sha no longer the recorded one) all exit 2. The
+    Phase-3 verifier cleared two undispositioned contradictions each way --
+    the flag, deleting the file, a lap board copied to a directory without
+    it, and a rewrite -- and the recorded path is read wherever the board
+    now lives, so a copied board keeps it."""
+    import os
+    import sys
+    from placement import reconcile
+    man = reconcile.regime_manifest(board_path)
+    recorded = man.get('mechanical') if isinstance(man, dict) else None
+    if recorded:
+        asked = getattr(args, 'mechanical', None)
+        why = None
+        if getattr(args, 'no_mechanical', False):
+            why = ("--no-mechanical: the unaided regime governing this board "
+                   f"recorded {recorded} as an input at staging, and a "
+                   "recorded input cannot be switched off")
+        elif asked and _same(asked, recorded) is False:
+            why = (f"--mechanical {asked}: the unaided regime recorded "
+                   f"{recorded} at staging; another file is not it")
+        elif not os.path.isfile(recorded):
+            # A run dir that was MOVED keeps its bytes: the file beside the
+            # regime manifest, or beside the board, with the recorded sha is
+            # the same declaration (round-2 verifier: an archived run exited
+            # 2 with the file sitting right there).
+            found = _relocated(recorded, man.get('mechanical_sha256'),
+                               board_path)
+            if found:
+                recorded = found
+            else:
+                why = (f"the mechanical declaration the unaided regime "
+                       f"recorded at staging, {recorded}, is gone -- "
+                       f"restore it")
+        if why:
+            print(f"cannot use the mechanical declaration: {why}",
+                  file=sys.stderr)
+            return None, recorded, 2
+        try:
+            mech = reconcile.load_mechanical(recorded)
+        except reconcile.MechanicalError as exc:
+            print(f"{exc}", file=sys.stderr)
+            return None, recorded, 2
+        msha = man.get('mechanical_sha256')
+        if msha and mech['sha256'] != msha:
+            print(f"cannot use the mechanical declaration: {recorded} "
+                  f"changed after staging (sha {mech['sha256'][:12]}, "
+                  f"recorded {msha[:12]}). It is an input the run was "
+                  f"handed, not the run's to rewrite -- restore it",
+                  file=sys.stderr)
+            return None, recorded, 2
+        return mech, recorded, 0
+    if getattr(args, 'no_mechanical', False):
+        return None, '', 0
+    path = getattr(args, 'mechanical', None)
+    if path:
+        if not os.path.isfile(path):
+            print(f"cannot read mechanical declaration {path}: no such file",
+                  file=sys.stderr)
+            return None, path, 2
+    else:
+        path = reconcile.discover_mechanical(board_path)
+        if not path:
+            return None, '', 0
+    try:
+        return reconcile.load_mechanical(path), path, 0
+    except reconcile.MechanicalError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return None, path, 2
+
+
 def add_brief_arg(parser) -> None:
     """`--brief` / `--no-brief`: the DECLARED design intent (#711).
 
@@ -183,17 +312,27 @@ def resolve_intent_gate_for_cli(intent, pcb_data, sources, path):
               file=sys.stderr)
     zoned = [z for z in bundle['zones'] if z['refs']]
     bound = len({r for z in zoned for r in z['refs']})
-    if not (zoned or bundle['keepouts'] or bundle['lock_refs']):
+    rigid = bundle.get('rigid_blocks') or {}
+    tethers = bundle.get('tethers') or {}
+    rotations = bundle.get('rotations') or {}
+    if not (zoned or bundle['keepouts'] or bundle['lock_refs'] or rigid
+            or tethers or rotations):
         # place_portfolio's --corridor-weight warning, same shape: an
         # intent-derived knob with nothing to bite on says so, rather than
         # reading as enforcement that happened to find nothing wrong.
         print(f"--intent {path} declares nothing this quench can gate on "
-              f"(no block with a resolved zone rect, no keep-out, no "
-              f"must_lock, no edge claim): the gate is inert", file=sys.stderr)
+              f"(no block with a resolved zone rect or a rotation, no "
+              f"keep-out, no must_lock, no edge claim, no array or rigid "
+              f"block, no tether limit at error): the gate is inert",
+              file=sys.stderr)
     else:
         print(f"intent: {len(zoned)} zoned block(s) over {bound} part(s), "
               f"{len(bundle['keepouts'])} keep-out(s), "
-              f"{len(bundle['lock_refs'])} locked ref(s); blocks resolved from "
+              f"{len(bundle['lock_refs'])} locked ref(s)"
+              + (f", {len(rigid)} rigid group(s)" if rigid else '')
+              + (f", tethers ({', '.join(sorted(tethers))})"
+                 if tethers else '')
+              + f"; blocks resolved from "
               f"{','.join(resolve_sources) or 'refs only'}")
     return bundle, problems
 

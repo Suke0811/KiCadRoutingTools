@@ -325,8 +325,10 @@ ROWS = [
      (T698,), 'KILLED'),
 
     ('the-probe-goes-back-to-the-named-scope-only', 's',
-     "        probe = _q.IntentProbe(state, zones=_bundle['zones'])\n",
-     "        probe = _q.IntentProbe(state, zones=_bundle['zones'], "
+     "        probe = _q.IntentProbe(state, zones=_bundle['zones'],\n"
+     "                               tethers=_bundle.get('tethers'))\n",
+     "        probe = _q.IntentProbe(state, zones=_bundle['zones'],\n"
+     "                               tethers=_bundle.get('tethers'), "
      "refs=scope)\n",
      (T698,), 'KILLED'),
 

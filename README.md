@@ -8,15 +8,22 @@ A fast Rust-accelerated A* autorouter for KiCad PCB files. Compatible with **KiC
 
 📊 **[Project metrics](https://drandyhaas.github.io/KiCadRoutingTools/metrics/)** — installs, downloads and traffic, updated daily.
 
-☕ **[Donate](https://ko-fi.com/drandyhaas)** — the tool is free and MIT-licensed; donations cover the ~$500/month of cloud compute and AI development behind it.
+<p align="center">
+  <a href="https://ko-fi.com/drandyhaas"><img src="docs/donate_button.svg" alt="Donate" width="300"></a>
+  <br>
+  Free and MIT-licensed. Donations cover the ~$500/month of cloud compute and AI development behind it.
+  <br>
+  Also via <a href="https://github.com/sponsors/drandyhaas">GitHub Sponsors</a> or <a href="https://www.paypal.me/DrAndyHaas">PayPal</a> — see <a href="#support">Support</a>.
+</p>
 
 <p align="center">
-  <img src="docs/routed_all.png" alt="Routed PCB example" width="600">
-  <img src="docs/routed_kit.png" alt="Routed PCB example 2" width="600">
+  <img src="docs/routed_all.png" alt="Routed PCB example" width="380">
+  <img src="docs/routed_kit.png" alt="Routed PCB example 2" width="380">
 </p>
 
 ## Contents
 
+- [Support](#support) — donate via Ko-fi, GitHub Sponsors or PayPal
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [KiCad Plugin](#kicad-plugin) — GUI, the AI **AI tab**, installation
@@ -26,7 +33,29 @@ A fast Rust-accelerated A* autorouter for KiCad PCB files. Compatible with **KiC
 - [Performance](#performance)
 - [Command Reference](#command-reference) — options per tool (full list: `--help` / [configuration.md](docs/configuration.md))
 - [Project metrics](https://drandyhaas.github.io/KiCadRoutingTools/metrics/) — installs, downloads and traffic
-- [Requirements](#requirements) · [Limitations](#limitations) · [Contributing](#contributing) · [Support](#support) · [License](#license)
+- [Requirements](#requirements) · [Limitations](#limitations) · [Contributing](#contributing) · [License](#license)
+
+## Support
+
+KiCadRoutingTools is free and MIT-licensed, and it stays that way — there is no
+paid tier, no feature held back, and nothing in this repository is paywalled.
+
+Donations go to what it costs to build and maintain it: about **$500/month** of
+cloud computing and AI-assisted development.
+
+The compute is not incidental. Every change to the router is A/B-tested by
+replaying a corpus of real open-source boards on rented cores and grading each
+one for DRC violations and unconnected nets, and the ~600-file test suite fans
+out the same way. It is what stops a change that helps one board from quietly
+breaking ten others.
+
+- **[☕ Donate on Ko-fi](https://ko-fi.com/drandyhaas)** — card or PayPal, no account needed.
+- **[GitHub Sponsors](https://github.com/sponsors/drandyhaas)** — one-time or monthly, billed with any other projects you sponsor.
+- Prefer PayPal directly? **[paypal.me/DrAndyHaas](https://www.paypal.me/DrAndyHaas)** (the sender needs a PayPal account).
+
+A donation buys no priority support and unlocks no features. If you would rather
+contribute something worth more than money, route one of your own boards and file
+an issue for whatever breaks — see [Contributing](#contributing).
 
 ## Features
 
@@ -158,6 +187,7 @@ Other useful skills:
 > /recommend-stackup kicad_files/my_board.kicad_pcb          # Stackup advice for impedance/time-matching accuracy
 > /diagnose-routing-failures my_board.kicad_pcb /tmp/route_output.txt  # Root-cause failed routes, get a retry command
 > /review-routed-board my_board_routed.kicad_pcb             # Post-route QA: DRC, connectivity, length match, GND vias
+> /pcb-free-agent full kicad_files/my_board.kicad_pcb        # Place and route end to end; the agent picks its steps
 ```
 
 See [Claude Skills](docs/claude-skills.md) for what each skill does and how they fit together.
@@ -215,9 +245,9 @@ The full button-to-skill map is in [Claude Skills - Plugin GUI Integration](docs
 
 Three ways to install:
 
-**A. KiCad Plugin and Content Manager (PCM)** — the recommended path for end users. Open the PCM from the KiCad main window, find *KiCad Routing Tools*, and click Install. (The package is in the process of being added to the official repository; once accepted, this will be available out-of-the-box.) On first launch, the plugin checks the Python packages listed in `requirements.txt` (currently `scipy` and `shapely` — KiCad already bundles `numpy`) and offers a one-click pip install for any that are missing into KiCad's Python.
+**A. KiCad Plugin and Content Manager (PCM)** — the recommended path for end users, and it needs no extra repository URL: the package has been in the **official KiCad repository** (the one KiCad ships with, `gitlab.com/kicad/addons`) since v0.15.6. Open the PCM from the KiCad main window, leave the repository dropdown on *KiCad official repository*, go to the **Plugins** tab, search for `routing`, select *KiCad Routing Tools* and click **Install**, then **Apply Changes** at the bottom. If it is not listed, the PCM is serving a cached catalogue — press **Refresh** and look again. Versions are published with status `testing` rather than `stable`, which the PCM shows in the Status column but does not hide or block; `kicad_version` is a *minimum*, so the 9.0 entry installs on KiCad 10 as well. On first launch, the plugin checks the Python packages listed in `requirements.txt` (`numpy`, `scipy`, `shapely`) and offers a one-click pip install for any that are missing **or too old** into KiCad's Python. Do not assume KiCad supplies them: what it bundles varies by version and platform, and KiCad 10 on macOS ships no `numpy` at all. The check reports the version and the file path the *running* interpreter imports — KiCad's Python is often not the one `pip show numpy` answers for in a terminal.
 
-**B. PCM "Install from File…" using the release zip** — works today, before the package lands in the official repository. Each [GitHub Release](https://github.com/drandyhaas/KiCadRoutingTools/releases) ships a ready-to-install PCM package zip named `KiCadRoutingTools-<version>.zip` (a single cross-platform archive bundling the prebuilt Rust binaries for all platforms — **not** the auto-generated "Source code (zip)"). To install it:
+**B. PCM "Install from File…" using the release zip** — for a release newer than the one the official catalogue currently carries, for a pinned older version, or for an offline machine. Each [GitHub Release](https://github.com/drandyhaas/KiCadRoutingTools/releases) ships a ready-to-install PCM package zip named `KiCadRoutingTools-<version>.zip` (a single cross-platform archive bundling the prebuilt Rust binaries for all platforms — **not** the auto-generated "Source code (zip)"). To install it:
 
 1. From the Release's *Assets*, download `KiCadRoutingTools-<version>.zip` (e.g. `KiCadRoutingTools-0.15.13.zip`).
 2. In KiCad, open **Plugin and Content Manager** from the main window.
@@ -243,6 +273,8 @@ The installer automatically detects your KiCad installation directory (supports 
 - **macOS**: `~/Documents/KiCad/<version>/3rdparty/plugins/`
 - **Linux**: `~/.local/share/kicad/<version>/3rdparty/plugins/`
 - **Windows**: `~/Documents/KiCad/<version>/3rdparty/plugins/`
+
+The installer also installs `requirements.txt` into KiCad's Python with pip, and skips pip when that Python already has everything. On Linux, KiCad runs the system Python, which Debian 12+, Ubuntu 23.04+, Fedora 38+ and Arch mark as externally managed (PEP 668) so pip refuses to install into it; there the installer runs no pip and prints the `apt` / `dnf` / `pacman` command for whatever is missing, plus the explicit `--break-system-packages` override for a package your distribution does not carry.
 
 If you previously installed this plugin through the Plugin & Content Manager, that copy sits next to the local install and would shadow it on `sys.path` (causing stale-code errors). The installer detects any such PCM copy and moves it aside to `<kicad-base>/disabled_pcm_plugins/<version>/`, leaving it recoverable. Pass `--keep-pcm` to skip this.
 
@@ -617,7 +649,7 @@ See [tests/README.md](tests/README.md) for detailed documentation of all test sc
 | [QFN Fanout](py_router/qfn_fanout/README.md) | QFN/QFP escape routing generator |
 | [Rust Router](rust_router/README.md) | Building and using the Rust A* module |
 | [Power Net Analysis](docs/power-nets.md) | Power net detection, AI analysis, track width guidelines |
-| [Claude Skills](docs/claude-skills.md) | All nine AI skills: routing plans, power/high-speed/diff-pair analysis, stackup, plane mappings, failure diagnosis, board review |
+| [Claude Skills](docs/claude-skills.md) | All ten AI skills: placement and routing end to end, routing plans, power/high-speed/diff-pair analysis, stackup, plane mappings, failure diagnosis, board review |
 | [Placement](py_placer/placement/README.md) | Placement optimization for routability |
 | [Integration Tests](tests/README.md) | Test scripts and performance benchmarks |
 | [Release Pipeline](docs/release-pipeline.md) | How to tag a release and submit it to the KiCad PCM (maintainers) |
@@ -734,6 +766,7 @@ KiCadRoutingTools/
     ├── recommend-stackup/    # Stackup review/recommendation skill
     ├── recommend-plane-mappings/  # Net-to-plane-layer assignment skill
     ├── diagnose-routing-failures/  # Failure root-cause and retry skill
+    ├── pcb-free-agent/       # Agent-driven place and/or route, one verifier, film + report
     ├── review-routed-board/  # Post-route QA and sign-off skill
     └── stress-test-router/   # Batch stress-test on real-world boards + issue filing (dev/QA)
 ```
@@ -875,7 +908,10 @@ The shared option groups — geometry, power-net widths, algorithm/strategy, pro
 - Python 3.9+ (the router is built `abi3-py39` whether it is downloaded or built
   from source, so building locally does not lower the floor — on 3.8 the module
   compiles and then fails to load with `symbol not found ... _PyCMethod_New`)
-- numpy (`pip3 install numpy`)
+- numpy **1.22 or newer** (`pip3 install "numpy>=1.22"`) — below 1.22 the stack fails
+  with errors that name neither numpy nor this tool: scipy's "A NumPy version
+  >=1.22.4 ... is required" and `TypeError: 'numpy._DTypeMeta' object is not
+  subscriptable`
 - scipy (`pip3 install scipy`) - used for optimal target assignment and Voronoi partitioning
 - shapely (`pip3 install shapely`) - used for polygon union in multi-net plane layers
 - Rust toolchain — only needed if you build the router from source (`python build_router.py --from-source`); not required when using the prebuilt binary
@@ -895,27 +931,6 @@ the result with `check_drc.py` + `check_connected.py`, and file an issue for
 anything that breaks — ideally with a pointer to the board file. Fixes and
 pull requests for open issues are just as welcome. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
-
-## Support
-
-KiCadRoutingTools is free and MIT-licensed, and it stays that way — there is no
-paid tier, no feature held back, and nothing in this repository is paywalled.
-
-Donations go to what it costs to build and maintain it: about **$500/month** of
-cloud computing and AI-assisted development.
-
-The compute is not incidental. Every change to the router is A/B-tested by
-replaying a corpus of real open-source boards on rented cores and grading each
-one for DRC violations and unconnected nets, and the ~600-file test suite fans
-out the same way. It is what stops a change that helps one board from quietly
-breaking ten others.
-
-**[☕ Donate on Ko-fi](https://ko-fi.com/drandyhaas)** — card or PayPal, no account needed.
-Prefer PayPal directly? **[paypal.me/DrAndyHaas](https://www.paypal.me/DrAndyHaas)** (the sender needs a PayPal account).
-
-A donation buys no priority support and unlocks no features. If you would rather
-contribute something worth more than money, route one of your own boards and file
-an issue for whatever breaks — see [Contributing](#contributing).
 
 ## License
 

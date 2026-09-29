@@ -26,8 +26,8 @@ a lap can be ranked by. This file pins three things about them:
    with it. Most of that is bookkeeping about what the operator locked.
 
 Two committed cross-checks, quoted from the tree rather than measured by hand:
-the pair span is **8.10 mm** on lap5 (`references/boundary-criteria.md`, pinned
-by `test_895_boundary_criteria.py`) and **8.131 mm** on the placed board
+the pair span is **8.10 mm** on lap5 (recorded in the retired
+`references/boundary-criteria.md`, now pinned here) and **8.131 mm** on the placed board
 (#894's own follow-up comment). Both are right; they are different boards, and
 an earlier draft of this work nearly encoded one of them as the other.
 
@@ -58,9 +58,6 @@ LAP5 = os.path.join(ROOT, 'tests', 'fixtures', 'run25',
                     'esp_prog_lap5.kicad_pcb')
 BRIEF = os.path.join(ROOT, 'tests', 'fixtures', '902',
                      'esp_prog_proximity.design-brief.json')
-CRITERIA = os.path.join(ROOT, '.claude', 'skills',
-                        'plan-pcb-placement-and-routing', 'references',
-                        'boundary-criteria.md')
 
 passed = 0
 failed = 0
@@ -163,9 +160,9 @@ def test_the_committed_pair_numbers_are_reproduced():
     """Two figures already in the tree, on two different boards."""
     lap5 = terms(LAP5)['terms']['pair_length']['value']
     placed = terms(PLACED)['terms']['pair_length']['value']
-    text = open(CRITERIA, encoding='utf-8').read()
-    check('lap5 reproduces the span boundary-criteria.md states',
-          f'{lap5:.2f} mm' in text, f'{lap5} -> "{lap5:.2f} mm"')
+    # 8.10 is the span the retired boundary-criteria.md recorded for lap5.
+    check('lap5 reproduces the recorded span (8.10 mm)',
+          f'{lap5:.2f}' == '8.10', f'{lap5} -> "{lap5:.2f} mm"')
     check('the placed board reproduces the figure #894 recorded (8.131)',
           abs(placed - 8.131) < 0.002, str(placed))
     check('...and the two boards genuinely differ, so neither figure is the '

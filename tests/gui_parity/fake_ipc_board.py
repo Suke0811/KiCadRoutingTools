@@ -60,7 +60,8 @@ for _p in (_REPO, os.path.join(_REPO, 'py_placer')):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from kicad_parser import parse_kicad_pcb, KICAD_10_MIN_VERSION  # noqa: E402
+from kicad_parser import (parse_kicad_pcb, KICAD_10_MIN_VERSION,  # noqa: E402
+                          kipy_via_protection_live)
 
 
 # id(kipy Zone) -> the arguments make_zone was called with. Module level so a
@@ -183,9 +184,12 @@ class FakeIpcBoard:
             self._tracks.append(t)
         for v in self.pcb_data.vias:
             layers = v.layers or ['F.Cu', 'B.Cu']
+            # The file's own protection spec rides on the kipy via, as KiCad
+            # reports it over IPC -- so the plugin's live read sees it.
             k = make_via(self.net_map, v.x, v.y, v.size, v.drill,
                          top_layer=layers[0], bottom_layer=layers[-1],
-                         net_name=self._name_of.get(v.net_id))
+                         net_name=self._name_of.get(v.net_id),
+                         tenting_attrs=v.tenting_attrs)
             self._src[id(k)] = v
             self._vias.append(k)
 
@@ -337,7 +341,10 @@ class FakeIpcBoard:
                              'size': getattr(it, 'diameter', 0) / 1e6,
                              'drill': getattr(it, 'drill_diameter', 0) / 1e6,
                              'layers': ['F.Cu', 'B.Cu'],
-                             'net_id': _nid(_name(it))})
+                             'net_id': _nid(_name(it)),
+                             # What the plugin wrote onto the padstack, in
+                             # the form KiCad saves it (probed on 10.0.0).
+                             'tenting_attrs': kipy_via_protection_live(it) or {}})
 
         # Removals: map the kipy items back to the parsed objects the text
         # writer understands. Items the router ADDED in this same commit and

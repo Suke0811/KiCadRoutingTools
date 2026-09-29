@@ -97,6 +97,36 @@ the routing pipeline applies both so the model and the output file agree.
 > and the whole-net dead-end trim `sweep_dead_ends` (#84). The residual same-net
 > self-crossings are tracked in #162.
 
+> **#1063 -- one removability predicate.** `collapse_strict_redundant(results,
+> pcb_data, scope_net_ids, keep_input_copper=False, protect_segment_ids=None,
+> stats=None)` deletes the copper `StrictRemovalModel` accepts, and
+> `check_weird`'s `removable-segment` reports exactly what that model accepts,
+> so the checker never calls copper removable that the cleanup keeps. The model
+> grades a removal of segments (a single one, or an unbranched run) plus the
+> vias it leaves joining nothing: every pad stays connected on the strict
+> graph (track widths clamped; a via joins a pad only by its centre,
+> `check_net_connectivity(..., via_in_pad_margin=...)`; on a layer a pad's
+> unconnected-layer mode removes, only its hole joins,
+> `check_net_connectivity(..., unflashed_hole_only=True)`) and on the physical
+> graph, no copper island, dangling end or soft joint appears, and no via the
+> pass may not drop -- anything but this run's own, unlocked vias -- is left
+> dangling. In-pad / in-via wiggles (both ends in same-net pad or via copper),
+> which #217 kept, are removed. A redundant loop through vias loses its via
+> branch first. `run_post_route_cleanup(strict_collapse=True)` runs the
+> collapse twice: after the cycle prune, and again after `close_soft_joints` on
+> the nets smoothing or bridging changed, never removing the soft-joint bridges
+> and web connectors close lays. **route.py passes `strict_collapse=False`**
+> and collapses ONCE at the end of the outermost run
+> (`route._late_strict_collapse1063`), after the plane finalize, the oracle
+> legs and the reconciliation, on the board it ships (the written file on the
+> CLI, the write model on the GUI); the finalize's in-process plane cleanups
+> skip it too (`cleanup_pipeline.defer_strict_collapse`). Collapsing before
+> those passes steered their rip/reroute (cparti_fpga: 6 open nets -> 15 from
+> one input). Nets over `STRICT_REMOVAL_MAX_SEGS` (500)
+> segments are skipped by both. `check_connected.analyze_conn_excluding` takes
+> `excluded_via_indices` for this and now returns the `num_copper_components`
+> it always computed.
+
 > **#672 -- sub-cell slivers.** `sweep_dead_ends(..., sliver_eps=mm)` is the one
 > exception to its `protect_net_ids` exemption (nets with unfinished pads keep
 > every landing site, #473): a protected net still loses a dead-end piece

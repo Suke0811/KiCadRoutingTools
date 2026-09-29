@@ -39,7 +39,7 @@ exit_on_error_if_main(__name__)
 # These imports are guaranteed to work after startup_checks passes
 import numpy as np
 
-from kicad_parser import parse_kicad_pcb, PCBData, Pad, Via, Segment, KICAD_10_MIN_VERSION, pad_is_plated_through
+from kicad_parser import parse_kicad_pcb, PCBData, Pad, Via, Segment, pcb_uses_name_nets, pad_is_plated_through
 from kicad_writer import (generate_zone_sexpr, generate_gr_line_sexpr,
                           zone_overlap_priorities)
 from routing_config import GridRouteConfig, GridCoord
@@ -1492,7 +1492,7 @@ def _generate_multinet_layer_zones(
                 clearance=zone_clearance,
                 min_thickness=min_thickness,
                 direct_connect=not thermal_relief,
-                use_net_name=pcb_data.kicad_version >= KICAD_10_MIN_VERSION
+                use_net_name=pcb_uses_name_nets(pcb_data)
             )
             zone_sexprs.append(zone_sexpr)
             zone_data_list.append({
@@ -1850,7 +1850,7 @@ def _generate_multinet_layer_zones(
             clearance=zone_clearance,
             min_thickness=min_thickness,
             direct_connect=not thermal_relief,
-            use_net_name=pcb_data.kicad_version >= KICAD_10_MIN_VERSION
+            use_net_name=pcb_uses_name_nets(pcb_data)
         )
         zone_sexprs.append(zone_sexpr)
         zone_data_list.append({
@@ -1905,7 +1905,7 @@ def _generate_multinet_layer_zones(
                 clearance=zone_clearance,
                 min_thickness=min_thickness,
                 direct_connect=not thermal_relief,
-                use_net_name=pcb_data.kicad_version >= KICAD_10_MIN_VERSION,
+                use_net_name=pcb_uses_name_nets(pcb_data),
                 priority=_prio_of.get((net_id, poly_idx), 0)
             )
             zone_sexprs.append(zone_sexpr)
@@ -2260,7 +2260,7 @@ def _write_plane_output(
     if all_debug_lines:
         print(f"  Adding {len(all_debug_lines)} debug lines on User.4")
 
-    kicad_v10_names = pcb_data.net_id_to_name if pcb_data.kicad_version >= KICAD_10_MIN_VERSION else None
+    kicad_v10_names = pcb_data.net_id_to_name if pcb_uses_name_nets(pcb_data) else None
     if not write_plane_output(input_file, output_file, combined_zone_sexpr, all_new_vias, all_new_segments,
                               exclude_net_ids=all_ripped_net_ids, zones_to_replace=zones_to_replace,
                               add_teardrops=add_teardrops, net_id_to_name=kicad_v10_names,
@@ -3196,6 +3196,10 @@ def create_plane(
     # copper in different ORDER, and list position leaks into decisions.
     from kicad_parser import canonicalize_pcb_data_order
     canonicalize_pcb_data_order(pcb_data)
+    # #962: the input's vias as values, for the Type VII stamp (only vias this
+    # run ADDS are stamped; see fab_notes.via_protection_stamps)
+    from fab_notes import via_snapshot as _via_snapshot962
+    _input_vias962 = _via_snapshot962(pcb_data.vias)
 
     # --plane-layers takes BARE copper layer names positionally matched to
     # --nets, but the natural thing to type (and what the routing skill's R1
@@ -3815,7 +3819,7 @@ def create_plane(
                 clearance=zone_clearance,
                 min_thickness=min_thickness,
                 direct_connect=not thermal_relief,
-                use_net_name=pcb_data.kicad_version >= KICAD_10_MIN_VERSION,
+                use_net_name=pcb_uses_name_nets(pcb_data),
                 priority=_prio
             )
             all_zone_sexprs.append(zone_sexpr)
@@ -4012,12 +4016,6 @@ def create_plane(
                 ripped_names.append(net.name if net else f"net_{rid}")
             print(f"  Nets excluded from output: {', '.join(ripped_names)}")
 
-    # Via-in-pad is a FAB requirement this run may just have created (#489 §8).
-    # Emitted from the shared engine so the GUI planes tab reports it too.
-    from fab_notes import print_via_in_pad_note
-    print_via_in_pad_note(all_new_vias, pcb_data.pads_by_net,
-                          context="plane stitching vias")
-
     # Finalize plane tap copper ONCE, before the write/dry-run split, so the
     # GUI (dry_run=True, return_results) and the CLI (writes the file) emit
     # identical copper for identical inputs: neck grazes -> graze prune /
@@ -4033,6 +4031,20 @@ def create_plane(
         track_width, grid_step, via_size, via_drill, hole_to_hole_clearance,
         net_clearances=net_clearances, strip_sink=_finalize_strips,
         same_net_pad_clearance=same_net_pad_clearance)  # #581
+
+    # Via-in-pad / via-in-paste is a FAB requirement this run may just have
+    # created (#489 §8, #962). It is DECLARED on the via itself, as
+    # (capping yes) (filling yes), and recorded. It runs AFTER the finalize,
+    # which merges and nudges vias, so it describes the vias that ship. It is
+    # set on the dicts before the write/return split, so the CLI writer
+    # (plane_io) and the GUI planes tab (apply_via_protection) both get it.
+    from fab_notes import (via_protection_stamps as _vps962,
+                           apply_stamps_in_memory as _asim962,
+                           print_via_protection_record as _pvpr962)
+    _stamps962, _via_in_pad962 = _vps962(all_new_vias, _input_vias962, pcb_data)
+    _asim962(_stamps962)
+    _pvpr962(_via_in_pad962, "plane stitching vias")
+    create_plane.last_via_in_pad = _via_in_pad962
 
     # Route trace (#482): emit the finalized plane-tap tracks/vias, grouped by
     # net so each plane's taps land as one animation event, then write
@@ -4085,7 +4097,7 @@ def create_plane(
                         continue  # already present from an earlier plane run
                     all_zone_sexprs.append(generate_keepout_zone_sexpr(
                         _cu, _pts, _kname,
-                        use_net_name=pcb_data.kicad_version >= KICAD_10_MIN_VERSION))
+                        use_net_name=pcb_uses_name_nets(pcb_data)))
                     all_zone_data.append({
                         'thermal_relief': thermal_relief,
                         'keepout': True, 'name': _kname, 'layers': _cu,
@@ -4320,7 +4332,7 @@ Examples:
                         default=None,
                         help="Edge-to-edge clearance (mm) between placed vias and same-net pads. "
                              "> 0 keeps ALL of this step's vias (stitching, taps, joins) off "
-                             "same-net pads and is recorded in the sibling .kicad_pro so later "
+                             "same-net pads and the net's solder-paste openings (#962) and is recorded in the sibling .kicad_pro so later "
                              "chain steps (route/route_diff/fanout/repair) inherit it (#581); "
                              "0 keeps its legacy stitching-only meaning; -1 explicitly allows "
                              "via-in-pad. Default: the project's recorded value, else -1.")
@@ -4613,11 +4625,26 @@ Examples:
             board_edge_clearance=effective_board_edge_clearance(args.input_file, 0.0),
         )
         from kicad_dru import install_layer_clearances
-        install_layer_clearances(gnd_config, None, None, pcb_data)  # #498
+        # #498: the INPUT's .kicad_dru. pcb_data is the parsed OUTPUT, whose
+        # sibling rules file fix_project_for_output only copies after this
+        # block -- so discovering it via pcb_data.source_path found nothing on
+        # a fresh output path, and return vias ignored every layer rule.
+        install_layer_clearances(gnd_config, None, args.input_file, pcb_data)
         coord = GridCoord(gnd_config.grid_step)
 
+        # Cross-class clearance (#434/#439), resolved exactly as create_plane
+        # does: a return via must clear each foreign net at max(base, its class)
+        # -- without the map an HV net's 0.8mm class was priced at the base 0.2.
+        from list_nets import net_clearance_map_by_id
+        gnd_net_clearances = net_clearance_map_by_id(
+            args.input_file, {nid: n.name for nid, n in pcb_data.nets.items()})
+        if gnd_net_clearances and args._clamp_netclasses:
+            gnd_net_clearances = {nid: min(c, args._clearance_ceiling)
+                                  for nid, c in gnd_net_clearances.items()}
+
         # Build obstacle map
-        obstacles = build_base_obstacle_map(pcb_data, gnd_config, [])
+        obstacles = build_base_obstacle_map(pcb_data, gnd_config, [],
+                                            net_clearances=gnd_net_clearances)
 
         # Add GND vias
         gnd_vias = add_gnd_vias_to_existing_board(
@@ -4640,6 +4667,13 @@ Examples:
                 'layers': v.layers,
                 'free': getattr(v, 'free', False)
             } for v in gnd_vias]
+            # #962: a GND return via this adds in a pad or paste opening
+            # declares Type VII like every other tool-added via (all new here).
+            from fab_notes import (via_protection_stamps, apply_stamps_in_memory,
+                                   print_via_protection_record)
+            _st962, _rec962 = via_protection_stamps(via_dicts, [], pcb_data)
+            apply_stamps_in_memory(_st962)
+            print_via_protection_record(_rec962, "GND return vias")
 
             # Write vias to output file
             add_tracks_and_vias_to_pcb(

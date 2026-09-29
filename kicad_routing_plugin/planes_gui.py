@@ -1090,7 +1090,12 @@ class PlanesTab(wx.Panel):
                         track_width=config.get('track_width', defaults.TRACK_WIDTH),
                         clearance=config.get('clearance', defaults.CLEARANCE),
                         grid_step=config.get('grid_step', defaults.GRID_STEP),
-                        layers=all_layers,
+                        # A THROUGH via must clear copper on EVERY board layer --
+                        # NOT `all_layers`, which is the plane step's routing set
+                        # (outer + pour layers) and leaves inner signal layers out,
+                        # so a return via could land on an inner track. CLI parity
+                        # with route_planes main (the bitaxe fix, 5c4a9f8d).
+                        layers=list(self.pcb_data.board_info.copper_layers),
                         # Thread the fab hole-to-hole minimum so GND-via placement
                         # enforces real drill spacing (issue #125), not the default.
                         hole_to_hole_clearance=config.get(
@@ -1108,10 +1113,20 @@ class PlanesTab(wx.Panel):
                         # outline.
                         board_edge_clearance=_live_board_edge_clearance(),
                     )
+                    # #498: the board's .kicad_dru per-layer clearance rules, read
+                    # from the live board's own project file as create_plane does
+                    # above -- CLI parity with route_planes main.
+                    from kicad_dru import install_layer_clearances
+                    install_layer_clearances(gnd_config, None, self.board_filename,
+                                             self.pcb_data)
                     coord = GridCoord(gnd_config.grid_step)
 
                     # Build obstacle map from PCB data (excluding no nets since we want all obstacles)
-                    obstacles = build_base_obstacle_map(self.pcb_data, gnd_config, [])
+                    # CLI parity: price foreign copper at its net class
+                    # (the same clamped map the plane step used above).
+                    obstacles = build_base_obstacle_map(
+                        self.pcb_data, gnd_config, [],
+                        net_clearances=_plane_net_clearances)
 
                     # Add GND vias near existing signal vias
                     gnd_vias = add_gnd_vias_to_existing_board(
@@ -1124,15 +1139,25 @@ class PlanesTab(wx.Panel):
                     )
 
                     # Add to new vias list
-                    for gv in gnd_vias:
-                        self._new_vias.append({
-                            'x': gv.x,
-                            'y': gv.y,
-                            'size': gv.size,
-                            'drill': gv.drill,
-                            'net_id': gv.net_id,
-                            'layers': gv.layers if hasattr(gv, 'layers') else ['F.Cu', 'B.Cu']
-                        })
+                    _gnd_dicts = [{
+                        'x': gv.x,
+                        'y': gv.y,
+                        'size': gv.size,
+                        'drill': gv.drill,
+                        'net_id': gv.net_id,
+                        'layers': gv.layers if hasattr(gv, 'layers') else ['F.Cu', 'B.Cu']
+                    } for gv in gnd_vias]
+                    # #962: the same Type VII stamp route_planes --add-gnd-vias
+                    # applies (all new here); apply_planes_results writes it
+                    # onto each via through make_via.
+                    from fab_notes import (via_protection_stamps,
+                                           apply_stamps_in_memory,
+                                           print_via_protection_record)
+                    _st962, _rec962 = via_protection_stamps(_gnd_dicts, [],
+                                                            self.pcb_data)
+                    apply_stamps_in_memory(_st962)
+                    print_via_protection_record(_rec962, "GND return vias")
+                    self._new_vias.extend(_gnd_dicts)
                     total_vias += len(gnd_vias)
 
                 except Exception as e:

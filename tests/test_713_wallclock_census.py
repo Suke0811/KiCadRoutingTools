@@ -125,15 +125,16 @@ REGISTRY = {
     'py_tools/repo_metrics.py': (
         'record',
         'the COLLECTION DATE of a metrics snapshot: `_today()` keys the '
-        'snapshot and defaults `meta.last_collected`. It does reach two '
-        'decisions -- which snapshots `thin_snapshots` keeps and which ISO '
-        'week `spread_downloads` buckets a release into -- but both take '
-        '`today` as a parameter and only fall back to the clock when the '
+        'snapshot and defaults `meta.last_collected`, and the collection TIME '
+        'is stored in `release_times.json` as data. It does reach one '
+        'decision -- which snapshots `thin_snapshots` keeps -- but that takes '
+        '`today` as a parameter and only falls back to the clock when the '
         'caller passes none, so the arithmetic is testable without one. '
         'Nothing measures a DURATION: the file declares no timeout or '
         'threshold constant and never compares an elapsed time to a limit '
-        '(the date maths at :494 and :631 reads stamps out of the collected '
-        'DATA, not off the clock).'),
+        '(the date maths in `reign_downloads`, `weekly_rollup` and '
+        '`collect_pcm_listings` reads stamps out of the collected DATA, not '
+        'off the clock).'),
     'py_router/cmd_timing.py': (
         'record',
         'reads back the clock tee_cmd already recorded, and formats it -- a '
@@ -182,6 +183,12 @@ REGISTRY = {
         'datetime.now() timestamps a line in the plugin bring-up log. A '
         'clock that is PRINTED, never compared -- nothing waits on it and '
         'nothing decides on it.'),
+    'kicad_routing_plugin/about_tab.py': (
+        'throttle',
+        "the Donate button's shimmer (#1080): time.monotonic() gives the "
+        'animation phase, which decides only where the highlight band is '
+        'painted and whether a frame is repainted. It reaches no routing, '
+        'placement or report output.'),
     'py_router/plane_region_connector.py': (
         'reporting',
         '_total_route_time, via `import time as _time`. Invisible to the '
@@ -209,6 +216,12 @@ REGISTRY = {
     # --- filesystem timestamps, not our elapsed time ------------------------
     'py_router/animate_route.py': (
         'file_mtime', 'orders movie frames by st_mtime'),
+    'py_router/movie_attempts.py': (
+        'file_mtime',
+        'a joined place+route attempts graph puts first whichever record '
+        'started first: the ledger\'s first row `t` vs the loop sidecars\' '
+        'earliest st_mtime (#946/C4). Ordering of a rendered film only; no '
+        'elapsed time of ours. (`x_is_time(` also matches discovery.)'),
     'py_router/route_planes.py': (
         'file_mtime',
         'compares the output file st_mtime before/after to detect that a '

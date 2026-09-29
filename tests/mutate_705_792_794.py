@@ -141,10 +141,12 @@ ROWS = [
      (T792P, T704), 'SURVIVED'),
 
     ('the-radius-reaches-the-election', 'grp',
-     "            if best_d is None or d < best_d:\n",
-     "            if d > DECAP_RADIUS_MM:\n"
-     "                continue\n"
-     "            if best_d is None or d < best_d:\n",
+     # Re-anchored (#1051 phase 5): the election's argmin moved into
+     # `groups.nearest_chip`, one indent level out.
+     "        if best_d is None or d < best_d:\n",
+     "        if d > DECAP_RADIUS_MM:\n"
+     "            continue\n"
+     "        if best_d is None or d < best_d:\n",
      (T792P, T794), 'KILLED'),
 
     # ---- #705: the supply-pin ladder --------------------------------------
@@ -183,10 +185,9 @@ ROWS = [
      (T705, T792P), 'KILLED'),
 
     ('the-pin-rules-exempt-filter-is-deleted', 'fp',
-     "            caps = [c for c in on_rail\n"
-     "                    if not any(fnmatch.fnmatch(c.reference, pat)\n"
-     "                               for pat in exempt)]\n",
-     "            caps = list(on_rail)\n",
+     "    caps = [c for c in on_rail\n"
+     "            if not any(fnmatch.fnmatch(c.reference, pat) for pat in exempt)]\n",
+     "    caps = list(on_rail)\n",
      (T705,), 'KILLED'),
 
     # EXPECTED SURVIVOR, and an EQUIVALENT MUTANT on this corpus: measured,
@@ -197,9 +198,9 @@ ROWS = [
     # assertion on a synthetic pair, since the semantics are real -- a THT
     # part occupies BOTH faces -- even though the corpus cannot show them.
     ('same_side-drops-the-through-hole-exemption', 'fp',
-     "                        if legality.footprint_side(c) == ic_side\n"
-     "                        or legality.footprint_has_through_pads(c)]\n",
-     "                        if legality.footprint_side(c) == ic_side]\n",
+     "                if legality.footprint_side(c) == ic_side\n"
+     "                or legality.footprint_has_through_pads(c)]\n",
+     "                if legality.footprint_side(c) == ic_side]\n",
      (T705,), 'SURVIVED'),
 
     ('the-gap-is-measured-to-the-caps-nearest-pad', 'fp',

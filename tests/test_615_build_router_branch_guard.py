@@ -151,3 +151,69 @@ def test_explicit_tag_overrides_the_guard(monkeypatch):
     downloads, builds = _run_main(monkeypatch, ['--tag', 'v0.20.1'],
                                   crate_matches=False)
     assert (downloads, builds) == (1, 0)
+
+
+if __name__ == '__main__':
+    # run_all.py runs each test file as a script. Without this block the file
+    # defined its tests and ran none of them, and run_all reported a pass. The
+    # two pytest fixtures are supplied from the stdlib so pytest stays
+    # optional; under pytest the functions still receive pytest's own.
+    import inspect
+    import pathlib
+    import shutil
+    import stat
+    import tempfile
+    import traceback
+
+    def _rmtree(path):
+        """Remove a fixture dir that holds a git repo. Git writes its object
+        files read-only, and on Windows rmtree cannot unlink a read-only file
+        -- ignore_errors=True left every repo behind in TEMP, one per test per
+        run. Clear the bit and retry; say so if anything still survives."""
+        def _writable_retry(func, p, _exc):
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        handler = ({'onexc': _writable_retry} if sys.version_info >= (3, 12)
+                   else {'onerror': _writable_retry})
+        try:
+            shutil.rmtree(path, **handler)
+        except OSError as exc:
+            print(f'  (could not remove {path}: {exc})')
+
+    class _MonkeyPatch:
+        """The one fixture method these tests use: setattr, undone after."""
+
+        def __init__(self):
+            self._undo = []
+
+        def setattr(self, target, name, value):
+            self._undo.append((target, name, getattr(target, name)))
+            setattr(target, name, value)
+
+        def undo(self):
+            for target, name, value in reversed(self._undo):
+                setattr(target, name, value)
+
+    tests = [(n, f) for n, f in sorted(globals().items())
+             if n.startswith('test_') and inspect.isfunction(f)]
+    failed = []
+    for name, fn in tests:
+        params = inspect.signature(fn).parameters
+        tmp, mp = tempfile.mkdtemp(prefix='t615_'), _MonkeyPatch()
+        kwargs = {}
+        if 'tmp_path' in params:
+            kwargs['tmp_path'] = pathlib.Path(tmp)
+        if 'monkeypatch' in params:
+            kwargs['monkeypatch'] = mp
+        try:
+            fn(**kwargs)
+            print(f'  PASS  {name}')
+        except Exception:                                  # noqa: BLE001
+            failed.append(name)
+            print(f'  FAIL  {name}')
+            traceback.print_exc()
+        finally:
+            mp.undo()
+            _rmtree(tmp)
+    print(f'{len(tests) - len(failed)}/{len(tests)} passed')
+    sys.exit(1 if failed or not tests else 0)

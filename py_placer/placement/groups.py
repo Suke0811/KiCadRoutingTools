@@ -303,7 +303,6 @@ def _elect_tethers(pcb_data, movable=None):
     and they are why "in the seeder's scope" and "graded against an IC" are two
     different questions rather than two spellings of one (#792).
     """
-    from net_queries import is_ground_net_name
     # THE SAME chip list `chip_refs` publishes, so the seeder's owner
     # test and the grader's tether election cannot answer "what is an
     # IC" differently -- which is the whole of #792.
@@ -321,30 +320,16 @@ def _elect_tethers(pcb_data, movable=None):
         fp = pcb_data.footprints.get(ref)
         if not is_decoupling_cap(fp, ref):
             continue
-        nets = {p.net_id for p in fp.pads if p.net_id > 0}
-        # Match on the POWER net, not on ground. A decoupling cap bridges a rail
-        # and GND, and GND is shared with nearly every part on the board -- so
-        # matching on "shares a net" lets the nearest 4-pad part win on ground
-        # alone. Measured, that tethered a rail decap to the CRYSTAL and the
-        # flash's own C2 to the USB connector, and the reported distance was then
-        # to the wrong part in both directions.
-        power = {n for n in nets
-                 if not is_ground_net_name(_net_name(pcb_data, n))} or nets
-        cx, cy = _centroid(fp)
-        best, best_d = None, None
-        for c in chips:
-            if c.reference == ref:
-                continue
-            # Nearest chip THAT CARRIES THE RAIL, not nearest-then-reject.
-            # Rejecting after the fact dropped the cap entirely whenever some
-            # unrelated part happened to be closer, so a genuinely distant decap
-            # went ungraded instead of flagged.
-            if not (power & ic_nets.get(c.reference, set())):
-                continue
-            x0, y0, x1, y1 = c.bounds
-            d = math.hypot(max(x0 - cx, cx - x1, 0.0), max(y0 - cy, cy - y1, 0.0))
-            if best_d is None or d < best_d:
-                best, best_d = c.reference, d
+        power = _cap_power_nets(pcb_data, fp)
+        # Nearest chip THAT CARRIES THE RAIL, not nearest-then-reject.
+        # Rejecting after the fact dropped the cap entirely whenever some
+        # unrelated part happened to be closer, so a genuinely distant decap
+        # went ungraded instead of flagged.
+        best, best_d = nearest_chip(
+            _centroid(fp),
+            ((c.reference, c.bounds) for c in chips
+             if c.reference != ref
+             and power & ic_nets.get(c.reference, set())))
         # A second `nets & ic_nets[best]` recheck used to stand here, commented
         # "near, but not electrically its cap". It was UNREACHABLE: `power` is a
         # subset of `nets`, and `best` is only ever assigned inside the branch
@@ -355,6 +340,81 @@ def _elect_tethers(pcb_data, movable=None):
         # what the loop above does.
         out.append((ref, best, best_d))
     return out
+
+
+def _cap_power_nets(pcb_data, fp) -> Set[int]:
+    """The nets a cap is tethered ON. Match on the POWER net, not on ground. A
+    decoupling cap bridges a rail and GND, and GND is shared with nearly every
+    part on the board -- so matching on "shares a net" lets the nearest 4-pad
+    part win on ground alone. Measured, that tethered a rail decap to the
+    CRYSTAL and the flash's own C2 to the USB connector, and the reported
+    distance was then to the wrong part in both directions."""
+    from net_queries import is_ground_net_name
+    nets = {p.net_id for p in fp.pads if p.net_id > 0}
+    return {n for n in nets
+            if not is_ground_net_name(_net_name(pcb_data, n))} or nets
+
+
+def nearest_chip(pt, candidates) -> Tuple[Optional[str], Optional[float]]:
+    """`(ref, distance)` -- the election's argmin over `(ref, bounds)`
+    candidates in the order given (the first strict minimum wins), or
+    `(None, None)`. `_elect_tethers` calls it over the chips carrying a cap's
+    rail; the #1043 quench gate calls it over the same chips at LIVE poses,
+    so the pair it holds is the pair the grade will elect."""
+    best, best_d = None, None
+    for ref, bounds in candidates:
+        d = _point_to_bounds(pt, bounds)
+        if best_d is None or d < best_d:
+            best, best_d = ref, d
+    return best, best_d
+
+
+def rail_chips(pcb_data, cap: str) -> List[str]:
+    """The chips `_elect_tethers` would consider for `cap`, in its order:
+    every chip of `_chip_list` (bar the cap) carrying the cap's power rail.
+    Pose-invariant for a quench (membership reads pad counts, nets, and the
+    collinearity of a chip's pads, which a 90-degree move keeps)."""
+    fp = pcb_data.footprints.get(cap)
+    if fp is None:
+        return []
+    power = _cap_power_nets(pcb_data, fp)
+    out = []
+    for c in _chip_list(pcb_data):
+        if c.reference == cap:
+            continue
+        cfp = pcb_data.footprints.get(c.reference)
+        if cfp is not None and power & {p.net_id for p in cfp.pads
+                                        if p.net_id > 0}:
+            out.append(c.reference)
+    return out
+
+
+def _point_to_bounds(pt, bounds) -> float:
+    """The election's distance: a point to a chip's pad bbox (0 inside)."""
+    cx, cy = pt
+    x0, y0, x1, y1 = bounds
+    return math.hypot(max(x0 - cx, cx - x1, 0.0), max(y0 - cy, cy - y1, 0.0))
+
+
+def chip_bounds_of(fp):
+    """The bounds `_chip_list` gives this ONE footprint at the pose it holds,
+    or None when it has no pads. Through `build_chip_list` itself, so a
+    caller measuring a footprint the election has not seen (#1043: the
+    quench, at a pose it is only considering) reads the election's margin."""
+    from types import SimpleNamespace
+    from chip_boundary import build_chip_list
+    got = build_chip_list(SimpleNamespace(footprints={'_': fp}), min_pads=1)
+    return got[0].bounds if got else None
+
+
+def elect_live(cap_fp, candidates) -> Tuple[Optional[str], Optional[float]]:
+    """`_elect_tethers`' election for ONE cap with the footprints at whatever
+    poses they hold: the cap's pad centroid against `(ref, bounds)` of the
+    chips on its rail (`rail_chips`' order, bounds from `chip_bounds_of`),
+    nearest wins. The #1043 quench gate calls this per candidate pose, so
+    it holds the pair the GRADE will elect -- a cap that walks toward a
+    different chip on its rail is measured against that chip."""
+    return nearest_chip(_centroid(cap_fp), candidates)
 
 
 def decap_tethers(pcb_data, movable=None,

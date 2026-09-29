@@ -27,10 +27,18 @@ summary line at all, and a driver that decided on parsed counts would read that
 silence as zero failures. Silence is not success: an unaccounted shard fails
 the run and is named.
 
-NOTE ON COVERAGE: the cloud image has NO KiCad, so every test needing pcbnew/wx
-self-skips (exit 77 with a `SKIP:` reason). Those are reported in their own
-bucket and are NOT passes. The wx/pcbnew parity gates in tests/gui_parity/ are
-not collected by run_all at all and still need a local KiCad-python session.
+NOTE ON COVERAGE: THIS image has no KiCad (plain debian_slim, no switch), so
+every test needing pcbnew/wx self-skips (exit 77 with a `SKIP:` reason). Those
+are reported in their own bucket and are NOT passes. The wx/pcbnew parity gates
+in tests/gui_parity/ are not collected by run_all at all and still need a local
+KiCad-python session.
+
+That is true of THIS app and not of "the cloud": the stress app has carried
+KiCad since 2026-08-23 (cloud_replay_sets.py passes --with-kicad by default,
+building modal_sweep/modal_app.py on kicad/kicad:10.0.0). Giving this image
+KiCad would mean copying that recipe; it would recover the two self-skips that
+are really about KiCad, and NOT the ones wanting artifacts under the gitignored
+wk/, which self-skip on any clean checkout.
 """
 from __future__ import annotations
 
@@ -188,11 +196,8 @@ image = (
     .pip_install_from_requirements(
         _image_requirements() if modal.is_local()
         else str(_repo_root / "requirements.txt"))
-    # pytest is a TEST-only dependency, so it is deliberately absent from
-    # requirements.txt (which is the shipping runtime). A handful of tests
-    # import it for fixtures/parametrisation and die with
-    # ModuleNotFoundError without it -- not a skip, a hard failure.
-    .pip_install("pytest")
+    # No pytest: run_all.py runs every test as a plain script, and
+    # test_718_static_test_hygiene refuses a test file that needs pytest.
     .apt_install("git", "procps", "curl")
     .env({"KICAD_SWEEP_GIT": GIT_SHA, "PYTHONUNBUFFERED": "1"})
     .add_local_dir(_src_dir, REPO, copy=True, ignore=[
@@ -385,7 +390,9 @@ def main(shards: int = 50, fast: bool = False, timeout: float = 600.0,
             print(f"  {n}")
     if tot["self_skipped"]:
         print(f"\n{tot['self_skipped']} self-skipped -- these asserted NOTHING "
-              f"(the cloud image has no KiCad). They are not passes.")
+              f"and are not passes. The reasons DIFFER: this image has no "
+              f"KiCad, and some tests want recorded artifacts absent from a "
+              f"clean checkout. Read each SKIP: line rather than assuming.")
     # A shard that never reported is the failure mode this block exists for:
     # its tests did not run, and without this the run would print green.
     if missing:

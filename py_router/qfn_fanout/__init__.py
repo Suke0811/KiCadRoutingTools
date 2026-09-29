@@ -983,8 +983,14 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
               f"before, those shipped unclamped")
     # The FAB requirement this escape may have just created (#489 §8). Emitted
     # from the shared engine path so the GUI fanout tab reports it too.
-    from fab_notes import print_via_in_pad_note
-    print_via_in_pad_note(vias, pcb_data.pads_by_net, context="QFN underpad escape")
+    # #962: DECLARED on each via-in-pad, (capping yes) (filling yes), not only
+    # printed. The dicts carry it to the CLI writer and the GUI fanout tab.
+    # `vias` are all this escape's own (empty input snapshot).
+    from fab_notes import (via_protection_stamps, apply_stamps_in_memory,
+                           print_via_protection_record)
+    _st962, _rec962 = via_protection_stamps(vias, [], pcb_data)
+    apply_stamps_in_memory(_st962)
+    print_via_protection_record(_rec962, "QFN underpad escape")
     if escalated_n:
         warn_fab_escalation(f"{escalated_n} via-in-pad(s) (sub-0.45mm pads)")
     if floor_n:
@@ -1784,6 +1790,13 @@ def main():
             with _cl.redirect_stdout(_io.StringIO()):  # keep JSON_SUMMARY output clean
                 _viols = _run_drc(out_path, clearance=args.clearance,
                                   quiet=True, max_print=0, check_sizes=False)
+            # #962: via-in-paste rows (and their accepted protected/inherited
+            # twins) are a fab-protection finding, not a clearance graze; a
+            # fanout's own stamped via-in-pad would otherwise inflate `total`.
+            # #995: an accepted footprint-own-copper contact is not a graze
+            # either -- published by check_drc, counted by nobody.
+            _viols = [_v for _v in _viols
+                      if _v.get('type') not in ('via-in-paste', 'footprint-own-copper')]
             _by = {}
             for _v in _viols:
                 _by[_v['type']] = _by.get(_v['type'], 0) + 1

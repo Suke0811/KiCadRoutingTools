@@ -83,32 +83,112 @@ def net_connectivity_map(pcb_data, tolerance: float = 0.02,
     *_by_net overrides to measure a WRITE MODEL (the copper a run is about
     to emit) instead of what is currently in pcb_data.
     """
-    from check_connected import check_net_connectivity, net_break_within_outlines
-
-    if segs_by_net is None:
-        segs_by_net = {}
-        for s in pcb_data.segments:
-            segs_by_net.setdefault(s.net_id, []).append(s)
-    if vias_by_net is None:
-        vias_by_net = {}
-        for v in pcb_data.vias:
-            vias_by_net.setdefault(v.net_id, []).append(v)
-    if zones_by_net is None:
-        zones_by_net = {}
-        for z in (getattr(pcb_data, 'zones', None) or []):
-            zones_by_net.setdefault(z.net_id, []).append(z)
-
+    segs_by_net, vias_by_net, zones_by_net = _copper_by_net(
+        pcb_data, segs_by_net, vias_by_net, zones_by_net)
     out: Dict[int, Tuple[bool, int]] = {}
     for net_id, pads in (pcb_data.pads_by_net or {}).items():
         if not net_id or len(pads or []) < 2:
             continue          # net 0 pseudo-net / trivially connected
-        r = check_net_connectivity(
-            net_id, segs_by_net.get(net_id, []), vias_by_net.get(net_id, []),
-            pads, zones_by_net.get(net_id, []), tolerance=tolerance,
-            pcb_data=pcb_data)
-        # #479 multi-board: only a break WITHIN one outline is a real break.
-        broken, dis_pads = net_break_within_outlines(pcb_data, r)
-        out[net_id] = (not broken, len(dis_pads or []) if broken else 0)
+        broken, dis_pads = _grade_net(
+            pcb_data, net_id, pads, segs_by_net.get(net_id, []),
+            vias_by_net.get(net_id, []), zones_by_net.get(net_id, []),
+            tolerance)
+        out[net_id] = (not broken, len(dis_pads) if broken else 0)
+    return out
+
+
+def copper_signature(segments, vias, net_name) -> Dict[str, object]:
+    """{net name: multiset of its copper} for "did this run change the net's
+    copper?" -- the one question a per-net diff has to answer (#1069).
+
+    Values, not object identity (a nudge moves a via object in place), keyed
+    by NAME (two parses of one board may number nets differently), rounded to
+    0.1 um so the writer's nm quantisation does not read as a change. A
+    segment is direction-free. Net 0 is skipped.
+    """
+    from collections import Counter
+
+    out: Dict[str, Counter] = {}
+    for item in list(segments) + list(vias):
+        name = net_name(item.net_id) if item.net_id else None
+        if not name:
+            continue
+        out.setdefault(name, Counter())[copper_item_key(item)] += 1
+    return out
+
+
+def copper_item_key(item) -> tuple:
+    """One segment's or via's key in copper_signature: its values, rounded to
+    0.1 um, a segment direction-free."""
+    def r(v):
+        return round(float(v), 4)
+    if hasattr(item, 'start_x'):
+        a = (r(item.start_x), r(item.start_y))
+        b = (r(item.end_x), r(item.end_y))
+        return ('s', item.layer, min(a, b), max(a, b), r(item.width))
+    return ('v', r(item.x), r(item.y), r(item.size), r(item.drill),
+            tuple(item.layers or ()))
+
+
+def _copper_by_net(pcb_data, segs_by_net, vias_by_net, zones_by_net):
+    """Fill in whichever per-net copper maps the caller did not pass."""
+    def _by_net(items):
+        d: Dict[int, list] = {}
+        for it in items:
+            d.setdefault(it.net_id, []).append(it)
+        return d
+
+    if segs_by_net is None:
+        segs_by_net = _by_net(pcb_data.segments)
+    if vias_by_net is None:
+        vias_by_net = _by_net(pcb_data.vias)
+    if zones_by_net is None:
+        zones_by_net = _by_net(getattr(pcb_data, 'zones', None) or [])
+    return segs_by_net, vias_by_net, zones_by_net
+
+
+def _grade_net(pcb_data, net_id, pads, segs, vias, zones, tolerance):
+    """(broken, disconnected_pad_locations) for one net: the zone/fill-aware
+    union-find route.py's own sweeps grade with, multi-board aware."""
+    from check_connected import check_net_connectivity, net_break_within_outlines
+    r = check_net_connectivity(net_id, segs, vias, pads, zones,
+                               tolerance=tolerance, pcb_data=pcb_data)
+    # #479 multi-board: only a break WITHIN one outline is a real break.
+    broken, dis_pads = net_break_within_outlines(pcb_data, r)
+    return bool(broken), (list(dis_pads or []) if broken else [])
+
+
+def grade_nets(pcb_data, net_ids, tolerance: float = 0.02,
+               segs_by_net: Optional[Dict[int, list]] = None,
+               vias_by_net: Optional[Dict[int, list]] = None,
+               zones_by_net: Optional[Dict[int, list]] = None
+               ) -> Dict[int, Dict]:
+    """Per-net detail for `net_ids` ONLY, on `net_connectivity_map`'s grade:
+    {net_id: {'pads', 'broken', 'copper', 'failed_pads'}}, `failed_pads`
+    shaped like route.py's failed_multipoint entries. Nets with fewer than two
+    pads are skipped (trivially connected). route.py's final re-grade (#1069)
+    uses it because it must grade the nets the run OWNS, never the whole
+    board: a scoped step would otherwise report other steps' nets."""
+    segs_by_net, vias_by_net, zones_by_net = _copper_by_net(
+        pcb_data, segs_by_net, vias_by_net, zones_by_net)
+    out: Dict[int, Dict] = {}
+    for net_id in net_ids:
+        pads = (pcb_data.pads_by_net or {}).get(net_id) or []
+        if not net_id or len(pads) < 2:
+            continue
+        segs = segs_by_net.get(net_id, [])
+        vias = vias_by_net.get(net_id, [])
+        broken, dis = _grade_net(pcb_data, net_id, pads, segs, vias,
+                                 zones_by_net.get(net_id, []), tolerance)
+        out[net_id] = {
+            'pads': len(pads),
+            'broken': broken,
+            'copper': bool(segs or vias),
+            'failed_pads': [
+                {'x': round(float(p[0]), 4), 'y': round(float(p[1]), 4),
+                 'component_ref': p[3] if len(p) > 3 else '?',
+                 'pad_number': '?'} for p in dis],
+        }
     return out
 
 
@@ -120,26 +200,38 @@ def compare_connectivity(before: Dict[int, Tuple[bool, int]],
     Only nets present in BOTH maps are compared: a net that exists in one
     reading and not the other is a parse/scope difference, not a routing
     outcome, and must not be able to trip the gate.
+
+    `worsened` lists every compared net whose disconnected-pad count ROSE
+    WITHOUT being newly broken (it was already open before the run), as
+    (name, before, after) -- disjoint from `lost`, so a net is named once. A
+    pad-count rejection used to name no net at all in that case, because the
+    net is then not `lost`.
     """
     lost: List[str] = []
     gained: List[str] = []
+    worsened: List[Tuple[str, int, int]] = []
     pads_before = pads_after = 0
+    compared = 0
     for net_id, (conn_b, dis_b) in before.items():
         if net_id not in after:
             continue
         conn_a, dis_a = after[net_id]
+        compared += 1
         pads_before += dis_b
         pads_after += dis_a
         if conn_b and not conn_a:
             lost.append(net_name(net_id))
         elif conn_a and not conn_b:
             gained.append(net_name(net_id))
+        elif dis_a > dis_b:
+            worsened.append((net_name(net_id), dis_b, dis_a))
     return {
         'lost': sorted(lost),
         'gained': sorted(gained),
+        'worsened': sorted(worsened),
         'disconnected_pads_before': pads_before,
         'disconnected_pads_after': pads_after,
-        'nets_compared': sum(1 for n in before if n in after),
+        'nets_compared': compared,
     }
 
 
@@ -162,12 +254,35 @@ def format_report(cmp: Dict, verdict: str, action: str) -> str:
     and the whole point of the gate is that the operator can see WHICH
     already-routed copper a rip took out."""
     lines = []
+    # The head line NAMES what it judged on, each list at its OWN
+    # clause (#1032). `broke 1 ... REJECTED` hid that the one net was GND; a
+    # pad-count-only rejection (the net was already broken before the run,
+    # so it is not `lost`) named nothing; and one bracket after "connected"
+    # read as if a net that got WORSE had been connected.
+    worsened = cmp.get('worsened') or []
+    lost = list(cmp['lost'])
+    # `worsened` is disjoint from `lost` (compare_connectivity): pad count
+    # rose on a net that was already open. The filter only guards a caller
+    # that built the dict by hand.
+    wors = [(n, b, a) for n, b, a in worsened if n not in lost]
+
+    def _capped(items, cap=6):
+        shown = ', '.join(items[:cap])
+        if len(items) > cap:
+            shown += f", +{len(items) - cap} more"
+        return f" [{shown}]" if items else ""
+
     head = ("IMPROVEMENT GATE: this run broke "
-            f"{len(cmp['lost'])} previously-connected net(s) and connected "
-            f"{len(cmp['gained'])}")
+            f"{len(lost)} previously-connected net(s){_capped(lost)}, "
+            f"worsened {len(wors)}"
+            f"{_capped([f'{n} {b}->{a}' for n, b, a in wors])}, "
+            f"connected {len(cmp['gained'])}")
     lines.append(head + f" -- {verdict.upper()}ED")
     if cmp['lost']:
         lines.append(f"  broken by this run: {', '.join(cmp['lost'])}")
+    if worsened:
+        lines.append("  more disconnected pads: " + ', '.join(
+            f"{n} {b}->{a}" for n, b, a in worsened))
     if cmp['gained']:
         lines.append(f"  connected by this run: {', '.join(cmp['gained'])}")
     lines.append(f"  disconnected pads: {cmp['disconnected_pads_before']} "

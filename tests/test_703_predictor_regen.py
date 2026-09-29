@@ -65,6 +65,30 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:
 #: MEASURED, from the run recorded in the pull request. Never predicted.
 #:
+#: RE-RECORDED 2026-09-28 (#1063: the post-route cleanup removes what
+#: check_weird calls removable, in-pad / in-via wiggles included). All four
+#: rows moved in `truth.quality` only, and in one direction: `vias` identical
+#: on all four, `segments` and `copper_mm` DOWN on all four -- the signature of
+#: deleting redundant copper, not of a different route. `truth.blocking` and
+#: the headline did not mismatch on any row.
+#:
+#:   esp_prog:authored            segs 260 -> 187, copper 336.58 -> 318.66
+#:   esp_prog:perturb-scatter-d1  segs 302 -> 235, copper 361.26 -> 348.22
+#:   esp_prog:portfolio-1         segs 293 -> 223, copper 362.65 -> 347.37
+#:   splitflap_driver:authored    segs 1154 -> 832, copper 2913.88 -> 2831.72
+#:
+#: RE-RECORDED 2026-09-28 (#1063 follow-up: route.py runs the strict collapse
+#: ONCE at the end of the run instead of inside the in-run cleanup, so the
+#: plane finalize and the reconciliation route around the copper the router
+#: laid). `truth.quality` only again, a few segments and < 0.2% copper either
+#: way, and two rows lose the 2 vias of their own that the end pass frees;
+#: `truth.blocking` and the headline did not mismatch on any row.
+#:
+#:   esp_prog:authored            vias 34 -> 32, segs 187 -> 189, copper 318.66 -> 319.38
+#:   esp_prog:perturb-scatter-d1  vias 38 -> 38, segs 235 -> 235, copper 348.22 -> 348.89
+#:   esp_prog:portfolio-1         vias 35 -> 33, segs 223 -> 225, copper 347.37 -> 347.97
+#:   splitflap_driver:authored    vias 168 -> 168, segs 832 -> 827, copper 2831.72 -> 2835.82
+#:
 #: RE-RECORDED 2026-09-16 (the #958 fine-pitch tie guard, `32167508`). The
 #: three esp_prog rows moved in ONE column and in ONE direction: `segments`
 #: ROSE everywhere while `vias` is identical on all three and `copper_mm` is
@@ -283,7 +307,7 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 286 -> 254; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 34/344.06/254 -> 34/336.58/250
                # 2026-09-16 (#958 fine-pitch tie guard): segs 250 -> 260
-               'quality': {'vias': 34, 'copper_mm': 336.58, 'segments': 260}},
+               'quality': {'vias': 32, 'copper_mm': 319.38, 'segments': 189}},
         predictors={
             'crossings': 53, 'hpwl': 253.98092000000003,
             'halo': 127.48707486477095, 'overlap_area': 1.1400451712000104,
@@ -301,7 +325,7 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 311 -> 292; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 37/363.0/292 -> 38/361.26/296
                # 2026-09-16 (#958 fine-pitch tie guard): segs 296 -> 302
-               'quality': {'vias': 38, 'copper_mm': 361.26, 'segments': 302}},
+               'quality': {'vias': 38, 'copper_mm': 348.89, 'segments': 235}},
         predictors={
             'crossings': 50, 'hpwl': 252.34828000000005,
             'halo': 130.46454030971682, 'overlap_area': 1.1400451712000104,
@@ -359,7 +383,7 @@ EXPECTED = {
                # 2026-09-15 (#908 Phase 3 lift): 30/350.67/269 -> 35/362.75/282
                # 2026-09-16 (#958 fine-pitch tie guard): 35/362.75/282 ->
                #   35/362.65/293 (the only row whose copper moved, -0.10mm)
-               'quality': {'vias': 35, 'copper_mm': 362.65, 'segments': 293}},
+               'quality': {'vias': 33, 'copper_mm': 347.97, 'segments': 225}},
         predictors={
             'crossings': 23, 'hpwl': 260.0687799999999,
             'halo': 101.01900525631262, 'overlap_area': 1.0,
@@ -378,8 +402,14 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 1422 -> 1155, copper
                # 2915.15 -> 2913.82 (-0.05%); vias unmoved. The only row whose
                # copper moved -- see the re-record note in the header.
-               'quality': {'vias': 168, 'copper_mm': 2913.82,
-                           'segments': 1155}},
+               # 2026-09-20 (bus622-take5: the pad keep-out's sub-cell offset
+               # rounded to a nanometre in routing_utils, so a cell exactly on
+               # the boundary is decided the same way in every frame):
+               # 168/2913.82/1155 -> 168/2913.88/1154. Attributed by a
+               # single-file revert; the fanout and plane-fill roundings of
+               # the same change leave this row alone.
+               'quality': {'vias': 168, 'copper_mm': 2835.82,
+                           'segments': 827}},
         predictors={
             'crossings': 300, 'hpwl': 2504.4400000000014,
             'halo': 297.4273114820511, 'overlap_area': 1.7621459846850488e-13,

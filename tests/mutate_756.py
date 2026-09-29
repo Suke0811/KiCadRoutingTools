@@ -285,8 +285,8 @@ ROWS = [
     # The HIGH finding a review caught: without this the GUI's unsaved board
     # reads the process CWD's .kicad_pro as its own rules.
     ('bga-cwd-probe-guard-dropped', 'bga',
-     '    if not _src_path or os.path.isdir(_src_path):',
-     '    if False:',
+     '    elif not _src_path or os.path.isdir(_src_path):',
+     '    elif False:',
      (T756,), 'KILLED'),
 
     ('bga-announces-on-a-call-with-no-routes', 'bga',

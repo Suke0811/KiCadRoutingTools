@@ -19,12 +19,10 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-# #522 reorg + skill merge: the engine moved to py_router/, the placer to
-# py_placer/, and board_score.py into the placement-and-routing skill. Tests
-# that shell out to or import them need those roots on sys.path.
-for _p in ('py_router', 'py_placer',
-           os.path.join('.claude', 'skills', 'plan-pcb-placement-and-routing',
-                        'scripts')):
+# #522 reorg: the engine moved to py_router/, the placer to py_placer/, and
+# board_score.py lives in py_tools/. Tests that shell out to or import them
+# need those roots on sys.path.
+for _p in ('py_router', 'py_placer', 'py_tools'):
     _d = os.path.join(ROOT, _p)
     if _d not in sys.path:
         sys.path.insert(0, _d)
@@ -52,7 +50,7 @@ def _lens_files(td, **verdicts):
     reopens a ledger, and a line retyped from a reply is a claim about the run
     where the row could carry a claim about a file. So every close-out arm in
     this file writes the verdict where the verifier is already required to
-    write it (references/verifier-prompts.md) and passes the path.
+    write it (the pcb-free-agent verifier brief) and passes the path.
 
     Defaults to a clean PASS for all three; name a lens to override, e.g.
     `_lens_files(td, drc='VERDICT=FAIL:lens=drc;finding=short;evidence=x')`.
@@ -236,6 +234,13 @@ def test_record_final_wants_the_lens_verdicts():
                     td, drc='VERDICT=FAIL:lens=drc;finding=short;evidence=x'))
         r = _cv(base + ['--stop-condition', '1'])
         assert r.returncode == 2 and 'lens FAILED' in r.stderr, r.stderr
+        # Stop condition 4 is "measured-unfixable", and since #963 the claim
+        # needs the measurement on the record. This test uses 4 as a
+        # FAIL-compatible TOKEN, so it supplies the decision and carries on.
+        assert _cv(['record', '--ledger', led, '--board', BOARD,
+                    '--kind', 'classification', '--shape', 'placement',
+                    '--lever', 'no lane exists at the escape faces']
+                   ).returncode == 0
         r = _cv(base + ['--stop-condition', '4'])
         assert r.returncode == 0, r.stderr
         assert json.loads(r.stdout).get('lenses')[1].startswith('VERDICT=FAIL')
@@ -275,7 +280,12 @@ def test_record_refuses_a_lens_verdict_its_own_score_contradicts():
         assert not os.path.exists(led), 'nothing may be written on refusal'
 
         # ...and the honest verdict IS accepted (stop condition 4: measured
-        # unfixable and said so).
+        # unfixable and said so) -- once the measurement is on the record,
+        # which since #963 is what 4 means.
+        assert _cv(['record', '--ledger', led, '--board', BOARD,
+                    '--kind', 'classification', '--shape', 'placement',
+                    '--lever', '32 nets need a lane no parameter creates']
+                   ).returncode == 0
         r = _cv(['record', '--ledger', led, '--board', BOARD, '--final',
                  '--kind', 'completion', '--stop-condition', '4',
                  '--score-file', run17]
@@ -448,8 +458,8 @@ def test_a_score_that_measured_nothing_is_reported_not_raised():
 
     `'DONE' not in stdout` would be a tautology (a null `blocking` can never
     satisfy `elif blocking == 0`), so the assertion below is on the verdict
-    NAME, which is the thing a caller reads -- loop_driver's L5 branches on it
-    and discards the exit code entirely.
+    NAME, which is the thing a caller reads (the retired loop_driver's L5
+    branched on it and discarded the exit code entirely).
 
     _score_key returns None for three distinct documents. Each gets its own
     sentence, and the "a component could not answer" cause is asserted only
@@ -963,8 +973,7 @@ def test_board_score_emits_board_sha():
     from board_store import sha256_file
     r = subprocess.run(
         [sys.executable, '-X', 'utf8',
-         os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing',
-                      'scripts', 'board_score.py'), BOARD, '-q'],
+         os.path.join(ROOT, 'py_tools', 'board_score.py'), BOARD, '-q'],
         capture_output=True, text=True, encoding='utf-8', errors='replace',
         cwd=ROOT)
     line = [l for l in r.stdout.splitlines() if l.startswith('SCORE_JSON=')]
@@ -975,18 +984,13 @@ def test_board_score_emits_board_sha():
     print("  PASS: board_score embeds board_sha")
 
 
-def test_l5_printed_final_command_runs_as_printed():
-    """D1: the run-closing command L5 prints must be ACCEPTED by converge,
-    verbatim, for every terminal verdict. The refusal-driven executor recovers
-    from a refused command, but a driver whose doctrine is "paste these exact
-    commands" may not print one its own tool refuses: the STUCK/BUDGET paths
-    carry a FAIL lens as the normal case, and DONE-EXHAUSTED must never sit
-    beside one."""
-    import shlex
-    sys.path.insert(0, os.path.join(
-        ROOT, '.claude', 'skills', 'plan-pcb-placement-and-routing', 'scripts'))
-    from loop_driver import final_record_command
-
+def test_a_final_close_out_is_accepted_for_every_terminal_verdict():
+    """D1: a run-closing `record --final` with three --lens-file slots is
+    ACCEPTED for every terminal verdict. The STUCK/BUDGET paths carry a FAIL
+    lens as the normal case, and DONE-EXHAUSTED must never sit beside one.
+    (This used to execute the retired loop_driver's printed L5 command; the
+    command is now built here in the same shape, since converge's contract
+    is what remains.)"""
     _PASS = {'connectivity': 'VERDICT=PASS:lens=connectivity',
              'drc': 'VERDICT=PASS:lens=drc',
              'spec': 'VERDICT=PASS:lens=spec'}
@@ -997,52 +1001,27 @@ def test_l5_printed_final_command_runs_as_printed():
     _DIRTY = {'blocking': 3, 'blocking_by':
               {'unrouted': 0, 'broken': 0, 'drc': 3, 'undersized': 0}}
 
-    def run_as_printed(name, lens_by_name, score_doc, led):
+    def close_out(name, lens_by_name, score_doc, led):
         work = os.path.dirname(led)
         score = os.path.join(work, 'score.json')
         with open(score, 'w', encoding='utf-8') as f:
             json.dump(score_doc, f)
-        # The paths the driver would resolve from --ledger, passed in the same
-        # shape `l5` passes them, so this test executes the command the stage
-        # really prints rather than a reconstruction of it.
-        verdicts = {f'verdict_{lens}.txt':
-                    os.path.join(work, f'verdict_{lens}.txt').replace('\\', '/')
-                    for lens in lens_by_name}
-        text = final_record_command(led.replace('\\', '/'),
-                                    BOARD.replace('\\', '/'),
-                                    score.replace('\\', '/'), name,
-                                    verdicts)
-        toks = shlex.split(text.replace('\\\n', ' '))
-        assert toks[0] == 'python3' and toks[3] == 'py_placer/converge.py', \
-            toks[:4]
-        toks[0] = sys.executable
-        # The three slots must be present AND be the paths the driver named --
-        # if its wording drifts, fail here rather than silently testing a
-        # different command than the one printed. #904: these are --lens-file
-        # slots now, so the verdict is WRITTEN where the printed command says
-        # the verifier put it, and converge reads it from there.
-        hit = 0
-        for i, t in enumerate(toks):
-            if t == '--lens-file':
-                path = toks[i + 1]
-                lens = os.path.basename(path)[len('verdict_'):-len('.txt')]
-                assert lens in lens_by_name, (lens, path)
-                with open(path, 'w', encoding='utf-8') as f:
-                    f.write(lens_by_name[lens] + '\n')
-                hit += 1
-        assert hit == 3, f'expected 3 --lens-file slots, found {hit}: {toks}'
-        assert '--lens' not in toks, (
-            'a bare --lens on a close-out is refused by converge; the printed '
-            'command must not offer one')
-        ia = toks.index('--argv')
-        toks = toks[:ia + 1] + [sys.executable, '-c', 'pass']
-        return subprocess.run(toks, capture_output=True, text=True,
-                              encoding='utf-8', errors='replace', cwd=ROOT)
+        slots = []
+        for lens in ('connectivity', 'drc', 'spec'):
+            path = os.path.join(work, f'verdict_{lens}.txt')
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(lens_by_name[lens] + '\n')
+            slots += ['--lens-file', path]
+        return _cv(['record', '--ledger', led, '--board', BOARD,
+                    '--kind', 'completion', '--final',
+                    '--stop-condition', name] + slots
+                   + ['--lever', f'close-out: {name}', '--score-file', score,
+                      '--argv', sys.executable, '-c', 'pass'])
 
     with tempfile.TemporaryDirectory() as td:
         # DONE-EXHAUSTED: every lens passes, clean score.
-        r = run_as_printed('DONE-EXHAUSTED', _PASS, _CLEAN,
-                           os.path.join(td, 'done.jsonl'))
+        r = close_out('DONE-EXHAUSTED', _PASS, _CLEAN,
+                      os.path.join(td, 'done.jsonl'))
         assert r.returncode == 0, r.stderr
         e = json.loads(r.stdout)
         assert e.get('final') is True and \
@@ -1050,20 +1029,343 @@ def test_l5_printed_final_command_runs_as_printed():
         # STUCK and BUDGET: a FAIL lens is the NORMAL case, not a refusal.
         for name in ('STUCK', 'BUDGET'):
             lenses = dict(_PASS, drc=_FAIL_DRC)
-            r = run_as_printed(name, lenses, _DIRTY,
-                               os.path.join(td, name + '.jsonl'))
+            r = close_out(name, lenses, _DIRTY,
+                          os.path.join(td, name + '.jsonl'))
             assert r.returncode == 0, f'{name}: {r.stderr}'
             e = json.loads(r.stdout)
             assert e.get('stop_condition') == name
             assert any(v.startswith('VERDICT=FAIL') for v in e['lenses'])
         # DONE-EXHAUSTED beside a FAIL lens is the one contradiction.
         led = os.path.join(td, 'contra.jsonl')
-        r = run_as_printed('DONE-EXHAUSTED', dict(_PASS, drc=_FAIL_DRC),
-                           _DIRTY, led)
+        r = close_out('DONE-EXHAUSTED', dict(_PASS, drc=_FAIL_DRC),
+                      _DIRTY, led)
         assert r.returncode == 2 and 'contradiction' in r.stderr, r.stderr
         assert not os.path.exists(led), "nothing may be written on refusal"
-    print("  PASS: L5's printed --final command runs as printed, "
-          "all three verdicts")
+    print("  PASS: a --final close-out is accepted for all three verdicts, "
+          "and DONE-EXHAUSTED beside a FAIL lens is refused")
+
+
+def _row_1071(i, kind, blocking, accepted=True, **extra):
+    """A ledger row in the shape `record` writes, with a hand-picked score --
+    `record` now refuses the values these tests need, so they are written."""
+    score = {'blocking': blocking}
+    score.update(extra)
+    return {'iteration': i, 'kind': kind, 'accepted': accepted,
+            'lever': f'{kind} lap {i}', 'lever_argv': None,
+            'parent_sha': None, 'result_sha': 'a' * 64, 'score': score,
+            't': 1000.0 + i}
+
+
+def _write_ledger_1071(path, rows):
+    with open(path, 'w', encoding='utf-8') as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + '\n')
+    return path
+
+
+def _verdict_1071(td, led, score_text):
+    p = os.path.join(td, 's.json')
+    with open(p, 'w', encoding='utf-8') as fh:
+        fh.write(score_text)
+    r = _cv(['verdict', '--ledger', led, '--score', p])
+    assert 'Traceback' not in r.stderr, r.stderr
+    return r
+
+
+def _no_bare_constants(text):
+    """json.loads that refuses NaN/Infinity -- strict JSON, as a reader other
+    than Python would parse the verdict document."""
+    def _refuse(tok):
+        raise ValueError(f'bare {tok} in the verdict document')
+    return json.loads(text, parse_constant=_refuse)
+
+
+def _run_utils():
+    _t = os.path.join(ROOT, 'tests')
+    if _t not in sys.path:
+        sys.path.insert(0, _t)
+    import run_utils
+    return run_utils
+
+
+#: `blocking` values that are not a count, as raw JSON, with the phrase the
+#: refusal must name for each (#1071, #1075).
+_NOT_A_COUNT_1071 = (
+    ('{"assembly_blocking_pairs": 8, "drc_violations": 30}', 'a JSON object'),
+    ('[1]', 'a JSON array'),
+    ('"10"', 'a string'),
+    ('true', 'boolean'),
+    ('false', 'boolean'),
+    ('-1', 'negative'),
+    ('NaN', 'nan'),
+    ('Infinity', 'inf'),
+    ('-Infinity', 'inf'),
+    ('1' + '0' * 400, '401 digits'),
+)
+
+
+def test_1071_a_ledger_holding_a_non_count_blocking_is_read_not_raised():
+    """#1071, #1075. A recorded `blocking` that is not a count is UNJUDGED.
+
+    The #1071 shape is wk/run21/tigard/ledger.jsonl: 7 placement rows whose
+    `blocking` is a per-term dict and no `quality`. `_score_key` returned
+    `(dict, quality)`, and once the flat window filled `min(r) < r[0]`
+    compared two different dicts: every verdict raised, however good its
+    --score. The scalar cases did not raise -- they gave a WRONG verdict:
+    `false`, `NaN`, `"10"`, `-1`, `true` and `Infinity` all plateaued, so a
+    board scored `{"blocking": 0}` read DONE-EXHAUSTED on laps that ranked
+    nothing.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        # The tigard shape: accepted T,F,T,T,F,F,T, dict blocking, no quality.
+        acc = (True, False, True, True, False, False, True)
+        rows = [{'iteration': i, 'kind': 'placement', 'accepted': a,
+                 'lever': f'lap {i}', 'lever_argv': None, 'parent_sha': None,
+                 'result_sha': 'a' * 64, 't': 1000.0 + i,
+                 'score': {'blocking': {'assembly_blocking_pairs': 8 - i,
+                                        'drc_violations': 30 + i,
+                                        'off_outline_pad_copper': 0}}}
+                for i, a in enumerate(acc)]
+        led = _write_ledger_1071(os.path.join(td, 'tigard.jsonl'), rows)
+        r = _verdict_1071(td, led, '{"blocking": 0, "quality": {}}')
+        assert r.returncode == converge.CONTINUE, (r.returncode, r.stdout)
+        doc = _no_bare_constants(r.stdout)
+        assert doc['verdict'] == 'CONTINUE', doc
+        pl = doc['placement']
+        assert pl['why'] == 'no-comparison', pl
+        assert pl['blocked'] == 'unjudged', pl
+        assert pl['unjudged_iterations'] == [2, 3, 6], pl
+        assert 'recorded no `blocking` a verdict can rank (null, absent, or ' \
+            'not a non-negative number)' in doc['reason'], doc['reason']
+
+        # The scalar cases: every lap of BOTH halves carries the same bad
+        # value. Before the fix each of these read DONE-EXHAUSTED, exit 0.
+        for raw, _phrase in _NOT_A_COUNT_1071:
+            rows = ([_row_1071(i, 'placement', None) for i in range(5)]
+                    + [_row_1071(5 + i, 'completion', None) for i in range(5)])
+            text = ''.join(json.dumps(r).replace(
+                '"blocking": null', '"blocking": ' + raw) + '\n' for r in rows)
+            led = os.path.join(td, 'scalar.jsonl')
+            with open(led, 'w', encoding='utf-8') as fh:
+                fh.write(text)
+            r = _verdict_1071(td, led, '{"blocking": 0}')
+            assert r.returncode == converge.CONTINUE, (raw, r.returncode,
+                                                       r.stdout)
+            doc = _no_bare_constants(r.stdout)
+            for h in ('placement', 'routing'):
+                assert doc[h]['why'] == 'no-comparison', (raw, h, doc[h])
+
+        # A string beside an int raised (`'<' not supported between 'str' and
+        # 'int'`). The string laps drop out, and the two counts either side of
+        # them are compared on their own: 5 -> 4 is a real improvement, which
+        # stands whatever else is in the window.
+        rows = ([_row_1071(0, 'placement', 5), _row_1071(1, 'placement', '9'),
+                 _row_1071(2, 'placement', '10'), _row_1071(3, 'placement', 4),
+                 _row_1071(4, 'placement', 4)])
+        led = _write_ledger_1071(os.path.join(td, 'mixed.jsonl'), rows)
+        r = _verdict_1071(td, led, '{"blocking": 0}')
+        assert r.returncode == converge.CONTINUE, (r.returncode, r.stdout)
+        assert json.loads(r.stdout)['placement']['why'] == 'improving', r.stdout
+        # ...and with no count to anchor them, "9" -> "10" is NOT an
+        # improvement ("10" < "9" as strings): the half is unjudged.
+        rows = [_row_1071(i, 'placement', s)
+                for i, s in enumerate(('9', '10', '10', '10', '10'))]
+        led = _write_ledger_1071(os.path.join(td, 'strings.jsonl'), rows)
+        r = _verdict_1071(td, led, '{"blocking": 0}')
+        doc = json.loads(r.stdout)
+        assert doc['placement']['why'] == 'no-comparison', doc['placement']
+        assert doc['placement']['unjudged_iterations'] == [0, 1, 2, 3, 4], \
+            doc['placement']
+    print("  PASS: a recorded blocking that is not a count is unjudged, never "
+          "ranked, never a plateau, never a traceback")
+
+
+def test_1075_a_score_whose_blocking_is_not_a_count_is_NO_SCORE():
+    """#1075. The --score itself: `false == 0` read DONE-EXHAUSTED, and an
+    `Infinity` printed "STUCK: blocking == None" -- the sentence #936 D1
+    removed for the null case, back through the inf -> None echo."""
+    with tempfile.TemporaryDirectory() as td:
+        rows = ([_row_1071(i, 'placement', 3) for i in range(5)]
+                + [_row_1071(5 + i, 'completion', 3) for i in range(5)])
+        led = _write_ledger_1071(os.path.join(td, 'flat.jsonl'), rows)
+        # The control: this ledger IS plateaued, so a real count stops it.
+        r = _verdict_1071(td, led, '{"blocking": 3}')
+        assert json.loads(r.stdout)['verdict'] == 'STUCK', r.stdout
+        for raw, phrase in _NOT_A_COUNT_1071 + (('"0"', 'a string'),):
+            r = _verdict_1071(td, led, '{"blocking": %s}' % raw)
+            assert r.returncode == 2, (raw, r.returncode, r.stdout)
+            doc = _no_bare_constants(r.stdout)
+            assert doc['verdict'] == 'NO-SCORE', (raw, doc)
+            assert 'must be a non-negative number' in doc['reason'], (raw, doc)
+            assert phrase in doc['reason'], (raw, phrase, doc['reason'])
+            assert 'is null' not in doc['reason'], (raw, doc['reason'])
+            assert 'blocking == None' not in r.stdout, raw
+            assert 'ungraded' in doc and 'unknown' in doc, doc
+    # `quality` items: a bool or a NaN is not a measurement either. NaN never
+    # compares, so it scrambled every tie it touched; `true` ranked as 1 via.
+    inf = float('inf')
+    for v in (True, float('nan'), inf, '3'):
+        k = converge._score_key({'blocking': 0, 'quality': {'vias': v}})
+        assert k == (0, (inf, inf, inf)), (v, k)
+    assert converge._score_key({'blocking': 0, 'quality': {'vias': 4}}) \
+        == (0, (4, inf, inf))
+    # A 400-digit JSON integer: `isfinite` converts an int to float and raised
+    # OverflowError. As a `blocking` it is not a count (past any float, and the
+    # film plots `float(b)`); as a quality item it ranks, and a ledger row
+    # carrying one must not break every later verdict (`record` does not
+    # validate `quality`).
+    huge = 10 ** 400
+    assert 'digits' in (converge.blocking_defect(huge) or ''), \
+        converge.blocking_defect(huge)
+    assert converge._score_key({'blocking': 3, 'quality': {'vias': huge}}) \
+        == (3, (huge, inf, inf))
+    with tempfile.TemporaryDirectory() as td:
+        rows = [_row_1071(i, 'completion', 3, quality={'vias': huge})
+                for i in range(5)]
+        led = _write_ledger_1071(os.path.join(td, 'huge.jsonl'), rows)
+        r = _verdict_1071(td, led, '{"blocking": 3}')
+        assert r.returncode == converge.CONTINUE, \
+            (r.returncode, r.stderr[-300:])
+    print("  PASS: a --score whose blocking is not a count is NO-SCORE, named "
+          "for what it is")
+
+
+def test_1076_verdict_reads_a_malformed_ungraded_beside_a_real_blocking():
+    """#1076. `sorted(score.get('ungraded') or [])` ran next to a REAL
+    blocking, where the NO-SCORE branch's `_names` guard never did: an int
+    raised `not iterable` and a mixed list raised on `<`."""
+    with tempfile.TemporaryDirectory() as td:
+        led = _write_ledger_1071(os.path.join(td, 'l.jsonl'),
+                                 [_row_1071(0, 'completion', 3)])
+        r = _verdict_1071(td, led, '{"blocking": 1, "ungraded": 5}')
+        assert r.returncode == converge.CONTINUE, (r.returncode, r.stderr)
+        doc = json.loads(r.stdout)
+        assert doc['ungraded'] == ['<not a list: 5>'], doc['ungraded']
+        r = _verdict_1071(td, led, '{"blocking": 0, "unknown": "impedance"}')
+        doc = json.loads(r.stdout)
+        assert doc['unknown'] == ["<not a list: 'impedance'>"], doc['unknown']
+        r = _verdict_1071(td, led, '{"blocking": 0, "ungraded": ["length", 3]}')
+        doc = json.loads(r.stdout)
+        assert doc['ungraded'] == ['3', 'length'], doc['ungraded']
+        # Silent before, not raised: `sorted("abc")` named three components
+        # a, b and c as UNEXAMINED.
+        r = _verdict_1071(td, led, '{"blocking": 0, "ungraded": "abc"}')
+        doc = json.loads(r.stdout)
+        assert doc['ungraded'] == ["<not a list: 'abc'>"], doc['ungraded']
+        assert 'UNEXAMINED' not in doc['reason'], doc['reason']
+        assert '`ungraded` is not a list' in doc['reason'], doc['reason']
+        r = _verdict_1071(td, led, '{"blocking": 0, "ungraded": ["length"]}')
+        assert 'UNEXAMINED, and not passed: length' in \
+            json.loads(r.stdout)['reason']
+        # ...and a non-list `unknown` names no component, so the verdict must
+        # not say one RAN and could not answer (the NO-SCORE branch's rule).
+        r = _verdict_1071(td, led, '{"blocking": 1, "unknown": false}')
+        doc = json.loads(r.stdout)
+        assert 'RAN and could not answer' not in doc['reason'], doc['reason']
+        assert '`unknown` is not a list' in doc['reason'], doc['reason']
+        r = _verdict_1071(td, led, '{"blocking": 1, "unknown": ["impedance"]}')
+        assert 'RAN and could not answer: impedance' in \
+            json.loads(r.stdout)['reason']
+    print("  PASS: a malformed ungraded/unknown beside a real blocking is "
+          "echoed, not raised")
+
+
+def test_1071_record_refuses_a_score_that_is_not_a_count_object():
+    """#1071, #1075, #1078. `record` is the one place to stop a bad score: the
+    ledger is append-only. It accepted any JSON, so a per-term dict landed and
+    broke every later verdict, and `[1]` was APPENDED and then crashed record
+    itself. Refused now, before the ledger or the board store is touched."""
+    run_utils = _run_utils()
+    base = [sys.executable, '-X', 'utf8',
+            os.path.join(ROOT, 'py_placer', 'converge.py'), 'record']
+    with tempfile.TemporaryDirectory() as td:
+        led = os.path.join(td, 'l.jsonl')
+
+        def _argv(score_text, kind='placement'):
+            return base + ['--ledger', led, '--board', BOARD, '--kind', kind,
+                           '--lever', 'x', '--score', score_text]
+
+        # A score that is not an object at all (#1078) -- FIRST, so a
+        # regression here reads as this refusal failing, not as a traceback
+        # in some later case.
+        for raw in ('[1, 2]', '"x"', '5'):
+            # `_cv`, not run_utils.check: the #1078 failure IS a traceback
+            # after the append, which check() would report as a broken test
+            # before the witness that names the defect is reached.
+            r = _cv(_argv(raw)[len(base) - 1:])      # from 'record' on
+            assert not os.path.exists(led), \
+                f'{raw}: the row was APPENDED before record failed (#1078)'
+            assert r.returncode == 2 and 'must be a JSON object' in r.stderr \
+                and 'Traceback' not in r.stderr, (raw, r.returncode, r.stderr)
+        for raw, phrase in _NOT_A_COUNT_1071:
+            r = run_utils.check(_argv('{"blocking": %s}' % raw),
+                                refuse='Nothing was written.', code=2)
+            assert "--score's `blocking` is" in r.stderr, (raw, r.stderr)
+            assert phrase in r.stderr, (raw, phrase, r.stderr)
+            assert not os.path.exists(led), raw
+            assert not os.path.exists(os.path.join(td, 'boards')), raw
+        # Not only placement rows: the refusal does not look at --kind, and
+        # the film reads every row.
+        run_utils.check(_argv('{"blocking": false}', kind='completion'),
+                        refuse="`blocking` is the boolean false", code=2)
+        # --score-file, the skill's own path.
+        sf = os.path.join(td, 'score.json')
+        with open(sf, 'w', encoding='utf-8') as fh:
+            fh.write('{"blocking": {"drc_violations": 3}}')
+        run_utils.check(base + ['--ledger', led, '--board', BOARD, '--kind',
+                                'placement', '--lever', 'x', '--score-file',
+                                run_utils.evidence(sf)],
+                        refuse='blocking_by', code=2)
+        assert not os.path.exists(led)
+        assert not os.path.exists(os.path.join(td, 'boards'))
+
+        # What IS a count, or honestly unmeasured, is still recorded.
+        for raw in ('{"blocking": 0}', '{"blocking": 3}', '{"blocking": 2.0}',
+                    '{"blocking": null}', '{"quality": {}}'):
+            run_utils.check(_argv(raw), accept=True)
+        with open(led, encoding='utf-8') as fh:
+            assert sum(1 for line in fh if line.strip()) == 5
+    print("  PASS: record refuses a blocking that is not a count, and a score "
+          "that is not an object, before anything is written")
+
+
+def test_1078_a_stray_ledger_line_is_skipped_not_raised():
+    """#1078. `Ledger.entries()` returned a line that parses to a non-object,
+    so one stray `42` made every verdict exit 1 on `.get`."""
+    with tempfile.TemporaryDirectory() as td:
+        led = os.path.join(td, 'l.jsonl')
+        with open(led, 'w', encoding='utf-8') as fh:
+            fh.write(json.dumps(_row_1071(0, 'completion', 3)) + '\n42\n[1]\n'
+                     '"x"\n')
+        from board_store import Ledger
+        assert len(Ledger(led).entries()) == 1
+        r = _verdict_1071(td, led, '{"blocking": 1}')
+        assert r.returncode == converge.CONTINUE, (r.returncode, r.stderr)
+        assert json.loads(r.stdout)['ledger_rows'] == 1, r.stdout
+    print("  PASS: a ledger line that is not an object is skipped, like a torn "
+          "one")
+
+
+def test_1078_a_new_row_is_numbered_past_every_used_iteration():
+    """#1078's leftover. `record` numbered a row `len(entries())`; once the
+    stray `42` is skipped, a ledger whose later rows were numbered by the old
+    count (0, 42, 2) hands out 2 again, and `replay --iteration 2` then
+    matches two rows."""
+    with tempfile.TemporaryDirectory() as td:
+        led = os.path.join(td, 'l.jsonl')
+        with open(led, 'w', encoding='utf-8') as fh:
+            fh.write(json.dumps(_row_1071(0, 'placement', 3)) + '\n42\n'
+                     + json.dumps(_row_1071(2, 'placement', 2)) + '\n')
+        r = _cv(['record', '--ledger', led, '--board', BOARD, '--kind',
+                 'placement', '--lever', 'after the stray line'])
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        from board_store import Ledger
+        its = [e.get('iteration') for e in Ledger(led).entries()]
+        assert its == [0, 2, 3], its
+        # ...and a ledger numbered 0..n-1 keeps the count it always had.
+        assert Ledger(os.path.join(td, 'none.jsonl')).next_iteration() == 0
+        assert Ledger(led).next_iteration() == 4
+    print("  PASS: a new row is numbered past every iteration already used")
 
 
 if __name__ == '__main__':

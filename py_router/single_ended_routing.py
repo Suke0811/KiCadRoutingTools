@@ -59,6 +59,23 @@ def _unblock_debug() -> bool:
 # kernels skip the bulk of the board's pads. Generous (~10x the largest realistic
 # margin) so routing stays byte-for-byte identical.
 _FOREIGN_PAD_WINDOW = 5.0  # mm
+# KICAD_SEG_DIST_EXACT=1 replaces the sampled sweep in _seg_foreign_seg_dist
+# with the exact segment-to-segment distance. Default OFF (2026-09-19): the
+# sweep is main's behaviour, and the exact distance changes copper on every
+# board, so it stays opt-in until a corpus A/B has graded it.
+_SEG_DIST_EXACT = os.environ.get('KICAD_SEG_DIST_EXACT', '0') == '1'
+# The sample-by-foreign sweeps below (_seg_foreign_pad_dist,
+# _seg_foreign_seg_dist) run in ROW CHUNKS so that no matrix exceeds this
+# many elements (512 KB of float64). Every element is computed from its own
+# sample and its own foreign item, and the result is the min, so the chunked
+# sweep is bit-identical to one matrix; what changes is what the allocator
+# keeps. Each call's matrix was a different size, and macOS's malloc keeps a
+# freed large block for reuse only by a block of its own size: a braid's
+# smoother (41,000 calls) left 230 MB of freed matrices resident, and a
+# probe of 300 sweep-shaped calls left 636 MB (random sizes) against 39 MB
+# at this cap -- and ran faster (1.9 s vs 2.1 s; 64 KB chunks: 3.1 s).
+# A call under the cap takes exactly the one-matrix path it always did.
+_SWEEP_CHUNK = 65536
 
 
 def _pad_corner_radius(pad):
@@ -119,12 +136,19 @@ def _foreign_pad_arrays(pcb_data, layer):
     cache = cache[1]
     arr = cache.get(layer)
     if arr is None:
+        # #1046: a pad's layer list keeps KiCad's `F&B.Cu` token as written,
+        # which is neither `layer` nor `*.Cu`, so the old membership test left
+        # every such pad (a through-hole pad on F and B only) out of every
+        # sampled foreign-pad check. Expanding against [layer] alone keeps the
+        # old answer for `*.Cu` (every copper layer, so this one) and needs no
+        # board layer list, which a hand-built PCBData may not carry.
+        from net_queries import expand_pad_layers
         nids, cx, cy, hx, hy, cr = [], [], [], [], [], []
         rc, rs, ex, ey, lc = [], [], [], [], []
         custom = []  # (net_id, pad) -- exact-outline pads handled per-pad
         for nid, pads in pcb_data.pads_by_net.items():
             for pad in pads:
-                if layer in pad.layers or '*.Cu' in pad.layers:
+                if layer in expand_pad_layers(pad.layers, [layer]):
                     if getattr(pad, 'polygons', None):
                         # CUSTOM pad with real polygon outline(s): the rounded
                         # rect model would use its bounding box, which both
@@ -300,25 +324,32 @@ def _seg_foreign_pad_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
         return best_custom
     fcx, fcy, fhx, fhy, fcr = cx[near], cy[near], hx[near], hy[near], cr[near]
     frc, frs = rc[near], rs[near]
-    # Rounded-rect signed distance in each pad's LOCAL frame (query offsets
-    # rotated by R(-rot); identity for axis-aligned pads): shrink the
-    # half-extents by the corner radius, take the outside distance to that
-    # inner rect, then subtract the radius.
-    ddx = sx[:, None] - fcx[None, :]
-    ddy = sy[:, None] - fcy[None, :]
-    lx = np.abs(ddx * frc[None, :] + ddy * frs[None, :])
-    ly = np.abs(-ddx * frs[None, :] + ddy * frc[None, :])
-    dx = np.maximum(lx - (fhx[None, :] - fcr[None, :]), 0.0)
-    dy = np.maximum(ly - (fhy[None, :] - fcr[None, :]), 0.0)
-    d = np.hypot(dx, dy) - fcr[None, :]
+    excess = None
     if base_clearance is not None:
         excess = np.maximum(plc[near] - base_clearance, 0.0)
         if net_clearances:
             fcls = np.array([max(0.0, net_clearances.get(int(f), base_clearance) - base_clearance)
                              for f in nids[near]], dtype=float)
             excess = np.maximum(excess, fcls)
-        d = d - excess[None, :]
-    return min(float(np.min(d)), best_custom)
+    # Rounded-rect signed distance in each pad's LOCAL frame (query offsets
+    # rotated by R(-rot); identity for axis-aligned pads): shrink the
+    # half-extents by the corner radius, take the outside distance to that
+    # inner rect, then subtract the radius.
+    rows = max(1, _SWEEP_CHUNK // fcx.size)     # see _SWEEP_CHUNK
+    best = math.inf
+    for r0 in range(0, sx.size, rows):
+        sxc, syc = sx[r0:r0 + rows], sy[r0:r0 + rows]
+        ddx = sxc[:, None] - fcx[None, :]
+        ddy = syc[:, None] - fcy[None, :]
+        lx = np.abs(ddx * frc[None, :] + ddy * frs[None, :])
+        ly = np.abs(-ddx * frs[None, :] + ddy * frc[None, :])
+        dx = np.maximum(lx - (fhx[None, :] - fcr[None, :]), 0.0)
+        dy = np.maximum(ly - (fhy[None, :] - fcr[None, :]), 0.0)
+        d = np.hypot(dx, dy) - fcr[None, :]
+        if excess is not None:
+            d = d - excess[None, :]
+        best = min(best, float(np.min(d)))
+    return min(best, best_custom)
 
 
 def _foreign_seg_arrays(pcb_data, layer):
@@ -500,14 +531,8 @@ def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
     sy = y1 + (y2 - y1) * t
     abx = bx - ax; aby = by - ay                      # (M,)
     L2 = abx * abx + aby * aby                         # (M,)
-    pax = sx[:, None] - ax[None, :]                    # (S, M)
-    pay = sy[:, None] - ay[None, :]
     safe_L2 = np.where(L2 > 0, L2, 1.0)
-    tt = (pax * abx[None, :] + pay * aby[None, :]) / safe_L2[None, :]
-    tt = np.where(L2[None, :] > 0, np.clip(tt, 0.0, 1.0), 0.0)
-    projx = ax[None, :] + tt * abx[None, :]
-    projy = ay[None, :] + tt * aby[None, :]
-    dist = np.hypot(sx[:, None] - projx, sy[:, None] - projy) - hw[None, :]
+    excess = None
     if net_clearances or track_clearances:
         # #436: fold each foreign net's class-excess into its distance.
         # The track-rule value raises the same per-foreign requirement (#735).
@@ -518,8 +543,50 @@ def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
                                max(_nc.get(int(f), base_clearance),
                                    _tc.get(int(f), 0.0)) - base_clearance)
                            for f in fnid], dtype=float)
-        dist = dist - excess[None, :]
-    return float(np.min(dist))
+    if _SEG_DIST_EXACT:
+        # The exact segment-to-segment distance (2026-09-11): the minimum
+        # between two segments is attained at an endpoint of one of them
+        # unless they cross, so four point-to-segment distances over the
+        # M foreign segments replace the (n + 1) x M sampled sweep -- the
+        # sampled minimum was never below the truth by more than the
+        # 0.02 mm step, this one IS the truth (so it can only be tighter).
+        # Profiled: 27,900 calls, 25 s of a 149 s K41 braid at write time.
+        def _p2ab(px, py):
+            pax_ = px - ax; pay_ = py - ay
+            tt_ = np.where(L2 > 0, np.clip((pax_ * abx + pay_ * aby) / safe_L2, 0.0, 1.0), 0.0)
+            return np.hypot(px - (ax + tt_ * abx), py - (ay + tt_ * aby))
+        d = np.minimum(_p2ab(x1, y1), _p2ab(x2, y2))
+        ux, uy = x2 - x1, y2 - y1
+        UL2 = ux * ux + uy * uy
+        if UL2 > 0:
+            for qx, qy in ((ax, ay), (bx, by)):
+                tt_ = np.clip(((qx - x1) * ux + (qy - y1) * uy) / UL2, 0.0, 1.0)
+                d = np.minimum(d, np.hypot(qx - (x1 + tt_ * ux), qy - (y1 + tt_ * uy)))
+            # a proper crossing: distance zero
+            c1 = ux * (ay - y1) - uy * (ax - x1)
+            c2 = ux * (by - y1) - uy * (bx - x1)
+            c3 = abx * (y1 - ay) - aby * (x1 - ax)
+            c4 = abx * (y2 - ay) - aby * (x2 - ax)
+            d = np.where((c1 * c2 < 0) & (c3 * c4 < 0), 0.0, d)
+        dist = d - hw
+        if excess is not None:
+            dist = dist - excess
+        return float(np.min(dist))
+    rows = max(1, _SWEEP_CHUNK // ax.size)      # see _SWEEP_CHUNK
+    best = math.inf
+    for r0 in range(0, sx.size, rows):
+        sxc, syc = sx[r0:r0 + rows], sy[r0:r0 + rows]
+        pax = sxc[:, None] - ax[None, :]                   # (rows, M)
+        pay = syc[:, None] - ay[None, :]
+        tt = (pax * abx[None, :] + pay * aby[None, :]) / safe_L2[None, :]
+        tt = np.where(L2[None, :] > 0, np.clip(tt, 0.0, 1.0), 0.0)
+        projx = ax[None, :] + tt * abx[None, :]
+        projy = ay[None, :] + tt * aby[None, :]
+        dist = np.hypot(sxc[:, None] - projx, syc[:, None] - projy) - hw[None, :]
+        if excess is not None:
+            dist = dist - excess[None, :]
+        best = min(best, float(np.min(dist)))
+    return best
 
 
 def _foreign_via_arrays(pcb_data):
@@ -1623,13 +1690,19 @@ def _free_on_pad_cells(pad, layer_idx, config, obstacles, coord,
     track/2) so a landing there adds no copper edge nearer any obstacle than
     the pad itself already has. Non-axis-aligned (rect_rotation) pads yield
     nothing. Part of the #479 blocked-terminal seeding (see callers)."""
-    if getattr(pad, 'rect_rotation', 0.0):
+    # The landing rule is shared with placement's keep-out channel (#1031),
+    # which must not accept a pose this function would find no cell on.
+    from net_queries import pad_landing_extent
+    # getattr: connectivity._EndpointStub (zero size, no `shape`) reaches
+    # here from the end-of-run reconciliation; it must yield no cells, not
+    # raise.
+    _ext = pad_landing_extent(pad.size_x, pad.size_y,
+                              getattr(pad, 'shape', None),
+                              getattr(pad, 'rect_rotation', 0.0),
+                              config.track_width)
+    if _ext is None:
         return []
-    half_x = (pad.size_x or 0.0) / 2.0 - config.track_width / 2.0
-    half_y = (pad.size_y or 0.0) / 2.0 - config.track_width / 2.0
-    if half_x <= 0 or half_y <= 0:
-        return []
-    round_outline = pad.shape in ('circle', 'oval')
+    half_x, half_y, round_outline = _ext
     gx0, gy0 = coord.to_grid(pad.global_x - half_x, pad.global_y - half_y)
     gx1, gy1 = coord.to_grid(pad.global_x + half_x, pad.global_y + half_y)
     cells = []
@@ -2168,15 +2241,10 @@ def route_net_with_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
             )
             new_segments.append(seg)
 
-    if necked_down:
-        # Both endpoints are pads: neck the start side too
-        new_segments = _apply_neckdown_widths(new_segments, config, net_id, obstacles,
-                                              coord, layer_names, track_margin, neck_start=True)
-    elif uniform_width is not None:
-        # Short power edge routed at a stepped-down width: every segment is that
-        # width, so the obstacle map (reads seg.width) and the output match (#180).
-        for _s in new_segments:
-            _s.width = uniform_width
+    # Both endpoints are pads: a neck-down necks the start side too.
+    new_segments = _assign_wide_route_widths(
+        new_segments, config, net_id, obstacles, coord, layer_names,
+        track_margin, necked_down, uniform_width, neck_start=True)
 
     # Neck any terminal-connection segment that grazes a foreign pad (#157): the
     # endpoint stub is laid geometrically with the endpoint region obstacle-exempt,
@@ -4234,15 +4302,10 @@ def route_multipoint_main(
         through_hole_positions,
         pcb_data
     )
-    if necked_down:
-        # Both endpoints are pads: neck the start side too
-        segments = _apply_neckdown_widths(segments, config, net_id, obstacles,
-                                          coord, layer_names, track_margin, neck_start=True)
-    elif uniform_width is not None:
-        # Short power edge routed at a stepped-down width (#180): every segment is
-        # that width, so obstacle blocking (reads seg.width) and output match.
-        for _s in segments:
-            _s.width = uniform_width
+    # Both endpoints are pads: a neck-down necks the start side too.
+    segments = _assign_wide_route_widths(
+        segments, config, net_id, obstacles, coord, layer_names,
+        track_margin, necked_down, uniform_width, neck_start=True)
     # Re-neck terminal grazes AFTER width assignment (#212): the neckdown/uniform
     # passes above rebuild widths and would otherwise restore a grazing terminal leg
     # to base/power width, undoing the graze-neck applied during conversion.
@@ -4395,6 +4458,31 @@ def route_multipoint_taps(
                 pass
 
 
+def inprogress_via_ring_cells(v, net_id: int, config: GridRouteConfig,
+                              coord: GridCoord) -> List[Tuple[int, int]]:
+    """Via-block cells around an IN-PROGRESS via `v` of `net_id` (a via this
+    net's main route or an earlier tap edge just placed, not yet in pcb_data),
+    so a later edge of the same net cannot drop a second via too close to it.
+
+    The radius is ``obstacle_map.same_net_via_ring_mm``: the larger of the
+    copper via-via spacing and the drill hole-to-hole minimum (#1070 -- the
+    copper term alone is SMALLER on fine vias: 0.25/0.15, clearance 0.09,
+    h2h 0.3 gives 0.34 vs 0.45), grown by the via's sub-grid offset so the
+    spacing holds from its TRUE centre, not its rounded cell (#70). The via's
+    own cell is left out so a later edge can still REUSE the barrel."""
+    from obstacle_map import same_net_via_ring_mm
+    vgx, vgy = coord.to_grid(v.x, v.y)
+    off_cells = math.hypot(v.x - vgx * coord.grid_step,
+                           v.y - vgy * coord.grid_step) / coord.grid_step
+    radius = (same_net_via_ring_mm(config, net_id, getattr(v, 'drill', 0.0) or 0.0)
+              * coord.inv_step) + off_cells
+    rng = int(math.ceil(radius))
+    radius_sq = radius * radius
+    return [(vgx + ex, vgy + ey)
+            for ex in range(-rng, rng + 1) for ey in range(-rng, rng + 1)
+            if 0 < ex * ex + ey * ey <= radius_sq]
+
+
 def _route_multipoint_taps_impl(
     pcb_data: PCBData,
     net_id: int,
@@ -4468,8 +4556,7 @@ def _route_multipoint_taps_impl(
     # via when its path lands on the cell, and (2) cannot drop a SECOND via within
     # hole-to-hole of it. Without this, a later branch dropped a via a sub-mm away
     # -- the VTT multipoint junction double-via (hole_to_hole DRC). The ring skips
-    # the via's own cell so reuse stays open.
-    _vv_radius = (config.via_size + config.clearance) * coord.inv_step
+    # the via's own cell so reuse stays open (sized by inprogress_via_ring_cells).
 
     try:        # #568: armed once per tap run (see the ring mirror below)
         from obstacle_map import _rung_small_armed as _rsa, _per_net_rungs as _pnr
@@ -4482,33 +4569,21 @@ def _route_multipoint_taps_impl(
     def _register_inprogress_via(v):
         vgx, vgy = coord.to_grid(v.x, v.y)
         obstacles.add_free_via(vgx, vgy)
-        # Grow the ring by the via's sub-grid offset so a later same-net via keeps
-        # the full spacing from this via's TRUE centre, not its rounded cell --
-        # otherwise a fine-grid route drops a via a sub-cell too close (issue #70,
-        # mirroring add_same_net_via_clearance).
-        off_cells = math.hypot(v.x - vgx * coord.grid_step,
-                               v.y - vgy * coord.grid_step) / coord.grid_step
-        radius = _vv_radius + off_cells
-        rng = int(math.ceil(radius))
-        radius_sq = radius * radius
-        for ex in range(-rng, rng + 1):
-            for ey in range(-rng, rng + 1):
-                d = ex * ex + ey * ey
-                if 0 < d <= radius_sq:
-                    obstacles.add_blocked_via(vgx + ex, vgy + ey)
-                    # #568 MIRROR: a rung-1 tap search trusts ONLY the small
-                    # map for dynamic copper, so without this it could drop a
-                    # small via inside the ring of a via this very net just
-                    # placed -- a real same-net hole-to-hole violation. The
-                    # wrapper's finally removes both maps' cells (#309).
-                    if _small_rung_on:
-                        obstacles.add_blocked_via_small(vgx + ex, vgy + ey)
-                    for _r in _pn_rungs:   # #530 per-net rungs
-                        obstacles.add_blocked_via_rung(_r, vgx + ex, vgy + ey)
-                    # Ref-counted raw add: the wrapper removes these on exit so
-                    # they can't leak into a persistent working map (#309).
-                    if _ring_cells is not None:
-                        _ring_cells.append((vgx + ex, vgy + ey))
+        for cgx, cgy in inprogress_via_ring_cells(v, net_id, config, coord):
+            obstacles.add_blocked_via(cgx, cgy)
+            # #568 MIRROR: a rung-1 tap search trusts ONLY the small map for
+            # dynamic copper, so without this it could drop a small via inside
+            # the ring of a via this very net just placed -- a real same-net
+            # hole-to-hole violation. The wrapper's finally removes both maps'
+            # cells (#309).
+            if _small_rung_on:
+                obstacles.add_blocked_via_small(cgx, cgy)
+            for _r in _pn_rungs:   # #530 per-net rungs
+                obstacles.add_blocked_via_rung(_r, cgx, cgy)
+            # Ref-counted raw add: the wrapper removes these on exit so they
+            # can't leak into a persistent working map (#309).
+            if _ring_cells is not None:
+                _ring_cells.append((cgx, cgy))
 
     for _v in all_vias:
         _register_inprogress_via(_v)
@@ -4966,14 +5041,9 @@ def _route_multipoint_taps_impl(
             through_hole_positions,
             pcb_data
         )
-        if necked_down:
-            segments = _apply_neckdown_widths(segments, config, net_id, obstacles,
-                                              coord, layer_names, track_margin)
-        elif uniform_width is not None:
-            # Short power edge routed at a stepped-down width (#180): uniform width
-            # so obstacle blocking (reads seg.width) and output match.
-            for _s in segments:
-                _s.width = uniform_width
+        segments = _assign_wide_route_widths(
+            segments, config, net_id, obstacles, coord, layer_names,
+            track_margin, necked_down, uniform_width, neck_start=False)
         # Re-neck terminal grazes AFTER width assignment (#212): the neckdown/uniform
         # passes rebuild widths and would otherwise restore a grazing terminal leg to
         # base/power width, undoing the graze-neck applied during conversion.
@@ -5462,6 +5532,46 @@ def _flip_segments(segments):
             for s in reversed(segments)]
 
 
+def _assign_wide_route_widths(segments, config: GridRouteConfig, net_id: int,
+                              obstacles, coord: GridCoord, layer_names,
+                              track_margin, necked_down, uniform_width,
+                              neck_start: bool):
+    """Give a wide (power / impedance) route its final widths (#1033).
+
+    `necked_down` (a long trunk re-routed at the neck floor) goes through
+    _apply_neckdown_widths, which necks the pad ends and keeps the net's width
+    wherever it fits. `uniform_width` (a short edge that only routed at a
+    stepped-down width, #180) is laid at the net's own width and necked to
+    `uniform_width` only where the full width does not fit. Anything else is
+    returned unchanged.
+
+    It records nothing in the `design_rules` ledger: it runs per routing
+    ATTEMPT (retries, rescues), so a row here would count attempts rather
+    than shipped copper. route.py records one
+    row per power net from the shipped board instead
+    (fab_tiers.replace_power_track_rows).
+    """
+    if necked_down:
+        segments = _apply_neckdown_widths(segments, config, net_id, obstacles,
+                                          coord, layer_names, track_margin,
+                                          neck_start=neck_start)
+    elif uniform_width is not None:
+        # #1033: the stepped-down width is the width the WHOLE edge could be
+        # routed at, not the width every piece of it needs. Lay it at the
+        # net's own width and let the neck pass narrow only where the full
+        # width does not fit -- the same rule as a long trunk, with the neck
+        # at `uniform_width` instead of the layer width. Every piece it keeps
+        # wide has passed the same swept-capsule check against the obstacle
+        # map that the long-trunk widen-back uses.
+        for _s in segments:
+            _s.width = config.get_net_track_width(net_id, _s.layer)
+        segments = _apply_neckdown_widths(segments, config, net_id, obstacles,
+                                          coord, layer_names, track_margin,
+                                          neck_start=neck_start,
+                                          neck_w=uniform_width)
+    return segments
+
+
 def _neck_width_for_net(config: GridRouteConfig, net_id: int, layer: str) -> float:
     """The width a neck-down narrows to on `layer` for this net: a POWER net
     (configured wider than the layer routing width) necks to the LAYER width,
@@ -5473,37 +5583,130 @@ def _neck_width_for_net(config: GridRouteConfig, net_id: int, layer: str) -> flo
     return min(lw, config.track_width)
 
 
+# #1033: granularity of the piecewise widen-back. A segment that does not fit
+# at full width along its whole length is cut into pieces of about this
+# length and each piece is tested on its own; consecutive pieces with the
+# same verdict are merged back, so a straight run costs at most one extra
+# segment per pinch it crosses.
+_WIDEN_PIECE_MM = 0.5
+# Fit-check guard, in cells, for a piece whose endpoints are NOT grid points:
+# rounding an endpoint to its cell can move it by up to sqrt(0.5) ~ 0.7071
+# cell (diagonally), so the guard must cover that whole displacement. 0.5 was
+# measured insufficient (12/4804 any-angle on-grid and 11/4904 off-grid pieces
+# still outside the cell-centre model, worst 0.158 cell); 0.7072 measured 0.
+_OFFGRID_FIT_GUARD = 0.7072
+
+
+def _widen_fitting_pieces(seg, fits, narrow_w, coord=None):
+    """`seg` (at its wide width) as a list of collinear pieces: wide where the
+    wide body fits, `narrow_w` where it does not, in start->end order.
+
+    Before #1033 the verdict was per SEGMENT, so one pinch anywhere along a
+    long straight segment narrowed all of it: a 22 mm pad-to-pad run through
+    a single 0.4 mm gap shipped entirely at the 0.127 neck width, and run 32's
+    +3V3 carried pad-to-pad runs up to 59 mm at the signal width.
+
+    The fit check rounds endpoints to cells, so:
+
+    * the WHOLE segment is checked unguarded only when both endpoints are
+      grid points (then it is tested exactly); an off-grid segment (a pad
+      stub, the neck-boundary split) is checked with `_OFFGRID_FIT_GUARD`
+      cells of extra margin -- unguarded, 149 of 1516 kept wide were up to
+      0.487 cell outside the cell-centre model;
+    * a segment running grid point to grid point on an octolinear bearing
+      (every A* path segment) is cut only at grid points along it, so each
+      piece is tested exactly, unguarded;
+    * anything else is cut into equal pieces, each checked with the guard.
+      A half-cell guard was not enough (a rounded endpoint can move
+      sqrt(0.5) cell); see _OFFGRID_FIT_GUARD."""
+    L = _seg_length(seg)
+    on_grid = False
+    ga = gb = None
+    if coord is not None:
+        ga = coord.to_grid(seg.start_x, seg.start_y)
+        gb = coord.to_grid(seg.end_x, seg.end_y)
+        fa = coord.to_float(*ga)
+        fb = coord.to_float(*gb)
+        on_grid = (abs(fa[0] - seg.start_x) < 1e-6 and abs(fa[1] - seg.start_y) < 1e-6
+                   and abs(fb[0] - seg.end_x) < 1e-6 and abs(fb[1] - seg.end_y) < 1e-6)
+    if fits(seg, 0.0 if on_grid else _OFFGRID_FIT_GUARD):
+        return [seg]
+    wide_w = seg.width
+    pts = None
+    guard = 0.0
+    if coord is not None and L > 0:
+        dgx, dgy = gb[0] - ga[0], gb[1] - ga[1]
+        steps = max(abs(dgx), abs(dgy))
+        if on_grid and steps > 1 and (dgx == 0 or dgy == 0 or abs(dgx) == abs(dgy)):
+            k = max(1, int(round(_WIDEN_PIECE_MM / (L / steps))))
+            ux, uy = dgx // steps, dgy // steps
+            idx = list(range(0, steps, k)) + [steps]
+            pts = [coord.to_float(ga[0] + ux * i, ga[1] + uy * i) for i in idx]
+    if pts is None:
+        n = int(math.ceil(L / _WIDEN_PIECE_MM)) if L > 0 else 1
+        if n <= 1:
+            seg.width = narrow_w
+            return [seg]
+        dx = (seg.end_x - seg.start_x) / n
+        dy = (seg.end_y - seg.start_y) / n
+        pts = [(seg.start_x + dx * i, seg.start_y + dy * i) for i in range(n)]
+        pts.append((seg.end_x, seg.end_y))
+        guard = _OFFGRID_FIT_GUARD
+    n = len(pts) - 1
+    if n <= 1:
+        seg.width = narrow_w
+        return [seg]
+    flags = [fits(Segment(start_x=pts[i][0], start_y=pts[i][1],
+                          end_x=pts[i + 1][0], end_y=pts[i + 1][1],
+                          width=wide_w, layer=seg.layer, net_id=seg.net_id),
+                  guard)
+             for i in range(n)]
+    out = []
+    i = 0
+    while i < n:
+        j = i
+        while j < n and flags[j] == flags[i]:
+            j += 1
+        out.append(Segment(start_x=pts[i][0], start_y=pts[i][1],
+                           end_x=pts[j][0], end_y=pts[j][1],
+                           width=wide_w if flags[i] else narrow_w,
+                           layer=seg.layer, net_id=seg.net_id))
+        i = j
+    return out
+
+
 def _neck_pass(segments, config: GridRouteConfig, obstacles, coord: GridCoord,
-               layer_map: Dict[str, int], track_margin, net_id: int):
+               layer_map: Dict[str, int], track_margin, net_id: int,
+               neck_w=None):
     """Narrow the last neckdown_length mm of the run (the pad is at the list
     END); beyond that, keep the wide width only where the wide clearance
-    fits. Never re-widens an already-narrow segment (so a second pass from
-    the other end preserves the first pass's neck). track_margin may be a
-    scalar or a per-layer list (#156)."""
-    def fits(s):
+    fits -- piece by piece (#1033), not all-or-nothing per segment. Never
+    re-widens an already-narrow segment (so a second pass from the other end
+    preserves the first pass's neck). track_margin may be a scalar or a
+    per-layer list (#156). `neck_w` overrides the neck width (the short-edge
+    path necks to the width its edge routed at, #1033)."""
+    def fits(s, guard=0.0):
         li = layer_map.get(s.layer, 0)
-        return _segment_fits_wide(s, obstacles, coord, li, _margin_at(track_margin, li))
+        return _segment_fits_wide(s, obstacles, coord, li,
+                                  _margin_at(track_margin, li) + guard)
 
     out = []  # built in reverse (pad-first)
     cum = 0.0
     for seg in reversed(segments):
-        narrow_w = _neck_width_for_net(config, net_id, seg.layer)
+        narrow_w = (neck_w if neck_w is not None
+                    else _neck_width_for_net(config, net_id, seg.layer))
         length = _seg_length(seg)
         if seg.width <= narrow_w:
             out.append(seg)
         elif cum >= config.neckdown_length:
-            if not fits(seg):
-                seg.width = narrow_w
-            out.append(seg)
+            out.extend(reversed(_widen_fitting_pieces(seg, fits, narrow_w, coord)))
         elif cum + length > config.neckdown_length:
             # Straddles the neck boundary: split there (the far piece,
             # touching the pad side, is neckdown_length - cum long)
             near, far = _split_segment_at(seg, config.neckdown_length - cum)
             far.width = narrow_w
             out.append(far)
-            if not fits(near):
-                near.width = narrow_w
-            out.append(near)
+            out.extend(reversed(_widen_fitting_pieces(near, fits, narrow_w, coord)))
         else:
             seg.width = narrow_w
             out.append(seg)
@@ -5514,7 +5717,8 @@ def _neck_pass(segments, config: GridRouteConfig, obstacles, coord: GridCoord,
 
 def _apply_neckdown_widths(segments, config: GridRouteConfig, net_id: int,
                            obstacles, coord: GridCoord, layer_names: List[str],
-                           track_margin, neck_start: bool = False):
+                           track_margin, neck_start: bool = False,
+                           neck_w=None):
     """Assign widths to a neck-down route (issue #72).
 
     The path was routed at the layer's default width because the power width
@@ -5527,11 +5731,18 @@ def _apply_neckdown_widths(segments, config: GridRouteConfig, net_id: int,
     Returns a new segment list (segments may be split for the taper).
     """
     layer_map = {name: i for i, name in enumerate(layer_names)}
-    out = _neck_pass(segments, config, obstacles, coord, layer_map, track_margin, net_id)
+
+    def _nw(layer):
+        return (neck_w if neck_w is not None
+                else _neck_width_for_net(config, net_id, layer))
+
+    out = _neck_pass(segments, config, obstacles, coord, layer_map, track_margin,
+                     net_id, neck_w=neck_w)
     if neck_start:
         out = _flip_segments(_neck_pass(_flip_segments(out), config, obstacles,
-                                        coord, layer_map, track_margin, net_id))
-    wide_flags = [s.width > _neck_width_for_net(config, net_id, s.layer) for s in out]
+                                        coord, layer_map, track_margin, net_id,
+                                        neck_w=neck_w))
+    wide_flags = [s.width > _nw(s.layer) for s in out]
 
     # Suppress short wide islands (a wide run between narrow pinches that is
     # barely longer than its tapers just adds notch noise)
@@ -5549,7 +5760,7 @@ def _apply_neckdown_widths(segments, config: GridRouteConfig, net_id: int,
         is_island = i > 0 and j < len(out)  # narrow (or pad) on both sides
         if is_island and run_len <= min_island:
             for k in range(i, j):
-                out[k].width = _neck_width_for_net(config, net_id, out[k].layer)
+                out[k].width = _nw(out[k].layer)
                 wide_flags[k] = False
         i = j
 
@@ -5562,7 +5773,7 @@ def _apply_neckdown_widths(segments, config: GridRouteConfig, net_id: int,
 
     def _taper_pieces(seg, narrow_end: str):
         """Split seg into [body + taper steps]; narrow_end is 'start' or 'end'."""
-        narrow_w = _neck_width_for_net(config, net_id, seg.layer)
+        narrow_w = _nw(seg.layer)
         wide_w = seg.width
         taper_len = min(config.neckdown_taper_length, _seg_length(seg) / 3)
         if taper_len <= 0:
