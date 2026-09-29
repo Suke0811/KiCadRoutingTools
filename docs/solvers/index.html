@@ -54,7 +54,7 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
 </head>
 <body>
 <nav class="toc"><a class="home" href="../">&larr; KiCadRoutingTools</a>
-<a href="#pipeline">Pipeline</a><a href="#cpsat">CP-SAT</a><a href="#lp">HiGHS LP</a><a href="#simplex">How an LP is solved</a><a href="#loop">Negotiation</a><a href="#summary">Side by side</a></nav>
+<a href="#pipeline">Pipeline</a><a href="#cpsat">CP-SAT</a><a href="#sec-lp">HiGHS LP</a><a href="#simplex">How an LP is solved</a><a href="#loop">Negotiation</a><a href="#summary">Side by side</a></nav>
 <main>
 
 <h1>What CP-SAT and HiGHS actually do in the whole route</h1>
@@ -143,7 +143,7 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
 </div>
 
 <!-- ======================= 2. LP ======================= -->
-<h2 id="lp">2 &nbsp; HiGHS: the continuous geometry (<code>whole_geo.py</code>)</h2>
+<h2 id="sec-lp">2 &nbsp; HiGHS: the continuous geometry (<code>whole_geo.py</code>)</h2>
 <p>CP-SAT has fixed the <b>topology</b>: the order of lanes at every column, and each lane's layer. What is still unknown is <b>real numbers</b>: how far off the centreline each lane sits at each column (one column every 4 router grid steps). That question is a linear program.</p>
 <p>The unknown is one number per (lane, column): its sideways offset <code>o[lane][col]</code>. The rows are:</p>
 <ul>
