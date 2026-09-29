@@ -5972,7 +5972,14 @@ def main(argv=None):
 # the pair step's reaches and widenings in the rules' units: PAIR PITCHES (a pair's own track + gap, PP) and LANE
 # pitches; each BRAID_PAIR_* override is in the same unit
 PP = _pairs.pitch(TRACK)
-PAIR_SLACKS = [float(v) * PP for v in os.environ.get('BRAID_PAIR_SLACKS', '2,4').split(',') if v.strip()]
+
+
+def pair_slacks():
+    """BRAID_PAIR_SLACKS, read when the pairs are routed and not when braid is imported: the whole route routes its
+    lanes with BRAID_PAIR_SLACKS=0 in the same process that planned them with the default"""
+    return [float(v) * PP for v in os.environ.get('BRAID_PAIR_SLACKS', '2,4').split(',') if v.strip()]
+
+
 PAIR_FANIN = float(os.environ.get('BRAID_PAIR_FANIN', '10') or 0) * LANE_MIN
 # BRAID_PAIR_CROSS_FANIN (1): the cross-corridor reservation under the pair's fan-in rule
 PAIR_CROSS_FANIN = int(os.environ.get('BRAID_PAIR_CROSS_FANIN', '1') or 0)
@@ -6160,7 +6167,7 @@ def _route_pairs_planned_in_order(ctx, corridors, log, order):
                         how = f'through {", ".join(w[0].component_ref for w in ways)}'
             else:
                 for ri, (virt_r, vv_r) in enumerate(rules):
-                    for sl in PAIR_SLACKS:
+                    for sl in pair_slacks():
                         res = c.route_pair_lane(nm, virt_r, vv_r, slack=sl, free=False)
                         if res is not None:
                             how = f'in its planned band +{sl:.1f} mm' + (' (the fan-in rule)' if ri else '')

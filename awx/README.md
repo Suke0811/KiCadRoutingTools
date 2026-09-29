@@ -161,6 +161,12 @@ DRC-clean, and its last line is the grade:
 WHOLE K=.. round=.. lanes=../.. vias=.. copper=..mm connected=0|1 drc=0|1 secs=..
 ```
 
+Each stage runs as a process of its own. `--inproc` runs every stage in the
+driver's own process instead, as a routing call inside KiCad's process will
+run them: the same outputs, file for file, and a quarter to a third less wall
+time (H3 K15, K28, K41 and zynq K18, 2026-09-29). The stage cache is the
+separate processes' only, and the checkers still run in their own.
+
 ### Building the zynq article
 
 The second bench is built from a public board: `ZYNQ7020_AD9364_V2` from
@@ -193,7 +199,7 @@ The zynq numbers in this README were measured on the first build
 `make_bench`'s net selection has changed since, so today's build is not that
 bench and does not reproduce those numbers rung for rung.
 
-The ladder on Linux, one container per rung: `modal run awx/modal_whole.py
+The ladder on Linux, one container per rung: `modal run awx/modal_whole.py::main
 --ks 15,28,35,41,51 --out DIR` (from the repo root). `modal_whole.py::stage`
 replays one command in the cloud on the laptop's files at their own paths.
 
@@ -957,13 +963,13 @@ copper -- their C libraries round differently in the last bit, and CP-SAT
 keeps a different plan among equal optima -- which is accepted; a rung that
 routes on one and not the other is not.
 
-**Where it stands (2026-09-29, this Mac).** Every rung of both ladders routes
-connected and DRC-clean with nothing pinned, at the vias and copper in the
-tables above. H3 K41 run twice, each run under its own random hash seed and
-one of them with every cache off, writes the same 45 files, and its copper is
-bit for bit the copper it routed when the transcendental functions were
-fdlibm's (below). The Linux rows were measured with them and are not yet
-re-run without.
+**Where it stands (2026-09-29).** With nothing pinned, every rung of both
+ladders routes connected and DRC-clean on this Mac, and every H3 rung on
+Linux (`modal_whole.py`), at the vias and copper in the tables above -- the
+same on both as when the transcendental functions were fdlibm's (below). On
+the Mac, H3 K41 run twice, each run under its own random hash seed and one of
+them with every cache off, writes the same 45 files, and its copper is bit
+for bit the copper it routed with fdlibm's functions.
 
 | what could move a machine's answer | what holds it |
 |---|---|

@@ -30,12 +30,17 @@ converging, 4 when it stopped at crowded ends.
 KRT_TOOL = {'scope': [], 'kind': 'actor'}   # #937: a research tool (awx), catalogued, shown at no door
 
 import argparse
+import atexit
+import contextlib
 import glob
+import io
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 
@@ -61,10 +66,87 @@ class Log:
             self.f.flush()
 
 
-def run(argv, env, log_path=None, err=None, to=None):
+INPROC = False      # --inproc: every stage in this process, as a routing call inside KiCad's own process will run them
+
+
+@contextlib.contextmanager
+def _fds(out_f, err_f):
+    """file descriptors 1 and 2 on these open files for the block -- what a child's `> log 2>&1` gives it, the
+    compiled code's own writes (the router, the solvers) included"""
+    sys.stdout.flush(); sys.stderr.flush()
+    saved = os.dup(1), os.dup(2)
+    try:
+        os.dup2(out_f.fileno(), 1)
+        os.dup2(err_f.fileno(), 2)
+        yield
+    finally:
+        sys.stdout.flush(); sys.stderr.flush()
+        os.dup2(saved[0], 1); os.dup2(saved[1], 2)
+        os.close(saved[0]); os.close(saved[1])
+
+
+def _stage_exit():
+    """what a stage's process does on its way out, done at the end of a stage run in this one: the taut memo's last
+    dirty shards saved (detect_buses registers it with atexit). Its REPORT is not printed, here or at exit: it counts
+    what this process holds, every stage's shards so far, where a stage's own process holds only its own -- printed
+    into a stage's output it became the last line of a gate's or a lint's, whose verdict is read off that line"""
+    db = sys.modules.get('detect_buses')
+    if db is not None:
+        db._memo_save(force=True)
+        atexit.unregister(db._memo_report)
+
+
+def _inproc(argv, env, out_f, err_f):
+    """`python3 ARGV...` run in this process as its own would run it: the environment ENV (whole, not added to), the
+    arguments, awx/ its directory, fds 1 and 2 on OUT_F / ERR_F (None: where the driver's go); the exit code"""
+    # (sys.path is not restored: a module imported by an earlier stage put its paths there once, and a later stage's
+    # lazy imports -- py_router's design_rules, say -- find their modules through them)
+    saved = dict(os.environ), list(sys.argv), os.getcwd()
+    os.environ.clear()
+    os.environ.update(env)
+    os.chdir(HERE)
+    sys.argv = list(argv)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(argv[0])))
+    rc = 0
+    with (_fds(out_f, err_f) if out_f is not None else contextlib.nullcontext()):
+        try:
+            runpy.run_path(argv[0], run_name='__main__')
+        except SystemExit as e:
+            if isinstance(e.code, str):         # sys.exit('why'): the interpreter prints it and exits 1
+                print(e.code, file=sys.stderr)
+            rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        except BaseException:
+            traceback.print_exc()
+            rc = 1
+        finally:
+            try:
+                _stage_exit()
+            finally:
+                sys.stdout.flush(); sys.stderr.flush()
+    os.environ.clear()
+    os.environ.update(saved[0])
+    sys.argv = saved[1]
+    os.chdir(saved[2])
+    return rc
+
+
+def run(argv, env, log_path=None, err=None, to=None, own_process=False):
     """`python3 ARGV...` in awx/ as the shell runs it: stdout and stderr to LOG_PATH (`> log 2>&1`), or both to the
     open file TO (a command inside the loop left unredirected: its lines land in the loop's log), or stdout captured
-    and stderr to ERR (the loop's own log, as `$(...)` inside it leaves it); (exit code, stdout)"""
+    and stderr to ERR (the loop's own log, as `$(...)` inside it leaves it); (exit code, stdout). In a process of its
+    own, or with INPROC in this one (OWN_PROCESS: in its own whatever INPROC says)."""
+    if INPROC and not own_process:
+        if log_path is not None:
+            with open(log_path, 'w') as f:
+                return _inproc(argv, env, f, f), ''
+        if to is INHERIT:
+            return _inproc(argv, env, None, None), ''
+        if to is not None:
+            return _inproc(argv, env, to, to), ''
+        with tempfile.TemporaryFile('w+') as cap, open(os.devnull, 'w') as dn:
+            rc = _inproc(argv, env, cap, err or dn)
+            cap.seek(0)
+            return rc, cap.read()
     if log_path is not None:
         with open(log_path, 'w') as f:
             return subprocess.run([PY] + argv, cwd=HERE, env=env, stdout=f, stderr=subprocess.STDOUT).returncode, ''
@@ -148,7 +230,11 @@ def loop(solve, out, rounds, env, log):
     unredirected = log.f if log.f is not None else INHERIT
 
     def stage(outs, script, args, logp, **extra):
-        """a stage through stage_cache.py, `> LOGP 2>&1`; its exit code"""
+        """a stage through stage_cache.py, `> LOGP 2>&1`; its exit code. In this process (INPROC) a stage runs
+        itself: the stage cache is the harness's, and it ends each stage with atexit's exit functions, which in one
+        process are every module's"""
+        if INPROC:
+            return run([script] + list(args), {**env, **extra}, log_path=logp)[0]
         argv = ['stage_cache.py'] + [a for o in outs for a in ('--out', o)] + ['--', script] + list(args)
         return run(argv, {**env, **extra}, log_path=logp)[0]
 
@@ -383,8 +469,7 @@ def loop(solve, out, rounds, env, log):
             return failed(O('plan.audit'))
         gs = gate(plan, O('plan.audit'))[1]
         log(prefixed(gs, '  snapped: '))
-        with open(O('plan.lint'), 'w') as lf:
-            subprocess.run([PY, 'whole_lint.py', plan], cwd=HERE, env=env, stdout=lf, stderr=subprocess.STDOUT)
+        run(['whole_lint.py', plan], env, log_path=O('plan.lint'))
         lint = (tail(O('plan.lint'), 1) or [''])[0]
         log(f"  snapped: {lint}")
         if gate(plan, O('plan.audit'))[0] == 0 and lint == 'LINT clean':
@@ -413,19 +498,16 @@ def loop(solve, out, rounds, env, log):
 # =============================================================================== the chain (whole_chain.sh)
 def grade_counts(board, nets):
     """(vias, copper mm) of the run's nets on BOARD, counted as the chain counts them"""
-    code = ("import sys, math, io, contextlib\n"
-            f"sys.path.insert(0, {PYR!r})\n"
-            "with contextlib.redirect_stdout(io.StringIO()):\n"
-            "    from kicad_parser import parse_kicad_pcb\n"
-            f"    p = parse_kicad_pcb({board!r})\n"
-            f"nets = set({sorted(nets)!r})\n"
-            "nm = {i: n.name.split('/')[-1] for i, n in p.nets.items()}\n"
-            "print(sum(1 for v in p.vias if nm.get(v.net_id) in nets),\n"
-            "      round(sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y) for s in p.segments "
-            "if nm.get(s.net_id) in nets)))\n")
-    p = subprocess.run([PY, '-c', code], cwd=HERE, stdout=subprocess.PIPE, text=True)
-    v, c = (p.stdout.split() + ['', ''])[:2]
-    return v, c
+    import math
+    if PYR not in sys.path:
+        sys.path.insert(0, PYR)
+    with contextlib.redirect_stdout(io.StringIO()):
+        from kicad_parser import parse_kicad_pcb
+        p = parse_kicad_pcb(board)
+    nm = {i: n.name.split('/')[-1] for i, n in p.nets.items()}
+    return (str(sum(1 for v in p.vias if nm.get(v.net_id) in nets)),
+            str(round(sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y) for s in p.segments
+                          if nm.get(s.net_id) in nets))))
 
 
 def chain(K, o, R=3):
@@ -509,12 +591,14 @@ def chain(K, o, R=3):
             say(f"  all at once: {sm}")
             nets = [n for n in lines_of(os.path.join(d, 'nets.lines')) for n in n.split()]
             pats = [f'*{n}' for n in nets]
-            # (the checkers by the path the shell gives them, from awx/: their logs echo it)
+            # (the checkers by the path the shell gives them, from awx/: their logs echo it; always in a process of
+            # their own: they are the harness's grade, not the route, and a checker run as a script installs its
+            # command-line banner -- the CMD / EXIT echo -- for its whole process)
             checker = lambda name: os.path.join('..', 'py_router', name)
             cc = run([checker('check_connected.py'), seq, '--nets'] + pats, env,
-                     log_path=os.path.join(d, 'conn.log'))[0]
+                     log_path=os.path.join(d, 'conn.log'), own_process=True)[0]
             dc = run([checker('check_drc.py'), seq, '--nets'] + pats + ['--clearance-margin', '0.1'], env,
-                     log_path=os.path.join(d, 'drc.log'))[0]
+                     log_path=os.path.join(d, 'drc.log'), own_process=True)[0]
             lanes = '\n'.join(m.split(' ')[0] for m in re.findall(r'[0-9]+/[0-9]+ in band', sm))
             v, c = grade_counts(seq, set(nets))
             g = (f"WHOLE K={K} round={r} lanes={lanes} vias={v} copper={c}mm connected={int(cc == 0)} "
@@ -529,9 +613,7 @@ def chain(K, o, R=3):
             run(['whole_gate.py', j, a, '--hot', h], env)
             hots.append(h)
         hots += sorted(glob.glob(os.path.join(loopd, 'hs*.json')))     # the snapped plans' places
-        p = subprocess.run([PY, 'whole_feedback.py', os.path.join(d, 'fo.plan.json'), FB] + hots, cwd=HERE, env=env,
-                           stdout=subprocess.PIPE, text=True)
-        fbl = stripped(p.stdout)
+        fbl = stripped(run(['whole_feedback.py', os.path.join(d, 'fo.plan.json'), FB] + hots, env, err=sys.stderr)[1])
         say(fbl)
         # nothing new for the fanout: the next round would lay the same ends from the same feedback
         if 'whole_feedback: 0 new' in fbl:
@@ -557,7 +639,11 @@ def main():
                     help="the fanout rounds (default 3), or with --loop the loop's rounds (default 6)")
     ap.add_argument('--loop', action='store_true',
                     help='the loop alone on a solve, the bench from BENCH / NETS / DEST as every whole_* stage reads it')
+    ap.add_argument('--inproc', action='store_true',
+                    help='every stage in this process rather than each in its own')
     a = ap.parse_args()
+    global INPROC
+    INPROC = a.inproc
     if a.loop:
         sys.exit(loop(a.first, os.path.abspath(a.outdir), a.rounds or 6, dict(os.environ), Log()))
     sys.exit(chain(a.first, a.outdir, a.rounds or 3)[0])

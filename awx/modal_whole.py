@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Modal app: the WHOLE ROUTE's K ladder (whole_route.py), one container per rung.
 
-    modal run awx/modal_whole.py --ks 15,28,35,41,51 --out DIR
+    modal run awx/modal_whole.py::main --ks 15,28,35,41,51 --out DIR   (::main: the app has two entrypoints)
 
 Each rung runs whole_route.py (the fanout on the whole route's ends, the solve, the loop, the route, the checks) in
 its own container and sends back its log and its routed board, written to DIR/kK.log and DIR/kK_seq.kicad_pcb, so a
