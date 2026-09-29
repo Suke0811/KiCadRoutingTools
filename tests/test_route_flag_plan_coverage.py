@@ -161,6 +161,44 @@ class TheComponentScope(unittest.TestCase):
         self.assertEqual(self._step()['nets'], ['*'])
 
 
+class TheBgaZoneRefs(unittest.TestCase):
+    """route.py / route_diff.py --no-bga-zones is nargs='*': bare disables
+    every BGA exclusion zone, `U1 U3` only those components'. The converter
+    held it as a switch, so every recorded ref list replayed as "disable
+    ALL" (23 recorded commands)."""
+
+    def _step(self, tool, *flags):
+        import manifest_to_plan as m2p
+        return m2p.parse_command(['python3', tool, 'in.kicad_pcb',
+                                  'out.kicad_pcb', *flags])
+
+    def test_refs_survive(self):
+        step = self._step('route.py', '--nets', '*', '--no-bga-zones', 'U1',
+                          'U3', '--clearance', '0.1')
+        self.assertEqual(step['params'].get('no_bga_zone'), ['U1', 'U3'])
+        self.assertEqual(step['params'].get('clearance'), 0.1)
+
+    def test_bare_still_means_every_zone(self):
+        step = self._step('route.py', '--no-bga-zones', '--clearance', '0.1')
+        self.assertIs(step['params'].get('no_bga_zone'), True)
+
+    def test_a_ref_is_not_read_as_a_net(self):
+        """With no --nets, a trailing ref used to land as a POSITIONAL net
+        glob, so the step routed a net called `U1` instead of every net."""
+        step = self._step('route.py', '--no-bga-zone', 'U1')
+        self.assertEqual(step['nets'], ['*'])
+        self.assertEqual(step['params'].get('no_bga_zone'), ['U1'])
+
+    def test_route_diff_takes_refs_too(self):
+        step = self._step('route_diff.py', '--no-bga-zones', 'U2')
+        self.assertEqual(step['params'].get('no_bga_zone'), ['U2'])
+
+    def test_the_plane_tools_keep_their_plain_switch(self):
+        step = self._step('route_planes.py', '--nets', 'GND',
+                          '--plane-layers', 'In1.Cu', '--no-bga-zones')
+        self.assertIs(step['params'].get('no_bga_zone'), True)
+
+
 class TheGuiParityGate(unittest.TestCase):
     """The counterpart this file is the run_all half of."""
 
@@ -303,6 +341,14 @@ class NegativeControls(unittest.TestCase):
                      "'bus': 'bus_enabled', 'no_smoothing': 'smoothing',")
         self._run(refuse="a --no-X switch landing on the POSITIVE checkbox "
                          "'smoothing' must untick it")
+
+    def test_the_bga_zone_refs_are_dropped_again(self):
+        """The converter's old reading: every --no-bga-zones is a bare switch.
+        The fixture's route_diff step names U7 U9, so the refs must show."""
+        self._mutate(M2P, "step['params'][tool_optional_lists[a]] = vals or True",
+                     "step['params'][tool_optional_lists[a]] = True")
+        self._run(refuse="--no-bga-zones: want ['U7', 'U9'] (refs, or True "
+                         "for bare) got True")
 
     def test_the_fix_drc_reset_line_is_load_bearing(self):
         """Without it, a step replaying --no-fix-drc-settings would leave the

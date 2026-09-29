@@ -328,6 +328,22 @@ TOOL_FLAG_PARAMS = {
     'qfn_fanout.py': {'--width': 'qfn_track_width', '--clearance': 'qfn_clearance'},
 }
 
+# Per-tool flags taking an OPTIONAL list (argparse nargs='*'). route.py and
+# route_diff.py spell --no-bga-zones that way: bare disables EVERY BGA
+# exclusion zone, `--no-bga-zones U1 U3` only those components' zones. It used
+# to sit in BOOL_FLAGS alone, which set "disable ALL" and dropped the refs --
+# as positional net globs when the step had no --nets (23 recorded commands
+# name refs, all with --nets, so the refs were silently discarded). The param
+# is True for bare and the ref list otherwise; ai_plan writes either into the
+# route tab's no_bga_zones_ctrl, which the GUI parses to the same [] / refs
+# list the CLI hands batch_route(disable_bga_zones=...). route_planes /
+# repair_planes take the flag as a plain switch, so BOOL_FLAGS serves them.
+TOOL_OPTIONAL_LIST_FLAGS = {
+    'route.py': {'--no-bga-zones': 'no_bga_zone',
+                 '--no-bga-zone': 'no_bga_zone'},
+    'route_diff.py': {'--no-bga-zones': 'no_bga_zone'},
+}
+
 
 def _num(v):
     try:
@@ -382,9 +398,19 @@ def parse_command(argv):
     positional = []
     aliases = TOOL_FLAG_ALIASES.get(tool, {})
     tool_params = TOOL_FLAG_PARAMS.get(tool, {})
+    tool_optional_lists = TOOL_OPTIONAL_LIST_FLAGS.get(tool, {})
     while i < len(argv):
         a = aliases.get(argv[i], argv[i])
-        if a in IGNORE_FLAGS:
+        if a in tool_optional_lists:
+            # Stop at a positional board file, like --component below.
+            vals = []
+            i += 1
+            while (i < len(argv) and not argv[i].startswith('--')
+                   and not argv[i].endswith('.kicad_pcb')):
+                vals.append(str(argv[i]))
+                i += 1
+            step['params'][tool_optional_lists[a]] = vals or True
+        elif a in IGNORE_FLAGS:
             i += 1
             while i < len(argv) and not argv[i].startswith('--'):
                 if argv[i].endswith('.kicad_pcb'):

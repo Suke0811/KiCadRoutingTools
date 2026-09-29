@@ -548,7 +548,14 @@ def apply_step_params(step, dialog):
             ctl = getattr(dialog, 'no_bga_zones_ctrl', None)
             if ctl is None:
                 return False
-            ctl.SetValue('ALL' if value else '')
+            if isinstance(value, (list, tuple)):
+                # `--no-bga-zones U1 U3`: only those components' zones, the
+                # refs the control's parse hands batch_route as
+                # disable_bga_zones, exactly the CLI's list. An empty list is
+                # the CLI's bare flag: every zone.
+                ctl.SetValue(' '.join(str(v) for v in value) or 'ALL')
+            else:
+                ctl.SetValue('ALL' if value else '')
             return True
         if name == 'power_nets' and isinstance(value, (list, tuple)):
             ctl = getattr(dialog, 'power_nets_ctrl', None)

@@ -340,6 +340,25 @@ def check_pair(argv, step):
                             f"want {want_nets} got {got_nets} "
                             f"(missing {missing})"))
 
+    # route.py / route_diff.py --no-bga-zones is nargs='*': bare disables every
+    # BGA zone, refs disable only those components'. The refs must survive as
+    # the param (they used to be dropped, leaving "disable ALL").
+    if step.get('action') in ('route', 'route_diff'):
+        for i, a in enumerate(argv):
+            if a not in ('--no-bga-zones', '--no-bga-zone'):
+                continue
+            refs = []
+            for b in argv[i + 1:]:
+                if b.startswith('-') or b.endswith('.kicad_pcb'):
+                    break
+                refs.append(b)
+            want = refs or True
+            got = params.get('no_bga_zone')
+            n += 1
+            if got != want:
+                bad.append((a, f"want {want!r} (refs, or True for bare) "
+                               f"got {got!r}"))
+
     # route.py --component: every reference must survive, and a step that
     # names components but no patterns must carry NO pattern. route.py drops
     # power/ground from a component's nets only in that case; a '*' fallback
