@@ -40,6 +40,12 @@ DEFAULT_THICKNESS = 1.6
 #: shorter side, clamped. A stand-in for the model the file does not carry.
 BODY_H_FRAC = 0.25
 BODY_H_MIN, BODY_H_MAX = 0.35, 3.0
+#: A part whose pad field covers more than this share of the board is not a
+#: package sitting on it -- it is a module, a connector field or a castellated
+#: carrier whose pads ARE the board's edge (rp2350_fpga_eensy's footprint
+#: spans the whole outline) -- so it gets no body box, which would otherwise
+#: lid the board and hide everything under it.
+BODY_MAX_BOARD_FRAC = 0.2
 #: kicad-cli's GLB export, measured at 3-6 s on a 60-part board.
 GLB_TIMEOUT_S = 300
 
@@ -73,8 +79,10 @@ def _local_pad(fp, p) -> list:
             (p.shape or 'rect').lower(), face, round(drill, 4)]
 
 
-def part_geometry(fp) -> dict:
-    """`{'pads': [...], 'body': [x0, y0, x1, y1, h]}` in the part's frame."""
+def part_geometry(fp, board_area=None) -> dict:
+    """`{'pads': [...], 'body': [x0, y0, x1, y1, h] | None}` in the part's
+    frame. No body for a part with no pads (a hole, a fiducial, a logo) or
+    one whose pad field is a large share of the board."""
     pads = [_local_pad(fp, p) for p in fp.pads
             if getattr(p, 'pad_type', '') != 'np_thru_hole']
     if pads:
@@ -83,10 +91,11 @@ def part_geometry(fp) -> dict:
         y0 = min(p[1] - p[3] / 2 for p in pads)
         y1 = max(p[1] + p[3] / 2 for p in pads)
     else:
-        x0 = y0 = -0.5
-        x1 = y1 = 0.5
+        return {'pads': pads, 'body': None}
     # the body sits INSIDE the pad field, the way a package does
     w, h = x1 - x0, y1 - y0
+    if board_area and w * h > BODY_MAX_BOARD_FRAC * board_area:
+        return {'pads': pads, 'body': None}
     ix, iy = min(0.15 * w, 0.4), min(0.15 * h, 0.4)
     h3 = min(BODY_H_MAX, max(BODY_H_MIN, BODY_H_FRAC * min(w, h)))
     return {'pads': pads,
@@ -106,10 +115,11 @@ def build_scene(pcb) -> dict:
                for ring in (getattr(bi, 'board_cutouts', None) or [])
                if len(ring) >= 3]
     parts = {}
+    area = max(1e-6, (bb[2] - bb[0]) * (bb[3] - bb[1]))
     for ref, fp in pcb.footprints.items():
         if ref.startswith('#'):
             continue
-        g = part_geometry(fp)
+        g = part_geometry(fp, area)
         g['side'] = 'B' if (fp.layer or '').startswith('B') else 'F'
         parts[ref] = g
     return {'bounds': [float(v) for v in bb], 'outline': outline,
