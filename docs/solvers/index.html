@@ -54,7 +54,7 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
 </head>
 <body>
 <nav class="toc"><a class="home" href="../">&larr; KiCadRoutingTools</a>
-<a href="#pipeline">Pipeline</a><a href="#cpsat">CP-SAT</a><a href="#sec-lp">HiGHS LP</a><a href="#simplex">How an LP is solved</a><a href="#loop">Negotiation</a><a href="#summary">Side by side</a></nav>
+<a href="#pipeline">Pipeline</a><a href="#cpsat">CP-SAT</a><a href="#sec-lp">HiGHS LP</a><a href="#simplex">How an LP is solved</a><a href="#sec-loop">Negotiation</a><a href="#summary">Side by side</a></nav>
 <main>
 
 <h1>What CP-SAT and HiGHS actually do in the whole route</h1>
@@ -203,7 +203,7 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
 <p style="font-size:14px;color:var(--mut)"><code>whole_geo.lp_by_dual</code> has one further trick: it solves the <b>dual</b> LP. This LP has many more rows than columns, so its dual has a row per column and every slack is a plain inequality. HiGHS's interior point runs it about 6&times; faster (K51 pass 2: 31 s instead of 188 s). The primal solution is then read from the dual's multipliers. If the interior point doesn't converge (it once ran 2329 iterations on zynq K18), it falls back to dual simplex, which lands on the same point.</p>
 
 <!-- ======================= 3. LOOP ======================= -->
-<h2 id="loop">3 &nbsp; The two solvers negotiate</h2>
+<h2 id="sec-loop">3 &nbsp; The two solvers negotiate</h2>
 <p>CP-SAT proves a plan is optimal in vias, but it knows nothing about millimetres. The LP knows the millimetres but can't change topology. When the LP has to pay on a hard row, it says which lane and which place. That becomes a <b>cut</b> (a boolean disjunction) added to the CP-SAT model, and CP-SAT solves again. Audits after the polish and snap do the same and also feed the congestion history.</p>
 <div class="card">
   <div class="row"><button id="lpStepPrev">&larr; back</button><button id="lpStepNext" class="primary">next &rarr;</button><span class="stat" id="stepLbl"></span></div>
