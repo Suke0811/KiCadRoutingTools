@@ -20,7 +20,7 @@ mentions it.)
 
 **Contents**
 
-1. [The whole route](#the-whole-route) -- [results](#results), [running it](#running-it), [how it works](#how-it-works), [the same answer on every machine](#every-machine-and-the-same-answer-on-each)
+1. [The whole route](#the-whole-route) -- [results](#results), [running it](#running-it), [how it works](#how-it-works), [the same answer on every machine](#every-machine-and-the-same-answer-on-each); its two solvers explained: [CP-SAT and HiGHS in the whole route](https://drandyhaas.github.io/KiCadRoutingTools/solvers/)
 2. [The braid chain and the evolution](#the-braid-chain-and-the-evolution)
 3. [Shared pieces](#shared-pieces) -- grading, `rules.py`, measuring honestly, the tools, what this adds to `py_router`
 4. [TODO](#todo)
@@ -212,6 +212,11 @@ FEEDBACK=FEEDBACK.json INCREMENTAL=tmp/e/fo.plan.json PLAN_JUDGE=ends \
 </details>
 
 ### How it works
+
+The two solvers at its heart -- CP-SAT for every crossing and layer change,
+HiGHS for the geometry's LP -- and how they negotiate have a page of their
+own, with interactive demos:
+**[CP-SAT and HiGHS in the whole route](https://drandyhaas.github.io/KiCadRoutingTools/solvers/)**.
 
 ```mermaid
 flowchart LR
@@ -2173,6 +2178,7 @@ shared and are not.
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a whole-route plan installed and audited, gated (complete and clean), linted, drawn; the bench they share |
 | `stage_cache.py` | a whole-route stage run, or restored when its script, arguments, environment and every file it read are unchanged |
 | `detmath.py` | the same bits on every machine: fdlibm's functions, installed by every chain stage; the LPs' tie-break and rounding |
+| `whole_movie.py` | a film of one run (`whole_chain.sh`'s OUTDIR), the fanout to the copper: the solve drawn as its braid under the board (u on the trunk is the board's x), the geometry LP as the shadow prices of the rules that bind; the root solve and the geometry re-run under observation, and refused unless they write what the chain wrote |
 
 **Shared by both routers:**
 
