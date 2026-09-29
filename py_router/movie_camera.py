@@ -446,42 +446,18 @@ class Stage:
         steps reveal through Movie's own path -- flips together. A movie where
         the board is mirrored but the tracks are not would be worse than no
         flip at all.
-        """
-        if not self._mirror:
-            self.movie.snapshot(label)
-            return
-        # Render WITHOUT the caption, mirror the board, then stamp the caption
-        # upright. Mirroring a frame that already carries its label reverses the
-        # text and throws it into the opposite corner -- it reads as a rendering
-        # fault, not as "you are looking at the back".
-        from PIL import ImageOps
-        img = self.r.frame(segments=list(self.movie.live_s.values()),
-                           vias=list(self.movie.live_v.values()),
-                           zone_net_ids=self.movie.revealed_zones)
-        img = ImageOps.mirror(img)
-        if label:
-            self.r._label(img, label)
-        self.movie.frames.append(img)
 
-    def _mirror_new_frames(self, label=''):
-        """Mirror frames appended by code that does not go through _snap --
-        i.e. the routing steps, which Movie renders and captions itself."""
-        if not self._mirror:
-            self._mark = len(self.movie.frames)
-            return
-        from PIL import ImageDraw, ImageOps
-        for i in range(self._mark, len(self.movie.frames)):
-            fr = ImageOps.mirror(self.movie.frames[i])
-            # Their caption was baked in before we saw the frame, so it mirrored
-            # with the board. Clear the whole top strip -- the caption bar's own
-            # territory -- and stamp it again upright.
-            d = ImageDraw.Draw(fr)
-            d.rectangle([0, 0, fr.size[0], max(18, fr.size[1] // 26)],
-                        fill=tuple(self.r.bg))
-            if label:
-                self.r._label(fr, label)
-            self.movie.frames[i] = fr
-        self._mark = len(self.movie.frames)
+        The mirror itself is `Movie`'s (#1082-#1085): the frame goes through
+        `Movie.snapshot` like every other, which mirrors it while
+        `movie.mirrored` is set and stamps the caption upright afterwards --
+        and only when no rail carries it. A second, Stage-side render path
+        used to do this, and it skipped the chrome record, the ghost overlay
+        and the rail's caption rule; the copper a routing step revealed after
+        a flip was never mirrored at all, because the hook meant to do it
+        (`exit_step`) had no caller.
+        """
+        self.movie.mirrored = self._mirror
+        self.movie.snapshot(label)
 
     def _emit(self, kind, views, label, side=None):
         """One frame per view, at a FROZEN board. A frame either moves the
@@ -612,10 +588,18 @@ class Stage:
             w = max(1, int(round(W * k)))
             frame = Image.new('RGB', (W, H), bg)
             frame.paste(face.resize((w, H), Image.BILINEAR), ((W - w) // 2, 0))
-            self.r._label(frame, label)       # upright, after the rotation
-            self.movie.frames.append(frame)
+            # Through Movie's one frame path (#1082/#1083): it notes this
+            # frame's chrome, stamps the caption upright only when no rail
+            # carries it, and records the flip for the 3D board (#1081).
+            self.movie.flip = (t, side)
+            try:
+                self.movie._push_frame(frame, label, 'flip',
+                                       record_chrome=True)
+            finally:
+                self.movie.flip = None
         # From here on we are looking at the other face.
         self._mirror = to_back
+        self.movie.mirrored = to_back
         self._mark = len(self.movie.frames)
 
     # -- the build_boards hooks -----------------------------------------
@@ -699,12 +683,6 @@ class Stage:
         self._arrive()          # no-op unless the tween never reached one
         self._mark = len(self.movie.frames)
         return not synth
-
-    def exit_step(self, label):
-        # Routing steps render through Movie's own path, not _snap, so their
-        # frames have to be flipped here or the board would be mirrored while
-        # the tracks landing on it were not.
-        self._mirror_new_frames(label)
 
     def _settle(self, label, n=None):
         """Bring the camera home to the BOARD before a copper step (#1036).
