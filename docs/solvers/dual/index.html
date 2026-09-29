@@ -76,7 +76,7 @@ ol.refs .why{color:var(--mut)}
 </head>
 <body>
 <nav class="toc"><a class="home" href="../">&larr; CP-SAT and HiGHS</a>
-<a href="#sec-short">Short answer</a><a href="#sec-pd">Primal and dual</a><a href="#sec-ball">A ball in a box</a><a href="#sec-geo">Geometry</a><a href="#sec-toy">Two lanes</a><a href="#sec-bound">Both sides of the toy</a><a href="#sec-column">Lanes past an island</a><a href="#sec-real">The real LP</a><a href="#sec-phys">Physics</a><a href="#sec-circuit">Circuit</a><a href="#sec-refs">References</a></nav>
+<a href="#sec-short">Short answer</a><a href="#sec-rail">Positions from forces</a><a href="#sec-pd">Primal and dual</a><a href="#sec-ball">A ball in a box</a><a href="#sec-geo">Geometry</a><a href="#sec-convex">Why convex</a><a href="#sec-toy">Two lanes</a><a href="#sec-via">One via</a><a href="#sec-bound">Both sides of the toy</a><a href="#sec-column">Lanes past an island</a><a href="#sec-real">The real LP</a><a href="#sec-phys">Physics</a><a href="#sec-uses">Uses in physics</a><a href="#sec-circuit">Circuit</a><a href="#sec-refs">References</a></nav>
 <main>
 
 <h1>The dual of the geometry LP: shadow prices are forces</h1>
@@ -89,25 +89,49 @@ ol.refs .why{color:var(--mut)}
 <dt>shadow price</dt><dd>a rule's dual value <code>y</code>: how fast the cost falls as that rule is loosened, the saving per unit for a small loosening. Its units are cost per millimetre, which for an energy is a force.</dd>
 <dt>binding</dt><dd>a rule that holds with no room to spare at the optimum. Only binding rules can have a price.</dd>
 <dt>elastic slack</dt><dd>a variable that lets a hard rule be broken at a very high price (<code>W_HARD = 10&#8308;</code> per mm), so the LP always has an answer and reports where it had to cheat.</dd>
-<dt>complementary slackness</dt><dd>at the optimum, no rule has both room to spare and a price. A rule with room to spare has price 0, and a rule with a price is binding.</dd>
+<dt>complementary slackness</dt><dd>at the optimum, no rule has both room to spare and a price. A rule with room to spare has price 0, and a rule with a price is binding: a wall pushes only while it is touched.</dd>
+<dt>convex</dt><dd>a region is convex when every point between two allowed points is allowed too: no dents, no holes, no separate pieces. An LP's region always is, and everything on this page depends on it (<a href="#sec-convex">section 2c</a>).</dd>
 </dl>
 
 <!-- ======================= SHORT ANSWER ======================= -->
 <h2 id="sec-short">The short answer</h2>
 <div class="answer">
-<p><b>Physically, the dual is the statics of the same system.</b> Think of every lane point as a bead that can slide sideways. The costs are constant forces on the beads: a string held at fixed tension, a weight pulling each bead toward its preferred spot. The rules are rigid contacts: struts between neighbours, walls at pad boxes and the board edge, pins at the terminals. The dual asks for one force per contact such that</p>
+<p><b>Physically, the dual is the statics of the same system.</b> Think of every lane point as a bead that can slide sideways. The costs pull on the beads: each lane is a string held at a fixed tension, which pulls it toward a straight line (in the toys below, a weight pulls each bead toward its preferred spot). The rules are contacts: struts between neighbours, walls at pad boxes and the board edge, pins at the terminals. Once the beads have settled, every contact carries some force. Those forces are the dual's answer, one per rule: its <b>shadow prices</b>. At rest,</p>
 <ul>
- <li>every force is a <b>push, never a pull</b> (<code>y &ge; 0</code>),</li>
- <li>at every bead the forces <b>cancel</b> (one balance equation per primal variable),</li>
- <li>no contact carries <b>more than it is rated for</b> (<code>W_HARD</code> for a hard rule, the string's tension for length),</li>
+ <li>a contact <b>pushes only while it is touched</b>, and never pulls. A wall with room to spare pushes with nothing;</li>
+ <li>at every bead the forces <b>cancel</b>;</li>
+ <li>no contact carries <b>more than it is rated for</b> (<code>W_HARD</code> for a hard rule, the string's tension for length).</li>
 </ul>
-<p>and among all such sets of forces it picks the one with the largest value of <code>&minus;b&middot;y</code>: minus the sum, over the contacts, of each contact's force times the position <code>b_i</code> where that contact stands. The winning set is the actual reaction force in every contact once the beads have settled, and for it that value is exactly the lowest energy, computed <b>from the forces and the contacts' positions alone</b>, without knowing where any bead is. Any other balanced set gives a smaller value, so it is a guaranteed lower bound on the energy. Structural engineering has the same statement as the static theorem of plastic collapse, and the two were shown to be the same LP duality <a class="cite" href="#ref-clz">(Charnes, Lemke and Zienkiewicz 1959)</a>.</p>
-<p><b>Geometrically</b>, the rules are the walls of a region and the cost is a direction. At the optimal corner, the downhill direction <code>&minus;c</code> lies inside the cone spanned by the outward normals of the walls that meet there, and the dual values are its coordinates in that cone. Adding those walls with those weights builds a new wall perpendicular to the cost. That wall is a floor under the whole region, and it touches the region exactly at the optimum.</p>
+<p><b>The forces tell you where the beads are.</b> The first fact does it. A contact that pushes must be touching, and you know where every contact stands, so each pushing contact puts a bead exactly against it. Start at a wall and follow the pushing contacts, and each one fixes the next bead. Where nothing pushes on a bead, the forces say nothing about where it is. <a href="#sec-rail">Section 0</a> works this through with one bead and with two, and <a href="#sec-via">section 3a</a> with a real via beside a pad box.</p>
+<p><b>The forces also give the lowest energy</b>, from the forces and the contacts' positions alone, without knowing where any bead is: minus the sum, over the contacts, of each contact's force times the position where it stands (<code>&minus;b&middot;y</code>). Any other set of forces that balances and keeps to the ratings gives a number no larger, so every such set is a guaranteed lower bound on the energy. Structural engineering has the same statement as the static theorem of plastic collapse, and the two were shown to be the same LP duality <a class="cite" href="#ref-clz">(Charnes, Lemke and Zienkiewicz 1959)</a>.</p>
+<p><b>All of this needs the allowed region to be convex</b>: one piece, with no dents. Then forces that balance mean the best answer overall, not just the best nearby. An LP's region is always convex, and <code>whole_geo</code> keeps the routing problem that way by leaving every either-or choice (the lanes' order, where they cross, which side of each pad box a lane passes) to CP-SAT and to <code>static_sides</code> (<a href="#sec-convex">section 2c</a>). Section 2b draws all of this as geometry.</p>
 </div>
+
+<!-- ======================= 0. THE RAIL ======================= -->
+<h2 id="sec-rail">0 &nbsp; Reading positions off the forces: one bead, two beads</h2>
+<p>The whole idea fits on a rail. A bead slides on a rail between two walls, at 0 and at 10, and a weight pulls it left. At rest, the left wall pushes back and the right wall pushes with nothing.</p>
+<p>Now suppose you are told only those two forces, and not where the bead is. The left wall is pushing, so the bead must be touching it. The left wall stands at 0, so the bead is at 0. Nobody had to tell you the position: the forces say <i>which</i> contacts touch, and the contacts' own positions say <i>where</i>.</p>
+<p>Add a second bead and a <b>spacer</b> that keeps the two at least 2 apart, and pull both left. At rest the left wall pushes on A, and the spacer pushes the two apart. Told only that, you reason in a chain. The left wall pushes, so A is at 0. The spacer pushes, so it is squeezed to its shortest, and B is at 0 + 2 = 2. The geometry LP works the same way: its pitch rules and via rooms are spacers, and its pad boxes and board edge are walls.</p>
+<div class="card">
+  <p style="margin-top:0"><b>Set the pulls</b> with the sliders or the buttons (a negative pull is to the left). The page finds where the beads settle and the force in every contact. The log then does the reasoning above <b>from the forces alone</b>, and checks it against where the beads settled.</p>
+  <div class="row"><button data-rail="one">One bead</button><button data-rail="left" class="primary">Two beads, pulled left</button><button data-rail="apart">Pulled apart</button><button data-rail="freeA">Nothing pulls A</button><button data-rail="cancel">Pulls cancel</button></div>
+  <svg id="railSvg" class="demo" viewBox="0 0 860 236" role="img" aria-label="Two beads on a rail between two walls, with a spacer between them and the forces on each"></svg>
+  <div class="row"><label for="railA">pull on A <input type="range" id="railA" min="-1" max="1" step="0.05" value="-0.6"></label><span class="stat" id="railAV"></span>
+   <label for="railB">pull on B <input type="range" id="railB" min="-1" max="1" step="0.05" value="-0.4"></label><span class="stat" id="railBV"></span>
+   <label><input type="checkbox" id="railTwo" checked> second bead</label></div>
+  <div class="row"><span class="stat">left wall <b id="railUL"></b></span><span class="stat">spacer <b id="railY"></b></span><span class="stat">right wall <b id="railUR"></b></span><span class="stat">A <b id="railPA"></b></span><span class="stat">B <b id="railPB"></b></span></div>
+  <div class="log" id="railLog" style="min-height:76px"></div>
+  <details><summary>Try this</summary><ul>
+   <li><b>Pulled apart</b>: each bead goes to its own wall. Both walls push, the spacer has room to spare and pushes with nothing, and each position is read off its own wall.</li>
+   <li><b>Nothing pulls A</b>: B goes to the right wall, and nothing touches A. Every force on A is zero, so the forces cannot say where it is. Every A from 0 to 8 is equally good (the shaded band).</li>
+   <li><b>Pulls cancel</b>: the spacer pushes, so B is exactly 2 past A, but no wall pushes, so nothing fixes where the pair sits. The forces have one answer and the positions have many. This is the tie in section 3's first preset.</li>
+  </ul></details>
+</div>
+<p><b>When it does not work.</b> A bead with no force on it is not held by any contact, so the forces cannot place it, and in an LP that means many positions are equally good. The positions then have to come from somewhere else. In <code>whole_geo</code> that is a tiny tie-break added to the cost (<code>detmath.lp_tie_break</code>), which makes one of those positions the answer, the same one on every machine.</p>
 
 <!-- ======================= 1. PRIMAL AND DUAL ======================= -->
 <h2 id="sec-pd">1 &nbsp; The primal and the dual, written out</h2>
-<p>For an LP whose unknowns are free (a lane's offset can go either way):</p>
+<p>This section is the algebra behind the short answer. Sections 0 and 2 show the same things without it. For an LP whose unknowns are free (a lane's offset can go either way):</p>
 <pre class="math">primal   minimise   c&middot;x          subject to   A&middot;x &le; b                  (one row per rule)
 dual     maximise  &minus;b&middot;y          subject to   A&#7488;&middot;y = &minus;c,   y &ge; 0      (one price per rule)</pre>
 <p>Everything in one problem has a partner in the other:</p>
@@ -159,23 +183,35 @@ dual     maximise  &minus;b&middot;y          subject to   A&#7488;&middot;y = &
  <li><b>Farkas' lemma.</b> At any corner, exactly one of two things is true. Either <code>f</code> lies in the corner's wedge (and the <code>y</code> values are a certificate that nothing lower exists), or some edge leaving the corner goes downhill (and the corner is not optimal). Never both, never neither. That lemma <a class="cite" href="#ref-farkas">(Farkas 1902)</a> is what LP duality rests on, and it is also the simplex method's stopping rule.</li>
 </ol>
 
+<!-- ======================= 2c. CONVEXITY ======================= -->
+<h3 id="sec-convex">2c &nbsp; Why the region must be convex</h3>
+<p>A region is <b>convex</b> when every point between two allowed points is allowed too: no dents, no holes, no separate pieces. An LP's region is always convex. Every rule is a straight wall that says "stay on this side of this line", and if two points are on the right side of every wall, so is everything between them. The ball's box above is convex, which is why the ball, rolling downhill, always finds the lowest corner.</p>
+<p>The routing problem is not convex by nature. A lane passing a pad box can go <b>below it or above it</b>, and those are two separate pieces: between a position below the box and one above it lies the box itself. In the figure a lane is pulled toward its straight line (energy = distance from it, so the curve is a V), and a pad box stands in the way.</p>
+<div class="card">
+  <p style="margin-top:0"><b>Move the lane's straight line</b> with the slider and watch the rest points. Then <b>choose a side</b>, as <code>static_sides</code> does: the region becomes one piece, with one rest point.</p>
+  <svg id="cvxSvg" class="demo" viewBox="0 0 860 300" role="img" aria-label="A lane's energy across a channel with a pad box in the middle: a rest point on each side of the box"></svg>
+  <div class="row"><label for="cvxR">the lane's straight line at <input type="range" id="cvxR" min="-0.2" max="1" step="0.01" value="0.4"></label><span class="stat" id="cvxRV"></span>
+   <label for="cvxMode">sides allowed <select id="cvxMode"><option value="both" selected>both: not convex</option><option value="below">below the box only</option><option value="above">above the box only</option></select></label></div>
+  <div class="log" id="cvxLog" style="min-height:76px"></div>
+</div>
+<p><b>Why the forces need it.</b> With both sides allowed the lane has two places to rest, one against each side of the box. At each, the string pulls toward the line and the box pushes back: the forces balance, and every wall that pushes is touching. Both pass every test in the short answer, and only one of them is the lowest. From the other, every small move goes into the box or further from the line, so no force points toward the better answer on the far side. In a region that is not convex, forces that balance mean only "best nearby".</p>
+<p>The dual's guarantee fails the same way. Its lower bound is a floor built by adding walls together (2b). The wall "stay below the box" is false for every position above the box, so a floor built from it is not under those positions: the dashed line in the figure, which the other pocket dips below. In one convex piece there is one pocket, and forces that balance mean the best answer overall.</p>
+<p><b>How <code>whole_geo</code> keeps its region convex.</b> An LP cannot say "below <i>or</i> above". It can only say "stay on this side of this line". So every either-or choice is made before the LP runs:</p>
+<ul>
+ <li><b>CP-SAT</b> chooses the order of the lanes at every column, where each pair crosses, and where along its route each lane changes layer (its vias);</li>
+ <li><b><code>static_sides</code></b> chooses which side of each pad box or island each lane passes, from the first pass's answer, so "not inside the box" becomes one wall, such as "stay above its top";</li>
+ <li><b>the bounds</b>: at a column the free space between pad boxes can be several separate intervals, and <code>whole_geo</code> keeps one of them for each lane.</li>
+</ul>
+<p>After those choices every rule is one straight wall, and the region is one convex piece. That is why the work is split between two solvers: CP-SAT makes the either-or choices, and the LP does the rest. It is also why a bad choice costs so much. Once a side is chosen, the LP finds the best answer on that side and never looks at the other (in the figure, choose the worse side and see what the other would have cost). If a side has no room at all, the loop flips it for the next round (the negotiation on <a href="../#sec-loop">the solvers page</a>).</p>
+<p><b>The costs must be convex too</b>: bowl-shaped, with a slope that only grows as a lane moves away. The length cost <code>G&middot;(&radic;(1+k&sup2;) &minus; 1)</code> is a bowl, which is why tangent cuts can stand in for it: a bowl is the highest of its tangent lines. The comfort cost is made steeper below the midpoint pitch (a millimetre there costs four times one above it), so it stays a bowl. A cost that got cheaper per millimetre the further a lane moved would make pockets of its own.</p>
+
 <!-- ======================= 3. TOY ======================= -->
 <h2 id="sec-toy">3 &nbsp; The toy: two lanes in one column</h2>
-<p>Two lanes, <b>a</b> and <b>b</b>, run on the same layer through one column of the route. Each has a preferred offset, its reference <code>r</code>. Moving lane a costs <code>w_a</code> per mm and lane b <code>w_b</code> per mm. The rule: b sits at least a pitch <code>P</code> above a. Walls (a pad box, the board edge) are optional. The LP:</p>
-<pre class="math">minimise    w_a&middot;|o_a &minus; r_a|  +  w_b&middot;|o_b &minus; r_b|  +  W&middot;e
-subject to  o_a &minus; o_b &minus; e &le; &minus;P        the pitch rule, elastic: breaking it by e costs W per mm
-            o_a &ge; L,   o_b &le; U          the walls, when present
-            e &ge; 0</pre>
-<p>(An absolute value is linear inside an LP by the usual trick: a helper <code>d &ge; o &minus; r</code>, <code>d &ge; r &minus; o</code>, cost <code>w&middot;d</code>.) Attaching <code>y</code> to the pitch rule, <code>u_a</code> and <code>u_b</code> to the walls, and minimising the Lagrangian term by term gives the dual:</p>
-<pre class="math">maximise    y&middot;g  &minus;  u_a&middot;(r_a &minus; L)  &minus;  u_b&middot;(U &minus; r_b)          g = P &minus; (r_b &minus; r_a), the room the rule needs
-subject to  0 &le; y &le; W                 from e:   the strut is rated for W; past that it yields
-            |y &minus; u_a| &le; w_a            lane a:   strut y down, wall u_a up; its pull covers the rest (at most w_a)
-            |u_b &minus; y| &le; w_b            lane b:   the same, mirrored
-            u_a, u_b &ge; 0              walls push, never pull</pre>
-<p>As mechanics: two beads on a rail, each held toward its reference by a constant force <code>w</code>. Off its reference the bead is pulled back with exactly <code>w</code>; sitting on it, it can resist any force up to <code>w</code>, like a bead in a V-shaped groove. A strut of length <code>P</code> sits between the beads, and its compression is <code>y</code>.</p>
+<p>Two lanes, <b>a</b> and <b>b</b>, run on the same layer through one column of the route. Each has a preferred offset, its reference <code>r</code>. Moving lane a costs <code>w_a</code> per mm and lane b <code>w_b</code> per mm. The rule: b sits at least a pitch <code>P</code> above a. Walls (a pad box, the board edge) are optional.</p>
+<p>As mechanics, it is section 0's rail with grooves. Two beads sit on a rail, each held toward its reference by a constant force <code>w</code>. Off its reference the bead is pulled back with exactly <code>w</code>; sitting on it, it can resist any force up to <code>w</code>, like a bead in a V-shaped groove. A strut of length <code>P</code> sits between the beads, and its compression is <code>y</code>. The rule is elastic: breaking it costs <code>W</code> per mm, so the strut carries at most <code>W</code> and then yields.</p>
 <div class="card">
   <p style="margin-top:0"><b>Drag the references</b> (the grey markers under the rail) and change the sliders. The page solves the LP exactly and draws the forces on each lane below the rail. The cost <code>C</code> and the dual value <code>D</code> are always equal.</p>
-  <div class="row"><button data-p="toy" class="primary">The toy</button><button data-p="uneq">Unequal pulls</button><button data-p="wall">Lane a against a wall</button><button data-p="yield">The rule cannot hold</button><button data-p="cheap">W set too low</button></div>
+  <div class="row"><button data-p="toy" class="primary">The toy</button><button data-p="uneq">Unequal pulls</button><button data-p="wall">Lane a against a wall</button><button data-p="yield">The rule cannot hold</button><button data-p="cheap">W set too low</button><button data-p="via">A via beside a pad box</button><button data-p="vianofit">The via does not fit</button></div>
   <svg id="toySvg" class="demo" viewBox="0 0 860 362" style="touch-action:none" role="img" aria-label="Two lanes on a rail with a strut between them and their free-body diagrams"></svg>
   <div class="row">
    <label for="tP">pitch P <input type="range" id="tP" min="0.05" max="0.6" step="0.01" value="0.3"></label><span class="stat" id="tPV"></span>
@@ -193,6 +229,38 @@ subject to  0 &le; y &le; W                 from e:   the strut is rated for W; 
   <div class="log" id="tLog" style="min-height:58px"></div>
 </div>
 <p><b>Who pays, and why that sets the price.</b> The rule needs <code>g</code> mm more room than the references give. Three sources can supply it: moving lane a (<code>w_a</code> per mm, until its wall), moving lane b (<code>w_b</code> per mm, until its wall), or breaking the rule (<code>W</code> per mm, without limit). The LP takes the cheapest first. The shadow price <code>y</code> is the unit price of the <b>last</b> source it had to use, because that is what one more millimetre of pitch would cost. In the mechanics the same thing reads: the weaker pull gives way first; once a bead reaches a wall, the wall takes up the extra force; when both walls hold, the only thing left to give is the strut, which yields at its rated force <code>W</code>.</p>
+<p><b>Reading the positions off the forces</b>, as in section 0. Press <b>Unequal pulls</b>: lane a pulls with 1 and lane b with 2.5, and the strut force comes out <code>y = 1</code>.</p>
+<ul>
+ <li>The strut pushes, so it is squeezed to its length: <code>o_b &minus; o_a = 0.3</code>.</li>
+ <li>Lane b feels 1, less than its pull of 2.5, so it has not left its groove: <code>o_b = r_b = 0.1</code>.</li>
+ <li>So <code>o_a = 0.1 &minus; 0.3 = &minus;0.2</code>. Lane a feels exactly its full pull, so it has left its groove, and its own forces do not say where it is. The strut does.</li>
+</ul>
+<p>With <b>The toy</b> preset the two pulls are equal, both lanes leave their grooves, and only the strut's equation is left: one equation for two positions. A whole range of splits is then optimal, the case in section 0 where the forces cannot place the beads (3b shows it as a side of the diamond).</p>
+<details><summary>The toy's LP and its dual, written out</summary>
+<pre class="math">minimise    w_a&middot;|o_a &minus; r_a|  +  w_b&middot;|o_b &minus; r_b|  +  W&middot;e
+subject to  o_a &minus; o_b &minus; e &le; &minus;P        the pitch rule, elastic: breaking it by e costs W per mm
+            o_a &ge; L,   o_b &le; U          the walls, when present
+            e &ge; 0</pre>
+<p>(An absolute value is linear inside an LP by the usual trick: a helper <code>d &ge; o &minus; r</code>, <code>d &ge; r &minus; o</code>, cost <code>w&middot;d</code>.) Attaching <code>y</code> to the pitch rule, <code>u_a</code> and <code>u_b</code> to the walls, and minimising the Lagrangian term by term gives the dual:</p>
+<pre class="math">maximise    y&middot;g  &minus;  u_a&middot;(r_a &minus; L)  &minus;  u_b&middot;(U &minus; r_b)          g = P &minus; (r_b &minus; r_a), the room the rule needs
+subject to  0 &le; y &le; W                 from e:   the strut is rated for W; past that it yields
+            |y &minus; u_a| &le; w_a            lane a:   strut y down, wall u_a up; its pull covers the rest (at most w_a)
+            |u_b &minus; y| &le; w_b            lane b:   the same, mirrored
+            u_a, u_b &ge; 0              walls push, never pull</pre>
+</details>
+
+<!-- ======================= 3a. ONE VIA ======================= -->
+<h3 id="sec-via">3a &nbsp; The toy at a real column: one via beside a pad box</h3>
+<p>The toy is more than a toy. Take a column of the real LP where a lane dives through a via. Before the LP runs, CP-SAT has already decided the lanes' order, where each pair crosses, and where along its route each via sits. The LP moves none of that. It only slides lanes sideways across the channel, so for a via it decides how far sideways the via sits, and how far its neighbours move to give it room. At the via's column that is the toy exactly:</p>
+<ul>
+ <li><b>lane a</b> is the lane with the via, and <b>lane b</b> is its neighbour;</li>
+ <li>the strut is the <b>via's room</b>: every neighbour stays at least that far from the via (about 0.32 mm for a single lane on the H3-to-DDR3 bench);</li>
+ <li><b>wall L</b> is a pad box, grown by the via's clearance, so 0 is as close to it as the via may stand;</li>
+ <li>each lane is pulled toward its straight line, its reference.</li>
+</ul>
+<p>Press <b>A via beside a pad box</b> in the toy above. Lane a's line runs at 0.05 and lane b's at 0.2, and b pulls twice as hard as a. At rest two contacts push: the pad box on lane a, and the via's room between the lanes. Told only that, you read the positions off in a chain. The pad box pushes, so the via is against it, at 0. The via's room pushes, so lane b is exactly one room away, at 0.32. The via ends up against the pad box, and lane b is bent out around it by exactly the via's room.</p>
+<p>Press <b>The via does not fit</b>: a second pad box stands at 0.30 (wall U). Lane b would have to be at 0.32 or more for the via's room and at 0.30 or less for the pad box. Every contact in the chain pushes as hard as it can, and the via's room gives way by 0.02 mm, at its cap <code>W</code> (<code>10&#8308;</code> in <code>whole_geo</code>). <code>whole_geo</code> reports the broken row and sends it back to CP-SAT as a cut: this via cannot have its room here, so plan something else. In the K51 table of section 5, 143 of the 376 rules that carry a force are this kind: a via's room pushing a neighbour.</p>
+<p style="font-size:14px;color:var(--mut)">The real rule is checked at every column within the via's reach, shrinking like a circle away from it and corrected for slope, against the two nearest lanes on each side and the nearest on each layer. At the via's own column it is this strut.</p>
 
 <!-- ======================= 3b. BOTH SIDES ======================= -->
 <h3 id="sec-bound">3b &nbsp; Both sides of the toy: the primal plane and the dual line</h3>
@@ -268,7 +336,7 @@ maximise                 &minus;b&middot;y + lo&middot;u &minus; hi&middot;w</pr
   <tr><td>solved as its dual by HiGHS in</td><td class="num">18 s</td></tr>
  </table></div>
  <div>
-  <p>That is 0.25% of the rules. The other 150,584 push with nothing, and most of them have room to spare. Geometrically, the optimum is a corner of a polytope in thousands of dimensions, and 376 of the walls that touch it there carry a price. The downhill direction <code>&minus;c</code> lies in the cone of those walls' outward normals (together with the bounds'), and the prices are its coordinates in that cone, exactly as in the ball's wedge.</p>
+  <p>That is 0.25% of the rules. The other 150,584 push with nothing, and most of them have room to spare. The 376 that push are the contacts that are touching. Together with the pins at the lanes' ends and the strings between them, they hold every lane where it is: as in section 0, each pushing contact holds its lanes exactly at its limit, against a pad box, a via's room or a neighbour. (Geometrically, the optimum is a corner of a polytope in thousands of dimensions, and the downhill direction <code>&minus;c</code> lies in the cone of those walls' outward normals, together with the bounds', exactly as in the ball's wedge.)</p>
   <p>A rule whose elastic slack was paid (the rule broke) has its price at the cap <code>10&#8308;</code>. The converse does not hold: other rules can sit at the cap because they carry the broken rule's load, as the squeezed stack in section 4 shows. The broken rows are the ones <code>whole_geo</code> writes as cuts for CP-SAT (the islands a lane could not be kept off, the changes it could not give their room).</p>
  </div>
 </div>
@@ -278,7 +346,7 @@ maximise                 &minus;b&middot;y + lo&middot;u &minus; hi&middot;w</pr
 </figure>
 
 <h3>Why <code>whole_geo</code> solves the dual itself</h3>
-<p><code>lp_by_dual</code> (<code>whole_geo.py</code>, line 787) does not solve the primal and read the prices off. It builds the dual explicitly and hands <i>that</i> to HiGHS:</p>
+<p><code>lp_by_dual</code> (in <code>whole_geo.py</code>) does not solve the primal and read the prices off. It builds the dual explicitly and hands <i>that</i> to HiGHS:</p>
 <pre class="math">AT = (&minus;A.T)
 A_ub = AT[plain]            the caps:      one per cost-carrying helper   (y &le; 10&#8308;, &Sigma; y &le; 1, &Sigma; y &le; 3, ...)
 A_eq = [AT[bj], U, W]       the balances:  one per bounded offset, with the walls' pushes u and w
@@ -286,7 +354,7 @@ linprog(b, lo, hi terms, A_ub, A_eq, method='highs-ipm')     interior point, cap
 x = &minus;marginals              the offsets come back as the multipliers of the balance equations</pre>
 <ul>
  <li><b>It is faster.</b> The primal has many more rows than columns, and every elastic slack becomes a one-entry inequality in the dual. SciPy's <code>highs-ipm</code>, which runs IPX, one of HiGHS's interior point solvers <a class="cite" href="#ref-schork">(Schork and Gondzio 2020)</a>, takes the dual form about six times faster: 31 s instead of 188 s on K51's pass 2.</li>
- <li><b>The positions come back for free.</b> The dual of the dual is the primal, so the multipliers HiGHS returns on the balance equations <i>are</i> the lane offsets. In mechanics this is the principle of virtual work: the multiplier of an equilibrium equation is the displacement that does work against it.</li>
+ <li><b>The positions come back in the same answer.</b> <code>lp_by_dual</code> never works the positions out from the forces as a second step. When HiGHS solves any LP, it returns an answer and a multiplier for every constraint. The dual's constraints are the balance equations, one per lane point, and the dual of the dual is the primal, so their multipliers <i>are</i> the lane offsets. Why a balance equation's multiplier is a position: a multiplier says how fast the optimum moves when its constraint's right-hand side moves, and the right-hand side of a balance is the load on that point. Push a lane point toward larger offsets with a small extra force <code>&delta;</code>, and the lowest energy falls by <code>&delta;</code> times the point's offset, the work the extra force does. So a position is how the energy answers a change of load, just as a force (a shadow price) is how the energy answers a moved wall. The minus in <code>x = &minus;marginals</code> is SciPy's sign: it minimises <code>b&middot;y</code>, the dual value with its sign flipped.</li>
  <li><b>It has a fallback.</b> If the interior point does not finish (zynq K18's pass 2 once ran for half an hour), the same dual goes to HiGHS's dual simplex <a class="cite" href="#ref-huangfu">(Huangfu and Hall 2018)</a>, and <code>detmath.lp_round</code> rounds the result so every machine gets the same offsets.</li>
 </ul>
 
@@ -295,15 +363,41 @@ x = &minus;marginals              the offsets come back as the multipliers of th
 <p>None of this is an analogy invented for the page. Each item below is the same mathematics under a physicist's name.</p>
 <div class="phys">
  <div class="card"><h3>Lagrange multipliers are constraint forces</h3><p>When a system minimises its potential energy subject to constraints, the multipliers on the constraints are the reaction forces the constraints exert: the normal force of a floor, the tension in a rod <a class="cite" href="#ref-lagrange">(Lagrange 1788)</a>. The optimality conditions of an LP, the Karush&ndash;Kuhn&ndash;Tucker conditions <a class="cite" href="#ref-karush">(Karush 1939)</a> <a class="cite" href="#ref-kt">(Kuhn and Tucker 1951)</a> <a class="cite" href="#ref-cottle">(Cottle 2012)</a>, are exactly equilibrium plus contact.</p></div>
- <div class="card"><h3>Complementary slackness is the contact law</h3><p>In contact mechanics (Signorini's problem <a class="cite" href="#ref-signorini33">(Signorini 1933)</a> <a class="cite" href="#ref-signorini59">(Signorini 1959)</a>): the gap is at least zero, the contact force is at least zero, and their product is zero. A wall pushes only while it is touched; a rope pulls only while it is taut. The LP says the same about a rule's room and its price.</p></div>
+ <div class="card"><h3>Complementary slackness is the contact law</h3><p>In contact mechanics (Signorini's problem <a class="cite" href="#ref-signorini33">(Signorini 1933)</a> <a class="cite" href="#ref-signorini59">(Signorini 1959)</a>): the gap is at least zero, the contact force is at least zero, and their product is zero. A wall pushes only while it is touched; a rope pulls only while it is taut. The LP says the same about a rule's room and its price, and that is what lets the forces place the beads (section 0).</p></div>
  <div class="card"><h3>Linear costs are constant forces</h3><p>A dead weight has energy <code>m&middot;g&middot;h</code>, linear in height, so it pulls with a constant force. A string held at fixed tension <code>T</code> by a weight over a pulley has energy <code>T &times; length</code>. The length term <code>W_LEN &times; length</code> is such a string with tension 1, and in the dual the tangent cuts' prices add up to at most 1: the string's tension, pulling sideways with about <code>T&middot;sin&theta;</code>, in steps, one per tangent cut (section 4).</p></div>
  <div class="card"><h3>An absolute value holds like friction</h3><p>A cost <code>w&middot;|o &minus; r|</code> is a V-shaped groove. Away from the bottom it pulls with exactly <code>w</code>. At the bottom it can supply any force up to <code>w</code>, like static friction holding a block until the load exceeds its limit. That is why a lane at its reference can take a strut force smaller than <code>w</code> without moving.</p></div>
  <div class="card"><h3>Elastic rules are rigid-plastic members</h3><p>A hard rule with an elastic slack behaves like a strut of a rigid, perfectly plastic material: it carries any force up to its rating <code>W_HARD</code> and then yields, and yielding is paying the slack. The bend term, cost <code>3 &times; |kink|</code>, is a plastic hinge with yield moment 3: its energy is the moment times the rotation (the kink, a second difference of offsets, stands in for the rotation).</p></div>
  <div class="card"><h3>Plastic limit analysis is an LP pair</h3><p>The collapse load of a rigid-plastic structure has two theorems. The static theorem: any set of forces that balances the load and nowhere exceeds yield gives a load the structure can certainly carry (a lower bound). The kinematic theorem: any collapse mechanism gives an upper bound. They meet at the collapse load <a class="cite" href="#ref-gp">(Greenberg and Prager 1952)</a> <a class="cite" href="#ref-dpg">(Drucker, Prager and Greenberg 1952)</a>. Charnes and Greenberg wrote the static problem for frames as a linear program in 1951 <a class="cite" href="#ref-cg">(Charnes and Greenberg 1951)</a>, and Charnes, Lemke and Zienkiewicz showed in 1959 that the two theorems are a dual pair of LPs <a class="cite" href="#ref-clz">(Charnes, Lemke and Zienkiewicz 1959)</a>; see also <a class="cite" href="#ref-dg">(Dorn and Greenberg 1957)</a>. The same kind of LP later laid out optimal trusses <a class="cite" href="#ref-dgg">(Dorn, Gomory and Greenberg 1964)</a>. Section 3b's curve is the static theorem for the toy.</p></div>
- <div class="card"><h3>The positions are virtual displacements</h3><p>The principle of virtual work <a class="cite" href="#ref-lagrange">(Lagrange 1788)</a> says a set of forces is in equilibrium exactly when it does zero work in every small displacement the constraints allow. In the dual, the balance equations are the equilibrium, and their multipliers are the positions (<code>x = &minus;marginals</code>). Strong duality, <code>c&middot;x = &minus;b&middot;y</code>, is the work bookkeeping that closes.</p></div>
+ <div class="card"><h3>The positions are virtual displacements</h3><p>The principle of virtual work <a class="cite" href="#ref-lagrange">(Lagrange 1788)</a> says a set of forces is in equilibrium exactly when it does zero work in every small displacement the constraints allow. In the dual, the balance equations are the equilibrium, and their multipliers are the positions (<code>x = &minus;marginals</code>). Plainly: push a bead with a small extra force, and the lowest energy falls by that force times the bead's position (section 5). Strong duality, <code>c&middot;x = &minus;b&middot;y</code>, is the work bookkeeping that closes.</p></div>
  <div class="card"><h3>Potential and complementary energy</h3><p>Elasticity has two minimum principles for one equilibrium: displacements minimise the potential energy, and stresses minimise the complementary energy, and at the solution the two are equal and opposite. They are linked by a Legendre transform <a class="cite" href="#ref-fenchel">(Fenchel 1949)</a> <a class="cite" href="#ref-rock70">(Rockafellar 1970)</a>. The primal and dual of an LP are the same pair for rigid contacts and constant loads.</p></div>
 </div>
 <p>Economists read the same numbers as prices: the value of one more unit of a scarce resource. Kantorovich's 1939 "resolving multipliers" are these prices <a class="cite" href="#ref-kant">(Kantorovich 1939/1960)</a>, the theory grew up in the Cowles Commission's activity analysis <a class="cite" href="#ref-koop">(Koopmans 1951)</a>, the first published proof of the duality theorem is Gale, Kuhn and Tucker's <a class="cite" href="#ref-gkt">(Gale, Kuhn and Tucker 1951)</a>, and the standard account is Dantzig's <a class="cite" href="#ref-dantzig">(Dantzig 1963)</a>. The units make the link to physics. A shadow price here is cost per millimetre, and cost is an energy, so a shadow price is an energy per length: a force.</p>
+
+<!-- ======================= 6b. USES IN PHYSICS ======================= -->
+<h3 id="sec-uses">6b &nbsp; Where physicists use the dual</h3>
+<p>The dual is not only a way to understand an LP. At the research frontier physicists solve the dual in place of the primal, either because it is easier or because it gives what the primal cannot: a proof. Three situations make the dual the better route:</p>
+<ul>
+ <li><b>the rules far outnumber the unknowns</b>, so the dual is the smaller problem (<code>whole_geo</code>'s own reason, section 5);</li>
+ <li><b>you want a bound you can trust</b>, not only a good answer: any set of forces that balances is a floor under every possible position (section 3b);</li>
+ <li><b>the primal is infinite but a certificate is finite</b>: one set of forces can rule out every position at once.</li>
+</ul>
+<p>And section 0's move comes back again and again: the primal answer is read off the dual one, because only the contacts that push are touching.</p>
+<div class="phys">
+ <div class="card"><h3>The conformal bootstrap</h3><p>At a critical point a theory is fixed by its spectrum of operators, and consistency (crossing symmetry and unitarity) limits which spectra are possible. The primal question, "is there a consistent theory with this spectrum?", ranges over infinitely many operators. The dual asks for one linear functional that proves there is not, and that is a finite LP <a class="cite" href="#ref-rrtv">(Rattazzi, Rychkov, Tonni and Vichi 2008)</a>, later a semidefinite program <a class="cite" href="#ref-sdpb">(Simmons-Duffin 2015)</a>. This is how the 3D Ising model was located <a class="cite" href="#ref-ising3d">(El-Showk et al. 2012)</a>, and its critical exponents are now known more precisely this way than by any other method <a class="cite" href="#ref-prv">(Poland, Rychkov and Vichi 2019)</a> <a class="cite" href="#ref-chang">(Chang et al. 2025)</a>. At the edge of the allowed region, the zeros of the best functional are the operator dimensions <a class="cite" href="#ref-efm">(El-Showk and Paulos 2013)</a>: the primal answer read off the dual, as the beads' positions are read off the pushing contacts in section 0.</p></div>
+ <div class="card"><h3>The S-matrix bootstrap</h3><p>The same idea for scattering amplitudes. The primal builds amplitudes that obey unitarity and crossing, and pushes a coupling as high as it will go. The dual gives rigorous bounds that no amplitude can pass. Run both, and they bracket the answer from the two sides until they meet <a class="cite" href="#ref-ghv">(Guerrieri, Homrich and Vieira 2020)</a>, as the curve <code>D(y)</code> rises to the line <code>C</code> in section 3b.</p></div>
+ <div class="card"><h3>Jamming: the struts are real</h3><p>Is a packing of hard spheres jammed, or can some of them still move? Donev, Torquato, Stillinger and Connelly test it with an LP <a class="cite" href="#ref-donev">(2004)</a>. The primal looks for a motion of the spheres that frees the packing. In its dual the unknowns are the forces between touching spheres, which push and never pull: this page's struts, literally. The two readings meet. A packing that no motion can free is one whose contacts can carry any load.</p></div>
+ <div class="card"><h3>Ground states, bounded from below</h3><p>Variational methods (DMRG, variational Monte Carlo) only give an upper bound on a ground-state energy, since every trial state costs at least the true minimum. Semidefinite relaxations give a lower bound, so the true energy is caught between the two: for molecules in a finite basis, through the two-electron reduced density matrix <a class="cite" href="#ref-mazziotti">(Mazziotti 2004)</a>; for matrix quantum mechanics, by bootstrapping <a class="cite" href="#ref-hhk">(Han, Hartnoll and Kruthoff 2020)</a>; for lattice models, through a renormalization-group relaxation <a class="cite" href="#ref-ksdn">(Kull, Schuch, Dive and Navascués 2024)</a>. A certified lower bound needs a feasible point of the dual program: a floor, as in section 3b.</p></div>
+ <div class="card"><h3>Quantum correlations</h3><p>Which correlations can quantum mechanics produce? The NPA hierarchy bounds the set from outside with semidefinite programs <a class="cite" href="#ref-npa">(Navascués, Pironio and Acín 2007)</a>. When a correlation falls outside, a feasible point of the dual is the proof, and it reads as a Bell inequality that the correlation violates <a class="cite" href="#ref-npa08">(Navascués, Pironio and Acín 2008)</a>: a certificate, not only a verdict.</p></div>
+ <div class="card"><h3>Sphere packing</h3><p>Cohn and Elkies turned the densest packing of spheres into an LP bound. Any function that is never positive past a radius, and whose Fourier transform is never negative, caps the density <a class="cite" href="#ref-ce">(Cohn and Elkies 2003)</a>. Such a function is a dual certificate. Viazovska's proof that the E8 lattice is the densest packing in 8 dimensions is the construction of the one certificate that meets the bound exactly <a class="cite" href="#ref-viaz">(Viazovska 2017)</a>.</p></div>
+ <div class="card"><h3>The early universe by optimal transport</h3><p>Where did today's galaxies start? If the displacement of matter is the gradient of a convex potential, as in the Zel'dovich approximation, the map from initial to present positions is an optimal transport with a quadratic cost, and on a sample of points it is an assignment problem, an LP. Frisch et al. solved it with a dual simplex method <a class="cite" href="#ref-fmms">(Frisch et al. 2002)</a>, and Brenier et al. with Bertsekas's auction algorithm <a class="cite" href="#ref-bfhl">(Brenier et al. 2003)</a>, whose bids set one price per point: Kantorovich's potentials, the economists' prices above.</p></div>
+ <div class="card"><h3>Random-field magnets by max-flow</h3><p>The ground state of the random-field Ising model is a minimum cut in a network, and it is found exactly as a maximum flow <a class="cite" href="#ref-ogielski">(Ogielski 1986)</a>. Maximum flow and minimum cut are an LP pair: the flow is the dual, and the edges it fills to capacity are the cut.</p></div>
+</div>
+<p><b>Where the dual is the physics itself.</b> In these the dual variable is not a device for solving. It is a quantity physicists measure.</p>
+<div class="phys">
+ <div class="card"><h3>Pressure is the price of volume</h3><p>In an incompressible fluid, pressure is the Lagrange multiplier that enforces the constraint of constant volume: the shadow price of volume. Brenier's dual least action problem for an ideal fluid makes this exact <a class="cite" href="#ref-brenier93">(Brenier 1993)</a>.</p></div>
+ <div class="card"><h3>Temperature is the price of energy</h3><p>Maximise entropy at a fixed mean energy and particle number, and the multipliers that appear are <code>1/T</code> and <code>&minus;&mu;/T</code> <a class="cite" href="#ref-jaynes">(Jaynes 1957)</a>. The free energies are Legendre transforms of the energy or the entropy: the same transform that makes section 3b's <code>D(y)</code>.</p></div>
+ <div class="card"><h3>Density functional theory</h3><p>Lieb wrote density functional theory as a convex duality: the universal functional of the density and the ground-state energy as a function of the external potential are Legendre transforms of each other, so the potential is the dual variable of the density <a class="cite" href="#ref-lieb">(Lieb 1983)</a>. Finding the potential that produces a given density is solving that dual <a class="cite" href="#ref-wuyang">(Wu and Yang 2003)</a>.</p></div>
+</div>
 
 <!-- ======================= 7. CIRCUIT ======================= -->
 <h2 id="sec-circuit">7 &nbsp; The same LP as an electrical circuit</h2>
@@ -325,7 +419,7 @@ x = &minus;marginals              the offsets come back as the multipliers of th
 </table></div>
 <div class="card">
   <p style="margin-top:0">The two-lane toy of section 3, wired up (1 mm of offset is 1 volt, a force of 1 is 1 amp). It shares that section's settings, so the buttons and sliders here change both. Wires that carry current are drawn flowing; a blocking diode carries none.</p>
-  <div class="row"><button data-p="toy" class="primary">The toy</button><button data-p="uneq">Unequal pulls</button><button data-p="wall">Lane a against a wall</button><button data-p="yield">The rule cannot hold</button><button data-p="cheap">W set too low</button></div>
+  <div class="row"><button data-p="toy" class="primary">The toy</button><button data-p="uneq">Unequal pulls</button><button data-p="wall">Lane a against a wall</button><button data-p="yield">The rule cannot hold</button><button data-p="cheap">W set too low</button><button data-p="via">A via beside a pad box</button><button data-p="vianofit">The via does not fit</button></div>
   <svg id="circSvg" class="demo" viewBox="0 0 860 372" role="img" aria-label="The two-lane toy as a circuit of diodes, batteries and current limiters"></svg>
   <div class="row"><label for="cP">battery P <input type="range" id="cP" min="0.05" max="0.6" step="0.01" value="0.3"></label><span class="stat" id="cPV"></span>
    <label for="cW">limiter W <input type="range" id="cW" min="0.5" max="12" step="0.5" value="10"></label><span class="stat" id="cWV"></span>
@@ -339,41 +433,63 @@ x = &minus;marginals              the offsets come back as the multipliers of th
 <!-- ======================= REFERENCES ======================= -->
 <h2 id="sec-refs">References</h2>
 <ol class="refs" id="refList">
+<li id="ref-brenier93">Y. Brenier, "The dual least action problem for an ideal, incompressible fluid," <i>Archive for Rational Mechanics and Analysis</i> 122(4):323&ndash;351, 1993. <a href="https://doi.org/10.1007/BF00375139">doi:10.1007/BF00375139</a> <span class="why">&mdash; the pressure as the Lagrange multiplier of incompressibility.</span></li>
+<li id="ref-bfhl">Y. Brenier, U. Frisch, M. H&eacute;non, G. Loeper, S. Matarrese, R. Mohayaee and A. Sobolevski&#301;, "Reconstruction of the early Universe as a convex optimization problem," <i>Monthly Notices of the Royal Astronomical Society</i> 346(2):501&ndash;524, 2003. <a href="https://doi.org/10.1046/j.1365-2966.2003.07106.x">doi:10.1046/j.1365-2966.2003.07106.x</a> <span class="why">&mdash; the reconstruction as an assignment problem, solved with Bertsekas&rsquo;s auction algorithm.</span></li>
+<li id="ref-chang">C.-H. Chang, V. Dommes, R. S. Erramilli, A. Homrich, P. Kravchuk, A. Liu, M. S. Mitchell, D. Poland and D. Simmons-Duffin, "Bootstrapping the 3d Ising stress tensor," <i>Journal of High Energy Physics</i> 2025(3):136, 2025. <a href="https://doi.org/10.1007/JHEP03(2025)136">doi:10.1007/JHEP03(2025)136</a> <span class="why">&mdash; the 3D Ising critical exponents to date.</span></li>
 <li id="ref-cg">A. Charnes and H. J. Greenberg, "Plastic collapse and linear programming. Preliminary report," abstract 506, <i>Bulletin of the American Mathematical Society</i> 57(6):480, 1951 (in J. W. T. Youngs, "The summer meeting in Minneapolis"). <a href="https://doi.org/10.1090/S0002-9904-1951-09546-4">doi:10.1090/S0002-9904-1951-09546-4</a> <span class="why">&mdash; the static problem of plastic collapse, for frames, as a linear program.</span></li>
 <li id="ref-clz">A. Charnes, C. E. Lemke and O. C. Zienkiewicz, "Virtual work, linear programming and plastic limit analysis," <i>Proceedings of the Royal Society A</i> 251(1264):110&ndash;116, 1959. <a href="https://doi.org/10.1098/rspa.1959.0094">doi:10.1098/rspa.1959.0094</a> <span class="why">&mdash; the static and kinematic collapse theorems as a dual pair of linear programs.</span></li>
 <li id="ref-chualin">L. O. Chua and G.-N. Lin, "Nonlinear programming without computation," <i>IEEE Transactions on Circuits and Systems</i> 31(2):182&ndash;188, 1984. <a href="https://doi.org/10.1109/TCS.1984.1085482">doi:10.1109/TCS.1984.1085482</a> <span class="why">&mdash; a circuit, built from the Kuhn&ndash;Tucker conditions, whose node voltages solve a nonlinear program.</span></li>
+<li id="ref-ce">H. Cohn and N. Elkies, "New upper bounds on sphere packings I," <i>Annals of Mathematics</i> 157(2):689&ndash;714, 2003. <a href="https://doi.org/10.4007/annals.2003.157.689">doi:10.4007/annals.2003.157.689</a> <span class="why">&mdash; the linear programming bound for sphere packing.</span></li>
 <li id="ref-cottle">R. W. Cottle, "William Karush and the KKT theorem," <i>Documenta Mathematica</i>, Extra Volume ISMP, 255&ndash;269, 2012. <span class="why">&mdash; the history of the Karush&ndash;Kuhn&ndash;Tucker conditions.</span></li>
 <li id="ref-dantzig">G. B. Dantzig, <i>Linear Programming and Extensions</i>, Princeton University Press, 1963. <a href="https://doi.org/10.1515/9781400884179">doi:10.1515/9781400884179</a> <span class="why">&mdash; the simplex method and LP duality.</span></li>
 <li id="ref-dennis">J. B. Dennis, <i>Mathematical Programming and Electrical Networks</i>, Technology Press of the Massachusetts Institute of Technology, 1959 (from his 1958 MIT Sc.D. thesis). <span class="why">&mdash; linear and quadratic programs, and their duals, as the DC operating point of networks of diodes, sources and resistors.</span></li>
+<li id="ref-donev">A. Donev, S. Torquato, F. H. Stillinger and R. Connelly, "A linear programming algorithm to test for jamming in hard-sphere packings," <i>Journal of Computational Physics</i> 197(1):139&ndash;166, 2004. <a href="https://doi.org/10.1016/j.jcp.2003.11.022">doi:10.1016/j.jcp.2003.11.022</a> <span class="why">&mdash; jamming as an LP, whose dual variables are the contact forces.</span></li>
 <li id="ref-dg">W. S. Dorn and H. J. Greenberg, "Linear programming and plastic limit analysis of structures," <i>Quarterly of Applied Mathematics</i> 15(2):155&ndash;167, 1957. <a href="https://doi.org/10.1090/qam/92465">doi:10.1090/qam/92465</a> <span class="why">&mdash; limit analysis of structures by linear programming.</span></li>
 <li id="ref-dgg">W. S. Dorn, R. E. Gomory and H. J. Greenberg, "Automatic design of optimal structures," <i>Journal de M&eacute;canique</i> 3:25&ndash;52, 1964. <span class="why">&mdash; truss layout as a linear program (the ground structure).</span></li>
 <li id="ref-dpg">D. C. Drucker, W. Prager and H. J. Greenberg, "Extended limit design theorems for continuous media," <i>Quarterly of Applied Mathematics</i> 9(4):381&ndash;389, 1952. <a href="https://doi.org/10.1090/qam/45573">doi:10.1090/qam/45573</a> <span class="why">&mdash; the lower- and upper-bound theorems for any perfectly plastic body.</span></li>
 <li id="ref-duffin">R. J. Duffin, "Nonlinear networks. IIa," <i>Bulletin of the American Mathematical Society</i> 53(10):963&ndash;971, 1947. <a href="https://doi.org/10.1090/S0002-9904-1947-08917-5">doi:10.1090/S0002-9904-1947-08917-5</a> <span class="why">&mdash; networks of monotone conductors settle at the minimum of a convex potential.</span></li>
+<li id="ref-ising3d">S. El-Showk, M. F. Paulos, D. Poland, S. Rychkov, D. Simmons-Duffin and A. Vichi, "Solving the 3D Ising model with the conformal bootstrap," <i>Physical Review D</i> 86(2):025022, 2012. <a href="https://doi.org/10.1103/PhysRevD.86.025022">doi:10.1103/PhysRevD.86.025022</a> <span class="why">&mdash; the 3D Ising model located by the numerical bootstrap.</span></li>
+<li id="ref-efm">S. El-Showk and M. F. Paulos, "Bootstrapping conformal field theories with the extremal functional method," <i>Physical Review Letters</i> 111(24):241601, 2013. <a href="https://doi.org/10.1103/PhysRevLett.111.241601">doi:10.1103/PhysRevLett.111.241601</a> <span class="why">&mdash; the spectrum read off the zeros of the optimal functional.</span></li>
 <li id="ref-farkas">J. Farkas, "Theorie der einfachen Ungleichungen," <i>Journal f&uuml;r die reine und angewandte Mathematik</i> 124:1&ndash;27, 1902. <a href="https://doi.org/10.1515/crll.1902.124.1">doi:10.1515/crll.1902.124.1</a> <span class="why">&mdash; Farkas&rsquo; lemma.</span></li>
 <li id="ref-fenchel">W. Fenchel, "On conjugate convex functions," <i>Canadian Journal of Mathematics</i> 1(1):73&ndash;77, 1949. <a href="https://doi.org/10.4153/CJM-1949-007-x">doi:10.4153/CJM-1949-007-x</a> <span class="why">&mdash; the convex conjugate (the Legendre&ndash;Fenchel transform).</span></li>
+<li id="ref-fmms">U. Frisch, S. Matarrese, R. Mohayaee and A. Sobolevski, "A reconstruction of the initial conditions of the Universe by optimal mass transportation," <i>Nature</i> 417(6886):260&ndash;262, 2002. <a href="https://doi.org/10.1038/417260a">doi:10.1038/417260a</a> <span class="why">&mdash; the early Universe reconstructed by optimal transport.</span></li>
 <li id="ref-gkt">D. Gale, H. W. Kuhn and A. W. Tucker, "Linear programming and the theory of games," in T. C. Koopmans (ed.), <i>Activity Analysis of Production and Allocation</i>, Wiley, 1951, pp. 317&ndash;329. <span class="why">&mdash; the first published proof of the LP duality theorem.</span></li>
 <li id="ref-gp">H. J. Greenberg and W. Prager, "Limit design of beams and frames," <i>Transactions of the American Society of Civil Engineers</i> 117(1):447&ndash;458, 1952. <a href="https://doi.org/10.1061/TACEAT.0006679">doi:10.1061/TACEAT.0006679</a> <span class="why">&mdash; the static and kinematic theorems of limit design.</span></li>
+<li id="ref-ghv">A. Guerrieri, A. Homrich and P. Vieira, "Dual S-matrix bootstrap. Part I. 2D theory," <i>Journal of High Energy Physics</i> 2020(11):084, 2020. <a href="https://doi.org/10.1007/JHEP11(2020)084">doi:10.1007/JHEP11(2020)084</a> <span class="why">&mdash; rigorous bounds from the dual, meeting the primal&rsquo;s.</span></li>
+<li id="ref-hhk">X. Han, S. A. Hartnoll and J. Kruthoff, "Bootstrapping matrix quantum mechanics," <i>Physical Review Letters</i> 125(4):041601, 2020. <a href="https://doi.org/10.1103/PhysRevLett.125.041601">doi:10.1103/PhysRevLett.125.041601</a> <span class="why">&mdash; energies bounded by positivity, a bootstrap for quantum mechanics.</span></li>
 <li id="ref-huangfu">Q. Huangfu and J. A. J. Hall, "Parallelizing the dual revised simplex method," <i>Mathematical Programming Computation</i> 10(1):119&ndash;142, 2018. <a href="https://doi.org/10.1007/s12532-017-0130-5">doi:10.1007/s12532-017-0130-5</a> <span class="why">&mdash; the dual simplex solver in HiGHS.</span></li>
+<li id="ref-jaynes">E. T. Jaynes, "Information theory and statistical mechanics," <i>Physical Review</i> 106(4):620&ndash;630, 1957. <a href="https://doi.org/10.1103/PhysRev.106.620">doi:10.1103/PhysRev.106.620</a> <span class="why">&mdash; maximum entropy, with temperature and chemical potential as its multipliers.</span></li>
 <li id="ref-kant">L. V. Kantorovich, "Mathematical methods of organizing and planning production," <i>Management Science</i> 6(4):366&ndash;422, 1960 (translation of the 1939 Leningrad booklet). <a href="https://doi.org/10.1287/mnsc.6.4.366">doi:10.1287/mnsc.6.4.366</a> <span class="why">&mdash; "resolving multipliers": the dual variables as prices.</span></li>
 <li id="ref-karush">W. Karush, "Minima of functions of several variables with inequalities as side conditions," Master&rsquo;s thesis, Department of Mathematics, University of Chicago, 1939. <span class="why">&mdash; the optimality conditions with inequality constraints.</span></li>
 <li id="ref-kennedy87">M. P. Kennedy and L. O. Chua, "Unifying the Tank and Hopfield linear programming circuit and the canonical nonlinear programming circuit of Chua and Lin," <i>IEEE Transactions on Circuits and Systems</i> 34(2):210&ndash;214, 1987. <a href="https://doi.org/10.1109/TCS.1987.1086095">doi:10.1109/TCS.1987.1086095</a> <span class="why">&mdash; the two circuits as one, and an error in the Tank&ndash;Hopfield design corrected.</span></li>
 <li id="ref-kennedy88">M. P. Kennedy and L. O. Chua, "Neural networks for nonlinear programming," <i>IEEE Transactions on Circuits and Systems</i> 35(5):554&ndash;562, 1988. <a href="https://doi.org/10.1109/31.1783">doi:10.1109/31.1783</a> <span class="why">&mdash; stability of optimisation circuits for nonlinear programs.</span></li>
 <li id="ref-koop">T. C. Koopmans (ed.), <i>Activity Analysis of Production and Allocation</i>, Cowles Commission Monograph 13, Wiley, 1951. <span class="why">&mdash; the volume where linear programming and its duality theory were set out.</span></li>
 <li id="ref-kt">H. W. Kuhn and A. W. Tucker, "Nonlinear programming," in J. Neyman (ed.), <i>Proceedings of the Second Berkeley Symposium on Mathematical Statistics and Probability</i>, University of California Press, 1951, pp. 481&ndash;492. <a href="https://doi.org/10.1525/9780520411586-036">doi:10.1525/9780520411586-036</a> <span class="why">&mdash; the Kuhn&ndash;Tucker conditions.</span></li>
+<li id="ref-ksdn">I. Kull, N. Schuch, B. Dive and M. Navascu&eacute;s, "Lower bounds on ground-state energies of local Hamiltonians through the renormalization group," <i>Physical Review X</i> 14(2):021008, 2024. <a href="https://doi.org/10.1103/PhysRevX.14.021008">doi:10.1103/PhysRevX.14.021008</a> <span class="why">&mdash; certified lower bounds for lattice models.</span></li>
 <li id="ref-lagrange">J.-L. Lagrange, <i>M&eacute;chanique analitique</i>, Paris: Veuve Desaint, 1788. <a href="https://doi.org/10.5479/sil.322586.39088000898585">doi:10.5479/sil.322586.39088000898585</a> <span class="why">&mdash; virtual work, and multipliers as the forces of constraint.</span></li>
+<li id="ref-lieb">E. H. Lieb, "Density functionals for Coulomb systems," <i>International Journal of Quantum Chemistry</i> 24(3):243&ndash;277, 1983. <a href="https://doi.org/10.1002/qua.560240302">doi:10.1002/qua.560240302</a> <span class="why">&mdash; density functional theory as a convex (Legendre) duality.</span></li>
 <li id="ref-maxwell">J. C. Maxwell, <i>A Treatise on Electricity and Magnetism</i>, Vol. I, Oxford: Clarendon Press, 1873, Art. 284. <span class="why">&mdash; the minimum-heat theorem for resistor networks.</span></li>
+<li id="ref-mazziotti">D. A. Mazziotti, "Realization of quantum chemistry without wave functions through first-order semidefinite programming," <i>Physical Review Letters</i> 93(21):213001, 2004. <a href="https://doi.org/10.1103/PhysRevLett.93.213001">doi:10.1103/PhysRevLett.93.213001</a> <span class="why">&mdash; ground-state energies from a semidefinite relaxation, a lower bound in a finite basis.</span></li>
 <li id="ref-millar">W. Millar, "Some general theorems for non-linear systems possessing resistance," <i>Philosophical Magazine</i> (Series 7) 42(333):1150&ndash;1160, 1951. <a href="https://doi.org/10.1080/14786445108561361">doi:10.1080/14786445108561361</a> <span class="why">&mdash; content and co-content.</span></li>
 <li id="ref-minty">G. J. Minty, "Monotone networks," <i>Proceedings of the Royal Society A</i> 257(1289):194&ndash;212, 1960. <a href="https://doi.org/10.1098/rspa.1960.0144">doi:10.1098/rspa.1960.0144</a> <span class="why">&mdash; existence and uniqueness for networks of monotone resistors, from convex extremum principles.</span></li>
+<li id="ref-npa">M. Navascu&eacute;s, S. Pironio and A. Ac&iacute;n, "Bounding the set of quantum correlations," <i>Physical Review Letters</i> 98(1):010401, 2007. <a href="https://doi.org/10.1103/PhysRevLett.98.010401">doi:10.1103/PhysRevLett.98.010401</a> <span class="why">&mdash; the NPA hierarchy of semidefinite programs.</span></li>
+<li id="ref-npa08">M. Navascu&eacute;s, S. Pironio and A. Ac&iacute;n, "A convergent hierarchy of semidefinite programs characterizing the set of quantum correlations," <i>New Journal of Physics</i> 10(7):073013, 2008. <a href="https://doi.org/10.1088/1367-2630/10/7/073013">doi:10.1088/1367-2630/10/7/073013</a> <span class="why">&mdash; a dual feasible point as a Bell inequality the correlation violates.</span></li>
+<li id="ref-ogielski">A. T. Ogielski, "Integer optimization and zero-temperature fixed point in Ising random-field systems," <i>Physical Review Letters</i> 57:1251&ndash;1254, 1986. <a href="https://doi.org/10.1103/PhysRevLett.57.1251">doi:10.1103/PhysRevLett.57.1251</a> <span class="why">&mdash; random-field Ising ground states by maximum flow.</span></li>
+<li id="ref-prv">D. Poland, S. Rychkov and A. Vichi, "The conformal bootstrap: Theory, numerical techniques, and applications," <i>Reviews of Modern Physics</i> 91(1):015002, 2019. <a href="https://doi.org/10.1103/RevModPhys.91.015002">doi:10.1103/RevModPhys.91.015002</a> <span class="why">&mdash; the review of the numerical bootstrap.</span></li>
+<li id="ref-rrtv">R. Rattazzi, V. S. Rychkov, E. Tonni and A. Vichi, "Bounding scalar operator dimensions in 4D CFT," <i>Journal of High Energy Physics</i> 2008(12):031, 2008. <a href="https://doi.org/10.1088/1126-6708/2008/12/031">doi:10.1088/1126-6708/2008/12/031</a> <span class="why">&mdash; the first numerical bootstrap, as a linear program.</span></li>
 <li id="ref-rock70">R. T. Rockafellar, <i>Convex Analysis</i>, Princeton University Press, 1970. <a href="https://doi.org/10.1515/9781400873173">doi:10.1515/9781400873173</a> <span class="why">&mdash; conjugate duality.</span></li>
 <li id="ref-rock84">R. T. Rockafellar, <i>Network Flows and Monotropic Optimization</i>, Wiley-Interscience, 1984 (reprinted Athena Scientific, 1998). <span class="why">&mdash; flows and potentials in duality, as in electrical networks.</span></li>
 <li id="ref-schork">L. Schork and J. Gondzio, "Implementation of an interior point method with basis preconditioning," <i>Mathematical Programming Computation</i> 12(4):603&ndash;635, 2020. <a href="https://doi.org/10.1007/s12532-020-00181-8">doi:10.1007/s12532-020-00181-8</a> <span class="why">&mdash; IPX, one of HiGHS&rsquo;s interior point solvers.</span></li>
 <li id="ref-signorini33">A. Signorini, "Sopra alcune questioni di elastostatica," <i>Atti della Societ&agrave; Italiana per il Progresso delle Scienze</i> 21(II):143&ndash;148, 1933. <span class="why">&mdash; the first short statement of the unilateral contact problem.</span></li>
 <li id="ref-signorini59">A. Signorini, "Questioni di elasticit&agrave; non linearizzata e semilinearizzata," <i>Rendiconti di Matematica e delle sue Applicazioni</i> (5) 18:95&ndash;139, 1959. <span class="why">&mdash; the Signorini contact conditions in full.</span></li>
+<li id="ref-sdpb">D. Simmons-Duffin, "A semidefinite program solver for the conformal bootstrap," <i>Journal of High Energy Physics</i> 2015(6):174, 2015. <a href="https://doi.org/10.1007/JHEP06(2015)174">doi:10.1007/JHEP06(2015)174</a> <span class="why">&mdash; SDPB, the bootstrap as a semidefinite program.</span></li>
 <li id="ref-tank">D. W. Tank and J. J. Hopfield, "Simple &lsquo;neural&rsquo; optimization networks: An A/D converter, signal decision circuit, and a linear programming circuit," <i>IEEE Transactions on Circuits and Systems</i> 33(5):533&ndash;541, 1986. <a href="https://doi.org/10.1109/TCS.1986.1085953">doi:10.1109/TCS.1986.1085953</a> <span class="why">&mdash; an analog circuit that solves a linear program by settling.</span></li>
 <li id="ref-tellegen">B. D. H. Tellegen, "A general network theorem, with applications," <i>Philips Research Reports</i> 7:259&ndash;269, 1952. <span class="why">&mdash; Tellegen&rsquo;s theorem.</span></li>
+<li id="ref-viaz">M. S. Viazovska, "The sphere packing problem in dimension 8," <i>Annals of Mathematics</i> 185(3):991&ndash;1015, 2017. <a href="https://doi.org/10.4007/annals.2017.185.3.7">doi:10.4007/annals.2017.185.3.7</a> <span class="why">&mdash; the optimal certificate for 8 dimensions: E8 is the densest packing.</span></li>
+<li id="ref-wuyang">Q. Wu and W. Yang, "A direct optimization method for calculating density functionals and exchange&ndash;correlation potentials from electron densities," <i>Journal of Chemical Physics</i> 118(6):2498&ndash;2509, 2003. <a href="https://doi.org/10.1063/1.1535422">doi:10.1063/1.1535422</a> <span class="why">&mdash; the potential from a density, by solving Lieb&rsquo;s dual.</span></li>
 </ol>
 
-<footer>A companion to <a href="../">What CP-SAT and HiGHS actually do in the whole route</a>. The real LP is <code>awx/whole_geo.py</code> (<code>build_and_solve</code>, <code>lp_by_dual</code>) on <code>bus622-take5</code>; the K51 numbers and the figure are from the film <code>whole_movie.py</code> makes of a K51 run. The small LPs on this page are solved in the browser: the toy exactly, the island by a short simplex that also returns every row's price.</footer>
+<footer>A companion to <a href="../">What CP-SAT and HiGHS actually do in the whole route</a>. The real LP is <code>awx/whole_geo.py</code> (<code>build_and_solve</code>, <code>lp_by_dual</code>) on <code>bus622-take5</code>; the K51 numbers and the figure are from the film <code>whole_movie.py</code> makes of a K51 run. The small LPs on this page are solved in the browser: the rail, the pad box and the toy exactly, the island by a short simplex that also returns every row's price.</footer>
 </main>
 
 <script>
@@ -416,6 +532,79 @@ function simplexDual(cost,rows){
   const z=reduced(c2,n+m),y=new Float64Array(m);for(let i=0;i<m;i++)y[i]=Math.max(0,z[n+i]);
   return{ok,x,y,zc:z.slice(0,n)};
 }
+
+/* ================= 0. the rail: positions read off the forces ================= */
+(function(){
+  const svg=$('#railSvg'),LR=10,SP=2,eps=1e-9,RY=120,BR=14,SC=55;
+  const st={fA:-0.6,fB:-0.4,two:true};
+  const PRE={one:{fA:-0.6,fB:0,two:false},left:{fA:-0.6,fB:-0.4,two:true},apart:{fA:-0.5,fB:0.5,two:true},freeA:{fA:0,fB:0.6,two:true},cancel:{fA:0.5,fB:-0.5,two:true}};
+  const X=p=>100+p*66;
+  /* where the beads settle and the force in every contact: [lo, hi] is a range of equally good positions */
+  function settle(){const{fA,fB,two}=st;
+    if(!two){const r={two,uL:0,uR:0,y:0,A:[0,LR],B:null};if(fA<-eps){r.A=[0,0];r.uL=-fA}else if(fA>eps){r.A=[LR,LR];r.uR=fA}return r}
+    const r={two,uL:0,uR:0,y:0,A:[0,LR-SP],B:[SP,LR]};
+    if(fA>eps||fB<-eps){const s=fA+fB;          /* pressed together: one body with the pull s */
+      if(s<-eps){r.A=[0,0];r.B=[SP,SP];r.uL=-s;r.y=-fB}else if(s>eps){r.A=[LR-SP,LR-SP];r.B=[LR,LR];r.uR=s;r.y=fA}else r.y=fA}
+    else{if(fA<-eps){r.A=[0,0];r.uL=-fA}if(fB>eps){r.B=[LR,LR];r.uR=fB}
+      if(r.A[0]===r.A[1]&&r.B[0]!==r.B[1])r.B=[r.A[0]+SP,LR];if(r.B[0]===r.B[1]&&r.A[0]!==r.A[1])r.A=[0,r.B[0]-SP]}
+    return r}
+  /* the reasoning from the forces alone: which contacts push, and where each contact stands */
+  function deduce(F){const out={A:null,B:null,lines:[]},w=f2;
+    if(!F.two){if(F.uL>eps){out.A=0;out.lines.push(`The left wall pushes with ${w(F.uL)}, so the bead touches it: A = 0.`)}
+      else if(F.uR>eps){out.A=LR;out.lines.push(`The right wall pushes with ${w(F.uR)}, so the bead touches it: A = 10.`)}
+      else out.lines.push('Neither wall pushes, so nothing touches the bead, and the forces cannot say where it is: every A from 0 to 10 is equally good.');
+      return out}
+    if(F.uL>eps){out.A=0;out.lines.push(`The left wall pushes with ${w(F.uL)}, so A touches it: A = 0.`)}
+    if(F.uR>eps){out.B=LR;out.lines.push(`The right wall pushes with ${w(F.uR)}, so B touches it: B = 10.`)}
+    if(F.y>eps){if(out.A!==null){out.B=out.A+SP;out.lines.push(`The spacer pushes with ${w(F.y)}, so it is squeezed to its shortest: B = A + 2 = ${out.B}.`)}
+      else if(out.B!==null){out.A=out.B-SP;out.lines.push(`The spacer pushes with ${w(F.y)}, so it is squeezed to its shortest: A = B − 2 = ${out.A}.`)}
+      else out.lines.push(`The spacer pushes with ${w(F.y)}, so B = A + 2. But no wall pushes, so nothing fixes where the pair sits: every A from 0 to 8 is equally good. The forces have one answer, and the positions have many.`)}
+    else{out.lines.push('The spacer pushes with nothing: it has room to spare, so B is more than 2 past A.');
+      if(out.A===null)out.lines.push(`Nothing pushes on A, so the forces cannot say where it is: every A from 0 to ${out.B!==null?out.B-SP:LR-SP} is equally good.`);
+      if(out.B===null)out.lines.push(`Nothing pushes on B, so the forces cannot say where it is: every B from ${out.A!==null?out.A+SP:SP} to 10 is equally good.`)}
+    return out}
+  const pinned=rg=>rg[0]===rg[1],rtxt=rg=>pinned(rg)?String(rg[0]):`${rg[0]} to ${rg[1]}`;
+  function band(rg,y,lab){S('rect',{x:X(rg[0])-BR,y,width:X(rg[1])-X(rg[0])+2*BR,height:8,rx:4,fill:CA,'fill-opacity':0.22},svg);
+    T(svg,(X(rg[0])+X(rg[1]))/2,y+20,lab,{'text-anchor':'middle','font-size':11,fill:CA})}
+  function draw(){
+    const R=settle(),D=deduce(R);svg.innerHTML='';
+    const defs=S('defs',{},svg),pat=S('pattern',{id:'hatchR',width:8,height:8,patternUnits:'userSpaceOnUse',patternTransform:'rotate(45)'},defs);
+    S('rect',{width:8,height:8,fill:'#fbe9d6'},pat);S('line',{x1:0,y1:0,x2:0,y2:8,stroke:CW,'stroke-width':2},pat);
+    S('rect',{x:10,y:6,width:840,height:224,fill:'#fbfcfe',stroke:'#e3e7ee',rx:8},svg);
+    const wl=X(0)-BR,wr=X(LR)+BR;
+    S('rect',{x:wl-46,y:RY-58,width:46,height:76,fill:'url(#hatchR)'},svg);S('line',{x1:wl,y1:RY-58,x2:wl,y2:RY+18,stroke:CW,'stroke-width':3},svg);
+    S('rect',{x:wr,y:RY-58,width:46,height:76,fill:'url(#hatchR)'},svg);S('line',{x1:wr,y1:RY-58,x2:wr,y2:RY+18,stroke:CW,'stroke-width':3},svg);
+    T(svg,wl-23,RY+34,'left wall',{'text-anchor':'middle','font-size':11,fill:CW,'font-weight':600});T(svg,wr+23,RY+34,'right wall',{'text-anchor':'middle','font-size':11,fill:CW,'font-weight':600});
+    S('line',{x1:wl,y1:RY,x2:wr,y2:RY,stroke:'#a9b0be','stroke-width':2},svg);
+    for(let p=0;p<=LR;p++){S('line',{x1:X(p),y1:RY+18,x2:X(p),y2:RY+24,stroke:'#a9b0be'},svg);T(svg,X(p),RY+37,String(p),{'text-anchor':'middle','font-size':11,fill:CK})}
+    T(svg,24,24,'dark: the pulls   ·   orange: a wall pushes   ·   magenta: the spacer pushes',{'font-size':11,fill:CK});
+    const a=pinned(R.A)?R.A[0]:(R.A[0]+R.A[1])/2;
+    const b=R.two?(pinned(R.B)?R.B[0]:(R.y>eps?a+SP:Math.max(a+SP,(R.B[0]+R.B[1])/2))):null;
+    if(!pinned(R.A))band(R.A,RY+46,R.two&&R.y>eps?'A could sit anywhere here, with B 2 past it':'A could be anywhere here');
+    if(R.two&&!pinned(R.B)&&!(R.y>eps))band(R.B,RY+74,'B could be anywhere here');
+    if(R.two){if(R.y>eps){S('line',{x1:X(a)+BR,y1:RY,x2:X(b)-BR,y2:RY,stroke:CP,'stroke-width':2+Math.min(8,R.y*5)},svg);T(svg,(X(a)+X(b))/2,RY-18,'spacer',{'text-anchor':'middle','font-size':11,fill:CP,'font-weight':600})}
+      else{S('line',{x1:X(a)+BR,y1:RY,x2:X(a+SP)-BR,y2:RY,stroke:'#b9c0cf','stroke-width':4,'stroke-dasharray':'5 4'},svg);T(svg,X(a+SP/2),RY-18,'spacer: room to spare',{'text-anchor':'middle','font-size':11,fill:CK})}}
+    const beads=[['A',a,st.fA,pinned(R.A)]];if(R.two)beads.push(['B',b,st.fB,pinned(R.B)]);
+    for(const[n,p,f,pin] of beads){if(Math.abs(f)>eps){arrow(svg,X(p),52,X(p)+f*SC,52,CI,3);T(svg,X(p)+f*SC/2,44,'pull '+f2(Math.abs(f)),{'text-anchor':'middle','font-size':11,fill:CI})}
+      S('circle',{cx:X(p),cy:RY,r:BR,fill:CF,'fill-opacity':pin?1:0.45,stroke:pin?'#fff':CF,'stroke-width':2,'stroke-dasharray':pin?undefined:'4 3'},svg);
+      T(svg,X(p),RY+4.5,n,{'text-anchor':'middle','font-size':13,'font-weight':700,fill:'#fff'})}
+    if(R.uL>eps)arrow(svg,X(a),84,X(a)+R.uL*SC,84,CW,3);
+    if(R.uR>eps)arrow(svg,X(R.two?b:a),84,X(R.two?b:a)-R.uR*SC,84,CW,3);
+    if(R.two&&R.y>eps){arrow(svg,X(a),92,X(a)-R.y*SC,92,CP,3);arrow(svg,X(b),92,X(b)+R.y*SC,92,CP,3)}
+    /* readouts and the reasoning */
+    $('#railUL').textContent=R.uL>eps?f2(R.uL):'0';$('#railUR').textContent=R.uR>eps?f2(R.uR):'0';$('#railY').textContent=R.two?(R.y>eps?f2(R.y):'0'):'–';
+    $('#railPA').textContent=rtxt(R.A);$('#railPB').textContent=R.two?rtxt(R.B):'–';
+    const dir=v=>Math.abs(v)<eps?'none':(v<0?'left ':'right ')+Math.abs(v).toFixed(2);
+    $('#railAV').textContent=dir(st.fA);$('#railBV').textContent=R.two?dir(st.fB):'–';$('#railB').disabled=!R.two;
+    const same=(pinned(R.A)?D.A===R.A[0]:D.A===null)&&(!R.two||(pinned(R.B)?D.B===R.B[0]:D.B===null));
+    $('#railLog').textContent='Told only the forces: '+D.lines.join(' ')+`  Where ${R.two?'the beads':'it'} settled: A ${rtxt(R.A)}`+(R.two?`, B ${rtxt(R.B)}`:'')+'.'+(same?' The forces alone placed every bead a contact holds, and no other.':'')}
+  const sync=()=>{$('#railA').value=st.fA;$('#railB').value=st.fB;$('#railTwo').checked=st.two};
+  $('#railA').addEventListener('input',e=>{st.fA=+e.target.value;draw()});$('#railB').addEventListener('input',e=>{st.fB=+e.target.value;draw()});
+  $('#railTwo').addEventListener('change',e=>{st.two=e.target.checked;draw()});
+  document.querySelectorAll('[data-rail]').forEach(bt=>bt.addEventListener('click',()=>{Object.assign(st,PRE[bt.dataset.rail]);sync();
+    document.querySelectorAll('[data-rail]').forEach(o=>o.classList.toggle('primary',o===bt));draw()}));
+  sync();draw();
+})();
 
 /* ================= 2. the ball in a box ================= */
 (function(){
@@ -539,6 +728,59 @@ function simplexDual(cost,rows){
   draw();
 })();
 
+/* ================= 2c. a pad box in the way: two pockets ================= */
+(function(){
+  const svg=$('#cvxSvg'),LO=0.1,HI=0.6,O0=-0.2,O1=1.0,EM=1.2,BY=262;let r=0.4,mode='both';
+  const X=o=>80+(o-O0)/(O1-O0)*740,Y=e=>BY-Math.min(e,EM)/EM*196;
+  const pieces=()=>[{k:'below',a:O0,b:LO,on:mode!=='above'},{k:'above',a:HI,b:O1,on:mode!=='below'}];
+  /* the rest point of one piece: the lowest energy |o - r| on it, and whether the box pushes there */
+  const rest=pc=>{const p=pc.k==='below'?Math.min(r,LO):Math.max(r,HI);return{k:pc.k,p,E:Math.abs(p-r),push:pc.k==='below'?r>LO+1e-9:r<HI-1e-9}};
+  const desc=q=>q.push?`against the box's ${q.k==='below'?'bottom':'top'} edge at ${f2(q.p)}, where the pull toward the line and the box's push cancel`:`on the line itself at ${f2(q.p)}, where nothing pushes`;
+  function draw(){
+    svg.innerHTML='';const defs=S('defs',{},svg),pat=S('pattern',{id:'hatchC',width:8,height:8,patternUnits:'userSpaceOnUse',patternTransform:'rotate(45)'},defs);
+    S('rect',{width:8,height:8,fill:'#f1f2f6'},pat);S('line',{x1:0,y1:0,x2:0,y2:8,stroke:'#c3c9d5','stroke-width':2},pat);
+    S('rect',{x:10,y:6,width:840,height:288,fill:'#fbfcfe',stroke:'#e3e7ee',rx:8},svg);
+    const PC=pieces();
+    for(const pc of PC)if(!pc.on){S('rect',{x:X(pc.a),y:62,width:X(pc.b)-X(pc.a),height:BY-62,fill:'url(#hatchC)'},svg);
+      T(svg,(X(pc.a)+X(pc.b))/2,BY-10,'excluded: the other side',{'text-anchor':'middle','font-size':11,fill:CK})}
+    S('rect',{x:X(LO),y:62,width:X(HI)-X(LO),height:BY-62,fill:'#c9ced8'},svg);
+    T(svg,(X(LO)+X(HI))/2,82,'pad box',{'text-anchor':'middle','font-size':12,'font-weight':600,fill:CI});T(svg,(X(LO)+X(HI))/2,97,'(grown by its clearance)',{'text-anchor':'middle','font-size':11,fill:CK});
+    S('line',{x1:X(O0),y1:BY,x2:X(O1),y2:BY,stroke:'#a9b0be'},svg);
+    for(let t=-2;t<=10;t++){const x=X(t/10);S('line',{x1:x,y1:BY,x2:x,y2:BY+(t%2?4:7),stroke:'#a9b0be'},svg);if(t%2===0)T(svg,x,BY+19,(t/10).toFixed(1),{'text-anchor':'middle','font-size':10,fill:CK})}
+    T(svg,X(O1),BY+31,'offset across the channel (mm)',{'text-anchor':'end','font-size':11,fill:CK});
+    for(const e of [0,0.3,0.6,0.9,1.2]){S('line',{x1:X(O0)-4,y1:Y(e),x2:X(O0),y2:Y(e),stroke:'#a9b0be'},svg);T(svg,X(O0)-7,Y(e)+3,e.toFixed(1),{'text-anchor':'end','font-size':10,fill:CK})}
+    T(svg,26,(62+BY)/2,'energy (cost)',{'text-anchor':'middle','font-size':11,fill:CK,transform:`rotate(-90 26 ${(62+BY)/2})`});
+    S('line',{x1:X(r),y1:40,x2:X(r),y2:BY,stroke:CO,'stroke-width':1.5,'stroke-dasharray':'5 4'},svg);
+    T(svg,clamp(X(r),150,720),32,`the lane's straight line, r = ${f2(r)}`,{'text-anchor':'middle','font-size':12,fill:CO,'font-weight':600});
+    for(const pc of PC){const pts=[];for(let i=0;i<=80;i++){const o=pc.a+(pc.b-pc.a)*i/80;pts.push(`${X(o)},${Y(Math.abs(o-r))}`)}
+      S('polyline',{points:pts.join(' '),fill:'none',stroke:pc.on?CI:'#b9c0cf','stroke-width':pc.on?3:2,'stroke-dasharray':pc.on?undefined:'5 4'},svg)}
+    const Rs=PC.filter(pc=>pc.on).map(rest),best=Rs.reduce((m,q)=>q.E<m.E?q:m,Rs[0]),tie=Rs.length===2&&Math.abs(Rs[0].E-Rs[1].E)<1e-9;
+    const worse=Rs.length===2&&!tie?Rs.find(q=>q!==best):null;
+    if(worse){S('line',{x1:X(O0),y1:Y(worse.E),x2:X(O1),y2:Y(worse.E),stroke:CA,'stroke-width':1.5,'stroke-dasharray':'8 5'},svg);
+      S('line',{x1:X(O0)+360,y1:50,x2:X(O0)+384,y2:50,stroke:CA,'stroke-width':1.5,'stroke-dasharray':'6 4'},svg);
+      T(svg,X(O0)+390,53,`the floor the forces at ${f2(worse.p)} certify: nothing below ${f2(worse.E)}`,{'font-size':11,fill:CA})}
+    for(const q of Rs){const cx=X(q.p),cy=Y(q.E),isB=q===best||tie;
+      if(Math.abs(q.p-r)>1e-9)arrow(svg,cx,cy,cx+Math.sign(r-q.p)*46,cy,CO,3);
+      if(q.push)arrow(svg,cx,cy,cx+(q.k==='below'?-46:46),cy,CW,3);
+      S('circle',{cx,cy,r:9,fill:isB?CA:CI,stroke:'#fff','stroke-width':2},svg);
+      /* labels where no curve runs: inside the box beside a pushing edge, else above the V's point */
+      const lowest=Rs.length===2&&!tie&&q===best,l1=(lowest?'lowest':'rest')+': energy '+f2(q.E),a1={'font-size':12,'font-weight':700,fill:isB?CA:CI};
+      if(q.push){const inX=q.k==='below'?1:-1,ly=lowest&&cy+26<BY?cy+24:cy-14;   /* the lowest below its point (the floor runs above it), else above */
+        T(svg,cx+inX*12,ly,l1,Object.assign({'text-anchor':inX>0?'start':'end'},a1))}
+      else T(svg,clamp(cx,150,700),cy-46,l1+', nothing pushes',Object.assign({'text-anchor':'middle'},a1))}
+    S('rect',{x:X(O0)+8,y:48,width:14,height:4,fill:CO},svg);T(svg,X(O0)+28,53,'the pull toward the line',{'font-size':11,fill:CK});
+    S('rect',{x:X(O0)+180,y:48,width:14,height:4,fill:CW},svg);T(svg,X(O0)+200,53,'the box pushes back',{'font-size':11,fill:CK});
+    let s;
+    if(Rs.length===2){s=`Two rest points: one ${desc(Rs[0])}, and one ${desc(Rs[1])}. Both balance, so by its forces alone each looks like an answer. `;
+      s+=tie?`Their energies are equal (${f2(Rs[0].E)}), so both are best, and only a tie-break chooses.`:
+        `Only the one at ${f2(best.p)} is the lowest (${f2(best.E)} against ${f2(worse.E)}). From ${f2(worse.p)}, every small move goes into the box or further from the line, so no force points to the better pocket, and the floor its forces certify (dashed) is wrong: the other pocket dips below it.`}
+    else{const q=Rs[0],other=rest(PC.find(pc=>!pc.on));
+      s=`One side chosen, so the allowed region is one piece, with one rest point, ${desc(q)}. Forces that balance there mean the best on this side: energy ${f2(q.E)}. Whether this was the better side is not the LP's question. The other side would cost ${f2(other.E)}`+(other.E<q.E-1e-9?', so this split is the worse one, and the LP cannot see that.':'.')}
+    $('#cvxLog').textContent=s;$('#cvxRV').textContent=f2(r)+' mm'}
+  $('#cvxR').addEventListener('input',e=>{r=+e.target.value;draw()});$('#cvxMode').addEventListener('change',e=>{mode=e.target.value;draw()});
+  draw();
+})();
+
 /* ================= 3. the two-lane toy ================= */
 (function(){
   const st={ra:0,rb:0,P:0.3,wa:1,wb:1,W:10,hasL:false,L:-0.3,hasU:false,U:0.5,yt:0.5};
@@ -546,7 +788,9 @@ function simplexDual(cost,rows){
     uneq:{ra:0,rb:0.1,P:0.3,wa:1,wb:2.5,W:10,hasL:false,L:-0.3,hasU:false,U:0.5,yt:0.5},
     wall:{ra:0,rb:0.1,P:0.3,wa:1,wb:2,W:10,hasL:true,L:-0.12,hasU:false,U:0.5,yt:1.5},
     yield:{ra:0,rb:0.1,P:0.3,wa:1,wb:2,W:10,hasL:true,L:-0.05,hasU:true,U:0.15,yt:5},
-    cheap:{ra:0,rb:0.1,P:0.3,wa:1,wb:2.5,W:1.5,hasL:true,L:-0.05,hasU:false,U:0.5,yt:1}};
+    cheap:{ra:0,rb:0.1,P:0.3,wa:1,wb:2.5,W:1.5,hasL:true,L:-0.05,hasU:false,U:0.5,yt:1},
+    via:{ra:0.05,rb:0.2,P:0.32,wa:1,wb:2,W:10,hasL:true,L:0,hasU:false,U:0.5,yt:2},
+    vianofit:{ra:0.05,rb:0.2,P:0.32,wa:1,wb:2,W:10,hasL:true,L:0,hasU:true,U:0.3,yt:5}};
   function solve(){
     const g=st.P-(st.rb-st.ra),capA=st.hasL?Math.max(0,st.ra-st.L):Infinity,capB=st.hasU?Math.max(0,st.U-st.rb):Infinity;
     let ma=0,mb=0,e=0,y=0,used=[],tie=false;
