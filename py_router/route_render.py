@@ -53,7 +53,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from startup_checks import check_render_dependencies
 check_render_dependencies()
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -559,7 +559,9 @@ class BoardRenderer:
               focus_layer: Optional[str] = None,
               opaque_crossings: Optional[bool] = None,
               label: Optional[str] = None, zone_net_ids=None,
-              overlays: Optional[Sequence] = None) -> Image.Image:
+              overlays: Optional[Sequence] = None, mirror: bool = False,
+              overlays_after_mirror: Optional[Sequence] = None
+              ) -> Image.Image:
         """Composite the given copper onto the static substrate and return an
         RGB image at output resolution.
 
@@ -570,6 +572,12 @@ class BoardRenderer:
         pours under the copper, so a plane "fills in" on the frame its taps land.
         ``overlays`` is a sequence of ``fn(draw, renderer)`` callables drawn at
         SUPERSAMPLED resolution, above the copper and below the label.
+
+        ``mirror`` (#1082-#1085) flips the board left-right -- the view from
+        the BACK -- after ``overlays`` and BEFORE the downsample, then draws
+        ``overlays_after_mirror`` (text, e.g. the in-frame key, which must read
+        the right way up) at the same supersampled resolution as any other
+        overlay, and stamps ``label`` last, upright.
         """
         segs = self.pcb.segments if segments is None else segments
         vs = self.pcb.vias if vias is None else vias
@@ -662,6 +670,10 @@ class BoardRenderer:
         # `renderer.tf` -- this is what keeps placement vocabulary (courtyards,
         # ghosts, arrows, airwires) out of this copper renderer entirely.
         for fn in (overlays or ()):
+            fn(ImageDraw.Draw(img), self)
+        if mirror:
+            img = ImageOps.mirror(img)
+        for fn in (overlays_after_mirror or ()):
             fn(ImageDraw.Draw(img), self)
         if self.ss > 1:
             img = img.resize((self.W, self.H), Image.LANCZOS)

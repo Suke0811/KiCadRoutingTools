@@ -75,6 +75,30 @@ def test_one_chrome_record_and_one_stage_record_per_frame():
         kinds = [r['kind'] for r in out['log'][a:b]]
         _check(kinds == ['flip'] * (b - a),
                'the stage record calls the flip frames flips: %s' % kinds)
+        # The poses the 3D board reads. `moving` names what glides on each
+        # glide frame (it was never set: 0 of 73 records), and every epoch's
+        # table holds RESTING poses -- a glide mutates the footprints in
+        # place, so the first table of a glide board used to catch C26 at a
+        # pose no board has (the phase-1 verifier's finding).
+        from kicad_parser import parse_kicad_pcb
+        glides = [i for s in _shots(st, 'action') for i in range(*s)]
+        named = [i for i in glides if out['log'][i]['moving']]
+        _check(glides and named == glides,
+               'every glide frame names what moves (%d of %d)'
+               % (len(named), len(glides)))
+        rest = set()
+        for bd in c.boards:
+            fps = parse_kicad_pcb(bd).footprints
+            for ref in ('C26', 'U1'):
+                fp = fps[ref]
+                rest.add((ref, round(fp.x, 6), round(fp.y, 6)))
+        bad = [(e, ref, tab[ref][:2])
+               for e, tab in enumerate(out['epochs'])
+               for ref in ('C26', 'U1')
+               if (ref, round(tab[ref][0], 6), round(tab[ref][1], 6))
+               not in rest]
+        _check(not bad, 'every epoch holds a board\'s resting poses %s'
+               % (bad[:3],))
 
 
 def test_no_caption_over_the_board_when_a_rail_carries_it():
@@ -173,6 +197,31 @@ def test_copper_revealed_after_the_flip_is_mirrored():
         _check(same is None and mirr is not None,
                'reveal frame %d and outro frame %d agree (diff %s; vs the '
                'mirror %s)' % (outro - 1, outro, same, mirr))
+        # ...and the COPPER-STEP frames themselves (kind 'frame', Movie's
+        # own path) -- the ones #1085 was about. Frame `outro - 1` is a
+        # reconcile SNAPSHOT, which a Stage-side mirror alone would already
+        # fix (the phase-1 verifier reverted `_frame`'s mirror and the checks
+        # above still passed). A reveal frame differs from the snapshot after
+        # it only by its highlight, so it must sit far closer to that
+        # snapshot than to its mirror image.
+        log = out['log']
+        reveal = [i for i in range(flip_end, outro - 1)
+                  if log[i]['kind'] == 'frame']
+        _check(bool(reveal), 'the fixture reveals copper through Movie\'s '
+               'own path after the flip (%d frames)' % len(reveal))
+        if reveal:
+            k = reveal[-1]
+            fk = frames[k].convert('RGB').crop(box)
+            snap = frames[outro - 1].convert('RGB').crop(box)
+
+            def _n(a, b):
+                d = ImageChops.difference(a, b).convert('L')
+                return d.point(lambda v: 255 if v else 0).histogram()[255]
+            near, far = _n(fk, snap), _n(ImageOps.mirror(fk), snap)
+            _check(near * 4 < far,
+                   'copper-step frame %d is seen from the back: %d px off '
+                   'the mirrored snapshot, %d px off its mirror image'
+                   % (k, near, far))
         flags = [r['mirror'] for r in out['log'][flip_end:]]
         _check(flags and all(flags),
                'every frame after the flip is recorded mirrored (%d of %d)'

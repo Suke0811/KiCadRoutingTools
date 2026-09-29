@@ -168,14 +168,18 @@ class _LiveRef(object):
         return self.log.state_at(self.n)
 
 
-def _pose_table(pcb):
+def _pose_table(pcb, rest=None):
     """`{ref: (x, y, rot, layer)}` of every footprint on `pcb` -- the parts'
     resting poses for one stage-log epoch (#1081). Small (a few KB per board),
-    so a film can keep one per board without keeping the boards."""
+    so a film can keep one per board without keeping the boards. `rest`
+    (`{ref: (x, y, rot)}`) overrides a part that is mid-glide right now."""
     if pcb is None:
         return {}
-    return {ref: (fp.x, fp.y, fp.rotation or 0.0, fp.layer or 'F.Cu')
-            for ref, fp in pcb.footprints.items()}
+    out = {}
+    for ref, fp in pcb.footprints.items():
+        x, y, rot = (rest or {}).get(ref) or (fp.x, fp.y, fp.rotation or 0.0)
+        out[ref] = (x, y, rot, fp.layer or 'F.Cu')
+    return out
 
 
 def _via_row(v, li):
@@ -283,8 +287,10 @@ class Movie:
         #: then nothing is recorded, so no other film pays for it.
         self.stage_log = None
         self.stage_epochs = []
-        #: Refs whose pose is mid-glide on this frame, set by `Stage._tween`.
+        #: Refs whose pose is mid-glide on this frame, and `{ref: (x, y, rot)}`
+        #: the pose each lands on -- both set by `Stage._tween` for a glide.
         self.moving = ()
+        self.moving_rest = {}
         #: `(t, to_side)` on a Stage flip frame, else None.
         self.flip = None
         self._epoch_pcb = None
@@ -299,24 +305,25 @@ class Movie:
             self.seen_events.append(role)
 
     def _overlays(self):
-        """Everything to draw above the copper this frame, in draw order.
+        """Everything to draw above the copper this frame, in draw order."""
+        return [o for o in (self.overlay, self._key_overlay()) if o]
 
-        On a MIRRORED frame the key is left out: it is text, and text drawn
-        before the mirror comes out reversed in the opposite corner.
-        `_push_frame` draws it after the mirror instead (`_post_key`)."""
-        key = None if self.mirrored else self._key_overlay()
-        return [o for o in (self.overlay, key) if o]
-
-    def _post_key(self, img):
-        """The in-frame key on an already-mirrored frame, the right way up."""
-        if not self.seen_events or self.split_caption:
-            return
-        from PIL import ImageDraw
-        from render_chrome import event_rows, draw_key
-        draw_key(ImageDraw.Draw(img), event_rows(self.theme,
-                                                 seen=self.seen_events),
-                 width=img.size[0], height=img.size[1], theme=self.theme,
-                 corner='bl', pad_scale=1)
+    def _render(self, label, **kw):
+        """`r.frame(...)` for this frame, seen from the back when the Stage
+        says so (#1082-#1085). A mirrored frame is flipped INSIDE the renderer,
+        before its downsample: the ghost mirrors with the board, while the key
+        (text) is drawn after the flip at the same supersampled resolution as
+        on the front, and the caption is stamped upright last. The front-side
+        call is exactly the call it always was."""
+        if not self.mirrored:
+            ov = self._overlays()
+            return self.r.frame(label=label, overlays=ov or None, **kw)
+        key = self._key_overlay()
+        return self.r.frame(label=label,
+                            overlays=[self.overlay] if self.overlay else None,
+                            mirror=True,
+                            overlays_after_mirror=[key] if key else None,
+                            **kw)
 
     def _key_overlay(self):
         """The in-frame key, drawn through `frame(overlays=...)`.
@@ -375,22 +382,20 @@ class Movie:
         animates, so the live state is already correct there and passing it
         explicitly is pixel-identical (verified). `base_v` is gone for the same
         reason: it never had a caller."""
-        ov = self._overlays()
         self._note_chrome(label)
         # #1019: when a rail is going to carry this, the over-board strip is a
         # DUPLICATE, and a duplicate that sits on the copper is worse than no
         # strip at all. `_label` stays for the legacy frame, which has no rail.
         if self.split_caption:
             label = None
-        img = self.r.frame(
+        img = self._render(
+            label,
             segments=(list(self.live_s.values()) if base_s is None
                       else list(base_s)),
             vias=list(self.live_v.values()),
             highlight_segments=hl_s, highlight_vias=hl_v,
             highlight_color=color, highlight_mark=mark,
-            label=None if self.mirrored else label,
-            zone_net_ids=self.revealed_zones,
-            overlays=ov or None)
+            zone_net_ids=self.revealed_zones)
         self._push_frame(img, label, 'frame', hl_s=hl_s, hl_v=hl_v,
                          color=color, mark=mark, base_s=base_s)
 
@@ -398,11 +403,11 @@ class Movie:
                     mark='solid', base_s=None, record_chrome=False):
         """THE one place a frame joins the film (#1082).
 
-        Mirrors it when the Stage is showing the back and stamps the caption
-        upright afterwards (a caption mirrored with the board reads as a
-        rendering fault), then appends the frame and -- when on -- its
-        stage-state record, so `frames`, `chrome` and `stage_log` stay the
-        same length by construction. `label` is None when a rail carries it.
+        Appends the frame and -- when on -- its stage-state record, so
+        `frames`, `chrome` and `stage_log` stay the same length by
+        construction. A mirrored frame arrives already mirrored (`_render`);
+        a FLIP frame is built by the Stage, so its caption is stamped here,
+        upright after the rotation, and only when no rail carries it.
         `record_chrome` is for a caller that has not noted the chrome yet
         (the Stage's flip frames).
         """
@@ -410,15 +415,8 @@ class Movie:
             self._note_chrome(label)
             if self.split_caption:
                 label = None
-        if kind == 'flip':
-            if label:
-                self.r._label(img, label)       # upright, after the rotation
-        elif self.mirrored:
-            from PIL import ImageOps
-            img = ImageOps.mirror(img)
-            self._post_key(img)
-            if label:
-                self.r._label(img, label)
+        if kind == 'flip' and label:
+            self.r._label(img, label)       # upright, after the rotation
         self.frames.append(img)
         if self.stage_log is not None:
             self.stage_log.append(self._stage_record(
@@ -433,7 +431,10 @@ class Movie:
         if pcb is not self._epoch_pcb:
             self._epoch_pcb = pcb
             self._epoch += 1
-            self.stage_epochs.append(_pose_table(pcb))
+            # A board's RESTING poses: a glide mutates its footprints in
+            # place, so a part mid-glide reads its landing pose from the
+            # Stage instead of from the footprint.
+            self.stage_epochs.append(_pose_table(pcb, self.moving_rest))
         hide = ()
         if base_s is not None:
             keep = {id(sg) for sg in base_s}
@@ -611,15 +612,13 @@ class Movie:
         ghost hooked only into `_frame` would never appear on the frames it
         exists for.
         """
-        ov = self._overlays()
         self._note_chrome(label)
         if self.split_caption:
             label = None
-        img = self.r.frame(
+        img = self._render(
+            label,
             segments=list(self.live_s.values()), vias=list(self.live_v.values()),
-            label=None if self.mirrored else label,
-            zone_net_ids=self.revealed_zones,
-            overlays=ov or None)
+            zone_net_ids=self.revealed_zones)
         self._push_frame(img, label, 'snap')
 
     def add(self, seg_rows, via_rows, event, label, only_new=False):
