@@ -3,7 +3,7 @@
 
 WHY THIS EXISTS: GitHub's traffic API is a ROLLING 14-DAY WINDOW and is not
 retroactive. Everything older is discarded by GitHub and cannot be recovered by
-anyone. A weekly snapshot committed to the repo is the only way this project
+anyone. A daily snapshot kept in the repo (the metrics-data branch) is the only way this project
 ever has a history of its own reach. Release asset counts do not expire, but
 they are CUMULATIVE totals with no per-period breakdown, so the only way to
 learn "how many downloads last week" is to diff two snapshots -- which again
@@ -1101,7 +1101,7 @@ code {{ font-size:.85em }}
 <p class="up"><a href="../">← KiCadRoutingTools</a></p>
 <h1>KiCadRoutingTools — reach</h1>
 <p class="sub">{_esc(slug)} · collected {_esc(meta.get('last_collected', 'never'))} ·
-rebuilt weekly from GitHub's API</p>
+rebuilt daily from GitHub's API</p>
 
 {err_html}
 
@@ -1285,7 +1285,7 @@ with a Python engine, usable as CLI scripts or as a KiCad plugin.</p>
   <a class="card" href="{repo}/releases"><div class="t">Releases →</div>
     <div class="d">Plugin package and prebuilt router binaries</div></a>
   <a class="card" href="metrics/"><div class="t">Reach metrics →</div>
-    <div class="d">Installs, downloads and traffic, updated weekly</div></a>
+    <div class="d">Installs, downloads and traffic, updated daily</div></a>
   <a class="card" href="solvers/"><div class="t">How the whole route plans →</div>
     <div class="d">Interactive explainer of CP-SAT and HiGHS in the bus router</div></a>
   <a class="card" href="solvers/dual/"><div class="t">Shadow prices as forces →</div>
@@ -1296,8 +1296,8 @@ with a Python engine, usable as CLI scripts or as a KiCad plugin.</p>
 releases, the project's reach, and interactive explainers of how the router
 works.</p>
 
-<div class="foot">This site is built from the repository and republished weekly
-by a GitHub Actions workflow.</div>
+<div class="foot">This site is built from the repository and republished daily,
+and whenever a release is published, by a GitHub Actions workflow.</div>
 </main>
 """
     os.makedirs(SITE, exist_ok=True)
