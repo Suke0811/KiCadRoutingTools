@@ -226,6 +226,18 @@ diff pairs emitted as net names, layerless repair_planes). The apply-side
 gaps (escape_method value->index, no_gnd_vias inversion) are ai_plan.py's
 job and belong to the wx harness / a future stub-dialog apply test.
 
+Those checks only see a flag that a manifest uses AND a table here names, so
+`route.py --bus` replayed with bus mode OFF and nothing noticed. The gate's
+`check_route_flag_coverage` therefore enumerates EVERY flag route.py's
+argparse accepts (`krt_capabilities.script_flags`, held exact by
+`tests/test_798_registrar_flags.py`) and requires each one to reach a control
+the route action can set, or to be listed in `ROUTE_CLI_ONLY` or
+`ROUTE_KNOWN_GAPS` with the reason. It also fails a reached control that
+`reset_params_to_defaults` does not restore, since a plan step that sets it
+would leak it into every later step. Its run_all half, with the negative
+controls, is
+`tests/test_route_flag_plan_coverage.py`.
+
 ## Cap-param delivery (test_772_cap_params_reach_engine.py)
 
 Needs KiCad's python (wx + pcbnew); re-execs into it automatically.

@@ -291,6 +291,22 @@ _PARAM_CONTROL_ALIASES = {
     'fab_overrides': 'fab_overrides_path',
     # #856: the opt-in severity relaxation checkbox (Options tab).
     'relax_drc_severities': 'relax_drc_severities_check',
+    # route.py --bus: plans converted BEFORE manifest_to_plan mapped it carry
+    # the fallthrough name `bus`; the control is the Advanced-options checkbox
+    # bus_enabled. New conversions emit bus_enabled directly (same shape as
+    # #237's fab_overrides above).
+    'bus': 'bus_enabled',
+    # The same shape for more route.py flags, found by the parity gate's
+    # route.py flag enumeration: the flag's name is not its control's name.
+    'can_swap_to_top_layer': 'can_swap_to_top',
+    'skip_routing': 'skip_routing_check',
+    'guide_corridor_layer': 'guide_corridor_layer_ctrl',
+    'guide_corridor_spacing': 'guide_corridor_spacing_ctrl',
+    'keepout_layer': 'keepout_layer_ctrl',
+    # route.py --length-match-group: older conversions carried only the LAST
+    # occurrence's patterns under the fallthrough name; the text control takes
+    # them as one group. New conversions emit length_match_groups (special).
+    'length_match_group': 'length_match_groups_ctrl',
 }
 # _PARAM_SPECIAL: params handled by _apply_special() (composite / inverted /
 # panel-backed controls that a plain SetValue can't fill).

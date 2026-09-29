@@ -142,8 +142,19 @@ FLAG_PARAMS = {
     '--escalation': 'escalation',
     # #530: the explicit class ceiling (Min Clearance + the ceiling box).
     '--clearance-ceiling': 'clearance_ceiling',
-    # #856: opt-in severity relaxation (the GUI checkbox of the same name).
-    '--relax-drc-severities': 'relax_drc_severities',
+    # route.py's guide-corridor (#7) and keepout (#27) layers and spacing. The
+    # fallthrough spelled them after the flag, which matches no control, so a
+    # replay followed the default User.1 / User.2 layers whatever the run had
+    # drawn on. Their controls are the text fields beside the enabling
+    # checkboxes (both reset per step, so a value cannot outlive its step).
+    '--guide-corridor-layer': 'guide_corridor_layer_ctrl',
+    '--guide-corridor-spacing': 'guide_corridor_spacing_ctrl',
+    '--keepout-layer': 'keepout_layer_ctrl',
+    # (#856's --relax-drc-severities is a store_true switch and lives in
+    # BOOL_FLAGS. It used to sit here, where the value branch consumed the
+    # NEXT token as its value: `--relax-drc-severities --clearance 0.1`
+    # converted to relax_drc_severities='--clearance', lost the clearance,
+    # and with no --nets turned `0.1` into the step's net list.)
 }
 LIST_FLAGS = {
     '--layers': 'layers',
@@ -178,7 +189,8 @@ LIST_FLAGS = {
 BOOL_FLAGS = {
     '--rip-blocker-nets': 'rip_blocker_nets',
     '--smoothing': 'smoothing',      # #536 octolinear smoothing (default ON)
-    '--no-smoothing': 'no_smoothing',  # the negative must survive a replay
+    # (--no-smoothing is in INVERTED_BOOL_FLAGS below: it used to be here as
+    # `no_smoothing`, a name no control or alias matched.)
     '--add-gnd-vias': 'add_gnd_vias',
     # #485: route_planes area via stitching toggles (planes-tab checkboxes
     # stitch_vias / stitch_edge_fence, applied by the plan executor's
@@ -222,6 +234,42 @@ BOOL_FLAGS = {
     # step WITHOUT it. The param name matches the QFNOptionsPanel
     # checkbox, so the executor's generic loop places it once it arrives.
     '--allow-via-in-pad': 'allow_via_in_pad',
+    # route.py's bus mode. Its GUI home is the Advanced-options checkbox
+    # `bus_enabled`, but the unknown-flag fallthrough spelled it `bus`, which
+    # matches no control and no alias: ai_plan logged "no control for bus,
+    # ignored" and a replayed step routed with bus mode OFF, while the
+    # --bus-detection-radius / --bus-min-nets / --ordering bus it travels
+    # with all landed. Same class as --fab-overrides above: the fallthrough
+    # name is not the control name, so emit the control's own name.
+    '--bus': 'bus_enabled',
+    # Same shape, found by the route.py flag enumeration in
+    # tests/gui_parity/test_manifest_plan_parity.py: each flag's GUI control
+    # exists, is reset per step, and has a different name.
+    '--can-swap-to-top-layer': 'can_swap_to_top',
+    '--skip-routing': 'skip_routing_check',
+    # #856: opt-in severity relaxation (ai_plan aliases it onto its checkbox).
+    # A switch, so it must not consume the next token -- see FLAG_PARAMS.
+    '--relax-drc-severities': 'relax_drc_severities',
+}
+# route.py `--no-X` flags whose GUI home is a POSITIVE checkbox (default on).
+# The converter emits the control's own name with False, the CAP_BOOL_FLAGS
+# `--no-rotate` shape, so the plan executor's generic loop unticks it. An alias
+# could not do this: an alias renames, it does not invert. `--no-smoothing`
+# used to convert to `no_smoothing: True`, which no control matched, so a
+# replay routed WITH the #536 smoothing the flag exists to turn off.
+INVERTED_BOOL_FLAGS = {
+    '--no-smoothing': 'smoothing',
+    '--no-stub-layer-swap': 'enable_layer_switch',
+    '--no-power-tap-neckdown': 'power_tap_neckdown_check',
+}
+# Repeatable nargs='+' flags (argparse action='append'): each OCCURRENCE is one
+# group, so the plan param is a list of lists. route.py's --length-match-group
+# fell through to `length_match_group`, which ai_plan ignored -- a replay lost
+# every recorded length-match group -- and a repeated flag kept only its LAST
+# occurrence. `length_match_groups` is the name ai_plan's special handler
+# formats into the GUI's comma-separated group field.
+GROUP_LIST_FLAGS = {
+    '--length-match-group': 'length_match_groups',
 }
 
 # Flags whose values are file paths / bookkeeping -- consumed, never params.
@@ -340,6 +388,20 @@ def parse_command(argv):
         elif a in BOOL_FLAGS:
             step['params'][BOOL_FLAGS[a]] = True
             i += 1
+        elif a in INVERTED_BOOL_FLAGS:
+            step['params'][INVERTED_BOOL_FLAGS[a]] = False
+            i += 1
+        elif a in GROUP_LIST_FLAGS:
+            # Stop at a positional board file too, like --component below: the
+            # patterns must not swallow the output path out of step['_files'].
+            vals = []
+            i += 1
+            while (i < len(argv) and not argv[i].startswith('--')
+                   and not argv[i].endswith('.kicad_pcb')):
+                vals.append(str(argv[i]))
+                i += 1
+            if vals:
+                step['params'].setdefault(GROUP_LIST_FLAGS[a], []).append(vals)
         elif a in tool_params or a in FLAG_PARAMS:
             step['params'][tool_params.get(a) or FLAG_PARAMS[a]] = _num(argv[i + 1])
             i += 2

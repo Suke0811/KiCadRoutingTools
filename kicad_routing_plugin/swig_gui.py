@@ -2800,6 +2800,16 @@ class RoutingDialog(wx.Dialog):
         self.meander_spacing.SetValue(defaults.MEANDER_SPACING)
         self.time_matching_check.SetValue(defaults.TIME_MATCHING)
         self.time_match_tolerance.SetValue(defaults.TIME_MATCH_TOLERANCE)
+        # Guide corridor (#7) and keepout (#27): plan-settable (--guide-corridor
+        # / --keepout and their layer/spacing flags), so a step that sets them
+        # must not hand them to the next step. Restored to what the
+        # constructor sets. The "Clear ... layer after routing" boxes are not
+        # plan params (no CLI flag) and stay as the user left them.
+        self.guide_corridor_check.SetValue(defaults.GUIDE_CORRIDOR_ENABLED)
+        self.guide_corridor_layer_ctrl.SetValue(defaults.GUIDE_CORRIDOR_LAYER)
+        self.guide_corridor_spacing_ctrl.SetValue(str(defaults.GUIDE_CORRIDOR_SPACING))
+        self.keepout_check.SetValue(defaults.KEEPOUT_ENABLED)
+        self.keepout_layer_ctrl.SetValue(defaults.KEEPOUT_LAYER)
         self.debug_lines_check.SetValue(False)
         self.verbose_check.SetValue(False)
         self.skip_routing_check.SetValue(False)
