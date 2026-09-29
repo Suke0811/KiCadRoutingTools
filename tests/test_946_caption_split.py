@@ -167,7 +167,10 @@ def test_the_over_board_strip_is_gone_when_a_rail_carries_it():
         steps = [('step1 route', board, None), ('step2 route', b, None)]
         ink = {}
         for layout in ('legacy', 'split'):
-            m = A.build_boards(steps, b, 300, 1, 150, 2, 3, layout=layout)
+            # DARK, explicitly: the strip is counted by its fill colour,
+            # which is distinct from the board only on the dark ground
+            m = A.build_boards(steps, b, 300, 1, 150, 2, 3, layout=layout,
+                               theme='dark')
             if not m:
                 fail('%s: no frames' % layout)
                 continue

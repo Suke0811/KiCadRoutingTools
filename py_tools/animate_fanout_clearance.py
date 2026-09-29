@@ -76,7 +76,9 @@ class _Recorder:
 # there are byte-for-byte these, verified over net ids -2..399 and t in [0,1],
 # so docs/fanout-cap-placement.gif is unchanged. movie_camera imports no PIL and
 # no pygame at module scope precisely so this import stays cheap here.
-from render_theme import DARK as _TH
+# the CONFIGURED default theme (#1081: light, or $KICAD_RENDER_THEME)
+from render_theme import default_theme as _default_theme
+_TH = _default_theme()
 from movie_camera import (lerp_rect as _lerp_rect, net_color as _net_color,
                           smoothstep as _smoothstep)
 

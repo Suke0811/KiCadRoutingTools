@@ -37,6 +37,7 @@ from typing import Dict, List, Optional, Tuple
 from route_trace import (load_trace, _Seg, _Via, seg_key_row, via_key_row)
 
 from render_theme import DARK as _THEME_DARK
+from render_theme import default_theme as _default_theme
 
 #: Aliases onto the dark theme, kept as names for out-of-repo callers. The
 #: EVENT colours are the two #946 opened on: `_RIP` and `_RESTORE` differ
@@ -51,7 +52,7 @@ _RESTORE = _THEME_DARK.rgb('event_restored')
 def _add_color(event: str, theme=None) -> Tuple[int, int, int]:
     """Which event colour an 'add' carries. Resolves a ROLE, not an RGB, so a
     themed movie flashes in its own palette."""
-    th = theme or _THEME_DARK
+    th = theme or _default_theme()
     e = (event or '').lower()
     if 'reroute' in e or 'restore' in e or 'rescue' in e:
         return th.rgb('event_restored')
@@ -210,7 +211,7 @@ class Movie:
     def __init__(self, renderer, layers, rip_hold: int = 2, theme=None):
         self.r = renderer
         # Off the renderer by default, so no call site has to learn about it.
-        self.theme = theme or getattr(renderer, 'theme', _THEME_DARK)
+        self.theme = theme or getattr(renderer, 'theme', None) or _default_theme()
         # #1014: which event roles this run has ACTUALLY produced, so far. The
         # key draws only these -- #896's rule, ported from
         # `render_placement.draw_legend`: a legend listing a mark the picture

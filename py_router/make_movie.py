@@ -754,8 +754,8 @@ def main():
     import frame_layout as _fl
     ap.add_argument('--layout', default=None,
                     help=_fl.layout_choices()
-                         + " ('legacy' is the default, or "
-                         "$KICAD_MOVIE_LAYOUT). "
+                         + " ('stage3d' is the default, or "
+                         "$KICAD_MOVIE_LAYOUT; 'legacy' is the old frame). "
                          "auto picks stacked-vs-sidebar from the "
                          "board's own aspect; inset-vs-split is a "
                          "stance about what the viewer is there to "
@@ -784,12 +784,14 @@ def main():
                     help="the benchmark board's `board_score --json` "
                          "document (must name that board by board_sha); "
                          "without it board_score is run once to grade it")
-    ap.add_argument('--board-3d', default='auto', choices=('auto', '2d'),
+    ap.add_argument('--board-3d', default='auto', choices=('auto', '2d', 'blender'),
                     help="stage3d only: 'auto' (default) draws the 3D board "
                          "when Node, playwright-core (npm ci in "
                          "py_router/stage3d) and a Chromium are present, "
                          "else the 2D X-ray and says why; '2d' always the "
-                         "X-ray")
+                         "X-ray; 'blender' the hi-fi backend: the same "
+                         "scene in Blender's Cycles on the CPU "
+                         "($KICAD_STAGE3D_BLENDER, #1089)")
     ap.add_argument('--floorplan-intent', default=None, metavar='PATH',
                     help='the floorplan intent to grade placement boards the '
                          'ledger does not name (check_floorplan --intent)')
@@ -799,7 +801,7 @@ def main():
                     help="the film's name on the rail's left (default: the "
                          "run directory, or the directory the chain's boards "
                          "share; never a later board's name)")
-    ap.add_argument('--theme', default=None, type=str.lower, choices=('dark', 'light'), help="'dark' (default, or $KICAD_RENDER_THEME) or 'light'. A light ground is for a figure going into a light-background document; the file's ground cannot be changed afterwards.")
+    ap.add_argument('--theme', default=None, type=str.lower, choices=('dark', 'light'), help="'light' (default, or $KICAD_RENDER_THEME) or 'dark' (KiCad's own canvas). The file's ground cannot be changed afterwards.")
     ap.add_argument('--quiet', action='store_true')
     ap.add_argument('--camera', default=None,
                     choices=('off', 'auto'),

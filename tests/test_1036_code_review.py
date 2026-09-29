@@ -410,9 +410,12 @@ def test_a_failing_overlay_costs_the_overlay_not_the_film():
         with contextlib.redirect_stderr(err):
             # 400 px: at 200 the band declines (over its share of the frame)
             try:
+                # 'legacy': the ATTEMPTS band is that layout's (stage3d,
+                # the default since #1081, folds it into the benchmark band)
                 got = make_movie.make_movie([BOARD], out=out, size=400,
                                             quiet=True, camera='off',
-                                            placement_panel=False, **kw)
+                                            placement_panel=False,
+                                            layout='legacy', **kw)
             except Exception as exc:                            # noqa: BLE001
                 # the regression itself: the overlay's error escaped
                 err.write(' RAISED %s: %s' % (type(exc).__name__, exc))

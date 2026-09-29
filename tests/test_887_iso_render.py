@@ -19,6 +19,11 @@ import subprocess
 import sys
 import tempfile
 
+# #887 is the iso panel, which the stage3d layout -- the film default since
+# #1081 -- replaces with its 3D board. These tests are about the LEGACY
+# frame and its iso panel, so they say so before env_knobs is read.
+os.environ.setdefault('KICAD_MOVIE_LAYOUT', 'legacy')
+
 RUN_ALL_TIMEOUT = 900
 
 TESTS = os.path.dirname(os.path.abspath(__file__))

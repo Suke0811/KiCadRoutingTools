@@ -201,13 +201,22 @@ def layout_choices() -> str:
     """`'legacy' | auto | stacked | ...` -- every key in `LAYOUTS`, for a
     `--layout` help string. Generated, so a new layout cannot be missing from
     the CLIs that accept it (#1081)."""
-    return ' | '.join(["'legacy'"] + [k for k in LAYOUTS if k != 'legacy'])
+    return ' | '.join(["'%s'" % DEFAULT_FILM_LAYOUT]
+                      + [k for k in LAYOUTS if k != DEFAULT_FILM_LAYOUT])
+
+
+#: The film's layout when nothing names one (#1081, at the requester's
+#: call): the 3D board, the layer column and the benchmark band.
+#: `plan_frame(layout=None)` still means 'legacy' -- today's frame -- for a
+#: caller that plans a frame directly; this is the FILM's default, which
+#: `make_movie` and `make_film` resolve through `resolve_layout_aspect`.
+DEFAULT_FILM_LAYOUT = 'stage3d'
 
 
 def resolve_layout_aspect(layout=None, aspect=None):
     """`(layout, aspect)` for a render: an explicit argument wins, and `None`
     falls back to `$KICAD_MOVIE_LAYOUT` / `$KICAD_MOVIE_ASPECT` (env_knobs),
-    then to `'legacy'` / the board's own aspect.
+    then to `DEFAULT_FILM_LAYOUT` (stage3d) / the board's own aspect.
 
     The ONE resolution, for make_movie and make_film's build_film alike. It
     lived inline in make_movie only, so a film -- the render that actually
@@ -219,7 +228,7 @@ def resolve_layout_aspect(layout=None, aspect=None):
         except Exception:                                       # noqa: BLE001
             _ek = None
         if layout is None:
-            layout = getattr(_ek, 'MOVIE_LAYOUT', 'legacy')
+            layout = getattr(_ek, 'MOVIE_LAYOUT', DEFAULT_FILM_LAYOUT)
         if aspect is None:
             aspect = getattr(_ek, 'MOVIE_ASPECT', '') or None
     return layout, aspect

@@ -74,7 +74,7 @@ def ghost_overlay(items, theme, t=0.0):
     def _draw(d, r):
         try:
             import render_theme
-            th = theme or render_theme.DARK
+            th = theme or render_theme.default_theme()
             ghost = th.rgb('place_ghost')
             arrow = th.rgb('place_arrow')
             ss = max(1, int(getattr(r, 'ss', 1)))

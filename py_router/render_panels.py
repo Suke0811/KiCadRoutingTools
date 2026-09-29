@@ -204,7 +204,7 @@ def draw_layer_strip(d, box, *, bounds, segments, layers, palette, theme,
     try:
         import render_theme
         from route_render import load_font
-        th = theme or render_theme.DARK
+        th = theme or render_theme.default_theme()
         if grid:
             _x0, _y0, _x1, _y1 = bounds
             _asp = max(_x1 - _x0, 1e-6) / max(_y1 - _y0, 1e-6)
@@ -313,7 +313,7 @@ def draw_inventory(d, box, *, counts, placed, total, theme):
     try:
         import render_theme
         from route_render import load_font
-        th = theme or render_theme.DARK
+        th = theme or render_theme.default_theme()
         d.rectangle([box.x, box.y, box.x + box.w - 1, box.y + box.h - 1],
                     fill=th.rgb('chrome_panel'))
         rows = sorted(counts.items(), key=lambda kv: (-kv[1][1], kv[0]))
@@ -383,7 +383,7 @@ def draw_summary(d, box, *, lines, theme):
     try:
         import render_theme
         from route_render import load_font
-        th = theme or render_theme.DARK
+        th = theme or render_theme.default_theme()
         # EVERY row it was given must land. Two failures measured, in order:
         # at a fixed 15 pt in a 132 px box the fifth row (`vias`) was clipped
         # away; sizing the font from the row COUNT fixed that at `--size 1000`

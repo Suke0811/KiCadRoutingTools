@@ -720,10 +720,11 @@ def main(argv=None):
                     help="the benchmark board's `board_score --json` "
                          "document (must name that board by board_sha); "
                          "without it board_score is run once")
-    ap.add_argument('--board-3d', default='auto', choices=('auto', '2d'),
+    ap.add_argument('--board-3d', default='auto', choices=('auto', '2d', 'blender'),
                     help="stage3d only: 'auto' (default) draws the 3D board "
                          "when Node, playwright-core and a Chromium are "
-                         "present, else the 2D X-ray and says why")
+                         "present, else the 2D X-ray and says why; "
+                         "'blender' the hi-fi Cycles backend (#1089)")
     ap.add_argument('--floorplan-intent', default=None, metavar='PATH',
                     help='grade placement boards the ledger does not name '
                          'with check_floorplan --intent')
@@ -742,12 +743,12 @@ def main(argv=None):
                     help="frames per part move (0 snaps)")
     ap.add_argument('--png-dir', help="also dump every frame as a PNG")
     ap.add_argument('--shots-json', help="write the resolved shot list here")
-    ap.add_argument('--theme', default=None, type=str.lower, choices=('dark', 'light'), help="'dark' (default, or $KICAD_RENDER_THEME) or 'light'. A light ground is for a figure going into a light-background document; the file's ground cannot be changed afterwards.")
+    ap.add_argument('--theme', default=None, type=str.lower, choices=('dark', 'light'), help="'light' (default, or $KICAD_RENDER_THEME) or 'dark' (KiCad's own canvas). The file's ground cannot be changed afterwards.")
     import frame_layout as _fl
     ap.add_argument('--layout', default=None,
                     help="frame layout: " + _fl.layout_choices()
-                         + " ('legacy' is the default, or "
-                         "$KICAD_MOVIE_LAYOUT; today's frame). "
+                         + " ('stage3d' is the default, or "
+                         "$KICAD_MOVIE_LAYOUT; 'legacy' is the old frame). "
                          "Anything but legacy reserves a rail and a lower "
                          "box, which is where the placement content lives; "
                          "stage3d puts a 3D board in the main box (#1081)")
