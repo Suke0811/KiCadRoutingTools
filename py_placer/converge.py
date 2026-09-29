@@ -1722,7 +1722,7 @@ def cmd_record(a):
                   f"({_hint}). `blocking` is a total, so the difference "
                   f"between these two rows is partly a difference in what was "
                   f"MEASURED, not in the board.", file=sys.stderr)
-    entry = {'iteration': len(lg.entries()), 'kind': a.kind,
+    entry = {'iteration': lg.next_iteration(), 'kind': a.kind,
              # #1034: resolved above -- --parent, else the recorded argv,
              # else the last accepted row (NOTE printed); the source says which.
              'parent_sha': _parent_sha,

@@ -133,6 +133,21 @@ class Ledger:
                         out.append(doc)
         return out
 
+    def next_iteration(self) -> int:
+        """The `iteration` a new row takes: past every number already used.
+
+        Not `len(entries())`. A line that is not a row (a torn one, or since
+        #1078 a stray `42`) is not counted, but rows written after it by the
+        old count were numbered past it, so the count fell back onto a number
+        a row already holds -- and `step-back` / `replay --iteration` then
+        match two rows. On a ledger numbered 0..n-1 this IS the count.
+        """
+        rows = self.entries()
+        used = [e.get('iteration') for e in rows]
+        return max([len(rows)] + [i + 1 for i in used
+                                  if isinstance(i, int)
+                                  and not isinstance(i, bool)])
+
     def last_accepted(self) -> Optional[Dict]:
         for e in reversed(self.entries()):
             if e.get('accepted'):

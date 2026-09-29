@@ -205,6 +205,33 @@ check('BLOCKING-NULL is reported on ANY lap, not only routing ones',
       len([e for e in ev if e.startswith('BLOCKING-NULL')]) == 1,
       f'{[e[:70] for e in ev]}')
 
+# #1071: a `blocking` that is not a count is unmeasured, as it is to the
+# verdict. A dict used to read "blocking=None", and a NaN or a `false` became
+# `prev` -- nothing compares above a NaN, and `false` is 0 -- so this ledger
+# reported "False -> 15" instead of 10 -> 15.
+ev = ledger_events([
+    {'iteration': 1, 'kind': 'completion', 'accepted': True,
+     'score': {'blocking': 10}},
+    {'iteration': 2, 'kind': 'completion', 'accepted': True,
+     'score': {'blocking': float('nan')}},
+    {'iteration': 3, 'kind': 'completion', 'accepted': True,
+     'score': {'blocking': {'drc': 4}}},
+    {'iteration': 4, 'kind': 'completion', 'accepted': True,
+     'score': {'blocking': False}},
+    {'iteration': 5, 'kind': 'completion', 'accepted': True,
+     'score': {'blocking': 15}},
+])
+bad = [e for e in ev if e.startswith('BLOCKING-NOT-A-COUNT')]
+check('a blocking that is not a count is named as such, never as null',
+      len(bad) == 3 and not [e for e in ev if e.startswith('BLOCKING-NULL')]
+      and 'a JSON object' in bad[1] and 'boolean false' in bad[2],
+      f'{[e[:90] for e in ev]}')
+up = [e for e in ev if e.startswith('BLOCKING-UP')]
+check('...and it is skipped, so the next count compares against the last '
+      'count (10 -> 15, not False -> 15)',
+      len(up) == 1 and 'blocking 10 -> 15' in up[0],
+      f'{[e[:90] for e in ev]}')
+
 print('--- the journal: liveness yes, scanning no ---')
 jd = tempfile.mkdtemp()
 with open(os.path.join(jd, 'JOURNAL.md'), 'w', encoding='utf-8') as fh:

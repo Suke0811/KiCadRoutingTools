@@ -1346,6 +1346,28 @@ def test_1078_a_stray_ledger_line_is_skipped_not_raised():
           "one")
 
 
+def test_1078_a_new_row_is_numbered_past_every_used_iteration():
+    """#1078's leftover. `record` numbered a row `len(entries())`; once the
+    stray `42` is skipped, a ledger whose later rows were numbered by the old
+    count (0, 42, 2) hands out 2 again, and `replay --iteration 2` then
+    matches two rows."""
+    with tempfile.TemporaryDirectory() as td:
+        led = os.path.join(td, 'l.jsonl')
+        with open(led, 'w', encoding='utf-8') as fh:
+            fh.write(json.dumps(_row_1071(0, 'placement', 3)) + '\n42\n'
+                     + json.dumps(_row_1071(2, 'placement', 2)) + '\n')
+        r = _cv(['record', '--ledger', led, '--board', BOARD, '--kind',
+                 'placement', '--lever', 'after the stray line'])
+        assert r.returncode == 0, (r.returncode, r.stderr)
+        from board_store import Ledger
+        its = [e.get('iteration') for e in Ledger(led).entries()]
+        assert its == [0, 2, 3], its
+        # ...and a ledger numbered 0..n-1 keeps the count it always had.
+        assert Ledger(os.path.join(td, 'none.jsonl')).next_iteration() == 0
+        assert Ledger(led).next_iteration() == 4
+    print("  PASS: a new row is numbered past every iteration already used")
+
+
 if __name__ == '__main__':
     for k, v in sorted(globals().items()):
         if k.startswith('test_'):

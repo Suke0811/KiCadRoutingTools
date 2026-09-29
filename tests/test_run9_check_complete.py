@@ -223,6 +223,46 @@ def main():
         check('...and the exit code is not success', code3 != DONE,
               f'exit {code3}')
 
+    # #1071's rule, on the score this wraps. board_score writes a count and
+    # lists, so these arrive only from a board_score defect -- stubbed here,
+    # in-process, since no board produces one.
+    print('a malformed score is never DONE, and says what is malformed')
+    import check_complete as CC
+
+    def close_out(score):
+        def fake_run(args, timeout=3600):
+            if args[0].endswith('board_score.py'):
+                with open(args[args.index('--json') + 1], 'w',
+                          encoding='utf-8') as fh:
+                    json.dump(dict(score, board_sha='0' * 64), fh)
+            return 0, ''
+        real, CC._run = CC._run, fake_run
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                jp = os.path.join(td, 'c.json')
+                code = CC.main([BOARD, '--skip-slow', '--json', jp])
+                with open(jp, encoding='utf-8') as fh:
+                    return code, json.load(fh)
+        finally:
+            CC._run = real
+
+    code, d = close_out({'blocking': 0, 'ungraded': ['impedance'],
+                         'unknown': []})
+    check('control: a clean count with a listed ungraded component is DONE',
+          code == DONE and 'UNEXAMINED' in d['reason'], d.get('reason'))
+    code, d = close_out({'blocking': False, 'ungraded': [], 'unknown': []})
+    check('blocking false is not a finished board',
+          code == INCOMPLETE and 'boolean false' in d['reason'],
+          d.get('reason'))
+    code, d = close_out({'blocking': 0, 'ungraded': 'abc', 'unknown': []})
+    check('an ungraded that is not a list names no component',
+          code == INCOMPLETE and 'not a list' in d['reason']
+          and 'a, b, c' not in d['reason'], d.get('reason'))
+    code, d = close_out({'blocking': 0, 'ungraded': [], 'unknown': 5})
+    check('an unknown that is not a list is named, not raised',
+          code == INCOMPLETE and 'not a list' in d['reason']
+          and 'TypeError' not in d['reason'], d.get('reason'))
+
     print()
     if FAILURES:
         print(f'FAIL: {len(FAILURES)} check(s): {", ".join(FAILURES)}')

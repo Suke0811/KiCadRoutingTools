@@ -76,6 +76,21 @@ TIMED_OUT = 124                     # the shell's code, and deliberately so:
                                     # by a clock", which is what happened.
 
 
+def _score_names(score, key):
+    """`score[key]` as sorted names, and why not when it is not a list.
+
+    board_score writes a list. Anything else names no component -- the rule
+    converge's verdict follows (#1076): `sorted("abc")` read as three
+    components nobody examined, and `sorted(5)` raised.
+    """
+    v = score.get(key)
+    if v is None:
+        return [], None
+    if isinstance(v, (list, tuple, set)):
+        return sorted(str(x) for x in v), None
+    return [], f'board_score wrote an `{key}` that is not a list ({v!r})'
+
+
 def _run(args, timeout=3600):
     """Run a checker. A timeout is a RESULT, not an exception.
 
@@ -201,8 +216,8 @@ def _grade(a, doc):
     # than by path, reusing the sha board_score already computed.
     doc['board_sha'] = score.get('board_sha')
     blocking = score.get('blocking')
-    ungraded = sorted(score.get('ungraded') or [])
-    unknown = sorted(score.get('unknown') or [])
+    ungraded, ungraded_bad = _score_names(score, 'ungraded')
+    unknown, unknown_bad = _score_names(score, 'unknown')
     score_failed = (code == TIMED_OUT or not score)
 
     # ---- 1b. is there a board here at all? ---------------------------------
@@ -277,7 +292,14 @@ def _grade(a, doc):
     if unknown:
         reasons.append('a component RAN and could not answer: '
                        + ', '.join(unknown))
-    if blocking is None and not score_failed:
+    reasons += [r for r in (ungraded_bad, unknown_bad) if r]
+    # ONE rule for what a `blocking` is (`converge.blocking_defect`, #1075):
+    # `false` is falsy, so it used to read as a clean board and exit DONE.
+    from converge import blocking_defect
+    _bdef = blocking_defect(blocking)
+    if _bdef:
+        reasons.append(f'blocking is {_bdef}')
+    elif blocking is None and not score_failed:
         reasons.append('blocking is null -- something was not graded, and a '
                        'null is not a zero')
     elif blocking:

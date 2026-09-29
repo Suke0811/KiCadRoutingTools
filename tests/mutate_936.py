@@ -49,6 +49,8 @@ TARGETS = {
     'dfl': os.path.join(REPO, 'tests', 'test_doc_flag_liveness.py'),
     't431': os.path.join(REPO, 'tests', 'test_431_skill_commands.py'),
     'prun': os.path.join(REPO, 'kicad_routing_plugin', 'placement_run.py'),
+    'rw': os.path.join(REPO, 'tests', 'stress', 'run_watch.py'),
+    'cc': os.path.join(REPO, 'check_complete.py'),
 }
 
 T_WORKLIST = 'tests/test_broken_worklist.py'
@@ -56,6 +58,8 @@ T_CONVERGE = 'tests/test_converge.py'
 T_DFL = 'tests/test_doc_flag_liveness.py'
 T_431 = 'tests/test_431_skill_commands.py'
 T_PRUN = 'tests/test_placement_run.py'
+T_RW = 'tests/test_run20_run_watch.py'
+T_CC = 'tests/test_run9_check_complete.py'
 
 #: (name, target, old, new, tests that must notice, expectation)
 ROWS = [
@@ -170,6 +174,33 @@ ROWS = [
      "                    if isinstance(doc, dict):\n",
      "                    if True:\n",
      (T_CONVERGE,), KILLED),
+    # #1078's leftover: numbering by the count repeats an iteration after a
+    # skipped line.
+    ('record-numbers-by-count', 'cv',
+     "    entry = {'iteration': lg.next_iteration(), 'kind': a.kind,\n",
+     "    entry = {'iteration': len(lg.entries()), 'kind': a.kind,\n",
+     (T_CONVERGE,), KILLED),
+    ('next-iteration-is-the-count', 'bst',
+     "        return max([len(rows)] + [i + 1 for i in used\n",
+     "        return max([len(rows)] + [0 for i in used\n",
+     (T_CONVERGE,), KILLED),
+    # The two readers outside the rule (#1071).
+    # The old test, which let `false` and NaN through as counts. (Not `blk =
+    # raw`: that dies comparing a dict, killed by a traceback, not a witness.)
+    ('watcher-ranks-a-non-count', 'rw',
+     "        blk = None if defect else raw\n",
+     "        blk = raw if isinstance(raw, (int, float)) else None\n",
+     (T_RW,), KILLED),
+    ('close-out-takes-false-as-done', 'cc',
+     "    if _bdef:\n",
+     "    if False:\n",
+     (T_CC,), KILLED),
+    ('close-out-splits-a-string-ungraded', 'cc',
+     "        return sorted(str(x) for x in v), None\n",
+     "        return sorted(str(x) for x in v), None\n"
+     "    if isinstance(v, str):\n"
+     "        return sorted(v), None\n",
+     (T_CC,), KILLED),
 
     # ---- the registration holes, and what they were hiding ------------------
     # `--no-ratsnest` is real and composed from an f-string, so no literal

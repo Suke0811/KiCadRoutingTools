@@ -348,12 +348,14 @@ check("bad movie/blocking non-fatal",
       out is not None and out["movie"] is None and out["blocking"] is None
       and len(errs) == 2, str(errs))
 # #1075: `isinstance(True, int)` holds, so a bool (and a negative) passed.
+# The REFUSAL is asserted, not its wording: 3.0 and "0" were refused before
+# #1075 too, and must keep failing only if they stop being refused.
 for _bad in (True, False, -1, 3.0, "0"):
     out, errs = parse_placement_result(json.dumps(
         {"status": "complete", "board": final_board, "blocking": _bad}))
     check("blocking %r is refused" % (_bad,),
           out is not None and out["blocking"] is None
-          and any("non-negative integer" in e for e in errs), str(errs))
+          and any(e.startswith("blocking ") for e in errs), str(errs))
 for _ok in (0, 3):
     out, errs = parse_placement_result(json.dumps(
         {"status": "complete", "board": final_board, "blocking": _ok}))
