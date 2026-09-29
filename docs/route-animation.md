@@ -746,6 +746,9 @@ staircase collapses to a single point.
 `metrics: {}` on purpose, and a converge row's `blocking: null` means a
 component that was asked for could not answer. Neither is dropped and neither is
 plotted at the axis floor: they are a tick on the rail, counted in the caption.
+A `blocking` that is not a count (a per-term dict, a boolean, a string, NaN, a
+negative) is drawn the same way and counted in the note: `converge.blocking_value`
+is the rule, and `movie_attempts._blocking_value` mirrors it (#1077).
 
 **A place-and-route run is ONE graph.** A combined run leaves two records of
 its search: the converge ledger (placement laps and routing laps, told apart by

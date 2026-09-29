@@ -212,6 +212,8 @@ Read `--help` before assuming a flag does not exist. Two runs declared
    ```
    - Use `--kind completion` for a routed board. The film's placement panels
      are drawn from the `placement` rows.
+   - `record` refuses (exit 2) a score whose `blocking` is not a non-negative
+     number, such as a per-term dict; record board_score's own JSON.
    - **Close the ledger** with one `record --final --stop-condition <1|2|3|4>`
      row, passing the verifier's per-lens files as `--lens-file`.
 
