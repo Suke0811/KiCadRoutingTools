@@ -18,9 +18,6 @@
            other, changing layer at its own barrel, every piece on a router direction; the entry and exit points on
            their poses' two legs, P and N on opposite sides and SWAPPED between entry and exit"""
 import sys, json, math, collections
-import detmath
-if __name__ == '__main__':
-    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 geo = json.load(open(sys.argv[1]))
 RU = geo['rules']; g = RU['grid']; TW = RU['track']
 EPS = 1e-6

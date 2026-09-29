@@ -58,7 +58,7 @@ def _chain_env(round_dir, dest):
         env.pop(k, None)
     env.update(OMP_NUM_THREADS='1', VECLIB_MAXIMUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
                TAUT_MEMO=os.environ.get('TAUT_MEMO', '1'), PROBE_MEMO=os.environ.get('PROBE_MEMO', '1'),
-               PYTHONHASHSEED='7', PLAN_PAGES='1', PLAN_JUDGE='ends', BRAID_PAIRS='1', PLAN_PAIRS='1',
+               PLAN_PAGES='1', PLAN_JUDGE='ends', BRAID_PAIRS='1', PLAN_PAIRS='1',
                BRAID_EXACT_PAGES='0', PLAN_PAGES_SIDERS='2', STAGE_CACHE=os.environ.get('STAGE_CACHE', '1'),
                BENCH=os.path.join(round_dir, 'fo.kicad_pcb'), NETS=','.join(nets), DEST=dest)
     return env
@@ -72,8 +72,6 @@ def _trace_solve(round_dir, out):
     """the round's ROOT solve (its solve.json) run again with every plan CP-SAT finds kept, and the model's own
     reading of the bench (the crossing windows, the face band, the built-in via cuts) from solve()'s locals"""
     sys.path.insert(0, HERE)
-    import detmath
-    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
     from ortools.sat.python import cp_model
     runs = []
     orig = cp_model.CpSolver.Solve
@@ -469,7 +467,7 @@ def copper_len(segs):
 
 
 # =============================================================================== geometry of the drawing
-import numpy as np            # noqa: E402  (the tracers import it after detmath.install)
+import numpy as np            # noqa: E402
 
 
 class Mapper:

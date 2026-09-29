@@ -439,7 +439,7 @@ def chain(K, o, R=3):
     dest = env.get('DEST') or 'DU1'
     env.update(OMP_NUM_THREADS='1', VECLIB_MAXIMUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
                TAUT_MEMO=env.get('TAUT_MEMO') or '1', PROBE_MEMO=env.get('PROBE_MEMO') or '1')
-    env.update(PYTHONHASHSEED='7', PLAN_PAGES='1', PLAN_JUDGE='ends', BRAID_PAIRS='1', PLAN_PAIRS='1',
+    env.update(PLAN_PAGES='1', PLAN_JUDGE='ends', BRAID_PAIRS='1', PLAN_PAIRS='1',
                BRAID_EXACT_PAGES='0', PLAN_PAGES_SIDERS='2')
     if 'BASE' in os.environ:                     # (the shell's BASE and DEST reach a stage only when the caller set them)
         env['BASE'] = base

@@ -29,9 +29,6 @@ import shutil
 import subprocess
 import sys
 
-import detmath
-if __name__ == '__main__':
-    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'py_router'))

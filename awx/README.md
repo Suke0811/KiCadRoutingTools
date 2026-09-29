@@ -20,7 +20,7 @@ mentions it.)
 
 **Contents**
 
-1. [The whole route](#the-whole-route) -- [results](#results), [running it](#running-it), [how it works](#how-it-works), [the same answer on every machine](#every-machine-and-the-same-answer-on-each); its two solvers explained: [CP-SAT and HiGHS in the whole route](https://drandyhaas.github.io/KiCadRoutingTools/solvers/)
+1. [The whole route](#the-whole-route) -- [results](#results), [running it](#running-it), [how it works](#how-it-works), [the same answer on each machine](#each-machine-the-same-answer); its two solvers explained: [CP-SAT and HiGHS in the whole route](https://drandyhaas.github.io/KiCadRoutingTools/solvers/)
 2. [The braid chain and the evolution](#the-braid-chain-and-the-evolution)
 3. [Shared pieces](#shared-pieces) -- grading, `rules.py`, measuring honestly, the tools, what this adds to `py_router`
 4. [TODO](#todo) -- first, [the bus step in the routing chain](#first-the-bus-step-in-the-routing-chain)
@@ -58,7 +58,8 @@ against the router's own rules, and only then routes it.
 whole route's own ends model (`whole_ends.py`, `PLAN_JUDGE=ends`), and the
 whole route plans and routes on them: no braid planner, no human ends
 (`whole_route.py`). Every board below routes every lane in its band at once,
-every net connected, DRC-clean, on a Mac and on Linux (Modal). Each cell
+every net connected, DRC-clean, on a Mac and on Linux (Modal; see *Each
+machine, the same answer*). Each cell
 counts every via and millimetre of the run's nets on the board; the human's
 are counted the same way.
 
@@ -206,7 +207,7 @@ NETS=$(python3 coherent_nets.py 51 --board=fb_t2q_pairs.kicad_pcb)
 # the human's ends ...
 python3 human_ends_bench.py fb_t2q_human.kicad_pcb tmp/hp/HHe_k51.kicad_pcb "$NETS" \
     --others bench:fb_t2q_pairs.kicad_pcb --ladder fb_t2q_pairs.ladder.txt --sidecar --marker
-# ... or our own (the fanout's plan environment: PYTHONHASHSEED=7 PLAN_PAGES=1 BRAID_PAIRS=1 PLAN_PAIRS=1)
+# ... or our own (the fanout's plan environment: PLAN_PAGES=1 BRAID_PAIRS=1 PLAN_PAIRS=1)
 mkdir -p tmp/e tmp/e2
 PLAN_JUDGE=ends python3 fanout_from_plan.py tmp/e/fo.kicad_pcb 51 --board=fb_t2q_pairs.kicad_pcb
 export BENCH=tmp/hp/HHe_k51.kicad_pcb NETS DEST=DU1   # (or tmp/e/fo.kicad_pcb) the bench every whole_* tool reads
@@ -947,72 +948,65 @@ The braid planner changes the whole route was first made on (berth rows, the
 rings' order and dips, directional pair floors, leg costs) are in `braid.py`
 and change the braid's default routing.
 
-### Every machine, and the same answer on each
+### Each machine, the same answer
 
 **The standard:** every rung routes on every machine, no solve hangs, it runs
-as fast as it can, and a machine type gives the same board on every run.
+as fast as it can, and a machine gives the same board on every run of a rung,
+whatever Python's hash seed. Two machine types may route a rung to different
+copper -- their C libraries round differently in the last bit, and CP-SAT
+keeps a different plan among equal optima -- which is accepted; a rung that
+routes on one and not the other is not.
 
-**Where it stands.** A Mac and a Linux box (Modal, `modal_whole.py`) go
-further up to K35: the same bits stage by stage (fanout, solve, geometry,
-polish, snaps, route) and the same board, digest
-for digest, cold with every cache off. Every rung of the zynq article gives
-the same vias and copper on both (2026-09-28; those boards were not compared
-digest for digest). Of three causes of difference, two are fixed at the root
-and the third is accepted:
+**Where it stands (2026-09-29, this Mac).** Every rung of both ladders routes
+connected and DRC-clean with nothing pinned, at the vias and copper in the
+tables above. H3 K41 run twice, each run under its own random hash seed and
+one of them with every cache off, writes the same 45 files, and its copper is
+bit for bit the copper it routed when the transcendental functions were
+fdlibm's (below). The Linux rows were measured with them and are not yet
+re-run without.
 
-| cause | what fixes it |
+| what could move a machine's answer | what holds it |
 |---|---|
-| the C libraries round differently | `detmath.py`: the transcendental functions from `+ - * / sqrt` alone |
-| an LP with a face of optima | `lp_tie_break` and `lp_round` on both LPs |
-| CP-SAT keeps different plans among equal optima | accepted: each machine repeats itself |
+| an LP with a face of optima | `lp_tie_break` and `lp_round` on both LPs (`detmath.py`) |
+| the order of a set or a dict under a hash seed | sorted wherever the order reaches a model |
+| a clock budget | none: every budget is in work |
 
 <details>
 <summary>Details</summary>
 
-**The C libraries round differently.** Apple's libm and glibc disagree in the
-last bit on sin, cos, tan, atan2, asin, acos, exp, log and pow -- including
-`x ** 2` on a Python float, which is the C library's pow -- and so do
-`np.hypot`, numpy's transcendental loops, `np.interp`, long dot products
-(Accelerate against OpenBLAS) and `np.linalg`. `+ - * / sqrt`, `math.hypot`,
-numpy's arithmetic and sums agree.
+**An LP with a face of optima.** HiGHS returns one of an LP's equal optima,
+decided by its own rounding, so a change that should not matter (a row order,
+an input's last bit) moved the plan: the geometry's first-pass LP has many
+optima, and the second pass is built from the first.
 
-- `detmath` computes the transcendental functions from those alone (fdlibm's
-  algorithms, the ones Java's StrictMath uses for this), within 1-3 ulp of
-  the platform's.
-- Every chain stage run as a script calls `detmath.install()` before it
-  imports the chain -- math's and numpy's functions are detmath's for the
-  process -- and the chain writes `x * x`.
-- At K28 the first difference was the trunk's length, one bit, through
-  `np.hypot`, which the chain calls on 1.4 billion elements a run (now
-  `sqrt(a*a + b*b)`, vectorised). The transcendental functions are called
-  200 thousand times, in pure Python. A cold K28 took 122 s on this laptop
-  before and after.
-
-**An LP with a face of optima.** Given the same model to the bit, HiGHS on
-the two machines returned different optima (its own arithmetic rounds
-differently): the geometry's first-pass LP has many, and the second pass is
-built from the first.
-
-- Both LPs (the geometry, the polish) now carry `lp_tie_break` -- a fixed
-  cost per column, 1e-4 times 0.5..1.5, below any real cost's step and above
-  the solver's tolerances -- so the optimum is one point, and `lp_round`
-  takes the solver's last bits off (a 2^-24 grid).
+- Both LPs (the geometry, the polish) carry `lp_tie_break` -- a fixed cost per
+  column, 1e-4 times 0.5..1.5, below any real cost's step and above the
+  solver's tolerances -- so the optimum is one point, and `lp_round` takes the
+  solver's last bits off (a 2^-24 grid).
 - The same change ended a stall: zynq K18's second-pass LP ran for half an
   hour in the interior point without terminating on its face of optima; it
   now solves in 11 s, and the rung routes (18 of 18, connected, DRC-clean).
 
-**CP-SAT, accepted.** On a byte-identical model both machines prove the same
-optimum (K41: 36 vias) but keep different plans among the many at it (30 of
-38 lanes in another order), each the same run to run on its own machine.
+**The hash seed.** Python gives every process its own string hash, so a set's
+iteration order changes run to run; where that order reached a model (the
+order of a CP-SAT model's constraints, of the geometry's rows) the same inputs
+routed different copper. Those iterations are sorted, and nothing pins
+`PYTHONHASHSEED`. To check a change still keeps it so, run a rung twice with
+two seeds and every cache off and compare the two OUTDIRs file for file:
 
-**The caches key on it.** The taut memo and the planned bench (`whole_ctx`)
-add detmath's version to their keys, so a string made with the platform's
-functions is never served to a run with detmath's (the probe memo and the
-stage cache key on the code already).
+```bash
+STAGE_CACHE=0 TAUT_MEMO=0 PROBE_MEMO=0 PYTHONHASHSEED=1 python3 whole_route.py 15 OUT1
+STAGE_CACHE=0 TAUT_MEMO=0 PROBE_MEMO=0 PYTHONHASHSEED=2 python3 whole_route.py 15 OUT2
+```
 
-**The test.** `tests/test_622_detmath.py` records the functions' bits as one
-digest, checked wherever the suite runs, and holds every stage the drivers
-run to installing first and every module the chain loads to no float power.
+**No swap of the platform's functions.** Until 2026-09-29 every chain stage
+swapped math's and numpy's transcendental functions for fdlibm's (computed
+from `+ - * / sqrt` alone), so a Mac and a Linux box gave the same bits up to
+K35. The standard no longer asks for that, and the swap replaced the functions
+for the whole process: the bus step will run inside KiCad's own process, where
+it would have changed every later computation there. `tests/test_622_detmath.py`
+holds the LP helpers to one answer per model and every awx module to no such
+swap.
 
 </details>
 
@@ -2170,17 +2164,13 @@ shared and are not.
 - **For the braid, cloud numbers are a different measurement from local
   ones.** CP-SAT stops the braid's plan solve at platform-dependent feasible
   points, so a chain on Modal starts from a different plan than the same
-  chain here. Compare cloud to cloud, local to local. (The whole route is
-  the same on both machines up to K35, and each machine repeats itself past
-  it.)
+  chain here. Compare cloud to cloud, local to local. (The whole route
+  repeats itself on each machine; two machines may differ.)
 - **A rung that routes on one machine and not on another is a defect**, and
-  so is a run that does not repeat itself on its own machine. The whole
-  route's copper may differ between machines past K35 (CP-SAT's choice among
-  equal plans); below it the digests agree, and a difference there is a
-  stage that did not install `detmath`, a float raised to a power, or an LP
-  without its tie-break. Find it by comparing the stages' outputs
-  (`modal_whole.py` brings every one back) in the order the chain writes
-  them: the first that differs names the stage.
+  so is a run that does not repeat itself on its own machine; the copper
+  may differ between machines. Find a run that does not repeat itself by
+  comparing two runs' stage outputs in the order the chain writes them: the
+  first that differs names the stage.
 - **There are no clocks.** Every budget is in work; a clock budget makes a
   slower machine answer differently, not later (two identical cloud runs of
   one baseline came back 72 and 58 vias).
@@ -2204,7 +2194,7 @@ shared and are not.
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP, the polish, the snap onto the router's grid (the loop that drives them is `whole_route.py`'s) |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a whole-route plan installed and audited, gated (complete and clean), linted, drawn; the bench they share |
 | `stage_cache.py` | a whole-route stage run, or restored when its script, arguments, environment and every file it read are unchanged |
-| `detmath.py` | the same bits on every machine: fdlibm's functions, installed by every chain stage; the LPs' tie-break and rounding |
+| `detmath.py` | one answer per LP: the geometry's and the polish's tie-break and rounding |
 | `whole_movie.py` | a film of one run (`whole_route.py`'s OUTDIR), the fanout to the copper: the solve drawn as its braid under the board (u on the trunk is the board's x), the geometry LP as the shadow prices of the rules that bind; the root solve and the geometry re-run under observation, and refused unless they write what the chain wrote |
 
 **Shared by both routers:**

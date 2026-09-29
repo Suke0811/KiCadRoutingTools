@@ -26,9 +26,6 @@ import math
 import os
 import sys
 
-import detmath
-if __name__ == '__main__':
-    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 import braid as bd
 import pairs as _pairs
 

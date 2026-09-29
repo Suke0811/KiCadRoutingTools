@@ -26,8 +26,6 @@ from scipy.optimize import linprog
 from scipy.sparse import coo_matrix, csr_matrix, hstack
 from types import SimpleNamespace
 import detmath
-if __name__ == '__main__':
-    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 import whole_ctx
 import whole_frame
 import braid as bd
@@ -760,7 +758,7 @@ def build_and_solve(sides, prev=None):
             le([(j, -1.0), (e, -1.0)], -(hi_ + CL))
     ncol = nv + len(extra)
     cost = np.zeros(ncol); cost[nv:] = extra
-    cost += detmath.lp_tie_break(ncol)             # one optimum, not a face: the same plan on every machine
+    cost += detmath.lp_tie_break(ncol)             # one optimum, not a face: the same plan on every run
     Aub = coo_matrix((vals, (rows, cols)), shape=(len(rhs), ncol)).tocsr()
     bnd = [(-2 * _SPAN, 2 * _SPAN)] * nv + [(0.0, None)] * len(extra)
     for j, b in bounds.items():

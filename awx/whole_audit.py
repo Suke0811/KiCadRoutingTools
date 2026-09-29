@@ -4,9 +4,6 @@ whole route's lanes as the router gets them (whole_ctx.lanes).
 usage as a driver: whole_audit.py GEO.json [checks]   -- reads the bench (whole_ctx: BENCH / NETS / DEST), installs,
 runs plan_audit's checks (default: pitch dives static shape bands swim). whole_gate.py reads the output."""
 import os, sys, json
-import detmath
-if __name__ == '__main__':
-    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 
 
 if __name__ == '__main__':

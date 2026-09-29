@@ -32,9 +32,6 @@ hug the ones before, so a bundle turns together, mitred."""
 import sys, os, json, math, heapq, time
 import numpy as np
 
-import detmath
-if __name__ == '__main__':
-    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 import whole_ctx
 import braid as bd
 import pairs as _pairs

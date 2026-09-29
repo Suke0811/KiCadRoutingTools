@@ -23,9 +23,6 @@ the vias are proved (the plan's vias no more than the bound's whole vias) or, on
 -- all but the fallback, the plan-finding workers' last try, which runs its whole budget. Only a plan PROVED optimal in its vias is written;
 one the search could not prove is no plan."""
 import sys, os, re, itertools, collections, json, math, hashlib
-import detmath
-if __name__ == '__main__':
-    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 import whole_ctx
 import whole_frame
 from ortools.sat.python import cp_model

@@ -35,8 +35,6 @@ import numpy as np
 from scipy.optimize import linprog
 
 import detmath
-if __name__ == '__main__':
-    detmath.install()          # a chain stage: detmath's functions for the platform's, before the chain loads
 import whole_ctx
 import plan_audit as pa
 import pairs as _pairs
@@ -838,7 +836,7 @@ def solve_round(rows, trust):
             ri.append(r_); ci.append(c); vv.append(v)
         b.append(rhs)
     Aub = coo_matrix((vv, (ri, ci)), shape=(len(rowsA), cols)).tocsr()
-    # one optimum, not a face, and without the solver's last bits: the same polish on every machine (detmath)
+    # one optimum, not a face, and without the solver's last bits: the same polish on every run (detmath)
     res = linprog(np.array(cost) + detmath.lp_tie_break(len(cost)), A_ub=Aub, b_ub=np.array(b), bounds=bounds, method='highs')
     if res.status != 0:
         log(f'  LP status {res.status}: {res.message}')
