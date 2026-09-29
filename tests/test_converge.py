@@ -1199,6 +1199,14 @@ def test_1075_a_score_whose_blocking_is_not_a_count_is_NO_SCORE():
             assert 'is null' not in doc['reason'], (raw, doc['reason'])
             assert 'blocking == None' not in r.stdout, raw
             assert 'ungraded' in doc and 'unknown' in doc, doc
+    # `quality` items: a bool or a NaN is not a measurement either. NaN never
+    # compares, so it scrambled every tie it touched; `true` ranked as 1 via.
+    inf = float('inf')
+    for v in (True, float('nan'), inf, '3'):
+        k = converge._score_key({'blocking': 0, 'quality': {'vias': v}})
+        assert k == (0, (inf, inf, inf)), (v, k)
+    assert converge._score_key({'blocking': 0, 'quality': {'vias': 4}}) \
+        == (0, (4, inf, inf))
     print("  PASS: a --score whose blocking is not a count is NO-SCORE, named "
           "for what it is")
 

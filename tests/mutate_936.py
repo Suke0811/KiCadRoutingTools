@@ -44,6 +44,7 @@ KILLED, SURVIVED, BROKEN = 'KILLED', 'SURVIVED', 'BROKEN'
 
 TARGETS = {
     'bs': os.path.join(REPO, 'py_tools', 'board_score.py'),
+    'bst': os.path.join(REPO, 'py_placer', 'board_store.py'),
     'cv': os.path.join(REPO, 'py_placer', 'converge.py'),
     'dfl': os.path.join(REPO, 'tests', 'test_doc_flag_liveness.py'),
     't431': os.path.join(REPO, 'tests', 'test_431_skill_commands.py'),
@@ -81,6 +82,60 @@ ROWS = [
     ('verdict-cause-unmeasured', 'cv',
      "        elif isinstance(score.get('unknown'), (list, tuple, set)) \\\n",
      "        elif score.get('unknown') is not None \\\n",
+     (T_CONVERGE,), KILLED),
+
+    # ---- #1071 #1075 #1076 #1078: `blocking` is a count, or unmeasured ------
+    # The #1071 crash itself: a per-term dict ranked, and the plateau test
+    # compared two dicts.
+    ('score-key-ranks-any-json', 'cv',
+     "    b = blocking_value(score.get('blocking'))\n",
+     "    b = score.get('blocking')\n",
+     (T_CONVERGE,), KILLED),
+    # One row per clause of the rule: each lets one kind of non-count rank.
+    ('blocking-bool-is-a-count', 'cv',
+     "    if isinstance(b, bool):\n        return (f'the boolean",
+     "    if False:\n        return (f'the boolean",
+     (T_CONVERGE,), KILLED),
+    ('blocking-nonfinite-is-a-count', 'cv',
+     "    if not math.isfinite(b):\n",
+     "    if False:\n",
+     (T_CONVERGE,), KILLED),
+    ('blocking-negative-is-a-count', 'cv',
+     "    if b < 0:\n        return f'negative",
+     "    if False:\n        return f'negative",
+     (T_CONVERGE,), KILLED),
+    # The append-only ledger's only door.
+    ('record-accepts-a-non-count-blocking', 'cv',
+     "    if _bad_blocking:\n",
+     "    if False:\n",
+     (T_CONVERGE,), KILLED),
+    ('record-accepts-a-non-object-score', 'cv',
+     "    if _score_doc is not None and not isinstance(_score_doc, dict):\n",
+     "    if False:\n",
+     (T_CONVERGE,), KILLED),
+    # `false` as a --score: NO-SCORE must say what it is, never "null".
+    ('verdict-calls-a-non-count-null', 'cv',
+     "        elif blocking_defect(score.get('blocking')):\n",
+     "        elif False:\n",
+     (T_CONVERGE,), KILLED),
+    # TWO lines: the first alone is also a substring of `_no_score`'s deeper
+    # indented copy; the newline + 11 spaces before `'unknown'` is not.
+    ('verdict-ungraded-unguarded-again', 'cv',
+     "           'ungraded': _names('ungraded'),\n           'unknown'",
+     "           'ungraded': sorted(score.get('ungraded') or []),\n"
+     "           'unknown'",
+     (T_CONVERGE,), KILLED),
+    ('verdict-unknown-unguarded-again', 'cv',
+     "           'unknown': _names('unknown'),\n",
+     "           'unknown': sorted(score.get('unknown') or []),\n",
+     (T_CONVERGE,), KILLED),
+    ('quality-ranks-a-bool-or-nan', 'cv',
+     "                    and not isinstance(v, bool) and math.isfinite(v)\n",
+     "                    and True\n",
+     (T_CONVERGE,), KILLED),
+    ('ledger-keeps-a-non-object-line', 'bst',
+     "                    if isinstance(doc, dict):\n",
+     "                    if True:\n",
      (T_CONVERGE,), KILLED),
 
     # ---- the registration holes, and what they were hiding ------------------
