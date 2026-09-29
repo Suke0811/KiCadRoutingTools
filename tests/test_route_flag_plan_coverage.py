@@ -304,6 +304,15 @@ class NegativeControls(unittest.TestCase):
         self._run(refuse="a --no-X switch landing on the POSITIVE checkbox "
                          "'smoothing' must untick it")
 
+    def test_the_fix_drc_reset_line_is_load_bearing(self):
+        """Without it, a step replaying --no-fix-drc-settings would leave the
+        box unticked, and every later step would skip the DRC-floor writeback
+        that route.py performs for any step without the flag."""
+        self._mutate(SWIG, 'self.fix_drc_check.SetValue(True)', 'pass',
+                     within='reset_params_to_defaults')
+        self._run(refuse='--no-fix-drc-settings: LEAKS between plan steps: '
+                         'fix_drc_check is not restored')
+
     def test_the_route_selection_stops_reading_the_component(self):
         """What shipped until now: the converter carried the refs and the
         route selection never looked at them, so the step routed every net."""

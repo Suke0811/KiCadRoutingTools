@@ -261,6 +261,11 @@ INVERTED_BOOL_FLAGS = {
     '--no-smoothing': 'smoothing',
     '--no-stub-layer-swap': 'enable_layer_switch',
     '--no-power-tap-neckdown': 'power_tap_neckdown_check',
+    # The shared "Fix DRC settings after routing" box (#160/#693): a step
+    # carrying the flag skips the DRC-floor writeback, a step without it
+    # writes back -- the CLI's per-step semantics, since reset_params_to_
+    # defaults re-ticks the box before every step.
+    '--no-fix-drc-settings': 'fix_drc_check',
 }
 # Repeatable nargs='+' flags (argparse action='append'): each OCCURRENCE is one
 # group, so the plan param is a list of lists. route.py's --length-match-group

@@ -2810,6 +2810,12 @@ class RoutingDialog(wx.Dialog):
         self.guide_corridor_spacing_ctrl.SetValue(str(defaults.GUIDE_CORRIDOR_SPACING))
         self.keepout_check.SetValue(defaults.KEEPOUT_ENABLED)
         self.keepout_layer_ctrl.SetValue(defaults.KEEPOUT_LAYER)
+        # "Fix DRC settings after routing" (#160/#693), ticked as the
+        # constructor ticks it. A plan replays route.py's per-step semantics:
+        # a step without --no-fix-drc-settings writes the DRC floors back, a
+        # step with it (manifest_to_plan unticks the box) does not, and the
+        # next step starts ticked again.
+        self.fix_drc_check.SetValue(True)
         self.debug_lines_check.SetValue(False)
         self.verbose_check.SetValue(False)
         self.skip_routing_check.SetValue(False)

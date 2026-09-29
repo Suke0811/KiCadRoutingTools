@@ -104,6 +104,7 @@ NEGATED_BOOL_FLAGS = {
     '--no-smoothing': 'smoothing',
     '--no-stub-layer-swap': 'enable_layer_switch',
     '--no-power-tap-neckdown': 'power_tap_neckdown_check',
+    '--no-fix-drc-settings': 'fix_drc_check',
 }
 # Repeatable nargs='+' flags: each OCCURRENCE is one group, and every group
 # must survive, in order. The fallthrough kept only the last one, under a name
@@ -719,18 +720,15 @@ ROUTE_CLI_ONLY = {
 }
 
 # KNOWN GAPS, PENDING ANDY'S DECISION. Each flag changes what a step routes,
-# a GUI plan replay does NOT honour it today, and the fix is more than a
-# converter row or an alias. Listed so this gate stays green while the list
-# stays visible; taking an entry off is that code change.
-ROUTE_KNOWN_GAPS = {
-    '--no-fix-drc-settings': (
-        "its inverse is the 'Fix DRC settings after routing' box "
-        "(fix_drc_check), a persisted preference reset_params_to_defaults "
-        "does not touch; an inverted row alone would leave it unticked for "
-        "every later step, and the project floors it skips are what the "
-        "next route step reads. Needs a decision: row + reset line, or "
-        "leave the GUI preference in charge"),
-}
+# a GUI plan replay does NOT honour it, and the fix is more than a converter
+# row or an alias. Listed so this gate stays green while the list stays
+# visible; taking an entry off is that code change.
+#
+# EMPTY now. It held --component (a route step never read its refs, so a
+# replay routed every net), the keepout / guide-corridor layer and spacing
+# flags (controls that were never reset), and --no-fix-drc-settings (its
+# checkbox was a preference no step reset); each left when its fix landed.
+ROUTE_KNOWN_GAPS = {}
 
 # REACHED, but the control is not restored by swig_gui's
 # reset_params_to_defaults, which the plan executor runs before EVERY step: a
