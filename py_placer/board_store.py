@@ -122,9 +122,15 @@ class Ledger:
                 line = line.strip()
                 if line:
                     try:
-                        out.append(json.loads(line))
+                        doc = json.loads(line)
                     except ValueError:
-                        pass                # a torn last line never loses the rest
+                        continue            # a torn last line never loses the rest
+                    # A LINE IS ONLY A ROW IF IT IS AN OBJECT (#1078). A stray
+                    # `42` parses fine, and then every reader's `.get` raised,
+                    # so one bad line made every `verdict` on the ledger exit 1.
+                    # movie_attempts skips such lines for the same reason.
+                    if isinstance(doc, dict):
+                        out.append(doc)
         return out
 
     def last_accepted(self) -> Optional[Dict]:
