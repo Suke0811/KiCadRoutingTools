@@ -121,7 +121,7 @@ def test_bodies_sit_on_their_own_face():
     """A front part's body stands on the TOP face, a back part's hangs below
     the BOTTOM one -- measured in the scene graph. A back body used to sit
     inside the board, and a 3 mm back-side connector poked out of the top
-    (the phase-6 verifier: 83 of 83 back parts on orangecrab)."""
+    (the phase-6 verifier: 83 of 83 back parts on orangecrab, 4 of 4 here)."""
     board = os.path.join(ROOT, 'kicad_files', 'orangecrab.kicad_pcb')
     if not os.path.isfile(board):
         board = os.path.join(ROOT, 'kicad_files',
