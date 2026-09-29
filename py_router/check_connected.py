@@ -14,7 +14,8 @@ import math
 import fnmatch
 from typing import List, Dict, Set, Tuple, Optional
 from collections import defaultdict
-from kicad_parser import parse_kicad_pcb, Segment, Via, Pad, PCBData, Zone
+from kicad_parser import (parse_kicad_pcb, Segment, Via, Pad, PCBData, Zone,
+                          pad_drill_capsule)
 from net_queries import expand_pad_layers
 
 
@@ -99,7 +100,7 @@ def matches_any_pattern(name: str, patterns: List[str]) -> bool:
     return False
 
 
-from geometry_utils import UnionFind
+from geometry_utils import UnionFind, segment_to_segment_distance
 
 
 def points_match(x1: float, y1: float, x2: float, y2: float, tolerance: float = 0.02) -> bool:
@@ -996,7 +997,8 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
                            zone_credit_validator=None,
                            pcb_data=None,
                            strict_fragments: bool = False,
-                           via_in_pad_margin: Optional[float] = None) -> Dict:
+                           via_in_pad_margin: Optional[float] = None,
+                           unflashed_hole_only: bool = False) -> Dict:
     """Check connectivity for a single net.
 
     Args:
@@ -1026,6 +1028,13 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
             passes COINCIDENCE_TOL: an off-centre via-in-pad grazing the pad
             outline is a joint KiCad accepts but not one a removal may lean
             on, while a track ending inside the barrel stays joined.
+        unflashed_hole_only: on a layer a pad's unconnected-layer mode removes
+            (connectivity.pad_unflashed_layers), a track end, a passing track
+            or a via joins the pad only by reaching its HOLE -- KiCad's own
+            test, since it flashes no copper there otherwise. Default False
+            keeps the outline credit for grading; the strict removal model
+            (#1063) passes True so a removal never leaves an annulus-only
+            joint KiCad grades open.
 
     Returns dict with:
         - connected: bool - whether all pads are connected
@@ -1211,6 +1220,15 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
         if this_pad_ids:
             pad_repr_id[pad_idx] = this_pad_ids[0]
             pad_copper_layers[pad_idx] = this_pad_layers
+    pad_hole_only = {}    # pad_idx -> layers joined only through the hole
+    if unflashed_hole_only:
+        # Local import (connectivity pulls in the routing config stack); every
+        # use below is gated on pad_hole_only, which stays empty without it.
+        from connectivity import pad_unflashed_layers, copper_reaches_pad_hole
+        for pad_idx, _layers in pad_copper_layers.items():
+            _h = pad_unflashed_layers(pads[pad_idx], _layers)
+            if _h:
+                pad_hole_only[pad_idx] = _h
 
     # Connect points through zones (power planes)
     # All points on the same layer that are inside the same zone are connected
@@ -1385,12 +1403,16 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
             reach = max(pad.size_x, pad.size_y) / 2 + tolerance + max_via_r
             for vx, vy, via_idx, vsize in via_pos_index.query_nearby(
                     pad.global_x, pad.global_y, '_via', reach):
-                if not (via_copper_layers[via_idx] & pad_copper_layers[pad_idx]):
+                _shared = via_copper_layers[via_idx] & pad_copper_layers[pad_idx]
+                if not _shared:
                     continue
                 _m = (max(vsize / 2 - 1e-6, tolerance)
                       if via_in_pad_margin is None
                       else max(via_in_pad_margin, tolerance))
-                if _point_in_pad(vx, vy, pad, margin=_m):
+                if _shared <= pad_hole_only.get(pad_idx, set()):
+                    if copper_reaches_pad_hole(vx, vy, _m, pad):
+                        _union(pad_repr_id[pad_idx], via_repr_id[via_idx])
+                elif _point_in_pad(vx, vy, pad, margin=_m):
                     _union(pad_repr_id[pad_idx], via_repr_id[via_idx])
 
     # A track that *ends inside* a pad's copper outline connects that pad even
@@ -1421,7 +1443,10 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
                     # rule (the strict twin clamps widths, so the strict
                     # graph keeps its tight gate automatically).
                     _m = max(ewidth / 2 - 1e-6, tolerance)
-                    if _point_in_pad(ex, ey, pad, margin=_m):
+                    if layer in pad_hole_only.get(pad_idx, ()):
+                        if copper_reaches_pad_hole(ex, ey, _m, pad):
+                            _union(pad_repr_id[pad_idx], eid)
+                    elif _point_in_pad(ex, ey, pad, margin=_m):
                         _union(pad_repr_id[pad_idx], eid)
 
     # Build spatial index for segments. Cell size = the widest credit reach
@@ -1454,6 +1479,18 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
             pad = pads[pad_idx]
             px, py, reach_pad = _pad_credit_disc(pad)
             for layer in pad_copper_layers[pad_idx]:
+                if layer in pad_hole_only.get(pad_idx, ()):
+                    # Unflashed layer: the track must cross the hole itself.
+                    (hax, hay), (hbx, hby), hr = pad_drill_capsule(pad)
+                    for seg, seg_start_id in seg_index.query_near(
+                            (hax + hbx) / 2, (hay + hby) / 2, layer,
+                            radius=max_seg_width / 2 + hr
+                            + math.hypot(hbx - hax, hby - hay) / 2):
+                        if segment_to_segment_distance(
+                                seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                                hax, hay, hbx, hby) <= seg.width / 2 + hr:
+                            _union(pad_repr_id[pad_idx], seg_start_id)
+                    continue
                 for seg, seg_start_id in seg_index.query_near(
                         px, py, layer, radius=max_seg_width / 2 + reach_pad):
                     dx = seg.end_x - seg.start_x

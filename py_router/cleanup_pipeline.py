@@ -74,6 +74,26 @@ def _changed_nets(before, after):
             if before.get(n) != after.get(n)}
 
 
+# route.py runs the strict collapse ONCE, on the board it ships, after the
+# plane finalize and the reconciliation (route._late_strict_collapse1063). Its
+# in-run cleanup passes strict_collapse=False, and while the finalize runs it
+# holds this counter so the plane-repair cleanups it calls in-process skip the
+# collapse too. The counter lives HERE because route.py is `__main__` on the
+# CLI while repair_planes imports it as `route` -- a flag in route.py would be
+# two flags (#1069's two summary sinks).
+_STRICT_COLLAPSE_DEFERRED = [0]
+
+
+def defer_strict_collapse(delta: int) -> None:
+    """+1 on entering a region whose copper a later strict collapse will
+    grade, -1 on leaving it (pair them in try/finally)."""
+    _STRICT_COLLAPSE_DEFERRED[0] = max(0, _STRICT_COLLAPSE_DEFERRED[0] + delta)
+
+
+def strict_collapse_deferred() -> bool:
+    return _STRICT_COLLAPSE_DEFERRED[0] > 0
+
+
 def _smooth_skip_net_ids(pcb_data):
     """Nets the #536 octolinear smoothing pass must never touch: protected
     nets (length/time-matched groups, coupled diff pairs, KiCad-locked
@@ -120,6 +140,7 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
                            progress_callback=None,
                            smooth: bool = False,
                            merge_collinear: bool = True,
+                           strict_collapse: bool = True,
                            ) -> CleanupOutcome:
     """Run the post-route cleanup passes in their one canonical order.
 
@@ -141,7 +162,12 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
       7. prune_redundant_cycles -- per-net tree invariant (RAM_A9 loops),
          then collapse_strict_redundant (#217/#1063: strictly redundant
          copper, incl. in-pad / in-via wiggles, and the vias it frees) and
-         remove_orphan_islands.
+         remove_orphan_islands. The collapse (and 10b) runs only with
+         ``strict_collapse`` and outside a defer_strict_collapse region:
+         route.py collapses once at the END of its run instead, so the
+         copper its plane finalize and reconciliation route around is the
+         copper the router laid (cparti_fpga: collapsing mid-run steered
+         the finalize's rip/reroute, 6 open nets -> 15).
       8. sweep_dead_ends       -- trim dead-end spurs and unsupported vias.
       9. neck_wide_segments_grazing_pads -- width-only fix for wide power
                                   trunks overlapping a fine-pitch foreign pad.
@@ -398,11 +424,13 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
     # parallel chains, pad/via-buried tails and in-pad/in-via wiggles that
     # are redundant under the strict removability model (the one check_weird
     # grades with). Before the sweep so its freed this-run vias drop too.
-    _prog("strict-redundant collapse")
-    _sc_stats = {}
-    _sc_n, _sc_strip = collapse_strict_redundant(results, pcb_data, _sub_scope,
-                                                 keep_input_copper=keep_input_copper,
-                                                 stats=_sc_stats)
+    _collapse_on = strict_collapse and not strict_collapse_deferred()
+    _sc_n, _sc_strip, _sc_stats = 0, [], {}
+    if _collapse_on:
+        _prog("strict-redundant collapse")
+        _sc_n, _sc_strip = collapse_strict_redundant(
+            results, pcb_data, _sub_scope, keep_input_copper=keep_input_copper,
+            stats=_sc_stats)
     counts['strict_collapsed'] = _sc_n
     counts['strict_collapse_vias'] = _sc_stats.get('vias', 0)
     _trace('strict_collapse')
@@ -551,7 +579,7 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
     # dangling via behind, so no sweep has to follow it.
     _changed = _changed_nets(_after_collapse,
                              _net_copper_signature(pcb_data, _sub_scope))
-    if _changed:
+    if _changed and _collapse_on:
         _prog("final strict collapse")
         _close_ids = {id(s) for r in results
                       if r.get('cleanup') in CLOSE_SOFT_JOINT_KINDS

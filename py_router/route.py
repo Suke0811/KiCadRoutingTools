@@ -556,6 +556,120 @@ def _ship_via_protection962(pcb_data, output_file, return_results, results_data,
     return record
 
 
+def _late_strict_collapse1063(pcb_data, output_file, return_results, results_data,
+                              write_model, input_signature, scope_names,
+                              keep_input_copper):
+    """The #1063 strict collapse, ONCE, on the board this run SHIPS.
+
+    It used to run inside run_post_route_cleanup, before the plane finalize
+    and the reconciliation -- and it removes a lot (cparti_fpga: 1063
+    segments where the pre-#1063 collapse removed 200). Those passes rip and
+    reroute around this copper, so collapsing it first steered them: from one
+    fixed input, cparti's route step went from 6 open nets to 15, every
+    removal innocent on its own (applied to the finished board it opens
+    nothing, by us or by KiCad). So the in-run cleanups now skip it and this
+    pass runs after every pass that lays copper, on the board the run ships:
+    the written file on the CLI, the write model on the GUI -- never
+    pcb_data, whose rip/reroute debris reaches no apply channel and could
+    vouch for a removal the shipped board cannot afford.
+
+    Ownership is by VALUE against the input board (`input_signature`,
+    improvement_gate.copper_item_key), the same on both fronts: copper the
+    input did not have is this run's, so a via it frees may go and
+    --keep-input-copper protects the rest. Scope: the run's nets plus every
+    net whose copper it changed. The model skips a net it cannot grade (a
+    broken net, a zoned net, one over STRICT_REMOVAL_MAX_SEGS), leaves no
+    dangle, island, dangling via or soft joint, and never removes a pad's
+    connection -- see StrictRemovalModel.
+
+    Returns (segments removed, vias dropped).
+    """
+    import copy as _copy
+    from collections import Counter
+    from improvement_gate import copper_signature, copper_item_key
+    from pcb_modification import collapse_strict_redundant
+    try:
+        if return_results:
+            rd = results_data or {}
+            segs_by_net, vias_by_net = write_model(rd)
+            board = _copy.copy(pcb_data)
+            board.segments = [s for _l in segs_by_net.values() for s in _l]
+            board.vias = [v for _l in vias_by_net.values() for v in _l]
+        elif output_file and os.path.isfile(output_file):
+            from kicad_parser import parse_kicad_pcb as _pk1063
+            board = _pk1063(output_file)
+        else:
+            return 0, 0
+        name_of = {nid: n.name for nid, n in board.nets.items()}
+        final_sig = copper_signature(board.segments, board.vias, name_of.get)
+        left = {n: Counter(c) for n, c in (input_signature or {}).items()}
+        owned_segs, owned_vias = [], []
+        for item in list(board.segments) + list(board.vias):
+            c = left.get(name_of.get(item.net_id))
+            k = copper_item_key(item)
+            if c and c[k] > 0:
+                c[k] -= 1                   # input copper
+            elif hasattr(item, 'start_x'):
+                owned_segs.append(item)
+            else:
+                owned_vias.append(item)
+        changed = {n for n in set(final_sig) | set(input_signature or {})
+                   if final_sig.get(n) != (input_signature or {}).get(n)}
+        names = set(scope_names) | changed
+        scope = {nid for nid, nm in name_of.items() if nm in names}
+        before_s, before_v = list(board.segments), list(board.vias)
+        _stats = {}
+        collapse_strict_redundant(
+            [{'new_segments': owned_segs, 'new_vias': owned_vias}], board,
+            scope, keep_input_copper=keep_input_copper, stats=_stats)
+        kept_s = {id(s) for s in board.segments}
+        kept_v = {id(v) for v in board.vias}
+        removed = [s for s in before_s if id(s) not in kept_s]
+        dropped = [v for v in before_v if id(v) not in kept_v]
+        if not (removed or dropped):
+            return 0, 0
+        if return_results:
+            # Back onto the applier's channels: this run's copper leaves the
+            # list that adds it, input copper joins the removal lists.
+            gone = {id(x) for x in removed + dropped}
+            for r in rd.get('results') or []:
+                for key in ('new_segments', 'new_vias'):
+                    if r.get(key):
+                        r[key] = [x for x in r[key] if id(x) not in gone]
+            for key in ('all_swap_segments', 'all_swap_vias'):
+                if rd.get(key):
+                    rd[key] = [x for x in rd[key] if id(x) not in gone]
+            in_ids = {id(x) for x in before_s + before_v} - \
+                {id(x) for x in owned_segs + owned_vias}
+            rd.setdefault('segments_to_remove', []).extend(
+                s for s in removed if id(s) in in_ids)
+            rd.setdefault('vias_to_remove', []).extend(
+                v for v in dropped if id(v) in in_ids)
+            pcb_data.segments = [s for s in pcb_data.segments if id(s) not in gone]
+            pcb_data.vias = [v for v in pcb_data.vias if id(v) not in gone]
+        else:
+            from kicad_parser import is_kicad_10 as _k10_1063
+            from kicad_writer import (remove_segments_from_content as _rsc1063,
+                                      remove_vias_from_content as _rvc1063)
+            with open(output_file, 'r', encoding='utf-8') as _f:
+                _c = _f.read()
+            _map = name_of if _k10_1063(_c) else None
+            if removed:
+                _c, _ = _rsc1063(_c, removed, net_id_to_name=_map)
+            if dropped:
+                _c, _ = _rvc1063(_c, dropped, net_id_to_name=_map)
+            with open(output_file, 'w', encoding='utf-8') as _f:
+                _f.write(_c)
+        print(f"  Strict collapse (#1063, end of run): removed {len(removed)} "
+              f"redundant segment(s)"
+              + (f" and {len(dropped)} via(s) they freed" if dropped else "")
+              + f" on {_stats.get('nets', 0)} net(s)")
+        return len(removed), len(dropped)
+    except Exception as _e:                                     # noqa: BLE001
+        print(f"  (end-of-run strict collapse skipped: {type(_e).__name__}: {_e})")
+        return 0, 0
+
+
 def _late_orphan_sweep659(pcb_data, output_file, return_results, results_data,
                           protect_unfinished, keep_input_copper, skip_routing):
     """Sweep pad-less copper islands off the FINAL board (#659).
@@ -3223,7 +3337,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # So smoothing is not starving the later passes; on balance it helps
         # them, presumably by freeing corridor space. --no-smoothing disables it
         # per step; KICAD_SMOOTH_ROUTE=0/1 still overrides either way.
-        smooth=smoothing)
+        smooth=smoothing,
+        # #1063: the strict collapse runs ONCE, at the end of the outermost
+        # run (_late_strict_collapse1063), never here -- the plane finalize
+        # and the reconciliation route around this copper, and collapsing it
+        # first steered their rip/reroute (cparti_fpga 6 open nets -> 15).
+        strict_collapse=False)
     # The cleanup pipeline MOVES and STRIPS copper -- nudge_grazing_octolinear /
     # _microshift / _vias re-bend and shift it, the prunes, sweeps and the #536
     # smoother delete and replace it -- all by mutating pcb_data directly. None
@@ -4915,6 +5034,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             and os.environ.get('KICAD_PLANE_FINALIZE', '1') == '1'):
         try:
             _finalize_depth(+1)
+            # #1063: the finalize's in-process plane cleanups skip the strict
+            # collapse; the end-of-run pass grades their copper with the rest.
+            from cleanup_pipeline import defer_strict_collapse as _dsc1063
+            _dsc1063(+1)
             from repair_planes import (
                 repair_planes as _rdp_engine, auto_detect_zones as _adz)
             _gui9 = bool(return_results)
@@ -5705,6 +5828,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                   f"{RESET}")
         finally:
             _finalize_depth(-1)
+            if '_dsc1063' in locals():
+                _dsc1063(-1)
             # Drop the GUI oracle's staging files (locals() guard: the names
             # only exist once the finalize body got that far).
             for _p9 in (locals().get('_orc_tmp9') or []):
@@ -6294,22 +6419,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         except Exception as _e10:
             print(f"  post-reconciliation re-audit failed: {_e10}")
 
-    _late_orphan_sweep659(
-        pcb_data, output_file, return_results,
-        locals().get('results_data'), _protect_unfinished, keep_input_copper,
-        skip_routing)
-
-    # #962: declare Type VII on every via this run put in a pad or a paste
-    # opening. It runs HERE because this is after the last pass that adds or
-    # moves a via (the #666 re-emit, the in-run finalize, the oracle, the
-    # reconcile sub-run, the #678 weld, the late sweep above), so the record
-    # describes the board that ships. Outermost call only.
-    _via_in_pad962 = None
-    if final_reconcile and not skip_routing:
-        _via_in_pad962 = _ship_via_protection962(
-            pcb_data, output_file, return_results, locals().get('results_data'),
-            _input_vias962)
-
     def _gui_write_model(rd):
         """The board the GUI applier will produce from `rd`: input copper
         MINUS what it removes PLUS what it adds, as ({net: segs}, {net: vias}).
@@ -6332,6 +6441,34 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         for _v6 in (rd.get('all_swap_vias') or []):
             _av.setdefault(_v6.net_id, []).append(_v6)
         return _as, _av
+
+    # #1063: the strict collapse, ONCE, after every pass that lays copper (the
+    # finalize, the oracle legs, the reconciliation laps, the #678 weld) and
+    # before the sweep, the #962 via stamp and the #1069 re-grade, so all of
+    # them read the collapsed board. Outermost run only, both fronts.
+    if final_reconcile and not skip_routing and not _ckpt_stop:
+        _late_strict_collapse1063(
+            pcb_data, output_file, return_results, locals().get('results_data'),
+            _gui_write_model, _input_sig1069,
+            {pcb_data.nets[_n].name for _n in sweep_scope_ids
+             if _n in pcb_data.nets},
+            keep_input_copper)
+
+    _late_orphan_sweep659(
+        pcb_data, output_file, return_results,
+        locals().get('results_data'), _protect_unfinished, keep_input_copper,
+        skip_routing)
+
+    # #962: declare Type VII on every via this run put in a pad or a paste
+    # opening. It runs HERE because this is after the last pass that adds or
+    # moves a via (the #666 re-emit, the in-run finalize, the oracle, the
+    # reconcile sub-run, the #678 weld, the late sweep above), so the record
+    # describes the board that ships. Outermost call only.
+    _via_in_pad962 = None
+    if final_reconcile and not skip_routing:
+        _via_in_pad962 = _ship_via_protection962(
+            pcb_data, output_file, return_results, locals().get('results_data'),
+            _input_vias962)
 
     # ---- POWER WIDTHS (#1033) ---------------------------------------------
     # Disclosure, not a gate: per requested-width net, how much of the copper

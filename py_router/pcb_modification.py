@@ -2169,10 +2169,14 @@ class StrictRemovalModel:
         barrel is copper, not a cap-overlap graze). A via joins a pad only
         with its CENTRE in the pad -- an off-centre via-in-pad grazing the
         outline is a joint KiCad accepts but not one a removal may lean on
-        (the 0708d lesson). Every pad stays in ONE component and no pad-less
-        copper island appears (num_copper_components);
-      * PHYSICAL graph (real widths and barrels) keeps every pad connected
-        (a branch carrying an overlap-credited pad connection stays whole);
+        (the 0708d lesson). On a layer a pad's unconnected-layer mode removes,
+        only its HOLE joins (pad_unflashed_layers: KiCad flashes no copper
+        there otherwise, so an end left in the annulus is open). Every pad
+        stays in ONE component and no pad-less copper island appears
+        (num_copper_components);
+      * PHYSICAL graph (real widths and barrels, the same hole rule) keeps
+        every pad connected (a branch carrying an overlap-credited pad
+        connection stays whole);
       * no via this pass may not drop gets WORSE in check_weird's via grading
         (joins >= 2 layers -> dangling, or dangling -> floating). A droppable
         via (this run's own, unlocked) that does is removed WITH the segments,
@@ -2230,7 +2234,8 @@ class StrictRemovalModel:
             c.width = min(c.width, tol)
             clamped.append(c)
         r = check_net_connectivity(net_id, clamped, self.vias, self.pads, [],
-                                   return_graph=True, via_in_pad_margin=tol)
+                                   return_graph=True, via_in_pad_margin=tol,
+                                   unflashed_hole_only=True)
         g = r.get('graph')
         if not g or not g.get('pad_ids'):
             return
@@ -2238,7 +2243,7 @@ class StrictRemovalModel:
         if base['num_components'] != 1 or base['disconnected_pads']:
             return
         rp = check_net_connectivity(net_id, self.segs, self.vias, self.pads, [],
-                                    return_graph=True)
+                                    return_graph=True, unflashed_hole_only=True)
         gp = rp.get('graph')
         if not gp:
             return
@@ -2320,7 +2325,8 @@ class StrictRemovalModel:
             if math.hypot(x - v.x, y - v.y) < (getattr(v, 'size', 0.6) or 0.6) / 2 + half:
                 return True
         for p in self.pads:
-            if endpoint_reaches_pad(x, y, half, (s.layer,), p):
+            if endpoint_reaches_pad(x, y, half, (s.layer,), p,
+                                    unflashed_hole_only=True):
                 return True
         tol = COINCIDENCE_TOL
         ends = ((s.start_x, s.start_y), (s.end_x, s.end_y))

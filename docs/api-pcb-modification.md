@@ -105,15 +105,24 @@ the routing pipeline applies both so the model and the output file agree.
 > grades a removal of segments (a single one, or an unbranched run) plus the
 > vias it leaves joining nothing: every pad stays connected on the strict
 > graph (track widths clamped; a via joins a pad only by its centre,
-> `check_net_connectivity(..., via_in_pad_margin=...)`) and on the physical
+> `check_net_connectivity(..., via_in_pad_margin=...)`; on a layer a pad's
+> unconnected-layer mode removes, only its hole joins,
+> `check_net_connectivity(..., unflashed_hole_only=True)`) and on the physical
 > graph, no copper island, dangling end or soft joint appears, and no via the
 > pass may not drop -- anything but this run's own, unlocked vias -- is left
 > dangling. In-pad / in-via wiggles (both ends in same-net pad or via copper),
 > which #217 kept, are removed. A redundant loop through vias loses its via
-> branch first. The cleanup pipeline runs the collapse twice: after the cycle
-> prune, and again after `close_soft_joints` on the nets smoothing or bridging
-> changed, never removing the soft-joint bridges and web connectors close
-> lays. Nets over `STRICT_REMOVAL_MAX_SEGS` (500)
+> branch first. `run_post_route_cleanup(strict_collapse=True)` runs the
+> collapse twice: after the cycle prune, and again after `close_soft_joints` on
+> the nets smoothing or bridging changed, never removing the soft-joint bridges
+> and web connectors close lays. **route.py passes `strict_collapse=False`**
+> and collapses ONCE at the end of the outermost run
+> (`route._late_strict_collapse1063`), after the plane finalize, the oracle
+> legs and the reconciliation, on the board it ships (the written file on the
+> CLI, the write model on the GUI); the finalize's in-process plane cleanups
+> skip it too (`cleanup_pipeline.defer_strict_collapse`). Collapsing before
+> those passes steered their rip/reroute (cparti_fpga: 6 open nets -> 15 from
+> one input). Nets over `STRICT_REMOVAL_MAX_SEGS` (500)
 > segments are skipped by both. `check_connected.analyze_conn_excluding` takes
 > `excluded_via_indices` for this and now returns the `num_copper_components`
 > it always computed.
