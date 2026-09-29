@@ -268,8 +268,13 @@ ROWS = [
      (T_ATT,), 'KILLED'),
 
     ('film-counts-nan-or-negative', 'attempts',
-     "    if not math.isfinite(b) or b < 0:",
+     "    if (isinstance(b, float) and not math.isfinite(b)) or b < 0:",
      "    if False:",
+     (T_ATT,), 'KILLED'),
+
+    ('film-isfinite-on-an-int-again', 'attempts',
+     "    if (isinstance(b, float) and not math.isfinite(b)) or b < 0:",
+     "    if not math.isfinite(b) or b < 0:",
      (T_ATT,), 'KILLED'),
 
     ('a-null-iteration-raises-again', 'attempts',

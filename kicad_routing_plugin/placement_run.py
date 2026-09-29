@@ -433,7 +433,8 @@ def parse_placement_result(value):
         errors.append(f"report path not found: {data.get('report')!r}")
     blocking = data.get("blocking")
     # `isinstance(True, int)` holds, so the bool test is not redundant: a
-    # `false` here used to pass as a finished board (#1075).
+    # `false` or a `-1` used to pass validation and reach the status line as
+    # "blocking False" (#1075).
     if blocking is not None and (isinstance(blocking, bool)
                                  or not isinstance(blocking, int)
                                  or blocking < 0):

@@ -306,7 +306,9 @@ def _blocking_value(b):
     """
     if isinstance(b, bool) or not isinstance(b, (int, float)):
         return None
-    if not math.isfinite(b) or b < 0:
+    # `isfinite` on floats only: it converts an int to float, and a
+    # 400-digit JSON integer raised OverflowError.
+    if (isinstance(b, float) and not math.isfinite(b)) or b < 0:
         return None
     return b
 

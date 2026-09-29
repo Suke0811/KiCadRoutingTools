@@ -504,13 +504,18 @@ def blocking_defect(b):
     if not isinstance(b, (int, float)):
         kind = {dict: 'a JSON object', list: 'a JSON array',
                 str: 'a string'}.get(type(b), type(b).__name__)
-        text = repr(b)
+        try:
+            text = json.dumps(b, sort_keys=True)     # the JSON it arrived as
+        except (TypeError, ValueError):
+            text = repr(b)
         text = text if len(text) <= 60 else text[:57] + '...'
         hint = {dict: ' -- a per-term breakdown belongs in `blocking_by`',
-                str: " -- strings compare letter by letter, so '10' < '9'",
+                str: ' -- strings compare letter by letter',
                 }.get(type(b), '')
         return f'{kind} ({text}), not a number{hint}'
-    if not math.isfinite(b):
+    # FLOATS only: an int is always finite, and `math.isfinite` converts its
+    # argument to float -- a 400-digit JSON integer raised OverflowError here.
+    if isinstance(b, float) and not math.isfinite(b):
         return f'{b!r}, which no board measures'
     if b < 0:
         return f'negative ({b!r}); a count of blockers cannot be below zero'
@@ -1964,9 +1969,11 @@ def _score_key(score):
     # rows tie on `blocking`. Untested until now because the self-tests use a
     # uniform empty quality. Sort unknowns LAST rather than crashing. A boolean
     # or a NaN is not a measurement either (#1075): NaN never compares, so it
-    # would scramble every tie it touched.
+    # would scramble every tie it touched. `isfinite` on floats only: it
+    # converts an int to float, and a 400-digit one raised OverflowError.
     quality = tuple(v if isinstance(v, (int, float))
-                    and not isinstance(v, bool) and math.isfinite(v)
+                    and not isinstance(v, bool)
+                    and (isinstance(v, int) or math.isfinite(v))
                     else float('inf')
                     for v in (q.get('vias'), q.get('copper_mm'),
                               q.get('segments')))
@@ -2510,9 +2517,10 @@ def cmd_verdict(a):
                    'is nothing to be blocked or done ABOUT. If this came from '
                    'board_score, it did not finish.')
         elif blocking_defect(score.get('blocking')):
-            # #1075. Not null, so neither null sentence below is true of it --
-            # `false` used to read DONE-EXHAUSTED here and `Infinity` printed
-            # "STUCK: blocking == None".
+            # #1075. Not null, so neither null sentence below is true of it.
+            # Before this branch such a score fell through to the terminal
+            # verdicts: `false == 0` read DONE-EXHAUSTED and `Infinity`
+            # printed "STUCK: blocking == None".
             why = ('`blocking` is ' + blocking_defect(score.get('blocking'))
                    + '. A verdict ranks boards on `blocking`, so it must be a '
                    'non-negative number (board_score writes an integer, or '
@@ -2772,11 +2780,20 @@ def cmd_verdict(a):
         # examined is UNEXAMINED, and DONE must say so out loud.
         doc['reason'] += (' UNEXAMINED, and not passed: '
                           + ', '.join(doc['ungraded']) + '.')
-    if doc['unknown']:
+    if doc['unknown'] and isinstance(score.get('unknown'),
+                                     (list, tuple, set)):
         doc['reason'] += (' A component RAN and could not answer: '
                           + ', '.join(doc['unknown'])
                           + ' -- fix the instrument before trusting any '
                             'verdict here.')
+    elif doc['unknown']:
+        # The NO-SCORE branch's rule: "a component RAN" is asserted only over
+        # a LIST the score named (#1076) -- `false` or `"impedance"` names no
+        # component, it is a malformed score.
+        doc['reason'] += (' The score\'s `unknown` is not a list ('
+                          + ', '.join(doc['unknown'])
+                          + '), so it names no component -- re-score before '
+                            'trusting any verdict here.')
     print(json.dumps(doc, indent=1, sort_keys=True))
     return code
 

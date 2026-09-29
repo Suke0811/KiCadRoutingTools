@@ -347,6 +347,18 @@ out, errs = parse_placement_result(json.dumps(
 check("bad movie/blocking non-fatal",
       out is not None and out["movie"] is None and out["blocking"] is None
       and len(errs) == 2, str(errs))
+# #1075: `isinstance(True, int)` holds, so a bool (and a negative) passed.
+for _bad in (True, False, -1, 3.0, "0"):
+    out, errs = parse_placement_result(json.dumps(
+        {"status": "complete", "board": final_board, "blocking": _bad}))
+    check("blocking %r is refused" % (_bad,),
+          out is not None and out["blocking"] is None
+          and any("non-negative integer" in e for e in errs), str(errs))
+for _ok in (0, 3):
+    out, errs = parse_placement_result(json.dumps(
+        {"status": "complete", "board": final_board, "blocking": _ok}))
+    check("blocking %r is kept" % (_ok,),
+          out is not None and out["blocking"] == _ok and not errs, str(errs))
 
 # ------------------------------------------------------- artifacts + stable
 

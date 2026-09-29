@@ -863,7 +863,8 @@ def test_the_film_and_the_verdict_agree_on_what_a_blocking_is():
     _mark = len(_FAIL)
     import converge
     nan, inf = float('nan'), float('inf')
-    table = (0, 3, 3.0, 2.5, -0.0, 10 ** 20, -1, -0.5, True, False, None,
+    table = (0, 3, 3.0, 2.5, -0.0, 10 ** 20, 10 ** 400, -10 ** 400,
+             -1, -0.5, True, False, None,
              'abc', '10', '', {}, {'a': 1}, [], [1], nan, inf, -inf)
     for v in table:
         a, b = MA._blocking_value(v), converge.blocking_value(v)

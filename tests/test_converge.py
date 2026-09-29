@@ -1207,6 +1207,20 @@ def test_1075_a_score_whose_blocking_is_not_a_count_is_NO_SCORE():
         assert k == (0, (inf, inf, inf)), (v, k)
     assert converge._score_key({'blocking': 0, 'quality': {'vias': 4}}) \
         == (0, (4, inf, inf))
+    # A 400-digit JSON integer is a (silly) count, not a crash: `isfinite`
+    # converts an int to float and raised OverflowError, in the ranking of
+    # both terms -- and a ledger row carrying one broke every later verdict.
+    huge = 10 ** 400
+    assert converge.blocking_defect(huge) is None
+    assert converge._score_key({'blocking': huge, 'quality': {'vias': huge}}) \
+        == (huge, (huge, inf, inf))
+    with tempfile.TemporaryDirectory() as td:
+        rows = [_row_1071(i, 'completion', 3, quality={'vias': huge})
+                for i in range(5)]
+        led = _write_ledger_1071(os.path.join(td, 'huge.jsonl'), rows)
+        r = _verdict_1071(td, led, '{"blocking": %d}' % huge)
+        assert r.returncode in (converge.CONTINUE, converge.STUCK), \
+            (r.returncode, r.stderr[-300:])
     print("  PASS: a --score whose blocking is not a count is NO-SCORE, named "
           "for what it is")
 
@@ -1233,6 +1247,15 @@ def test_1076_verdict_reads_a_malformed_ungraded_beside_a_real_blocking():
         r = _verdict_1071(td, led, '{"blocking": 0, "ungraded": "abc"}')
         doc = json.loads(r.stdout)
         assert doc['ungraded'] == ["<not a list: 'abc'>"], doc['ungraded']
+        # ...and a non-list `unknown` names no component, so the verdict must
+        # not say one RAN and could not answer (the NO-SCORE branch's rule).
+        r = _verdict_1071(td, led, '{"blocking": 1, "unknown": false}')
+        doc = json.loads(r.stdout)
+        assert 'RAN and could not answer' not in doc['reason'], doc['reason']
+        assert '`unknown` is not a list' in doc['reason'], doc['reason']
+        r = _verdict_1071(td, led, '{"blocking": 1, "unknown": ["impedance"]}')
+        assert 'RAN and could not answer: impedance' in \
+            json.loads(r.stdout)['reason']
     print("  PASS: a malformed ungraded/unknown beside a real blocking is "
           "echoed, not raised")
 
@@ -1259,7 +1282,8 @@ def test_1071_record_refuses_a_score_that_is_not_a_count_object():
             assert phrase in r.stderr, (raw, phrase, r.stderr)
             assert not os.path.exists(led), raw
             assert not os.path.exists(os.path.join(td, 'boards')), raw
-        # Every kind, since the film reads every row.
+        # Not only placement rows: the refusal does not look at --kind, and
+        # the film reads every row.
         run_utils.check(_argv('{"blocking": false}', kind='completion'),
                         refuse="`blocking` is the boolean false", code=2)
         # --score-file, the skill's own path.
@@ -1278,10 +1302,11 @@ def test_1071_record_refuses_a_score_that_is_not_a_count_object():
 
         # What IS a count, or honestly unmeasured, is still recorded.
         for raw in ('{"blocking": 0}', '{"blocking": 3}', '{"blocking": 2.0}',
-                    '{"blocking": null}', '{"quality": {}}'):
+                    '{"blocking": null}', '{"quality": {}}',
+                    '{"blocking": 1%s}' % ('0' * 400)):
             run_utils.check(_argv(raw), accept=True)
         with open(led, encoding='utf-8') as fh:
-            assert sum(1 for line in fh if line.strip()) == 5
+            assert sum(1 for line in fh if line.strip()) == 6
     print("  PASS: record refuses a blocking that is not a count, and a score "
           "that is not an object, before anything is written")
 
