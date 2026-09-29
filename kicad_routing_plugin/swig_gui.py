@@ -2645,7 +2645,11 @@ class RoutingDialog(wx.Dialog):
                     ('underpad_escape', False),
                     ('allow_via_in_pad', False),
                     ('plane_drop', True),    # #424 drops: default ON
-                    ('plane_net_layers_ctrl', '')):  # future-pour decl, empty
+                    ('plane_net_layers_ctrl', ''),   # future-pour decl, empty
+                    # bga_fanout --diff-pairs / --diff-pair-gap: no coupling,
+                    # the CLI's default gap.
+                    ('diff_pair_patterns_ctrl', ''),
+                    ('bga_diff_pair_gap', defaults.BGA_DIFF_PAIR_GAP)):
                 _ctl = _fctl(_name)
                 if _ctl is not None:
                     try:

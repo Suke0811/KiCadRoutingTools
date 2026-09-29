@@ -198,6 +198,20 @@ class NegativeControls(unittest.TestCase):
                 finally:
                     restore()
 
+    def test_the_bga_coupled_pair_gap_row_reverted(self):
+        """Without its bga_fanout row the gap converts to the diff tab's
+        name. The enumeration still resolves it (the fanout block re-homes
+        that legacy name), so it is the fixture's expectation that fails."""
+        self._mutate(M2P, "'bga_fanout.py': {'--diff-pair-gap': "
+                          "'bga_diff_pair_gap'},", "'bga_fanout.py': {},")
+        self._run(refuse='--diff-pair-gap: want 0.1143 got None')
+
+    def test_the_bga_coupled_pair_gap_reset_line_is_load_bearing(self):
+        self._mutate(SWIG, "('bga_diff_pair_gap', defaults.BGA_DIFF_PAIR_GAP)):",
+                     "):", within='reset_params_to_defaults')
+        self._run(refuse='--diff-pair-gap: LEAKS between plan steps: '
+                         'bga_diff_pair_gap is not restored')
+
     def test_plane_net_layers_dropped_by_the_converter_again(self):
         """The largest fix the enumeration found: 26 kept bga_fanout steps
         whose future-pour declaration the converter collected and never

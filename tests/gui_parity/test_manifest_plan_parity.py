@@ -132,12 +132,17 @@ LIST_FLAGS = {
     # then never copied into the step (26 kept corpus steps on 18 boards).
     '--plane-net-layers': 'plane_net_layers',
     '--layer-costs': 'layer_costs',
+    # bga_fanout's coupled-pair patterns: the BGA panel's Coupled pairs field.
+    '--diff-pairs': 'diff_pair_patterns_ctrl',
 }
 # Per-action overrides of SCALAR_FLAGS. #381 D4: route_diff.py's trace width is
 # --track-width, but its GUI home is the diff tab's diff_pair_width control (not
 # the Basic-tab track_width), so a diff step must carry it there.
 ACTION_SCALAR_OVERRIDES = {
     'route_diff': {'--track-width': 'diff_pair_width'},
+    # bga_fanout's --diff-pair-gap is the BGA panel's own coupled-pair gap,
+    # never the diff tab's diff_pair_gap (#493).
+    'fanout': {'--diff-pair-gap': 'bga_diff_pair_gap'},
 }
 # Fanout via/clearance/grid live on the fanout tab's shared params too, so
 # fanout steps must carry them like route steps do.
@@ -456,6 +461,7 @@ _MUST_RESOLVE = {
     # route_diff / bga_fanout fallthrough names older conversions carry.
     'diff_pair_intra_match', 'ac_couple_match', 'diff_chamfer_extra',
     'check_for_previous', 'no_inner_top_layer', 'force_escape_direction',
+    'diff_pairs',
 }
 
 
@@ -834,20 +840,10 @@ PLANES_KNOWN_GAPS = {
 }
 
 BGA_CLI_ONLY = {'--output': ROUTE_CLI_ONLY['--output']}
-# KNOWN GAPS, PENDING ANDY'S DECISION (bga_fanout.py).
+# KNOWN GAPS, PENDING ANDY'S DECISION (bga_fanout.py). (--diff-pairs and
+# --diff-pair-gap left when the BGA panel got its Coupled pairs field and its
+# own coupled-pair gap: 51 kept corpus steps on 36 boards carry both.)
 BGA_KNOWN_GAPS = {
-    '--diff-pairs': (
-        "takes net PATTERNS; the fanout tab's only control is the "
-        "'Differential pairs' checkbox, which sends ['*'] (every pair) or "
-        "nothing, so a replay cannot scope the pairs. The largest measured "
-        "replay loss: 51 kept steps on 36 corpus boards, all with specific "
-        "patterns (DDR CK/DQS, PCIe, HDMI, ...). Needs a pattern control or "
-        "a code change"),
-    '--diff-pair-gap': (
-        "no control: fanout_gui hard-codes defaults.BGA_DIFF_PAIR_GAP (#493 "
-        "stopped it leaking the diff tab's gap), so a recorded gap is lost -- "
-        "the same 51 kept steps record 0.09, 0.1, 0.1143, 0.127, 0.15, "
-        "0.2032 and 0.25 mm. Needs a control"),
     '--primary-escape': (
         "its control is the escape_direction RadioBox, which the plan "
         "executor's _set_control cannot set (no RadioBox branch, no "
@@ -1209,7 +1205,8 @@ def check_flag_coverage(tool):
     valued = (set(m2p.FLAG_PARAMS) | set(m2p.LIST_FLAGS)
               | set(m2p.GROUP_LIST_FLAGS)
               | set(m2p.TOOL_FLAG_PARAMS.get(tool, {}))
-              | set(m2p.TOOL_OPTIONAL_LIST_FLAGS.get(tool, {})))
+              | set(m2p.TOOL_OPTIONAL_LIST_FLAGS.get(tool, {}))
+              | set(m2p.TOOL_LIST_FLAGS.get(tool, {})))
     base = m2p.parse_command(list(probe))
 
     def _control(p):

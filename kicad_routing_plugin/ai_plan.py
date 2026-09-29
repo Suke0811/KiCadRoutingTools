@@ -318,6 +318,9 @@ _PARAM_CONTROL_ALIASES = {
     'check_for_previous': 'check_previous',
     'no_inner_top_layer': 'no_inner_top',
     'force_escape_direction': 'force_escape',
+    # bga_fanout --diff-pairs, under the fallthrough name. (Its
+    # --diff-pair-gap cannot be aliased: see the fanout block's note.)
+    'diff_pairs': 'diff_pair_patterns_ctrl',
     # --layer-costs on a fanout or plane step: both tabs read the shared
     # Basic-tab control (#288, #381 D6). Route and diff steps never get here
     # -- their action blocks format it (see _GENERIC_SKIP).
@@ -455,7 +458,10 @@ def apply_step_params(step, dialog):
         # the QFN panel's own controls; skip them in the generic loop (which has
         # no same-named control on the fanout owners) to avoid a spurious
         # "no control, ignored" note.
-        "fanout": {"qfn_track_width", "qfn_clearance"},
+        "fanout": {"qfn_track_width", "qfn_clearance",
+                   # a BGA step's legacy diff_pair_gap: the block below
+                   # re-homes it onto the panel's own coupled-pair gap.
+                   "diff_pair_gap"},
         # #772: on a CAP step, `board_edge_clearance` is
         # place_fanout_clearance.py's flag, whose GUI home is the BGA
         # panel's cap_board_edge_clearance -- NOT the Basic tab's
@@ -872,6 +878,18 @@ def apply_step_params(step, dialog):
                     opts.exit_margin.SetValue(float(params["exit_margin"]))
                 except (TypeError, ValueError):
                     notes.append(f"ignored non-numeric exit_margin={params['exit_margin']!r}")
+            # Plans converted before manifest_to_plan scoped bga_fanout's
+            # --diff-pair-gap to this panel carry it as `diff_pair_gap`. On a
+            # BGA fanout step that can only mean the panel's own coupled-pair
+            # gap. It is handled HERE rather than by an alias because an alias
+            # would re-point a route_diff step's diff_pair_gap too, which is
+            # the diff tab's (owner scoping, #772); _GENERIC_SKIP['fanout']
+            # keeps the generic loop from logging it as ignored.
+            if "diff_pair_gap" in params:
+                try:
+                    opts.bga_diff_pair_gap.SetValue(float(params["diff_pair_gap"]))
+                except (TypeError, ValueError):
+                    notes.append(f"ignored non-numeric diff_pair_gap={params['diff_pair_gap']!r}")
         else:
             opts = dialog.fanout_tab.qfn_options
             if "extension" in params:

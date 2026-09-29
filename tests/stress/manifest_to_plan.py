@@ -335,6 +335,19 @@ TOOL_FLAG_ALIASES = {
 TOOL_FLAG_PARAMS = {
     'route_diff.py': {'--track-width': 'diff_pair_width'},
     'qfn_fanout.py': {'--width': 'qfn_track_width', '--clearance': 'qfn_clearance'},
+    # bga_fanout's coupled-pair gap is the BGA panel's OWN control, never the
+    # diff tab's diff_pair_gap that the global row targets (#493: that one
+    # resolves to the net-class gap).
+    'bga_fanout.py': {'--diff-pair-gap': 'bga_diff_pair_gap'},
+}
+
+# Per-tool list flags (nargs='*' / '+') whose GUI home is one text field.
+# bga_fanout's --diff-pairs names the pairs to couple; the BGA panel's Coupled
+# pairs field takes the patterns space-joined. A bare flag is [] -- no pairs,
+# as in the CLI, where an empty list is falsy -- so it is not an
+# optional-list flag with a True for bare.
+TOOL_LIST_FLAGS = {
+    'bga_fanout.py': {'--diff-pairs': 'diff_pair_patterns_ctrl'},
 }
 
 # Per-tool flags taking an OPTIONAL list (argparse nargs='*'). route.py and
@@ -408,9 +421,10 @@ def parse_command(argv):
     aliases = TOOL_FLAG_ALIASES.get(tool, {})
     tool_params = TOOL_FLAG_PARAMS.get(tool, {})
     tool_optional_lists = TOOL_OPTIONAL_LIST_FLAGS.get(tool, {})
+    tool_lists = TOOL_LIST_FLAGS.get(tool, {})
     while i < len(argv):
         a = aliases.get(argv[i], argv[i])
-        if a in tool_optional_lists:
+        if a in tool_optional_lists or a in tool_lists:
             # Stop at a positional board file, like --component below.
             vals = []
             i += 1
@@ -418,7 +432,10 @@ def parse_command(argv):
                    and not argv[i].endswith('.kicad_pcb')):
                 vals.append(str(argv[i]))
                 i += 1
-            step['params'][tool_optional_lists[a]] = vals or True
+            if a in tool_lists:
+                step['params'][tool_lists[a]] = vals
+            else:
+                step['params'][tool_optional_lists[a]] = vals or True
         elif a in IGNORE_FLAGS:
             i += 1
             while i < len(argv) and not argv[i].startswith('--'):
