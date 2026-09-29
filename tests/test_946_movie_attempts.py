@@ -785,7 +785,7 @@ def test_lineage_falls_back_to_last_accepted_and_says_so():
 #: graded row -- the shape of #1071's tigard ledger, plus the scalars that
 #: `float()` accepted without a word.
 _NOT_A_COUNT = ({'a': 1}, [1], 'abc', '10', True, False, -1,
-                float('nan'), float('inf'))
+                float('nan'), float('inf'), 10 ** 400)
 
 
 def test_a_blocking_that_is_not_a_count_is_ungraded_not_raised():
@@ -804,10 +804,6 @@ def test_a_blocking_that_is_not_a_count_is_ungraded_not_raised():
                                     'parent_sha': 'r0',
                                     'result_sha': 'r%d' % i, 'accepted': False,
                                     'score': {'blocking': b}}) + '\n')
-            # A null iteration, and a parent_sha that is not a string.
-            f.write(json.dumps({'iteration': None, 'kind': 'completion',
-                                'parent_sha': ['r0'], 'accepted': False,
-                                'score': {'blocking': 2}}) + '\n')
         try:
             t = MA.attempts_from_converge_ledger(p)
         except Exception as exc:                            # noqa: BLE001
@@ -815,9 +811,9 @@ def test_a_blocking_that_is_not_a_count_is_ungraded_not_raised():
                  % (type(exc).__name__, exc))
             return
         got = {a.index: a for a in t.attempts}
-        if len(t.attempts) != len(_NOT_A_COUNT) + 2:
+        if len(t.attempts) != len(_NOT_A_COUNT) + 1:
             fail('rows were dropped: %d of %d kept'
-                 % (len(t.attempts), len(_NOT_A_COUNT) + 2))
+                 % (len(t.attempts), len(_NOT_A_COUNT) + 1))
         if got.get(0) is None or got[0].score != 3.0:
             fail('the graded row lost its score: %r' % (got.get(0),))
         for i, b in enumerate(_NOT_A_COUNT, 1):
@@ -830,10 +826,33 @@ def test_a_blocking_that_is_not_a_count_is_ungraded_not_raised():
         if 'not a count' not in t.note or \
                 '%d with a blocking' % len(_NOT_A_COUNT) not in t.note:
             fail('the note does not count the non-count rows: %r' % t.note)
-        last = t.attempts[-1]
-        if last.index != len(_NOT_A_COUNT) + 1 or last.score != 2.0:
-            fail('a null iteration did not fall back to the row position: %r'
-                 % (last,))
+        note = t.note
+
+        # The row's OTHER fields: a null or boolean `iteration` falls back to
+        # the row position (`int(None)` raised; `true` read as 1), and a
+        # parent_sha / result_sha that is not a string is no lineage key (a
+        # list raised `unhashable`).
+        s = os.path.join(td, 'i.jsonl')
+        with open(s, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({'iteration': 0, 'kind': 'completion',
+                                'result_sha': ['r0'], 'accepted': True,
+                                'score': {'blocking': 3}}) + '\n')
+            f.write(json.dumps({'iteration': None, 'kind': 'completion',
+                                'parent_sha': ['r0'], 'accepted': False,
+                                'score': {'blocking': 2}}) + '\n')
+            f.write(json.dumps({'iteration': True, 'kind': 'completion',
+                                'accepted': False,
+                                'score': {'blocking': 1}}) + '\n')
+        try:
+            u = MA.attempts_from_converge_ledger(s)
+        except Exception as exc:                            # noqa: BLE001
+            fail('a malformed iteration / sha raised: %s: %s'
+                 % (type(exc).__name__, exc))
+        else:
+            idx = [(a.index, a.score) for a in u.attempts]
+            if idx != [(0, 3.0), (1, 2.0), (2, 1.0)]:
+                fail('a null or boolean iteration did not fall back to the '
+                     'row position: %r' % (idx,))
 
         # `_graded` decides whether placement laps leave the axis. A routing
         # row whose blocking is not a count is NOT a routed verdict, so a
@@ -853,7 +872,7 @@ def test_a_blocking_that_is_not_a_count_is_ungraded_not_raised():
                  'took the placement lap off the axis: %r' % t.note)
     if len(_FAIL) == _mark:
         print('  PASS: %d non-count blockings drawn ungraded and counted: %s'
-              % (len(_NOT_A_COUNT), t.note))
+              % (len(_NOT_A_COUNT), note))
 
 
 def test_the_film_and_the_verdict_agree_on_what_a_blocking_is():
@@ -867,7 +886,12 @@ def test_the_film_and_the_verdict_agree_on_what_a_blocking_is():
              -1, -0.5, True, False, None,
              'abc', '10', '', {}, {'a': 1}, [], [1], nan, inf, -inf)
     for v in table:
-        a, b = MA._blocking_value(v), converge.blocking_value(v)
+        try:
+            a, b = MA._blocking_value(v), converge.blocking_value(v)
+        except Exception as exc:                            # noqa: BLE001
+            fail('the rule raised on %r: %s: %s'
+                 % (v, type(exc).__name__, exc))
+            continue
         same = (a is None and b is None) or (
             a is not None and b is not None and a == b
             and type(a) is type(b))

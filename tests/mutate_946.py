@@ -277,6 +277,21 @@ ROWS = [
      "    if not math.isfinite(b) or b < 0:",
      (T_ATT,), 'KILLED'),
 
+    ('film-past-float-is-a-count', 'attempts',
+     "    if b > sys.float_info.max:\n        return None",
+     "    if False:\n        return None",
+     (T_ATT,), 'KILLED'),
+
+    ('a-list-result-sha-raises', 'attempts',
+     "        if e.get('result_sha') and isinstance(e['result_sha'], str):\n",
+     "        if e.get('result_sha'):\n",
+     (T_ATT,), 'KILLED'),
+
+    ('a-bool-iteration-reads-as-one', 'attempts',
+     "        return it if isinstance(it, int) and not isinstance(it, bool) else i",
+     "        return it if isinstance(it, int) else i",
+     (T_ATT,), 'KILLED'),
+
     ('a-null-iteration-raises-again', 'attempts',
      "        return it if isinstance(it, int) and not isinstance(it, bool) else i",
      "        return int(it)",

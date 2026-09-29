@@ -519,6 +519,12 @@ def blocking_defect(b):
         return f'{b!r}, which no board measures'
     if b < 0:
         return f'negative ({b!r}); a count of blockers cannot be below zero'
+    # Past the float range: nothing measures that many blockers, and the film
+    # plots `float(b)`, which raised OverflowError on a row `record` had
+    # accepted. (int > float compares exactly, without converting.)
+    if b > sys.float_info.max:
+        return (f'an integer of {len(str(b))} digits, beyond any float, which '
+                f'no board measures')
     return None
 
 
@@ -2773,7 +2779,15 @@ def cmd_verdict(a):
                 f'both were graded with --impedance-nets, and the board called '
                 f'worse was one impedance crossing better. Re-score with the '
                 f'same flags to make the comparison mean anything.')
-    if doc['ungraded']:
+    if doc['ungraded'] and not isinstance(score.get('ungraded'),
+                                          (list, tuple, set)):
+        # Like `unknown` below: `"abc"` names no component, so it must not be
+        # read as three components nobody examined (#1076).
+        doc['reason'] += (' The score\'s `ungraded` is not a list ('
+                          + ', '.join(doc['ungraded'])
+                          + '), so it names no component -- re-score before '
+                            'trusting any verdict here.')
+    elif doc['ungraded']:
         # Not fatal: a board with no spec files has nothing to grade those
         # components against, and making it fatal would put every corpus board
         # permanently in STUCK. But it is never silent -- a component nothing

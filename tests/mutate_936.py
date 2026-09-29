@@ -48,12 +48,14 @@ TARGETS = {
     'cv': os.path.join(REPO, 'py_placer', 'converge.py'),
     'dfl': os.path.join(REPO, 'tests', 'test_doc_flag_liveness.py'),
     't431': os.path.join(REPO, 'tests', 'test_431_skill_commands.py'),
+    'prun': os.path.join(REPO, 'kicad_routing_plugin', 'placement_run.py'),
 }
 
 T_WORKLIST = 'tests/test_broken_worklist.py'
 T_CONVERGE = 'tests/test_converge.py'
 T_DFL = 'tests/test_doc_flag_liveness.py'
 T_431 = 'tests/test_431_skill_commands.py'
+T_PRUN = 'tests/test_placement_run.py'
 
 #: (name, target, old, new, tests that must notice, expectation)
 ROWS = [
@@ -99,6 +101,10 @@ ROWS = [
     ('blocking-nonfinite-is-a-count', 'cv',
      "    if isinstance(b, float) and not math.isfinite(b):\n",
      "    if False:\n",
+     (T_CONVERGE,), KILLED),
+    ('blocking-past-float-is-a-count', 'cv',
+     "    if b > sys.float_info.max:\n        return (f'an integer",
+     "    if False:\n        return (f'an integer",
      (T_CONVERGE,), KILLED),
     # `isfinite` converts an int to float: a 400-digit count raised.
     ('isfinite-on-an-int-again', 'cv',
@@ -147,6 +153,19 @@ ROWS = [
      "    if doc['unknown'] and isinstance(score.get('unknown'),\n",
      "    if doc['unknown'] and (score.get('unknown'),\n",
      (T_CONVERGE,), KILLED),
+    ('ungraded-not-a-list-reads-unexamined', 'cv',
+     "    if doc['ungraded'] and not isinstance(score.get('ungraded'),\n",
+     "    if False and not isinstance(score.get('ungraded'),\n",
+     (T_CONVERGE,), KILLED),
+    # The GUI's result document: `isinstance(True, int)` holds.
+    ('placement-result-takes-a-bool', 'prun',
+     "    if blocking is not None and (isinstance(blocking, bool)\n",
+     "    if blocking is not None and (False\n",
+     (T_PRUN,), KILLED),
+    ('placement-result-takes-a-negative', 'prun',
+     "                                 or blocking < 0):\n",
+     "                                 or False):\n",
+     (T_PRUN,), KILLED),
     ('ledger-keeps-a-non-object-line', 'bst',
      "                    if isinstance(doc, dict):\n",
      "                    if True:\n",

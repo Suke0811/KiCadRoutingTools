@@ -310,6 +310,9 @@ def _blocking_value(b):
     # 400-digit JSON integer raised OverflowError.
     if (isinstance(b, float) and not math.isfinite(b)) or b < 0:
         return None
+    # ...and within the float range, since this axis plots `float(b)`.
+    if b > sys.float_info.max:
+        return None
     return b
 
 

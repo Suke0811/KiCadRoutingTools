@@ -1100,6 +1100,7 @@ _NOT_A_COUNT_1071 = (
     ('NaN', 'nan'),
     ('Infinity', 'inf'),
     ('-Infinity', 'inf'),
+    ('1' + '0' * 400, '401 digits'),
 )
 
 
@@ -1134,7 +1135,8 @@ def test_1071_a_ledger_holding_a_non_count_blocking_is_read_not_raised():
         assert pl['why'] == 'no-comparison', pl
         assert pl['blocked'] == 'unjudged', pl
         assert pl['unjudged_iterations'] == [2, 3, 6], pl
-        assert 'not a non-negative number' in doc['reason'], doc['reason']
+        assert 'recorded no `blocking` a verdict can rank (null, absent, or ' \
+            'not a non-negative number)' in doc['reason'], doc['reason']
 
         # The scalar cases: every lap of BOTH halves carries the same bad
         # value. Before the fix each of these read DONE-EXHAUSTED, exit 0.
@@ -1207,19 +1209,22 @@ def test_1075_a_score_whose_blocking_is_not_a_count_is_NO_SCORE():
         assert k == (0, (inf, inf, inf)), (v, k)
     assert converge._score_key({'blocking': 0, 'quality': {'vias': 4}}) \
         == (0, (4, inf, inf))
-    # A 400-digit JSON integer is a (silly) count, not a crash: `isfinite`
-    # converts an int to float and raised OverflowError, in the ranking of
-    # both terms -- and a ledger row carrying one broke every later verdict.
+    # A 400-digit JSON integer: `isfinite` converts an int to float and raised
+    # OverflowError. As a `blocking` it is not a count (past any float, and the
+    # film plots `float(b)`); as a quality item it ranks, and a ledger row
+    # carrying one must not break every later verdict (`record` does not
+    # validate `quality`).
     huge = 10 ** 400
-    assert converge.blocking_defect(huge) is None
-    assert converge._score_key({'blocking': huge, 'quality': {'vias': huge}}) \
-        == (huge, (huge, inf, inf))
+    assert 'digits' in (converge.blocking_defect(huge) or ''), \
+        converge.blocking_defect(huge)
+    assert converge._score_key({'blocking': 3, 'quality': {'vias': huge}}) \
+        == (3, (huge, inf, inf))
     with tempfile.TemporaryDirectory() as td:
         rows = [_row_1071(i, 'completion', 3, quality={'vias': huge})
                 for i in range(5)]
         led = _write_ledger_1071(os.path.join(td, 'huge.jsonl'), rows)
-        r = _verdict_1071(td, led, '{"blocking": %d}' % huge)
-        assert r.returncode in (converge.CONTINUE, converge.STUCK), \
+        r = _verdict_1071(td, led, '{"blocking": 3}')
+        assert r.returncode == converge.CONTINUE, \
             (r.returncode, r.stderr[-300:])
     print("  PASS: a --score whose blocking is not a count is NO-SCORE, named "
           "for what it is")
@@ -1247,6 +1252,11 @@ def test_1076_verdict_reads_a_malformed_ungraded_beside_a_real_blocking():
         r = _verdict_1071(td, led, '{"blocking": 0, "ungraded": "abc"}')
         doc = json.loads(r.stdout)
         assert doc['ungraded'] == ["<not a list: 'abc'>"], doc['ungraded']
+        assert 'UNEXAMINED' not in doc['reason'], doc['reason']
+        assert '`ungraded` is not a list' in doc['reason'], doc['reason']
+        r = _verdict_1071(td, led, '{"blocking": 0, "ungraded": ["length"]}')
+        assert 'UNEXAMINED, and not passed: length' in \
+            json.loads(r.stdout)['reason']
         # ...and a non-list `unknown` names no component, so the verdict must
         # not say one RAN and could not answer (the NO-SCORE branch's rule).
         r = _verdict_1071(td, led, '{"blocking": 1, "unknown": false}')
@@ -1275,6 +1285,18 @@ def test_1071_record_refuses_a_score_that_is_not_a_count_object():
             return base + ['--ledger', led, '--board', BOARD, '--kind', kind,
                            '--lever', 'x', '--score', score_text]
 
+        # A score that is not an object at all (#1078) -- FIRST, so a
+        # regression here reads as this refusal failing, not as a traceback
+        # in some later case.
+        for raw in ('[1, 2]', '"x"', '5'):
+            # `_cv`, not run_utils.check: the #1078 failure IS a traceback
+            # after the append, which check() would report as a broken test
+            # before the witness that names the defect is reached.
+            r = _cv(_argv(raw)[len(base) - 1:])      # from 'record' on
+            assert not os.path.exists(led), \
+                f'{raw}: the row was APPENDED before record failed (#1078)'
+            assert r.returncode == 2 and 'must be a JSON object' in r.stderr \
+                and 'Traceback' not in r.stderr, (raw, r.returncode, r.stderr)
         for raw, phrase in _NOT_A_COUNT_1071:
             r = run_utils.check(_argv('{"blocking": %s}' % raw),
                                 refuse='Nothing was written.', code=2)
@@ -1294,19 +1316,15 @@ def test_1071_record_refuses_a_score_that_is_not_a_count_object():
                                 'placement', '--lever', 'x', '--score-file',
                                 run_utils.evidence(sf)],
                         refuse='blocking_by', code=2)
-        # A score that is not an object at all (#1078).
-        for raw in ('[1, 2]', '"x"', '5'):
-            run_utils.check(_argv(raw), refuse='must be a JSON object', code=2)
         assert not os.path.exists(led)
         assert not os.path.exists(os.path.join(td, 'boards'))
 
         # What IS a count, or honestly unmeasured, is still recorded.
         for raw in ('{"blocking": 0}', '{"blocking": 3}', '{"blocking": 2.0}',
-                    '{"blocking": null}', '{"quality": {}}',
-                    '{"blocking": 1%s}' % ('0' * 400)):
+                    '{"blocking": null}', '{"quality": {}}'):
             run_utils.check(_argv(raw), accept=True)
         with open(led, encoding='utf-8') as fh:
-            assert sum(1 for line in fh if line.strip()) == 6
+            assert sum(1 for line in fh if line.strip()) == 5
     print("  PASS: record refuses a blocking that is not a count, and a score "
           "that is not an object, before anything is written")
 
