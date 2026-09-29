@@ -2766,7 +2766,11 @@ class RoutingDialog(wx.Dialog):
                     ('underpad_escape', False),
                     ('allow_via_in_pad', False),
                     ('plane_drop', True),    # #424 drops: default ON
-                    ('plane_net_layers_ctrl', '')):  # future-pour decl, empty
+                    ('plane_net_layers_ctrl', ''),   # future-pour decl, empty
+                    # bga_fanout --diff-pairs / --diff-pair-gap: no coupling,
+                    # the CLI's default gap.
+                    ('diff_pair_patterns_ctrl', ''),
+                    ('bga_diff_pair_gap', defaults.BGA_DIFF_PAIR_GAP)):
                 _ctl = _fctl(_name)
                 if _ctl is not None:
                     try:
@@ -2921,6 +2925,22 @@ class RoutingDialog(wx.Dialog):
         self.meander_spacing.SetValue(defaults.MEANDER_SPACING)
         self.time_matching_check.SetValue(defaults.TIME_MATCHING)
         self.time_match_tolerance.SetValue(defaults.TIME_MATCH_TOLERANCE)
+        # Guide corridor (#7) and keepout (#27): plan-settable (--guide-corridor
+        # / --keepout and their layer/spacing flags), so a step that sets them
+        # must not hand them to the next step. Restored to what the
+        # constructor sets. The "Clear ... layer after routing" boxes are not
+        # plan params (no CLI flag) and stay as the user left them.
+        self.guide_corridor_check.SetValue(defaults.GUIDE_CORRIDOR_ENABLED)
+        self.guide_corridor_layer_ctrl.SetValue(defaults.GUIDE_CORRIDOR_LAYER)
+        self.guide_corridor_spacing_ctrl.SetValue(str(defaults.GUIDE_CORRIDOR_SPACING))
+        self.keepout_check.SetValue(defaults.KEEPOUT_ENABLED)
+        self.keepout_layer_ctrl.SetValue(defaults.KEEPOUT_LAYER)
+        # "Fix DRC settings after routing" (#160/#693), ticked as the
+        # constructor ticks it. A plan replays route.py's per-step semantics:
+        # a step without --no-fix-drc-settings writes the DRC floors back, a
+        # step with it (manifest_to_plan unticks the box) does not, and the
+        # next step starts ticked again.
+        self.fix_drc_check.SetValue(True)
         self.debug_lines_check.SetValue(False)
         self.verbose_check.SetValue(False)
         self.skip_routing_check.SetValue(False)

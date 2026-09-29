@@ -190,6 +190,9 @@ def get_dialog_settings(dialog):
         'fanout_type': dialog.fanout_tab.fanout_type.GetSelection(),
         'fanout_bga_exit_margin': dialog.fanout_tab.bga_options.exit_margin.GetValue(),
         'fanout_bga_differential': dialog.fanout_tab.bga_options.differential_check.GetValue(),
+        # bga_fanout's --diff-pairs patterns and --diff-pair-gap.
+        'fanout_bga_diff_pair_patterns': dialog.fanout_tab.bga_options.diff_pair_patterns_ctrl.GetValue(),
+        'fanout_bga_diff_pair_gap': dialog.fanout_tab.bga_options.bga_diff_pair_gap.GetValue(),
         'fanout_bga_escape_direction': dialog.fanout_tab.bga_options.escape_direction.GetSelection(),
         'fanout_bga_force_escape': dialog.fanout_tab.bga_options.force_escape.GetValue(),
         'fanout_bga_rebalance': dialog.fanout_tab.bga_options.rebalance_escape.GetValue(),
@@ -646,6 +649,12 @@ def restore_dialog_settings(dialog, settings):
         dialog.fanout_tab.bga_options.exit_margin.SetValue(settings['fanout_bga_exit_margin'])
     if 'fanout_bga_differential' in settings:
         dialog.fanout_tab.bga_options.differential_check.SetValue(settings['fanout_bga_differential'])
+    if 'fanout_bga_diff_pair_patterns' in settings:
+        dialog.fanout_tab.bga_options.diff_pair_patterns_ctrl.SetValue(
+            str(settings['fanout_bga_diff_pair_patterns']))
+    if 'fanout_bga_diff_pair_gap' in settings:
+        dialog.fanout_tab.bga_options.bga_diff_pair_gap.SetValue(
+            float(settings['fanout_bga_diff_pair_gap']))
     if 'fanout_bga_escape_direction' in settings:
         dialog.fanout_tab.bga_options.escape_direction.SetSelection(settings['fanout_bga_escape_direction'])
     if 'fanout_bga_force_escape' in settings:

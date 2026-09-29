@@ -881,9 +881,42 @@ class BGAOptionsPanel(wx.ScrolledWindow):
 
         self.differential_check = wx.CheckBox(self, label="Differential pairs")
         self.differential_check.SetValue(False)
-        self.differential_check.SetToolTip("Route as differential pairs (uses Pair Gap from Differential tab)")
+        self.differential_check.SetToolTip(
+            "Pick the pairs to fan out from the list, routed as coupled pairs "
+            "at the Coupled pair gap below")
         self.differential_check.Bind(wx.EVT_CHECKBOX, self._on_differential_changed)
         mode_sizer.Add(self.differential_check, 0, wx.ALL, 5)
+
+        # bga_fanout's --diff-pairs / --diff-pair-gap. With the box above
+        # unticked the tab fans out the selected nets and couples the pairs
+        # these patterns name, in the same run -- what `bga_fanout --nets ...
+        # --diff-pairs '*CK*' '*DQS*'` does. Empty = no coupling.
+        pair_grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=5)
+        pair_grid.AddGrowableCol(1)
+        pair_grid.Add(wx.StaticText(self, label="Coupled pairs:"), 0,
+                      wx.ALIGN_CENTER_VERTICAL)
+        self.diff_pair_patterns_ctrl = wx.TextCtrl(self, value="")
+        self.diff_pair_patterns_ctrl.SetToolTip(
+            "Net patterns of the differential pairs to fan out as coupled "
+            "pairs, space separated (e.g. *CK* *DQS*) -- bga_fanout's "
+            "--diff-pairs. Empty = no coupling. Used when 'Differential "
+            "pairs' is unticked.")
+        pair_grid.Add(self.diff_pair_patterns_ctrl, 0, wx.EXPAND)
+        # Its OWN control, never the Differential tab's diff_pair_gap (#493:
+        # that one resolves to the net-class gap). Range as the diff tab's,
+        # four digits because recorded gaps are imperial (0.1143, 0.2032).
+        r = defaults.PARAM_RANGES['diff_pair_gap']
+        pair_grid.Add(wx.StaticText(self, label="Coupled pair gap (mm):"), 0,
+                      wx.ALIGN_CENTER_VERTICAL)
+        self.bga_diff_pair_gap = wx.SpinCtrlDouble(
+            self, min=r['min'], max=r['max'],
+            initial=defaults.BGA_DIFF_PAIR_GAP, inc=0.001)
+        self.bga_diff_pair_gap.SetDigits(4)
+        self.bga_diff_pair_gap.SetToolTip(
+            "Gap between the P and N escapes of a coupled pair (mm) -- "
+            "bga_fanout's --diff-pair-gap")
+        pair_grid.Add(self.bga_diff_pair_gap, 0, wx.EXPAND)
+        mode_sizer.Add(pair_grid, 0, wx.EXPAND | wx.ALL, 5)
 
         main_sizer.Add(mode_sizer, 0, wx.EXPAND | wx.BOTTOM, 5)
 
@@ -1105,7 +1138,11 @@ class BGAOptionsPanel(wx.ScrolledWindow):
         return {
             'exit_margin': self.exit_margin.GetValue(),
             'differential': is_differential,
-            'diff_pair_patterns': ['*'] if is_differential else [],  # Auto-detect all diff pairs when enabled
+            # Ticked: every auto-detected pair (the pairs come from the list).
+            # Unticked: the Coupled pairs patterns, [] -> None when empty.
+            'diff_pair_patterns': (['*'] if is_differential else
+                                   self.diff_pair_patterns_ctrl.GetValue().split()),
+            'diff_pair_gap': self.bga_diff_pair_gap.GetValue(),
             'primary_escape': 'horizontal' if self.escape_direction.GetSelection() == 0 else 'vertical',
             'force_escape_direction': self.force_escape.GetValue(),
             'rebalance_escape': self.rebalance_escape.GetValue(),
@@ -1673,7 +1710,10 @@ class FanoutTab(wx.Panel):
             layers=layers,
             track_width=track_width,
             clearance=clearance,
-            # BGA_DIFF_PAIR_GAP, and NOT shared['diff_pair_gap'] (#493).
+            # This tab's own Coupled pair gap (bga_diff_pair_gap, default
+            # BGA_DIFF_PAIR_GAP -- bga_fanout's --diff-pair-gap), and still
+            # NEVER shared['diff_pair_gap'] (#493). It used to be the constant
+            # itself; the history of why it is not the diff tab's value:
             # Two bugs in one line: the fallback named the signal-routing
             # constant (DIFF_PAIR_GAP 0.101) instead of the fanout one
             # (BGA_DIFF_PAIR_GAP 0.1) -- every neighbouring param here
@@ -1689,7 +1729,7 @@ class FanoutTab(wx.Panel):
             # plane step. bga_fanout.py's --diff-pair-gap likewise defaults
             # to BGA_DIFF_PAIR_GAP and does not consult the net class, so
             # this is the value the recorded chains were routed at.
-            diff_pair_gap=defaults.BGA_DIFF_PAIR_GAP,
+            diff_pair_gap=config.get('diff_pair_gap', defaults.BGA_DIFF_PAIR_GAP),
             exit_margin=config['exit_margin'],
             primary_escape=config['primary_escape'],
             force_escape_direction=config['force_escape_direction'],

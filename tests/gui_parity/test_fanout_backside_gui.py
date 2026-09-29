@@ -244,6 +244,18 @@ def main():
         if not kwargs:
             print("\nThe tab never reached generate_bga_fanout -- nothing to compare")
             return 1
+        # The BGA panel's Coupled pairs field and coupled-pair gap
+        # (bga_fanout --diff-pairs / --diff-pair-gap) at their defaults must
+        # hand the engine exactly what the tab passed before they existed:
+        # no coupling, and the constant gap #493 pinned it to.
+        import routing_defaults as _rd
+        r.append(_ok("both coupled-pair controls at default: diff_pair_patterns "
+                     "None and diff_pair_gap == BGA_DIFF_PAIR_GAP "
+                     "(got %r, %r)" % (kwargs.get('diff_pair_patterns'),
+                                       kwargs.get('diff_pair_gap')),
+                     kwargs.get('diff_pair_patterns') is None
+                     and repr(kwargs.get('diff_pair_gap'))
+                     == repr(_rd.BGA_DIFF_PAIR_GAP)))
         print(f"\nCLI front: text-parsed PCBData, same {len(nets)} nets, "
               f"replaying {len(kwargs)} kwargs from the tab")
         cli = run_cli(board_path, kwargs)

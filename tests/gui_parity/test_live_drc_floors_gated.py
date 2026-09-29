@@ -28,6 +28,12 @@ not:
     the IPC plan path's only floor writer (the SWIG branch gates its live
     writer instead, which would leave the checkbox inert here).
 
+The box is also a VETO a plan cannot override (main's 0a9b652b): the executor
+holds a user's untick through every step, and puts the user's value back in a
+`finally`, so no way a plan ends (completion, Stop, a raising step) leaves the
+box where the steps put it -- that is what settings_persistence saves on
+close. That half is front-agnostic and checked here too.
+
 Pure AST, no wx and no kipy -- runs anywhere in about a second.
 """
 import ast
@@ -110,9 +116,31 @@ def check_choke_point():
             f"Update this gate rather than deleting it."]
 
 
+def check_executor_restores():
+    """PlanExecutor._finish must put the user's value back in a `finally`."""
+    src = open(os.path.join(PLUGIN, "ai_plan.py"), encoding="utf-8").read()
+    tree = ast.parse(src)
+    fin = next((n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "_finish"),
+               None)
+    if fin is None:
+        return ["ai_plan.py has no _finish -- the restore cannot be checked"]
+    for n in ast.walk(fin):
+        if isinstance(n, ast.Try) and any(
+                getattr(getattr(c, "func", None), "id", None)
+                == "restore_fix_drc_preference"
+                for b in n.finalbody for c in ast.walk(b)):
+            return []
+    return ["PlanExecutor._finish does not restore the user's 'Fix DRC "
+            "settings' value in a `finally`: a plan that stops or raises "
+            "would leave the box where the last step put it, and that is "
+            "what settings_persistence saves on close"]
+
+
 def main():
     fails, checked = check_call_sites()
     fails += check_choke_point()
+    fails += check_executor_restores()
 
     if not checked:
         print(f"FAIL: found no call sites for any of {list(GATED_AT_CALL)} -- "
@@ -123,8 +151,9 @@ def main():
         for f in fails:
             print(f"FAIL: {f}")
         return 1
-    print(f"PASS: {checked} direct floor-writer call site(s) gated, and "
-          f"{CHOKE_POINT} still carries the gate every routing tab relies on "
+    print(f"PASS: {checked} direct floor-writer call site(s) gated, "
+          f"{CHOKE_POINT} still carries the gate every routing tab relies on, "
+          f"and the plan executor restores the user's choice in a finally "
           f"(#693)")
     return 0
 
