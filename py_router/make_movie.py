@@ -709,13 +709,16 @@ def main():
                     help='also dump the raw PNG frames here')
     ap.add_argument('--png', action='store_true',
                     help='also write a full-resolution still of the final board')
+    import frame_layout as _fl
     ap.add_argument('--layout', default=None,
-                    help="'legacy' (default, or $KICAD_MOVIE_LAYOUT) "
-                         "| auto | stacked | sidebar | inset | split. "
+                    help=_fl.layout_choices()
+                         + " ('legacy' is the default, or "
+                         "$KICAD_MOVIE_LAYOUT). "
                          "auto picks stacked-vs-sidebar from the "
                          "board's own aspect; inset-vs-split is a "
                          "stance about what the viewer is there to "
-                         "read, so it is never inferred")
+                         "read, so it is never inferred, and so is "
+                         "stage3d (the 3D board, #1081)")
     ap.add_argument('--aspect', default=None, metavar='W:H',
                     help="target frame aspect, or $KICAD_MOVIE_ASPECT. "
                          "'board' (default) keeps today's behaviour: "

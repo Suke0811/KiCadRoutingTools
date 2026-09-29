@@ -691,12 +691,14 @@ def main(argv=None):
     ap.add_argument('--png-dir', help="also dump every frame as a PNG")
     ap.add_argument('--shots-json', help="write the resolved shot list here")
     ap.add_argument('--theme', default=None, type=str.lower, choices=('dark', 'light'), help="'dark' (default, or $KICAD_RENDER_THEME) or 'light'. A light ground is for a figure going into a light-background document; the file's ground cannot be changed afterwards.")
+    import frame_layout as _fl
     ap.add_argument('--layout', default=None,
-                    help="frame layout: 'legacy' (default, or "
-                         "$KICAD_MOVIE_LAYOUT; today's frame), "
-                         "'stacked', 'sidebar', 'inset', 'split' or 'auto'. "
+                    help="frame layout: " + _fl.layout_choices()
+                         + " ('legacy' is the default, or "
+                         "$KICAD_MOVIE_LAYOUT; today's frame). "
                          "Anything but legacy reserves a rail and a lower "
-                         "box, which is where the placement content lives")
+                         "box, which is where the placement content lives; "
+                         "stage3d puts a 3D board in the main box (#1081)")
     ap.add_argument('--aspect', default=None, metavar='W:H',
                     help="target frame aspect, or $KICAD_MOVIE_ASPECT; "
                          "'board' (default) keeps the board's own bounding box")
