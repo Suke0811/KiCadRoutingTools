@@ -62,6 +62,13 @@ import shlex
 import sys
 import time
 
+# The ledger's `blocking` rule is converge's (#1071), read from the product
+# rather than mirrored: a watcher that ranks a value the verdict refuses would
+# report a regression nobody measured.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))), 'py_placer'))
+from converge import blocking_defect  # noqa: E402
+
 #: Substrings that mean something went wrong, in any text the run leaves
 #: behind. Deliberately broad: a false positive costs one line, a missed
 #: crash costs the whole run's credibility. Ordered roughly by severity so
@@ -263,26 +270,39 @@ def _scan_ledger(path, seen, rel):
                 out.append(f'REJECTED-LAP {rel}: iteration {it} '
                            f'lever={r.get("lever")} was not accepted')
         sc = r.get('score') if isinstance(r.get('score'), dict) else {}
-        blk = sc.get('blocking')
+        raw = sc.get('blocking')
+        # A `blocking` that is not a count is unmeasured, as it is to the
+        # verdict (`converge.blocking_defect`, #1071). This used to report a
+        # dict as `blocking=None`, compare `false` as 0, and let a NaN become
+        # `prev` -- which nothing compares above, so it hid the next real
+        # BLOCKING-UP.
+        defect = blocking_defect(raw)
+        blk = None if defect else raw
 
         # A lap that recorded `blocking: null` is a finding about the
         # MEASUREMENT, not about the sequence, so it is reported for every lap --
         # rejected and non-routing ones included. Keep it outside the
-        # comparison rules below.
-        if not isinstance(blk, (int, float)) and 'blocking' in sc:
+        # comparison rules below. So is one that is not a count.
+        if raw is None and 'blocking' in sc:
             key = (rel, 'blocking-none', it)
             if key not in seen:
                 seen.add(key)
                 out.append(f'BLOCKING-NULL {rel}: iteration {it} reports '
                            f'blocking=None -- "0 violations" and "0 rules '
                            f'ran" are different answers')
+        elif defect:
+            key = (rel, 'blocking-not-a-count', it)
+            if key not in seen:
+                seen.add(key)
+                out.append(f'BLOCKING-NOT-A-COUNT {rel}: iteration {it} '
+                           f'blocking is {defect} -- no verdict ranks it')
 
         if (r.get('kind') or 'completion') not in ROUTING_KINDS:
             prev = None            # a half boundary: the next score grades a
             continue               # different board than the last one did
         if r.get('accepted') is not True:
             continue               # a reverted lap is not a step in the sequence
-        if not isinstance(blk, (int, float)):
+        if blk is None:
             continue               # unmeasured: evidence in neither direction
         if prev is not None and blk > prev:
             key = (rel, 'regress', it)

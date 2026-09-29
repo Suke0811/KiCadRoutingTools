@@ -781,6 +781,127 @@ def test_lineage_falls_back_to_last_accepted_and_says_so():
         print('  PASS: parent_sha followed; 2 fallbacks, said: %s' % t.note)
 
 
+#: `blocking` values that are not a count (#1077), one row each after a
+#: graded row -- the shape of #1071's tigard ledger, plus the scalars that
+#: `float()` accepted without a word.
+_NOT_A_COUNT = ({'a': 1}, [1], 'abc', '10', True, False, -1,
+                float('nan'), float('inf'), 10 ** 400)
+
+
+def test_a_blocking_that_is_not_a_count_is_ungraded_not_raised():
+    """#1077. A per-term dict raised `float(b)` inside `make_film.main()`,
+    which calls this adapter unguarded; `false` was drawn at 0.0 ADMISSIBLE;
+    `"10"` was plotted at 10; a null `iteration` raised `int(None)`."""
+    _mark = len(_FAIL)
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, 'l.jsonl')
+        with open(p, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({'iteration': 0, 'kind': 'completion',
+                                'result_sha': 'r0', 'accepted': True,
+                                'score': {'blocking': 3}}) + '\n')
+            for i, b in enumerate(_NOT_A_COUNT, 1):
+                f.write(json.dumps({'iteration': i, 'kind': 'completion',
+                                    'parent_sha': 'r0',
+                                    'result_sha': 'r%d' % i, 'accepted': False,
+                                    'score': {'blocking': b}}) + '\n')
+        try:
+            t = MA.attempts_from_converge_ledger(p)
+        except Exception as exc:                            # noqa: BLE001
+            fail('the adapter raised on a non-count blocking: %s: %s'
+                 % (type(exc).__name__, exc))
+            return
+        got = {a.index: a for a in t.attempts}
+        if len(t.attempts) != len(_NOT_A_COUNT) + 1:
+            fail('rows were dropped: %d of %d kept'
+                 % (len(t.attempts), len(_NOT_A_COUNT) + 1))
+        if got.get(0) is None or got[0].score != 3.0:
+            fail('the graded row lost its score: %r' % (got.get(0),))
+        for i, b in enumerate(_NOT_A_COUNT, 1):
+            a = got.get(i)
+            if a is None:
+                fail('the %r row is missing' % (b,))
+            elif a.score is not None or a.admissible:
+                fail('blocking %r was drawn (score %r, admissible %r) rather '
+                     'than ungraded' % (b, a.score, a.admissible))
+        if 'not a count' not in t.note or \
+                '%d with a blocking' % len(_NOT_A_COUNT) not in t.note:
+            fail('the note does not count the non-count rows: %r' % t.note)
+        note = t.note
+
+        # The row's OTHER fields: a null or boolean `iteration` falls back to
+        # the row position (`int(None)` raised; `true` read as 1), and a
+        # parent_sha / result_sha that is not a string is no lineage key (a
+        # list raised `unhashable`).
+        s = os.path.join(td, 'i.jsonl')
+        with open(s, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({'iteration': 0, 'kind': 'completion',
+                                'result_sha': ['r0'], 'accepted': True,
+                                'score': {'blocking': 3}}) + '\n')
+            f.write(json.dumps({'iteration': None, 'kind': 'completion',
+                                'parent_sha': ['r0'], 'accepted': False,
+                                'score': {'blocking': 2}}) + '\n')
+            f.write(json.dumps({'iteration': True, 'kind': 'completion',
+                                'accepted': False,
+                                'score': {'blocking': 1}}) + '\n')
+        try:
+            u = MA.attempts_from_converge_ledger(s)
+        except Exception as exc:                            # noqa: BLE001
+            fail('a malformed iteration / sha raised: %s: %s'
+                 % (type(exc).__name__, exc))
+        else:
+            idx = [(a.index, a.score) for a in u.attempts]
+            if idx != [(0, 3.0), (1, 2.0), (2, 1.0)]:
+                fail('a null or boolean iteration did not fall back to the '
+                     'row position: %r' % (idx,))
+
+        # `_graded` decides whether placement laps leave the axis. A routing
+        # row whose blocking is not a count is NOT a routed verdict, so a
+        # placement-only ledger keeps its laps on the axis.
+        q = os.path.join(td, 'g.jsonl')
+        with open(q, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({'iteration': 0, 'kind': 'placement',
+                                'result_sha': 'p0', 'accepted': True,
+                                'score': {'blocking': 4}}) + '\n')
+            f.write(json.dumps({'iteration': 1, 'kind': 'completion',
+                                'result_sha': 'c1', 'accepted': True,
+                                'score': {'blocking': False}}) + '\n')
+        t = MA.attempts_from_converge_ledger(q)
+        if 'placement lap(s) off this axis' in t.note or \
+                not any(a.score == 4.0 for a in t.attempts):
+            fail('a `false` routing blocking counted as a routed verdict and '
+                 'took the placement lap off the axis: %r' % t.note)
+    if len(_FAIL) == _mark:
+        print('  PASS: %d non-count blockings drawn ungraded and counted: %s'
+              % (len(_NOT_A_COUNT), note))
+
+
+def test_the_film_and_the_verdict_agree_on_what_a_blocking_is():
+    """#1077. `_blocking_value` MIRRORS `converge.blocking_value` (the router
+    side does not import the placer), so the two are pinned to agree here --
+    a mirror nobody compares drifts."""
+    _mark = len(_FAIL)
+    import converge
+    nan, inf = float('nan'), float('inf')
+    table = (0, 3, 3.0, 2.5, -0.0, 10 ** 20, 10 ** 400, -10 ** 400,
+             -1, -0.5, True, False, None,
+             'abc', '10', '', {}, {'a': 1}, [], [1], nan, inf, -inf)
+    for v in table:
+        try:
+            a, b = MA._blocking_value(v), converge.blocking_value(v)
+        except Exception as exc:                            # noqa: BLE001
+            fail('the rule raised on %r: %s: %s'
+                 % (v, type(exc).__name__, exc))
+            continue
+        same = (a is None and b is None) or (
+            a is not None and b is not None and a == b
+            and type(a) is type(b))
+        if not same:
+            fail('film and verdict disagree on %r: film %r, verdict %r'
+                 % (v, a, b))
+    if len(_FAIL) == _mark:
+        print('  PASS: film and verdict agree on all %d values' % len(table))
+
+
 TESTS = (
     test_three_producers_one_record_type,
     test_the_axis_is_the_accept_rule_and_is_never_mixed,
@@ -798,6 +919,8 @@ TESTS = (
     test_a_card_and_a_band_in_one_film_are_one_size,
     test_place_and_route_is_one_graph,
     test_lineage_falls_back_to_last_accepted_and_says_so,
+    test_a_blocking_that_is_not_a_count_is_ungraded_not_raised,
+    test_the_film_and_the_verdict_agree_on_what_a_blocking_is,
 )
 
 

@@ -156,7 +156,7 @@ _ROOT_JOIN_ARGV_OK = {
         'so the join is over a relative path rather than a bare basename.',
     'mutate_936.py':
         'same shape and same reason again: its `tests` values are the '
-        'module-level T_WORKLIST/T_CONVERGE/T_DFL/T_431 constants, every one a directory-qualified literal, so the '
+        'module-level T_WORKLIST/T_CONVERGE/T_DFL/T_431/T_PRUN/T_RW/T_CC constants, every one a directory-qualified literal, so the '
         'join is over a relative path rather than a bare basename.',
     'mutate_941_942.py':
         'same shape and same reason once more: its `tests` values are the '

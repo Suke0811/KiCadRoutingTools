@@ -805,7 +805,7 @@ def main():
             os.path.dirname(os.path.abspath(args.ledger)), 'boards'))
         lg = Ledger(args.ledger)
         base_sha = store.put(baseline.board)
-        lg.append({'iteration': len(lg.entries()), 'kind': 'completion',
+        lg.append({'iteration': lg.next_iteration(), 'kind': 'completion',
                    'lever': 'portfolio-baseline', 'result_sha': base_sha,
                    'parent_sha': None, 'lever_argv': None,
                    'score': {'crossings': baseline.metrics.get('crossings'),
@@ -814,7 +814,7 @@ def main():
         for i in kept:
             c = by_index[i]
             sha = store.put(c.board)
-            lg.append({'iteration': len(lg.entries()), 'kind': 'completion',
+            lg.append({'iteration': lg.next_iteration(), 'kind': 'completion',
                        'lever': f'portfolio-{c.strategy}', 'result_sha': sha,
                        'parent_sha': base_sha,
                        'lever_argv': _replay_argv(args, i),

@@ -432,8 +432,13 @@ def parse_placement_result(value):
     if data.get("report") and report is None:
         errors.append(f"report path not found: {data.get('report')!r}")
     blocking = data.get("blocking")
-    if blocking is not None and not isinstance(blocking, int):
-        errors.append(f"blocking is not an integer: {blocking!r}")
+    # `isinstance(True, int)` holds, so the bool test is not redundant: a
+    # `false` or a `-1` used to pass validation and reach the status line as
+    # "blocking False" (#1075).
+    if blocking is not None and (isinstance(blocking, bool)
+                                 or not isinstance(blocking, int)
+                                 or blocking < 0):
+        errors.append(f"blocking is not a non-negative integer: {blocking!r}")
         blocking = None
     return {
         "status": status,

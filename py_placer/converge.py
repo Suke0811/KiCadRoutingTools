@@ -51,6 +51,7 @@ KRT_TOOL = {'scope': ['placement', 'routing', 'combined'], 'kind': 'actor'}
 import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -482,6 +483,59 @@ def score_component(score, key):
         if not isinstance(v, bool) and isinstance(v, (int, float)):
             return v
     return None
+
+
+def blocking_defect(b):
+    """None when `b` is a count a verdict can rank (or null/absent); else WHY
+    it is neither (#1071, #1075).
+
+    A verdict ranks every lap on `blocking` and asks `blocking == 0` for a
+    finished board, so the value must be a non-negative number. Anything else
+    either breaks the ranking outright (a per-term dict: two different dicts
+    compare with `<` and raise) or ranks wrong without a word (`false == 0`
+    reads as a finished board, `"10" < "9"`, NaN never compares below
+    anything so its half reads as plateaued).
+    """
+    if b is None:
+        return None
+    if isinstance(b, bool):
+        return (f'the boolean {json.dumps(b)}, not a count (true would rank '
+                f'as 1 and false as a finished board)')
+    if not isinstance(b, (int, float)):
+        kind = {dict: 'a JSON object', list: 'a JSON array',
+                str: 'a string'}.get(type(b), type(b).__name__)
+        try:
+            text = json.dumps(b, sort_keys=True)     # the JSON it arrived as
+        except (TypeError, ValueError):
+            text = repr(b)
+        text = text if len(text) <= 60 else text[:57] + '...'
+        hint = {dict: ' -- a per-term breakdown belongs in `blocking_by`',
+                str: ' -- strings compare letter by letter',
+                }.get(type(b), '')
+        return f'{kind} ({text}), not a number{hint}'
+    # FLOATS only: an int is always finite, and `math.isfinite` converts its
+    # argument to float -- a 400-digit JSON integer raised OverflowError here.
+    if isinstance(b, float) and not math.isfinite(b):
+        return f'{b!r}, which no board measures'
+    if b < 0:
+        return f'negative ({b!r}); a count of blockers cannot be below zero'
+    # Past the float range: nothing measures that many blockers, and the film
+    # plots `float(b)`, which raised OverflowError on a row `record` had
+    # accepted. (int > float compares exactly, without converting.)
+    if b > sys.float_info.max:
+        return (f'an integer of {len(str(b))} digits, beyond any float, which '
+                f'no board measures')
+    return None
+
+
+def blocking_value(b):
+    """`b` as a rankable count, or None when it is null OR not a count.
+
+    ONE rule for `_score_key` (the ranking), `record` (the refusal) and --
+    mirrored, since the router side does not import the placer --
+    `movie_attempts._blocking_value` (the film's axis).
+    """
+    return None if b is None or blocking_defect(b) else b
 
 
 #: The answers `score_board_binding` can give, in the order a reader meets
@@ -1164,6 +1218,30 @@ def cmd_record(a):
                   f"({type(exc).__name__}: {exc}). Nothing was written.",
                   file=sys.stderr)
             return 2
+    # A SCORE IS AN OBJECT (#1078). `[1]`, `"x"` or `5` parse, pass every
+    # dict-guarded check below, get APPENDED -- and then the summary's
+    # `sc.get('failures')` raised AttributeError with the row already in the
+    # append-only ledger.
+    if _score_doc is not None and not isinstance(_score_doc, dict):
+        print(f"record: --score must be a JSON object (board_score's --json "
+              f"output); this is a JSON {type(_score_doc).__name__}. Nothing "
+              f"was written.", file=sys.stderr)
+        return 2
+    # ...AND ITS `blocking` IS A COUNT (#1071, #1075). `verdict` ranks every lap
+    # on it, and the ledger is append-only, so this is the one place to stop a
+    # value that breaks or bends every later verdict on the ledger.
+    _bad_blocking = blocking_defect(_score_doc.get('blocking')) \
+        if isinstance(_score_doc, dict) else None
+    if _bad_blocking:
+        print(f"record: --score's `blocking` is {_bad_blocking}. `verdict` "
+              f"ranks every lap on this number, so a value that is not a "
+              f"non-negative number either breaks every later verdict on this "
+              f"ledger (#1071: a per-term dict made the plateau test compare "
+              f"two dicts) or ranks wrong (false == 0 reads as a finished "
+              f"board). Record the total as a number -- board_score's own "
+              f"`blocking` -- or leave `blocking` out (or null) if nothing "
+              f"measured it. Nothing was written.", file=sys.stderr)
+        return 2
     if a.lens and isinstance(_score_doc, dict) and \
             _grades_another_board(a.board, _score_doc):
         # NEVER SILENT. The skip is correct -- a verdict about this board must
@@ -1644,7 +1722,7 @@ def cmd_record(a):
                   f"({_hint}). `blocking` is a total, so the difference "
                   f"between these two rows is partly a difference in what was "
                   f"MEASURED, not in the board.", file=sys.stderr)
-    entry = {'iteration': len(lg.entries()), 'kind': a.kind,
+    entry = {'iteration': lg.next_iteration(), 'kind': a.kind,
              # #1034: resolved above -- --parent, else the recorded argv,
              # else the last accepted row (NOTE printed); the source says which.
              'parent_sha': _parent_sha,
@@ -1873,10 +1951,14 @@ def _score_key(score):
     disconnected net with a lower via count. `blocking == None` is NOT zero --
     it means a component that was asked for could not answer -- so it sorts
     worse than any real number rather than reading as a perfect board.
+
+    A `blocking` that is not a count (`blocking_value`: a dict, a boolean, a
+    string, NaN, a negative) is None here too (#1071): the row is still a lap,
+    but an UNJUDGED one, never ranked and never read as plateaued.
     """
     if not isinstance(score, dict):
         return None
-    b = score.get('blocking')
+    b = blocking_value(score.get('blocking'))
     q = score.get('quality')
     # `quality` IS NOT NECESSARILY A DICT. `record` accepts any JSON for it, so
     # `{"quality": [1, 2]}` reaches here and `q.get` raised AttributeError --
@@ -1891,8 +1973,14 @@ def _score_key(score):
     # A quality tuple carrying None (board_score.quality returns {'error': ...}
     # when the board will not parse) makes min() raise TypeError the moment two
     # rows tie on `blocking`. Untested until now because the self-tests use a
-    # uniform empty quality. Sort unknowns LAST rather than crashing.
-    quality = tuple(v if isinstance(v, (int, float)) else float('inf')
+    # uniform empty quality. Sort unknowns LAST rather than crashing. A boolean
+    # or a NaN is not a measurement either (#1075): NaN never compares, so it
+    # would scramble every tie it touched. `isfinite` on floats only: it
+    # converts an int to float, and a 400-digit one raised OverflowError.
+    quality = tuple(v if isinstance(v, (int, float))
+                    and not isinstance(v, bool)
+                    and (isinstance(v, int) or math.isfinite(v))
+                    else float('inf')
                     for v in (q.get('vias'), q.get('copper_mm'),
                               q.get('segments')))
     if b is None:
@@ -2245,7 +2333,8 @@ def _half_state(rows, half, flat, board_sha=None):
     runs.append(cur)
     runs_pairs = [r for r in runs if len(r) >= 2]
     runs = [[k for k, _s in r] for r in runs_pairs]
-    # An ACCEPTED lap that recorded no `blocking` is unjudged, and a plateau
+    # An ACCEPTED lap that recorded no `blocking` -- or one that is not a count
+    # (`blocking_value`, #1071) -- is unjudged, and a plateau
     # asserted over unjudged laps is the "reported clean because unexamined"
     # error this toolchain names everywhere else. An improvement, by contrast,
     # is a DEFINITE finding and stands whatever else is in the window. So:
@@ -2433,6 +2522,17 @@ def cmd_verdict(a):
             why = ('the score document has no `blocking` key at all, so there '
                    'is nothing to be blocked or done ABOUT. If this came from '
                    'board_score, it did not finish.')
+        elif blocking_defect(score.get('blocking')):
+            # #1075. Not null, so neither null sentence below is true of it.
+            # Before this branch such a score fell through to the terminal
+            # verdicts: `false == 0` read DONE-EXHAUSTED and `Infinity`
+            # printed "STUCK: blocking == None".
+            why = ('`blocking` is ' + blocking_defect(score.get('blocking'))
+                   + '. A verdict ranks boards on `blocking`, so it must be a '
+                   'non-negative number (board_score writes an integer, or '
+                   'null when it could not measure); this is not a measurement '
+                   'of any board. Fix whatever wrote the score, re-score, then '
+                   'ask for a verdict.')
         elif isinstance(score.get('unknown'), (list, tuple, set)) \
                 and _names('unknown'):
             # The LIST test, not just truthiness: `{"unknown": "impedance"}`
@@ -2489,10 +2589,16 @@ def cmd_verdict(a):
 
     doc = {'ledger_rows': len(rows), 'scored_rows': len(scored),
            'budget': a.budget, 'flat': a.flat,
-           'blocking': None if blocking == float('inf') else blocking,
+           # A finite count by construction (`blocking_value`), so there is no
+           # inf to map: the old `None if inf` printed "STUCK: blocking ==
+           # None" for an `Infinity` score (#1075).
+           'blocking': blocking,
            'quality': score.get('quality'),
-           'ungraded': sorted(score.get('ungraded') or []),
-           'unknown': sorted(score.get('unknown') or []),
+           # `_names`, not `sorted(score.get(k) or [])`: that raised on
+           # `{"ungraded": 5}` and on a mixed list, next to a REAL blocking,
+           # where the NO-SCORE branch's guard never ran (#1076).
+           'ungraded': _names('ungraded'),
+           'unknown': _names('unknown'),
            # The last L3 decision on the record, published on EVERY verdict
            # rather than only on the branch that reads it -- the posture the
            # incommensurable block already takes. `null` means no
@@ -2553,7 +2659,9 @@ def cmd_verdict(a):
                     f'last {a.flat} can be COMPARED -- '
                     + {'unjudged': (
                         f'{st[h].get("unjudged")} accepted lap(s) in that '
-                        f'window recorded no `blocking` -- iteration(s) '
+                        f'window recorded no `blocking` a verdict can rank '
+                        f'(null, absent, or not a non-negative number) -- '
+                        f'iteration(s) '
                         + (', '.join(str(i) for i in
                                      (st[h].get('unjudged_iterations') or []))
                            or 'not numbered')
@@ -2671,18 +2779,35 @@ def cmd_verdict(a):
                 f'both were graded with --impedance-nets, and the board called '
                 f'worse was one impedance crossing better. Re-score with the '
                 f'same flags to make the comparison mean anything.')
-    if doc['ungraded']:
+    if doc['ungraded'] and not isinstance(score.get('ungraded'),
+                                          (list, tuple, set)):
+        # Like `unknown` below: `"abc"` names no component, so it must not be
+        # read as three components nobody examined (#1076).
+        doc['reason'] += (' The score\'s `ungraded` is not a list ('
+                          + ', '.join(doc['ungraded'])
+                          + '), so it names no component -- re-score before '
+                            'trusting any verdict here.')
+    elif doc['ungraded']:
         # Not fatal: a board with no spec files has nothing to grade those
         # components against, and making it fatal would put every corpus board
         # permanently in STUCK. But it is never silent -- a component nothing
         # examined is UNEXAMINED, and DONE must say so out loud.
         doc['reason'] += (' UNEXAMINED, and not passed: '
                           + ', '.join(doc['ungraded']) + '.')
-    if doc['unknown']:
+    if doc['unknown'] and isinstance(score.get('unknown'),
+                                     (list, tuple, set)):
         doc['reason'] += (' A component RAN and could not answer: '
                           + ', '.join(doc['unknown'])
                           + ' -- fix the instrument before trusting any '
                             'verdict here.')
+    elif doc['unknown']:
+        # The NO-SCORE branch's rule: "a component RAN" is asserted only over
+        # a LIST the score named (#1076) -- `false` or `"impedance"` names no
+        # component, it is a malformed score.
+        doc['reason'] += (' The score\'s `unknown` is not a list ('
+                          + ', '.join(doc['unknown'])
+                          + '), so it names no component -- re-score before '
+                            'trusting any verdict here.')
     print(json.dumps(doc, indent=1, sort_keys=True))
     return code
 

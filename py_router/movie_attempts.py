@@ -109,6 +109,7 @@ from __future__ import annotations
 
 import glob
 import json
+import math
 import os
 import re
 import sys
@@ -293,9 +294,31 @@ def _is_placement_row(e) -> bool:
     return str(e.get('kind') or '') == 'placement'
 
 
+def _blocking_value(b):
+    """`b` as a count the axis can plot, or None (drawn ungraded).
+
+    A MIRROR of `py_placer/converge.py:blocking_value`, not an import: the
+    router side does not import placement engines (`_placer_path`).
+    tests/test_946_movie_attempts.py pins that the two agree. A count is an
+    int or a finite float >= 0 and never a bool -- a per-term dict raised
+    `float(b)` inside `make_film.main()`, and `false` plotted at 0.0 as
+    admissible (#1077).
+    """
+    if isinstance(b, bool) or not isinstance(b, (int, float)):
+        return None
+    # `isfinite` on floats only: it converts an int to float, and a
+    # 400-digit JSON integer raised OverflowError.
+    if (isinstance(b, float) and not math.isfinite(b)) or b < 0:
+        return None
+    # ...and within the float range, since this axis plots `float(b)`.
+    if b > sys.float_info.max:
+        return None
+    return b
+
+
 def _graded(e) -> bool:
     sc = e.get('score') if isinstance(e.get('score'), dict) else None
-    return bool(sc) and sc.get('blocking') is not None
+    return bool(sc) and _blocking_value(sc.get('blocking')) is not None
 
 
 def attempts_from_converge_ledger(path: str,
@@ -305,7 +328,9 @@ def attempts_from_converge_ledger(path: str,
     `_score_key`'s own comment is the rule this follows: "`blocking == None` is
     NOT zero -- it means a component that was asked for could not answer". So a
     null-scored row keeps its node and is drawn ungraded, never plotted at the
-    bottom of the axis as though it were perfect.
+    bottom of the axis as though it were perfect. So does a row whose
+    `blocking` is not a count (`_blocking_value`, #1077), and the note counts
+    those.
 
     `drop_placement` decides whether `kind == placement` laps are on this
     axis. None (the default) drops them only when the ledger ALSO holds a
@@ -337,10 +362,17 @@ def attempts_from_converge_ledger(path: str,
         return None
     if not rows_in:
         return None
+    def _row_index(e, i):
+        # `record` writes an int. Anything else (null, a string) fell into an
+        # unguarded `int(...)` and took the film down (#1077); the row's
+        # position is the honest fallback, as it already was for an absent key.
+        it = e.get('iteration', i)
+        return it if isinstance(it, int) and not isinstance(it, bool) else i
+
     by_sha = {}
     for i, e in enumerate(rows_in):
-        if e.get('result_sha'):
-            by_sha.setdefault(e['result_sha'], e.get('iteration', i))
+        if e.get('result_sha') and isinstance(e['result_sha'], str):
+            by_sha.setdefault(e['result_sha'], _row_index(e, i))
     if drop_placement is None:
         drop_placement = any(not _is_placement_row(e) and _graded(e)
                              for e in rows_in)
@@ -354,10 +386,13 @@ def attempts_from_converge_ledger(path: str,
     fallback = 0
     last_acc = None
     n_place = 0
+    n_bad = 0
     for i, e in enumerate(rows_in):
         sc = e.get('score') if isinstance(e.get('score'), dict) else None
         b = sc.get('blocking') if sc else None
-        idx = int(e.get('iteration', i))
+        not_a_count = b is not None and _blocking_value(b) is None
+        b = _blocking_value(b)
+        idx = _row_index(e, i)
         if drop_placement and _is_placement_row(e):
             # OFF THE VERDICT AXIS (#1042) when there IS a routed verdict. A
             # placement lap scores the COPPER-FREE board, where `blocking` is
@@ -370,10 +405,13 @@ def attempts_from_converge_ledger(path: str,
             if e.get('accepted'):
                 last_acc = idx
             continue
-        parent = by_sha.get(e.get('parent_sha'))
+        _psha = e.get('parent_sha')
+        parent = by_sha.get(_psha) if isinstance(_psha, str) else None
         if parent is None and i > 0 and last_acc is not None:
             parent = last_acc
             fallback += 1
+        if not_a_count:
+            n_bad += 1
         rows.append(Attempt(
             index=idx,
             label=str(e.get('lever') or e.get('kind') or 'lap')[:40],
@@ -393,6 +431,10 @@ def attempts_from_converge_ledger(path: str,
     if n_place:
         note += ('; %d placement lap(s) off this axis (copper-free, see the '
                  'placement panels)' % n_place)
+    if n_bad:
+        # No ';' inside the clause (see below).
+        note += ('; %d with a blocking that is not a count (drawn ungraded, '
+                 'converge.blocking_value)' % n_bad)
     if fallback:
         # No ';' inside the clause: the note is a '; '-separated list, and
         # `join_tracks` carries clauses over by splitting on it.

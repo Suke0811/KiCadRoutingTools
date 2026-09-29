@@ -122,10 +122,31 @@ class Ledger:
                 line = line.strip()
                 if line:
                     try:
-                        out.append(json.loads(line))
+                        doc = json.loads(line)
                     except ValueError:
-                        pass                # a torn last line never loses the rest
+                        continue            # a torn last line never loses the rest
+                    # A LINE IS ONLY A ROW IF IT IS AN OBJECT (#1078). A stray
+                    # `42` parses fine, and then every reader's `.get` raised,
+                    # so one bad line made every `verdict` on the ledger exit 1.
+                    # movie_attempts skips such lines for the same reason.
+                    if isinstance(doc, dict):
+                        out.append(doc)
         return out
+
+    def next_iteration(self) -> int:
+        """The `iteration` a new row takes: past every number already used.
+
+        Not `len(entries())`. A line that is not a row (a torn one, or since
+        #1078 a stray `42`) is not counted, but rows written after it by the
+        old count were numbered past it, so the count fell back onto a number
+        a row already holds -- and `step-back` / `replay --iteration` then
+        match two rows. On a ledger numbered 0..n-1 this IS the count.
+        """
+        rows = self.entries()
+        used = [e.get('iteration') for e in rows]
+        return max([len(rows)] + [i + 1 for i in used
+                                  if isinstance(i, int)
+                                  and not isinstance(i, bool)])
 
     def last_accepted(self) -> Optional[Dict]:
         for e in reversed(self.entries()):
