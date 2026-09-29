@@ -6206,11 +6206,11 @@
   },
   "v0.15.15": {
    "assets": {
-    "KiCadRoutingTools-0.15.15.zip": 1527,
-    "grid_router-linux-x86_64.so": 28,
+    "KiCadRoutingTools-0.15.15.zip": 1529,
+    "grid_router-linux-x86_64.so": 30,
     "grid_router-macos-arm64.so": 18,
     "grid_router-macos-x86_64.so": 3,
-    "grid_router-windows-x86_64.pyd": 27,
+    "grid_router-windows-x86_64.pyd": 28,
     "metadata.json": 1
    },
    "published_at": "2026-06-21T21:25:05Z"
@@ -6241,7 +6241,7 @@
   },
   "v0.15.6": {
    "assets": {
-    "KiCadRoutingTools-0.15.6.zip": 1289,
+    "KiCadRoutingTools-0.15.6.zip": 1291,
     "grid_router-linux-x86_64.so": 159,
     "grid_router-macos-arm64.so": 40,
     "grid_router-macos-x86_64.so": 3,
@@ -6252,7 +6252,7 @@
   },
   "v0.15.7": {
    "assets": {
-    "KiCadRoutingTools-0.15.7.zip": 2221,
+    "KiCadRoutingTools-0.15.7.zip": 2223,
     "grid_router-linux-x86_64.so": 49,
     "grid_router-macos-arm64.so": 24,
     "grid_router-macos-x86_64.so": 4,
@@ -6318,7 +6318,7 @@
   },
   "v0.17.3": {
    "assets": {
-    "KiCadRoutingTools-0.17.3.zip": 1122,
+    "KiCadRoutingTools-0.17.3.zip": 1124,
     "grid_router-linux-x86_64.so": 52,
     "grid_router-macos-arm64.so": 25,
     "grid_router-macos-x86_64.so": 3,
@@ -6351,7 +6351,7 @@
   },
   "v0.17.6": {
    "assets": {
-    "KiCadRoutingTools-0.17.6.zip": 2552,
+    "KiCadRoutingTools-0.17.6.zip": 2554,
     "grid_router-linux-x86_64.so": 17,
     "grid_router-macos-arm64.so": 9,
     "grid_router-macos-x86_64.so": 1,
@@ -6428,7 +6428,7 @@
   },
   "v0.19.1": {
    "assets": {
-    "KiCadRoutingTools-0.19.1.zip": 2216,
+    "KiCadRoutingTools-0.19.1.zip": 2218,
     "grid_router-linux-x86_64.so": 66,
     "grid_router-macos-arm64.so": 28,
     "grid_router-macos-x86_64.so": 4,
@@ -6494,7 +6494,7 @@
   },
   "v0.20.4": {
    "assets": {
-    "KiCadRoutingTools-0.20.4.zip": 4533,
+    "KiCadRoutingTools-0.20.4.zip": 4537,
     "grid_router-linux-x86_64.so": 147,
     "grid_router-macos-arm64.so": 34,
     "grid_router-macos-x86_64.so": 3,
@@ -6550,7 +6550,7 @@
   "v0.21.5": {
    "assets": {
     "KiCadRoutingTools-0.21.5.zip": 47,
-    "grid_router-linux-x86_64.so": 92,
+    "grid_router-linux-x86_64.so": 93,
     "grid_router-macos-arm64.so": 64,
     "grid_router-macos-x86_64.so": 40,
     "grid_router-windows-x86_64.pyd": 95,
@@ -6560,23 +6560,23 @@
   },
   "v0.22.0": {
    "assets": {
-    "KiCadRoutingTools-0.22.0.zip": 344,
+    "KiCadRoutingTools-0.22.0.zip": 350,
     "grid_router-linux-x86_64.so": 451,
     "grid_router-macos-arm64.so": 282,
     "grid_router-macos-x86_64.so": 62,
-    "grid_router-windows-x86_64.pyd": 333,
+    "grid_router-windows-x86_64.pyd": 335,
     "metadata.json": 24
    },
    "published_at": "2026-09-04T02:41:37Z"
   },
   "v0.22.1": {
    "assets": {
-    "KiCadRoutingTools-0.22.1.zip": 1855,
-    "grid_router-linux-x86_64.so": 236,
-    "grid_router-macos-arm64.so": 146,
-    "grid_router-macos-x86_64.so": 10,
-    "grid_router-windows-x86_64.pyd": 213,
-    "metadata.json": 12
+    "KiCadRoutingTools-0.22.1.zip": 1916,
+    "grid_router-linux-x86_64.so": 244,
+    "grid_router-macos-arm64.so": 153,
+    "grid_router-macos-x86_64.so": 11,
+    "grid_router-windows-x86_64.pyd": 218,
+    "metadata.json": 13
    },
    "published_at": "2026-09-17T22:43:30Z"
   }
