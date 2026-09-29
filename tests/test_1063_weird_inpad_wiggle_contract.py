@@ -17,7 +17,14 @@ The contract, pinned here:
      pass removes the other branch instead of stranding them;
   3. the invariant, on real routed copper: after the delete-only passes,
      check_weird calls nothing removable and no finding category grew;
-  4. a plain route.py of esp_prog reaches check_complete's weird_copper clean.
+  4. a plain route.py of esp_prog reaches check_complete's weird_copper clean,
+     and it is the END-OF-RUN collapse that gets it there: route.py's in-run
+     cleanup no longer collapses (it steered the plane finalize's rip/reroute,
+     cparti_fpga 6 open nets -> 15), and the one pass after the finalize and
+     the reconciliation removes copper;
+  5. that end-of-run pass on the GUI front: a removed wiggle this run laid
+     leaves its result, a removed INPUT wiggle joins segments_to_remove, and
+     --keep-input-copper keeps the input one.
 
     python3 tests/test_1063_weird_inpad_wiggle_contract.py
 """
@@ -214,6 +221,13 @@ def routed_esp_prog():
               if r.returncode else '')
         if r.returncode:
             return
+        import re
+        m = re.search(r'Strict collapse \(#1063, end of run\): removed (\d+)', r.stdout)
+        check("the end-of-run strict collapse removed copper (guard not vacuous)",
+              m is not None and int(m.group(1)) > 0,
+              m.group(0) if m else 'no end-of-run collapse line')
+        check("no in-run strict collapse ran (route.py collapses at the end)",
+              not re.search(r'^\s*(Final s|S)trict collapse: removed', r.stdout, re.M))
         evidence(out, 'routed esp_prog')
         pcb = parse_kicad_pcb(out)
         c, f = _cats(pcb)
@@ -232,11 +246,51 @@ def routed_esp_prog():
               wc.get('ran') is True and wc.get('clean') is True, str(wc))
 
 
+def end_of_run_gui():
+    print("5. the end-of-run collapse on the GUI front (write model)")
+    from improvement_gate import copper_signature
+    from route import _late_strict_collapse1063
+
+    def case(keep_input):
+        pads = [make_pad(NET, 0, 0, ref='U1', size_x=2.0, size_y=2.0),
+                make_pad(NET, 10, 0, ref='U2', size_x=0.6, size_y=0.6)]
+        trunk = make_seg(0, 0, 10, 0, net_id=NET)
+        in_wiggle = make_seg(-0.5, -0.3, 0.5, -0.3, net_id=NET)
+        run_wiggle = make_seg(-0.5, 0.3, 0.5, 0.3, net_id=NET)
+        pcb = _board([trunk, in_wiggle, run_wiggle], [], pads)
+        name = {NET: '/N7'}.get
+        sig = copper_signature([trunk, in_wiggle], [], name)
+        rd = {'results': [{'new_segments': [run_wiggle], 'new_vias': []}]}
+
+        def write_model(r):
+            drop = {id(s) for s in r.get('segments_to_remove') or []}
+            segs = [s for s in (trunk, in_wiggle) if id(s) not in drop]
+            segs += [s for x in r['results'] for s in x['new_segments']]
+            return {NET: segs}, {}
+
+        n, v = _late_strict_collapse1063(pcb, None, True, rd, write_model, sig,
+                                         {'/N7'}, keep_input)
+        return n, rd, trunk, in_wiggle, run_wiggle, write_model
+
+    n, rd, trunk, in_wiggle, run_wiggle, wm = case(False)
+    check("both buried wiggles removed", n == 2, f"removed {n}")
+    check("this run's wiggle left its result's new_segments",
+          run_wiggle not in rd['results'][0]['new_segments'])
+    check("the input wiggle joined segments_to_remove",
+          in_wiggle in (rd.get('segments_to_remove') or []))
+    check("the trunk ships", wm(rd)[0][NET] == [trunk])
+    n, rd, trunk, in_wiggle, run_wiggle, wm = case(True)
+    check("--keep-input-copper: only this run's wiggle goes",
+          n == 1 and in_wiggle not in (rd.get('segments_to_remove') or [])
+          and run_wiggle not in rd['results'][0]['new_segments'], f"removed {n}")
+
+
 def main():
     wiggles()
     via_loop()
     invariant()
     routed_esp_prog()
+    end_of_run_gui()
     print(f"\n{'ALL PASS' if not FAILS else f'{len(FAILS)} FAILED: ' + ', '.join(FAILS)}")
     return 1 if FAILS else 0
 

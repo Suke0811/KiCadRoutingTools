@@ -112,10 +112,17 @@ the routing pipeline applies both so the model and the output file agree.
 > pass may not drop -- anything but this run's own, unlocked vias -- is left
 > dangling. In-pad / in-via wiggles (both ends in same-net pad or via copper),
 > which #217 kept, are removed. A redundant loop through vias loses its via
-> branch first. The cleanup pipeline runs the collapse twice: after the cycle
-> prune, and again after `close_soft_joints` on the nets smoothing or bridging
-> changed, never removing the soft-joint bridges and web connectors close
-> lays. Nets over `STRICT_REMOVAL_MAX_SEGS` (500)
+> branch first. `run_post_route_cleanup(strict_collapse=True)` runs the
+> collapse twice: after the cycle prune, and again after `close_soft_joints` on
+> the nets smoothing or bridging changed, never removing the soft-joint bridges
+> and web connectors close lays. **route.py passes `strict_collapse=False`**
+> and collapses ONCE at the end of the outermost run
+> (`route._late_strict_collapse1063`), after the plane finalize, the oracle
+> legs and the reconciliation, on the board it ships (the written file on the
+> CLI, the write model on the GUI); the finalize's in-process plane cleanups
+> skip it too (`cleanup_pipeline.defer_strict_collapse`). Collapsing before
+> those passes steered their rip/reroute (cparti_fpga: 6 open nets -> 15 from
+> one input). Nets over `STRICT_REMOVAL_MAX_SEGS` (500)
 > segments are skipped by both. `check_connected.analyze_conn_excluding` takes
 > `excluded_via_indices` for this and now returns the `num_copper_components`
 > it always computed.

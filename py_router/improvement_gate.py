@@ -108,26 +108,26 @@ def copper_signature(segments, vias, net_name) -> Dict[str, object]:
     """
     from collections import Counter
 
+    out: Dict[str, Counter] = {}
+    for item in list(segments) + list(vias):
+        name = net_name(item.net_id) if item.net_id else None
+        if not name:
+            continue
+        out.setdefault(name, Counter())[copper_item_key(item)] += 1
+    return out
+
+
+def copper_item_key(item) -> tuple:
+    """One segment's or via's key in copper_signature: its values, rounded to
+    0.1 um, a segment direction-free."""
     def r(v):
         return round(float(v), 4)
-
-    out: Dict[str, Counter] = {}
-    for s in segments:
-        name = net_name(s.net_id) if s.net_id else None
-        if not name:
-            continue
-        a = (r(s.start_x), r(s.start_y))
-        b = (r(s.end_x), r(s.end_y))
-        out.setdefault(name, Counter())[
-            ('s', s.layer, min(a, b), max(a, b), r(s.width))] += 1
-    for v in vias:
-        name = net_name(v.net_id) if v.net_id else None
-        if not name:
-            continue
-        out.setdefault(name, Counter())[
-            ('v', r(v.x), r(v.y), r(v.size), r(v.drill),
-             tuple(v.layers or ()))] += 1
-    return out
+    if hasattr(item, 'start_x'):
+        a = (r(item.start_x), r(item.start_y))
+        b = (r(item.end_x), r(item.end_y))
+        return ('s', item.layer, min(a, b), max(a, b), r(item.width))
+    return ('v', r(item.x), r(item.y), r(item.size), r(item.drill),
+            tuple(item.layers or ()))
 
 
 def _copper_by_net(pcb_data, segs_by_net, vias_by_net, zones_by_net):
