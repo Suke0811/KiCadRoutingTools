@@ -415,7 +415,8 @@ def build_film(shots, size=DEFAULT_SIZE, fps=DEFAULT_FPS, supersample=1,
                     else movie_panels.IsoOpts())
         # the theme resolved ONCE, above -- never the name again
         iso_opts.theme = _th
-        if str(layout or 'legacy').lower() not in ('legacy', 'inset'):
+        if str(layout or 'legacy').lower() not in ('legacy', 'inset',
+                                                   'stage3d'):
             iso_box = movie_panels.preflight(steps[0][1], iso_opts) is None
     import frame_spool
     # #1036 review: BOTH spools are closed on every way out -- an exception
@@ -451,6 +452,29 @@ def _build_film_body(a, frame_spool, sink, steps, final, size, supersample,
     # #1042: the placement panels, measured before the frame is planned so
     # their region is reserved -- the same call make_movie makes.
     placement = placement or {}
+    # #1081: the stage3d film has ONE band -- the benchmark band -- which
+    # folds the verdict band and the placement panels into one curve, so
+    # neither is measured or reserved (the same rule make_movie applies).
+    _stage3d = str(layout or '').strip().lower() == 'stage3d'
+    _btrack = None
+    if _stage3d:
+        try:
+            import movie_benchmark
+            _led = placement.get('ledger')
+            _btrack = (movie_benchmark.from_converge_ledger(_led) if _led
+                       else movie_benchmark.discover(
+                           os.path.dirname(os.path.abspath(final))))
+            if _btrack is not None and placement.get('benchmark'):
+                _btrack = movie_benchmark.with_benchmark(
+                    _btrack, movie_benchmark.grade_benchmark(
+                        placement['benchmark'],
+                        placement.get('benchmark_score')))
+        except Exception as exc:                                # noqa: BLE001
+            print('make_film: no benchmark band (%s)' % exc,
+                  file=sys.stderr)
+            _btrack = None
+        attempts = None
+        placement = dict(placement, off=True)
     _verdict = bool(attempts is not None and len(attempts.attempts) >= 2)
     _ptrack, _pwhy = None, 'off (--no-placement-panel)'
     if not placement.get('off'):
@@ -471,9 +495,14 @@ def _build_film_body(a, frame_spool, sink, steps, final, size, supersample,
                             frames_sink=sink, max_frames=max_frames,
                             theme=_th, layout=layout, aspect=aspect,
                             geom_out=_geom,
-                            attempts_band=(_pfn if _pfn is not None
-                                           else bool(_verdict)),
-                            iso_panel=iso_box, lands_out=_lands)
+                            attempts_band=(
+                                bool(_btrack is not None
+                                     and len(_btrack.points) >= 2)
+                                if _stage3d else
+                                (_pfn if _pfn is not None
+                                 else bool(_verdict))),
+                            iso_panel=iso_box, lands_out=_lands,
+                            board3d=placement.get('board3d') or 'auto')
     if not frames:
         if sink is not None:
             sink.close()
@@ -511,21 +540,35 @@ def _build_film_body(a, frame_spool, sink, steps, final, size, supersample,
     # attempts: this film is usually made FROM a search, and the sidecars that
     # record it are sitting next to the boards. Nothing is ever inferred from
     # the boards themselves -- no sidecars means no band.
-    try:
-        import movie_attempts
-        frames, _rep = movie_attempts.attach(
-            frames, attempts, theme=_th, marks=marks, box=_vbox)
-        if not quiet:
-            print('make_film: ' + movie_attempts.status_line(_rep),
+    if _stage3d:
+        try:
+            import movie_benchmark
+            frames, _brep = movie_benchmark.attach(
+                frames, _btrack, box=_vbox, theme=_th, marks=marks)
+            print('make_film: ' + movie_benchmark.status_line(_brep),
                   file=sys.stderr)
-    except Exception as exc:                                    # noqa: BLE001
-        if not quiet:
-            print(f"make_film: no attempts band ({exc})", file=sys.stderr)
+        except Exception as exc:                                # noqa: BLE001
+            print(f"make_film: no benchmark band ({exc})", file=sys.stderr)
+    else:
+        try:
+            import movie_attempts
+            frames, _rep = movie_attempts.attach(
+                frames, attempts, theme=_th, marks=marks, box=_vbox)
+            if not quiet:
+                print('make_film: ' + movie_attempts.status_line(_rep),
+                      file=sys.stderr)
+        except Exception as exc:                                # noqa: BLE001
+            if not quiet:
+                print(f"make_film: no attempts band ({exc})",
+                      file=sys.stderr)
 
     # The iso view, after the band and BEFORE the badges and cards, for the
     # band's reason: a badge's border must enclose the whole composed frame,
     # and the cards are cut at the composed size.
-    if want_iso:
+    if want_iso and _stage3d:
+        print('make_film: iso panel: not drawn -- the stage3d board box IS '
+              'the 3D view', file=sys.stderr)
+    elif want_iso:
         import movie_panels
         _box = (_g0.panel_split[0] if (iso_box and _g0 is not None
                                       and _g0.panel_split) else None)
@@ -669,9 +712,18 @@ def main(argv=None):
                          'placement panels (#1042); --from-ledger also '
                          'supplies one')
     ap.add_argument('--benchmark-board', default=None, metavar='PATH',
-                    help="a benchmark placement drawn DASHED on the "
-                         "placement arrangement panel (a screen, not the "
-                         "verdict)")
+                    help="a benchmark board: drawn DASHED on the placement "
+                         "arrangement panel, and -- with --layout stage3d "
+                         "-- the 100%% line of the benchmark band, gold once "
+                         "a WORKING board beats it")
+    ap.add_argument('--benchmark-score', default=None, metavar='PATH',
+                    help="the benchmark board's `board_score --json` "
+                         "document (must name that board by board_sha); "
+                         "without it board_score is run once")
+    ap.add_argument('--board-3d', default='auto', choices=('auto', '2d'),
+                    help="stage3d only: 'auto' (default) draws the 3D board "
+                         "when Node, playwright-core and a Chromium are "
+                         "present, else the 2D X-ray and says why")
     ap.add_argument('--floorplan-intent', default=None, metavar='PATH',
                     help='grade placement boards the ledger does not name '
                          'with check_floorplan --intent')
@@ -766,6 +818,8 @@ def main(argv=None):
                                    'ledger': (a.attempts_ledger
                                               or a.from_ledger),
                                    'benchmark': a.benchmark_board,
+                                   'benchmark_score': a.benchmark_score,
+                                   'board3d': a.board_3d,
                                    'intent': a.floorplan_intent},
                         iso_opts=_iso_opts(a),
                         attempts=attempts,

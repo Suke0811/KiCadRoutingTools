@@ -667,7 +667,10 @@ def attach(frames, track, *, box, theme=None, marks=None):
     if marks:
         ends = sorted({int(m[3]) for m in marks if len(m) >= 4})
         if ends:
-            horizons = [lo + (hi - lo) * (sum(1 for e in ends if e < i)
+            # a step counts once its LAST frame is drawn (`last` is
+            # exclusive), so the final frame shows every lap -- counting only
+            # steps that ended BEFORE a frame left the last lap off the film
+            horizons = [lo + (hi - lo) * (sum(1 for e in ends if e <= i + 1)
                                           / float(len(ends)))
                         for i in range(len(frames))]
     probe = Image.new('RGB', (box.w, box.h))

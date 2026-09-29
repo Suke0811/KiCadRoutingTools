@@ -16,7 +16,9 @@ const S = {};
 
 function rad(d) { return d * Math.PI / 180; }
 
-function rgb(c) { return new THREE.Color(c[0] / 255, c[1] / 255, c[2] / 255); }
+// Theme colours are sRGB bytes; say so, or three's colour management treats
+// them as linear and the board box comes out lighter than the frame's ground.
+function rgb(c) { return new THREE.Color().setRGB(c[0] / 255, c[1] / 255, c[2] / 255, THREE.SRGBColorSpace); }
 
 // ---------------------------------------------------------------- board
 function buildBoard(scene, colors) {

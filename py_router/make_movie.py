@@ -242,7 +242,8 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
                panels=None, iso_opts=None, timing=None, theme=None,
                layout=None, aspect=None, attempts=None, max_frames=None,
                title=None, attempts_ledger=None, benchmark_board=None,
-               floorplan_intent=None, placement_panel=None):
+               floorplan_intent=None, placement_panel=None, board3d='auto',
+               benchmark_score=None):
     """Render the movie. ``inputs`` is a run dir (one entry) or a board sequence.
 
     Returns the path actually written -- which is a sibling ``.gif`` when an
@@ -272,6 +273,7 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
             benchmark_board=benchmark_board,
             floorplan_intent=floorplan_intent,
             placement_panel=placement_panel,
+            board3d=board3d, benchmark_score=benchmark_score,
             spool=spool)
     finally:
         spool.close()
@@ -282,7 +284,7 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                 panels, iso_opts, timing, theme, layout, aspect, attempts,
                 max_frames, spool, title=None, attempts_ledger=None,
                 benchmark_board=None, floorplan_intent=None,
-                placement_panel=None):
+                placement_panel=None, board3d='auto', benchmark_score=None):
     import animate_route as a
     if isinstance(inputs, str):
         inputs = [inputs]
@@ -448,6 +450,29 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
     max_frames = resolve_max_frames(max_frames)
     max_frames = spool_budget(spool, steps, size, max_frames, rip_hold,
                               who='make_movie')
+    # #1081. THE STAGE3D FILM HAS ONE BAND, the benchmark band, which folds
+    # the verdict band and the placement panels into one curve -- so neither
+    # of those is measured or reserved, and there is no iso panel: the board
+    # box IS the 3D view.
+    _stage3d = str(layout or '').strip().lower() == 'stage3d'
+    _btrack = None
+    if _stage3d:
+        try:
+            import movie_benchmark
+            if attempts is not False:
+                _btrack = (movie_benchmark.from_converge_ledger(
+                    attempts_ledger) if attempts_ledger else
+                    movie_benchmark.discover(
+                        os.path.dirname(os.path.abspath(final))))
+            if _btrack is not None and benchmark_board:
+                _btrack = movie_benchmark.with_benchmark(
+                    _btrack, movie_benchmark.grade_benchmark(
+                        benchmark_board, benchmark_score))
+        except Exception as exc:                                # noqa: BLE001
+            print('make_movie: no benchmark band (%s)' % exc,
+                  file=sys.stderr)
+            _btrack = None
+        attempts, placement_panel = False, False
     # #946/C4: THE ATTEMPTS ARE FOUND BEFORE THE FRAME IS PLANNED, so the
     # band is RESERVED in the layout (`plan_frame(track_px=)`) instead of
     # grown under every frame afterwards -- which is what made a declared
@@ -510,13 +535,15 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
         _band = _pfn
     else:
         _band = bool(_verdict)
+    if _stage3d:
+        _band = bool(_btrack is not None and len(_btrack.points) >= 2)
     # The 3D view gets a region of the layout's own panel (#946/C4) when the
     # layout has one to split and the panel WOULD run -- asked now, before
     # the frame is planned, because a region reserved for a panel that is
     # then gated off would be a blank box in every frame.
     _iso_box = False
-    if want_iso and str(layout or 'legacy').lower() not in ('legacy',
-                                                            'inset'):
+    if want_iso and str(layout or 'legacy').lower() not in (
+            'legacy', 'inset', 'stage3d'):
         try:
             import movie_panels
             if iso_opts is None:
@@ -531,7 +558,7 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                             geom_out=geom_out, title=_title,
                             frames_sink=spool, max_frames=max_frames,
                             attempts_band=_band, iso_panel=_iso_box,
-                            lands_out=_lands)
+                            lands_out=_lands, board3d=board3d)
     if not frames:
         if not quiet:
             print("make_movie: no frames (nothing routed?)", file=sys.stderr)
@@ -559,6 +586,18 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                                              theme, _geom0.frame.h)
         else:
             _ptrack, _pwhy = None, 'no band could be reserved in this frame'
+    if _stage3d:
+        # #1081: PRINTED EVEN WHEN QUIET, like every band's status line.
+        try:
+            import movie_benchmark
+            frames, _brep = movie_benchmark.attach(
+                frames, _btrack, box=(_geom0.track if _geom0 is not None
+                                      else None),
+                theme=theme, marks=marks)
+            print(movie_benchmark.status_line(_brep), file=sys.stderr)
+        except Exception as exc:                                # noqa: BLE001
+            print('make_movie: no benchmark band (%s)' % exc,
+                  file=sys.stderr)
     # SAID whenever a placement was found, drawn or declined
     if _ptrack is not None or placement_panel or _plan is not None:
         import movie_placement
@@ -623,7 +662,10 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
             # A clock is decoration; it may never take the movie down.
             if not quiet:
                 print('make_movie: no run clock (%s)' % exc, file=sys.stderr)
-    if want_iso:
+    if want_iso and _stage3d:
+        print('iso panel: not drawn -- the stage3d board box IS the 3D view',
+              file=sys.stderr)
+    elif want_iso:
         # Imported HERE, not at module scope: make_movie is imported in-process
         # by the GUI recorder, run_plan.py, place_route_loop.py and
         # render_run.py, and none of them should pay for a feature they did not
@@ -733,9 +775,21 @@ def main():
                          'the placement panels from, instead of looking '
                          'beside the boards (#1042)')
     ap.add_argument('--benchmark-board', default=None, metavar='PATH',
-                    help="a benchmark placement (the human's board, or a "
-                         "previous run) drawn DASHED on the placement "
-                         "arrangement panel -- a screen, not the verdict")
+                    help="a benchmark board (the human's, or a previous "
+                         "run): drawn DASHED on the placement arrangement "
+                         "panel, and -- with --layout stage3d -- the 100%% "
+                         "line of the benchmark band, gold once a WORKING "
+                         "board beats it on (vias, copper, segments)")
+    ap.add_argument('--benchmark-score', default=None, metavar='PATH',
+                    help="the benchmark board's `board_score --json` "
+                         "document (must name that board by board_sha); "
+                         "without it board_score is run once to grade it")
+    ap.add_argument('--board-3d', default='auto', choices=('auto', '2d'),
+                    help="stage3d only: 'auto' (default) draws the 3D board "
+                         "when Node, playwright-core (npm ci in "
+                         "py_router/stage3d) and a Chromium are present, "
+                         "else the 2D X-ray and says why; '2d' always the "
+                         "X-ray")
     ap.add_argument('--floorplan-intent', default=None, metavar='PATH',
                     help='the floorplan intent to grade placement boards the '
                          'ledger does not name (check_floorplan --intent)')
@@ -866,6 +920,8 @@ def main():
                          max_frames=args.max_frames, title=args.title,
                          attempts_ledger=args.attempts_ledger,
                          benchmark_board=args.benchmark_board,
+                         benchmark_score=args.benchmark_score,
+                         board3d=args.board_3d,
                          floorplan_intent=args.floorplan_intent,
                          placement_panel=(False if args.no_placement_panel
                                           else None),

@@ -943,7 +943,8 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
                  marks=None, theme=None, layout=None, aspect=None,
                  geom_out=None, title=None, frames_sink=None,
                  max_frames=None, notes=None, attempts_band=False,
-                 iso_panel=False, lands_out=None, stage_out=None):
+                 iso_panel=False, lands_out=None, stage_out=None,
+                 board3d='auto'):
     """Frames for a chain given as [(label, board, trace|None), ...] plus the
     final board. ``build_run`` is this with the chain discovered from a run dir.
 
@@ -955,6 +956,11 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     record and receives it: ``log`` (one record per frame, same length as the
     frames), ``epochs`` (each board's part poses), ``layers``, ``chrome`` and
     the copper edit logs ``ops_s`` / ``ops_v`` the records index into.
+
+    ``board3d`` (#1081) applies to the ``stage3d`` layout only: ``'auto'``
+    (default) puts the 3D board in the board box when this machine can
+    render it and says why when it cannot; ``'2d'`` keeps the X-ray.
+    See `stage3d.film.apply` -- all frames 3D, or all X-ray, never mixed.
 
     ``stage`` (movie_camera.Stage, #431) adds a camera and animates FOOTPRINT
     motion for placement rounds. With ``stage=None`` -- every existing caller --
@@ -1072,6 +1078,10 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
         if geom_out is not None:
             geom_out.append(_g)
     m = Movie(r, layers, rip_hold=rip_hold)
+    _s3d = (_geom is not None and _geom.layout == 'stage3d'
+            and board3d not in ('2d', 'off'))
+    if stage_out is None and _s3d:
+        stage_out = {}                  # the 3D board is rebuilt from it
     if stage_out is not None:
         # #1081: the per-frame stage record, handed back to the caller
         # (the stage3d layout's 3D board) with the layer names it indexes.
@@ -1258,6 +1268,14 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
         m.snapshot("routed")
     if stage is not None:
         stage.outro()
+    # #1081: the stage3d layout's board box holds the 3D board -- rendered
+    # in full before any frame is composed, or not at all.
+    if _geom is not None and _geom.layout == 'stage3d':
+        from stage3d import film as _s3f
+        m.frames, _s3rep = _s3f.apply(
+            m.frames, stage_out, final, _geom, r.theme,
+            stage_present=stage is not None,
+            mode=board3d if _s3d else '2d', notes=notes)
     # #1018: the board was rendered into its PLANNED BOX; the frame is the
     # planned FRAME. Composing here rather than leaving the box as the frame is
     # what makes the size claim real -- the rail, the panel and the foot exist
