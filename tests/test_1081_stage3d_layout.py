@@ -72,12 +72,13 @@ def test_the_board_keeps_seventy_by_seventy():
                     W, H = g.frame.w, g.frame.h
                     land = W >= FL.ISO_SIDE_ASPECT * H
                     tag = '%s/%s/%s/band %d' % (ratio, size, sn, track)
-                    _check(g.board.h >= FL.STAGE3D_BOARD_H_FRAC * H
-                           or g.track is None,
-                           '%s: board %d of %d px high' % (tag, g.board.h, H))
+                    small = any('too small' in n for n in g.notes)
+                    _check(g.board.h >= FL.STAGE3D_BOARD_H_FRAC * H or small,
+                           '%s: board %d of %d px high, and nothing says '
+                           'why' % (tag, g.board.h, H))
                     if land:
-                        _check(g.board.w >= FL.STAGE3D_BOARD_W_FRAC * W,
-                               '%s: board %d of %d px wide'
+                        _check(g.board.w >= FL.STAGE3D_BOARD_W_FRAC * W
+                               or small, '%s: board %d of %d px wide'
                                % (tag, g.board.w, W))
                         _check(g.panel is not None and g.panel.x == g.board.w,
                                '%s: the layer column sits right of the board'
@@ -118,6 +119,24 @@ def test_a_band_is_shrunk_then_declined_and_either_is_said():
            % (g.track, g.notes))
     if len(_FAIL) == mark:
         print('  PASS: shrink, decline, and both said')
+
+
+def test_a_floor_it_cannot_keep_is_said():
+    """The phase-3 verifier: at size 100 the board was 14% of the frame,
+    and with a 250 px clock band 47%, with no note and no error."""
+    mark = len(_FAIL)
+    for size, foot in ((100, 0), (200, 0), (1000, 250)):
+        g = _plan(SHAPES['wide 1.85'], '16:9', size, 0, foot=foot)
+        if g.board.h < FL.STAGE3D_BOARD_H_FRAC * g.frame.h:
+            _check(any('too small' in n for n in g.notes),
+                   'size %d, foot %d: board %dx%d of %dx%d is said (%s)'
+                   % (size, foot, g.board.w, g.board.h, g.frame.w,
+                      g.frame.h, g.notes))
+    g = _plan(SHAPES['wide 1.85'], '16:9', 1000, 0)
+    _check(not any('too small' in n for n in g.notes),
+           'a frame that keeps the floor says nothing about it')
+    if len(_FAIL) == mark:
+        print('  PASS: a broken floor is always said')
 
 
 def test_portrait_makes_the_column_a_row_or_says_why_not():
@@ -199,6 +218,7 @@ def test_layout_budget_excludes_stage3d_on_purpose():
 TESTS = (
     test_the_board_keeps_seventy_by_seventy,
     test_a_band_is_shrunk_then_declined_and_either_is_said,
+    test_a_floor_it_cannot_keep_is_said,
     test_portrait_makes_the_column_a_row_or_says_why_not,
     test_an_extreme_aspect_falls_back_to_legacy_and_says_so,
     test_auto_never_picks_it,

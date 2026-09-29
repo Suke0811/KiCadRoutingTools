@@ -108,8 +108,10 @@ STAGE3D_BOARD_H_FRAC = 0.70
 STAGE3D_BAND_MIN_PX = 64
 #: A PORTRAIT stage3d frame (aspect below `ISO_SIDE_ASPECT`) has no width
 #: for a side column, so the layer column becomes a ROW under the board --
-#: dropped, and said, when it would be shorter than this.
-STAGE3D_ROW_MIN_PX = 40
+#: dropped, and said, when it would be shorter than this. Not 40: a 52 px
+#: row at 9:16 drew six 8 px-wide cells with their names cut to "In" (the
+#: phase-3 verifier's render) -- a row too short to read is not a row.
+STAGE3D_ROW_MIN_PX = 90
 
 
 class Box(NamedTuple):
@@ -400,6 +402,17 @@ def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
         if iso:
             notes.append('stage3d: no iso panel -- the board box IS the 3D '
                          'view')
+        # The floor is a PROMISE only a frame big enough can keep. A tiny
+        # frame, or a clock band taller than the frame can spare, breaks it
+        # -- and says so rather than shipping a smaller board quietly.
+        if (board.h < STAGE3D_BOARD_H_FRAC * H
+                or (W >= ISO_SIDE_ASPECT * H
+                    and board.w < STAGE3D_BOARD_W_FRAC * W)):
+            notes.append('stage3d: the frame is too small for the %d%% x '
+                         '%d%% board (%dx%d of %dx%d)'
+                         % (round(100 * STAGE3D_BOARD_W_FRAC),
+                            round(100 * STAGE3D_BOARD_H_FRAC),
+                            board.w, board.h, W, H))
     elif not panel or spec.panel is None:
         board = Box(0, inner_y, W, inner_h)
     elif (spec.panel in ('below', 'split') and (iso or track_h)
@@ -477,8 +490,8 @@ def _stage3d_band(H, rail_h, foot_h, band_h, track_h):
     need = _up_even(STAGE3D_BOARD_H_FRAC * H)
     cap = H - rail_h - foot_h - band_h - need
     if cap < STAGE3D_BAND_MIN_PX:
-        return 0, ('stage3d: no benchmark band -- %d px is left under a '
-                   '%d px board box, and the band needs %d'
+        return 0, ('stage3d: no benchmark band -- %d px is left once the '
+                   'board keeps its %d px floor, and the band needs %d'
                    % (max(0, cap), need, STAGE3D_BAND_MIN_PX))
     if track_h > cap:
         return even(cap), ('stage3d: benchmark band %d -> %d px so the '
