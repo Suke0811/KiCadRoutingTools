@@ -433,10 +433,31 @@ class FakeIpcBoard:
         """Queue a zone s-expression for the next push (planes tab)."""
         self._zone_sexprs.append(sexpr)
 
-    def save_as(self, path, overwrite=True, include_project=False):
+    def save_as(self, path, overwrite=True, include_project=True):
+        """kipy's `Board.save_as` (SaveCopyOfDocument), on the file.
+
+        `include_project` defaults True, as kipy's does, and then copies the
+        board's `.kicad_pro` beside the copy -- what KiCad 10.0.0 writes
+        (probed: `.kicad_pcb` + `.kicad_pro`, not the `.kicad_prl`). The
+        `.kicad_dru` goes too when there is one: the graders read it, and the
+        CLI leg carries it.
+
+        This used to ignore the flag and copy the board alone, so every GUI
+        step snapshot was graded with NO project rule at all while the CLI leg
+        was graded against the `.kicad_pro` it wrote. On rp2350 that read as
+        "GUI create clean, CLI create 10 TRACK-HOLE" for copper the two fronts
+        shared -- the #441 trap, in the harness.
+        """
         import shutil
-        if os.path.abspath(path) != self.path:
-            shutil.copy(self.path, path)
+        dst = os.path.abspath(path)
+        if dst != self.path:
+            shutil.copy(self.path, dst)
+            if include_project:
+                src_stem = os.path.splitext(self.path)[0]
+                dst_stem = os.path.splitext(dst)[0]
+                for ext in ('.kicad_pro', '.kicad_dru'):
+                    if os.path.isfile(src_stem + ext):
+                        shutil.copy(src_stem + ext, dst_stem + ext)
         return True
 
 
@@ -474,7 +495,11 @@ def install(board_path):
     adapter.get_board = lambda *a, **k: board
     adapter.connect = lambda *a, **k: None
     adapter.get_board_full_path = lambda *a, **k: board.path
-    adapter.save_board_snapshot = lambda path, *a, **k: board.save_as(path)
+    # include_project=False, as the real save_board_snapshot passes it: the
+    # oracle's temp copy must carry NO project (it stages the real one through
+    # project_from, #490).
+    adapter.save_board_snapshot = lambda path, *a, **k: board.save_as(
+        path, include_project=False)
     adapter.ping = lambda *a, **k: True
 
     # Every plugin call site does a function-local
