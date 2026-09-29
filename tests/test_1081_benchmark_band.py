@@ -239,7 +239,8 @@ def test_the_band_draws_what_it_claims():
         g = [i for i in dbg['shown'] if MB.plan(MB.with_benchmark(
             tr, MB.Benchmark('human', (9.0, 500.0, 200.0), 0.0, 't')))
             .gold_at == i]
-        gx, gy = dbg['xs'][g[0]], dbg['ypos'][g[0]]
+        _check(bool(g), '%s: the gold lap is revealed' % theme)
+        gx, gy = dbg['gold_xy']
         _check(img.getpixel((int(gx), int(gy))) == tuple(gold),
                '%s: the gold marker is in the pixels' % theme)
         _check(dbg['marker'] and 'beats benchmark' in dbg['marker'],

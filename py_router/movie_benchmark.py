@@ -277,7 +277,10 @@ def grade_benchmark(board, score_json=None, timeout=900) -> Benchmark:
     b = None
     if isinstance(doc, dict):
         sha = doc.get('board_sha')
-        if sha and os.path.isfile(board) and sha != _sha256(board):
+        if not sha:
+            why += ('; but that score names no board_sha, so which board it '
+                    'graded is unknown')
+        elif os.path.isfile(board) and sha != _sha256(board):
             why += '; but that score is about ANOTHER board (board_sha)'
         else:
             from movie_attempts import _blocking_value
@@ -419,7 +422,7 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
     font = load_font(cap_h - 2)
     small = load_font(max(9, cap_h - 4))
     x0, y0 = box.x + AXIS_W, box.y + cap_h + 8
-    x1, y1 = box.x + box.w - 10, box.y + box.h - 12
+    x1, y1 = box.x + box.w - 10, box.y + box.h - (cap_h + 2)
     if x1 - x0 < 60 or y1 - y0 < 40:
         return False
     pl = plan(track)
@@ -514,6 +517,9 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
             d.line([(xx, yb), (min(xx + 5, x1), yb)], fill=gold, width=1)
         put(x1, yb + 2, 'benchmark %s = 100 %%' % bench.name, small, gold,
             tries=((0, 0), (0, -16)))
+        # the dashed line is an obstacle too: a record label struck through
+        # by it read as crossed out (the phase-7 verification)
+        occupied.append((x0, yb - 1, x1, yb + 1))
     # the curve over the accepted spine
     prev = None
     for i in shown:
@@ -586,20 +592,25 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
             tries=((0, 0), (0, -16), (-120, -16)))
     # gold: the first record that beats the (working) benchmark
     marker = None
+    gold_xy = None
     for pos, word in ((pl.gold_at, 'beats'), (pl.ties_at, 'matches')):
         if pos is None or pos not in show:
             continue
         p = order[pos]
-        y = ys[pos]
         s = 7
-        d.polygon([(xs[pos], y - s), (xs[pos] + s, y), (xs[pos], y + s),
-                   (xs[pos] - s, y)], fill=gold)
+        # inside the plot: at the corner the diamond was clipped
+        y = min(max(ys[pos], y0 + s), y1 - s)
+        gx = min(max(xs[pos], x0 + s), x1 - s)
+        d.polygon([(gx, y - s), (gx + s, y), (gx, y + s), (gx - s, y)],
+                  fill=gold)
+        gold_xy = (gx, y)
         when = (_fmt_t(p.t - track.domain[0]) if track.domain
                 else 'lap %d' % (p.iteration if p.iteration is not None
                                  else p.index))
         marker = '%s benchmark @ %s' % (word, when)
-        put(xs[pos] + 10, y - 18, marker, small, gold,
-            tries=((0, 0), (0, 12), (-150, -18), (-150, 12)))
+        put(gx + 10, y - 18, marker, small, gold,
+            tries=((0, 0), (0, 12), (-170, -18), (-170, 12), (-170, -32),
+                   (10, -32), (-85, -34)))
         break
     # record labels: the deciding term below the line, placement detail
     # above; a label that would overlap anything is dropped, never stacked
@@ -609,7 +620,8 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
             continue
         col = ok if order[i].done else tried
         if put(xs[i] + 7, ys[i] + 4, lab, small, col,
-               tries=((0, 0), (0, -18), (-60, 6))):
+               tries=((0, 0), (0, -18), (-60, 6), (-90, -18), (8, -32),
+                      (-110, -32), (-110, 6))):
             labels.append((i, lab))
     # caption
     if bench is None:
@@ -629,9 +641,26 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
         cap = '  |  '.join(parts)
     d.text((box.x + 6, box.y + 2), cap, fill=dim, font=small)
     d.text((box.x + 6, y0), 'blocking', fill=ink, font=small)
-    d.text((box.x + 6, line_y + 6), 'vias %', fill=ink, font=small)
+    d.text((box.x + 6, line_y + 16), 'vias %', fill=ink, font=small)
+    # the axes' own numbers: the top of the blocking scale, the 100 % mark,
+    # and the run clock (or lap numbers) at each end
+    d.text((x0 - 4, y0 + 16), '%g' % round(pl.bmax, 1), fill=dim,
+           font=small, anchor='ra')
+    if pl.ref_vias and lo_p <= 100.0 <= hi_p:
+        d.text((x0 - 4, int(y_below(100.0))), '100 %', fill=dim, font=small,
+               anchor='rm')
+    if track.domain:
+        left, right = _fmt_t(0), _fmt_t(track.domain[1] - track.domain[0])
+    else:
+        first, last = order[0], order[-1]
+        left = 'lap %d' % (first.iteration if first.iteration is not None
+                           else first.index)
+        right = 'lap %d' % (last.iteration if last.iteration is not None
+                            else last.index)
+    d.text((x0, y1 + 1), left, fill=dim, font=small, anchor='la')
+    d.text((x1, y1 + 1), right, fill=dim, font=small, anchor='ra')
     if debug is not None:
-        debug.update(line_y=line_y, xs=xs, shown=shown,
+        debug.update(line_y=line_y, xs=xs, shown=shown, gold_xy=gold_xy,
                      crossed=bool(live_spans), chip=chip, marker=marker,
                      labels=labels, records=[i for i, _l in rec],
                      caption=cap, plot=(x0, y0, x1, y1), done_at=pl.done_at,

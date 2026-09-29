@@ -17,12 +17,17 @@ into data a renderer can replay with no knowledge of how the film was made:
     Frames with identical states are coalesced (`unique`), because a rip hold
     or a caption-only change repeats a picture the renderer need not redraw.
 
-**The flip is the Stage's.** When the film had a Stage, its recorded flip
-frames and mirror flag are the only source of the board's side, so the 3D
-board turns on exactly the frames the X-ray does. A film with no Stage has no
-flip in 2D at all; there `auto_sides` applies a documented 3D-only rule --
-B-side activity faces the camera to the back, with a minimum dwell and no
-flip for a stray event -- and says so in the timeline's `side_rule`.
+**The board faces the work** (`activity_sides`). A glide faces the side
+its moving parts are on, copper faces the layer it lands on, and the board
+turns over about a second BEFORE the work begins, so the viewer sees it land.
+Work shorter than the dwell does not turn the board (no flip for a stray
+event), and an inner layer keeps whatever face is showing. This is the
+issue's own rule -- flip for bottom work, flip BACK for top work -- and it is
+deliberately not the 2D Stage's: the Stage flips for placement only and never
+flips back, so a film whose last copper landed on F.Cu ended face-down with
+every one of those segments on the far side (the phase-7 verification). The
+3D board is the stage3d film's only board view, so its side is chosen for the
+viewer; `side_rule` says which rule ran.
 """
 from __future__ import annotations
 
@@ -85,64 +90,91 @@ def _key_to_item(ops, n):
     return live
 
 
-def side_of(rec) -> str:
-    return 'B' if rec.get('mirror') else 'F'
+def _smooth(k):
+    return k * k * (3 - 2 * k)
 
 
-def flip_angle(rec) -> float:
-    """The board's turn about its long axis, radians: 0 = the front faces
-    the camera, pi = the back. A Stage flip frame carries `(t, to_side)`."""
-    fl = rec.get('flip')
-    if fl:
-        t, to = float(fl[0]), fl[1]
-        return math.pi * t if to == 'B' else math.pi * (1.0 - t)
-    return math.pi if rec.get('mirror') else 0.0
+def activity_sides(log, epochs, fps, dwell_s=AUTO_DWELL_S,
+                   flip_s=AUTO_FLIP_S):
+    """Per-frame flip angle: face the side the film is working on.
 
-
-def auto_sides(log, fps, dwell_s=AUTO_DWELL_S, flip_s=AUTO_FLIP_S):
-    """Per-frame flip angle for a film with NO Stage: face the back while the
-    work is on the back. `active` names the layer each frame's event touched;
-    `B.Cu` wants the back, `F.Cu` the front, an inner layer keeps whatever is
-    showing. A switch happens only when the wanted side has held for
-    `dwell_s` AND the current side has been shown that long; it then turns
-    over `flip_s`. Returns (angles, flips) where flips counts the turns."""
+    Each frame WANTS a side: the side of the parts gliding on it (their
+    resting layer), else the copper layer its event touched (`B.Cu` back,
+    `F.Cu` front), else no preference. Runs of one wanted side shorter than
+    `dwell_s` are absorbed into the side already showing -- hysteresis, so a
+    stray event never flips the board -- and each remaining change turns the
+    board over the `flip_s` BEFORE its run starts (never overlapping the
+    previous turn), so the work is seen landing face-on. The whole log is
+    known before a frame is drawn, which is what makes looking ahead
+    deterministic. Returns (angles, turns)."""
     dwell = max(1, int(round(dwell_s * fps)))
     turn = max(1, int(round(flip_s * fps)))
     want = []
-    cur = 'F'
+    glide = []
     for r in log:
-        a = r.get('active') or ''
-        if a == 'B.Cu':
-            cur = 'B'
-        elif a == 'F.Cu':
-            cur = 'F'
-        want.append(cur)
-    side, held, pend, since = 'F', dwell, None, 0
-    angles = []
-    flips = 0
-    turning = None                  # (start frame, to side)
-    for i, w in enumerate(want):
-        if turning is not None:
-            k = (i - turning[0] + 1) / float(turn)
-            if k >= 1.0:
-                side, held, turning = turning[1], 0, None
-            else:
-                a = math.pi * k if turning[1] == 'B' else math.pi * (1 - k)
-                angles.append(a)
-                continue
-        held += 1
-        if w != side:
-            if pend != w:
-                pend, since = w, 0
-            since += 1
-            if since >= dwell and held >= dwell:
-                turning = (i, w)
-                flips += 1
-                pend = None
+        glide.append(bool(r.get('moving')))
+        w = None
+        mv = r.get('moving') or {}
+        if mv:
+            tab = epochs[r['epoch']] if 0 <= r['epoch'] < len(epochs) else {}
+            back = sum(1 for ref in mv
+                       if str((tab.get(ref) or [0, 0, 0, 'F.Cu'])[3])
+                       .startswith('B'))
+            w = 'B' if back * 2 > len(mv) else 'F'
         else:
-            pend = None
-        angles.append(math.pi if side == 'B' else 0.0)
-    return angles, flips
+            a = r.get('active') or ''
+            w = 'B' if a == 'B.Cu' else ('F' if a == 'F.Cu' else None)
+        want.append(w)
+    # runs of a preference: [side, first, end, end of its LAST real work];
+    # no-preference frames extend the run before them but are not work
+    runs = []
+    for i, w in enumerate(want):
+        if w is None:
+            if runs:
+                runs[-1][2] = i + 1
+            continue
+        if runs and runs[-1][0] == w:
+            runs[-1][2] = runs[-1][3] = i + 1
+        else:
+            runs.append([w, i, i + 1, i + 1])
+    # hysteresis: a run shorter than the dwell keeps the side showing
+    side = 'F'
+    work_end = 0                        # end of the last GLIDE on `side`
+    changes = []                        # (start, side, work_end before it)
+    for w, a, b, last in runs:
+        if w != side and b - a >= dwell:
+            changes.append((a, w, work_end))
+            side = w
+        if w == side and glide[last - 1]:
+            work_end = last
+    angles = [0.0] * len(log)
+    cur, last_end = 0.0, 0
+    turns = 0
+    ci = 0
+    target = {'F': 0.0, 'B': math.pi}
+    # the turn: `turn` frames ending where the new work starts -- but never
+    # before the previous side's last GLIDE ends, so a part is never seen
+    # turning away mid-move (copper still landing may be seen mid-turn);
+    # squeezed into what is left when the gap is short, at worst one frame
+    windows = []
+    for c, w, prev_end in changes:
+        start = max(last_end, prev_end, c - turn)
+        end = max(start + 1, c)
+        windows.append((start, end, w))
+        last_end = end
+    for i in range(len(log)):
+        while ci < len(windows) and i >= windows[ci][1]:
+            cur = target[windows[ci][2]]
+            ci += 1
+        angles[i] = cur
+    for start, end, w in windows:
+        frm = target['B' if w == 'F' else 'F']
+        span = float(end - start)
+        for i in range(start, min(end, len(log))):
+            k = _smooth((i - start + 1) / span)
+            angles[i] = frm + (target[w] - frm) * k
+        turns += 1
+    return angles, turns
 
 
 def build(stage_out, *, fps=6.0, stage_present=True) -> dict:
@@ -162,13 +194,10 @@ def build(stage_out, *, fps=6.0, stage_present=True) -> dict:
         s[5] = li.get(s[5], 0)
     for v in vias:
         v[4], v[5] = li.get(v[4], 0), li.get(v[5], len(layers) - 1)
-    if stage_present:
-        angles = [flip_angle(r) for r in log]
-        rule = 'stage'
-    else:
-        angles, nf = auto_sides(log, fps)
-        rule = ('auto: B.Cu work faces the back after %.1f s, %d turn(s); '
-                'the 2D film has no flip' % (AUTO_DWELL_S, nf))
+    angles, nf = activity_sides(log, stage_out.get('epochs') or [], fps)
+    rule = ('activity: faces the side being worked on, turning %.1f s '
+            'ahead, ignoring work under %.1f s -- %d turn(s)'
+            % (AUTO_FLIP_S, AUTO_DWELL_S, nf))
     ops_s = stage_out['ops_s']
     states = []
     index = {}

@@ -1426,6 +1426,12 @@ def _draw_panel(d, geom, r, c, iso_in_panel=False):
         th = getattr(r, 'theme', None)
         phase = render_panels.phase_for(c.get('event', ''),
                                         unplaced=bool(c.get('unplaced')))
+        if geom.layout == 'stage3d':
+            # #1081: the stage3d column is ONE thing, the per-layer strip
+            # with the board's numbers under it, on every frame -- it sits
+            # beside a 3D board that already shows the placement, and a
+            # column that swapped panels by phase read as three widgets
+            phase = 'routing'
         box = geom.panel
         d.rectangle([box.x, box.y, box.x + box.w - 1, box.y + box.h - 1],
                     fill=th.rgb('chrome_panel') if th else (14, 14, 18))

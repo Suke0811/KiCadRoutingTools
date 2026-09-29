@@ -11,7 +11,7 @@ rebuild the same segments, the same vias, the same highlights -- on a film
 with a flip, a glide, a rip-and-retract and a growth stage.
 
 It also pins the side rules: with a Stage, the 3D board turns on the Stage's
-own flip frames and nowhere else; without one, `auto_sides` turns only after
+own flip frames and nowhere else; without one, `activity_sides` turns only after
 the back-side work has held for the dwell, never for a stray event.
 """
 import json
@@ -139,45 +139,72 @@ def test_every_frame_is_rebuilt_from_the_record_alone():
         _check(died >= 24, '%d copper items die (the rip)' % died)
 
 
-def test_the_3d_board_turns_on_the_stage_flip_and_only_there():
+def test_the_board_faces_the_work_and_turns_back():
+    """#1081: the board flips for bottom-side work and flips BACK for top
+    work. The Stage alone never flips back -- a film whose last copper
+    landed on F.Cu ended face-down (the phase-7 verification) -- so the 3D
+    board follows the activity: U1's back-side glide is seen from the back,
+    the F.Cu copper that follows from the front, the B.Cu after it from the
+    back, and each turn completes BEFORE its work starts."""
     with FC.Chain() as c:
         out = {}
-        frames, _m, st, _g = FC.film(c.boards, stage_out=out)
+        tr = FC.rip_trace(c.boards[-1], os.path.join(c.dir, 'tr.json'))
+        _f, _m, st, _g = FC.film(c.boards, stage_out=out, traces={3: tr})
         tl = TL.build(out)
-        a, b = [(x, y) for k, x, y in st.frame_log() if k == 'flip'][0]
         ang = [tl['states'][s]['angle'] for s in tl['frames']]
-        _check(all(v == 0.0 for v in ang[:a]), 'front before the flip')
-        mid = ang[a:b]
-        _check(all(0 < v <= math.pi + 1e-5 for v in mid)
-               and mid == sorted(mid), 'turning through the flip frames: '
-               '%s' % [round(v, 2) for v in mid])
-        _check(all(abs(v - math.pi) < 1e-5 for v in ang[b:]),
-               'back for every frame after it')
-        _check(tl['side_rule'] == 'stage', 'the rule is the Stage\'s')
+        log = out['log']
+        glide_b = [i for i in range(len(log))
+                   if 'U1' in (log[i].get('moving') or {})]
+        f_cu = [i for i in range(len(log)) if log[i].get('kind') == 'frame'
+                and log[i].get('active') == 'F.Cu']
+        b_cu = [i for i in range(len(log)) if log[i].get('kind') == 'frame'
+                and log[i].get('active') == 'B.Cu']
+        _check(glide_b and all(abs(ang[i] - math.pi) < 1e-5
+                               for i in glide_b),
+               'U1\'s back-side glide is seen from the back, every frame '
+               '(%s)' % [round(ang[i], 2) for i in glide_b])
+        first_f = f_cu[:6]
+        _check(first_f and all(abs(ang[i]) < 1e-5 for i in first_f),
+               'the F.Cu copper that follows lands face-on, the board turned '
+               'back (%s)' % [round(ang[i], 2) for i in first_f])
+        _check(b_cu and abs(ang[b_cu[0]] - math.pi) < 1e-5,
+               'and the B.Cu work after it faces the back again')
+        _check(tl['side_rule'].startswith('activity:'),
+               'the rule is named (%r)' % tl['side_rule'])
 
 
-def test_auto_sides_waits_for_the_dwell():
+def _rec(active=None, moving=None, epoch=0):
+    return {'active': active, 'moving': moving or {}, 'epoch': epoch}
+
+
+def test_the_side_rule_waits_out_a_stray_event():
     fps = 6.0
-    rec = ([{'active': 'F.Cu'}] * 20 + [{'active': 'B.Cu'}] * 2
-           + [{'active': 'F.Cu'}] * 20 + [{'active': 'B.Cu'}] * 30
-           + [{'active': 'In1.Cu'}] * 10)
-    ang, flips = TL.auto_sides(rec, fps)
+    ep = [{'U1': [0, 0, 0, 'B.Cu'], 'C1': [0, 0, 0, 'F.Cu']}]
+    rec = ([_rec('F.Cu')] * 20 + [_rec('B.Cu')] * 2
+           + [_rec('F.Cu')] * 20 + [_rec('B.Cu')] * 30
+           + [_rec('In1.Cu')] * 10)
+    ang, turns = TL.activity_sides(rec, ep, fps)
     _check(len(ang) == len(rec), 'one angle per frame')
-    _check(all(v == 0.0 for v in ang[:42]),
+    turn = int(TL.AUTO_FLIP_S * fps)
+    _check(all(v == 0.0 for v in ang[:42 - turn]),
            'a 2-frame stray back-side event does not flip the board')
-    _check(flips == 1, 'one turn for the sustained back-side work (%d)'
-           % flips)
-    _check(abs(ang[-1] - math.pi) < 1e-9,
-           'an inner-layer event keeps the back facing')
-    first = next(i for i, v in enumerate(ang) if v > 0)
-    _check(first >= 42 + int(TL.AUTO_DWELL_S * fps) - 1,
-           'the turn starts only after the dwell (frame %d)' % first)
+    _check(turns == 1, 'one turn for the sustained back-side work (%d)'
+           % turns)
+    _check(all(abs(v - math.pi) < 1e-9 for v in ang[42:]),
+           'the board already faces the back when the work starts, and an '
+           'inner-layer event keeps it there')
+    _check(0 < ang[42 - turn] < math.pi, 'the turn happens BEFORE the work')
+    # a glide faces its parts' side, whatever the copper last touched
+    rec = [_rec('F.Cu')] * 12 + [_rec(moving={'U1': [1, 1, 0]})] * 10
+    ang, _t = TL.activity_sides(rec, ep, fps)
+    _check(all(abs(v - math.pi) < 1e-9 for v in ang[12:]),
+           'a back-side glide is watched from the back')
 
 
 TESTS = (
     test_every_frame_is_rebuilt_from_the_record_alone,
-    test_the_3d_board_turns_on_the_stage_flip_and_only_there,
-    test_auto_sides_waits_for_the_dwell,
+    test_the_board_faces_the_work_and_turns_back,
+    test_the_side_rule_waits_out_a_stray_event,
 )
 
 

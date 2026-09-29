@@ -288,7 +288,10 @@ def inventory_counts(pcb, unseated=()):
     out = {}
     bad = set(unseated or ())
     for ref in getattr(pcb, 'footprints', {}) or {}:
-        cls = ''.join(ch for ch in str(ref) if ch.isalpha())[:3] or '?'
+        # a REFERENCE-LESS block is keyed `#<uuid>` (#726): its letters are
+        # hex digits, not a class -- it read as classes 'ab', 'dcd', 'edd'
+        cls = ('?' if str(ref).startswith('#') else
+               ''.join(ch for ch in str(ref) if ch.isalpha())[:3] or '?')
         seated, total = out.get(cls, (0, 0))
         out[cls] = (seated + (0 if ref in bad else 1), total + 1)
     return out

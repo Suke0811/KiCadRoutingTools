@@ -265,12 +265,48 @@ def test_the_key_is_drawn_after_the_mirror_at_any_supersample():
            'the front side draws nothing after a mirror it does not have')
 
 
+def test_the_stage3d_column_is_always_the_layer_strip():
+    """#1081's layer column is ONE thing on every frame: the per-layer strip
+    (with the board's numbers under it). It used to switch by phase between
+    the strip, a placement bar chart and a stats table (the phase-7
+    verification), which read as three widgets beside one 3D board."""
+    import animate_route as A2
+    import render_panels as RP
+    calls = {'strip': 0, 'inventory': 0}
+    o_strip, o_inv = RP.draw_layer_strip, RP.draw_inventory
+
+    def _strip(*a, **k):
+        calls['strip'] += 1
+        return o_strip(*a, **k)
+
+    def _inv(*a, **k):
+        calls['inventory'] += 1
+        return o_inv(*a, **k)
+    RP.draw_layer_strip, RP.draw_inventory = _strip, _inv
+    try:
+        with FC.Chain() as c:
+            geom = []
+            steps = [('step %d' % i, b, None) for i, b in enumerate(c.boards)]
+            import movie_camera as MC
+            st = MC.Stage(MC.synth_rounds(c.boards), '', tween=4, quiet=True)
+            frames = A2.build_boards(steps, c.boards[-1], 480, 1, None, 2, 6,
+                                     stage=st, layout='stage3d',
+                                     geom_out=geom, board3d='2d')
+            list(frames)
+    finally:
+        RP.draw_layer_strip, RP.draw_inventory = o_strip, o_inv
+    _check(calls['strip'] == len(frames) and calls['inventory'] == 0,
+           'stage3d: the layer strip on all %d frames, the placement bars '
+           'on none (%s)' % (len(frames), calls))
+
+
 TESTS = (
     test_one_chrome_record_and_one_stage_record_per_frame,
     test_no_caption_over_the_board_when_a_rail_carries_it,
     test_a_back_side_glide_draws_its_ghost,
     test_copper_revealed_after_the_flip_is_mirrored,
     test_the_key_is_drawn_after_the_mirror_at_any_supersample,
+    test_the_stage3d_column_is_always_the_layer_strip,
 )
 
 

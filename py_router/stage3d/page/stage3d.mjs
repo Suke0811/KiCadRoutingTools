@@ -214,8 +214,29 @@ function buildParts(scene, colors, root) {
       grp.add(body);
     }
     grp.add(faces.F, faces.B);
+    // the part's own extent, for its halo and its ghost
+    let ex0 = -0.5, ey0 = -0.5, ex1 = 0.5, ey1 = 0.5;
+    if (P.pads.length) {
+      ex0 = Math.min(...P.pads.map(p => p[0] - p[2] / 2)); ex1 = Math.max(...P.pads.map(p => p[0] + p[2] / 2));
+      ey0 = Math.min(...P.pads.map(p => p[1] - p[3] / 2)); ey1 = Math.max(...P.pads.map(p => p[1] + p[3] / 2));
+    }
+    const plane = new THREE.PlaneGeometry(ex1 - ex0 + 1.2, ey1 - ey0 + 1.2);
+    plane.rotateX(-Math.PI / 2);
+    plane.translate((ex0 + ex1) / 2, 0, (ey0 + ey1) / 2);
+    const halo = new THREE.Mesh(plane, new THREE.MeshBasicMaterial({
+      color: rgb(colors.hilite), transparent: true, opacity: 0.55, depthWrite: false,
+      side: THREE.DoubleSide }));
+    halo.renderOrder = 4;
+    halo.visible = false;
+    grp.add(halo);
+    const ghost = new THREE.Mesh(plane, new THREE.MeshBasicMaterial({
+      color: rgb(colors.hilite), transparent: true, opacity: 0.22, depthWrite: false,
+      side: THREE.DoubleSide }));
+    ghost.renderOrder = 4;
+    ghost.visible = false;
+    root.add(ghost);
     root.add(grp);
-    S.parts[ref] = { grp, faces, body, side: P.side, d };
+    S.parts[ref] = { grp, faces, body, side: P.side, d, halo, ghost };
   }
 }
 
@@ -229,8 +250,19 @@ function poseParts(st, tl) {
     const m = st.moving[ref];
     const x = m ? m[0] : e[0], y = m ? m[1] : e[1], rot = m ? m[2] : e[2];
     const back = String(e[3] || 'F.Cu').startsWith('B');
-    part.grp.position.set(x, back ? 0 : part.d, y);
+    // mid-glide: lifted clear of its neighbours (C26 slid THROUGH the
+    // RP2350's model and was hidden for 6 of its 10 frames), haloed, and
+    // its landing pose shown as a ghost on the face
+    const lift = m ? 1.2 : 0;
+    part.grp.position.set(x, back ? -lift : part.d + lift, y);
     part.grp.rotation.set(0, rad(rot), 0);
+    part.halo.visible = !!m;
+    part.halo.position.y = back ? -0.03 + lift : 0.03 - lift;
+    part.ghost.visible = !!m;
+    if (m) {
+      part.ghost.position.set(e[0], back ? -0.04 : part.d + 0.04, e[1]);
+      part.ghost.rotation.set(0, rad(e[2]), 0);
+    }
     // pads drawn on the part's own face (THT pads carry both), and the body
     // hangs below a back-side part
     part.faces.F.position.y = back ? part.d : 0;
@@ -311,8 +343,18 @@ async function loadGlb(url, glb, root) {
 }
 
 // ---------------------------------------------------------------- camera
-function frameCamera(scene, W, H) {
-  const [x0, y0, x1, y1] = scene.bounds;
+function frameCamera(scene, tl, W, H) {
+  let [x0, y0, x1, y1] = scene.bounds;
+  // a part off the outline (a pile beside the board, a glide's source) is
+  // in the film too: the fit covers every pose any part takes
+  for (const ep of tl.epochs) for (const ref of Object.keys(ep)) {
+    const p = scene.parts[ref];
+    if (!p) continue;
+    const r = p.pads.length ? Math.max(...p.pads.map(q => Math.hypot(q[0], q[1]) + Math.max(q[2], q[3]) / 2)) : 1;
+    const [px, py] = ep[ref];
+    x0 = Math.min(x0, px - r); x1 = Math.max(x1, px + r);
+    y0 = Math.min(y0, py - r); y1 = Math.max(y1, py + r);
+  }
   const cx = (x0 + x1) / 2, cz = (y0 + y1) / 2;
   const r = 0.5 * Math.hypot(x1 - x0, y1 - y0) + 2;
   const fov = 30;
@@ -363,7 +405,7 @@ window.stage3dInit = async function (o) {
   const sun = new THREE.DirectionalLight(0xffffff, 1.6);
   sun.position.set(0.35, 1.0, 0.7);
   world.add(sun);
-  const { cam, cx, cz } = frameCamera(scene, W, H);
+  const { cam, cx, cz } = frameCamera(scene, tl, W, H);
   // the flip pivot: the board turns about the screen-vertical axis through
   // its centre, like the X-ray's flip
   const pivot = new THREE.Group();

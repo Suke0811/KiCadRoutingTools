@@ -157,8 +157,11 @@ def colors_for(theme_name, layers) -> Dict[str, list]:
             return list(th.rgb(role))
         except Exception:                                      # noqa: BLE001
             return list(fb)
+    # the board is SOLDERMASK green in both themes: the theme's
+    # `board_body` is the 2D X-ray's plate, and in the light theme it is
+    # near-white -- a 3D board drawn in it read as a blank slab
     return {'ground': c('ground', (14, 16, 18)),
-            'board': c('board_body', (20, 60, 40)),
+            'board': [22, 58, 40] if th.name == 'dark' else [52, 112, 76],
             'pad': c('pad', (200, 170, 80)), 'via': c('via', (180, 180, 180)),
             'body': [48, 50, 54] if th.name == 'dark' else [70, 72, 76],
             'hilite': c('hilite', (255, 255, 255)),

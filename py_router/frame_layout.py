@@ -606,7 +606,9 @@ def frame_status_line(geom: FrameGeometry) -> str:
             % (title, letter, geom.frame.w, geom.frame.h, geom.aspect,
                geom.board.w, geom.board.h))
     if geom.track is not None:
-        line += ', attempts band %dpx inside' % geom.track.h
+        line += ', %s band %dpx inside' % (
+            'benchmark' if geom.layout == 'stage3d' else 'attempts',
+            geom.track.h)
     if geom.requested_layout != geom.layout:
         line += '  |  %s -> %s' % (geom.requested_layout, geom.chosen_by)
     for note in geom.notes:
