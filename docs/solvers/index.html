@@ -50,11 +50,13 @@ dl.gl dt{font-weight:600}dl.gl dd{margin:0;color:var(--ink)}
 .steps li:before{content:counter(s);position:absolute;left:0;top:0;width:24px;height:24px;border-radius:50%;background:var(--acc);color:#fff;text-align:center;font-size:13px;line-height:24px;font-weight:700}
 footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:var(--mut);font-size:14px}
 .tag{display:inline-block;font-size:12px;padding:0 7px;border-radius:9px;background:#e6e0f6;color:#4a2a9a;margin-right:4px}
+.vid{position:relative;aspect-ratio:16/9;background:#11141b;border-radius:8px;overflow:hidden;margin:8px 0}
+.vid iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
 </style>
 </head>
 <body>
 <nav class="toc"><a class="home" href="../">&larr; KiCadRoutingTools</a>
-<a href="#pipeline">Pipeline</a><a href="#ends">Ends</a><a href="#cpsat">CP-SAT</a><a href="#sec-lp">HiGHS LP</a><a href="#simplex">How an LP is solved</a><a href="#sec-loop">Negotiation</a><a href="#sec-after">Polish &middot; snap &middot; audit &middot; route</a><a href="#summary">Side by side</a></nav>
+<a href="#sec-films">Films</a><a href="#pipeline">Pipeline</a><a href="#ends">Ends</a><a href="#cpsat">CP-SAT</a><a href="#sec-lp">HiGHS LP</a><a href="#simplex">How an LP is solved</a><a href="#sec-loop">Negotiation</a><a href="#sec-after">Polish &middot; snap &middot; audit &middot; route</a><a href="#summary">Side by side</a></nav>
 <main>
 
 <h1>What CP-SAT and HiGHS actually do in the whole route</h1>
@@ -72,6 +74,27 @@ footer{margin-top:50px;padding-top:14px;border-top:2px solid var(--line);color:v
 <div class="legend"><span><i style="background:var(--F)"></i>F.Cu (top layer)</span><span><i style="background:var(--B)"></i>B.Cu (bottom layer)</span><span><i style="background:#fff;border:2px solid #1d2330"></i>via</span></div>
 
 <div class="callout warn"><b>One correction to the framing.</b> In the whole route HiGHS is a plain <b>LP</b> (continuous, via <code>scipy.optimize.linprog</code> in <code>whole_geo.py</code>), not a MILP. HiGHS <i>is</i> used as a MILP (<code>scipy.optimize.milp</code>) in the older braid-chain code and its instruments: <code>schedule.exact_pages</code>, <code>joint_floor.py</code>, <code>synth_bus.cap_floor</code>. Those are covered at the end.</div>
+
+<!-- ======================= FILMS ======================= -->
+<h2 id="sec-films">Watch a whole run</h2>
+<p>Two films of real <code>whole_chain.sh</code> runs on the H3-to-DDR3 bench (BGA <code>U1</code> to DDR3 <code>DU1</code>), made by <code>awx/whole_movie.py</code>. Each walks the stages in order: the ends, the frame, the solve, the geometry, the polish, the snap, the audit and the route. Beside the board it draws what each solver decides:</p>
+<ul>
+ <li><b>The solve (CP-SAT)</b> is a braid under the board, sharing its x axis. Each strand is a lane, its height is the lane's order, and its colour is its layer. Two strands that cross differ in colour, and a white ring is a via. The search is replayed from the plans CP-SAT really found, in the order it found them, with the bound that proved the last one. On the board above, the lanes swap exactly where the solve put each crossing.</li>
+ <li><b>The geometry (HiGHS LP)</b> is drawn as forces on the board. Every rule that holds a lane where it is has a <b>shadow price</b> in the LP's dual, and the price is how hard it pushes: a neighbour on the same layer, a via's room, a pad, the board edge, a turn limit.</li>
+</ul>
+<p>Neither solver is re-implemented for the film. Each is run again under the chain's own settings and watched, and the film is refused unless the re-run writes what the chain wrote, byte for byte.</p>
+<div class="card">
+  <h3 style="margin-top:0">K28: the plan passes on the first round</h3>
+  <p style="margin-top:0">25 lanes (28 nets, 3 of them differential pairs). CP-SAT finds three plans in 0.14 s and proves the last one optimal, and the plan passes every audit check on the first loop round. Routed: every net connected, DRC clean, 30 vias and 589 mm, against the human's 48 vias and 678 mm on the same nets (the human's copper includes its length-matching meanders).</p>
+  <div class="vid"><iframe src="https://drive.google.com/file/d/1T5S_PyLtYb8HodUSI5uSRaG6z0yAwfPH/preview" title="K28 whole route film" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe></div>
+  <p style="font-size:14px;color:var(--mut)">2 min 38 s, 1080p. <a href="https://drive.google.com/file/d/1T5S_PyLtYb8HodUSI5uSRaG6z0yAwfPH/view">Open in Google Drive</a></p>
+</div>
+<div class="card">
+  <h3 style="margin-top:0">K51: one round of negotiation</h3>
+  <p style="margin-top:0">48 lanes (51 nets, 3 of them differential pairs). CP-SAT proves its plan optimal in 19 s, but the first loop round does not pass: the audit finds 3 places short, and the polish finds 2 lanes with no room on their side of an island. The film stops to show what goes back (<a href="#sec-loop">section 3</a>): side flips to the geometry, and cuts and history to the solve, which solves again with the same vias and the crossings moved out of the short places. Routed: every net connected, DRC clean, 80 vias and 1220 mm, against the human's 88 vias and 1337 mm.</p>
+  <div class="vid"><iframe src="https://drive.google.com/file/d/1gVCKe98gpvDGrCZCJjovikLR8IRmTc7i/preview" title="K51 whole route film" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe></div>
+  <p style="font-size:14px;color:var(--mut)">2 min 50 s, 1080p. <a href="https://drive.google.com/file/d/1gVCKe98gpvDGrCZCJjovikLR8IRmTc7i/view">Open in Google Drive</a></p>
+</div>
 
 <!-- ======================= 0. PIPELINE ======================= -->
 <h2 id="pipeline">0 &nbsp; The pipeline, and where the two solvers sit</h2>
