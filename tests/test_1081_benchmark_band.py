@@ -293,7 +293,135 @@ def test_hostile_rows_are_ungraded_not_raised():
            'included (it ranks, it just cannot be plotted)')
 
 
+def test_only_an_accepted_lap_makes_the_board_working():
+    """The phase-4 verifier: three real ledgers put WORKING on a lap the run
+    itself REJECTED (run 25's verdict of record was STUCK)."""
+    rows = [_row(0, 4, 9), _row(1, 0, 8, accepted=False), _row(2, 3, 9)]
+    pl = MB.plan(MB.from_converge_ledger(_ledger(rows)))
+    _check(pl.done_at is None and not pl.spans,
+           'a rejected blocking-0 lap is not a crossing (%s)' % (pl.spans,))
+    _check([pl.order[i].index for i, _l in pl.records] == [0, 2],
+           'and the accepted 4 -> 3 is still drawn as progress')
+
+
+def test_a_regression_ends_the_working_span_and_says_so():
+    rows = [_row(0, 3, 9), _row(1, 0, 8), _row(2, 2, 7), _row(3, 0, 7)]
+    tr = MB.from_converge_ledger(_ledger(rows))
+    pl = MB.plan(tr)
+    _check([(pl.order[a].index, b if b is None else pl.order[b].index)
+            for a, b in pl.spans] == [(1, 2), (3, None)],
+           'working 1..2, then again from 3 (%s)' % (pl.spans,))
+    img = Image.new('RGB', (1600, 220))
+    dbg = {}
+    MB.draw_band(ImageDraw.Draw(img), FL.Box(0, 0, 1600, 220), tr,
+                 theme='dark', debug=dbg)
+    x0, y0, x1, y1 = dbg['plot']
+    import render_theme
+    ground = render_theme.theme('dark').rgb('ground')
+    xa, xb = dbg['xs'][1], dbg['xs'][2]
+    mid = int((xa + xb) / 2)
+    after = int((xb + dbg['xs'][3]) / 2)
+    _check(img.getpixel((mid, y1 - 2)) != tuple(ground)
+           and img.getpixel((after, y1 - 2)) == tuple(ground),
+           'the green ground stops at the regression')
+    recs = [pl.order[i].index for i, _l in pl.records]
+    _check(recs == [0, 1, 3],
+           'the regression (lap 2) is never a record; the re-cross with '
+           'fewer vias is (%s)' % recs)
+
+
+def test_final_and_exhausted_rows_are_not_laps():
+    rows = [_row(0, 3, 9), _row(1, 0, 8),
+            dict(_row(2, 1, 8), final=True, stop_condition='STUCK',
+                 lenses=['VERDICT=FAIL:lens=spec']),
+            dict(_row(3, 0, 8), exhausted={'half': 'routing', 'reason': 'x'})]
+    tr = MB.from_converge_ledger(_ledger(rows))
+    _check([p.iteration for p in tr.points] == [0, 1],
+           'only the two laps are points (%s)'
+           % [p.iteration for p in tr.points])
+    _check(tr.final == 'final: STUCK (spec FAIL)',
+           'the final row\'s verdict is carried for the caption (%r)'
+           % tr.final)
+    _img, dbg, _d = _draw(tr)
+    _check('final: STUCK' in dbg['caption'], 'and shown (%r)'
+           % dbg['caption'])
+
+
+def test_ungraded_is_unexamined_not_passed():
+    """`converge verdict` calls a board with an `ungraded` LIST done and names
+    the list UNEXAMINED (run 24 and run 19 shipped DONE-EXHAUSTED so); the
+    band agrees and SAYS it. A non-list names no component -- re-score."""
+    r = dict(_row(0, 0, 1), score={'blocking': 0,
+                                   'ungraded': ['impedance', 'length']})
+    _check(LS.row_done(r) is True and LS.unexamined(r) == ['impedance',
+                                                            'length'],
+           'an ungraded LIST is working, with its components named')
+    for v in ('impedance', 3):
+        r = dict(_row(0, 0, 1), score={'blocking': 0, 'ungraded': v})
+        _check(LS.row_done(r) is False,
+               'ungraded=%r names no component: not working' % (v,))
+    rows = [_row(0, 2, 9), dict(_row(1, 0, 8), score={
+        'blocking': 0, 'ungraded': ['impedance'],
+        'quality': {'vias': 8}})]
+    _img, dbg, _d = _draw(MB.from_converge_ledger(_ledger(rows)))
+    _check(dbg['chip'] and '1 unexamined' in dbg['chip'],
+           'the chip counts what nobody examined (%r)' % dbg['chip'])
+
+
+def test_a_benchmark_is_checked_before_it_is_believed():
+    tr = MB.from_converge_ledger(_ledger(_run()))
+    unm = MB.Benchmark('human', (math.inf, 500.0, 200.0), 0.0, 'test')
+    pl = MB.plan(MB.with_benchmark(tr, unm))
+    _check(not pl.bench_line and pl.ref_vias == 10 and pl.gold_at is None,
+           'an unmeasured benchmark draws no 100 % line, earns no gold, and '
+           '100 % is the first working board')
+    _img, dbg, _d = _draw(MB.with_benchmark(tr, unm))
+    _check('unmeasured' in dbg['caption'], 'the caption says why (%r)'
+           % dbg['caption'])
+    board = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
+    sj = os.path.join(tempfile.mkdtemp(prefix='t1081s_'), 's.json')
+    with open(sj, 'w') as f:
+        json.dump({'board_sha': '0' * 64, 'blocking': 0}, f)
+    b = MB.grade_benchmark(board, score_json=sj)
+    _check(b.blocking is None and 'ANOTHER board' in b.why,
+           'a score about another board is refused (%r)' % b.why)
+    with open(sj, 'w') as f:
+        json.dump({'board_sha': MB._sha256(board), 'blocking': 0}, f)
+    b = MB.grade_benchmark(board, score_json=sj)
+    _check(b.blocking == 0, 'the same board\'s score is read (%r)' % (b,))
+
+
+def test_labels_never_overprint_and_outliers_do_not_flatten_the_axis():
+    rows = [_row(0, 12703, kind='placement')]
+    rows += [_row(i, 41 - i, kind='placement') for i in range(1, 12)]
+    rows += [_row(12 + i, 0, 40 - (i // 2), 900.0 - i, 300)
+             for i in range(24)]
+    tr = MB.from_converge_ledger(_ledger(rows))
+    pl = MB.plan(tr)
+    _check(pl.bmax < 200, 'one 12703 pile does not set the axis (top %g)'
+           % pl.bmax)
+    for theme in ('dark', 'light'):
+        img = Image.new('RGB', (900, 200))
+        dbg = {}
+        MB.draw_band(ImageDraw.Draw(img), FL.Box(0, 0, 900, 200), tr,
+                     theme=theme, debug=dbg)
+        rects = dbg['text_rects']
+        bad = [(a, b) for k, a in enumerate(rects) for b in rects[k + 1:]
+               if MB._overlaps(a, b)]
+        _check(not bad, '%s: %d text boxes, none overlapping (%s)'
+               % (theme, len(rects), bad[:2]))
+        x0, y0, x1, y1 = dbg['plot']
+        _check(all(r[2] <= x1 + 3 for r in rects),
+               '%s: no text past the plot\'s right edge' % theme)
+
+
 TESTS = (
+    test_only_an_accepted_lap_makes_the_board_working,
+    test_a_regression_ends_the_working_span_and_says_so,
+    test_final_and_exhausted_rows_are_not_laps,
+    test_ungraded_is_unexamined_not_passed,
+    test_a_benchmark_is_checked_before_it_is_believed,
+    test_labels_never_overprint_and_outliers_do_not_flatten_the_axis,
     test_the_done_predicate,
     test_quality_key_is_the_runs_own_ranking,
     test_records_are_lexicographic_and_labelled,

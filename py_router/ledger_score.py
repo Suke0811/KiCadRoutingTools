@@ -43,6 +43,22 @@ _LENS_RE = re.compile(r'^VERDICT=(PASS|FAIL):lens=([A-Za-z0-9_-]+)')
 #: what a routed result would still block on, but it is not a routed board:
 #: the film never calls a placement lap a working PCB.
 DONE_KINDS = ('completion', 'routing')
+#: Kinds that are LAPS at all (placement and routing), `converge._HALF`'s.
+LAP_KINDS = ('placement', 'completion', 'routing')
+
+
+def is_lap(row) -> bool:
+    """`converge._is_lap` for either half: a placement or routing row that
+    is not a `--final` record of a verdict and not an `--exhausted`
+    declaration -- neither changes a board, so neither is a turn of the loop
+    the band should draw."""
+    if not isinstance(row, dict):
+        return False
+    if str(row.get('kind') or '').lower() not in LAP_KINDS:
+        return False
+    if row.get('final'):
+        return False
+    return not isinstance(row.get('exhausted'), dict)
 
 
 def _term(v):
@@ -89,9 +105,9 @@ def deciding_term(prev, new) -> Optional[Tuple[str, float]]:
     for name, a, b in zip(TERMS, prev, new):
         if a != b:
             if not (plottable(a) and plottable(b)):
-                # one side unmeasured (or too large to subtract): the term
-                # decided it, but there is no honest difference to print
-                return (name, math.inf if is_inf(a) else -math.inf)
+                # unmeasured, or too large to subtract: the term decided it,
+                # but only its DIRECTION can be printed honestly
+                return (name, -math.inf if b < a else math.inf)
             return (name, float(b) - float(a))
     return None
 
@@ -103,7 +119,7 @@ def term_label(term) -> str:
     name, d = term
     if is_inf(d):
         return '%s %s' % (TERM_LABEL.get(name, name),
-                          'measured' if d < 0 else 'unmeasured')
+                          'lower' if d < 0 else 'higher')
     num = ('%d' % d) if float(d).is_integer() else ('%.1f' % d)
     if d > 0:
         num = '+' + num
@@ -143,10 +159,23 @@ def row_done(row) -> Optional[bool]:
     row says it is not, None when the row cannot say (not a routed kind,
     or no countable `blocking`).
 
-    Working means: `blocking == 0`, nothing `unknown`, no lens FAILed, and a
-    score that is about THIS board (`score_stale` names a score that is not:
-    #963). An ABSENT lens is not a failure -- ordinary laps carry none; only
-    a `--final` row is guaranteed to, which `done_evidence` reports apart.
+    Working means: `blocking == 0`, nothing `unknown` (a component RAN and
+    could not answer), no lens FAILed, and a score that is about THIS board
+    (`score_stale` names a score that is not: #963).
+
+    An `ungraded` LIST does not stop it, exactly as it does not stop
+    `converge verdict`'s DONE: a board with no spec file has nothing to
+    grade those components against (run 24 and run 19 shipped
+    DONE-EXHAUSTED with floorplan and impedance named unexamined). It is
+    never silent either: `unexamined(row)` names them and the band's chip
+    counts them. An `ungraded` that is NOT a list names no component, and
+    converge says to re-score before trusting anything -- so that, like a
+    non-list `unknown`, is not working.
+
+    An ABSENT lens is not a failure -- ordinary laps carry none; only a
+    `--final` row is guaranteed to, which `done_evidence` reports apart. It
+    is still a MEASUREMENT: the band says "measured" until a verifier has
+    said "verified".
     """
     if not isinstance(row, dict):
         return None
@@ -159,8 +188,12 @@ def row_done(row) -> Optional[bool]:
     if b != 0:
         return False
     unknown = score.get('unknown')
-    if isinstance(unknown, (list, tuple)) and len(unknown):
-        return False
+    if unknown not in (None, [], (), '', {}):
+        return False                # any value: RAN and could not answer
+    ung = score.get('ungraded')
+    if ung not in (None, [], (), '', {}) and not isinstance(ung,
+                                                            (list, tuple)):
+        return False                # names no component (#1076)
     stale = row.get('score_stale')
     if isinstance(stale, dict) and stale.get('binding') in ('other',
                                                             'unbound'):
@@ -168,6 +201,15 @@ def row_done(row) -> Optional[bool]:
     if 'FAIL' in lens_verdicts(row).values():
         return False
     return True
+
+
+def unexamined(row) -> list:
+    """The components a row's score names as `ungraded`: a working board
+    carries them as UNEXAMINED, never as passed."""
+    sc = row.get('score') if isinstance(row, dict) else None
+    ung = sc.get('ungraded') if isinstance(sc, dict) else None
+    return (sorted(str(x) for x in ung)
+            if isinstance(ung, (list, tuple)) else [])
 
 
 def done_evidence(row) -> str:
