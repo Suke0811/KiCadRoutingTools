@@ -407,7 +407,11 @@ def test_undo_does_not_litter_on_a_non_board_output():
     assert os.path.isfile(os.path.splitext(src)[0] + '.kicad_pro'), "fixture"
     r = _run(src, os.devnull, '--nets', 'GND', '--undo')
     assert r.returncode == 0, r.stdout[-400:]
-    new = set(os.listdir(ROOT)) - before
+    # __pycache__ is the interpreter's, not the undo's: any process importing
+    # a root-level module writes it -- route.py's krt_capabilities import, or
+    # a test running beside this one under run_all's -j 4, which is how it
+    # read as "littered" on the Modal suite.
+    new = set(os.listdir(ROOT)) - before - {'__pycache__'}
     assert not new, f"undo littered the repo root: {new}"
     assert 'carried the DRC floor' not in r.stdout, \
         "claimed to carry a floor to a non-board output"
