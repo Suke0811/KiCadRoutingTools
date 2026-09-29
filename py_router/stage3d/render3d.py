@@ -136,8 +136,40 @@ def resolve_browser(explicit=None) -> Tuple[Optional[str], str]:
                   % HERE)
 
 
-def available() -> Tuple[bool, str]:
-    """`(ok, why)` -- can this machine render the 3D board at all?"""
+#: Where a Blender is looked for when neither `$KICAD_STAGE3D_BLENDER` nor
+#: `blender` on PATH names one (#1089).
+_BLENDER_GLOBS = (
+    'C:/Program Files/Blender Foundation/Blender */blender.exe',
+    os.path.join(os.environ.get('LOCALAPPDATA', ''), 'krt-blender',
+                 'blender.exe'),
+    '/Applications/Blender.app/Contents/MacOS/Blender',
+    '/usr/bin/blender', '/snap/bin/blender')
+
+
+def resolve_blender(explicit=None) -> Tuple[Optional[str], str]:
+    """The Blender for the hi-fi backend (#1089): `$KICAD_STAGE3D_BLENDER`,
+    else `blender` on PATH, else a standard install. Returns (path, why)."""
+    cand = explicit or os.environ.get('KICAD_STAGE3D_BLENDER')
+    if cand:
+        return (cand, 'blender %s' % cand) if os.path.isfile(cand) else (
+            None, '$KICAD_STAGE3D_BLENDER %r is not a file' % cand)
+    p = shutil.which('blender')
+    if p:
+        return p, 'blender %s' % p
+    for pat in _BLENDER_GLOBS:
+        hits = sorted(glob.glob(pat))
+        if hits:
+            return hits[-1], 'blender %s' % hits[-1]
+    return None, ('no Blender: set $KICAD_STAGE3D_BLENDER, or install '
+                  'Blender (4.2 LTS or newer)')
+
+
+def available(backend='three') -> Tuple[bool, str]:
+    """`(ok, why)` -- can this machine render the 3D board at all, with
+    `backend` ('three' or 'blender')?"""
+    if backend == 'blender':
+        p, why = resolve_blender()
+        return (bool(p), 'ok' if p else why)
     for fn in (resolve_node, resolve_playwright, resolve_browser):
         p, why = fn()
         if not p:
@@ -169,12 +201,21 @@ def colors_for(theme_name, layers) -> Dict[str, list]:
             'layers': [list(pal.get(n, (200, 120, 60))) for n in layers]}
 
 
-def render(scene, timeline, *, width, height, out_dir, theme='dark',
+def render(scene, timeline, *, width, height, out_dir, theme=None,
            glb=None, node=None, browser=None, timeout=None,
-           quiet=True, probe=None) -> Tuple[Optional[List[str]], dict, str]:
+           quiet=True, probe=None,
+           backend='three') -> Tuple[Optional[List[str]], dict, str]:
     """Render every timeline STATE to `out_dir`. Returns `(pngs, info,
     why)`: `pngs[i]` is state i's frame, or `(None, info, why)` when any part
-    of it failed -- and a failure is never a partial list."""
+    of it failed -- and a failure is never a partial list.
+
+    `backend` 'blender' (#1089) renders the SAME scene and timeline with
+    Cycles on the CPU (`blender_scene.py`, fixed seed and samples): slower,
+    physically lit, and like SwiftShader independent of the machine's GPU."""
+    if backend == 'blender':
+        return _render_blender(scene, timeline, width=width, height=height,
+                               out_dir=out_dir, theme=theme, glb=glb,
+                               timeout=timeout)
     node, nwhy = resolve_node(node)
     if not node:
         return None, {}, nwhy
@@ -194,6 +235,7 @@ def render(scene, timeline, *, width, height, out_dir, theme='dark',
     with open(tp, 'w', encoding='utf-8') as f:
         json.dump(timeline, f)
     frames_dir = os.path.join(out_dir, 'frames')
+    theme = theme or _default_theme_name()
     job = {'browser': browser, 'width': int(width), 'height': int(height),
            'outDir': frames_dir, 'scene': sp, 'timeline': tp,
            'glb': (glb or {}).get('path') if glb else None,
@@ -256,3 +298,96 @@ def render(scene, timeline, *, width, height, out_dir, theme='dark',
             info['glbError'])
     return pngs, info, 'rendered %d states at %.0f ms each (SwiftShader, %s)' % (
         n, done.get('ms_per_state') or 0, bwhy)
+
+
+
+def _default_theme_name():
+    try:
+        import render_theme
+        return render_theme.default_theme().name
+    except Exception:                                          # noqa: BLE001
+        return 'light'
+
+
+#: Seconds per state for Cycles on the CPU -- a HANG guard, not a budget
+#: (measured ~1.3 s per 672x490 state at 8 samples).
+BLENDER_STATE_BUDGET_S = 60.0
+
+
+def _render_blender(scene, timeline, *, width, height, out_dir, theme,
+                    glb, timeout):
+    """The Blender backend: the three.js job's own files, rendered by
+    `blender -b -P blender_scene.py`. Same all-or-nothing contract."""
+    blender, why = resolve_blender()
+    if not blender:
+        return None, {}, why
+    try:
+        n = len(timeline['states'])
+        timeline['layers']
+    except (KeyError, TypeError) as exc:
+        return None, {}, 'the timeline is malformed (%s)' % exc
+    if n == 0:
+        return None, {}, 'the timeline has no states to render'
+    data = os.path.join(out_dir, 'data')
+    os.makedirs(data, exist_ok=True)
+    sp, tp = (os.path.join(data, 'scene.json'),
+              os.path.join(data, 'timeline.json'))
+    with open(sp, 'w', encoding='utf-8') as f:
+        json.dump(scene, f)
+    with open(tp, 'w', encoding='utf-8') as f:
+        json.dump(timeline, f)
+    frames_dir = os.path.join(out_dir, 'frames')
+    job = {'width': int(width), 'height': int(height), 'outDir': frames_dir,
+           'scene': sp, 'timeline': tp,
+           'glb': (glb or {}).get('path') if glb else None,
+           'colors': colors_for(theme or _default_theme_name(),
+                                timeline['layers'])}
+    jp = os.path.join(out_dir, 'job.json')
+    with open(jp, 'w', encoding='utf-8') as f:
+        json.dump(job, f)
+    budget = timeout or (STARTUP_S + BLENDER_STATE_BUDGET_S * n)
+    try:
+        r = subprocess.run([blender, '-b', '--factory-startup', '-P',
+                            os.path.join(HERE, 'blender_scene.py'), '--',
+                            jp], capture_output=True, text=True,
+                           encoding='utf-8', errors='replace',
+                           timeout=budget)
+    except subprocess.TimeoutExpired:
+        return None, {}, 'the Blender render took over %.0f s (%d states)' % (
+            budget, n)
+    except OSError as exc:
+        return None, {}, 'could not run Blender (%s)' % exc
+    info, done, err = {}, None, None
+    for line in (r.stdout or '').splitlines():
+        if not line.startswith('{'):
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(msg, dict):
+            continue
+        if msg.get('type') == 'info':
+            info = msg
+        elif msg.get('type') == 'done':
+            done = msg
+        elif msg.get('type') == 'error':
+            err = msg.get('why')
+    info['tools'] = why
+    if err or done is None:
+        return None, info, 'the Blender render failed: %s' % (
+            err or 'exit %d' % r.returncode)
+    pngs = [os.path.join(frames_dir, 's%06d.png' % i) for i in range(n)]
+    missing = [p for p in pngs if not os.path.isfile(p)]
+    if missing:
+        return None, info, '%d of %d state frames missing' % (len(missing), n)
+    # Re-encode without metadata: Cycles writes its render statistics
+    # (times, date) into every PNG, so identical pictures were different
+    # FILES -- the pixels were already identical run to run.
+    from PIL import Image
+    for p in pngs:
+        with Image.open(p) as im:
+            px = im.convert('RGB')
+        px.save(p, format='PNG')
+    return pngs, info, 'rendered %d states at %.0f ms each (%s)' % (
+        n, done.get('ms_per_state') or 0, info.get('renderer'))

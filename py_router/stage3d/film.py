@@ -52,7 +52,10 @@ def apply(frames, stage_out, final, geom, theme, *, stage_present,
         _say('stage3d: 2D X-ray in the board box -- %s' % report['why'],
              notes)
         return frames, report
-    ok, why = render3d.available()
+    # #1089: 'blender' is the hi-fi backend (Cycles on the CPU), 'auto'
+    # the three.js one
+    backend = 'blender' if mode == 'blender' else 'three'
+    ok, why = render3d.available(backend)
     if not ok:
         report['why'] = why
         _say('stage3d: 2D X-ray in the board box -- %s' % why, notes)
@@ -72,8 +75,8 @@ def apply(frames, stage_out, final, geom, theme, *, stage_present,
             sc['glb'] = {k: v for k, v in glb.items() if k != 'path'}
         pngs, info, rwhy = render3d.render(
             sc, tl, width=geom.board.w, height=geom.board.h,
-            out_dir=tmp, theme=getattr(theme, 'name', theme) or 'dark',
-            glb=glb)
+            out_dir=tmp, theme=getattr(theme, 'name', theme) or None,
+            glb=glb, backend=backend)
     except Exception as exc:                                   # noqa: BLE001
         pngs, info, rwhy = None, {}, 'the 3D board failed (%s)' % (
             str(exc).splitlines()[0][:160] if str(exc) else
