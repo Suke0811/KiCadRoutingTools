@@ -896,7 +896,14 @@ class AITab(wx.Panel):
         """Adopt a validated step list (from a fresh plan OR a loaded plan
         file): populate the checklist and pre-fill the tabs."""
         from .ai_plan import step_label, apply_step_params, \
-            apply_step_selection
+            apply_step_selection, user_fix_drc_preference, \
+            restore_fix_drc_preference
+        # "Fix DRC settings after routing" is the user's preference as well
+        # as a step parameter: read it before the reset and the pre-fill below
+        # touch it, and put it back after them, so loading a plan never
+        # changes what is saved on close -- and the executor, which reads the
+        # box when the plan starts, reads the user's own choice.
+        _fix_drc_pref = user_fix_drc_preference(self.routing_dialog)
         # A new plan supersedes the session's panel tweaks: reset every
         # routing parameter to defaults BEFORE applying the plan's values,
         # so options the plan does not specify run at CLI-default-
@@ -926,6 +933,7 @@ class AITab(wx.Panel):
                 notes += apply_step_selection(step, self.routing_dialog)
             except Exception as e:
                 notes.append(f"applying {step['action']}: {e}")
+        restore_fix_drc_preference(self.routing_dialog, _fix_drc_pref)
         for note in notes:
             self.output_ctrl.AppendText(f"plan: {note}\n")
             self._log(f"AI plan: {note}")
