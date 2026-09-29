@@ -4632,6 +4632,7 @@ class Corridor:
                       vias=[v for v in ctx.pcb.vias if x0 < v.x < x1 and y0 < v.y < y1], overlays=[ov],
                       label=f'pair {nm} refused: virtual lines (yellow), lane (white), band (green F / magenta B / blue both), pieces (orange), poses (cyan)')
         out = f'tmp/pairdbg_{nm}_{len(ctx.landed)}.png'
+        os.makedirs('tmp', exist_ok=True)
         img.save(out)
         self.log(f'    pair debug image -> {out}')
 

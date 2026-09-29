@@ -70,8 +70,9 @@ H3 to DDR3 (`fb_t2q_pairs`):
 | the whole route, Linux | 10 v, 199 mm | 30 v, 589 mm | 58 v, 779 mm | 70 v, 981 mm | 78 v, 1260 mm |
 | human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm | 70 v, 1081 mm | 88 v, 1337 mm |
 
-Zynq to DDR3 (`BASE=tmp/zynq/zynqF.kicad_pcb DEST=U2`; the human's copper
-here carries its length-matching meanders):
+Zynq to DDR3 (the zynq article as built on 2026-09-19, 44 lanes; today's
+build selects 47, see *Building the zynq article*; the human's copper here
+carries its length-matching meanders):
 
 | | K18 | K26 | K32 | K38 | K42 | K44 |
 |---|---|---|---|---|---|---|
@@ -148,9 +149,11 @@ route and the checks, with up to `ROUNDS` fanout rounds (default 3):
 
 ```bash
 cd awx
-bash whole_chain.sh 51 OUTDIR                                       # the H3 bench (BASE=fb_t2q_pairs.kicad_pcb DEST=DU1)
-BASE=tmp/zynq/zynqF.kicad_pcb DEST=U2 bash whole_chain.sh 44 OUTDIR  # the zynq article
+zsh whole_chain.sh 51 OUTDIR                                       # the H3 bench (BASE=fb_t2q_pairs.kicad_pcb DEST=DU1)
+BASE=tmp/zynq/zynqF.kicad_pcb DEST=U2 zsh whole_chain.sh 9 OUTDIR   # the zynq article (build it first, below), any rung of its ladder
 ```
+
+`whole_chain.sh` and `whole_loop.sh` are zsh scripts; run them with `zsh`.
 
 It exits 0 when `OUTDIR/rN/seq.kicad_pcb` is routed, connected and
 DRC-clean, and its last line is the grade:
@@ -158,6 +161,38 @@ DRC-clean, and its last line is the grade:
 ```
 WHOLE K=.. round=.. lanes=../.. vias=.. copper=..mm connected=0|1 drc=0|1 secs=..
 ```
+
+### Building the zynq article
+
+The second bench is built from a public board: `ZYNQ7020_AD9364_V2` from
+[kangyuzhe666/ZYNQ7010-7020_AD9363](https://github.com/kangyuzhe666/ZYNQ7010-7020_AD9363),
+the Zynq `U1` (CLG400) to its DDR3 `U2`. Its routing is stripped, the bench is
+made two-layer with `U1` fanned out, and the result is turned into the flow
+frame (one quarter turn), where `whole_chain.sh` runs it:
+
+```bash
+cd awx
+mkdir -p tmp/zynq/src/boards_set1
+U=https://raw.githubusercontent.com/kangyuzhe666/ZYNQ7010-7020_AD9363/main/kicad/ZYNQ7020_AD9364_V2
+curl -L -o tmp/zynq/src/boards_set1/zynq_ad9364.kicad_pcb $U.kicad_pcb
+curl -L -o tmp/zynq/src/boards_set1/zynq_ad9364.kicad_pro $U.kicad_pro
+# strip the routing with KiCad's bundled python (macOS path shown) -> tmp/zynq/src/boards_unrouted_set1/
+STRESS_DIR=tmp/zynq/src /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 \
+    ../tests/stress/strip_routing.py zynq_ad9364
+python3 make_bench.py tmp/zynq/src/boards_unrouted_set1/zynq_ad9364.kicad_pcb U1 U2 tmp/zynq/zynq.kicad_pcb --two-layer
+NETS=$(python3 coherent_nets.py 47 --board=tmp/zynq/zynq.kicad_pcb)
+read K CX CY <<< "$(python3 flow_frame.py quarter tmp/zynq/zynq.kicad_pcb U2 "$NETS" | tail -1)"
+python3 flow_frame.py turn tmp/zynq/zynq.kicad_pcb tmp/zynq/zynqF.kicad_pcb $K $CX $CY   # its .kicad_pro and .ladder.txt beside it
+```
+
+Built this way (2026-09-29): 48 two-pad nets between the arrays, `DDR3_A14`
+refused at the source, 47 in the ladder (checkpoints 9 17 25 31 37 42 47),
+one quarter turn about (109.3, -103.2); K9 through `whole_chain.sh` routes 9/9
+lanes in their bands with 4 vias, connected and DRC-clean, in about 30 s.
+The zynq numbers in this README were measured on the first build
+(2026-09-19: 46 nets, 44 in the ladder, checkpoints 9 18 26 32 38 42 44).
+`make_bench`'s net selection has changed since, so today's build is not that
+bench and does not reproduce those numbers rung for rung.
 
 The ladder on Linux, one container per rung: `modal run awx/modal_whole.py
 --ks 15,28,35,41,51 --out DIR` (from the repo root). `modal_whole.py::stage`
@@ -183,7 +218,7 @@ export BENCH=tmp/hp/HHe_k51.kicad_pcb NETS DEST=DU1   # (or tmp/e/fo.kicad_pcb) 
 
 ```bash
 python3 whole_solve.py SOLVE.json                  # crossings and layer changes
-bash whole_loop.sh SOLVE.json OUTDIR               # geometry -> polish -> audit -> pairs -> singles -> snap
+zsh whole_loop.sh SOLVE.json OUTDIR               # geometry -> polish -> audit -> pairs -> singles -> snap
 python3 whole_render.py OUTDIR/plan.json OUT.png   # look at it (AUDIT=FILE marks the audit's findings)
 ```
 
@@ -1059,9 +1094,9 @@ Notes:
   and the last run ended with four distinct 83s: every jump and
   crossover world descended back to 83.
 
-**The zynq article** (2026-09-19). `zynq_ad9364` from the stress corpus
-(set 4), the Zynq `U1` (CLG400) to its DDR3 `U2`, built by `make_bench.py
---two-layer` in 15 s: 46 nets between the two arrays, two refused at the
+**The zynq article** (2026-09-19). The public Zynq board of *Building the
+zynq article*, the Zynq `U1` (CLG400) to its DDR3 `U2`, built by `make_bench.py
+--two-layer` in 15 s (that day's net selection; today's build differs): 46 nets between the two arrays, two refused at the
 source, 44 in seven rivers, checkpoints 9 18 26 32 38 42 44. The human routed
 this bus on F and B only (the inner layers are planes; 103 vias over the same
 44 nets, every one F-to-B), so the two-layer article is a fair comparison.
@@ -1484,7 +1519,7 @@ K36 = + SCK).
 
 #### Two more benches (2026-09-20 evening)
 
-**The zynq article** (`BASE=tmp/zynq/zynqF.kicad_pcb DEST=U2`; K44 carries
+**The zynq article** (the 2026-09-19 build; K44 carries
 both DQS pairs as legs; CK stays out, its R20 is 4 mm from the balls). Two
 rules came from it:
 
