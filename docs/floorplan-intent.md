@@ -422,6 +422,23 @@ carries exactly the finding KiCad's DRC reports -- declare the budget to fit
 it. A pose also overlapping a part the waiver does not name (U30 and
 TP2, once TP2 is placed or declared) is still refused.
 
+**Courtyards are graded as drawn, at the project's own severity (#1094,
+#1095).** The courtyard and fab channels keep the part rects as their broad
+phase and measure an overlapping pair on the DRAWN outlines (courtyard united
+pad by pad with the copper), which is what KiCad measures: KiCad's StickHub
+demo, 39 parts at +-45/+-135 degrees, went from 74 phantom courtyard-blocking
+pairs and 6 phantom containments to 0. The fixed-pose seat above calls the
+same measure. A board whose own `.kicad_pro` sets `courtyards_overlap` to
+`ignore` gets every courtyard pair its intent does not already waive labelled
+`project_severity_ignore`, never gating (KiCad runs no courtyard check then).
+`warning` is graded as error, since KiCad still reports it and
+`fix_kicad_drc_settings --relax-severities` writes exactly that demotion. An
+`ignore` carrying every category this repo's pre-#856 route steps wrote is
+taken as the tool's, not the author's, and graded at error; a
+`kicad_routing_tools.saved_severities` record is the author's value. None of
+this touches the fab containment channel, which is not KiCad's courtyard
+rule. `check_assembly --ignore-project-severity` is the OFF arm.
+
 ### WHERE ALONG the edge: `center_on_edge` and `along_edge_band`
 
 `edge_connector` grades the overhang band, the nearest-edge identity and a
@@ -1412,6 +1429,16 @@ withholding note is visible instead of silent.
 never fire on an auto-emitted intent. With `--declare-decaps` it derives
 `max_distance_mm` from the board's own tethers.
 
+**`--decaps-from <placed board>` (#1099)** derives the same number from a
+PLACED REFERENCE of the same design instead -- a human layout, an earlier
+placement -- which is the only way to arm the rule on a pile, where there is
+nothing to read. Same derivation and withholding; the basis is
+`reference:<file>`, in the census and in `context.basis`. It withholds when
+under 90% of the reference's pad-bearing parts are on the board with the same
+footprint (another design), and when the reference is itself unplaced.
+StickHub's human board gives 2.18 mm from 38 tethers; run 36, with no limit
+armed, left the hub's decaps 2.1-9.8 mm from their pins.
+
 **Three states since #959**, selected by `--no-declare-decaps`,
 `--declare-decaps` (strict) and `--auto-declare-decaps`. The default,
 `check_floorplan.DECLARE_DECAPS_DEFAULT`, is `off`.
@@ -1772,3 +1799,36 @@ board, so the emitter keeps writing `[]`. What it should not do is leave the
 reader unable to tell *"none declared"* from *"not considered"*, so
 `context.keepouts_note` states which one it is. At grade time the same
 distinction is already carried by `rules_skipped` and by `--require-rules`.
+
+### A PCB-edge plug's mating region is a keep-out nobody has to declare (#1098)
+
+One keep-out CAN be read off a board, because the footprint states it: the
+tongue of a plug made of board copper (a PCB-trace USB plug, a card edge),
+which has to enter a socket with nothing on either face. Run 36 put 8
+back-side parts on StickHub's USB-A tongue and every instrument passed it:
+the plug is SMD fingers with a courtyard on F.CrtYd only, and courtyards are
+per side.
+
+`floorplan.derived_mating_keepouts` derives one keep-out per plug, applied at
+the consumers rather than written into the intent:
+
+- **a plug is** a footprint KiCad does not assemble (`board_only` or
+  `exclude_from_pos_files`, and no 3D model), not a net-tie, with >= 2 netted
+  pads and none drilled, >= 2 of them within 1 mm of the outline, and a
+  courtyard that is on the board and reaches the outline;
+- **the region is** that courtyard's board rect inset by 0.25 mm, on BOTH
+  faces, allowing the plug itself and every part with no copper pad (a slot
+  such as StickHub's H1). The inset keeps a neighbour's courtyard margin that
+  grazes the tongue's root (StickHub J2, J6: 0.15 mm) from reading as a part
+  on the plug;
+- **it binds** the seeder and the quench (`QuenchState` takes the union),
+  every grade (`_Ctx` grades the intent plus it, so `place_seed --repair`
+  charges it), `grade_pad_legality`'s `mating_keepout_*` (which `place_pose`
+  gates on) and `check_assembly`, where it is a NOT BUILDABLE conjunct. All
+  of them measure the quench's rect (courtyard, else pad bbox), so the seat
+  and the checker cannot disagree;
+- **a declared keep-out named `mating:<ref>`** (intent or brief) replaces
+  the derived one, for a plug whose real insertion depth differs.
+
+StickHub's human board has no part in the region; run 36's final board has
+exactly the 8.
