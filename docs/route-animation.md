@@ -1038,6 +1038,10 @@ The board is drawn by a pinned three.js (r186, vendored unmodified under
 from Node by `playwright-core`, which is pinned by `py_router/stage3d/package.json`
 and its lockfile.
 
+The board is white soldermask in the light theme and green in the dark one.
+Its outline is drawn on both faces in the theme's `board_edge`, because a
+white board's top face alone is close to the light ground.
+
 Three tools are optional:
 
 - **Node**: `$KICAD_STAGE3D_NODE`, else `node` on PATH.

@@ -32,7 +32,20 @@ function buildBoard(scene, colors) {
   geo.translate(0, d, 0);            // y in [0, d]: the top face is y = d
   const mat = new THREE.MeshStandardMaterial({ color: rgb(colors.board), roughness: 0.85,
                                                metalness: 0.0, transparent: true, opacity: 0.9 });
-  return new THREE.Mesh(geo, mat);
+  const board = new THREE.Mesh(geo, mat);
+  // the outline on both faces, in the theme's board edge: a WHITE board's
+  // top face is close to the light ground, and without it the back and side
+  // edges vanished into the frame
+  if (colors.edge) {
+    const lm = new THREE.LineBasicMaterial({ color: rgb(colors.edge) });
+    for (const ring of [scene.outline, ...scene.cutouts]) {
+      for (const y of [d + 0.02, -0.02]) {
+        const pts = ring.map(p => new THREE.Vector3(p[0], y, p[1]));
+        board.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), lm));
+      }
+    }
+  }
+  return board;
 }
 
 // ---------------------------------------------------------------- copper
