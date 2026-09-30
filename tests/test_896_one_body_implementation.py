@@ -93,9 +93,19 @@ _DECLARED = {
                      'not a body -- the refusal must read copper'),
     # -- goes through the model; the call here is not a ladder.
     (os.path.join('py_placer', 'placement', 'legality.py'),
-     'part_local_bounds'): (1, 'the +/-0.5mm fiction for a part the model '
+     '_part_local_bounds_and_bodies'): (1, 'the +/-0.5mm fiction for a part the model '
                             'reports as SOURCE_NONE; the ladder itself is '
                             'body.board_bodies'),
+    # -- #1098: the plug's mating region and who is in it, on the QUENCH's
+    #    ladder (courtyard, else pads) on purpose: the seat enforces the
+    #    keep-out on those rects, and the checker must grade the SAME rect
+    #    or the generator is looser than the checker.
+    (os.path.join('py_placer', 'placement', 'floorplan.py'),
+     'derived_mating_keepouts'): (2, "the plug's own COURTYARD is the "
+                                  'region; a body is not the question'),
+    (os.path.join('py_placer', 'placement', 'floorplan.py'),
+     'mating_keepout_findings'): (3, "the quench's rect, so seat and "
+                                  'checker grade one currency (#1098 D3)'),
     (os.path.join('py_tools', 'board_brief.py'),
      'parts_section'): (1, 'fallback only, when the model returns no box; '
                         'the extent itself is body.occupancy_local'),

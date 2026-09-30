@@ -115,6 +115,14 @@ class TestOffOutline(unittest.TestCase):
             '(pad "2" smd rect (at 0.5 0) (size 0.6 0.6) (layers "F.Cu")',
             '(pad "2" thru_hole rect (at 0.5 0.4) (size 0.6 0.6) (drill 0.3)'
             ' (layers "*.Cu") (property pad_prop_castellated)')
+        # BOTH pads castellated, so nothing but the straddle rule can make it
+        # gate (mutate_1094 `castellated-exempt-off-the-board` survived a
+        # one-pad version: its plain pad gated on its own).
+        board = board.replace(
+            '(pad "1" smd rect (at -0.5 0) (size 0.6 0.6) (layers "F.Cu")',
+            '(pad "1" thru_hole rect (at -0.5 0.4) (size 0.6 0.6) (drill 0.3)'
+            ' (layers "*.Cu") (property pad_prop_castellated)')
+        self.assertEqual(board.count('pad_prop_castellated'), 2)
         r, d = _run_text(board.format(y=30))
         self.assertFalse(d['buildable'], r.stdout[-1500:])
         self.assertEqual(d['oob_pad_copper_gating_refs'], ['R1'])
