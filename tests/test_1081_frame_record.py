@@ -184,10 +184,27 @@ def test_copper_revealed_after_the_flip_is_mirrored():
     """#1085: the copper reveal after a flip to B is seen from the back. The
     last reveal frame and the first outro frame show one state at one view
     (the settle already brought the camera home), so their board boxes are
-    EQUAL -- before the fix the outro frame equalled the reveal's MIRROR."""
+    EQUAL -- before the fix the outro frame equalled the reveal's MIRROR.
+
+    Those two checks are RELATIVE: a film that stopped mirroring after the
+    flip altogether is self-consistent and passes them (on the stage3d
+    frame, measured: `mutate_1081`'s copper-after-the-flip-unmirrored
+    survived). So the renderer's own calls are counted too -- every frame
+    recorded as seen from the back must have been rendered with
+    `mirror=True`."""
+    calls = []
+    orig = RR.BoardRenderer.frame
+
+    def _frame(self, *a, **k):
+        calls.append(bool(k.get('mirror')))
+        return orig(self, *a, **k)
     with FC.Chain() as c:
         out = {}
-        frames, _m, st, g = FC.film(c.boards, stage_out=out)
+        RR.BoardRenderer.frame = _frame
+        try:
+            frames, _m, st, g = FC.film(c.boards, stage_out=out)
+        finally:
+            RR.BoardRenderer.frame = orig
         outro = _shots(st, 'outro')[0][0]
         flip_end = _shots(st, 'flip')[0][1]
         bx = g.board
@@ -224,6 +241,10 @@ def test_copper_revealed_after_the_flip_is_mirrored():
                    'copper-step frame %d is seen from the back: %d px off '
                    'the mirrored snapshot, %d px off its mirror image'
                    % (k, near, far))
+        n_back = sum(1 for r in out['log'] if r['mirror'])
+        _check(n_back and sum(calls) >= n_back,
+               'every back-side frame is rendered mirrored (%d mirror=True '
+               'renders for %d back-side frames)' % (sum(calls), n_back))
         flags = [r['mirror'] for r in out['log'][flip_end:]]
         _check(flags and all(flags),
                'every frame after the flip is recorded mirrored (%d of %d)'
