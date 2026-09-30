@@ -65,6 +65,11 @@ def _pad_outline_polygon(pad, k: int = 4) -> List[Tuple[float, float]]:
     return out
 
 
+#: Public name for the placement graders (#1094): a courtyard outline is united
+#: with its pads' copper as THIS measures it, not as a second implementation.
+pad_outline_polygon = _pad_outline_polygon
+
+
 def _overlap_depth(a: List[Tuple[float, float]], b: List[Tuple[float, float]]) -> float:
     """Separating-axis penetration depth between two convex polygons (mm), for any
     vertex count. >0 = overlap by that depth; <=0 = (negative) gap."""

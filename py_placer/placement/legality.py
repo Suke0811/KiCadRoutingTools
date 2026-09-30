@@ -147,6 +147,51 @@ def rect_area(rect):
     return max(0.0, rect[2] - rect[0]) * max(0.0, rect[3] - rect[1])
 
 
+# --- drawn outlines (#1094) ----------------------------------------------------
+# The rect primitives above are exact only for an axis-aligned part. A part at
+# 45 degrees graded as the box around its rotated box reported 74 courtyard
+# pairs on KiCad's StickHub demo where KiCad reports 0, and six fab
+# CONTAINMENTS that made the human board NOT BUILDABLE. The graders keep the
+# rects as their broad phase and measure a pair the rects say overlaps on the
+# drawn outlines below, which is what KiCad measures.
+
+def place_local_shape(shape, x, y, rotation):
+    """A local-frame shapely geometry at the pose (x, y, rotation).
+
+    The same sign as `rotate_local_bounds`, so the bbox of the result is the
+    rect that function would give for an axis-aligned shape.
+    """
+    from shapely import affinity
+    rot = (rotation or 0.0) % 360
+    g = shape if abs(rot) < 0.01 else affinity.rotate(shape, -rot,
+                                                      origin=(0, 0))
+    return affinity.translate(g, x, y)
+
+
+def shape_overlap(a, b):
+    """(area, depth, rect) of two board-frame geometries' intersection.
+
+    `depth` is the shorter side of the intersection's minimum rotated
+    rectangle -- for two axis-aligned rects exactly `min(dx, dy)`, the rect
+    channel's own depth -- and `rect` its bounding box, which is what the
+    edge-class waiver tests against the outline. (0.0, 0.0, None) when they
+    do not overlap.
+    """
+    ix = a.intersection(b)
+    area = ix.area
+    if area <= EPS:
+        return 0.0, 0.0, None
+    mrr = ix.minimum_rotated_rectangle
+    cs = list(mrr.exterior.coords) if hasattr(mrr, 'exterior') else []
+    if len(cs) >= 4:
+        s1 = math.hypot(cs[1][0] - cs[0][0], cs[1][1] - cs[0][1])
+        s2 = math.hypot(cs[2][0] - cs[1][0], cs[2][1] - cs[1][1])
+        depth = min(s1, s2)
+    else:
+        depth = 0.0
+    return area, depth, tuple(ix.bounds)
+
+
 #: A body overlap at or above this fraction of the SMALLER body is a
 #: CONTAINMENT rather than a kiss. Corpus-calibrated on the 33 boards in
 #: kicad_files/, measured (not assumed), in the FAB currency:
@@ -201,7 +246,13 @@ def containment_frac(area, ra, rb):
     overlap is everything to a 0402 and nothing to a connector. Returns
     0.0..1.0, or None when either body has no area (nothing to be inside of).
     """
-    small = min(rect_area(ra), rect_area(rb))
+    return containment_frac_of_areas(area, rect_area(ra), rect_area(rb))
+
+
+def containment_frac_of_areas(area, area_a, area_b):
+    """`containment_frac` for bodies known by their AREAS (#1094: a drawn
+    outline is not a rect, and its bbox area over-states the body)."""
+    small = min(area_a, area_b)
     if small <= EPS:
         return None
     return round(min(1.0, area / small), 4)
@@ -945,6 +996,12 @@ class GradedPart(NamedTuple):
     # pad bbox and a pair reported against a drawn housing are different
     # claims, and a reader could not tell them apart.
     source: str = ''
+    # #1094. The part's OWN-side occupancy as board-frame shapely geometry:
+    # the drawn courtyard outline united with its pads' copper, or the
+    # oriented occupancy box on the other rungs. `rect` bounds it and stays
+    # the broad phase; None (a generator's own record) means the pair is
+    # measured on the rects alone.
+    poly: object = None
 
     @property
     def sides(self) -> frozenset:
@@ -1093,6 +1150,72 @@ class BodyOverlapPair(NamedTuple):
     contained: bool = False
 
 
+def _pair_exact(a: GradedPart, b: GradedPart, s: str, ra, rb):
+    """(area, depth, overlap_rect, area_a, area_b) of a pair on shared side
+    `s`: on the drawn outlines where the parts carry them, else the rects.
+
+    A part's `poly` is used only on its OWN side; the far side of a
+    through-hole part is its drilled-pad box, which is a rect by definition.
+    """
+    pa = a.poly if (s == a.side and a.poly is not None) else None
+    pb = b.poly if (s == b.side and b.poly is not None) else None
+    if pa is None and pb is None:
+        ix = (max(ra[0], rb[0]), max(ra[1], rb[1]),
+              min(ra[2], rb[2]), min(ra[3], rb[3]))
+        return (rect_overlap_area(ra, rb), min(ix[2] - ix[0], ix[3] - ix[1]),
+                ix, rect_area(ra), rect_area(rb))
+    from shapely.geometry import box
+    ga = pa if pa is not None else box(*ra)
+    gb = pb if pb is not None else box(*rb)
+    area, depth, ix = shape_overlap(ga, gb)
+    return area, depth, ix, ga.area, gb.area
+
+
+def pair_overlap_area_exact(a: GradedPart, b: GradedPart) -> float:
+    """`pair_overlap_area` measured the way `body_overlap_pairs` measures it
+    (#1094): the rects as broad phase, the drawn outlines deciding.
+
+    For a GENERATOR that must not refuse what the checker accepts on the same
+    geometry -- the #1054 fixed-pose seating refused StickHub's declared
+    human poses at -135 degrees on the rects alone.
+    """
+    worst = 0.0
+    for s in (a.sides & b.sides):
+        ra = rect_on(s, a.side, a.rect, a.tht_rect)
+        rb = rect_on(s, b.side, b.rect, b.tht_rect)
+        if ra is None or rb is None or rect_overlap_area(ra, rb) <= EPS:
+            continue
+        worst = max(worst, _pair_exact(a, b, s, ra, rb)[0])
+    return worst
+
+
+def graded_part_at_pose(pcb_data, ref: str, pose, side: str, rect, tht_rect,
+                        has_tht: bool, pcb_file: Optional[str] = None,
+                        cache: Optional[dict] = None) -> GradedPart:
+    """A `GradedPart` for `ref` at a pose nothing has written yet, carrying
+    its drawn occupancy outline there (#1094). `cache` (any dict the caller
+    keeps) holds the one board read this needs across calls."""
+    if cache is None:
+        cache = {}
+    if 'bodies' not in cache:
+        try:
+            cache['bodies'] = _part_local_bounds_and_bodies(pcb_data, pcb_file)
+        except Exception:                                    # noqa: BLE001
+            cache['bodies'] = ({}, {})
+    lbs, bodies = cache['bodies']
+    lb = lbs.get(ref)
+    fp = (pcb_data.footprints or {}).get(ref)
+    poly = None
+    if lb is not None and fp is not None:
+        try:
+            poly = occupancy_shape(footprint_at_pose(fp, tuple(pose)), lb,
+                                   bodies.get(ref))
+        except Exception:                                    # noqa: BLE001
+            poly = None
+    return GradedPart(ref=ref, side=side, rect=rect, tht_rect=tht_rect,
+                      has_tht=has_tht, poly=poly)
+
+
 def body_overlap_pairs(parts: Sequence[GradedPart]) -> List[BodyOverlapPair]:
     """Per-PAIR side-aware courtyard intersections (kind='courtyard').
 
@@ -1108,28 +1231,29 @@ def body_overlap_pairs(parts: Sequence[GradedPart]) -> List[BodyOverlapPair]:
         for b in items[i + 1:]:
             worst = 0.0
             worst_side = ''
-            worst_rects = None
+            worst_geo = None
             for s in (a.sides & b.sides):
                 ra = rect_on(s, a.side, a.rect, a.tht_rect)
                 rb = rect_on(s, b.side, b.rect, b.tht_rect)
                 if ra is None or rb is None:
                     continue
-                area = rect_overlap_area(ra, rb)
+                if rect_overlap_area(ra, rb) <= EPS:
+                    continue
+                # The rects overlap: measure the pair on the drawn outlines
+                # (#1094), a rect standing in for a side that has none.
+                area, depth, ix, fa, fb = _pair_exact(a, b, s, ra, rb)
                 if area > worst:
                     worst = area
                     worst_side = s
-                    worst_rects = (ra, rb)
+                    worst_geo = (depth, ix, fa, fb)
             if worst > EPS:
-                ra, rb = worst_rects
-                ix = (max(ra[0], rb[0]), max(ra[1], rb[1]),
-                      min(ra[2], rb[2]), min(ra[3], rb[3]))
-                _dx, _dy = ix[2] - ix[0], ix[3] - ix[1]
+                depth, ix, fa, fb = worst_geo
                 out.append(BodyOverlapPair(
                     a=min(a.ref, b.ref), b=max(a.ref, b.ref),
                     kind='courtyard', area_mm2=round(worst, 4),
                     side=worst_side, waived=False, waiver='',
-                    contained_frac=containment_frac(worst, *worst_rects),
-                    depth_mm=round(max(0.0, min(_dx, _dy)), 4),
+                    contained_frac=containment_frac_of_areas(worst, fa, fb),
+                    depth_mm=round(max(0.0, depth), 4),
                     overlap_rect=tuple(round(v, 4) for v in ix)))
     out.sort(key=lambda p: (-p.area_mm2, p.a, p.b))
     return out
@@ -1206,6 +1330,14 @@ def part_local_bounds(pcb_data, pcb_file: Optional[str] = None
     A ref is ABSENT when even the pad fallback raised -- the same parts
     `graded_parts_from_file` skips, so both consumers see one universe.
     """
+    return _part_local_bounds_and_bodies(pcb_data, pcb_file)[0]
+
+
+def _part_local_bounds_and_bodies(pcb_data, pcb_file: Optional[str] = None):
+    """`part_local_bounds` plus the `board_bodies` it was read from, so
+    `graded_parts_from_file` gets the drawn outlines (#1094) without a second
+    file read. `LocalBounds` itself stays shape-free: its `_asdict()` feeds
+    JSON (floorplan's `measured`), which a shapely object would break."""
     from placement.body import (SOURCE_COURTYARD, SOURCE_NONE, board_bodies)
     from placement.utility import compute_footprint_bbox_local
 
@@ -1255,7 +1387,40 @@ def part_local_bounds(pcb_data, pcb_file: Optional[str] = None
                                has_tht=has_tht, synthetic=synthetic,
                                from_courtyard=(source == SOURCE_COURTYARD),
                                source=source, silk_rejected=silk_rejected)
-    return out
+    return out, bodies
+
+
+def occupancy_shape(fp, lb: 'LocalBounds', geom=None):
+    """A part's own-side occupancy as board-frame geometry at its file pose
+    (#1094): the drawn courtyard outline united with the part's pad copper
+    when the courtyard rung answered, else the occupancy box, oriented.
+
+    The pads are united pad by pad (`check_pads`' outline, the checker that
+    already measures pad copper) rather than as their bbox: a stepped QFP
+    courtyard hugs its pin rows, and the pad BBOX would put back the corners
+    the drawing cut away (StickHub U1<->Y1, 2.01 mm2, which KiCad does not
+    report).
+    """
+    from shapely.geometry import Polygon, box
+    from shapely.ops import unary_union
+    court = getattr(geom, 'court_shape_local', None) if geom else None
+    if court is None or lb.synthetic:
+        return place_local_shape(box(*lb.local), fp.x, fp.y, fp.rotation)
+    shape = place_local_shape(court, fp.x, fp.y, fp.rotation)
+    from check_pads import pad_outline_polygon
+    extra = []
+    for pad in (fp.pads or ()):
+        if getattr(pad, 'pad_type', '') == 'np_thru_hole':
+            continue
+        try:
+            pts = pad_outline_polygon(pad)
+        except Exception:                                    # noqa: BLE001
+            continue
+        if len(pts) >= 3:
+            pp = Polygon(pts)
+            if pp.is_valid and not shape.contains(pp):
+                extra.append(pp)
+    return unary_union([shape] + extra) if extra else shape
 
 
 def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
@@ -1267,7 +1432,8 @@ def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
     that needs the box at ANOTHER rotation does not grow a second copy of it.
     """
     out: List[GradedPart] = []
-    for ref, lb in part_local_bounds(pcb_data, pcb_file).items():
+    lbs, bodies = _part_local_bounds_and_bodies(pcb_data, pcb_file)
+    for ref, lb in lbs.items():
         fp = pcb_data.footprints[ref]
         rot = fp.rotation or 0.0
         lx0, ly0, lx1, ly1 = rotate_local_bounds(*lb.local, rot)
@@ -1278,7 +1444,8 @@ def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
             tht = (fp.x + tx0, fp.y + ty0, fp.x + tx1, fp.y + ty1)
         out.append(GradedPart(ref=ref, side=lb.side, rect=rect,
                               tht_rect=tht, has_tht=lb.has_tht,
-                              synthetic=lb.synthetic, source=lb.source))
+                              synthetic=lb.synthetic, source=lb.source,
+                              poly=occupancy_shape(fp, lb, bodies.get(ref))))
     return out
 
 
@@ -1415,7 +1582,14 @@ def grade_body_overlap(pcb_data, clearance: float,
             rot = fp.rotation or 0.0
             x0, y0, x1, y1 = rotate_local_bounds(*lb, rot)
             _rect = (fp.x + x0, fp.y + y0, fp.x + x1, fp.y + y1)
-            fab_parts.append((ref, own, _rect))
+            # #1094: the drawn .Fab outline at the pose, when the fab rung
+            # answered; the rect is only its broad phase. A silk-rung body is
+            # a box by construction (silk U pads) and is measured oriented.
+            _drawn = getattr(geom, 'drawn_shape_local', None)
+            from shapely.geometry import box as _box
+            _shape = place_local_shape(_drawn if _drawn is not None
+                                       else _box(*lb), fp.x, fp.y, rot)
+            fab_parts.append((ref, own, _rect, _shape))
             # #896 seam input. The drilled-pad box rides along so the seam
             # obeys the same shared-side rule the graders use: a B-side part
             # and an F-side part have no seam at all unless a barrel makes
@@ -1429,23 +1603,26 @@ def grade_body_overlap(pcb_data, clearance: float,
                     _tht = (fp.x + tx0, fp.y + ty0, fp.x + tx1, fp.y + ty1)
             seam_parts.append((ref, sides_occupied(own, _has_tht), own,
                                _rect, _tht, body_sources[ref]))
-        for i, (ra, sa, rca) in enumerate(fab_parts):
-            for rb, sb, rcb in fab_parts[i + 1:]:
+        for i, (ra, sa, rca, sha) in enumerate(fab_parts):
+            for rb, sb, rcb, shb in fab_parts[i + 1:]:
                 if sa != sb:
                     continue
-                ov = rect_overlap_area(rca, rcb)
+                if rect_overlap_area(rca, rcb) <= EPS:
+                    continue
+                # #1094: the rects overlap; the drawn bodies decide. U1 at
+                # -135 degrees on StickHub "contained" six passives on the
+                # rects, which overlap its drawn body by 0.0 mm2.
+                ov, _depth, _ix = shape_overlap(sha, shb)
                 if ov > EPS:
                     waiver = _waiver_for(ra, rb)
-                    _cf = containment_frac(ov, rca, rcb)
-                    _dx = min(rca[2], rcb[2]) - max(rca[0], rcb[0])
-                    _dy = min(rca[3], rcb[3]) - max(rca[1], rcb[1])
+                    _cf = containment_frac_of_areas(ov, sha.area, shb.area)
                     pairs.append(BodyOverlapPair(
                         a=min(ra, rb), b=max(ra, rb), kind='fab',
                         area_mm2=round(ov, 4), side=sa,
                         waived=bool(waiver), waiver=waiver,
                         contained_frac=_cf, contained=_cf is not None
                         and _cf >= CONTAINMENT_FRAC,
-                        depth_mm=round(max(0.0, min(_dx, _dy)), 4)))
+                        depth_mm=round(max(0.0, _depth), 4)))
 
     # -- pad_intersection channel (never waivable) ----------------------------
     # AABB broad phase in the gate currency, then exact re-verification at
@@ -2542,11 +2719,23 @@ class PartPads:
             rad = math.radians(-key)
             c, s = math.cos(rad), math.sin(rad)
             swap = round(key) % 180 == 90
+            # #1094: off a 90-degree step the pad box is not swapped but
+            # TURNED, and its axis-aligned half-extents grow to
+            # hx|c| + hy|s|. Swapping only at 90/270 left a 45-degree pad at
+            # its seed-pose extents -- smaller than the copper, so this gate
+            # (which may falsely reject, never falsely accept) accepted pad
+            # overlaps the written board then failed. The orthogonal steps
+            # keep the exact swap, so they stay bit-identical.
+            ortho = abs(key - 90.0 * round(key / 90.0)) < 1e-9
+            ac, as_ = abs(c), abs(s)
             cache = []
             for ox, oy, hx, hy, net, pside in self.pads_local:
                 rx = ox * c - oy * s
                 ry = ox * s + oy * c
-                HX, HY = (hy, hx) if swap else (hx, hy)
+                if ortho:
+                    HX, HY = (hy, hx) if swap else (hx, hy)
+                else:
+                    HX, HY = hx * ac + hy * as_, hx * as_ + hy * ac
                 cache.append((rx, ry, HX, HY, net, pside))
             self._pad_cache[key] = cache
         return cache

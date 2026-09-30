@@ -173,13 +173,18 @@ class TestRun23Board(unittest.TestCase):
         self.assertNotIn(('C25', 'JP2'), census)
 
     def test_full_census_is_carried(self):
-        """The 15-pair census the user SAW must be in the JSON, waivers and
-        all -- J1<->SW1 (7.0mm2, edge-waived) is the one a reader asks about
-        first."""
+        """The census the user SAW must be in the JSON, waivers and all --
+        J1<->SW1 (7.0mm2, edge-waived) is the one a reader asks about first.
+
+        The user saw 15 pairs; 14 are real. #1094 grades a courtyard as
+        drawn, and G***<->TP1 (0.143mm2) was the corner of the bbox of TP1's
+        ROUND courtyard touching the logo's +/-0.5mm fiction -- the circle
+        itself does not reach it, so the pair is gone and must stay gone."""
         _r, doc = _grade(PLACED)
         census = {(q['a'], q['b']) for q in doc['courtyard_pairs']}
         self.assertIn(('J1', 'SW1'), census)
-        self.assertGreaterEqual(len(census), 15)
+        self.assertNotIn(('G***', 'TP1'), census)
+        self.assertGreaterEqual(len(census), 14)
 
 
 class TestRenderCourtyardTruth(unittest.TestCase):

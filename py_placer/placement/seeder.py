@@ -3474,14 +3474,27 @@ def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
     """`(area mm^2, w, h)` of the courtyard overlap of `a` at `pose_a` with
     `b` at `pose_b`. The VERDICT is `legality.pair_overlap_area` -- the
     side-aware measure `legality_metrics`' `overlap_area` and the seeder's
-    `_overlap_at` use -- called, not re-derived; `w` x `h` is the courtyard
-    rects' intersection, for the refusal's text only."""
-    from .legality import pair_overlap_area
+    `_overlap_at` use -- called, not re-derived, and where those rects
+    overlap, `legality.pair_overlap_area_exact` on the drawn outlines, the
+    measure `check_assembly` grades the seated pose with (#1094: StickHub's
+    declared -135 degree human poses were refused on rects alone). `w` x `h`
+    is the courtyard rects' intersection, for the refusal's text only."""
+    from .legality import (graded_part_at_pose, pair_overlap_area,
+                           pair_overlap_area_exact)
     pa, pb = state.parts[a], state.parts[b]
     ra, ta = pa.rect(*pose_a), pa.tht_rect(*pose_a)
     rb, tb = pb.rect(*pose_b), pb.tht_rect(*pose_b)
     area = pair_overlap_area(pa.sides, pa.side, ra, ta,
                              pb.sides, pb.side, rb, tb)
+    if area > FIXED_OVERLAP_EPS_MM2:
+        cache = state.__dict__.setdefault('_exact_overlap_cache', {})
+        pcb_file = getattr(state, 'pcb_file', None)
+        ga = graded_part_at_pose(state.pcb_data, a, pose_a, pa.side, ra, ta,
+                                 ta is not None, pcb_file, cache)
+        gb = graded_part_at_pose(state.pcb_data, b, pose_b, pb.side, rb, tb,
+                                 tb is not None, pcb_file, cache)
+        if ga.poly is not None or gb.poly is not None:
+            area = pair_overlap_area_exact(ga, gb)
     w = max(0.0, min(ra[2], rb[2]) - max(ra[0], rb[0]))
     h = max(0.0, min(ra[3], rb[3]) - max(ra[1], rb[1]))
     return area, w, h

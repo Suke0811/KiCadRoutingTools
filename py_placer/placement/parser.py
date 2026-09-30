@@ -227,6 +227,144 @@ def extract_silk_sides(pcb_file: str) -> Dict[str, Dict[str, Bbox]]:
     return result
 
 
+#: Coordinates are snapped to this grid (mm) before an outline is noded, so two
+#: segment ends KiCad wrote as 1.2500001 and 1.25 still meet.
+_OUTLINE_SNAP_MM = 1e-4
+#: A polygonised outline must contain every drawn vertex to within this (mm);
+#: otherwise part of the drawing did not close and the convex hull is used.
+_OUTLINE_COVER_TOL_MM = 1e-3
+OUTLINE_POLYGON = 'polygon'
+OUTLINE_HULL = 'hull'
+
+
+def _outline_shapes_by_side(fp_text: str, layer_re: str) -> Dict[str, tuple]:
+    """The TRUE drawn outline of one footprint on `layer_re`, per side (#1094).
+
+    `{side: (shapely geometry in the local frame, how)}`, where `how` is
+    `OUTLINE_POLYGON` when the drawing closes and `OUTLINE_HULL` when it does
+    not (an open courtyard drawing, a missing segment) and the convex hull of
+    every drawn vertex stands in for it. Never smaller than what was drawn.
+
+    `_courtyard_points_by_side` reads the same elements but keeps only their
+    points, which is all a bbox needs; a bbox cannot survive a 45 degree
+    rotation (StickHub: 74 phantom courtyard pairs, KiCad finds 0), and an
+    oriented bbox cannot either, because a stepped courtyard such as StickHub
+    U1's 24 segments still over-states its corners by 2 mm2. This keeps the
+    shape.
+    """
+    from shapely.geometry import LineString, Point, Polygon, box
+    from shapely.ops import polygonize, unary_union
+
+    def snap(v):
+        return round(v / _OUTLINE_SNAP_MM) * _OUTLINE_SNAP_MM
+
+    lines: Dict[str, list] = {}
+    areas: Dict[str, list] = {}
+    verts: Dict[str, list] = {}
+
+    def seg(side, a, b):
+        a = (snap(a[0]), snap(a[1]))
+        b = (snap(b[0]), snap(b[1]))
+        verts.setdefault(side, []).extend((a, b))
+        if a != b:
+            lines.setdefault(side, []).append(LineString((a, b)))
+
+    for m in re.finditer(
+            r'\(fp_(line|rect)\s+\(start\s+' + _NUM + r'\s+' + _NUM + r'\)\s+'
+            r'\(end\s+' + _NUM + r'\s+' + _NUM + r'\)' + _FP_ELEMENT_GAP
+            + layer_re, fp_text, re.DOTALL):
+        x1, y1, x2, y2 = (float(m.group(i)) for i in range(2, 6))
+        side = m.group(6)
+        if m.group(1) == 'rect':
+            r = box(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+            areas.setdefault(side, []).append(r)
+            verts.setdefault(side, []).extend(r.exterior.coords)
+        else:
+            seg(side, (x1, y1), (x2, y2))
+
+    for m in re.finditer(
+            r'\(fp_arc\s+\(start\s+' + _NUM + r'\s+' + _NUM + r'\)\s+'
+            r'\(mid\s+' + _NUM + r'\s+' + _NUM + r'\)\s+'
+            r'\(end\s+' + _NUM + r'\s+' + _NUM + r'\)' + _FP_ELEMENT_GAP
+            + layer_re, fp_text, re.DOTALL):
+        sx, sy, mx, my, ex, ey = (float(m.group(i)) for i in range(1, 7))
+        for a, b in _arc_to_segments((sx, sy), (mx, my), (ex, ey)):
+            seg(m.group(7), a, b)
+
+    for m in re.finditer(
+            r'\(fp_circle\s+\(center\s+' + _NUM + r'\s+' + _NUM + r'\)\s+'
+            r'\(end\s+' + _NUM + r'\s+' + _NUM + r'\)' + _FP_ELEMENT_GAP
+            + layer_re, fp_text, re.DOTALL):
+        cx, cy, ex, ey = (float(m.group(i)) for i in range(1, 5))
+        # A circle stays a circle: its bbox corners rotate off the disc.
+        c = Point(cx, cy).buffer(math.hypot(ex - cx, ey - cy), 32)
+        areas.setdefault(m.group(5), []).append(c)
+        verts.setdefault(m.group(5), []).extend(c.exterior.coords)
+
+    for pm in re.finditer(r'\(fp_poly\b', fp_text):
+        poly_text = fp_text[pm.start():find_matching_paren(fp_text, pm.start())]
+        lm = re.search(layer_re, poly_text)
+        if not lm:
+            continue
+        pts = [(snap(float(xm.group(1))), snap(float(xm.group(2))))
+               for xm in re.finditer(r'\(xy\s+' + _NUM + r'\s+' + _NUM + r'\)',
+                                     poly_text)]
+        if len(pts) >= 3:
+            p = Polygon(pts)
+            if not p.is_valid:
+                p = p.buffer(0)
+            areas.setdefault(lm.group(1), []).append(p)
+        verts.setdefault(lm.group(1), []).extend(pts)
+
+    out: Dict[str, tuple] = {}
+    for side in set(verts) | set(areas):
+        parts = list(areas.get(side, []))
+        if lines.get(side):
+            parts.extend(polygonize(unary_union(lines[side])))
+        how = OUTLINE_POLYGON
+        shape = unary_union(parts) if parts else None
+        pts = verts.get(side, [])
+        if pts and (shape is None or shape.is_empty
+                    or any(shape.distance(Point(p)) > _OUTLINE_COVER_TOL_MM
+                           for p in pts)):
+            from shapely.geometry import MultiPoint
+            shape, how = MultiPoint(pts).convex_hull, OUTLINE_HULL
+        if shape is None or shape.is_empty or shape.area <= 0:
+            continue
+        out[side] = (shape, how)
+    return out
+
+
+def _extract_outline_shapes(pcb_file: str, layer_re: str, marker: str
+                            ) -> Dict[str, Dict[str, tuple]]:
+    with open(pcb_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    result: Dict[str, Dict[str, tuple]] = {}
+    for ref, fp_text in _footprint_blocks(content):
+        if marker not in fp_text:
+            continue
+        by_side = _outline_shapes_by_side(fp_text, layer_re)
+        if by_side:
+            result[ref] = by_side
+    return result
+
+
+def extract_courtyard_shapes(pcb_file: str) -> Dict[str, Dict[str, tuple]]:
+    """Per-side courtyard OUTLINES, `{ref: {side: (geometry, how)}}` (#1094).
+
+    `extract_courtyard_sides`' shape-keeping twin: same footprints, same keys,
+    same elements, local frame. The bbox of each geometry is the bbox that
+    function returns, so a consumer can use the bbox as a broad phase and this
+    as the exact test.
+    """
+    return _extract_outline_shapes(pcb_file, _CRTYD_LAYER, '.CrtYd"')
+
+
+def extract_fab_shapes(pcb_file: str) -> Dict[str, Dict[str, tuple]]:
+    """Per-side .Fab body OUTLINES; `extract_fab_sides`' twin (#1094)."""
+    return _extract_outline_shapes(pcb_file, _FAB_LAYER, '.Fab"')
+
+
 def extract_courtyard_bboxes(pcb_file: str) -> Dict[str, Bbox]:
     """
     Parse courtyard (F.CrtYd / B.CrtYd) extents from each footprint block.
