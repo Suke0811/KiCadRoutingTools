@@ -417,6 +417,44 @@ class TestReviewFollowUps(unittest.TestCase):
                                        board_edge_clearance=0.1)
             self.assertFalse(st.parts['J1'].locked)
 
+    def test_check_assembly_grades_the_declared_region(self):
+        """A declared `mating:J1` replaces the derived region in
+        check_assembly as in the floorplan grade: R1 on the tongue's root is
+        clean against a region declared at its tip, and R1 on the body is
+        caught by a region declared there."""
+        tip = {'name': 'mating:J1', 'rect': [10, 30, 20, 32],
+               'sides': ['F', 'B'], 'allow': ['J1']}
+        body = {'name': 'mating:J1', 'rect': [20.5, 5, 29.5, 15],
+                'sides': ['F', 'B'], 'allow': ['J1']}
+        for r1, decl, buildable in (((15, 26, 'B.Cu'), tip, True),
+                                    ((25, 10, 'B.Cu'), body, False)):
+            with tempfile.TemporaryDirectory() as td:
+                p = board(td, r1=r1)
+                intent = write_intent(td, [decl])
+                js = p + '.json'
+                r = subprocess.run(
+                    [sys.executable, '-X', 'utf8',
+                     os.path.join(ROOT, 'py_tools', 'check_assembly.py'), p,
+                     '--intent', intent, '--json', js],
+                    capture_output=True, text=True, cwd=ROOT)
+                with open(js, encoding='utf-8') as fh:
+                    d = json.load(fh)
+            self.assertEqual(d['buildable'], buildable,
+                             (r1, r.stdout[-1500:]))
+
+    def test_place_pose_grades_the_declared_region(self):
+        tip = {'name': 'mating:J1', 'rect': [10, 30, 20, 32],
+               'sides': ['F', 'B'], 'allow': ['J1']}
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td)
+            intent = write_intent(td, [tip])
+            out = os.path.join(td, 'o.kicad_pcb')
+            r = place_pose(p, out, 'set', 'R1', '15', '26', '--rot', '0',
+                           '--intent', intent)
+            wrote = os.path.exists(out)
+        self.assertEqual(r.returncode, 0, (r.stdout + r.stderr)[-2000:])
+        self.assertTrue(wrote)
+
 
 if __name__ == '__main__':
     unittest.main()

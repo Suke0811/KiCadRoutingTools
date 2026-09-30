@@ -4261,7 +4261,8 @@ def grade_pad_edge_clearance(pcb_data, required: float, pcb_file=None) -> Dict:
 def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                        edge_margin: Optional[float] = None,
                        worst_n: int = 10,
-                       pcb_file: str = None) -> Dict[str, object]:
+                       pcb_file: str = None,
+                       declared_keepouts=()) -> Dict[str, object]:
     """Board-level pad/hole legality audit at the FILE's own poses.
 
     AABB broad phase over all cross-footprint pad pairs; with `exact` (the
@@ -4562,10 +4563,15 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
     # the resolved per-pad edge requirement (#986 moved it onto the context)
     graphic = _graphic_copper_channel(pcb_data, edge_ctx.required)
     # #1098: parts inside a PCB-edge plug's mating region, on either face.
+    # `declared_keepouts` is the intent's `keepouts`: a declared
+    # `mating:<ref>` replaces the derived region here as it does in the
+    # seeder and the floorplan grade, so the checker grades the rect the
+    # generator was held to.
     mating_error = None
     try:
         from .floorplan import mating_keepout_findings
-        mating = mating_keepout_findings(pcb_data, pcb_file)
+        mating = mating_keepout_findings(pcb_data, pcb_file,
+                                         declared=declared_keepouts)
     except Exception as exc:                                 # noqa: BLE001
         # Not "clean": an unmeasured tongue is reported, and check_assembly
         # fails closed on it (#1098 review).

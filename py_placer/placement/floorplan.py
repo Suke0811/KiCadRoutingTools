@@ -2288,12 +2288,26 @@ def with_derived_keepouts(keepouts, pcb_data, pcb_file: Optional[str] = None
                             if k['name'] not in names)
 
 
+def mating_keepouts(pcb_data, pcb_file: Optional[str] = None,
+                    declared=()) -> Tuple[Dict, ...]:
+    """The board's mating regions as the seeder, quench and grade resolve
+    them (#1098): `with_derived_keepouts(declared, ...)`, keeping only the
+    `mating:` entries. A declared `mating:<ref>` therefore replaces the
+    derived one here exactly as it does there; the intent's other
+    keep-outs are the floorplan grade's rules, not an assembly fact."""
+    return tuple(k for k in with_derived_keepouts(declared, pcb_data,
+                                                  pcb_file)
+                 if str(k.get('name', '')).startswith(MATING_PREFIX))
+
+
 def mating_keepout_findings(pcb_data, pcb_file: Optional[str] = None,
-                            keepouts=None) -> List[Dict]:
-    """`[{ref, keepout, side, area_mm2}]`: parts inside a derived mating
-    keep-out at the file's poses (#1098). `keepout_hit` over each part's
-    (rect, drilled-pad rect), resolved by `keepouts_for_ref` -- the same two
-    functions the seeder and the grade call.
+                            keepouts=None, declared=()) -> List[Dict]:
+    """`[{ref, keepout, side, area_mm2}]`: parts inside a mating keep-out at
+    the file's poses (#1098) -- `keepouts` when given, else
+    `mating_keepouts(pcb_data, pcb_file, declared)`, so a checker handed the
+    intent's keep-outs resolves the region the seeder enforced. `keepout_hit`
+    over each part's (rect, drilled-pad rect), resolved by `keepouts_for_ref`
+    -- the same two functions the seeder and the grade call.
 
     The rect is the QUENCH's (`quench._Part`): the courtyard, else the pad
     bbox. A checker measuring courtyard-plus-pads here graded a part the
@@ -2301,7 +2315,7 @@ def mating_keepout_findings(pcb_data, pcb_file: Optional[str] = None,
     tongue) NOT BUILDABLE -- the generator more permissive than the checker,
     which is the one direction that may never happen. So both read one
     rect."""
-    ks = (derived_mating_keepouts(pcb_data, pcb_file)
+    ks = (mating_keepouts(pcb_data, pcb_file, declared)
           if keepouts is None else tuple(keepouts))
     if not ks:
         return []

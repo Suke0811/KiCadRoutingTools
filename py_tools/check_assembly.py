@@ -8,7 +8,8 @@ pad/hole/oob legality echo -- both conjuncts in one JSON.
 
 Needs NO intent to be meaningful (unlike check_floorplan's legality rule,
 which skips without a budget): a bare board grades honestly. --intent adds
-authored overlap waivers only.
+authored overlap waivers, and a declared `mating:<ref>` keep-out, which
+replaces the plug region derived from the board (#1098).
 
 --baseline <board> computes the loop currency: advisory pairs NEW relative
 to the baseline board (dense real boards ship hundreds of by-design
@@ -43,7 +44,9 @@ def main():
         description="Assembly (body-overlap) audit of a placed board.")
     p.add_argument("board")
     p.add_argument("--intent", default=None, metavar="JSON",
-                   help="Floorplan intent; only its overlap_waivers are read")
+                   help="Floorplan intent; its overlap_waivers are read, and "
+                        "a keep-out it names `mating:<ref>` replaces the "
+                        "plug mating region derived from the board (#1098)")
     p.add_argument("--clearance", type=float, default=None,
                    help="Pad-model clearance in mm. Default: the board's own "
                         "Default net-class clearance, else routing_defaults. "
@@ -142,10 +145,15 @@ def main():
               f"intersections rather than clearance grazes.")
 
     waivers = ()
+    declared_keepouts = ()
     if args.intent:
         try:
             from placement.floorplan import load_intent
-            waivers = load_intent(args.intent).waiver_pairs()
+            _intent = load_intent(args.intent)
+            waivers = _intent.waiver_pairs()
+            # #1098: the intent's keep-outs, so a declared `mating:<ref>`
+            # replaces the derived plug region here as it does in the seeder.
+            declared_keepouts = tuple(_intent.keepouts or ())
         except Exception as exc:
             print(f"cannot load intent {args.intent}: {exc}", file=sys.stderr)
             return 2
@@ -166,7 +174,8 @@ def main():
     from placement.legality import format_waiver_warnings as _waiver_warnings
     for _line in _waiver_warnings(g):
         print("  " + _line, file=sys.stderr)
-    leg = grade_pad_legality(pcb, clearance, worst_n=0, pcb_file=args.board)
+    leg = grade_pad_legality(pcb, clearance, worst_n=0, pcb_file=args.board,
+                             declared_keepouts=declared_keepouts)
     # #697: name any pair graded ABOVE `clearance` and what raised it, or the
     # echo below reports a count the announced floor cannot explain.
     from placement.legality import format_required_clause as _req_clause

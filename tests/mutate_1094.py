@@ -259,6 +259,18 @@ ROWS = [
      "    if legality.pad_copper_overrun_mm(pads, gate) > legality.EPS:",
      "    if False:",
      (T1098,), 'KILLED'),
+    ('declared-region-not-graded', 'leg',
+     "                                         declared=declared_keepouts)",
+     "                                         declared=())",
+     (T1098,), 'KILLED'),
+    ('assembly-drops-declared-region', 'asm',
+     "            declared_keepouts = tuple(_intent.keepouts or ())",
+     "            declared_keepouts = ()",
+     (T1098,), 'KILLED'),
+    ('place-pose-drops-declared-region', 'pose',
+     "    declared_keepouts = tuple(getattr(intent, 'keepouts', None) or ())",
+     "    declared_keepouts = ()",
+     (T1098,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

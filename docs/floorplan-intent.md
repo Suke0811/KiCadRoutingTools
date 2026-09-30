@@ -1846,7 +1846,10 @@ the consumers rather than written into the intent:
   of them measure the quench's rect (courtyard, else pad bbox), so the seat
   and the checker cannot disagree;
 - **a declared keep-out named `mating:<ref>`** (intent or brief) replaces
-  the derived one, for a plug whose real insertion depth differs.
+  the derived one, for a plug whose real insertion depth differs -- in every
+  consumer handed the intent, `check_assembly --intent` and `place_pose
+  --intent` included (`floorplan.mating_keepouts`). The plug it names is
+  locked by the same seated test.
 
 StickHub's human board has no part in the region; run 36's final board has
 exactly the 8.

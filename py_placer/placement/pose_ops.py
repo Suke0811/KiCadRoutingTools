@@ -396,17 +396,20 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
 # ---------------------------------------------------------------------------
 
 def grade(pcb_data, board_path: str, clearance: float,
-          board_edge_clearance=None) -> Dict:
+          board_edge_clearance=None, declared_keepouts=()) -> Dict:
     """`grade_pad_legality` at this board's own poses -- never a re-derivation.
 
     `pcb_file` is passed so `PadClearanceModel` can read the netclasses, the
     `.kicad_dru` layer rules and any pad `local_clearance` override (#697):
     a board that declares none of the three grades exactly as a flat scalar
     would, and one that declares them is graded the way check_drc will.
+    `declared_keepouts` is the intent's keep-outs (#1098): a declared
+    `mating:<ref>` replaces the derived plug region, as in the seeder.
     """
     from placement.legality import grade_pad_legality
     return grade_pad_legality(pcb_data, clearance, pcb_file=board_path,
-                              edge_margin=board_edge_clearance)
+                              edge_margin=board_edge_clearance,
+                              declared_keepouts=declared_keepouts)
 
 
 def worsened(before: Dict, after: Dict) -> List[str]:
@@ -700,6 +703,9 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
     placements, notes = resolve_ops(pcb, ops, clearance=clearance,
                                     track_width=track_width)
     check_lock_refs(pcb, lock_refs, unlock_refs)
+    # #1098: the intent's keep-outs reach every grade below, so a declared
+    # `mating:<ref>` is the region this verb holds a move to.
+    declared_keepouts = tuple(getattr(intent, 'keepouts', None) or ())
 
     # A KiCad lock is a DECISION someone recorded in the file -- the seeder
     # stamps the intent's must_lock refs there, and run 25 stamped its rotation
@@ -769,7 +775,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
         'would_write': out_path,
     }
 
-    before = grade(pcb, board_path, clearance, board_edge_clearance)
+    before = grade(pcb, board_path, clearance, board_edge_clearance,
+                   declared_keepouts)
     stage = tempfile.TemporaryDirectory(prefix='place_pose_')
     try:
         cand = os.path.join(stage.name, 'candidate.kicad_pcb')
@@ -779,7 +786,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
             shutil.copyfile(board_path, cand)
         copy_siblings(board_path, cand)
         cand_pcb = parse_kicad_pcb(cand)
-        after = grade(cand_pcb, cand, clearance, board_edge_clearance)
+        after = grade(cand_pcb, cand, clearance, board_edge_clearance,
+                      declared_keepouts)
         bad = worsened(before, after)
 
         if snap and len(placements) != 1:
@@ -835,7 +843,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 write_placed_output(board_path, cand, trial)
                 copy_siblings(board_path, cand)
                 pcb_c = parse_kicad_pcb(cand)
-                g = grade(pcb_c, cand, clearance, board_edge_clearance)
+                g = grade(pcb_c, cand, clearance, board_edge_clearance,
+                          declared_keepouts)
                 return trial, pcb_c, g, worsened(before, g)
 
             # TWO PHASES, each with its OWN budget, and the reason is the
@@ -909,7 +918,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 write_placed_output(board_path, cand, placements)
                 copy_siblings(board_path, cand)
                 cand_pcb = parse_kicad_pcb(cand)
-                after = grade(cand_pcb, cand, clearance, board_edge_clearance)
+                after = grade(cand_pcb, cand, clearance, board_edge_clearance,
+                              declared_keepouts)
                 bad = worsened(before, after)
 
         # A `face` op's rotation is PREDICTED (FACE_CYCLE) and then MEASURED on
