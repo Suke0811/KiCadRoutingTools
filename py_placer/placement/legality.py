@@ -1449,9 +1449,29 @@ def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
     return out
 
 
+#: The waiver label a courtyard pair carries when the board's own project
+#: sets KiCad's `courtyards_overlap` to a non-error severity (#1095); the
+#: severity is appended, e.g. 'project_severity_ignore'.
+PROJECT_SEVERITY_WAIVER = 'project_severity_'
+
+
+def courtyard_severity_of(pcb_file: Optional[str]) -> Optional[str]:
+    """The board's `courtyards_overlap` severity, or None (no project, or
+    unset: KiCad's default is error)."""
+    if not pcb_file:
+        return None
+    try:
+        from check_drc import rule_severity
+        return rule_severity(pcb_file, 'courtyards_overlap')
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
 def grade_body_overlap(pcb_data, clearance: float,
                        intent_waivers: Sequence[Sequence[str]] = (),
-                       pcb_file: Optional[str] = None) -> Dict[str, object]:
+                       pcb_file: Optional[str] = None,
+                       courtyard_severity: Optional[str] = 'auto'
+                       ) -> Dict[str, object]:
     """Board-level ASSEMBLY audit at the file's own poses.
 
     Returns {'blocking': int, 'advisory': int, 'waived': int,
@@ -1461,8 +1481,31 @@ def grade_body_overlap(pcb_data, clearance: float,
     courtyard pairs -- fix targets for the placement loop, dispositioned by
     the boundary verifier, never a gate by themselves (see the module
     comment's corpus census for why).
+
+    `courtyard_severity` (#1095) is KiCad's `courtyards_overlap` severity to
+    grade the COURTYARD channel at: 'auto' reads the board's own project,
+    None grades at error whatever the project says (the OFF arm). At
+    'ignore' every courtyard pair the intent does not already waive carries
+    `PROJECT_SEVERITY_WAIVER + 'ignore'` and never gates: KiCad runs no
+    courtyard check at all then, and reports none of them.
+
+    'warning' is graded as error, deliberately. KiCad still REPORTS a
+    warning, and `fix_kicad_drc_settings --relax-severities` writes exactly
+    that demotion into a project on the promise that check_assembly stays
+    the arbiter -- honouring it would switch the courtyard gate off on every
+    board that tool ever relaxed.
+
+    The fab/containment, pad and locked-contact channels are NOT KiCad's
+    courtyard rule and are graded as before: a severity is the board's word
+    about courtyards, not about two bodies in one place.
     """
     from placement.part_class import classify_part
+
+    _cy_sev = (courtyard_severity_of(pcb_file
+                                     or getattr(pcb_data, 'source_path', None))
+               if courtyard_severity == 'auto' else courtyard_severity)
+    _cy_waiver = (PROJECT_SEVERITY_WAIVER + _cy_sev
+                  if _cy_sev == 'ignore' else '')
 
     fps = pcb_data.footprints or {}
     waiver_sets = {frozenset(p) for p in intent_waivers if len(p) == 2}
@@ -1551,6 +1594,10 @@ def grade_body_overlap(pcb_data, clearance: float,
     # -- courtyard channel (advisory + the run-23 blocking policy below) ------
     for p in body_overlap_pairs(_graded):
         waiver = _waiver_for(p.a, p.b)
+        # #1095: the board's own severity outranks every inferred class
+        # label, and only an authored intent waiver outranks it.
+        if _cy_waiver and waiver != 'intent_declared':
+            waiver = _cy_waiver
         pairs.append(p._replace(waived=bool(waiver), waiver=waiver))
 
     # -- DRAWN BODY channel (advisory) ----------------------------------------
@@ -1838,6 +1885,11 @@ def grade_body_overlap(pcb_data, clearance: float,
         # human decision about this exact pair.
         if p.waiver == 'intent_declared':
             return True
+        # #1095: the board declared KiCad's courtyard rule non-blocking. Its
+        # own DRC reports none of these pairs, locked or not, so neither do
+        # we; the pair stays in the census with its label.
+        if p.waiver.startswith(PROJECT_SEVERITY_WAIVER):
+            return True
         # No CLASS waiver blesses contact with a KiCad-LOCKED part (the
         # run-8 E6 principle, extended to the courtyard channel): a locked
         # pose is a decision somebody made, and a class label chosen for
@@ -1885,7 +1937,9 @@ def grade_body_overlap(pcb_data, clearance: float,
         and not _silk_occupancy_pair(p)]
     from placement.body import tightest_body_seam as _tbs
     _seam = _tbs(seam_parts)
-    return {'blocking': len(blocking),
+    return {'courtyard_severity': _cy_sev,
+            'courtyard_severity_waiver': _cy_waiver,
+            'blocking': len(blocking),
             'advisory': len(advisory),
             'waived': sum(1 for p in pairs if p.waived),
             'pairs': pairs,

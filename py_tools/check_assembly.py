@@ -34,6 +34,7 @@ import _path  # noqa: F401  (py_tools -> py_router/py_placer on sys.path)
 
 import argparse
 import json
+import os
 import sys
 
 
@@ -53,6 +54,12 @@ def main():
                         "(the placement-loop currency)")
     p.add_argument("--json", default=None, metavar="PATH",
                    help="Write the full grade as JSON")
+    p.add_argument("--ignore-project-severity", action="store_true",
+                   help="Grade courtyard overlaps at KiCad's default "
+                        "(error) even when the board's .kicad_pro sets "
+                        "courtyards_overlap to ignore (#1095). Default: the "
+                        "project's own severity (a 'warning' is graded as "
+                        "error either way, since KiCad still reports it)")
     args = p.parse_args()
 
     import routing_defaults as defaults
@@ -149,8 +156,10 @@ def main():
         print(f"cannot parse {args.board}: {exc}", file=sys.stderr)
         return 2
 
+    _cy_sev_arg = None if args.ignore_project_severity else 'auto'
     g = grade_body_overlap(pcb, clearance, intent_waivers=waivers,
-                           pcb_file=args.board)
+                           pcb_file=args.board,
+                           courtyard_severity=_cy_sev_arg)
     # #897: a waiver that resolves to nothing excuses nothing, and said nothing.
     # Formatted by the engine (`format_waiver_warnings`) rather than here, so
     # place_reconstruct says the same words.
@@ -218,7 +227,8 @@ def main():
                   file=sys.stderr)
             return 2
         gb = grade_body_overlap(base_pcb, clearance, intent_waivers=waivers,
-                                pcb_file=args.baseline)
+                                pcb_file=args.baseline,
+                                courtyard_severity=_cy_sev_arg)
         base_keys = {(q.a, q.b, q.kind) for q in gb['pairs']}
         new_advisory = [q for q in g['advisory_pairs']
                         if (q.a, q.b, q.kind) not in base_keys]
@@ -523,6 +533,20 @@ def main():
     # contact) is exactly that. It stays in the census and the review-sheet
     # facts, and the boundary review must disposition it; no movement test
     # can charge it without also flipping pristine boards.
+    # #1095: the board's own severity for KiCad's courtyard rule. Said
+    # whenever it waived anything, with the file it came from, because a
+    # courtyard census that silently shrank would read as a fix.
+    _cy_w = g.get('courtyard_severity_waiver') or ''
+    if _cy_w:
+        _n_sev = sum(1 for q in g['pairs']
+                     if q.kind == 'courtyard' and q.waiver == _cy_w)
+        print(f"  courtyard severity: the project sets courtyards_overlap to "
+              f"'{g['courtyard_severity']}' "
+              f"({os.path.splitext(args.board)[0]}.kicad_pro), so {_n_sev} "
+              f"courtyard pair(s) are waived '{_cy_w}' and none gates -- "
+              f"KiCad's own DRC reports none of them. Fab containment, pad "
+              f"and locked-contact channels are graded as usual. "
+              f"--ignore-project-severity grades them at error.")
     courtyard_gating = []
     if g['courtyard_blocking'] and moved_refs is not None:
         courtyard_gating = [q for q in g['courtyard_blocking_pairs']
@@ -624,6 +648,11 @@ def main():
                                           if moved_refs is not None else None),
             'courtyard_blocking_gating_pairs': [q._asdict()
                                                 for q in courtyard_gating],
+            # #1095: the severity the courtyard channel was graded at (None
+            # = KiCad's default, error) and the waiver label it gave.
+            'courtyard_severity': g.get('courtyard_severity'),
+            'courtyard_severity_waiver': g.get('courtyard_severity_waiver')
+            or None,
             'courtyard_gating_basis': ('moved-vs-baseline'
                                        if moved_refs is not None
                                        else 'no-baseline: report-only'),
