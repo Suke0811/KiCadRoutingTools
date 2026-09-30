@@ -491,9 +491,52 @@ window.renderState = function (i) {
   setHighlight(st, S.tl, S.scene, S.colors, S.root);
   poseParts(st, S.tl);
   S.pivot.rotation.set(0, 0, st.angle);
+  fitCamera();
   S.renderer.render(S.world, S.cam);
   return true;
 };
+
+// Fit the camera to what THIS state shows: the board, the parts where they
+// are now, copper and pours, as posed and turned. The film-wide fit
+// (`frameCamera`) had to cover the pile beside the board and the board
+// standing on its edge mid-flip, so every ordinary frame drew the board at
+// about a third of its box (esp_prog, run 35). A per-state fit pulls back
+// while a pile or a turn needs the room and comes in again after, and it is
+// still a pure function of the state.
+const _fitBox = new THREE.Box3(), _b = new THREE.Box3();
+function fitCamera() {
+  S.world.updateMatrixWorld(true);
+  _fitBox.makeEmpty();
+  S.pivot.traverseVisible(o => {
+    if (!o.isMesh || o.isInstancedMesh || !o.geometry) return;
+    if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+    _b.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld);
+    _fitBox.union(_b);
+  });
+  if (_fitBox.isEmpty()) return;
+  const c = _fitBox.getCenter(new THREE.Vector3());
+  const corners = [];
+  for (const x of [_fitBox.min.x, _fitBox.max.x])
+    for (const y of [_fitBox.min.y, _fitBox.max.y])
+      for (const z of [_fitBox.min.z, _fitBox.max.z])
+        corners.push(new THREE.Vector3(x, y, z));
+  const el = rad(52);
+  let dist = 0.6 * _fitBox.getSize(new THREE.Vector3()).length() / Math.tan(rad(15));
+  for (let k = 0; k < 5; k++) {
+    S.cam.position.set(c.x, c.y + dist * Math.sin(el), c.z + dist * Math.cos(el));
+    S.cam.lookAt(c);
+    S.cam.updateMatrixWorld(true);
+    let ext = 0;
+    for (const q of corners) {
+      const p = q.clone().project(S.cam);
+      ext = Math.max(ext, Math.abs(p.x), Math.abs(p.y));
+    }
+    dist *= ext / 0.92;                 // 8 % margin
+  }
+  S.cam.position.set(c.x, c.y + dist * Math.sin(el), c.z + dist * Math.cos(el));
+  S.cam.lookAt(c);
+  S.cam.updateMatrixWorld(true);
+}
 
 // For tests: every drawn part body's world-space y range and side at
 // state `i`, so a body on the wrong side of the board is a number, not a

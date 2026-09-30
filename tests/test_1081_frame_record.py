@@ -300,7 +300,21 @@ def test_the_stage3d_column_is_always_the_layer_strip():
            'on none (%s)' % (len(frames), calls))
 
 
+def test_a_parts_own_copper_is_not_routing():
+    """esp_prog's U2 draws its SOT-89 tab as net-less F.Cu (#908). It moves
+    with U2, so the board-to-board diff read U2's placement move as a rip of
+    it, and the film flashed the tab red at the pile (run 35)."""
+    from kicad_parser import parse_kicad_pcb
+    pcb = parse_kicad_pcb(os.path.join(FC.ROOT, 'kicad_files',
+                                       'esp_prog.kicad_pcb'))
+    own = [s for s in pcb.segments if s.graphic and s.owner_ref]
+    segs, _v = A._board_rows(pcb, list(pcb.board_info.copper_layers))
+    _check(own and not segs, "U2's %d tab segment(s) are not copper rows "
+           '(%d row(s))' % (len(own), len(segs)))
+
+
 TESTS = (
+    test_a_parts_own_copper_is_not_routing,
     test_one_chrome_record_and_one_stage_record_per_frame,
     test_no_caption_over_the_board_when_a_rail_carries_it,
     test_a_back_side_glide_draws_its_ghost,

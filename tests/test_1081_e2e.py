@@ -80,7 +80,31 @@ def _movie(boards, led, png, **kw):
     for p in pngs:
         with Image.open(os.path.join(png, p)) as im:
             sizes.add(im.size)
-    return out, err.getvalue(), len(pngs), sizes
+    fill = _board_fill(os.path.join(png, pngs[-1])) if pngs else 0.0
+    return out, err.getvalue(), len(pngs), sizes, fill
+
+
+def _board_fill(path):
+    """How much of the board box the drawn board spans on the last frame,
+    along whichever axis binds (the larger of the width and height
+    fractions): the extent of pixels that differ from the box's own ground.
+    The film-wide camera fit drew esp_prog's board at about a third of it
+    (run 35), because it had to cover the pile and a mid-flip board."""
+    from PIL import Image
+    with Image.open(path) as im:
+        im = im.convert('RGB')
+        w, h = im.size
+        bw = int(w * 0.68)                  # the box: left of the column
+        y0, y1 = int(h * 0.10), int(h * 0.75)
+        ground = im.getpixel((4, (y0 + y1) // 2))
+        hit = [(x, y) for x in range(0, bw, 3) for y in range(y0, y1, 3)
+               if sum(abs(a - b) for a, b in zip(im.getpixel((x, y)),
+                                                 ground)) > 45]
+    if not hit:
+        return 0.0
+    xs, ys = [q[0] for q in hit], [q[1] for q in hit]
+    return max((max(xs) - min(xs)) / float(bw),
+               (max(ys) - min(ys)) / float(y1 - y0))
 
 
 def test_make_movie_stage3d_three_ways():
@@ -110,7 +134,7 @@ def test_make_movie_stage3d_three_ways():
                     else:
                         os.environ[k] = v
                 env_knobs.refresh()
-        for name, (out, err, n, sizes) in runs.items():
+        for name, (out, err, n, sizes, _fill) in runs.items():
             _check(out and os.path.isfile(out), '%s: a film was written' % name)
             _check(len(sizes) == 1 and (960, 540) in sizes,
                    '%s: one frame size, the planned 960x540 (%s)'
@@ -126,6 +150,11 @@ def test_make_movie_stage3d_three_ways():
         if '3d' in runs:
             _check('stage3d: 3D board' in runs['3d'][1],
                    '3d: says it drew the 3D board')
+            _check(runs['3d'][4] >= 0.6,
+                   '3d: the board spans %.0f %% of its box (the binding '
+                   'axis) on the '
+                   'last frame (>= 60 %%: the camera is fitted per state)'
+                   % (100 * runs['3d'][4]))
         _check('stage3d: 2D X-ray in the board box -- the 2D X-ray was '
                'asked for' in runs['2d'][1], '2d: says it was asked for')
         _check('the 2D X-ray was asked for' in runs['knob'][1],

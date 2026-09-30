@@ -501,6 +501,9 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
             if bb[2] > x1:
                 shift = bb[2] - x1
                 bb = (bb[0] - shift, bb[1], bb[2] - shift, bb[3])
+            if bb[0] < x0:                # ...and never out past the axis
+                shift = x0 - bb[0]
+                bb = (bb[0] + shift, bb[1], bb[2] + shift, bb[3])
             rect = (bb[0] - 2, bb[1] - 1, bb[2] + 2, bb[3] + 1)
             if rect[1] < box.y or rect[3] > box.y + box.h:
                 continue
@@ -510,6 +513,49 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
             occupied.append(rect)
             return True
         return False
+    # the caption and the axes' own words go down FIRST, as obstacles: drawn
+    # last, a record label placed before them was overwritten by the caption
+    # and the axis name (esp_prog, run 35)
+
+    def _fixed(xy, text, fill, anchor='la'):
+        d.text(xy, text, fill=fill, font=small, anchor=anchor)
+        bb = d.textbbox(xy, text, font=small, anchor=anchor)
+        occupied.append((bb[0] - 2, bb[1] - 1, bb[2] + 2, bb[3] + 1))
+    # caption
+    bench = track.benchmark
+    if bench is None:
+        tail = 'no benchmark board (100 % = the first working board)'
+    elif not pl.bench_line:
+        tail = ('benchmark %s: its via count is unmeasured, so 100 %% = the '
+                'first working board' % bench.name)
+    elif bench.blocking == 0:
+        tail = 'benchmark %s' % bench.name
+    else:
+        tail = 'benchmark %s is not a working board, so no gold' % bench.name
+    parts = ['records ranked on (vias, copper, segments)', tail,
+             track.note] + ([track.final] if track.final else [])
+    cap = '  |  '.join(parts)
+    while len(parts) > 2 and d.textlength(cap, font=small) > box.w - 12:
+        parts.pop(2)
+        cap = '  |  '.join(parts)
+    _fixed((box.x + 6, box.y + 2), cap, dim)
+    _fixed((box.x + 6, y0), 'blocking', ink)
+    _fixed((box.x + 6, line_y + 16), 'vias %', ink)
+    # the axes' own numbers: the top of the blocking scale, the 100 % mark,
+    # and the run clock (or lap numbers) at each end
+    _fixed((x0 - 4, y0 + 16), '%g' % round(pl.bmax, 1), dim, 'ra')
+    if pl.ref_vias and lo_p <= 100.0 <= hi_p:
+        _fixed((x0 - 4, int(y_below(100.0))), '100 %', dim, 'rm')
+    if track.domain:
+        left, right = _fmt_t(0), _fmt_t(track.domain[1] - track.domain[0])
+    else:
+        first, last = order[0], order[-1]
+        left = 'lap %d' % (first.iteration if first.iteration is not None
+                           else first.index)
+        right = 'lap %d' % (last.iteration if last.iteration is not None
+                            else last.index)
+    _fixed((x0, y1 + 1), left, dim, 'la')
+    _fixed((x1, y1 + 1), right, dim, 'ra')
     for i in shown:                       # nodes are obstacles for text
         if ys[i] is not None:
             occupied.append((xs[i] - 6, ys[i] - 6, xs[i] + 6, ys[i] + 6))
@@ -517,7 +563,6 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
     put(x0 + 4, line_y - 16, cap_line, small, ok,
         tries=((0, 0), (0, 20)))
     # the benchmark's 100 % line
-    bench = track.benchmark
     if bench is not None and pl.bench_line:
         yb = int(y_below(100.0))
         for xx in range(int(x0), int(x1), 10):
@@ -630,42 +675,6 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
                tries=((0, 0), (0, -18), (-60, 6), (-90, -18), (8, -32),
                       (-110, -32), (-110, 6))):
             labels.append((i, lab))
-    # caption
-    if bench is None:
-        tail = 'no benchmark board (100 % = the first working board)'
-    elif not pl.bench_line:
-        tail = ('benchmark %s: its via count is unmeasured, so 100 %% = the '
-                'first working board' % bench.name)
-    elif bench.blocking == 0:
-        tail = 'benchmark %s' % bench.name
-    else:
-        tail = 'benchmark %s is not a working board, so no gold' % bench.name
-    parts = ['records ranked on (vias, copper, segments)', tail,
-             track.note] + ([track.final] if track.final else [])
-    cap = '  |  '.join(parts)
-    while len(parts) > 2 and d.textlength(cap, font=small) > box.w - 12:
-        parts.pop(2)
-        cap = '  |  '.join(parts)
-    d.text((box.x + 6, box.y + 2), cap, fill=dim, font=small)
-    d.text((box.x + 6, y0), 'blocking', fill=ink, font=small)
-    d.text((box.x + 6, line_y + 16), 'vias %', fill=ink, font=small)
-    # the axes' own numbers: the top of the blocking scale, the 100 % mark,
-    # and the run clock (or lap numbers) at each end
-    d.text((x0 - 4, y0 + 16), '%g' % round(pl.bmax, 1), fill=dim,
-           font=small, anchor='ra')
-    if pl.ref_vias and lo_p <= 100.0 <= hi_p:
-        d.text((x0 - 4, int(y_below(100.0))), '100 %', fill=dim, font=small,
-               anchor='rm')
-    if track.domain:
-        left, right = _fmt_t(0), _fmt_t(track.domain[1] - track.domain[0])
-    else:
-        first, last = order[0], order[-1]
-        left = 'lap %d' % (first.iteration if first.iteration is not None
-                           else first.index)
-        right = 'lap %d' % (last.iteration if last.iteration is not None
-                            else last.index)
-    d.text((x0, y1 + 1), left, fill=dim, font=small, anchor='la')
-    d.text((x1, y1 + 1), right, fill=dim, font=small, anchor='ra')
     if debug is not None:
         debug.update(line_y=line_y, xs=xs, shown=shown, gold_xy=gold_xy,
                      crossed=bool(live_spans), chip=chip, marker=marker,

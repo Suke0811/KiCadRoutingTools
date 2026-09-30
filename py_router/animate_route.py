@@ -64,10 +64,16 @@ def _board_rows(pcb, layers) -> Tuple[List[List], List[List]]:
     trace events and other boards by the same keys)."""
     li = {n: i for i, n in enumerate(layers)}
     lset = set(layers)
+    # A footprint's OWN copper (#908: a SOT-89 tab, an antenna) is part of
+    # its part, not routing: it travels with the footprint, so diffing it
+    # board to board read every placement move as a rip of it -- esp_prog's
+    # U2 tab flashed red at the pile after U2 had left (run 35).
     seg_rows = [[round(s.start_x, 4), round(s.start_y, 4),
                  round(s.end_x, 4), round(s.end_y, 4),
                  round(s.width, 4), li.get(s.layer, 0)]
-                for s in pcb.segments if s.layer in lset]
+                for s in pcb.segments if s.layer in lset
+                and not (getattr(s, 'graphic', False)
+                         and getattr(s, 'owner_ref', None))]
     via_rows = []
     for v in pcb.vias:
         vl = getattr(v, 'layers', None) or []
