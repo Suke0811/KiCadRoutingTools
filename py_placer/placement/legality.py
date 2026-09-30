@@ -878,6 +878,32 @@ class BoardOutlineGate:
         return (max(0.0, u[0] - rect[0]) + max(0.0, u[1] - rect[1])
                 + max(0.0, rect[2] - u[2]) + max(0.0, rect[3] - u[3]))
 
+    def rect_overrun_mm(self, rect) -> float:
+        """How far `rect` reaches past the outline, in mm: the largest
+        distance from one of its corners that is off the board to the
+        outline, 0.0 when every corner is on it (#1096).
+
+        A DISTANCE, unlike `rect_outside_amount`, which sums an overshoot
+        term per corner and per edge so that it can rank candidate poses: a
+        0402 wholly off the board read "36.8mm" there, and its farthest
+        copper is 7.84 mm out. The corners suffice for a pad rect: its
+        farthest point from the board is a corner.
+        """
+        x0, y0, x1, y1 = rect
+        corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+        if not self.rings:
+            if self.bounds is None:
+                return 0.0
+            bx0, by0, bx1, by1 = self.bounds
+            return max(math.hypot(max(bx0 - x, 0.0, x - bx1),
+                                  max(by0 - y, 0.0, y - by1))
+                       for x, y in corners)
+        from check_drc import _point_on_board, _point_to_rings_distance
+        return max((_point_to_rings_distance(x, y, self.rings)
+                    for x, y in corners
+                    if not _point_on_board(x, y, self.outer, self.cutouts)),
+                   default=0.0)
+
     def rect_outside_amount(self, rect, exact: bool = True, edges=None,
                             skip_rings=None) -> float:
         """Magnitude of a rect's board-boundary violation; 0 iff fully legal.
@@ -4279,6 +4305,7 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
     #: The PER-PAD census beside the AABB one (#937). See its basis string
     #: below for why both travel and neither replaces the other.
     oob_copper_refs = []
+    oob_copper_overrun: Dict[str, float] = {}
     board_info = getattr(pcb_data, 'board_info', None)
     if board_info is not None and getattr(board_info, 'board_bounds', None):
         gate = BoardOutlineGate(board_info, clearance)
@@ -4333,6 +4360,10 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                        for r in rects), default=0.0)
             if amt > EPS:
                 oob_copper_refs.append([ref, round(amt, 4)])
+                # #1096: the DISTANCE past the outline, beside the magnitude.
+                oob_copper_overrun[ref] = round(max(
+                    (pad_gate.rect_overrun_mm(r[:4]) for r in rects),
+                    default=0.0), 4)
     # the resolved per-pad edge requirement (#986 moved it onto the context)
     graphic = _graphic_copper_channel(pcb_data, edge_ctx.required)
     # #1031: board-level rule-area keep-outs, the third pad-copper channel.
@@ -4359,6 +4390,11 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             # also rendering, and so the two numbers can be read side by side.
             'oob_pad_copper_count': len(oob_copper_refs),
             'oob_pad_copper_refs': sorted(oob_copper_refs),
+            # #1096. `oob_pad_copper_refs` carries rect_outside_amount's
+            # MAGNITUDE (a per-corner and per-edge sum, for ranking); this is
+            # how far each part's copper actually reaches past the outline.
+            'oob_pad_copper_overrun_mm': dict(sorted(
+                oob_copper_overrun.items())),
             'oob_pad_copper_basis': ('per-PAD copper rects against the real '
                                      'outline at margin 0 (the authoritative '
                                      'measure; the same question '

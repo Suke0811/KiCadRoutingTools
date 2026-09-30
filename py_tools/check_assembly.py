@@ -342,11 +342,18 @@ def main():
     # empty precise list is the bounding box of an edge-mounted part, not
     # copper in the air, and a reader who sees only the count cannot tell.
     _exact = leg.get('oob_pad_copper_refs') or []
+    _overrun = leg.get('oob_pad_copper_overrun_mm') or {}
     if leg['oob_pad_count'] or _exact:
         if _exact:
+            # #1096: the DISTANCE the copper reaches past the outline. The
+            # magnitude in `oob_pad_copper_refs` is a ranking sum (C20 read
+            # "36.8mm" for copper 7.84 mm out) and is kept in the JSON.
             print("    pad copper genuinely off the outline (per-pad, "
                   "margin 0): "
-                  + ', '.join(f'{r} ({a}mm)' for r, a in _exact))
+                  + ', '.join(f'{r} ({_overrun.get(r, a)}mm past the '
+                              f'outline)' for r, a in _exact)
+                  + " -- NOT BUILDABLE: a part not on the board cannot "
+                    "be assembled or routed")
         else:
             print("    ...but NO PAD crosses the real outline (per-pad, "
                   "margin 0, is empty). The count above is the part's "
@@ -357,8 +364,8 @@ def main():
     # SOT-89 tab, an antenna). Pads can all be inside while the tab hangs off
     # the board: esp_prog U2 at 115.34 reported blocking 0 with its tab
     # 1.11 mm past the outline. Printed, and in JSON; it is not a
-    # `not_buildable` conjunct (the same decision as the pad channel above,
-    # #937), and check_drc grades it as graphic-off-board.
+    # `not_buildable` conjunct (#937's decision, which #1096 reversed for the
+    # PAD channel above only), and check_drc grades it as graphic-off-board.
     _g_refs = leg.get('oob_graphic_copper_refs') or []
     if _g_refs:
         print("    footprint GRAPHIC copper past the outline (margin 0): "
@@ -586,9 +593,17 @@ def main():
     # `courtyard_gating` is the FIFTH conjunct (run-23): the moved-vs-baseline
     # subset of the courtyard census -- see the currency comment above for
     # why the absolute census must not gate.
+    # #1096, the SIXTH conjunct: pad copper wholly or partly off the real
+    # outline, per pad at margin 0. #937 kept it out of the verdict as "the
+    # wrong channel" and run 36 then routed a board with C20 7.84 mm below
+    # its south edge on a `buildable` -- the router took GND off the board to
+    # reach it. CLAUDE.md ranks this the top-priority placement defect; a
+    # part that is not on the board cannot be built. A lock does not exempt
+    # it (placement stamps locks itself, #962's reasoning).
+    off_outline_pads = [r for r, _a in (leg.get('oob_pad_copper_refs') or [])]
     not_buildable = bool(g['blocking'] or locked_contact or stack_groups
                          or g['containment_blocking']
-                         or courtyard_gating)
+                         or courtyard_gating or off_outline_pads)
     verdict = 'NOT BUILDABLE' if not_buildable else 'buildable (blocking 0)'
     print(f"  VERDICT: {verdict}")
 
@@ -690,6 +705,8 @@ def main():
             # not the other. Both keys travel; neither replaces the other.
             'oob_pad_copper_count': leg.get('oob_pad_copper_count', 0),
             'oob_pad_copper_refs': leg.get('oob_pad_copper_refs') or [],
+            'oob_pad_copper_overrun_mm':
+                leg.get('oob_pad_copper_overrun_mm') or {},
             'oob_pad_copper_basis': leg.get('oob_pad_copper_basis'),
             # #962: footprint GRAPHIC copper against the outline -- the second
             # off-outline channel, same non-gating contract as the pad one.

@@ -398,9 +398,12 @@ So, when grading a placement:
 placement defect**, ahead of every clearance graze: its nets cannot be routed
 at all, so it converts one-for-one into `unrouted` and `broken`. Measured, run
 10: 11 such parts produced ALL 13 unrouted nets and most of the 37 broken ones.
-Read it off `render_placement --json-out`'s
-`checklist.a_off_outline.pad_copper` — a whole-board pass/fail verdict is the
-wrong channel for it.
+Read WHICH parts off `render_placement --json-out`'s
+`checklist.a_off_outline.pad_copper`. Since #1096 it also makes
+`check_assembly` NOT BUILDABLE (per pad, margin 0, a lock does not exempt it),
+because run 36 routed a board with C20 7.84 mm below its outline on a
+`buildable` verdict; `oob_pad_copper_overrun_mm` is the distance, and
+`oob_pad_copper_refs` carries a ranking magnitude, not a distance.
 
 **Footprint GRAPHIC copper past the outline is the same defect (#962)**, and
 it used to be invisible: a drawn tab or antenna is not a pad, and check_drc's

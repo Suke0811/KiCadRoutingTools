@@ -391,7 +391,8 @@ def unrouted_shape(board: str, unrouted_names) -> dict:
 #: --baseline, so check_assembly publishes null rather than 0. Reported as
 #: unmeasured, never counted as clean.
 ASSEMBLY_CONJUNCTS = ('blocking', 'locked_contacts', 'coincident_origins',
-                      'containment_blocking', 'courtyard_blocking_gating')
+                      'containment_blocking', 'courtyard_blocking_gating',
+                      'oob_pad_copper_count')
 
 #: The conjuncts that can ACTUALLY flip the verdict while `blocking` is 0, in
 #: this scorer's invocation. Two, not four:
@@ -401,7 +402,12 @@ ASSEMBLY_CONJUNCTS = ('blocking', 'locked_contacts', 'coincident_origins',
 #:     passed, and board_score never passes one.
 #: Written down because the issue, and this file's first draft, claimed all
 #: four -- and a motivating case that cannot occur is not a motivating case.
-ASSEMBLY_LIVE_CONJUNCTS = ('coincident_origins', 'containment_blocking')
+#: #1096 added `oob_pad_copper_count`: pad copper past the outline gates the
+#: verdict, and it does not need `blocking` to fire. It overlaps `unrouted` /
+#: `broken` (such a part's nets cannot be routed) and adds at most 1 through
+#: the NOT-BUILDABLE floor, deliberately: CLAUDE.md ranks it first.
+ASSEMBLY_LIVE_CONJUNCTS = ('coincident_origins', 'containment_blocking',
+                           'oob_pad_copper_count')
 
 
 def assembly_component(doc: dict, rc: int) -> dict:
