@@ -52,6 +52,16 @@ not.
 - **Never emit the intent from a damaged board.** It records the damage as
   the spec: one such intent failed the correct board and passed a 142 mm²
   pile-up. Emit it from the brief, or edit it down.
+- **When a placed reference of the design exists, arm the decap rule from
+  it.** Add `--decaps-from <reference.kicad_pcb>` to the `--emit-intent`
+  call (a human layout, or an earlier placement), and say in your report
+  that you did. A pile has no decap distances to read, so without it the
+  rule stays unarmed: run 36 left StickHub's hub decaps 2.1-9.8 mm from
+  their pins, where the human board keeps them within 2.2 mm.
+- **When that reference places parts at 45 degrees, add
+  `--diagonal-rotations` to `place_seed`.** The seeder otherwise tries only
+  the 90-degree lattice, and StickHub's human packs 39 parts at +-45/+-135
+  degrees around a diagonal QFP.
 - **Give `--intent` to every placement tool.** It is a per-move gate only in
   tools that receive it. It stops a part LEAVING its zone; it never moves one
   back in.
@@ -116,6 +126,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   both blocking pairs in 63 s, where whole-board sweeps ran over 10 min. For
   parts tens of mm off, use `--reseat`: `--repair` ran 5 min and attempted
   none of 11.
+- **Read `unseated_refs` after every `place_seed`.** A part in that
+  list is still in the staging pile, so seat it (`--repair`, or
+  `place_pose.py`) before any route. The exit-4 line names these parts; run
+  36 routed a board with C20 still in the pile and the router took GND off
+  the board to reach it.
 - **What the decap tools report:**
   - `place_seed --repair` counts a violator `repaired` only once its
     finding is gone; read `unresolved_refs` / `unresolved_by_rule` in its

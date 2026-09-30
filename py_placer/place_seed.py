@@ -306,7 +306,20 @@ def gate_reason(unseated, own, my_pads, hole_delta, band=()):
     if not (unseated or own or my_pads or hole_delta or band):
         return None
     tail = " It was still written, for inspection."
-    if unseated or own:
+    if unseated:
+        # #1099: NAME them. Run 36's seed exited 4 with this line and no
+        # refs, the agent read "grade errors" and routed a board with C20
+        # still in the staging pile. An unseated part is not on the board.
+        names = sorted(unseated)
+        shown = ', '.join(names[:12]) + (f" ... +{len(names) - 12} more"
+                                         if len(names) > 12 else '')
+        return (f"place_seed: {len(names)} part(s) UNSEATED, still in the "
+                f"staging pile and NOT placed: {shown}. The seed does NOT "
+                f"satisfy its intent -- seat them (--repair, or "
+                f"place_pose.py) before routing."
+                + (" There are grade errors above as well." if own else '')
+                + tail)
+    if own:
         return ("place_seed: the seed does NOT satisfy its intent -- see the "
                 "errors above." + tail)
     ch = []
@@ -384,6 +397,17 @@ Examples:
                         "pads face the edge, more crossings and pin-order "
                         "inversions). Opt in when that trade is the one you "
                         "want; a tie keeps the input rotation first.")
+    p.add_argument("--diagonal-rotations", action="store_true",
+                   help="Also try the 45-degree lattice (#1099): a part that "
+                        "fits at no 90-degree angle at any clearance step "
+                        "gets a second pass at 45/135/225/315 relative to its "
+                        "current angle, and a decoupling cap on a chip seated "
+                        "off the 90-degree lattice tries the chip's angles "
+                        "first. A part that fits orthogonally seats exactly "
+                        "as it would without this. OFF by default: "
+                        "tests/test_placement_ab.py measured it inert on all "
+                        "five tracked boards it was tried on. Use it when "
+                        "the design's reference placement is diagonal.")
     p.add_argument("--evict-depth", type=int, default=0, choices=(0, 1, 2),
                    metavar="N",
                    help="Eviction rung (#630, #699). At every depth a part "
@@ -1030,7 +1054,8 @@ Examples:
         anchors_first=args.anchors_first,
         anchor_rounds=args.anchor_rounds,
         evict_depth=args.evict_depth,
-        rotate_by_facing=args.rotate_by_facing)
+        rotate_by_facing=args.rotate_by_facing,
+        diagonal_rotations=args.diagonal_rotations)
     for note in result['notes']:
         print(f"  NOTE: {note}")
     print(f"Seeded {len(result['placements'])} part(s); "

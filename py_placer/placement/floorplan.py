@@ -7591,6 +7591,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 zone_pad_mm: float = 1.0,
                 declare_classes: bool = False,
                 derive_decaps='off', brief_fragment=None,
+                decaps_from: Optional[str] = None,
                 derive_arrays='off', rigid_blocks: Sequence[str] = ()
                 ) -> Dict:
     """A starter intent READ OFF the board, for a human or a model to edit.
@@ -8018,6 +8019,26 @@ def emit_intent(pcb_data, pcb_file: str, *,
                   'read 0.0')
         else:
             _derive = True
+    if decaps_from:
+        # #1099: the limit read off a PLACED REFERENCE -- a human layout or
+        # an earlier one of this design -- instead of the board being
+        # emitted, which on a pile has nothing to read (auto withholds;
+        # strict wrote 0.0 on run 29). Same derivation, same withholding;
+        # the basis names the file, and it replaces `derive_decaps`.
+        from kicad_parser import parse_kicad_pcb as _parse_ref
+        _ref_census = decap_census(_parse_ref(decaps_from))
+        _limit, _why = _decap_derivation(_ref_census)
+        _census['reference_board'] = decaps_from
+        _census['reference_tethers'] = _ref_census.get('tethers')
+        if _limit is None:
+            _withheld['decaps.max_distance_mm'] = (
+                f"the reference board {decaps_from}: {_why}")
+        else:
+            _decaps['max_distance_mm'] = _limit
+            _census['emitted_max_distance_mm'] = _limit
+            _census['decaps_basis'] = ('reference:'
+                                       + os.path.basename(decaps_from))
+        _derive = False
     if _derive:
         _limit, _why = _decap_derivation(_census)
         if _limit is None:

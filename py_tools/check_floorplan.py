@@ -112,6 +112,15 @@ def build_parser():
                         'labelled an observed regression baseline; a pile '
                         'records why in context.decap_census.auto_withheld '
                         'rather than a limit of 0.0 (#959)')
+    p.add_argument('--decaps-from', default=None, metavar='BOARD',
+                   help='with --emit-intent: derive decaps.max_distance_mm '
+                        'from this PLACED reference board of the same design '
+                        '(a human layout, an earlier placement) instead of '
+                        'the board being emitted -- the way to arm the decap '
+                        'rule on a pile, where nothing can be read (#1099). '
+                        'Same derivation and withholding as --declare-decaps; '
+                        'the census records decaps_basis reference:<file>. '
+                        'Overrides the --*declare-decaps arms')
     p.add_argument('--declare-decaps', dest='declare_decaps',
                    action='store_const', const='strict',
                    help='with --emit-intent: ALSO derive decaps.'
@@ -501,7 +510,8 @@ def main(argv=None):
             doc = emit_intent(pcb, args.board, group_sources=sources or (),
                               declare_classes=args.declare_classes,
                               derive_decaps=args.declare_decaps,
-                              brief_fragment=brief_fragment or None)
+                              brief_fragment=brief_fragment or None,
+                              decaps_from=args.decaps_from)
         except UntrustworthyOutline as exc:
             print(f"ERROR: {args.board}: {exc}", file=sys.stderr)
             return UNPLACED_EXIT
