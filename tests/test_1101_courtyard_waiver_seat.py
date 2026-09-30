@@ -92,6 +92,92 @@ class TestWaivedCourtyards(unittest.TestCase):
         self.assertGreaterEqual(max(gap_x, gap_y), 0.15 - 1e-6, pose)
 
 
+class TestPadRequirementNotSeatClearance(unittest.TestCase):
+    """#1101 verifier: pad boxes priced at the SEAT clearance let pairs sit
+    under their net class (StickHub at --clearance 0.1, class 0.15). The
+    waived-courtyard seat now asks each pair's own pad requirement."""
+
+    def test_a_pad_gap_under_the_net_class_is_refused(self):
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'b.kicad_pcb')
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write(BOARD.format(
+                    parts=PART.format(ref='A', x=30).replace('(at 30 20)',
+                                                             '(at 2.5 2)')
+                    # B STARTS on A's pads, as a pile part does: the
+                    # seed-relative pad layer then admits anything no worse
+                    # than that, so only the absolute test can refuse.
+                    + PART.format(ref='B', x=40).replace('(at 40 20)',
+                                                         '(at 3.3 2)')))
+            with open(os.path.join(td, 'b.kicad_pro'), 'w',
+                      encoding='utf-8') as fh:
+                json.dump({'board': {'design_settings': {'rule_severities': {
+                    'courtyards_overlap': 'ignore'}}},
+                    'net_settings': {'classes': [
+                        {'name': 'Default', 'clearance': 0.3,
+                         'track_width': 0.2, 'via_diameter': 0.6,
+                         'via_drill': 0.3}]}}, fh)
+            st = pose_score.make_state(parse_kicad_pcb(path), path,
+                                       clearance=0.1,
+                                       board_edge_clearance=0.1)
+            self.assertTrue(st.courtyards_ignored)
+            # B's pads 0.2 mm from A's: above the seat's 0.1, under the
+            # class's 0.3.
+            near = st.candidate_valid('B', 2.5 + 1.3 + 0.2, 2.0, 0.0)
+            far = st.candidate_valid('B', 2.5 + 1.3 + 0.5, 2.0, 0.0)
+        self.assertFalse(near)
+        self.assertTrue(far)
+
+
+class TestEscapeBranchChecksBodies(unittest.TestCase):
+    """A part coming in from the pile takes candidate_valid's off-board
+    escape branch, which accepted any pose that lowered the off-board amount
+    with no courtyard overlap -- and never asked about BODIES. StickHub's
+    lying-down C38 (a 6.3 x 11.5 mm .Fab over a pad-sized courtyard) was
+    seated over eleven parts that way, and inside Y1 before #1101. Any
+    board, whatever its courtyard severity."""
+
+    def test_a_large_body_is_not_seated_over_a_small_part(self):
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        big = (
+            '  (footprint "t:L" (layer "F.Cu") (at 40 20)\n'
+            '    (property "Reference" "L" (at 0 0) (layer "F.SilkS"))\n'
+            '    (fp_rect (start -0.6 -0.4) (end 0.6 0.4) (stroke (width 0.05)'
+            ' (type default)) (layer "F.CrtYd"))\n'
+            '    (fp_rect (start -3 -1.5) (end 3 1.5) (stroke (width 0.05)'
+            ' (type default)) (layer "F.Fab"))\n'
+            '    (pad "1" smd rect (at -0.3 0) (size 0.3 0.3) (layers "F.Cu")'
+            ' (net 1 "A"))\n'
+            '    (pad "2" smd rect (at 0.3 0) (size 0.3 0.3) (layers "F.Cu")'
+            ' (net 2 "B")))\n')
+        small = (
+            '  (footprint "t:S" (layer "F.Cu") (at 7 2)\n'
+            '    (property "Reference" "S" (at 0 0) (layer "F.SilkS"))\n'
+            '    (fp_rect (start -0.5 -0.3) (end 0.5 0.3) (stroke (width 0.05)'
+            ' (type default)) (layer "F.CrtYd"))\n'
+            '    (fp_rect (start -0.4 -0.2) (end 0.4 0.2) (stroke (width 0.05)'
+            ' (type default)) (layer "F.Fab"))\n'
+            '    (pad "1" smd rect (at -0.25 0) (size 0.2 0.2) (layers "F.Cu")'
+            ' (net 1 "A"))\n'
+            '    (pad "2" smd rect (at 0.25 0) (size 0.2 0.2) (layers "F.Cu")'
+            ' (net 2 "B")))\n')
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'b.kicad_pcb')
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write(BOARD.format(parts=big + small))
+            st = pose_score.make_state(parse_kicad_pcb(path), path,
+                                       clearance=0.15,
+                                       board_edge_clearance=0.1)
+            # L's courtyard clears S at (5, 2) by 0.9 mm; its body does not.
+            over = st.candidate_valid('L', 5.0, 2.0, 0.0, exclude=set())
+            clear = st.candidate_valid('L', 5.0, 2.0, 0.0, exclude={'S'})
+        self.assertFalse(over)
+        self.assertTrue(clear)
+
+
 class TestCensusSides(unittest.TestCase):
     def test_a_back_side_part_is_not_a_blocker_of_a_front_part(self):
         """The eviction census lists only parts sharing a face (or drilled);

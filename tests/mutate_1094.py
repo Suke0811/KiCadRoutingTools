@@ -205,6 +205,18 @@ ROWS = [
      "                    if ob is not None and rect_gap(mine, ob) < clr:",
      "                    if False:",
      (T1101,), 'KILLED'),
+    ('waived-seat-prices-at-seat-clearance', 'quench',
+     "                        if (sf.pad > EPS_IMPROVE or sf.pad_overlap",
+     "                        if (False and sf.pad > EPS_IMPROVE or sf.pad_overlap",
+     (T1101,), 'KILLED'),
+    ('escape-branch-skips-bodies', 'quench',
+     "        if self._body_contained_at(ref, x, y, rot, exclude):\n"
+     "            return False\n"
+     "        # The unfreeze branch",
+     "        if False:\n"
+     "            return False\n"
+     "        # The unfreeze branch",
+     (T1101,), 'KILLED'),
     ('census-counts-the-other-face', 'seeder',
      "        if not (part.sides & op.sides):",
      "        if False:",

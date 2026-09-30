@@ -691,7 +691,8 @@ class _Part:
     __slots__ = ('ref', 'pads_local', 'pin_count', 'bounds_by_rot',
                  'seed_x', 'seed_y', 'x', 'y', 'rot', 'locked',
                  'nets', 'halo', 'footprint_name', 'orig_rot',
-                 'side', 'has_tht', 'sides', 'tht_by_rot', 'padbox_local')
+                 'side', 'has_tht', 'sides', 'tht_by_rot', 'padbox_local',
+                 'padbox_by_rot')
 
     def __init__(self, ref, fp, courtyard_sides, locked, halo_base, halo_coef,
                  body_local=None):
@@ -732,6 +733,7 @@ class _Part:
         # for a pad-less footprint (a logo occupies no copper).
         self.padbox_local = (compute_footprint_bbox_local(fp)
                              if fp.pads else None)
+        self.padbox_by_rot: Dict[float, Tuple[float, float, float, float]] = {}
         tlb = through_pad_bounds_local(fp) if self.has_tht else None
         self.tht_by_rot = ({r: _rotate_local_bounds(*tlb, r) for r in ROTATIONS}
                            if tlb is not None else None)
@@ -769,8 +771,11 @@ class _Part:
             return None
         x = self.x if x is None else x
         y = self.y if y is None else y
-        rot = self.rot if rot is None else rot
-        b = _rotate_local_bounds(*self.padbox_local, rot % 360)
+        rot = (self.rot if rot is None else rot) % 360
+        b = self.padbox_by_rot.get(rot)
+        if b is None:
+            b = self.padbox_by_rot[rot] = _rotate_local_bounds(
+                *self.padbox_local, rot)
         return (x + b[0], y + b[1], x + b[2], y + b[3])
 
     def tht_rect(self, x=None, y=None, rot=None):
@@ -2077,22 +2082,38 @@ class QuenchState:
                 legal = False
         if legal and getattr(self, 'courtyards_ignored', False):
             # #1101: courtyards waived by the project, so the neighbour test
-            # spaces PAD COPPER at the same clearance instead. Without this
-            # the seed-relative pad layer is all that is left, and on a pile
-            # its neighbours are the pile's: measured on StickHub, 19 new pad
-            # conflicts.
+            # asks the PAD question instead, ABSOLUTELY and at each pair's own
+            # requirement (net class, pad override -- what the grade prices),
+            # never at the seat's ladder clearance: pricing pad boxes at
+            # `self.clearance` let four StickHub pairs sit under their 0.15 mm
+            # net class at --clearance 0.1 (#1101 verifier). The seed-relative
+            # `pads_ok` below cannot stand in: on a pile the seed poses
+            # already overlap, so it admits anything.
             mine = part.padbox(x, y, rot)
             if mine is not None:
+                if self._neighbors is not None and ref in self._neighbors:
+                    others = ((o, self.parts[o]) for o in self._neighbors[ref])
+                else:
+                    others = self.parts.items()
+                ctx = self.legality_ctx
                 clr = self.clearance
-                for other_ref, other in self.parts.items():
+                for other_ref, other in others:
                     if other_ref == ref or (exclude and other_ref in exclude):
                         continue
                     if not (part.sides & other.sides):
                         continue
-                    ob = other.padbox()
-                    if ob is not None and rect_gap(mine, ob) < clr:
-                        legal = False
-                        break
+                    if ctx is not None:
+                        sf = ctx.pair_shortfall(ref, other_ref,
+                                                pose_a=(x, y, rot))
+                        if (sf.pad > EPS_IMPROVE or sf.pad_overlap
+                                or sf.stack or sf.hole > EPS_IMPROVE):
+                            legal = False
+                            break
+                    else:
+                        ob = other.padbox()
+                        if ob is not None and rect_gap(mine, ob) < clr:
+                            legal = False
+                            break
         elif legal:
             if self._neighbors is not None and ref in self._neighbors:
                 others = ((o, self.parts[o]) for o in self._neighbors[ref])
@@ -2184,6 +2205,14 @@ class QuenchState:
             ref, x, y, rot, exclude=exclude, limit=cur_board)
         if not (cand_overlap <= EPS_IMPROVE
                 and cand_board < cur_board - EPS_IMPROVE):
+            return False
+        # #1101: ...and the same BODY conjunct the ordinary path has. Coming in
+        # from the pile, a part whose courtyard is small and whose drawn body
+        # is large (StickHub's lying-down electrolytic C38: a 6.3 x 11.5 mm
+        # .Fab over a pad-sized courtyard) overlaps no courtyard, so this
+        # branch seated it on top of eleven parts -- and, before #1101, inside
+        # Y1's body. The branch never asked about bodies.
+        if self._body_contained_at(ref, x, y, rot, exclude):
             return False
         # The unfreeze branch gets the SAME pad/hole conjunct: a part may move
         # back toward the board only without worsening any pad pair.
