@@ -101,8 +101,13 @@ _DECLARED = {
     #    keep-out on those rects, and the checker must grade the SAME rect
     #    or the generator is looser than the checker.
     (os.path.join('py_placer', 'placement', 'floorplan.py'),
-     'derived_mating_keepouts'): (2, "the plug's own COURTYARD is the "
+     'derived_mating_keepouts'): (1, "the plug's own COURTYARD is the "
                                   'region; a body is not the question'),
+    (os.path.join('py_placer', 'placement', 'floorplan.py'),
+     '_plug_seat_rect'): (1, "the plug's own COURTYARD reaching the "
+                          'outline is what "seated" means'),
+    (os.path.join('py_placer', 'placement', 'floorplan.py'),
+     'seated_plugs'): (1, 'reads the courtyards `_plug_seat_rect` tests'),
     (os.path.join('py_placer', 'placement', 'floorplan.py'),
      'mating_keepout_findings'): (3, "the quench's rect, so seat and "
                                   'checker grade one currency (#1098 D3)'),
