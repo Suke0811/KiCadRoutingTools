@@ -198,6 +198,13 @@ It routes at the chain's sizes, given as the routing CLIs take them
 `route.py` resolves its own: see
 [One source for every routing number](#one-source-for-every-routing-number-rulespy).
 
+`--joint-fanout` (opt-in) also fans out the two arrays' other nets and plane
+balls. The bus is laid as without it, but round a via site kept free in every
+other ball. The rest are planned together round the bus in the first fanout
+round, and held in later rounds as the round holds its own teeth: only a ball
+whose copper the round's bus stubs now meet is planned again. See the TODO
+(*later*) for what it does not do yet.
+
 `zynq_ad9364` from GitHub, its planes poured as the stress run poured them,
 and the whole bus at the stress run's sizes: its fanouts' 0.12 mm track at
 0.09 mm, its routes' 0.15 mm track and 0.45/0.3 mm vias:
@@ -2288,6 +2295,7 @@ shared and are not.
 | | |
 |---|---|
 | `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed by the whole route in the board's own frame, graded on the board (`BUS ..`) |
+| `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): one array's balls planned together in one CP-SAT solve -- every escape move, straps, plane drops, at the real sizes -- and laid by the joint escape engine (`py_router/bga_fanout/jointescape.py`), the fab ladder walked by the whole fanout; the escapes' conflicts as cliques and bicliques, the whole route's relation exactly (`tests/test_622_conflict_groups.py`) |
 | `whole_route.py`, `modal_whole.py` | one rung of the whole route end to end on our own ends -- fanout, solve, loop, route, checks, and the feedback rounds -- graded in one line (`WHOLE K=..`); the ladder in the cloud, one container per rung, and one command replayed there on the laptop's files at their own paths (`modal_whole.py::stage`) |
 | `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the whole route's own choice of ends (the fanout's `PLAN_JUDGE=ends`); its own frame of a bench; the audits' findings at the ends, back to the fanout |
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP, the polish, the snap onto the router's grid (the loop that drives them is `whole_route.py`'s) |
@@ -2567,10 +2575,35 @@ layers follow once the basics route real boards (*later*, below).
   signal layers than the bus uses.
 - **Feedback from `route.py`:** failures that name bus copper as the
   blocker are sent back to a re-run of the step as reservations.
-- **The bus's fanout and the other nets' fanout as one:** each array fanned
-  out once for all its nets, the bus's ends chosen together with the
-  others', so that neither blocks the other. Until then the bus goes
-  first.
+- **The bus's fanout and the other nets' fanout as one.** `route_bus.py
+  --joint-fanout` (opt-in) does the first half. The bus is laid by its own
+  engine call as without it, but round a via site kept free in every other
+  ball of the two arrays (`joint_escape.reserve_ball_vias`). Right after the
+  first round lays the bus at both arrays, each array's other nets and plane
+  balls are planned together in one solve (`joint_escape.plan_array`: every
+  move kind, straps, drops; the conflicts as groups, `conflict_groups.py`)
+  and laid by the joint escape engine (`bga_fanout/jointescape.py`), the
+  whole fanout stepped down the fab ladder together only while a ball is
+  left. A later round holds them as it holds its own teeth: each ball's
+  copper stands unless the round's moved bus stubs meet it
+  (`joint_escape.carry`), and only those balls are planned again. Still to
+  do:
+  - a bus tooth that walls in another ball (zynq at K9: `DDR3_A4` on B
+    under `DDR3_CK_N`'s M2 left it one way out, through `GND` M1's only via
+    site) is not seen by the ends model: feedback naming the tooth, as it
+    names crowded ends;
+  - a re-laid pair berth ran through a reserved via site (zynq at K45: the
+    second round's `DDR3_DQS0_P` berth at U2, leaving `VCC_1V5` F1 without
+    its drop); the engine path that ignores the stand-in via is not found;
+  - the whole route does not see the other nets' copper (item 3), so a
+    drop in a lane's path is found only in the audit, and the feedback can
+    move bus ends, not other nets' copper;
+  - where the inner layers are planes the other nets escape on F and B
+    only; the whole-chain A/B with and without the joint fanout, on one
+    plane set, is owed;
+  - the joint escape engine is a fork of the under-pad engine, to be folded
+    back into it, and the under-pad engine's stub check made to test only
+    its own layer's tracks, as the fork's does.
 
 ### Next, the whole route (`whole_*.py`)
 

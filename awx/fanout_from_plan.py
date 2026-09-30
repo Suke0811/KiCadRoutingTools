@@ -200,6 +200,9 @@ def plan_state(pcb, names, banned=frozenset()):
     asked: the plan's model said they were possible, the engine said no,
     and the engine is the authority -- they leave the menus."""
     plan_state._pair_legs = None
+    # the joint fanout (FANOUT_JOINT): the arrays' other balls keep their own via sites, which the menus leave free
+    import joint_escape as _je
+    _je.reserve_ball_vias(pcb)
     byname = {n.name.split('/')[-1]: (i, n) for i, n in pcb.nets.items()}
     ends = te.endpoints(pcb, names, byname)
     kids = {byname[n][0] for n in names}
@@ -1200,7 +1203,97 @@ def main():
     print('planning (source realized every round)...')
     work = out_path[:-len('.kicad_pcb')] if out_path.endswith('.kicad_pcb') else out_path
     choice, dst_pad, dref, byname, board, realized, banned = plan(base, names, work)
-    return fanout_destination(out_path, names, choice, dst_pad, dref, byname, board, realized, banned)
+    rc = fanout_destination(out_path, names, choice, dst_pad, dref, byname, board, realized, banned)
+    joint_others(out_path)
+    return rc
+
+
+def joint_others(out_path, log=print):
+    """FANOUT_JOINT (route_bus --joint-fanout): a JSON file naming the arrays whose OTHER nets and plane balls are
+    fanned with the bus's -- {"layers": [the others' layers], "arrays": [{"ref", "others", "drops"}, ...]}. The bus
+    is laid at both arrays first, by the bus-only engine call above, exactly as without it; then the others.
+
+    The first round plans and lays them jointly round that copper (joint_escape.fan_array: one plan, the whole
+    fanout stepped down the fab ladder together only while a ball is left), and records the size it kept beside the
+    board (<OUT>.joint.json). A later round -- INCREMENTAL, whose fanout moves only the bus stubs its feedback names
+    and holds the rest -- holds these the same way: each ball's piece of the previous round's copper stands if the
+    round's bus copper leaves it room (joint_escape.carry), and only the balls whose piece does not, or that had
+    none, are planned again, at the first round's size."""
+    path = awx_settings.get('FANOUT_JOINT')
+    if not path or not os.path.isfile(out_path):
+        return
+    import dataclasses
+    import shutil
+    import joint_escape as je
+    import rules as _rules
+    spec = json.load(open(path))
+    stem = out_path[:-len('.kicad_pcb')] if out_path.endswith('.kicad_pcb') else out_path
+    prev = awx_settings.get('INCREMENTAL') if PLAN_JUDGE == 'ends' else None
+    prev_stem = prev[:-len('.plan.json')] if prev and prev.endswith('.plan.json') else None
+    prev_board, prev_side = (f'{prev_stem}.kicad_pcb', f'{prev_stem}.joint.json') if prev_stem else (None, None)
+    held = json.load(open(prev_side)) if prev_side and os.path.isfile(prev_side) and os.path.isfile(prev_board) \
+        else None
+    kept = {}
+    cur = out_path
+    for a in spec['arrays']:
+        ref = a['ref']
+        nxt = f'{stem}.joint_{ref}.kicad_pcb'
+        if held and ref in held:
+            size = held[ref]
+            rung = dataclasses.replace(_rules.active(), fan_track=size['track'], via_size=size['via'],
+                                       via_drill=size['drill'])
+            carried = f'{stem}.carried_{ref}.kicad_pcb'
+            again, n_kept, n_moved = je.carry(prev_board, cur, carried, ref, a['others'], a['drops'])
+            log(f'  joint fanout of {ref}, held from the previous round: {n_kept} piece(s) stand, {n_moved} moved; '
+                f'{len(again)} ball(s) to plan again at track {rung.fan_track} / via {rung.via_size}/{rung.via_drill}'
+                + (f': {again}' if again and len(again) <= 12 else ''))
+            if again:
+                def replan(board, out_b, keys):
+                    nets_k = {k.split('#')[0] for k in keys}
+                    o_k = sorted(n for n in a['others'] if je.short_name(n) in nets_k)
+                    d_k = sorted(n for n in a['drops'] if je.short_name(n) in nets_k)
+                    # (the array's other nets are the engine's filter: it leaves the carried balls as they stand)
+                    return je.fan_array(board, out_b, ref, [], o_k, spec['layers'], drops=d_k, log=log,
+                                        only=set(keys), rungs=[rung], filter_nets=a['others'])[1][-1]
+                tw = rung.fan_track
+
+                def unserved(board):
+                    return je.bare_balls(board, ref, a['others'], tw) + je.undropped_balls(board, ref, a['drops'], tw)
+                replan(carried, nxt, again)
+                left = unserved(nxt)
+                stuck = [k for k in left if k in set(again)]
+                log(f'  joint fanout of {ref}, planned again: {len(left)} ball(s) unserved' + (f' {left}' if left else ''))
+                if stuck:
+                    # once more with the stuck balls' neighbours released from their held copper, the neighbourhood
+                    # planned together -- kept only if it serves more
+                    carried2, nxt2 = f'{stem}.carried2_{ref}.kicad_pcb', f'{stem}.joint2_{ref}.kicad_pcb'
+                    again2, k2, m2 = je.carry(prev_board, cur, carried2, ref, a['others'], a['drops'],
+                                              release_near=stuck)
+                    replan(carried2, nxt2, again2)
+                    left2 = unserved(nxt2)
+                    log(f'  joint fanout of {ref}, {stuck} with their neighbours released ({len(again2)} ball(s) '
+                        f'planned together): {len(left2)} unserved' + (f' {left2}' if left2 else '')
+                        + (' -- kept' if len(left2) < len(left) else ' -- not kept'))
+                    if len(left2) < len(left):
+                        shutil.copy(nxt2, nxt)
+                        copy_pro(nxt2, nxt)
+            else:
+                shutil.copy(carried, nxt)
+                copy_pro(carried, nxt)
+        else:
+            rung, reps = je.fan_array(cur, nxt, ref, [], a['others'], spec['layers'], drops=a['drops'], log=log)
+            last = next(r for r in reps if (r['track'], r['via'], r['drill']) ==
+                        (rung.fan_track, rung.via_size, rung.via_drill))
+            log(f'  joint fanout of {ref}: {len(a["others"])} other nets and the plane balls of '
+                f'{len(a["drops"])} nets at track {rung.fan_track} / via {rung.via_size}/{rung.via_drill}: '
+                f'{len(last["bare"])} ball(s) bare, {last["undropped"]} plane ball(s) undropped')
+        kept[ref] = {'track': rung.fan_track, 'via': rung.via_size, 'drill': rung.via_drill}
+        cur = nxt
+    if cur != out_path:
+        shutil.copy(cur, out_path)
+        copy_pro(cur, out_path)
+    with open(f'{stem}.joint.json', 'w', encoding='utf-8') as f:
+        json.dump(kept, f, indent=1)
 
 
 PAIR_EXIT_REACH = float(awx_settings.get('PLAN_PAIR_EXIT_REACH', '1.2') or 0)
@@ -1527,6 +1620,8 @@ def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
     # No placement step follows this chain, so every foreign pad is one a
     # via must clear.
     pcb._fanout_all_foreign_immovable = True
+    import joint_escape as _je
+    _je.reserve_ball_vias(pcb)          # the joint fanout: the other balls' own via sites stay free
     tracks, vias_add, vias_rm, failed = generate_bga_fanout(
         pcb.footprints[dref], pcb, net_filter=targets, layers=list(LAYERS),
         track_width=sr.FAN_TRACK, clearance=sr.FAN_CLEAR, via_size=te.VIA_SIZE, via_drill=te.VIA_DRILL,

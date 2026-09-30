@@ -118,7 +118,7 @@ def pair_nets(pcb, src, dst):
                        if pcb.footprints.get(p.component_ref)} <= {src, dst})
 
 
-def fanout_source(board, out, src, names, layers=None, diff_pairs=None, escape_method='auto'):
+def fanout_source(board, out, src, names, layers=None, diff_pairs=None, escape_method='auto', reserve=None):
     """fanout_from_plan.fanout_once's engine call, on the SOURCE array.
 
     `diff_pairs` (2026-09-21): the pair BASE names among `names` (pairs.
@@ -136,9 +136,15 @@ def fanout_source(board, out, src, names, layers=None, diff_pairs=None, escape_m
     over both -- measured, 4 of 8 straight-out EDGE escapes were pushed onto
     B, each paying a via in pad -- which is right for a real part and fatal
     for a generated case whose known answer assumes both ends of a lane are
-    on F. Default unchanged."""
+    on F. Default unchanged.
+
+    `reserve` (route_bus's joint fanout): the joint spec, whose arrays' other
+    balls keep their own via sites (joint_escape.reserve_ball_vias)."""
     pcb = parse_kicad_pcb(board)
     pcb._fanout_all_foreign_immovable = True
+    if reserve:
+        import joint_escape as _je
+        _je.reserve_ball_vias(pcb, reserve)
     extra = {}
     if diff_pairs:
         import pairs as _pairs

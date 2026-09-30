@@ -883,7 +883,7 @@ def unthreadable(fp, track=None, clear=None):
     return float(d.min()) < track + 2 * clear
 
 
-def build_obstacles(pcb, nid, kids, layer):
+def build_obstacles(pcb, nid, kids, layer, margin=None, skip_refs=frozenset()):
     """A static-copper model for one net on one layer: every foreign
     pad as KiCad draws it (a rect or an oval as capsules, _build_obstacles;
     others a disc), every foreign segment as a capsule, every foreign
@@ -893,7 +893,9 @@ def build_obstacles(pcb, nid, kids, layer):
     the router's own model and never consults this one. Memoised per
     (board file as on disk, net, excluded nets, layer): the plan loop
     parses the same board several times per round and rebuilt the same
-    model each time (531 builds at K15)."""
+    model each time (531 builds at K15). `margin` inflates every item instead of the braid's clearance + half its
+    lane track (the joint escape plans at the fan track and clearance it lays at); `skip_refs` are footprints left
+    out (the movable passives the cap step moves off the fanout)."""
     # ONE BASE per (board, layer, excluded segment nets), the net's own
     # model DERIVED from it (Obstacles.exclude): the 35 nets of a plan
     # differ only by their own pads and vias, and a full build per net
@@ -910,14 +912,15 @@ def build_obstacles(pcb, nid, kids, layer):
         bkey = (os.path.abspath(src), st_.st_mtime_ns, st_.st_size,
                 base_kids, layer, len(pcb.segments), len(pcb.vias),
                 getattr(pcb, 'frame_axis', None),   # the board turned over, or rotated,
-                getattr(pcb, 'frame_rotation', None))   # is another board
+                getattr(pcb, 'frame_rotation', None),   # is another board
+                margin, frozenset(skip_refs))
         dkey = bkey + (nid,)
         hit = _OBS_MEMO.get(dkey)
         if hit is not None:
             return hit
     base = _OBS_MEMO.get(bkey) if bkey is not None else None
     if base is None:
-        base = _build_obstacles(pcb, base_kids, layer)
+        base = _build_obstacles(pcb, base_kids, layer, margin=margin, skip_refs=skip_refs)
         if bkey is not None:
             _obs_remember(bkey)
             _OBS_MEMO[bkey] = base
@@ -933,13 +936,15 @@ def build_obstacles(pcb, nid, kids, layer):
 RECT_EXACT = 5.5
 
 
-def _build_obstacles(pcb, kids, layer):
+def _build_obstacles(pcb, kids, layer, margin=None, skip_refs=frozenset()):
     """Every pad on `layer` (drilled: on both), every segment on it
     whose net is not in `kids`, every via -- each tagged with its net,
     so a per-net model is a derivation (build_obstacles)."""
     obs = ts.Obstacles()
-    m = CLEAR + TRACK / 2
+    m = CLEAR + TRACK / 2 if margin is None else margin
     for ref, fp in pcb.footprints.items():
+        if ref in skip_refs:
+            continue
         for p in fp.pads:
             on_layer = any(L == layer or '*' in L for L in p.layers)
             if p.drill and p.drill > 0:

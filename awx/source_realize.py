@@ -469,6 +469,8 @@ def realize(board, src_choice, src_pad, byname, sref, out_path, log=print,
     # no placement step follows this chain, so every foreign pad -- a
     # decoupling cap under the array included -- is one a via must clear
     pcb._fanout_all_foreign_immovable = True
+    import joint_escape as _je
+    _je.reserve_ball_vias(pcb)          # the joint fanout (FANOUT_JOINT): the other balls' own via sites stay free
     hints = {}
     for nm, m in src_choice.items():
         p = src_pad[nm]
