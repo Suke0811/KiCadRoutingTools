@@ -174,6 +174,125 @@ class TestSynthetic(unittest.TestCase):
         self.assertGreater(area_hit, seeder.FIXED_OVERLAP_EPS_MM2)
 
 
+def raw_board(td, body):
+    text = ('(kicad_pcb (version 20240108) (generator pcbnew)\n'
+            '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal)'
+            ' (44 "Edge.Cuts" user))\n'
+            '  (net 0 "") (net 1 "N1") (net 2 "N2")\n'
+            '  (gr_rect (start 0 0) (end 30 30) (stroke (width 0.1)'
+            ' (type default)) (layer "Edge.Cuts"))\n' + body + ')\n')
+    path = os.path.join(td, 'b.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(text)
+    return path
+
+
+def fp(ref, x, y, inner, rot=0, net=1):
+    return (f'  (footprint "t:{ref}" (layer "F.Cu") (at {x} {y} {rot})\n'
+            f'    (property "Reference" "{ref}" (at 0 0 {rot})'
+            f' (layer "F.SilkS"))\n' + inner
+            + f'    (pad "9" smd rect (at 0 0 {rot}) (size 0.2 0.2)'
+            f' (layers "F.Cu") (net {net} "N{net}")))\n')
+
+
+def line(a, b, layer='F.CrtYd'):
+    return (f'    (fp_line (start {a[0]} {a[1]}) (end {b[0]} {b[1]}) (stroke'
+            f' (width 0.05) (type default)) (layer "{layer}"))\n')
+
+
+class TestOutlineDetails(unittest.TestCase):
+    """The hunks the #1094 verifier could revert without a test noticing."""
+
+    def test_pad_copper_past_the_courtyard_still_occupies(self):
+        """A's pad pokes 0.6 mm past its 1 x 1 courtyard; B's courtyard
+        overlaps only that pad, by 0.1 mm. The occupancy is the drawing UNITED with the
+        pads, so the pair is found."""
+        body = (
+            '  (footprint "t:A" (layer "F.Cu") (at 10 10)\n'
+            '    (property "Reference" "A" (at 0 0) (layer "F.SilkS"))\n'
+            '    (fp_rect (start -0.5 -0.5) (end 0.5 0.5) (stroke (width'
+            ' 0.05) (type default)) (layer "F.CrtYd"))\n'
+            '    (pad "1" smd rect (at 0.8 0) (size 0.6 0.4) (layers "F.Cu")'
+            ' (net 1 "N1")))\n'
+            + fp('B', 11.8, 10,
+                 '    (fp_rect (start -0.8 -0.5) (end 0.8 0.5) (stroke'
+                 ' (width 0.05) (type default)) (layer "F.CrtYd"))\n',
+                 net=2))
+        with tempfile.TemporaryDirectory() as td:
+            g = grade(raw_board(td, body))
+        self.assertEqual(courtyard_pairs(g), {('A', 'B')})
+
+    def test_an_open_courtyard_falls_back_to_its_hull(self):
+        """Three sides of a square drawn: the outline does not close, so the
+        convex hull stands in -- never less than what was drawn -- and a
+        part inside the open square is still paired."""
+        from placement.parser import OUTLINE_HULL, extract_courtyard_shapes
+        u = (line((-2, -2), (2, -2)) + line((2, -2), (2, 2))
+             + line((2, 2), (-2, 2)))
+        body = (fp('A', 10, 10, u)
+                + fp('B', 9.2, 10, SQUARE.replace('-1 -1', '-0.4 -0.4')
+                     .replace('1 1', '0.4 0.4'), net=2))
+        with tempfile.TemporaryDirectory() as td:
+            p = raw_board(td, body)
+            shp = extract_courtyard_shapes(p)['A']['F']
+            g = grade(p)
+        self.assertEqual(shp[1], OUTLINE_HULL)
+        self.assertAlmostEqual(shp[0].area, 16.0, places=3)
+        self.assertEqual(courtyard_pairs(g), {('A', 'B')})
+
+    def test_a_join_a_few_microns_open_still_closes(self):
+        """ulx3s BAT1's courtyard: ends that miss by ~2 um are joined, the
+        outline is the drawing, not its hull."""
+        from placement.parser import OUTLINE_POLYGON, extract_courtyard_shapes
+        tri = (line((0, 0), (4, 0)) + line((4, 0), (0, 3))
+               + line((0.000002, 3.000002), (0, 0)))
+        with tempfile.TemporaryDirectory() as td:
+            shp = extract_courtyard_shapes(raw_board(
+                td, fp('A', 10, 10, tri)))['A']['F']
+        self.assertEqual(shp[1], OUTLINE_POLYGON)
+        self.assertAlmostEqual(shp[0].area, 6.0, places=3)
+
+    def test_containment_is_measured_on_the_drawn_body(self):
+        """B's .Fab body is a right triangle (area 2, box 4) wholly inside
+        A's: contained_frac is 1.0 on the drawn areas, 0.5 on the boxes."""
+        tri_fab = (line((0, 0), (2, 0), 'F.Fab') + line((2, 0), (0, 2), 'F.Fab')
+                   + line((0, 2), (0, 0), 'F.Fab'))
+        a_fab = ('    (fp_rect (start -3 -3) (end 3 3) (stroke (width 0.05)'
+                 ' (type default)) (layer "F.Fab"))\n')
+        with tempfile.TemporaryDirectory() as td:
+            g = grade(raw_board(td, fp('A', 10, 10, a_fab)
+                                + fp('B', 9, 9, tri_fab, net=2)))
+        fab = [q for q in g['pairs'] if q.kind == 'fab']
+        self.assertEqual(len(fab), 1, g['pairs'])
+        self.assertAlmostEqual(fab[0].area_mm2, 2.0, places=3)
+        self.assertEqual(fab[0].contained_frac, 1.0)
+
+    def test_a_pad_turned_off_the_lattice_is_boxed_from_its_own_size(self):
+        """PartPads at a 45-degree delta: a 0.4 x 1.2 pad on a part seeded
+        at 0 boxes to (0.2 + 0.6) / sqrt2 half-extents; the same pad on a
+        part seeded AT 45 and turned back to 0 is its own 0.2 x 0.6 --
+        not the seed box grown twice (0.8 x 0.8)."""
+        from kicad_parser import parse_kicad_pcb
+        from placement.legality import PartPads
+        body = ''.join(
+            f'  (footprint "t:{r}" (layer "F.Cu") (at {x} 10 {rot})\n'
+            f'    (property "Reference" "{r}" (at 0 0 {rot}) (layer'
+            f' "F.SilkS"))\n'
+            f'    (pad "1" smd rect (at 0 0 {rot}) (size 0.4 1.2) (layers'
+            f' "F.Cu") (net 1 "N1")))\n'
+            for r, x, rot in (('P0', 5, 0), ('P45', 15, 45)))
+        with tempfile.TemporaryDirectory() as td:
+            pcb = parse_kicad_pcb(raw_board(td, body))
+        d = 0.8 / 2 ** 0.5
+        r0 = PartPads(pcb.footprints['P0'], 0.1).pad_rects(0, 0, 45.0)[0]
+        self.assertAlmostEqual(r0[2] - r0[0], 2 * d, places=4)
+        self.assertAlmostEqual(r0[3] - r0[1], 2 * d, places=4)
+        r45 = PartPads(pcb.footprints['P45'], 0.1).pad_rects(0, 0, 0.0)[0]
+        w, h = sorted((r45[2] - r45[0], r45[3] - r45[1]))
+        self.assertAlmostEqual(w, 0.4, places=4)
+        self.assertAlmostEqual(h, 1.2, places=4)
+
+
 class TestStickHub(unittest.TestCase):
     def setUp(self):
         self.path = stickhub()

@@ -2139,6 +2139,10 @@ def keepout_hit(entry, rects) -> float:
 
 #: Attrs that say the footprint is not placed by the assembly house.
 MATING_ATTRS = ('board_only', 'exclude_from_pos_files')
+#: The plug's netted finger pads must reach this close to the outline (mm).
+#: StickHub J1's fingers stop 0.6 mm short of the tongue's tip, as a USB-A
+#: plug's do; a solder jumper's pads do not reach an edge at all.
+MATING_FINGER_EDGE_MM = 1.0
 #: The courtyard is inset by this before it becomes the keep-out. StickHub's
 #: J2 and J6 courtyards reach 0.15 mm past the tongue's root; the inset keeps
 #: a neighbour's courtyard margin that grazes the root from reading as a part
@@ -2152,10 +2156,12 @@ def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
     """The keep-outs a board's PCB-edge plugs imply, one per plug (#1098).
 
     A footprint is a plug when it is not assembled (an attr in
-    `MATING_ATTRS` and no 3D model), carries >= 2 netted pads and no drilled
-    one (finger copper, not a connector body), draws a courtyard, and that
-    courtyard reaches the outline (overhangs it or lies within the seat
-    tolerance of it). The keep-out is the courtyard's board rect inset by
+    `MATING_ATTRS` and no 3D model), is not a net-tie (a solder jumper
+    shorts pad groups; a plug does not), carries >= 2 netted pads and no
+    drilled one (finger copper, not a connector body) of which >= 2 reach
+    within `MATING_FINGER_EDGE_MM` of the outline, and draws a courtyard
+    that is ON the board (not wholly off it -- a jumper parked in a pile is
+    not at an edge) and reaches the outline. The keep-out is the courtyard's board rect inset by
     `MATING_INSET_MM`, on both faces, allowing the plug itself and every
     part with no copper pad (a slot like StickHub's H1, a logo).
 
@@ -2193,7 +2199,20 @@ def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
         pads = copper_pads(fp)
         if any((p.drill or 0) > 0 for p in pads):
             continue
-        if sum(1 for p in pads if p.net_id) < 2:
+        if getattr(fp, 'net_tie_groups', None):
+            continue
+        fingers = [p for p in pads if p.net_id]
+        if len(fingers) < 2:
+            continue
+        near = 0
+        for p in fingers:
+            hx, hy = legality.pad_half_extents(p)
+            pr = (p.global_x - hx, p.global_y - hy,
+                  p.global_x + hx, p.global_y + hy)
+            if (gate.rect_outside_amount(pr) > legality.EPS
+                    or gate.edge_clearance(pr) <= MATING_FINGER_EDGE_MM):
+                near += 1
+        if near < 2:
             continue
         loc = courtyard_for_side(crt.get(ref), legality.footprint_side(fp))
         if loc is None:
@@ -2201,6 +2220,8 @@ def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
         x0, y0, x1, y1 = legality.rotate_local_bounds(*loc,
                                                       fp.rotation or 0.0)
         rect = (fp.x + x0, fp.y + y0, fp.x + x1, fp.y + y1)
+        if gate.out_of_board_area(rect) >= legality.rect_area(rect) - 1e-6:
+            continue            # wholly off the board: not at an edge
         if not (gate.rect_outside_amount(rect) > legality.EPS
                 or gate.edge_clearance(rect) <= SEAT_TOL_MM):
             continue
@@ -2232,24 +2253,54 @@ def with_derived_keepouts(keepouts, pcb_data, pcb_file: Optional[str] = None
 
 
 def mating_keepout_findings(pcb_data, pcb_file: Optional[str] = None,
-                            graded=None, keepouts=None) -> List[Dict]:
+                            keepouts=None) -> List[Dict]:
     """`[{ref, keepout, side, area_mm2}]`: parts inside a derived mating
     keep-out at the file's poses (#1098). `keepout_hit` over each part's
-    (courtyard, drilled-pad) rects, resolved by `keepouts_for_ref` -- the
-    same two functions the seeder and the grade call."""
+    (rect, drilled-pad rect), resolved by `keepouts_for_ref` -- the same two
+    functions the seeder and the grade call.
+
+    The rect is the QUENCH's (`quench._Part`): the courtyard, else the pad
+    bbox. A checker measuring courtyard-plus-pads here graded a part the
+    seeder had just seated (its pad poking past its own courtyard into the
+    tongue) NOT BUILDABLE -- the generator more permissive than the checker,
+    which is the one direction that may never happen. So both read one
+    rect."""
     ks = (derived_mating_keepouts(pcb_data, pcb_file)
           if keepouts is None else tuple(keepouts))
     if not ks:
         return []
-    if graded is None:
-        graded = legality.graded_parts_from_file(pcb_data, pcb_file)
+    from .parser import courtyard_for_side, extract_courtyard_sides
+    from .utility import compute_footprint_bbox_local
+    path = pcb_file or getattr(pcb_data, 'source_path', None)
+    try:
+        crt = extract_courtyard_sides(path) if path else {}
+    except Exception:                                        # noqa: BLE001
+        crt = {}
     out = []
-    for g in graded:
-        for k in keepouts_for_ref(ks, g.ref, g.sides):
-            a = keepout_hit(k, (g.rect, g.tht_rect))
+    for ref, fp in sorted((pcb_data.footprints or {}).items()):
+        side = legality.footprint_side(fp)
+        has_tht = legality.footprint_has_through_pads(fp)
+        loc = courtyard_for_side(crt.get(ref), side)
+        if loc is None:
+            try:
+                loc = compute_footprint_bbox_local(fp)
+            except Exception:                                # noqa: BLE001
+                continue
+        rot = fp.rotation or 0.0
+        x0, y0, x1, y1 = legality.rotate_local_bounds(*loc, rot)
+        rect = (fp.x + x0, fp.y + y0, fp.x + x1, fp.y + y1)
+        tht = None
+        if has_tht:
+            tl = legality.through_pad_bounds_local(fp)
+            if tl is not None:
+                a0, b0, a1, b1 = legality.rotate_local_bounds(*tl, rot)
+                tht = (fp.x + a0, fp.y + b0, fp.x + a1, fp.y + b1)
+        sides = legality.sides_occupied(side, has_tht)
+        for k in keepouts_for_ref(ks, ref, sides):
+            a = keepout_hit(k, (rect, tht))
             if a:
-                out.append({'ref': g.ref, 'keepout': k['name'],
-                            'side': g.side, 'area_mm2': round(a, 4)})
+                out.append({'ref': ref, 'keepout': k['name'],
+                            'side': side, 'area_mm2': round(a, 4)})
     return sorted(out, key=lambda f: (f['keepout'], f['ref']))
 
 
@@ -2807,6 +2858,13 @@ class _Ctx:
 
     def __init__(self, intent, pcb_data, pcb_file, state, blocks, locked,
                  outline):
+        # #1098: plus a PCB-edge plug's derived mating keep-out, so the
+        # grade, its roster, the pose grader and place_seed --repair (which
+        # charges grade errors) all see what the seeder enforces. The same
+        # board without a plug keeps the very intent it was handed.
+        _ks = with_derived_keepouts(intent.keepouts, pcb_data, pcb_file)
+        if len(_ks) != len(intent.keepouts or ()):
+            intent = dataclasses.replace(intent, keepouts=_ks)
         self.intent = intent
         self.pcb = pcb_data
         self.pcb_file = pcb_file
@@ -5942,6 +6000,9 @@ def _roster(intent: Intent, pcb_data, ctx, *, census=None,
     cases the honest answers are "declare it from a requirement" or "say why
     not" (#959 Phase 0 checkpoint).
     """
+    # The intent the grade ran (#1098: plus derived mating keep-outs), so the
+    # roster never calls a rule inapplicable that the grade just fired.
+    intent = getattr(ctx, 'intent', None) or intent
     census = census if census is not None else decap_census(pcb_data)
     disp = intent.dispositions or {}
     rule_disp = disp.get('rules', {})

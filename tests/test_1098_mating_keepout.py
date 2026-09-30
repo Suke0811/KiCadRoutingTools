@@ -130,6 +130,23 @@ class TestDerivation(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 self.assertEqual(keepouts(board(td, **kw)), (), kw)
 
+    def test_a_net_tie_or_a_part_off_the_board_is_not_a_plug(self):
+        """#1098 verifier: SolderJumper-3 parts (net-ties, no model,
+        exclude_from_pos_files) parked wholly OFF a board read as plugs."""
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td)
+            text = open(p, encoding='utf-8').read()
+            tie = text.replace('(attr smd exclude_from_pos_files)',
+                               '(attr smd exclude_from_pos_files)\n'
+                               '    (net_tie_pad_groups "1,2")')
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write(tie)
+            self.assertEqual(keepouts(p), ())
+            off = text.replace('(at 15 32)\n', '(at 60 60)\n', 1)
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write(off)
+            self.assertEqual(keepouts(p), ())
+
     def test_board_only_counts_too(self):
         with tempfile.TemporaryDirectory() as td:
             self.assertEqual(len(keepouts(board(td, attr='board_only'))), 1)
@@ -195,6 +212,30 @@ class TestGenerator(unittest.TestCase):
             off = seeder.pose_ok(st, 'R1', 5.0, 10.0, 0.0, set())
         self.assertFalse(on)
         self.assertTrue(off)
+
+    def test_the_seat_and_the_checker_measure_one_rect(self):
+        """#1098 verifier D3: the seat tested the courtyard, the checker the
+        courtyard plus pads, so a part whose pad pokes past its courtyard
+        into the tongue was seated and then graded NOT BUILDABLE. Both now
+        read the quench's rect, and a pose they judge alike stays alike on
+        each side of the region's edge."""
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        from placement import seeder
+        for x, y in ((15, 26), (25, 10), (15, 19.9), (9.6, 26)):
+            with tempfile.TemporaryDirectory() as td:
+                p = board(td, r1=(x, y, 'B.Cu'))
+                hit = bool(findings(p))
+                st = pose_score.make_state(parse_kicad_pcb(p), p,
+                                           clearance=0.1,
+                                           board_edge_clearance=0.0)
+                seat = seeder.pose_ok(st, 'R1', float(x), float(y), 0.0,
+                                      set())
+                clear = st.keepout_clear('R1', st.parts['R1'].rects(
+                    float(x), float(y), 0.0))
+            self.assertEqual(hit, not clear, (x, y))
+            if hit:
+                self.assertFalse(seat, (x, y))
 
     def test_a_declared_keepout_of_that_name_wins(self):
         from kicad_parser import parse_kicad_pcb

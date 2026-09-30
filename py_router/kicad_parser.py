@@ -6057,16 +6057,23 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                                  ('exclude_from_pos_files',
                                   'FP_EXCLUDE_FROM_POS_FILES'),
                                  ('exclude_from_bom', 'FP_EXCLUDE_FROM_BOM'),
-                                 ('allow_missing_courtyard',
-                                  'FP_ALLOW_MISSING_COURTYARD'),
-                                 ('allow_soldermask_bridges',
-                                  'FP_ALLOW_SOLDERMASK_BRIDGES'),
                                  ('dnp', 'FP_DNP')):
                 _v = getattr(pcbnew, _const, None)
                 if _v is not None and _bits & int(_v):
                     fp_attrs.append(_tok)
         except Exception:
             pass
+        # Not in the bitmask on KiCad 10 (no FP_ALLOW_* constant exists):
+        # they have getters of their own.
+        for _tok, _getter in (('allow_missing_courtyard',
+                               'AllowMissingCourtyard'),
+                              ('allow_soldermask_bridges',
+                               'AllowSolderMaskBridges')):
+            try:
+                if getattr(fp, _getter)():
+                    fp_attrs.append(_tok)
+            except Exception:
+                pass
         if fp_dnp and 'dnp' not in fp_attrs:
             fp_attrs.append('dnp')
         fp_attrs = tuple(sorted(set(fp_attrs)))

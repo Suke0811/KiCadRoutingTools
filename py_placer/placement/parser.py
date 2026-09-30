@@ -74,17 +74,42 @@ def _footprint_blocks(content: str):
         yield key, fp_text
 
 
+#: #1094: `(path, mtime, size) -> [(key, footprint_text)]`. Every reader
+#: below splits the whole file into footprint blocks, and one
+#: check_assembly grade calls five of them twice each (occupancy and fab
+#: bodies): the split was 5 of its 7 seconds on glasgow_revC.
+_BLOCK_CACHE: Dict[tuple, list] = {}
+
+
+def _file_blocks(pcb_file: str) -> list:
+    """`_footprint_blocks` of a board FILE, split once per file version."""
+    import os as _os
+    try:
+        st = _os.stat(pcb_file)
+        key = (_os.path.abspath(pcb_file), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key is not None and key in _BLOCK_CACHE:
+        return _BLOCK_CACHE[key]
+    with open(pcb_file, 'r', encoding='utf-8') as f:
+        blocks = list(_footprint_blocks(f.read()))
+    if key is not None:
+        if len(_BLOCK_CACHE) > 8:
+            _BLOCK_CACHE.clear()
+        _BLOCK_CACHE[key] = blocks
+    return blocks
+
+
 def extract_locked_refs(pcb_file: str) -> Set[str]:
     """
     Find all footprints marked as locked in the PCB file.
 
     Returns set of component references (e.g., {"P1", "J1"}).
     """
-    with open(pcb_file, 'r', encoding='utf-8') as f:
-        content = f.read()
+    blocks = _file_blocks(pcb_file)
 
     locked = set()
-    for ref, fp_text in _footprint_blocks(content):
+    for ref, fp_text in blocks:
         # Check for (locked yes) before the first pad
         # It appears early in the footprint block, before properties
         first_pad = fp_text.find('(pad ')
@@ -171,11 +196,10 @@ def extract_courtyard_sides(pcb_file: str) -> Dict[str, Dict[str, Bbox]]:
     without overlapping in copper; `extract_courtyard_bboxes` keeps the legacy
     union-of-sides view for callers that don't model side.
     """
-    with open(pcb_file, 'r', encoding='utf-8') as f:
-        content = f.read()
+    blocks = _file_blocks(pcb_file)
 
     result: Dict[str, Dict[str, Bbox]] = {}
-    for ref, fp_text in _footprint_blocks(content):
+    for ref, fp_text in blocks:
         if '.CrtYd"' not in fp_text:
             continue
         by_side = _courtyard_points_by_side(fp_text)
@@ -190,10 +214,9 @@ def extract_fab_sides(pcb_file: str) -> Dict[str, Dict[str, Bbox]]:
     courtyard margin, so a cross-footprint fab intersection is two parts
     physically colliding -- the discriminating channel between a real stack
     and a legitimate shell-overhang courtyard kiss."""
-    with open(pcb_file, 'r', encoding='utf-8') as f:
-        content = f.read()
+    blocks = _file_blocks(pcb_file)
     result: Dict[str, Dict[str, Bbox]] = {}
-    for ref, fp_text in _footprint_blocks(content):
+    for ref, fp_text in blocks:
         if '.Fab"' not in fp_text:
             continue
         by_side = _courtyard_points_by_side(fp_text, _FAB_LAYER)
@@ -215,10 +238,9 @@ def extract_silk_sides(pcb_file: str) -> Dict[str, Dict[str, Bbox]]:
     pad bbox rather than substituting it, and why nothing here applies an
     expansion. `placement.body.body_geometry` is the only intended consumer.
     """
-    with open(pcb_file, 'r', encoding='utf-8') as f:
-        content = f.read()
+    blocks = _file_blocks(pcb_file)
     result: Dict[str, Dict[str, Bbox]] = {}
-    for ref, fp_text in _footprint_blocks(content):
+    for ref, fp_text in blocks:
         if '.SilkS"' not in fp_text:
             continue
         by_side = _courtyard_points_by_side(fp_text, _SILK_LAYER)
@@ -233,8 +255,15 @@ _OUTLINE_SNAP_MM = 1e-4
 #: A polygonised outline must contain every drawn vertex to within this (mm);
 #: otherwise part of the drawing did not close and the convex hull is used.
 _OUTLINE_COVER_TOL_MM = 1e-3
+#: Segment ends within this of each other are joined on a second attempt
+#: when a drawing does not close as written (#1094 verifier: ulx3s BAT1).
+_OUTLINE_JOIN_MM = 0.01
 OUTLINE_POLYGON = 'polygon'
 OUTLINE_HULL = 'hull'
+#: One read of a board's outlines per (path, mtime, size, layer): a single
+#: check_assembly reads them twice (occupancy and fab), and the placement
+#: tools grade the same file again and again.
+_SHAPE_CACHE: Dict[tuple, Dict[str, Dict[str, tuple]]] = {}
 
 
 def _outline_shapes_by_side(fp_text: str, layer_re: str) -> Dict[str, tuple]:
@@ -316,6 +345,13 @@ def _outline_shapes_by_side(fp_text: str, layer_re: str) -> Dict[str, tuple]:
             areas.setdefault(lm.group(1), []).append(p)
         verts.setdefault(lm.group(1), []).extend(pts)
 
+    def covers(shape, pts):
+        if shape is None or shape.is_empty:
+            return False
+        import shapely
+        return float(shapely.distance(shape, shapely.points(pts)).max()
+                     ) <= _OUTLINE_COVER_TOL_MM
+
     out: Dict[str, tuple] = {}
     for side in set(verts) | set(areas):
         parts = list(areas.get(side, []))
@@ -324,9 +360,22 @@ def _outline_shapes_by_side(fp_text: str, layer_re: str) -> Dict[str, tuple]:
         how = OUTLINE_POLYGON
         shape = unary_union(parts) if parts else None
         pts = verts.get(side, [])
-        if pts and (shape is None or shape.is_empty
-                    or any(shape.distance(Point(p)) > _OUTLINE_COVER_TOL_MM
-                           for p in pts)):
+        if pts and lines.get(side) and not covers(shape, pts):
+            # Ends that miss each other by a few microns (ulx3s BAT1's
+            # courtyard: KiCad closes it, a strict join does not): snap
+            # the drawing onto itself at `_OUTLINE_JOIN_MM` and polygonise
+            # again before settling for the hull.
+            import shapely
+            from shapely.geometry import MultiLineString
+            ml = MultiLineString([list(ln.coords) for ln in lines[side]])
+            snapped = shapely.snap(ml, ml, _OUTLINE_JOIN_MM)
+            retry = list(areas.get(side, [])) + list(
+                polygonize(unary_union(snapped)))
+            if retry:
+                cand = unary_union(retry)
+                if covers(cand, pts):
+                    shape = cand
+        if pts and not covers(shape, pts):
             from shapely.geometry import MultiPoint
             shape, how = MultiPoint(pts).convex_hull, OUTLINE_HULL
         if shape is None or shape.is_empty or shape.area <= 0:
@@ -337,10 +386,28 @@ def _outline_shapes_by_side(fp_text: str, layer_re: str) -> Dict[str, tuple]:
 
 def _extract_outline_shapes(pcb_file: str, layer_re: str, marker: str
                             ) -> Dict[str, Dict[str, tuple]]:
-    with open(pcb_file, 'r', encoding='utf-8') as f:
-        content = f.read()
+    import os as _os
+    try:
+        st = _os.stat(pcb_file)
+        key = (_os.path.abspath(pcb_file), st.st_mtime_ns, st.st_size,
+               layer_re)
+    except OSError:
+        key = None
+    if key is not None and key in _SHAPE_CACHE:
+        return dict(_SHAPE_CACHE[key])
+    result = _read_outline_shapes(pcb_file, layer_re, marker)
+    if key is not None:
+        if len(_SHAPE_CACHE) > 16:
+            _SHAPE_CACHE.clear()
+        _SHAPE_CACHE[key] = result
+    return dict(result)
+
+
+def _read_outline_shapes(pcb_file: str, layer_re: str, marker: str
+                         ) -> Dict[str, Dict[str, tuple]]:
+    blocks = _file_blocks(pcb_file)
     result: Dict[str, Dict[str, tuple]] = {}
-    for ref, fp_text in _footprint_blocks(content):
+    for ref, fp_text in blocks:
         if marker not in fp_text:
             continue
         by_side = _outline_shapes_by_side(fp_text, layer_re)

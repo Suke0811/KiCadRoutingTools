@@ -1491,6 +1491,16 @@ def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
 PROJECT_SEVERITY_WAIVER = 'project_severity_'
 
 
+#: The categories the pre-#856 `fix_kicad_drc_settings.severity_plan` set to
+#: ignore on every route step, as they were THEN. A literal on purpose: built
+#: from the live plan, a category added to it later would make every old
+#: tool-written ignore read as the author's again.
+LEGACY_SEVERITY_PLAN_IGNORES = (
+    'annular_width', 'courtyards_overlap', 'lib_footprint_issues',
+    'lib_footprint_mismatch', 'malformed_courtyard', 'npth_inside_courtyard',
+    'pth_inside_courtyard', 'solder_mask_bridge')
+
+
 def courtyard_severity_of(pcb_file: Optional[str]) -> Tuple[Optional[str],
                                                           str]:
     """`(severity, basis)`: the AUTHOR's `courtyards_overlap` severity for
@@ -1529,13 +1539,8 @@ def courtyard_severity_of(pcb_file: Optional[str]) -> Tuple[Optional[str],
         return saved, "saved: the author's value, kept when a tool changed it"
     value = sev.get('courtyards_overlap')
     if value == 'ignore':
-        try:
-            from fix_kicad_drc_settings import (COURTYARD_CATS,
-                                                FOOTPRINT_CATS, MASK_CATS)
-            legacy = set(COURTYARD_CATS) | set(MASK_CATS) | set(FOOTPRINT_CATS)
-        except Exception:                                    # noqa: BLE001
-            legacy = set()
-        if legacy and all(sev.get(c) == 'ignore' for c in legacy):
+        legacy = LEGACY_SEVERITY_PLAN_IGNORES
+        if all(sev.get(c) == 'ignore' for c in legacy):
             return None, ("legacy severity plan: the project ignores all of "
                           + ', '.join(sorted(legacy)) + ", which this "
                           "repo's pre-#856 route steps wrote, so the ignore "
@@ -2620,7 +2625,7 @@ class PartPads:
     keep-clear declaration push a part off the board outline.
     """
 
-    __slots__ = ('ref', 'side', 'has_tht', 'seed_rot', 'pads_local',
+    __slots__ = ('ref', 'side', 'has_tht', 'seed_rot', 'pads_local', '_pad_tilt',
                  'holes_local', 'holes_extent', 'n_pads', '_pad_cache',
                  '_hole_cache', '_keepout_cache', '_ext_cache', 'pad_floors',
                  'max_floor', 'clearance', 'hole_reach', 'holes_req',
@@ -2645,6 +2650,13 @@ class PartPads:
         # without one.
         self.clearance = float(clearance)
         self.pads_local = []    # (off_x, off_y, half_x, half_y, net_id, pside)
+        # #1094: each pad's own box and tilt, parallel to `pads_local`, for
+        # the off-lattice turns in `_rotated`. `(hx, hy, tilt)`: the seed
+        # AABB with tilt 0 for a pad square to the board, else the pad's
+        # size and residual angle -- growing the seed AABB of an already
+        # tilted pad again double-inflates it (a 0.4 x 1.2 pad seeded at 45
+        # read 0.8 x 0.8 half-extents at 0 and at 90).
+        self._pad_tilt = []
         self.holes_local = []   # (off_x, off_y, radius) -- NPTH keepouts, inflated
         self.holes_extent = []  # ...the same holes at their EXTENT radius (#730)
         self.holes_req = []     # ...and the REQUIREMENT each one resolved to (#761)
@@ -2790,6 +2802,12 @@ class PartPads:
             phx, phy = pad_half_extents(p)
             self.pads_local.append((p.global_x - fp.x, p.global_y - fp.y,
                                     phx, phy, p.net_id, pside))
+            _tilt = float(getattr(p, 'rect_rotation', 0.0) or 0.0)
+            if abs(_tilt - 90.0 * round(_tilt / 90.0)) < 1e-6:
+                self._pad_tilt.append((phx, phy, 0.0))
+            else:
+                self._pad_tilt.append((p.size_x / 2.0, p.size_y / 2.0,
+                                       _tilt))
             if model is not None:
                 floor = model.pad_floor(p)
                 self.pad_floors.append(floor)
@@ -2860,15 +2878,22 @@ class PartPads:
             # overlaps the written board then failed. The orthogonal steps
             # keep the exact swap, so they stay bit-identical.
             ortho = abs(key - 90.0 * round(key / 90.0)) < 1e-9
-            ac, as_ = abs(c), abs(s)
             cache = []
-            for ox, oy, hx, hy, net, pside in self.pads_local:
+            for i, (ox, oy, hx, hy, net, pside) in enumerate(self.pads_local):
                 rx = ox * c - oy * s
                 ry = ox * s + oy * c
                 if ortho:
                     HX, HY = (hy, hx) if swap else (hx, hy)
                 else:
-                    HX, HY = hx * ac + hy * as_, hx * as_ + hy * ac
+                    # The pad's own box turned to its new tilt, then boxed:
+                    # a footprint turn of `key` turns each pad by -key in
+                    # this frame (the sign `rotate_local_bounds` uses).
+                    px, py, tilt = (self._pad_tilt[i]
+                                    if i < len(self._pad_tilt)
+                                    else (hx, hy, 0.0))
+                    t = math.radians(tilt - key)
+                    tc, ts = abs(math.cos(t)), abs(math.sin(t))
+                    HX, HY = px * tc + py * ts, px * ts + py * tc
                 cache.append((rx, ry, HX, HY, net, pside))
             self._pad_cache[key] = cache
         return cache
