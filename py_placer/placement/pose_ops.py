@@ -416,6 +416,10 @@ def worsened(before: Dict, after: Dict) -> List[str]:
     """Which legality categories the request made worse. [] is the good case."""
     out = [k for k in LEGALITY_KEYS
            if (after.get(k) or 0) > (before.get(k) or 0)]
+    # #1098: an unmeasured plug mating region is not a clean one --
+    # check_assembly fails closed on it, and so does this verb.
+    if after.get('mating_keepout_error'):
+        out.append('mating_keepout_error')
     out += [k for k in MAGNITUDE_KEYS
             if (after.get(k) or 0.0) > ((before.get(k) or 0.0) + MAGNITUDE_EPS)]
     # #962: a SWAP can hold the graphic-copper count and summed amount level
@@ -460,6 +464,7 @@ def new_pairs(before: Dict, after: Dict, pair_key: str) -> List[str]:
 def is_clean(report: Dict) -> bool:
     """Is this board legal in the ABSOLUTE sense, not merely no worse?"""
     return not (report.get('pad_edge', {}).get('complete') is False
+                or report.get('mating_keepout_error')
                 or any(report.get(k) for k in LEGALITY_KEYS)
                 or any((report.get(k) or 0.0) > MAGNITUDE_EPS
                        for k in MAGNITUDE_KEYS))

@@ -282,6 +282,10 @@ ROWS = [
      "                with_derived_keepouts(declared_keepouts, pcb, board_path),",
      "                with_derived_keepouts((), pcb, board_path),",
      (T1098,), 'KILLED'),
+    ('place-pose-reads-unmeasured-as-clean', 'pose',
+     "    if after.get('mating_keepout_error'):",
+     "    if False:",
+     (T1098,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

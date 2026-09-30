@@ -508,6 +508,26 @@ class TestReviewFollowUps(unittest.TestCase):
         self.assertTrue('J1' in res['unseated'] or at.get('J1') != (60, 60),
                         (at.get('J1'), res['unseated']))
 
+    def test_place_pose_fails_closed_on_an_unmeasured_region(self):
+        """check_assembly reads an unmeasured tongue as NOT BUILDABLE; the
+        pose verb refuses on it too instead of reading a count of 0."""
+        from placement import floorplan, pose_ops
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td)
+            real = floorplan.mating_keepout_findings
+
+            def boom(*_a, **_k):
+                raise RuntimeError('no tongue today')
+            floorplan.mating_keepout_findings = boom
+            try:
+                with self.assertRaises(pose_ops.PoseRefusal) as cm:
+                    pose_ops.apply_poses(
+                        p, None, [{'kind': 'set', 'ref': 'R1', 'x': 25,
+                                   'y': 12, 'rot': 0}], dry_run=True)
+            finally:
+                floorplan.mating_keepout_findings = real
+        self.assertIn('mating_keepout_error', cm.exception.reason)
+
 
 if __name__ == '__main__':
     unittest.main()
