@@ -171,25 +171,74 @@ def place_local_shape(shape, x, y, rotation):
 def shape_overlap(a, b):
     """(area, depth, rect) of two board-frame geometries' intersection.
 
-    `depth` is the shorter side of the intersection's minimum rotated
-    rectangle -- for two axis-aligned rects exactly `min(dx, dy)`, the rect
-    channel's own depth -- and `rect` its bounding box, which is what the
-    edge-class waiver tests against the outline. (0.0, 0.0, None) when they
-    do not overlap.
+    `depth` is `overlap_thickness` of the intersection -- for two
+    axis-aligned rects exactly `min(dx, dy)`, the rect channel's own depth
+    -- and `rect` its bounding box, which is what the edge-class waiver
+    tests against the outline. (0.0, 0.0, None) when they do not overlap.
     """
     ix = a.intersection(b)
     area = ix.area
     if area <= EPS:
         return 0.0, 0.0, None
-    mrr = ix.minimum_rotated_rectangle
-    cs = list(mrr.exterior.coords) if hasattr(mrr, 'exterior') else []
-    if len(cs) >= 4:
-        s1 = math.hypot(cs[1][0] - cs[0][0], cs[1][1] - cs[0][1])
-        s2 = math.hypot(cs[2][0] - cs[1][0], cs[2][1] - cs[1][1])
-        depth = min(s1, s2)
-    else:
-        depth = 0.0
-    return area, depth, tuple(ix.bounds)
+    return area, overlap_thickness(ix), tuple(ix.bounds)
+
+
+#: The precision (mm) `overlap_thickness` measures a non-rectangular region
+#: to: the last decimal `depth_mm` is rounded to. A rectangle is exact.
+THICKNESS_TOL_MM = 1e-4
+
+
+def _areal_parts(geom):
+    """The Polygon parts of any geometry: an intersection can be a Polygon, a
+    MultiPolygon, or a collection that also carries lines and points."""
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == 'Polygon':
+        return [geom] if geom.area > EPS else []
+    out = []
+    for g in getattr(geom, 'geoms', ()):
+        out.extend(_areal_parts(g))
+    return out
+
+
+def _inscribed_radius(poly) -> float:
+    """Radius of the largest circle inside `poly`, to `THICKNESS_TOL_MM`.
+    shapely 2.1 has `maximum_inscribed_circle`; before it, `polylabel` finds
+    the same centre (the pole of inaccessibility)."""
+    import shapely
+    mic = getattr(shapely, 'maximum_inscribed_circle', None)
+    if mic is not None:
+        return float(mic(poly, tolerance=THICKNESS_TOL_MM).length)
+    from shapely.ops import polylabel
+    return float(poly.boundary.distance(
+        polylabel(poly, tolerance=THICKNESS_TOL_MM)))
+
+
+def overlap_thickness(geom) -> float:
+    """How thick an overlap region is, in mm: twice the radius of the largest
+    circle it contains, over its thickest part.
+
+    For a rectangle that is its shorter side -- the rect channel's
+    `min(dx, dy)` -- and a rectangular region is measured exactly so, with
+    no search. The shorter side of the region's minimum ROTATED rectangle,
+    which this replaced, spans the whole region instead of its thickness: a
+    part tucked into a stepped courtyard's corner notch, grazing both arms
+    0.2 mm deep, read 2.2 mm and tripped the 0.3 mm blocking floor, and two
+    disjoint slivers read as one region as wide as the gap between them.
+    """
+    best = 0.0
+    for p in _areal_parts(geom):
+        mrr = p.minimum_rotated_rectangle
+        cs = list(mrr.exterior.coords) if hasattr(mrr, 'exterior') else []
+        if len(cs) < 4:
+            continue
+        short = min(math.hypot(cs[1][0] - cs[0][0], cs[1][1] - cs[0][1]),
+                    math.hypot(cs[2][0] - cs[1][0], cs[2][1] - cs[1][1]))
+        if abs(mrr.area - p.area) <= 1e-9 * max(1.0, mrr.area):
+            best = max(best, short)            # the region IS a rectangle
+        else:
+            best = max(best, min(short, 2.0 * _inscribed_radius(p)))
+    return best
 
 
 #: A body overlap at or above this fraction of the SMALLER body is a

@@ -270,6 +270,51 @@ class TestOutlineDetails(unittest.TestCase):
         self.assertAlmostEqual(fab[0].area_mm2, 2.0, places=3)
         self.assertEqual(fab[0].contained_frac, 1.0)
 
+    def test_an_l_shaped_graze_is_as_thin_as_it_is(self):
+        """B (3.2 mm square) sits in the corner notch of A's stepped
+        courtyard and grazes both arms 0.2 mm deep: an L of 0.84 mm2. Its
+        thickness is ~0.23 mm, under the 0.3 mm blocking floor; the short
+        side of its minimum rotated rectangle is 2.2 mm, which made it
+        COURTYARD BLOCKING."""
+        from placement.legality import COURTYARD_BLOCKING_MIN_DEPTH_MM
+        step = [(-5, -7), (5, -7), (5, -5), (7, -5), (7, 5), (5, 5), (5, 7),
+                (-5, 7), (-5, 5), (-7, 5), (-7, -5), (-5, -5)]
+        stepped = ''.join(line(step[i], step[(i + 1) % len(step)])
+                          for i in range(len(step)))
+        sq = ('    (fp_rect (start -1.6 -1.6) (end 1.6 1.6) (stroke (width'
+              ' 0.05) (type default)) (layer "F.CrtYd"))\n')
+        with tempfile.TemporaryDirectory() as td:
+            g = grade(raw_board(td, fp('A', 10, 10, stepped)
+                                + fp('B', 16.4, 16.4, sq, net=2)))
+        pair = next(q for q in g['pairs'] if q.kind == 'courtyard')
+        self.assertAlmostEqual(pair.area_mm2, 0.84, places=3)
+        self.assertAlmostEqual(pair.depth_mm, 0.2343, delta=0.002)
+        self.assertLess(pair.depth_mm, COURTYARD_BLOCKING_MIN_DEPTH_MM)
+        self.assertEqual(g['courtyard_blocking_pairs'], [])
+
+    def test_thickness_without_maximum_inscribed_circle(self):
+        """shapely before 2.1 has no `maximum_inscribed_circle`; the
+        polylabel fallback measures the same thickness."""
+        import shapely
+        from shapely.geometry import Polygon, box
+        from placement.legality import overlap_thickness
+        ell = Polygon([(0, 0), (3, 0), (3, 0.2), (0.2, 0.2), (0.2, 3),
+                       (0, 3)])
+        rect = box(0, 0, 2, 0.7)
+        want = [overlap_thickness(ell), overlap_thickness(rect)]
+        mic = getattr(shapely, 'maximum_inscribed_circle', None)
+        if mic is not None:
+            del shapely.maximum_inscribed_circle
+        try:
+            got = [overlap_thickness(ell), overlap_thickness(rect)]
+        finally:
+            if mic is not None:
+                shapely.maximum_inscribed_circle = mic
+        self.assertAlmostEqual(want[1], 0.7, places=9)
+        self.assertAlmostEqual(got[1], 0.7, places=9)
+        self.assertAlmostEqual(got[0], want[0], delta=1e-3)
+        self.assertLess(want[0], 0.3)
+
     def test_a_pad_turned_off_the_lattice_is_boxed_from_its_own_size(self):
         """PartPads at a 45-degree delta: a 0.4 x 1.2 pad on a part seeded
         at 0 boxes to (0.2 + 0.6) / sqrt2 half-extents; the same pad on a
