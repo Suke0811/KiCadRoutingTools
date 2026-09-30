@@ -288,7 +288,31 @@ def test_a_flat_model_path_is_found_by_its_name():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_a_part_nothing_is_placed_on_has_no_body():
+    """A part with no 3D model that KiCad excludes from pick-and-place (or
+    marks board-only) is copper, not a component: a USB-A plug made of board
+    traces, a PCB antenna, a Tag-Connect footprint. A box drawn on it read as
+    a part that is not there (StickHub's J1, run 36). An assembled part with
+    no model still gets its box."""
+    from kicad_parser import parse_kicad_pcb
+    from stage3d import scene as SC
+    sc = SC.build_scene(parse_kicad_pcb(os.path.join(
+        FC.ROOT, 'kicad_files', 'ulx3s.kicad_pcb')))
+    _check(sc['parts']['AE1']['body'] is None,
+           "ulx3s AE1 (a PCB antenna, not placed) has no body")
+    sc = SC.build_scene(parse_kicad_pcb(os.path.join(
+        FC.ROOT, 'kicad_files', 'rp2350_fpga_eensy_prePlane.kicad_pcb')))
+    _check(sc['parts']['J2']['body'] is None
+           and sc['parts']['U1']['body'] is not None,
+           'rp2350 J2 (a Tag-Connect footprint) has no body; U1 keeps one')
+    sc = SC.build_scene(parse_kicad_pcb(os.path.join(
+        FC.ROOT, 'kicad_files', 'esp_prog.kicad_pcb')))
+    _check(sc['parts']['Ref*']['body'] is not None,
+           'esp_prog\'s fiducial (no model, but assembled) keeps its box')
+
+
 TESTS = (
+    test_a_part_nothing_is_placed_on_has_no_body,
     test_every_frame_is_rebuilt_from_the_record_alone,
     test_the_board_faces_the_work_and_turns_back,
     test_the_side_rule_waits_out_a_stray_event,

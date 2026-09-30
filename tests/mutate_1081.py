@@ -235,6 +235,10 @@ ROWS = [
      "        found = _by_name(path, dirs)",
      "        found = None",
      (T_TL,), 'KILLED'),
+    ('a-copper-only-part-gets-a-box', 'scene',
+     "            if words & {'board_only', 'exclude_from_pos_files'}:",
+     "            if False:",
+     (T_TL,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)
