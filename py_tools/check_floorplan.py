@@ -633,6 +633,13 @@ def main(argv=None):
                   f"{len(doc['must_lock'])} locked part(s)")
             print(f"  envelope {doc['envelope']['rect']} -- read from the "
                   f"board. The outline is not editable by this toolchain")
+            # #1103: a pile says what it did not read off its poses.
+            _pcw = (doc.get('context') or {}).get('pose_claims_withheld')
+            if _pcw:
+                print(f"  pile: {_pcw['reason']} -- withheld "
+                      f"{', '.join(_pcw['withheld'])} for "
+                      f"{len(_pcw['refs_off_board'])} unlocked part(s) off the board; "
+                      f"kept: {_pcw['kept']}")
             # #704: the decap number and what it COSTS, next to each other.
             cen = (doc.get('context') or {}).get('decap_census') or {}
             lim = (doc.get('decaps') or {}).get('max_distance_mm')

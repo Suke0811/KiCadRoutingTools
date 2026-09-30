@@ -3560,13 +3560,21 @@ def _drill_conflict(state, a: str, pose_a, b: str, pose_b) -> Optional[str]:
     da, db = drills(a, pose_a), drills(b, pose_b)
     if not da or not db:
         return None
-    floor = 0.0
-    try:
-        from list_nets import board_constraint
-        floor = float(board_constraint(state.pcb_file, 'min_hole_to_hole')
-                      or 0.0)
-    except Exception:                                      # noqa: BLE001
+    # Read once per state: the waived-courtyard seat (#1101) calls this per
+    # candidate pose, and the constraint is a file read.
+    floor = getattr(state, '_h2h_floor', None)
+    if floor is None:
         floor = 0.0
+        try:
+            from list_nets import board_constraint
+            floor = float(board_constraint(state.pcb_file,
+                                           'min_hole_to_hole') or 0.0)
+        except Exception:                                  # noqa: BLE001
+            floor = 0.0
+        try:
+            state._h2h_floor = floor
+        except Exception:                                  # noqa: BLE001
+            pass
     worst = None
     for ax, ay, ar, an in da:
         for bx, by, br, bn in db:
@@ -3665,6 +3673,13 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
                 else:
                     conflicts[other] = (f"courtyard overlaps {other} by "
                                         f"{w:.2f}x{h:.2f}mm ({area:.3f}mm2)")
+            elif getattr(state, 'courtyards_ignored', False):
+                # #1101: the project waives the courtyard, and with it the
+                # only branch above that asked about stacked holes; holes are
+                # not waived (review: two coincident NPTH seated).
+                _dh = _drill_conflict(state, ref, pose, other, opose)
+                if _dh:
+                    conflicts[other] = _dh
         if ctx is not None:
             sf = ctx.pair_shortfall(ref, other, pose_a=pose, pose_b=opose)
             # `pads_ok`'s conjuncts, ABSOLUTE rather than seed-relative: a

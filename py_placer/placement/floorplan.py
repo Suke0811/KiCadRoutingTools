@@ -8128,7 +8128,19 @@ def emit_intent(pcb_data, pcb_file: str, *,
     _suspects = any('SUSPECT' in (c.get('note') or '') for c in conns)
     _budget = {}
     _withheld = {}
-    if _body_blocking:
+    try:
+        from .legality import courtyard_severity_of as _cso
+        _cy_ignored = _cso(pcb_file)[0] == 'ignore'
+    except Exception:                                        # noqa: BLE001
+        _cy_ignored = False
+    if _cy_ignored:
+        # #1101 review: the budget is a courtyard OVERLAP AREA, and the
+        # project waives courtyard overlap -- the seeder packs courtyards
+        # there, so a budget read off this board would fail its own seed.
+        _withheld['overlap_area'] = (
+            "the project sets courtyards_overlap to ignore, so a courtyard "
+            "overlap budget grades nothing it asks for")
+    elif _body_blocking:
         _withheld['overlap_area'] = (f'{_body_blocking} blocking body '
                                      f'pair(s) on the emitting board (run-6)')
     elif _courtyard_blocking:

@@ -379,7 +379,12 @@ KiCad's DRC judges them: an overlap is illegal, courtyards that abut (gap 0)
 are not -- unlike a searched seat, which keeps the board clearance -- so a
 human's edge-to-edge rows can be declared. Pad and hole clearance, keep-outs
 (#1031's rule-area band included) and the outline keep their normal rules,
-ABSOLUTE rather than against an input pose, and as in `pads_ok` two parts'
+ABSOLUTE rather than against an input pose. **A board whose own project sets
+`courtyards_overlap` to `ignore` (#1101)** is not refused a courtyard overlap
+at all, here or in any searched seat: KiCad checks none, and check_assembly
+grades it that way (#1095). The searched seats then space each PAD PAIR at its
+own requirement instead of courtyards, holes stay refused hole to hole, and
+the emitter writes no `overlap_area` budget. As in `pads_ok` two parts'
 pads may not stack on each other whatever their nets -- a same-net stack is
 refused too (a part overhanging the outline must
 keep its pad copper and holes on the board). Every declared pose is judged
@@ -1437,7 +1442,9 @@ nothing to read. Same derivation and withholding; the basis is
 under 90% of the reference's pad-bearing parts are on the board with the same
 footprint (another design), and when the reference is itself unplaced.
 StickHub's human board gives 2.18 mm from 38 tethers; run 36, with no limit
-armed, left the hub's decaps 2.1-9.8 mm from their pins.
+armed, left the hub's decaps 2.1-9.8 mm from their pins. Since #1102 it also
+derives the PIN limit, `max_pin_distance_mm` (see "The emitter derives no pin
+limit" below for why only from a reference).
 
 **Three states since #959**, selected by `--no-declare-decaps`,
 `--declare-decaps` (strict) and `--auto-declare-decaps`. The default,
@@ -1794,7 +1801,7 @@ fewer than 3 are covered. When the reference also keeps every rail cap inside
 the 5 mm tether radius, the intent promotes `decap_ungraded` to error, so a cap
 stranded beyond it is named. Run 37 (StickHub) stranded C3, C7, C12 at 7.8-10.2
 mm with no error; with the human board as reference it gets 10 pin errors and
-those 4 caps by name, and the human board grades clean against its own
+C3, C7, C12 and C21 by name, and the human board grades clean against its own
 limits (1.7716 mm pins, 2.1828 mm tethers).
 
 `READER_VERSION` stays 1. `_reject_unknown` already refuses an unknown `decaps`

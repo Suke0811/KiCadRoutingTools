@@ -178,6 +178,126 @@ class TestEscapeBranchChecksBodies(unittest.TestCase):
         self.assertTrue(clear)
 
 
+HOLE = (
+    '  (footprint "t:H" (layer "F.Cu") (at {x} {y})\n'
+    '    (property "Reference" "{ref}" (at 0 0) (layer "F.SilkS"))\n'
+    '    (fp_circle (center 0 0) (end 1 0) (stroke (width 0.05)'
+    ' (type default)) (layer "F.CrtYd"))\n'
+    '    (pad "" np_thru_hole circle (at 0 0) (size 1.5 1.5) (drill 1.5)'
+    ' (layers "*.Cu" "*.Mask")))\n')
+
+
+def ignore_board(td, parts, extra_pro=None):
+    path = os.path.join(td, 'b.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(BOARD.format(parts=parts))
+    pro = {'board': {'design_settings': {'rule_severities': {
+        'courtyards_overlap': 'ignore'}}}}
+    pro.update(extra_pro or {})
+    with open(os.path.join(td, 'b.kicad_pro'), 'w', encoding='utf-8') as fh:
+        json.dump(pro, fh)
+    return path
+
+
+class TestHolesAreNotWaived(unittest.TestCase):
+    """#1101 review: with the courtyard waived, nothing refused two drill
+    holes on one spot -- the courtyard was the only check that did."""
+
+    def test_stacked_holes_are_refused(self):
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        with tempfile.TemporaryDirectory() as td:
+            p = ignore_board(td, HOLE.format(ref='H1', x=3, y=2)
+                             + HOLE.format(ref='H2', x=3.1, y=2))
+            st = pose_score.make_state(parse_kicad_pcb(p), p, clearance=0.15,
+                                       board_edge_clearance=0.1)
+            self.assertTrue(st.courtyards_ignored)
+            stacked = st.candidate_valid('H2', 3.5, 2.0, 0.0, exclude=set())
+            apart = st.candidate_valid('H2', 6.5, 2.0, 0.0, exclude=set())
+        self.assertFalse(stacked)
+        self.assertTrue(apart)
+
+    def test_a_declared_pose_on_a_hole_is_refused(self):
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        from placement.seeder import _fixed_pose_check
+        with tempfile.TemporaryDirectory() as td:
+            p = ignore_board(td, HOLE.format(ref='H1', x=3, y=2)
+                             + HOLE.format(ref='H2', x=6.5, y=2))
+            st = pose_score.make_state(parse_kicad_pcb(p), p, clearance=0.15,
+                                       board_edge_clearance=0.1)
+            _how, _why, stacked = _fixed_pose_check(
+                st, 'H2', (3.1, 2.0, 0.0), {'H1': (3.0, 2.0, 0.0)})
+            _how, _why, apart = _fixed_pose_check(
+                st, 'H2', (6.5, 2.0, 0.0), {'H1': (3.0, 2.0, 0.0)})
+        self.assertIn('H1', stacked)
+        self.assertIn('drill', stacked['H1'])
+        self.assertNotIn('H1', apart)
+
+
+class TestOffsetCopperIsSeen(unittest.TestCase):
+    """#1101 review: a padbox is built from pad ANCHORS, so copper offset
+    from its drill (castellated paddles) lay outside it; a padbox prefilter
+    let a pad seat on that copper. S starts on O's copper (a pile), so
+    the seed-relative pads_ok admits the move and only the waived seat
+    can refuse it."""
+
+    def test_a_pad_on_offset_copper_is_refused(self):
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        parts = (
+            '  (footprint "t:O" (layer "F.Cu") (at 3 2)\n'
+            '    (property "Reference" "O" (at 0 0) (layer "F.SilkS"))\n'
+            '    (fp_rect (start -0.6 -0.6) (end 0.6 0.6) (stroke (width 0.05)'
+            ' (type default)) (layer "F.CrtYd"))\n'
+            '    (pad "1" thru_hole rect (at 0 0) (size 1 1)'
+            ' (drill 0.5 (offset 2 0)) (layers "*.Cu" "*.Mask")'
+            ' (net 1 "A")))\n'
+            '  (footprint "t:S" (layer "F.Cu") (at 5.3 2)\n'
+            '    (property "Reference" "S" (at 0 0) (layer "F.SilkS"))\n'
+            '    (fp_rect (start -0.4 -0.4) (end 0.4 0.4) (stroke (width 0.05)'
+            ' (type default)) (layer "F.CrtYd"))\n'
+            '    (pad "1" smd rect (at 0 0) (size 0.5 0.5) (layers "F.Cu")'
+            ' (net 2 "B")))\n')
+        with tempfile.TemporaryDirectory() as td:
+            p = ignore_board(td, parts)
+            st = pose_score.make_state(parse_kicad_pcb(p), p, clearance=0.15,
+                                       board_edge_clearance=0.1)
+            on_copper = st.candidate_valid('S', 5.3, 2.0, 0.0, exclude=set())
+            clear = st.candidate_valid('S', 8.0, 2.0, 0.0, exclude=set())
+        self.assertFalse(on_copper)
+        self.assertTrue(clear)
+
+
+class TestIgnoreBoardEmitsNoOverlapBudget(unittest.TestCase):
+    def test_overlap_area_is_withheld_with_the_reason(self):
+        from kicad_parser import parse_kicad_pcb
+        from placement.floorplan import emit_intent
+        with tempfile.TemporaryDirectory() as td:
+            p = ignore_board(td, PART.format(ref='A', x=30).replace(
+                '(at 30 20)', '(at 3 2)'))
+            doc = emit_intent(parse_kicad_pcb(p), p)
+        self.assertNotIn('overlap_area', doc.get('legality_budget') or {})
+        self.assertIn('courtyards_overlap to ignore',
+                      doc['context']['budget_withheld']['overlap_area'])
+
+
+class TestHolePairsRecorded(unittest.TestCase):
+    """#1100: the hole channel names its pairs too (it recorded none)."""
+
+    def test_a_pad_in_a_hole_keepout_is_a_named_pair(self):
+        from kicad_parser import parse_kicad_pcb
+        from placement.legality import grade_pad_legality
+        with tempfile.TemporaryDirectory() as td:
+            p = ignore_board(td, HOLE.format(ref='H1', x=3, y=2)
+                             + PART.format(ref='A', x=30).replace(
+                                 '(at 30 20)', '(at 3.5 2)'))
+            g = grade_pad_legality(parse_kicad_pcb(p), 0.15, worst_n=0,
+                                   pcb_file=p)
+        self.assertGreaterEqual(g['hole_conflicts'], 1)
+        self.assertIn(['A', 'H1'], g['hole_conflict_pairs'])
+
+
 class TestCensusSides(unittest.TestCase):
     def test_a_back_side_part_is_not_a_blocker_of_a_front_part(self):
         """The eviction census lists only parts sharing a face (or drilled);

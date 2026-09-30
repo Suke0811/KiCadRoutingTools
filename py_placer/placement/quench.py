@@ -1853,6 +1853,19 @@ class QuenchState:
         return all(v <= t.threshold
                    for v, t in zip(self.intent_terms(ref, rects), spec))
 
+    def _drilled_refs(self):
+        """Refs with any drilled pad (plated or not), cached -- the parts a
+        hole-to-hole check can concern (#1101)."""
+        got = getattr(self, '_drilled_cache', None)
+        if got is None:
+            got = frozenset(
+                r for r, fp in (self.pcb_data.footprints or {}).items()
+                if any(max(float(getattr(p, 'drill', 0) or 0),
+                           float(getattr(p, 'drill_w', 0) or 0)) > 0
+                       for p in fp.pads))
+            self._drilled_cache = got
+        return got
+
     def keepout_clear(self, ref, rects) -> bool:
         """The keep-out slice of `intent_clear`, absolute (#701's policy).
 
@@ -2097,12 +2110,26 @@ class QuenchState:
                     others = self.parts.items()
                 ctx = self.legality_ctx
                 clr = self.clearance
+                drilled = self._drilled_refs()
+                from .seeder import _drill_conflict
                 for other_ref, other in others:
                     if other_ref == ref or (exclude and other_ref in exclude):
                         continue
                     if not (part.sides & other.sides):
                         continue
+                    # Hole to hole is not the pad question and the courtyard
+                    # that used to keep holes apart is waived (#1101 review).
+                    if (ref in drilled and other_ref in drilled
+                            and _drill_conflict(
+                                self, ref, (x, y, rot), other_ref,
+                                (other.x, other.y, other.rot))):
+                        legal = False
+                        break
                     if ctx is not None:
+                        # No padbox prefilter: a padbox is built from pad
+                        # ANCHORS, and offset-drill copper sits millimetres
+                        # past it; pair_shortfall early-outs on its own
+                        # copper extent (#1101 review).
                         sf = ctx.pair_shortfall(ref, other_ref,
                                                 pose_a=(x, y, rot))
                         if (sf.pad > EPS_IMPROVE or sf.pad_overlap

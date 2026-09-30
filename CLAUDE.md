@@ -192,7 +192,8 @@ Validate routed boards against the *real* spec, with the right checker — most
   `<board>.design-brief.json`.** Placement otherwise infers everything from the
   board: `emit_intent` is "a starter intent READ OFF the board", and every
   connector's edge is guessed from its current pose by `_nearest_edge`, which is
-  the only source of an edge in the toolchain. The brief is the channel for the
+  the only source of an edge in the toolchain -- except on a PILE, where no
+  UNLOCKED part's pose is read (#1103: `context.pose_claims_withheld`). The brief is the channel for the
   facts a board file cannot contain -- which connectors are user-facing, which
   edge each belongs on and **where along it**, what the enclosure forbids. It is
   auto-discovered by `check_floorplan.py` and `board_brief.py` the way
