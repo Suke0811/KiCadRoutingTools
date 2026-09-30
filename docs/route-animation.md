@@ -486,7 +486,11 @@ on stderr as retired (`frame_layout.warn_retired_knobs`).
 
 `--aspect` on `make_movie.py` or `make_film.py`, or `$KICAD_MOVIE_ASPECT`,
 declares the frame's ratio; without one it is 16:9. Both front ends resolve it
-through the one function `frame_layout.resolve_aspect`.
+through the one function `frame_layout.resolve_aspect`. A retired layout's name
+given as the aspect (`--aspect stacked`, `$KICAD_MOVIE_ASPECT=sidebar`, or
+`build_boards(aspect=...)`) declares nothing: it is named once on stderr as
+retired and the frame is the default 16:9. Any other value that is not a ratio
+is refused.
 
 **A declared size is kept.** The frame is exactly the declared size. The band
 is reserved inside it (`plan_frame(track_px=)`), out of the board's share. It

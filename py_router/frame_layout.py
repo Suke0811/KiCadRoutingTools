@@ -110,6 +110,13 @@ RATIOS: Dict[str, Optional[float]] = {
 }
 
 
+#: The retired film layouts' names. One arriving where the ASPECT goes --
+#: `--aspect stacked` was the stacked layout's own ratio, and a script or a
+#: shell may still hand a layout name to `--aspect` / `$KICAD_MOVIE_ASPECT`
+#: -- is said once as retired and declares nothing: the frame's own 16:9.
+RETIRED_LAYOUTS = ('legacy', 'stacked', 'sidebar', 'inset', 'split', 'auto')
+
+
 class FrameSizeError(ValueError):
     """Frames handed to the encoder are not all the same size."""
 
@@ -161,6 +168,21 @@ def warn_retired_knobs():
     return line
 
 
+_RETIRED_ASPECT_SAID = set()
+
+
+def warn_retired_aspect(name):
+    """ONE stderr line per retired layout name given as an aspect, in
+    `warn_retired_knobs`' words. Returns the line, or '' once said."""
+    if name in _RETIRED_ASPECT_SAID:
+        return ''
+    line = ("movie: aspect '%s' is retired -- stage3d is the only film "
+            "layout, so ignored (the frame's own 16:9)" % name)
+    print(line, file=sys.stderr)
+    _RETIRED_ASPECT_SAID.add(name)
+    return line
+
+
 def resolve_aspect(aspect=None):
     """The film's declared aspect: an explicit argument wins, and `None`
     falls back to `$KICAD_MOVIE_ASPECT` (env_knobs), then to None -- the
@@ -180,7 +202,9 @@ def resolve_aspect(aspect=None):
 
 def parse_ratio(text) -> Optional[float]:
     """`'16:9'`, `'16/9'`, `1.78`, or a RATIOS key. `None` = nothing
-    declared: the frame's own `STAGE3D_ASPECT`."""
+    declared: the frame's own `STAGE3D_ASPECT`. A `RETIRED_LAYOUTS` name is
+    said (`warn_retired_aspect`) and declares nothing; anything else that is
+    not a ratio raises."""
     if text is None or text == '':
         return None
     if isinstance(text, (int, float)):
@@ -188,6 +212,9 @@ def parse_ratio(text) -> Optional[float]:
     key = str(text).strip().lower()
     if key in RATIOS:
         return RATIOS[key]
+    if key in RETIRED_LAYOUTS:
+        warn_retired_aspect(key)
+        return None
     for sep in (':', '/', 'x'):
         if sep in key:
             a, _, b = key.partition(sep)
