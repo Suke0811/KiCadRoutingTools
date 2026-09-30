@@ -106,8 +106,14 @@ ROWS = [
      "        if False:",
      (T1095,), 'KILLED'),
     ('legacy-tool-ignore-trusted', 'leg',
-     "        if all(sev.get(c) == 'ignore' for c in legacy):",
+     "        if all(saved_all.get(c, sev.get(c)) == 'ignore' for c in legacy):",
      "        if False:",
+     (T1095,), 'KILLED'),
+    # The PR review: an author's ignore followed by a current relax read as
+    # the legacy plan (glasgow_revC 0 -> 21 courtyard-blocking pairs).
+    ('legacy-check-blind-to-saved', 'leg',
+     "        if all(saved_all.get(c, sev.get(c)) == 'ignore' for c in legacy):",
+     "        if all(sev.get(c) == 'ignore' for c in legacy):",
      (T1095,), 'KILLED'),
     # --- #1096: pad copper off the outline -----------------------------------
     ('off-outline-not-a-conjunct', 'asm',

@@ -1512,14 +1512,22 @@ def courtyard_severity_of(pcb_file: Optional[str]) -> Tuple[Optional[str],
     `fix_kicad_drc_settings.severity_plan`, whose early form set
     courtyards_overlap to ignore along with the rest of its categories, and
     the writeback only ever loosens, so it carries down every later copy
-    (241 local run outputs carry it; glasgow_revC's routed loop outputs read
-    0 courtyard-blocking pairs under it and 24-25 without). So:
+    (run outputs of that era carry it: glasgow_revC's routed loop outputs
+    read 0 courtyard-blocking pairs under it and 24-25 without). So:
 
     - `kicad_routing_tools.saved_severities.courtyards_overlap` exists: a
       current tool changed the value and kept the author's; that is the
       answer ('saved: author's value').
-    - the project ignores EVERY category the legacy plan ignored: tool
-      written, graded at error ('legacy severity plan').
+    - the project ignored EVERY category the legacy plan ignored BEFORE any
+      current tool touched it: tool written, graded at error ('legacy
+      severity plan'). "Before" is each category's `saved_severities`
+      record where it has one, else its value. The pre-#856 writer never
+      wrote that record (it did not exist until #856), and a current
+      `--relax-severities` records every category it changes -- so an
+      author's own `ignore` followed by a relax, which ignores the other
+      seven, reads as the author's, while a legacy project a current tool
+      later touched still reads as legacy (its categories were already at
+      ignore, so nothing was recorded for them).
     - otherwise the project's own value ('project').
     """
     if not pcb_file:
@@ -1533,14 +1541,15 @@ def courtyard_severity_of(pcb_file: Optional[str]) -> Tuple[Optional[str],
         return None, 'no project'
     sev = (((doc.get('board') or {}).get('design_settings') or {})
            .get('rule_severities') or {})
-    saved = (((doc.get('kicad_routing_tools') or {})
-              .get('saved_severities') or {}).get('courtyards_overlap'))
+    saved_all = ((doc.get('kicad_routing_tools') or {})
+                 .get('saved_severities') or {})
+    saved = saved_all.get('courtyards_overlap')
     if saved is not None:
         return saved, "saved: the author's value, kept when a tool changed it"
     value = sev.get('courtyards_overlap')
     if value == 'ignore':
         legacy = LEGACY_SEVERITY_PLAN_IGNORES
-        if all(sev.get(c) == 'ignore' for c in legacy):
+        if all(saved_all.get(c, sev.get(c)) == 'ignore' for c in legacy):
             return None, ("legacy severity plan: the project ignores all of "
                           + ', '.join(sorted(legacy)) + ", which this "
                           "repo's pre-#856 route steps wrote, so the ignore "

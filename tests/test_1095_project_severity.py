@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(ROOT, 'py_router'))
 sys.path.insert(0, os.path.join(ROOT, 'py_tools'))
 
 from test_1094_rotated_courtyards import stickhub  # noqa: E402
+from placement.legality import LEGACY_SEVERITY_PLAN_IGNORES  # noqa: E402
 
 PART = (
     '  (footprint "t:{ref}" (layer "F.Cu") (at {x} 10)\n'
@@ -139,6 +140,50 @@ class TestSynthetic(unittest.TestCase):
         self.assertIsNone(g['courtyard_severity'])
         self.assertTrue(g['courtyard_severity_basis'].startswith(
             'legacy severity plan'))
+
+    def _relax(self, path):
+        """Apply the CURRENT `fix_kicad_drc_settings --relax-severities`
+        plan to the board's project, through the real writer."""
+        from fix_kicad_drc_settings import (apply_targets_to_project,
+                                            severity_plan)
+        pro = os.path.splitext(path)[0] + '.kicad_pro'
+        with open(pro, encoding='utf-8') as fh:
+            doc = json.load(fh)
+        apply_targets_to_project(doc, {}, severity_plan())
+        with open(pro, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh)
+        return doc
+
+    def test_an_author_ignore_survives_a_later_relax(self):
+        """The author ignores courtyards_overlap; a current relax then
+        ignores the other seven legacy categories (and records each one it
+        changed). All eight read 'ignore' now, but the ignore is still the
+        author's: glasgow_revC went 0 -> 21 courtyard-blocking pairs here
+        before the check looked at `saved_severities`."""
+        with tempfile.TemporaryDirectory() as td:
+            path = board(td, DEEP, 'ignore')
+            doc = self._relax(path)
+            sev = doc['board']['design_settings']['rule_severities']
+            self.assertTrue(all(sev.get(c) == 'ignore' for c in
+                                LEGACY_SEVERITY_PLAN_IGNORES), sev)
+            g = grade(path)
+        self.assertEqual(g['courtyard_severity'], 'ignore')
+        self.assertEqual(g['courtyard_severity_basis'], 'project')
+        self.assertEqual(g['courtyard_blocking_pairs'], [])
+
+    def test_a_legacy_ignore_stays_legacy_after_a_later_relax(self):
+        """A legacy project a current tool relaxes again records nothing for
+        the legacy categories (they are already at ignore), so it still
+        reads as the pre-#856 tool's."""
+        legacy = {c: 'ignore' for c in LEGACY_SEVERITY_PLAN_IGNORES}
+        with tempfile.TemporaryDirectory() as td:
+            path = board(td, DEEP, 'ignore', extra_sev=legacy)
+            self._relax(path)
+            g = grade(path)
+        self.assertIsNone(g['courtyard_severity'])
+        self.assertTrue(g['courtyard_severity_basis'].startswith(
+            'legacy severity plan'))
+        self.assertEqual(len(g['courtyard_blocking_pairs']), 1)
 
     def test_a_saved_author_value_wins_over_a_tool_ignore(self):
         """A current tool that loosened the project records the author's
