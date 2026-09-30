@@ -2575,6 +2575,16 @@ layers follow once the basics route real boards (*later*, below).
   signal layers than the bus uses.
 - **Feedback from `route.py`:** failures that name bus copper as the
   blocker are sent back to a re-run of the step as reservations.
+- **Which nets get planes, and where.** The chain's first step pours the
+  planes the routing skills pick (`recommend-plane-mappings`,
+  `plan-pcb-routing`); nothing here reviews that choice. On `zynq_ad9364`
+  the recorded chain poured GND, RFGND and VCC_1V8, and the joint-fanout runs
+  added VCC_1V0, VCC_1V5 and VCC_3V3 on In2 by hand. VCC1P8 -- the AD9364's
+  1.8 V rail, a separate net from VCC_1V8 -- was left to `route.py` and ended
+  in three pieces, and RFGND's pour is only as large as the three outlines the
+  board draws for it on In1. Review the choice (the nets, the layer each gets,
+  the pour's extent, several rails sharing a layer) and measure it in the
+  whole-chain A/B.
 - **The bus's fanout and the other nets' fanout as one.** `route_bus.py
   --joint-fanout` (opt-in) does the first half. The bus is laid by its own
   engine call as without it, but round a via site kept free in every other
