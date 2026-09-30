@@ -105,18 +105,35 @@ class TestNewPairAtATiedCount(unittest.TestCase):
 class TestPinLimitFromTheReference(unittest.TestCase):
     """#1102."""
 
-    def test_the_pin_limit_is_derived_or_withheld_with_a_reason(self):
-        _r, doc = emit(PILE, '--decaps-from', PLACED)
+    def test_a_withheld_pin_limit_is_a_note_not_debt(self):
+        """esp_prog covers too few supply pins to derive a pin limit: the
+        reason is a census NOTE, and the board still grades pass against
+        its own intent (it went pass -> exit 4 when the withholding was
+        written to budget_withheld)."""
+        _r, doc = emit(PLACED, '--decaps-from', PLACED)
         census = doc['context']['decap_census']
-        pin = (doc.get('decaps') or {}).get('max_pin_distance_mm')
-        held = (doc['context'].get('budget_withheld') or {}).get(
-            'decaps.max_pin_distance_mm')
-        self.assertTrue((pin is None) != (held is None), (pin, held))
-        self.assertIsNotNone(census.get('reference_pin_census'))
-        if pin is not None:
-            self.assertEqual(doc['context']['basis']
-                             ['decaps.max_pin_distance_mm'],
-                             'reference:esp_prog.kicad_pcb')
+        self.assertNotIn('max_pin_distance_mm', doc.get('decaps') or {})
+        self.assertIn('supply pin', census.get('pin_limit_withheld') or '')
+        self.assertNotIn('decaps.max_pin_distance_mm',
+                         doc['context'].get('budget_withheld') or {})
+        with tempfile.TemporaryDirectory() as td:
+            ip = os.path.join(td, 'i.json')
+            with open(ip, 'w', encoding='utf-8') as fh:
+                json.dump(doc, fh)
+            g = subprocess.run([sys.executable, '-X', 'utf8', FLOORPLAN,
+                                PLACED, '--intent', ip],
+                               capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(g.returncode, 0, g.stdout[-1500:])
+
+    def test_a_derived_pin_limit_carries_its_basis(self):
+        """flat_hierarchy derives a pin limit with no tether limit beside it;
+        the pin limit is still labelled with its reference."""
+        board = os.path.join(ROOT, 'kicad_files', 'flat_hierarchy.kicad_pcb')
+        _r, doc = emit(board, '--decaps-from', board)
+        self.assertIn('max_pin_distance_mm', doc['decaps'])
+        self.assertEqual(doc['context']['basis']
+                         ['decaps.max_pin_distance_mm'],
+                         'reference:flat_hierarchy.kicad_pcb')
 
     def test_stickhub_reference_arms_the_pin_rule_and_the_horizon(self):
         path = stickhub()
@@ -143,16 +160,41 @@ class TestPileEmitsNoPoseClaims(unittest.TestCase):
     """#1103."""
 
     def test_a_pile_withholds_what_its_poses_would_claim(self):
+        """esp_prog with every unlocked part parked off the right edge, in
+        a column: each of them overhangs and would be read as an edge
+        connector nearest the east edge."""
+        from kicad_parser import iter_footprint_blocks
         from placement.parser import extract_locked_refs
-        _r, doc = emit(PILE, '--declare-classes')
-        locked = extract_locked_refs(PILE)
+        text = open(PLACED, encoding='utf-8').read()
+        locked = extract_locked_refs(PLACED)
+        blocks = [(s, e, key) for s, e, _t, _r, key
+                  in iter_footprint_blocks(text) if key not in locked]
+        for i, (s, e, key) in reversed(list(enumerate(blocks))):
+            blk = text[s:e]
+            a = blk.index('(at ')
+            b = blk.index(')', a)
+            blk = blk[:a] + f'(at 200 {60 + 4 * i}' + blk[b:]
+            text = text[:s] + blk + text[e:]
+        with tempfile.TemporaryDirectory() as td:
+            pile = os.path.join(td, 'pile.kicad_pcb')
+            with open(pile, 'w', encoding='utf-8') as fh:
+                fh.write(text)
+            _r, doc = emit(pile, '--declare-classes')
         w = doc['context']['pose_claims_withheld']
         self.assertIn('pile', w['reason'])
+        self.assertGreaterEqual(len(w['refs_off_board']), 10)
         self.assertEqual([c['ref'] for c in doc['edge_connectors']
                           if c.get('edge') and c['ref'] not in locked], [])
         self.assertEqual([b for b in doc['blocks'] if 'zone' in b], [])
         self.assertNotIn('oob_count', doc.get('legality_budget') or {})
-        self.assertIn('oob_count', doc['context']['budget_withheld'])
+
+    def test_a_pile_inside_the_board_keeps_an_honest_zero(self):
+        """run 29's heap sits on the board: its oob_count 0 is true and
+        stays a budget rather than going dark."""
+        _r, doc = emit(PILE, '--declare-classes')
+        self.assertIn('pose_claims_withheld', doc['context'])
+        self.assertEqual((doc.get('legality_budget') or {}).get('oob_count'),
+                         0)
 
     def test_a_placed_board_keeps_its_claims(self):
         _r, doc = emit(PLACED, '--declare-classes')

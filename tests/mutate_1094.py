@@ -58,6 +58,8 @@ T1095 = _t('test_1095_project_severity.py')
 T1096 = _t('test_1096_off_outline_gates.py')
 T1098 = _t('test_1098_mating_keepout.py')
 T1099 = _t('test_1099_seed_gaps.py')
+T1100 = _t('test_1100_1103_run37_followups.py')
+T1101 = _t('test_1101_courtyard_waiver_seat.py')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -176,6 +178,37 @@ ROWS = [
      "                        for d in (45.0, 135.0, 225.0, 315.0)])",
      "                        for d in ()])",
      (T1099,), 'KILLED'),
+    # --- #1100-#1103: run 37's follow-ups -------------------------------------
+    ('new-pair-at-a-tie-accepted', 'pose',
+     "            if fresh:",
+     "            if False:",
+     (T1100,), 'KILLED'),
+    ('pile-edges-read-off-poses', 'fp',
+     "        amt = state.edge_gate.rect_outside_amount(parts[ref].rect)\n"
+     "        if _pile and ref not in _pile_locked:",
+     "        amt = state.edge_gate.rect_outside_amount(parts[ref].rect)\n"
+     "        if False:",
+     (T1100,), 'KILLED'),
+    ('pin-limit-not-derived', 'fp',
+     "            _decaps['max_pin_distance_mm'] = _pin_limit",
+     "            pass",
+     (T1100,), 'KILLED'),
+    ('withheld-pin-limit-is-debt', 'fp',
+     "            _census['pin_limit_withheld'] = (",
+     "            _withheld['decaps.max_pin_distance_mm'] = (",
+     (T1100,), 'KILLED'),
+    ('waived-courtyards-still-refused', 'quench',
+     "        if legal and getattr(self, 'courtyards_ignored', False):",
+     "        if False:",
+     (T1101,), 'KILLED'),
+    ('waived-seat-spaces-no-pads', 'quench',
+     "                    if ob is not None and rect_gap(mine, ob) < clr:",
+     "                    if False:",
+     (T1101,), 'KILLED'),
+    ('census-counts-the-other-face', 'seeder',
+     "        if not (part.sides & op.sides):",
+     "        if False:",
+     (T1101,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

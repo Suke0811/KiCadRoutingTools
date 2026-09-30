@@ -5663,10 +5663,6 @@ _WITHHELD_RULE = {
     'decaps.max_distance_mm': (
         ('decap_distance', 'decap_ungraded'),
         lambda i: (i.decaps or {}).get('max_distance_mm') is not None),
-    # #1102: withheld by --decaps-from when the reference cannot say it.
-    'decaps.max_pin_distance_mm': (
-        ('decap_pin_distance',),
-        lambda i: (i.decaps or {}).get('max_pin_distance_mm') is not None),
 }
 
 
@@ -7677,7 +7673,8 @@ def _decap_mode(v) -> str:
 
 def _emitted_basis(decaps, budget, conns, blocks,
                    assembly=None, band_default=(),
-                   decaps_basis: Optional[str] = None) -> Dict[str, str]:
+                   decaps_basis: Optional[str] = None,
+                   pin_basis: Optional[str] = None) -> Dict[str, str]:
     """`{intent path: basis}` for every number the emitter chose: what it
     READ off this board is `observed_baseline`; a constant of this module is
     `derived_default`. The envelope RECT is not here -- it is the outline,
@@ -7689,8 +7686,8 @@ def _emitted_basis(decaps, budget, conns, blocks,
     if 'max_distance_mm' in (decaps or {}):
         # #1099: read off a REFERENCE board, not this one, says so.
         out['decaps.max_distance_mm'] = decaps_basis or 'observed_baseline'
-    if 'max_pin_distance_mm' in (decaps or {}) and decaps_basis:
-        out['decaps.max_pin_distance_mm'] = decaps_basis
+    if 'max_pin_distance_mm' in (decaps or {}) and pin_basis:
+        out['decaps.max_pin_distance_mm'] = pin_basis
     for k in sorted(budget or {}):
         out[f'legality_budget.{k}'] = 'observed_baseline'
     for c in conns or ():
@@ -7817,9 +7814,14 @@ def emit_intent(pcb_data, pcb_file: str, *,
     # it, and that board's other claims are real; a heap is at least half
     # stacked (run 29's pile: 83%).
     _sig = _pile_st.signals or {}
+    # The heap test counts `stacked_suspect_refs`, which already excuses the
+    # far-side and marker co-locations a placed board has on purpose; the
+    # raw `duplicate_fraction` does not (verifier: a placed orangecrab with
+    # 60 parts under front-side parts read as a pile).
+    _n_fp = max(1, _pile_st.n_footprints or 0)
     _pile = bool(_pile_st.unplaced or _sig.get('s3_outside')
                  or (_pile_st.partially_unplaced
-                     and (_sig.get('duplicate_fraction') or 0) >= 0.5))
+                     and len(_pile_st.stacked_suspect_refs) / _n_fp >= 0.5))
     _pile_locked = set(extract_locked_refs_safe(pcb_file)) if _pile else set()
     _pose_withheld: List[str] = []
 
@@ -8136,7 +8138,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
             f'auto-budget would bless them')
     else:
         _budget['overlap_area'] = _ceil4(float(leg['overlap_area']))
-    if _pile:
+    if _pile and int(leg['oob_count']):
         _withheld['oob_count'] = (
             'the board is a pile: its off-board count is staging, not a '
             'baseline (#1103)')
@@ -8253,7 +8255,11 @@ def emit_intent(pcb_data, pcb_file: str, *,
         _census['reference_pin_census'] = _pin_census_of(_ref_pcb) \
             if _ref_ok else None
         if _pin_limit is None:
-            _withheld['decaps.max_pin_distance_mm'] = (
+            # A census NOTE, not `budget_withheld`: nothing asked for the pin
+            # rule, so withholding it must not leave a clean board "not fully
+            # graded" (#1102 verifier: esp_prog graded against its own
+            # --decaps-from intent went pass/exit 0 -> exit 4).
+            _census['pin_limit_withheld'] = (
                 f"the reference board {decaps_from}: {_pin_why}")
         else:
             _decaps['max_pin_distance_mm'] = _pin_limit
@@ -8411,7 +8417,9 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 _decaps, _budget, conns, blocks, _assembly, band_default,
                 decaps_basis=(_census.get('decaps_basis')
                               if str(_census.get('decaps_basis') or '')
-                              .startswith('reference:') else None)),
+                              .startswith('reference:') else None),
+                pin_basis=('reference:' + os.path.basename(decaps_from)
+                           if decaps_from else None)),
         },
     }
     if derive_arrays == 'auto':

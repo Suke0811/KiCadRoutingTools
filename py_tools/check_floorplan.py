@@ -120,7 +120,11 @@ def build_parser():
                         'rule on a pile, where nothing can be read (#1099). '
                         'Same derivation and withholding as --declare-decaps; '
                         'the census records decaps_basis reference:<file>. '
-                        'Overrides the --*declare-decaps arms')
+                        'Also derives decaps.max_pin_distance_mm (supply pin '
+                        'to nearest cap, #1102) and, when the reference keeps '
+                        'every rail cap inside the search radius, promotes '
+                        'decap_ungraded to error. Overrides the '
+                        '--*declare-decaps arms')
     p.add_argument('--declare-decaps', dest='declare_decaps',
                    action='store_const', const='strict',
                    help='with --emit-intent: ALSO derive decaps.'
@@ -648,8 +652,6 @@ def main(argv=None):
                 print(f"  decaps: max_distance_mm WITHHELD -- {held}")
             # #1102: the pin limit --decaps-from derives beside it.
             _plim = (doc.get('decaps') or {}).get('max_pin_distance_mm')
-            _pheld = ((doc.get('context') or {}).get('budget_withheld')
-                      or {}).get('decaps.max_pin_distance_mm')
             if _plim is not None:
                 _pc = cen.get('reference_pin_census') or {}
                 print(f"  decaps: max_pin_distance_mm {_plim} from "
@@ -657,8 +659,9 @@ def main(argv=None):
                       + ("; decap_ungraded promoted to error (the "
                          "reference keeps every rail cap in the radius)"
                          if cen.get('decap_ungraded_promoted') else ''))
-            elif _pheld:
-                print(f"  decaps: max_pin_distance_mm WITHHELD -- {_pheld}")
+            elif cen.get('pin_limit_withheld'):
+                print(f"  decaps: max_pin_distance_mm not derived -- "
+                      f"{cen['pin_limit_withheld']}")
             elif cen.get('auto_withheld'):
                 # #959: auto's withholding is kept out of budget_withheld
                 # (no exit change), and printed here so it is not silent.
