@@ -575,8 +575,10 @@ def main(argv=None):
     ap.add_argument('--chunks', type=int, default=6)
     ap.add_argument('--end-hold', type=float, default=1.5)
     ap.add_argument('--attempts-ledger', default=None, metavar='PATH',
-                    help='the converge ledger for the benchmark band '
-                         '(#1042); --from-ledger also supplies one')
+                    help='the converge ledger for the benchmark band, and '
+                         'the one the placement panels read their laps and '
+                         'scores from (#1042); --from-ledger also supplies '
+                         'one')
     ap.add_argument('--benchmark-board', default=None, metavar='PATH',
                     help="a benchmark board: drawn DASHED on the placement "
                          "arrangement panel, and the 100%% line of the benchmark band, gold once "

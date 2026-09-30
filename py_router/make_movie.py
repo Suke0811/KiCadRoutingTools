@@ -551,8 +551,9 @@ def main():
                          "panels instead, and says so.")
     ap.add_argument('--attempts-ledger', default=None, metavar='PATH',
                     help='the converge ledger to draw the benchmark band '
-                         'from, instead of looking beside the boards '
-                         '(#1042)')
+                         'from, instead of looking beside the boards; the '
+                         'placement panels read their laps and scores from '
+                         'it too (#1042)')
     ap.add_argument('--benchmark-board', default=None, metavar='PATH',
                     help="a benchmark board (the human's, or a previous "
                          "run): drawn DASHED on the placement arrangement "

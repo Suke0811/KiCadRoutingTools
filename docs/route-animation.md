@@ -581,13 +581,15 @@ layer name is **dropped, not overprinted** — measured overlap was +25 px at
 Routing and placement are not one shot. `place_route_loop` tries a round,
 routes it, keeps it or throws it away, and tries again -- and the search is on
 disk in full, because `write_round_sidecar` records every round including the
-rejected ones. `py_router/movie_attempts.py` reads those records -- the loop
+rejected ones. The film draws the search as the stage3d frame's benchmark band
+(below), and reads it with `movie_benchmark.discover` beside the boards: the
+converge ledger (`ledger.jsonl`, else `converge.jsonl`) when one holds a lap,
+**else** the `loop_round*.json` sidecars -- one record or the other, never the
+two joined. A ledger named by `--attempts-ledger` or `--from-ledger` is read
+alone. `py_router/movie_attempts.py` still reads all three records -- the loop
 sidecars, a converge ledger, an `awx` evolve ledger -- into one `Track` of
-`Attempt`s. The film draws the search as the stage3d frame's benchmark band
-(below); the verdict graph this module used to draw, the ATTEMPTS BAND, went
-with the retired layouts, and so did its drawing rules (the broken axis, the
-visibility horizon, the refusal of a frame too short for it). What the readers
-decide is still worth knowing:
+`Attempt`s, and shares its record rule with `awx`, but no film draws that
+`Track` any more. What its readers decide:
 
 ```bash
 python3 py_tools/make_film.py --from-loop-dir wk/ -o film.gif
@@ -645,22 +647,21 @@ A `blocking` that is not a count (a per-term dict, a boolean, a string, NaN, a
 negative) is read the same way and counted in the note: `converge.blocking_value`
 is the rule, and `movie_attempts._blocking_value` mirrors it (#1077).
 
-**A place-and-route run is ONE graph.** A combined run leaves two records of
+**Two records, and the film draws one.** A combined run leaves two records of
 its search: the converge ledger (placement laps and routing laps, told apart by
 `kind`), and `loop_round*.json` sidecars when `place_route_loop` ran. When both
-sit next to the boards, `movie_attempts.discover` joins them
-(`join_tracks`). The index counts laps across both halves: the half that
-started first keeps its indices and the other is shifted past it. The second
-half's root descends from the first half's last kept attempt. Both axes are a
-blocking term (`score.blocking`, `failures`), and the metric names both. A loop
-ranked on an `--accept-cmd` scalar is not joined, and the note says it was left
-out.
+sit next to the boards the film's band is the LEDGER's (`movie_benchmark.
+discover` looks for it first); the sidecars are not drawn. `movie_attempts.
+discover` can join the two into one `Track` (`join_tracks`: the half that
+started first keeps its indices, the other is shifted past it, and its root
+descends from the first half's last kept attempt; a loop ranked on an
+`--accept-cmd` scalar is not joined), but no film path calls it.
 
 **x is run time when the ledger has a clock (#1042).** A converge ledger's
-rows carry `t`. When every attempt has one, the track's x domain is run time
-over the ledger's whole span, placement laps included, and the placement panels
-read the same domain. A joined converge + loop graph has no time on its loop
-half, so it keeps the lap index.
+rows carry `t`. When every lap has one, the band's x domain is run time over
+the ledger's whole span, placement laps included, and the placement panels
+read the same domain. Loop sidecars carry no clock, so a band read from them
+keeps the lap index.
 
 **Lineage follows `parent_sha`.** A ledger row with no `parent_sha`, or one
 naming a board no row produced, descends from the last accepted row before it,
