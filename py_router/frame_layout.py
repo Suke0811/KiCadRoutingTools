@@ -201,10 +201,9 @@ def layout_choices() -> str:
 
 
 #: The film's layout when nothing names one (#1081, at the requester's
-#: call): the 3D board, the layer column and the benchmark band.
-#: `plan_frame(layout=None)` still means 'legacy' -- today's frame -- for a
-#: caller that plans a frame directly; this is the FILM's default, which
-#: `make_movie` and `make_film` resolve through `resolve_layout_aspect`.
+#: call): the 3D board, the layer column and the benchmark band --
+#: `plan_frame(layout=None)` and `animate_route.build_boards(layout=None)`
+#: included.
 DEFAULT_FILM_LAYOUT = 'stage3d'
 
 
@@ -283,8 +282,9 @@ def parse_ratio(text) -> Optional[float]:
 
 
 def resolve_layout(name, board_bounds, *, quiet=False) -> Tuple[str, str]:
-    """`(resolved_key, why)`. Only `'auto'` consults the board."""
-    key = (name or 'legacy')
+    """`(resolved_key, why)`. Only `'auto'` consults the board; no name
+    is stage3d, the film's only default."""
+    key = (name or DEFAULT_FILM_LAYOUT)
     if isinstance(key, str):
         key = key.strip().lower()
     if key not in LAYOUTS:
@@ -331,7 +331,7 @@ def resolve_layout(name, board_bounds, *, quiet=False) -> Tuple[str, str]:
                        % (a, ADAPTIVE_ASPECT_CUT))
 
 
-def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
+def plan_frame(board_bounds, *, layout=None, ratio=None, size=1000,
                panel=False, foot_px=0, track_px=0,
                rail_frac=RAIL_FRAC, foot_frac=FOOT_FRAC,
                legacy_size=None, quiet=False) -> FrameGeometry:
@@ -355,18 +355,19 @@ def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
     key, why = resolve_layout(layout, board_bounds, quiet=quiet)
     spec = LAYOUTS[key]
     notes = []
+    extreme = False
     if key == 'stage3d':
         # A declared frame this far from square cannot hold a 70 x 70 board
-        # box AND a column or row beside it; the honest answer is the frame
-        # whose box IS the board -- the same rule `auto` applies to a board.
+        # box AND a column or row beside it. It stays a stage3d frame at the
+        # ratio asked for -- rail, foot, and the band only if it fits -- but
+        # the board box takes the whole width and there is no layer column,
+        # and the status line says so.
         fa = ratio if ratio else spec.aspect
         if fa and not (EXTREME_ASPECT_LO <= fa <= EXTREME_ASPECT_HI):
+            extreme = True
             notes.append('stage3d: frame aspect %.2f is outside %.2f..%.2f, '
-                         "so the legacy frame at the board's own aspect"
-                         % (fa, EXTREME_ASPECT_LO, EXTREME_ASPECT_HI))
-            key, spec, ratio = 'legacy', LAYOUTS['legacy'], None
-            panel = False           # legacy has no lower box
-            why = notes[-1]
+                         'so no layer column -- the board box takes the '
+                         'frame' % (fa, EXTREME_ASPECT_LO, EXTREME_ASPECT_HI))
 
     # An explicit ratio always wins: `legacy_size` is a shortcut for
     # reproducing today's frame EXACTLY, and asking for a ratio is asking
@@ -419,7 +420,11 @@ def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
     panel_box = None
     split = None
     if spec.panel == 'column':
-        board, panel_box, why_col = _stage3d_boxes(W, H, inner_y, inner_h)
+        if extreme:
+            board, panel_box, why_col = Box(0, inner_y, W, inner_h), None, None
+        else:
+            board, panel_box, why_col = _stage3d_boxes(W, H, inner_y,
+                                                       inner_h)
         if why_col:
             notes.append(why_col)
         # The floor is a PROMISE only a frame big enough can keep. A tiny
@@ -473,7 +478,7 @@ def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
     foot_box = Box(0, y, W, foot_h + band_h)
 
     geom = FrameGeometry(
-        layout=key, requested_layout=str(layout or 'legacy'), chosen_by=why,
+        layout=key, requested_layout=str(layout or key), chosen_by=why,
         aspect=aspect, frame=Box(0, 0, W, H), board=board, panel=panel_box,
         panel_split=split, rail=Box(0, 0, W, rail_h), foot=foot_box,
         track=track_box, overlays_board=spec.overlays_board,

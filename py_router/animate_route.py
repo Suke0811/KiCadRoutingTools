@@ -1025,12 +1025,12 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     if True:
         import frame_layout
         _plan_kw = dict(
-            layout=layout or 'legacy',
+            layout=layout or frame_layout.DEFAULT_FILM_LAYOUT,
             ratio=frame_layout.parse_ratio(aspect), size=size,
             # A panel is reserved for every layout that declares one, EXCEPT
             # 'legacy' -- which has no chrome at all, because legacy means
             # today's frame and today's frame has no lower box.
-            panel=(str(layout or 'legacy').lower() != 'legacy'),
+            panel=(str(layout or 'stage3d').lower() != 'legacy'),
             legacy_size=(r.W, r.H))
         _g = frame_layout.plan_frame(r.pcb.board_info.board_bounds,
                                      **_plan_kw)
@@ -1758,7 +1758,17 @@ def main() -> int:
                               args.layer_alpha, args.rip_hold)
         out = args.output or (os.path.splitext(args.trace)[0] + '.gif')
 
-    return 0 if save_gif(frames, out, args.fps, args.end_hold, args.png_dir) else 1
+    try:
+        ok = save_gif(frames, out, args.fps, args.end_hold, args.png_dir)
+    finally:
+        # a --run-dir film is a stage3d film (the only layout): drop the 3D
+        # board's state frames once it is written, as make_movie does
+        try:
+            from stage3d import film as _s3f
+            _s3f.cleanup()
+        except Exception:                                      # noqa: BLE001
+            pass
+    return 0 if ok else 1
 
 
 if __name__ == '__main__':

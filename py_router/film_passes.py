@@ -49,19 +49,9 @@ def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
     board; `attempts_from=''` means do not look). `placement`: `{'off',
     'ledger', 'benchmark', 'benchmark_score', 'intent'}`."""
     placement = dict(placement or {})
-    stage3d = str(layout or '').strip().lower() == 'stage3d'
-    if stage3d:
-        # the SAME fallback plan_frame takes: a declared aspect outside
-        # 0.50..3.00 is a legacy frame, so it gets legacy's bands (a
-        # benchmark band drawn on a legacy frame was the half-fallback)
-        import frame_layout
-        try:
-            fa = frame_layout.parse_ratio(aspect) if aspect else None
-        except ValueError:
-            fa = None
-        if fa and not (frame_layout.EXTREME_ASPECT_LO <= fa
-                       <= frame_layout.EXTREME_ASPECT_HI):
-            stage3d, layout = False, 'legacy'
+    # a declared aspect outside 0.50..3.00 is still a stage3d frame (a
+    # board-only one, `frame_layout.plan_frame`), so it gets stage3d's bands
+    stage3d = str(layout or 'stage3d').strip().lower() == 'stage3d'
     here = os.path.dirname(os.path.abspath(final)) if final else ''
     btrack = None
     if stage3d:

@@ -100,18 +100,18 @@ def test_stage3d_without_a_ledger_keeps_the_placement_panels():
                'measured and reserved (%s, band %r)' % (b.pwhy, b.band))
 
 
-def test_an_extreme_aspect_gets_legacy_bands():
-    """plan_frame falls stage3d back to legacy outside 0.50..3.00; the
-    bands must follow, or a benchmark band lands on a legacy frame."""
+def test_an_extreme_aspect_keeps_stage3d_bands():
+    """Outside 0.50..3.00 plan_frame draws a board-only STAGE3D frame
+    (there is no legacy frame any more), so the bands stay stage3d's."""
     with contextlib.redirect_stderr(io.StringIO()):
         b = FP.plan([], None, 'stage3d', aspect='4:1', quiet=True,
                     attempts=False)
-    _check(not b.stage3d, 'stage3d at 4:1 plans legacy bands')
+    _check(b.stage3d, 'stage3d at 4:1 plans stage3d bands')
 
 
 TESTS = (test_both_front_ends_run_the_one_pipeline,
          test_stage3d_without_a_ledger_keeps_the_placement_panels,
-         test_an_extreme_aspect_gets_legacy_bands)
+         test_an_extreme_aspect_keeps_stage3d_bands)
 
 
 def main():

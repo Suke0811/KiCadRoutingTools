@@ -15,8 +15,9 @@ What this file pins:
     that nothing explains reads as a missing feature;
   * **portrait turns the column into a row** under the board, and drops it
     (said) when it would be too short to read;
-  * **an extreme declared aspect falls back to `legacy`**, said, at the
-    board's own aspect -- a declared ratio kept would starve the legacy frame;
+  * **an extreme declared aspect stays a stage3d frame at the ratio asked
+    for**, board-only: no layer column, the board box the full width, the
+    band only if it fits -- and said;
   * **`auto` never picks it**: it is a stance, like C and D;
   * **every layout key is in both CLIs' `--layout` help** -- the help used to
     be hand-listed, and a new layout is exactly what such a list forgets;
@@ -67,7 +68,7 @@ def test_the_board_keeps_seventy_by_seventy():
                 for track in (0, 120, 400):
                     g = _plan(bb, ratio, size, track)
                     n += 1
-                    if g.layout != 'stage3d':
+                    if any('outside' in x for x in g.notes):
                         continue            # an extreme ratio; tested below
                     W, H = g.frame.w, g.frame.h
                     land = W >= FL.ISO_SIDE_ASPECT * H
@@ -155,24 +156,35 @@ def test_portrait_makes_the_column_a_row_or_says_why_not():
         print('  PASS: portrait row, or a stated drop')
 
 
-def test_an_extreme_aspect_falls_back_to_legacy_and_says_so():
+def test_an_extreme_aspect_is_a_board_only_stage3d_frame_and_says_so():
+    """No legacy frame to fall back to any more. The declared ratio is
+    KEPT, the board box takes the whole width under the rail, there is no
+    layer column, and a band only when the board keeps its height floor."""
     mark = len(_FAIL)
     for ratio in ('4:1', '1:3'):
-        for track in (0, 120):
-            g = _plan(SHAPES['wide 1.85'], ratio, 500, track)
-            line = FL.frame_status_line(g)
-            _check(g.layout == 'legacy' and 'outside' in line,
-                   '%s band %d: legacy, said (%s: %r)'
-                   % (ratio, track, g.layout, line))
-            bw = SHAPES['wide 1.85'][2] / float(SHAPES['wide 1.85'][3])
-            # the legacy FRAME grows by the clock band; its board box is
-            # the board's own aspect
-            got = g.board.w / float(g.board.h)
-            _check(abs(got - bw) < 0.05,
-                   '%s band %d: the board box is the board\'s own aspect '
-                   '%.2f (got %.2f)' % (ratio, track, bw, got))
+        want = FL.parse_ratio(ratio)
+        for size in (500, 1400):
+            for track in (0, 120):
+                g = _plan(SHAPES['wide 1.85'], ratio, size, track)
+                line = FL.frame_status_line(g)
+                tag = '%s size %d band %d' % (ratio, size, track)
+                _check(g.layout == 'stage3d' and 'outside' in line
+                       and 'no layer column' in line,
+                       '%s: stage3d, board-only, said (%s: %r)'
+                       % (tag, g.layout, line))
+                _check(abs(g.frame.w / float(g.frame.h) - want) < 0.05,
+                       '%s: the declared ratio is kept (%dx%d)'
+                       % (tag, g.frame.w, g.frame.h))
+                _check(g.panel is None and g.board.w == g.frame.w
+                       and g.board.y == g.rail.h and g.rail.h > 0,
+                       '%s: the board box is the full width under the rail, '
+                       'no column (%s, panel %s)' % (tag, g.board, g.panel))
+                if g.track is not None:
+                    _check(g.board.h >= FL.STAGE3D_BOARD_H_FRAC * g.frame.h,
+                           '%s: a band only when the board keeps its floor'
+                           % tag)
     if len(_FAIL) == mark:
-        print('  PASS: extreme aspects fall back, said')
+        print('  PASS: extreme aspects are board-only stage3d frames, said')
 
 
 def test_auto_never_picks_it():
@@ -220,7 +232,7 @@ TESTS = (
     test_a_band_is_shrunk_then_declined_and_either_is_said,
     test_a_floor_it_cannot_keep_is_said,
     test_portrait_makes_the_column_a_row_or_says_why_not,
-    test_an_extreme_aspect_falls_back_to_legacy_and_says_so,
+    test_an_extreme_aspect_is_a_board_only_stage3d_frame_and_says_so,
     test_auto_never_picks_it,
     test_every_layout_is_in_both_clis_help,
     test_layout_budget_excludes_stage3d_on_purpose,
