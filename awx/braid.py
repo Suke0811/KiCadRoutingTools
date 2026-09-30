@@ -81,26 +81,26 @@ from bga_fanout.flip_frame import to_front_frame, other_layer, mirror_axis  # no
 import rules as _rules  # noqa: E402  ONE source for every design rule
 
 # ONE SOURCE: rules.py. main() installs them (rules.install_defaults);
-# without an install they are the literals they have always been -- see
-# rules.py, "USING IT".
+# they start as rules.active()'s -- a run's supplied rules, else the
+# literals they have always been -- see rules.py, "USING IT".
 TRACK = ts.TRACK         # ONE source: topo_strings
-CLEAR = _rules.DEFAULT.hug
+CLEAR = _rules.active().hug
                          # 0.1 spec + 5um so hugs don't sit exactly at 0.1
-SPEC_CLEARANCE = _rules.DEFAULT.clearance
+SPEC_CLEARANCE = _rules.active().clearance
                          # the spec itself: what the fanout lays at, what grade_k
                          # grades at, and what the output PROJECT records (CLEAR
                          # is the router's private margin over it, not a rule)
-VIA_SIZE = _rules.DEFAULT.via_size
-GRID = _rules.DEFAULT.grid        # the routing grid (rules.GRID)
-VIA_DRILL = _rules.DEFAULT.via_drill
+VIA_SIZE = _rules.active().via_size
+GRID = _rules.active().grid        # the routing grid (rules.GRID)
+VIA_DRILL = _rules.active().via_drill
 
-MINP = _rules.DEFAULT.exit_pitch   # lane pitch floor at the exits
-LPITCH = _rules.DEFAULT.lane_pitch # pitch of a side-join / side-exit block
+MINP = _rules.active().exit_pitch   # lane pitch floor at the exits
+LPITCH = _rules.active().lane_pitch # pitch of a side-join / side-exit block
 BLOCK_GAP = 0.45               # a block starts this far beyond what it clears
                                # line: a lane passing a stub's END at the
                                # legal minimum plus a hair
                                # (= TRACK + CLEAR + 0.07)
-HALF_SEP = _rules.DEFAULT.half_sep  # two lanes at their band edges clear
+HALF_SEP = _rules.active().half_sep  # two lanes at their band edges clear
                                # (= (TRACK + SPEC_CLEARANCE) / 2)
 LEG_W = 0.5                    # half-width in s of a join / exit leg's band
 ROW_O = 0.7                    # head-on berths within this across the spine form a ROW (Corridor._head_order)
@@ -6995,7 +6995,9 @@ def setup(board, names, dest, log, plan=None, pairs=False):
     # tighten-only, so a board declaring less than the default routes
     # as before
     from list_nets import board_constraint
-    h2h = board_constraint(board, 'min_hole_to_hole')
+    # (a run's supplied rules carry the floors the driver resolved -- route_bus: given, else the board's own)
+    _sup = _rules.active()
+    h2h = _sup.hole_to_hole if _sup.hole_to_hole is not None else board_constraint(board, 'min_hole_to_hole')
     kw = {}
     if h2h and h2h > cn.GridRouteConfig().hole_to_hole_clearance:
         kw['hole_to_hole_clearance'] = float(h2h)
@@ -7005,7 +7007,8 @@ def setup(board, names, dest, log, plan=None, pairs=False):
     # bench's family), and a lane along an edge -- never on the bench,
     # SCAS on the pose gate's BF article at K28 -- shipped three edge
     # violations at 0.079 mm over (2026-09-08)
-    edge = board_constraint(board, 'min_copper_edge_clearance')
+    edge = (_sup.edge_clearance if _sup.edge_clearance is not None
+            else board_constraint(board, 'min_copper_edge_clearance'))
     if edge and edge > CLEAR:
         kw['board_edge_clearance'] = float(edge)
     ctx.cfg = cn.make_config(pcb, TRACK, CLEAR, VIA_SIZE, VIA_DRILL,

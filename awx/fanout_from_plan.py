@@ -1544,7 +1544,7 @@ def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
     copy_pro(board, out_path)
     r = subprocess.run([sys.executable,
                         os.path.join(HERE, '..', 'py_router', 'check_drc.py'),
-                        out_path, '--clearance', '0.1',
+                        out_path, '--clearance', str(te.SPEC_CLEARANCE),
                         '--clearance-margin', '0.1',
                         # or check_drc truncates each category at 20 and the
                         # nets beyond that are never banned, never freed

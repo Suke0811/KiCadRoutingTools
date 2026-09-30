@@ -192,8 +192,15 @@ It is graded where it is written:
 A board with inner copper layers is taken as it is. The lanes run on F.Cu
 and B.Cu, and the inner layers' copper meets the through vias only.
 
+It routes at the chain's sizes, given as the routing CLIs take them
+(`--clearance`, `--track-width`, `--via-size`, `--via-drill`, ... and
+`--fanout-track-width` for the escapes). One omitted is resolved as
+`route.py` resolves its own: see
+[One source for every routing number](#one-source-for-every-routing-number-rulespy).
+
 `zynq_ad9364` from GitHub, its planes poured as the stress run poured them,
-and the whole bus:
+and the whole bus at the stress run's sizes: its fanouts' 0.12 mm track at
+0.09 mm, its routes' 0.15 mm track and 0.45/0.3 mm vias:
 
 ```bash
 cd awx
@@ -207,16 +214,22 @@ python3 ../py_router/route_planes.py tmp/zynq/src/boards_unrouted_set1/zynq_ad93
     --nets GND RFGND VCC_1V8 --plane-layers In1.Cu In1.Cu In2.Cu --layers F.Cu In1.Cu In2.Cu B.Cu \
     --clearance-ceiling 0.2 --hole-to-hole-clearance 0.25 --via-size 0.45 --via-drill 0.3 \
     --power-nets GND RFGND VCC_1V8 --power-nets-widths 0.4 0.4 0.4
-python3 route_bus.py tmp/zynq/planes.kicad_pcb tmp/zynq/bus.kicad_pcb --src U1 --dest U2 --inproc
+python3 route_bus.py tmp/zynq/planes.kicad_pcb tmp/zynq/bus.kicad_pcb --src U1 --dest U2 --inproc \
+    --clearance 0.09 --track-width 0.15 --fanout-track-width 0.12 --via-size 0.45 --via-drill 0.3
 ```
 
 On a Mac (2026-09-29), 48 nets run between U1 and U2:
 - the CK pair is refused, because it passes through its termination
   resistor R20 and the whole route lays no waypoint;
-- the source fanout refuses A14 and CAS;
-- the other 44 route in their bands, in two fanout rounds, with 72 vias and
-  1329 mm of copper, connected and DRC-clean on the whole board, in 636 s
-  and a 1.1 GB process.
+- the source fanout refuses CAS;
+- the other 45 route in their bands, in two fanout rounds, with 80 vias and
+  1292 mm of copper, connected and DRC-clean on the whole board, in 1640 s
+  and a 1 GB process.
+
+The escapes are 0.12 mm, the lanes 0.15 mm, and the vias 0.45/0.3 mm. The
+exception is a via in an array's ball: there the production fanout sizes
+the via to the pad, as it does in the chain's own fanouts (0.35/0.2 in
+U1's balls, 0.4/0.25 in U2's).
 
 Its last line is the grade:
 
@@ -2201,9 +2214,29 @@ every module's constant defaults to it, and every stage installs from it
 swimmer was once priced five different ways.
 
 It does **not** resolve numbers from the board, on purpose: `py_router`
-already does that resolution in one place, and the topo chain will be driven
-by the main router with the geometry supplied
+already does that resolution, and the chain is given its geometry
 (`Rules.from_router_config(cfg)` is the seam).
+
+The bus step supplies it. `route_bus.py` takes the chain's sizes as the
+routing CLIs take them: `--clearance`, `--clearance-ceiling`,
+`--track-width`, `--via-size`, `--via-drill`, the hole-to-hole and edge
+floors, and `--fanout-track-width` for the escapes (the chain lays its
+fanout narrower than its routes). One omitted is resolved as `route.py`
+resolves its own:
+- the board's Default net class, else the fallback;
+- the clearance capped at a ceiling;
+- the floors the board's own;
+- every size pinned up to the fab floor.
+
+The resulting rules go to every stage as one setting (`rules.SETTING`). Each
+module sets its constants from them when imported (`rules.active()`), and
+`rules.install()` rewrites a module already imported. The two leave every
+module the same, bit for bit (`tests/test_622_rules_supplied.py`). A bus
+that needs its own sizes, not the rest of the chain's, is given them the
+same way.
+
+With nothing supplied, as on the benches, the constants below are what
+every stage has:
 
 | quantity | source | value |
 |---|---|---|
@@ -2212,7 +2245,7 @@ by the main router with the geometry supplied
 | lane track / fanout track | `rules.TRACK` / `Rules.fan_track` | 0.127 / 0.1 -- the board carries two widths on purpose |
 | via size / drill | `rules.VIA_SIZE` / `VIA_DRILL` | 0.25 / 0.15 |
 | lane slice, lane pitch, exit pitch | `Rules.lane_slice` / `.lane_pitch` / `.exit_pitch` | 0.232, 0.35, 0.38 |
-| hole-to-hole / edge | `Rules.hole_to_hole` / `.edge_clearance` | read off the board, tighten-only |
+| hole-to-hole / edge | `Rules.hole_to_hole` / `.edge_clearance` | read off the board, tighten-only (supplied: the given or the board's own) |
 
 `braid.CLEAR` (0.105) and `topo_strings.SPEC_CLEAR` (0.1) are different
 quantities; `TOL`, `STEP`, `MARGIN`, `CAP`, `PROX_TRACK`, `HW_COL` look
@@ -2441,11 +2474,15 @@ layers follow once the basics route real boards (*later*, below).
      copper graphics; a board handed over partly routed brings more. A
      board's inner layers already meet the vias only (item 2).
 4. **The router's rules.**
-   - Clearance, track and via come from the same resolution `route.py`
-     makes: net classes, `.kicad_dru` layer rules, the fab tier and
-     `--clearance-ceiling`. They go through `Rules.from_router_config`.
-   - The `.kicad_pro` floor is written back.
-   - Today `rules.py` holds fixed constants.
+   - Done: `route_bus.py` takes the chain's sizes as the routing CLIs take
+     them. An omitted size is resolved as `route.py` resolves its own: the
+     Default net class, `--clearance-ceiling`, the board's floors and the
+     fab floor. The sizes go through `Rules.from_router_config` to every
+     stage, and the `.kicad_pro` floor is written back, lowered only.
+   - Still to do: the whole route prices one clearance for the whole bus,
+     so a bus net class that differs from the Default class, and
+     `.kicad_dru` layer rules, are not honoured. There is no
+     `--fab-tier` / `--escalation`: the default tier applies.
 5. **Finding the buses.**
    - A detector names every pair of parts that share enough point-to-point
      nets and have an array on at least one side. The step takes the whole

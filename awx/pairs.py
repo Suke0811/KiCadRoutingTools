@@ -30,7 +30,7 @@ Pt = Tuple[float, float]
 # the pair router rejects a pair whose legs sit closer than the config's
 # clearance as a short (measured: gap 0.100 against clearance 0.105,
 # SDQS0 refused after a found route). Overridable per invocation.
-GAP = float(awx_settings.get('BRAID_PAIR_GAP', '0') or 0) or _rules.DEFAULT.pair_gap
+GAP = float(awx_settings.get('BRAID_PAIR_GAP', '0') or 0) or _rules.active().pair_gap
 # (the hug plus a grid diagonal, rules.pair_gap: the pose router's short test
 # is `gap < clearance` on the legs it GENERATES on the grid, and at a corner
 # the inner leg's gap shrinks -- measured 0.102, 0.1035 and 0.092 against
@@ -39,7 +39,7 @@ GAP = float(awx_settings.get('BRAID_PAIR_GAP', '0') or 0) or _rules.DEFAULT.pair
 # the farthest apart a pair's two teeth (or two berths) may stand for the
 # pair to be routed as ONE lane: beyond it the legs are singles, and the
 # log says so (the plan chose the ends apart -- the joint menu's job)
-MAX_SEP = float(awx_settings.get('BRAID_PAIR_SEP', '0') or 0) or 2.0 * _rules.DEFAULT.lane_pitch
+MAX_SEP = float(awx_settings.get('BRAID_PAIR_SEP', '0') or 0) or 2.0 * _rules.active().lane_pitch
 
 _SUFFIX = re.compile(r'^(.*?)(_P|_N|P|N|\+|-|_p|_n)$')
 
@@ -55,7 +55,7 @@ ONLY = {s.strip() for s in awx_settings.get('BRAID_PAIR_ONLY', '').split(',') if
 
 def pitch(track: float = None) -> float:
     """Centre-to-centre pitch of the two legs."""
-    return (_rules.TRACK if track is None else track) + GAP
+    return (_rules.active().track if track is None else track) + GAP
 
 
 def via_straight_steps(cfg) -> int:

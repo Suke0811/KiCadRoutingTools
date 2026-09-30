@@ -38,8 +38,71 @@ sys.path.insert(0, os.path.join(HERE, '..', 'py_router'))
 STEP_SETTINGS = {'TAUT_MEMO': '0', 'PROBE_MEMO': '0', 'STAGE_CACHE': '0'}
 
 
-def route_bus(board, out, src, dest, k=None, rounds=3, inproc=False, log=print):
-    """Route the bus between `src` and `dest` on `board`, writing `out`. Returns (exit code, grade line)."""
+# the sizes route_bus takes, as the routing CLIs spell them (route.py's, and the escapes' own track)
+SIZE_ARGS = ('clearance', 'clearance_ceiling', 'track_width', 'fanout_track_width', 'via_size', 'via_drill',
+             'hole_to_hole_clearance', 'board_edge_clearance')
+
+
+def resolve_rules(board, clearance=None, clearance_ceiling=None, track_width=None, fanout_track_width=None,
+                  via_size=None, via_drill=None, hole_to_hole_clearance=None, board_edge_clearance=None, log=print):
+    """The run's rules: the chain's sizes, resolved as route.py resolves its own, through Rules.from_router_config
+    (rules.py's one seam; rules.py itself never reads a board).
+
+    A size given is taken. One omitted is the board's Default net class's, else routing_defaults'. The clearance is
+    capped at `clearance_ceiling` (min of the two, route.py's reading). The hole-to-hole and edge floors are the
+    board's own when not given (list_nets.resolve_cli_floor). Every size is pinned up to the fab floor for the
+    board's copper layer count (fab_tiers.enforce_fab_floors). The escapes' track is `fanout_track_width`, else the
+    lanes' -- the chain lays its fanout narrower than its routes, and a router config has one track."""
+    import dataclasses
+    import types
+    import routing_defaults as defaults
+    import rules as _rules
+    from list_nets import board_default_netclass_param, resolve_cli_floor
+    from fab_tiers import enforce_fab_floors, count_copper_layers_in_file
+    got = {}
+    for name, key, given, fallback in (('track_width', 'track_width', track_width, defaults.TRACK_WIDTH),
+                                       ('via_size', 'via_diameter', via_size, defaults.VIA_SIZE),
+                                       ('via_drill', 'via_drill', via_drill, defaults.VIA_DRILL),
+                                       ('clearance', 'clearance', clearance, defaults.CLEARANCE)):
+        if given is None:
+            v = board_default_netclass_param(board, key)
+            given = v if v is not None else fallback
+            log(f'  --{name.replace("_", "-")} not given: {given} mm, '
+                f'{"the board Default net class" if v is not None else "the fallback"}')
+        got[name] = float(given)
+    if clearance_ceiling is not None and clearance_ceiling < got['clearance']:
+        log(f'  --clearance-ceiling {clearance_ceiling}: the clearance {got["clearance"]} capped at it')
+        got['clearance'] = float(clearance_ceiling)
+    got['hole_to_hole_clearance'] = resolve_cli_floor(board, 'hole_to_hole', hole_to_hole_clearance,
+                                                      defaults.HOLE_TO_HOLE_CLEARANCE, '--hole-to-hole-clearance')
+    got['board_edge_clearance'] = resolve_cli_floor(board, 'board_edge_clearance', board_edge_clearance,
+                                                    defaults.BOARD_EDGE_CLEARANCE, '--board-edge-clearance')
+    n_cu = count_copper_layers_in_file(board)
+    got.update(enforce_fab_floors(n_cu, **got))
+    fan = float(fanout_track_width) if fanout_track_width is not None else got['track_width']
+    fan = enforce_fab_floors(n_cu, track_width=fan).get('track_width', fan)
+    r = _rules.Rules.from_router_config(types.SimpleNamespace(**got), fan_track=fan)
+    return dataclasses.replace(r, source='the chain\'s sizes, resolved as route.py resolves its own')
+
+
+def route_bus(board, out, src, dest, k=None, rounds=3, inproc=False, log=print, **sizes):
+    """Route the bus between `src` and `dest` on `board`, writing `out`, at the chain's sizes (`sizes`: SIZE_ARGS,
+    resolve_rules). Returns (exit code, grade line). The run's rules are installed for the step and supplied to
+    every stage (rules.SETTING); the process's own are put back after."""
+    import rules as _rules
+    bad = sorted(set(sizes) - set(SIZE_ARGS))
+    if bad:
+        raise TypeError(f'route_bus: no size {bad}')
+    run_rules = resolve_rules(board, log=log, **sizes)
+    prev = _rules.active()
+    _rules.install(run_rules)
+    try:
+        return _route(board, out, src, dest, k, rounds, inproc, log, run_rules)
+    finally:
+        _rules.install(prev)
+
+
+def _route(board, out, src, dest, k, rounds, inproc, log, run_rules):
     import make_bench as mb
     import flow_frame as ff
     import whole_route as wr
@@ -84,9 +147,8 @@ def route_bus(board, out, src, dest, k=None, rounds=3, inproc=False, log=print):
     fp.copy_pro(board, base)
 
     # 2. the source fanned out, the project floor, the ladder
-    _r = _rules.install_defaults()
     log(f'  rules: clearance {te.SPEC_CLEARANCE}, track {te.TRACK}, fanout {sr.FAN_TRACK}/{sr.FAN_CLEAR}, '
-        f'via {te.VIA_SIZE}/{te.VIA_DRILL}  [{_r.source}]')
+        f'via {te.VIA_SIZE}/{te.VIA_DRILL}  [{run_rules.source}]')
     fanned = os.path.join(work, 'fanned.kicad_pcb')
     with contextlib.redirect_stdout(sys.stderr):
         n_t, n_v, failed = mb.fanout_source(base, fanned, src, names)
@@ -112,7 +174,8 @@ def route_bus(board, out, src, dest, k=None, rounds=3, inproc=False, log=print):
 
     # 4. the whole route
     wr.INPROC = inproc
-    rc, grade = wr.chain(K, os.path.join(work, 'run'), rounds, base=frame, dest=dest, settings=STEP_SETTINGS)
+    rc, grade = wr.chain(K, os.path.join(work, 'run'), rounds, base=frame, dest=dest,
+                         settings={**STEP_SETTINGS, _rules.SETTING: _rules.as_setting(run_rules)})
     seq = _routed(os.path.join(work, 'run'))
     if rc != 0 or seq is None:
         log(f'route_bus: the whole route did not route the bus (exit {rc}): {grade}')
@@ -184,11 +247,22 @@ def main():
     ap.add_argument('--k', type=int, help="the ladder's first K nets (default: the whole ladder)")
     ap.add_argument('--rounds', type=int, default=3, help='fanout rounds (default 3)')
     ap.add_argument('--inproc', action='store_true', help='every stage in this process rather than each in its own')
+    g = ap.add_argument_group('sizes', 'the chain\'s sizes, as the routing CLIs take them; one omitted is resolved as '
+                                       'route.py resolves it (the board\'s Default net class, else the fallback)')
+    g.add_argument('--clearance', type=float, help='the run\'s clearance (mm)')
+    g.add_argument('--clearance-ceiling', type=float, help='cap the clearance at this (mm), as route.py does')
+    g.add_argument('--track-width', type=float, help='the lanes\' track (mm)')
+    g.add_argument('--fanout-track-width', type=float, help='the escapes\' track (mm; default: --track-width)')
+    g.add_argument('--via-size', type=float, help='via diameter (mm)')
+    g.add_argument('--via-drill', type=float, help='via drill (mm)')
+    g.add_argument('--hole-to-hole-clearance', type=float, help='drill to drill (mm; default: the board\'s own)')
+    g.add_argument('--board-edge-clearance', type=float, help='copper to edge (mm; default: the board\'s own)')
     a = ap.parse_args()
     if not os.path.isfile(a.board):
         print(f'route_bus: no board {a.board}', file=sys.stderr)
         sys.exit(2)
-    sys.exit(route_bus(a.board, a.out, a.src, a.dest, a.k, a.rounds, a.inproc)[0])
+    sizes = {n: getattr(a, n) for n in SIZE_ARGS if getattr(a, n) is not None}
+    sys.exit(route_bus(a.board, a.out, a.src, a.dest, a.k, a.rounds, a.inproc, **sizes)[0])
 
 
 if __name__ == '__main__':

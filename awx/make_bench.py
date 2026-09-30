@@ -193,7 +193,7 @@ def pad_partners(board, ref):
     """Other parts whose PADS collide with `ref`'s pads (check_drc)."""
     r = subprocess.run([sys.executable,
                         os.path.join(HERE, '..', 'py_router', 'check_drc.py'),
-                        board, '--clearance', '0.1', '--clearance-margin', '0.1'],
+                        board, '--clearance', str(te.SPEC_CLEARANCE), '--clearance-margin', '0.1'],
                        capture_output=True, text=True)
     out = set()
     for a, b in PAD_PAIR.findall(r.stdout + r.stderr):
@@ -226,7 +226,7 @@ def put_on_side(board, ref, side, log=print):
 def drc_verdict(board):
     r = subprocess.run([sys.executable,
                         os.path.join(HERE, '..', 'py_router', 'check_drc.py'),
-                        board, '--clearance', '0.1', '--clearance-margin', '0.1'],
+                        board, '--clearance', str(te.SPEC_CLEARANCE), '--clearance-margin', '0.1'],
                        capture_output=True, text=True)
     out = r.stdout + r.stderr
     m = re.search(r'FOUND (\d+) DRC VIOLATIONS', out)
@@ -354,7 +354,7 @@ def main(argv=None):
         os.replace(rot, out)
     n_drc = drc_verdict(out)
     print(f'{os.path.basename(out)}: {"DRC clean" if n_drc == 0 else f"{n_drc} DRC violation(s)"}'
-          ' at the chain\'s floor (0.1)')
+          f' at the chain\'s floor ({te.SPEC_CLEARANCE})')
     write_ladder(out, names)
     print(f'run: BASE={out} DEST={dst} bash chain_k.sh TAG K ...')
     return 0 if n_drc == 0 else 1

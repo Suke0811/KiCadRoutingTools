@@ -28,13 +28,13 @@ import rules as _rules  # noqa: E402  ONE source for every design rule
 # ONE SOURCE: rules.py. A stage installs them (rules.install_defaults);
 # a module imported without an install keeps exactly these values
 # (see rules.py, "USING IT").
-TRACK = _rules.DEFAULT.track
-SPEC_CLEAR = _rules.DEFAULT.clearance
+TRACK = _rules.active().track
+SPEC_CLEAR = _rules.active().clearance
                      # the spec clearance. NOT braid.CLEAR, which is
                      # 0.105 -- the spec plus 5um so a hug does not sit
                      # exactly on it. Two different quantities: do not
                      # import one where the other is meant.
-MARGIN_OUT = _rules.DEFAULT.margin_out   # routing margin outside the field
+MARGIN_OUT = _rules.active().margin_out   # routing margin outside the field
                                          # (= SPEC_CLEAR + TRACK / 2)
 MARGIN_IN = 0.06                     # bare-copper margin inside the field
 FREEZE = 0.35                        # no pushes this close to an endpoint

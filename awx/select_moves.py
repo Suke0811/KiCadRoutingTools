@@ -637,7 +637,7 @@ def _conflict(m: Move, om: Move, tol: float = 0.16, strict: bool = True, stack: 
 
 
 _EXIT_TOL = 0.16    # half a fine-pitch gap
-_STACK_PITCH = _rules.TRACK + _rules.SPEC_CLEARANCE + _rules.HUG_OVER   # two lanes' centres side by side
+_STACK_PITCH = _rules.active().track + _rules.active().clearance + _rules.HUG_OVER   # two lanes' centres side by side
 
 
 _VIA_REACH = 0.30   # via radius + clearance + half a track, rounded up

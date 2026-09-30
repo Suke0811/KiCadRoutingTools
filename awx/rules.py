@@ -93,16 +93,21 @@ once, near the top of ``main()``::
 
 `install` writes the values into the module-level constants the chain
 already reads (``topo_strings.TRACK``, ``braid.CLEAR``, ...) and
-re-evaluates the constants derived from them. The literals stay as each
-module's DEFAULT, so a module imported without an install behaves exactly
-as it did before this file existed -- which is what makes the chain
+re-evaluates the constants derived from them -- every one another module
+derives at import, too, so an install leaves each module exactly as a
+fresh import under the same rules does (test_622_rules_supplied). A module
+initializes its constants from `active()`: with nothing installed or
+supplied that is DEFAULT, the literals, so a module behaves exactly as it
+did before this file existed -- which is what makes the chain
 byte-identical BY CONSTRUCTION rather than by measurement. (Measured too;
 see the README section.)
 
-Today `install_defaults()` installs exactly what the modules already hold,
-so it is inert. That is the point: it is the SEAM. When the main router
-drives the topo chain it will call ``install(Rules.from_router_config(cfg))``
-instead, and one call moves the whole chain onto the router's geometry.
+A RUN'S RULES are supplied by its driver through one setting (SETTING,
+`as_setting` / `supplied`): route_bus.py resolves the chain's sizes as
+route.py resolves its own and builds them with
+``Rules.from_router_config(cfg, fan_track=...)``. A stage in a process of
+its own imports its modules under the setting; `install_defaults()`
+installs the supplied rules when there are some, else DEFAULT (inert).
 
 Why install-into-constants rather than making each constant a function: the
 chain's consumers read these through module ATTRIBUTES at call time
@@ -305,21 +310,62 @@ class Rules:
 DEFAULT = Rules()
 """The chain's constants.
 
-Every module's constant is initialized from this, so a module used without
-an install behaves exactly as it did when the numbers were literals.
+Every module's constant is initialized from `active()`, which is this when
+nothing is supplied, so a module used without an install or a supply
+behaves exactly as it did when the numbers were literals.
 """
+
+
+# ------------------------------------------------------- supplying a run's rules
+
+SETTING = 'AWX_RULES'
+"""The setting a driver supplies a run's rules through (awx_settings: given
+for a stage in the driver's own process, the environment for a stage in a
+process of its own): `as_setting(rules)`, the numeric fields as
+``name=value`` pairs (a float's repr reads back to the same float; ``none``
+for an unset floor). route_bus.py resolves the chain's sizes as route.py
+resolves its own and supplies them to every stage; without it every stage
+has the constants."""
+
+_NUMBERS = ('clearance', 'track', 'via_size', 'via_drill', 'grid', 'hole_to_hole', 'edge_clearance', 'fan_track',
+            'lane_pitch', 'exit_pitch')
+
+
+def as_setting(rules):
+    """``rules`` as the value of SETTING."""
+    return ' '.join(f'{k}={"none" if getattr(rules, k) is None else repr(float(getattr(rules, k)))}'
+                    for k in _NUMBERS)
+
+
+def supplied():
+    """The rules SETTING supplies, or None."""
+    raw = awx_settings.get(SETTING)
+    if not raw:
+        return None
+    d = {}
+    for tok in raw.split():
+        k, v = tok.split('=', 1)
+        if k not in _NUMBERS:
+            raise ValueError(f'{SETTING}: no rule {k!r}')
+        d[k] = None if v == 'none' else float(v)
+    return Rules(source=f'supplied ({SETTING})', **d)
 
 
 # --------------------------------------------------------------- installing
 
 ACTIVE = None
-"""The Rules the last `install` put in place (None = the modules carry their
-defaults, which are DEFAULT's values). `active()` reads it."""
+"""The Rules the last `install` put in place (None = the modules carry what
+they were initialized with). `active()` reads it."""
 
 
 def active():
-    """The rules in force in this process."""
-    return ACTIVE if ACTIVE is not None else DEFAULT
+    """The rules in force in this process: the last installed, else the
+    supplied (SETTING), else DEFAULT. A module initializes its constants
+    from it, so a stage that never installs -- run in a process of its own,
+    the run's rules supplied -- still reads the run's."""
+    if ACTIVE is not None:
+        return ACTIVE
+    return supplied() or DEFAULT
 
 
 def install(rules, verbose=False):
@@ -394,6 +440,27 @@ def install(rules, verbose=False):
     put('source_realize', 'FAN_TRACK', rules.fan_track)
     put('source_realize', 'FAN_CLEAR', rules.fan_clear)
 
+    # the constants other modules DERIVE from these at import, each in its module's own expression and order, so an
+    # install leaves every module exactly as a fresh import under the same rules does (test_622_rules_supplied): a
+    # module imported before the install -- a GUI's process, an earlier stage in the driver's -- is not re-imported
+    put('braid', 'WRAP_REACH', 10 * rules.lane_min)
+    put('braid', 'PAIR_FANIN', float(awx_settings.get('BRAID_PAIR_FANIN', '10') or 0) * rules.lane_min)
+    for m in _modules('pairs'):
+        if not float(awx_settings.get('BRAID_PAIR_SEP', '0') or 0):
+            put('pairs', 'MAX_SEP', 2.0 * rules.lane_pitch)
+        pp = rules.track + m.GAP                                  # pairs.pitch(TRACK), after GAP above
+        put('braid', 'PP', pp)
+        put('braid', 'PAIR_DIVE_EXTRA', float(awx_settings.get('BRAID_PAIR_DIVE_EXTRA', '2') or 0) * pp)
+        put('braid', 'PAIR_FANIN_BAND', float(awx_settings.get('BRAID_PAIR_FANIN_BAND', '2') or 0) * pp)
+        put('braid', 'PAIR_APPROACH', float(awx_settings.get('BRAID_PAIR_APPROACH', '4.5') or 0) * pp)
+    stack = rules.track + rules.clearance + HUG_OVER
+    put('select_moves', '_STACK_PITCH', stack)
+    put('whole_ends', 'DUP_TOL', stack / 2)
+    put('whole_ends', '_LANE_PITCH', rules.lane_min)
+    put('whole_ends', '_CHG_ROOM', 2 * 1.1 * rules.via_need)
+    put('plan_audit', 'TINY', rules.track / 25)
+    put('whole_feedback', 'FRONT', 2 * rules.via_need + rules.lane_min)
+
     # the module that binds braid's constants into its OWN locals at
     # import time -- rebind it, in case it was imported before this call
     for mod in ('cut_ledger',):
@@ -422,16 +489,13 @@ def install(rules, verbose=False):
 
 
 def install_defaults(verbose=False):
-    """What a stage's ``main()`` calls: put the chain's constants in place.
-
-    Inert today -- it installs exactly what the modules already hold -- and
-    that is the point. It is the seam: when the main router drives the topo
-    chain, this call becomes
-    ``install(Rules.from_router_config(cfg))`` and the whole chain moves
-    onto the router's geometry at once.
-    """
-    install(DEFAULT, verbose=verbose)
-    return DEFAULT
+    """What a stage's ``main()`` calls: put the run's rules in place -- the
+    ones the driver supplied (SETTING: route_bus.py's, the router's sizes
+    through `Rules.from_router_config`), else the chain's constants, which
+    is what the modules already hold (inert)."""
+    r = supplied() or DEFAULT
+    install(r, verbose=verbose)
+    return r
 
 
 def main(argv=None):

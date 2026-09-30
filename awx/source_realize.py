@@ -68,8 +68,8 @@ def move_sig(m):
 # Defaults from rules.py, resolved per board by the stage that installs
 # (see rules.py, "USING IT"); the engine call below reads them at call time.
 import rules as _rules            # noqa: E402  ONE source for every design rule
-FAN_TRACK = _rules.DEFAULT.fan_track
-FAN_CLEAR = _rules.DEFAULT.fan_clear
+FAN_TRACK = _rules.active().fan_track
+FAN_CLEAR = _rules.active().fan_clear
 
 
 def _seg_point_dist(px, py, ax, ay, bx, by):
@@ -394,7 +394,7 @@ def drc_pairs(board, nets=None, pcb_data=None):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             try:
-                _cd.run_drc(board, clearance=0.1, clearance_margin=0.1, net_patterns=pats, max_print=10 ** 6,
+                _cd.run_drc(board, clearance=te.SPEC_CLEARANCE, clearance_margin=0.1, net_patterns=pats, max_print=10 ** 6,
                             pcb_data=pcb_data)
             except SystemExit:
                 pass
@@ -407,7 +407,7 @@ def drc_pairs(board, nets=None, pcb_data=None):
         return _violation_lines(out)
     r = subprocess.run([sys.executable,
                         os.path.join(HERE, '..', 'py_router', 'check_drc.py'),
-                        board, '--clearance', '0.1', '--clearance-margin', '0.1'],
+                        board, '--clearance', str(te.SPEC_CLEARANCE), '--clearance-margin', '0.1'],
                        capture_output=True, text=True, env=awx_settings.environ())
     out = r.stdout + r.stderr
     # A CHECKER THAT DID NOT REPORT IS NOT A CLEAN BOARD. This is the only
