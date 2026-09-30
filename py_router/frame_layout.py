@@ -4,13 +4,13 @@
 `render_theme` plans WHAT COLOUR; this plans WHERE. Pure integer arithmetic
 over stdlib -- no PIL, no board parser, no Image -- so a whole layout can be
 checked as data before a pixel exists, the same posture as
-`movie_camera.plan_shots` and `movie_panels.plan_iso_shots`.
+`movie_camera.plan_shots`.
 
 **THE INVARIANT.** Every frame handed to `animate_route.save_movie` must be the
 same size, and the reason is worse than an exception: **NOTHING RAISES.**
 Measured on this repo's Pillow, saving a GIF whose frames differ in size does
 not raise -- Pillow writes a valid file in which every later frame has been
-SILENTLY RESIZED to the first (`movie_panels.py:19-33`). `_write_mp4` does fail
+SILENTLY RESIZED to the first. `_write_mp4` does fail
 loudly, and falls back to the GIF that absorbs it without a word.
 `tests/test_431_placement_movie.py:207-212` calls
 `len({f.size for f in frames}) == 1` "the single highest-value assertion here".
@@ -19,8 +19,8 @@ This module is how that invariant becomes structural rather than hoped-for:
 `plan_frame()` is called ONCE, before the first frame, and its `FrameGeometry`
 is the only source of any size thereafter.
 
-**BOTH DIMENSIONS ARE FORCED EVEN.** `movie_panels.panel_geometry` forced only
-the height, and its docstring cites only the height crop -- but
+**BOTH DIMENSIONS ARE FORCED EVEN.** The retired iso panel forced only
+the height -- but
 `_write_mp4` does `h, wd = a.shape[0] & ~1, a.shape[1] & ~1`, BOTH dimensions.
 Frame width is `round(size * bw / bh)` for a taller-than-wide board and can land
 odd, so a tall board's mp4 has been silently losing a pixel column in every
@@ -77,16 +77,11 @@ SIDEBAR_BOARD_FRAC = 0.73           # of frame WIDTH            (B)
 INSET_PANEL_FRAC = (0.30, 0.26)     # of frame W, H             (C)
 SPLIT_PANEL_FRAC = 0.32             # of frame HEIGHT           (D)
 SPLIT_ISO_FRAC = 0.42               # of the split box's WIDTH  (D)
-#: With the iso view on, the SIDEBAR's panel is split top/bottom rather than
-#: left/right: it is a tall column, and a left/right split of a column gives
-#: two slivers.
-SIDEBAR_ISO_FRAC = 0.50             # of the sidebar box's HEIGHT (B)
-#: A LANDSCAPE frame with the iso view on puts the lower box in a side
-#: column instead (#1036 review): below the board, a 16:9 split film left the
-#: board a 1400x342 strip -- 43% of the height for the thing the film is
-#: about, beside a 3D view that shows no routing. At or above this frame
-#: aspect the panel is a right-hand column of this share of the width, iso on
-#: top and the layer strip under it.
+#: A LANDSCAPE frame puts the lower box in a side column instead (#1036
+#: review): below the board, a 16:9 split film left the board a 1400x342
+#: strip -- 43% of the height for the thing the film is about. At or above
+#: this frame aspect the panel is a right-hand column of this share of the
+#: width.
 ISO_SIDE_ASPECT = 1.25
 ISO_SIDE_FRAC = 0.30                # of frame WIDTH
 #: The board box plus the attempts band never get less than this share of
@@ -213,6 +208,29 @@ def layout_choices() -> str:
 DEFAULT_FILM_LAYOUT = 'stage3d'
 
 
+_RETIRED_SAID = []
+
+
+def warn_retired_knobs():
+    """ONE stderr line, once per process, naming every retired movie knob
+    still set in the environment (`env_knobs.MOVIE_RETIRED`). A retired
+    knob selects nothing, and a value that is ignored without a word reads
+    as a feature that broke. Returns the line, or '' when there is none."""
+    try:
+        import env_knobs as _ek
+        retired = dict(getattr(_ek, 'MOVIE_RETIRED', {}) or {})
+    except Exception:                                           # noqa: BLE001
+        retired = {}
+    if not retired or _RETIRED_SAID:
+        return ''
+    line = ('movie: %s %s retired -- stage3d is the only film layout, so '
+            'ignored' % (', '.join('%s=%s' % kv for kv in sorted(
+                retired.items())), 'is' if len(retired) == 1 else 'are'))
+    _RETIRED_SAID.append(line)
+    print(line, file=sys.stderr)
+    return line
+
+
 def resolve_layout_aspect(layout=None, aspect=None):
     """`(layout, aspect)` for a render: an explicit argument wins, and `None`
     falls back to `$KICAD_MOVIE_LAYOUT` / `$KICAD_MOVIE_ASPECT` (env_knobs),
@@ -222,6 +240,7 @@ def resolve_layout_aspect(layout=None, aspect=None):
     lived inline in make_movie only, so a film -- the render that actually
     shows placement -- ignored both knobs while make_movie's `--help`
     advertised them."""
+    warn_retired_knobs()
     if layout is None or aspect is None:
         try:
             import env_knobs as _ek
@@ -313,7 +332,7 @@ def resolve_layout(name, board_bounds, *, quiet=False) -> Tuple[str, str]:
 
 
 def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
-               panel=False, foot_px=0, track_px=0, iso=False,
+               panel=False, foot_px=0, track_px=0,
                rail_frac=RAIL_FRAC, foot_frac=FOOT_FRAC,
                legacy_size=None, quiet=False) -> FrameGeometry:
     """The whole frame, decided ONCE.
@@ -332,11 +351,6 @@ def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
     frame whose aspect is the BOARD's (legacy with no ratio, inset) still
     grows to hold them, because there is no declared size to keep.
 
-    `iso=True` asks for the panel to be SPLIT so the 3D view has a region of
-    its own: `panel_split = (iso box, layer-strip box)` for the stacked (A),
-    sidebar (B) and split (D) layouts. D always splits, as it always has.
-    Inset (C) and legacy have no panel to split; there the iso view stacks
-    under the frame, as it always has, and the frame grows.
     """
     key, why = resolve_layout(layout, board_bounds, quiet=quiet)
     spec = LAYOUTS[key]
@@ -408,9 +422,6 @@ def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
         board, panel_box, why_col = _stage3d_boxes(W, H, inner_y, inner_h)
         if why_col:
             notes.append(why_col)
-        if iso:
-            notes.append('stage3d: no iso panel -- the board box IS the 3D '
-                         'view')
         # The floor is a PROMISE only a frame big enough can keep. A tiny
         # frame, or a clock band taller than the frame can spare, breaks it
         # -- and says so rather than shipping a smaller board quietly.
@@ -424,36 +435,23 @@ def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
                             board.w, board.h, W, H))
     elif not panel or spec.panel is None:
         board = Box(0, inner_y, W, inner_h)
-    elif (spec.panel in ('below', 'split') and (iso or track_h)
+    elif (spec.panel in ('below', 'split') and track_h
           and W >= ISO_SIDE_ASPECT * H):
         # A LANDSCAPE frame puts its panel in a right-hand COLUMN when there
-        # is an iso view, or a reserved band (#1042): the band is then the
-        # frame's ONE bottom row, and a full-width lower box on top of it
-        # starved the board (16:9 split, panels on: a 1000x170 board box).
-        # Without iso the whole column is the layer strip and stats.
+        # is a reserved band (#1042): the band is then the frame's ONE
+        # bottom row, and a full-width lower box on top of it starved the
+        # board (16:9 split, panels on: a 1000x170 board box).
         cw = even(W * ISO_SIDE_FRAC)
         board = Box(0, inner_y, W - cw, inner_h)
         panel_box = Box(W - cw, inner_y, cw, inner_h)
-        if iso:
-            ih = even(inner_h * SIDEBAR_ISO_FRAC)
-            split = (Box(W - cw, inner_y, cw, ih),
-                     Box(W - cw, inner_y + ih, cw, inner_h - ih))
     elif spec.panel == 'below':
         ph = _cap_panel(even(H * STACKED_PANEL_FRAC), H, inner_h, track_h)
         board = Box(0, inner_y, W, max(2, inner_h - ph))
         panel_box = Box(0, inner_y + board.h, W, ph)
-        if iso:
-            iw = even(W * SPLIT_ISO_FRAC)
-            split = (Box(0, panel_box.y, iw, ph),
-                     Box(iw, panel_box.y, W - iw, ph))
     elif spec.panel == 'right':
         bw = even(W * SIDEBAR_BOARD_FRAC)
         board = Box(0, inner_y, bw, inner_h)
         panel_box = Box(bw, inner_y, W - bw, inner_h)
-        if iso:
-            ih = even(inner_h * SIDEBAR_ISO_FRAC)
-            split = (Box(bw, inner_y, W - bw, ih),
-                     Box(bw, inner_y + ih, W - bw, inner_h - ih))
     elif spec.panel == 'inset':
         board = Box(0, inner_y, W, inner_h)
         pw = even(W * INSET_PANEL_FRAC[0])
@@ -607,7 +605,7 @@ def assert_frames_uniform(sizes: Sequence[Tuple[int, int]],
 
 def frame_status_line(geom: FrameGeometry) -> str:
     """One line saying which layout ran and why. Modelled on
-    `movie_panels.iso_status_line`: none of the states may read like silence."""
+    none of the states may read like silence."""
     spec = LAYOUTS.get(geom.layout)
     title = spec.title if spec else geom.layout
     letter = (' (%s)' % spec.letter) if spec and spec.letter != '-' else ''

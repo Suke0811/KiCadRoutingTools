@@ -944,7 +944,7 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
                  marks=None, theme=None, layout=None, aspect=None,
                  geom_out=None, title=None, frames_sink=None,
                  max_frames=None, notes=None, attempts_band=False,
-                 iso_panel=False, lands_out=None, stage_out=None,
+                 lands_out=None, stage_out=None,
                  board3d=None, fps=None):
     """Frames for a chain given as [(label, board, trace|None), ...] plus the
     final board. ``build_run`` is this with the chain discovered from a run dir.
@@ -991,9 +991,7 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     CALLABLE ``(frame_w, frame_h) -> px`` sizes it instead (#1042: the
     placement panels' `movie_placement.band_px`); the
     band's box is `geom_out[0].track` and `movie_attempts.attach(box=)` draws
-    into it. ``iso_panel`` asks the layout to split its panel so the 3D view
-    has a region of its own (`geom.panel_split[0]`); the layer strip then
-    draws into the other half.
+    into it.
     """
     from kicad_parser import parse_kicad_pcb
     if not final:
@@ -1033,7 +1031,7 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
             # 'legacy' -- which has no chrome at all, because legacy means
             # today's frame and today's frame has no lower box.
             panel=(str(layout or 'legacy').lower() != 'legacy'),
-            legacy_size=(r.W, r.H), iso=bool(iso_panel))
+            legacy_size=(r.W, r.H))
         _g = frame_layout.plan_frame(r.pcb.board_info.board_bounds,
                                      **_plan_kw)
         if attempts_band:
@@ -1112,11 +1110,6 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     # no box -- retains nothing.
     m.want_panel = bool(_geom is not None and _geom.panel is not None
                         and _geom.panel.h > 0)
-    #: #946/C4: the iso view takes `panel_split[0]`; the strip draws into
-    #: `panel_split[1]`, and the iso half is left as panel ground for
-    #: `movie_panels.compose_two_panel(box=)` to fill.
-    m.iso_in_panel = bool(iso_panel and _geom is not None
-                          and _geom.panel_split)
     if m.want_panel:
         # Seeded from the chain's FIRST board, not its last: the opening
         # snapshot is of the board as it arrived, and a film of a seeding run
@@ -1290,10 +1283,9 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     # as reserved ground from this commit, and #1019/#1020/#1021 fill them.
     #
     # In place, so peak memory stays about two frames rather than twice the
-    # movie: the same reason `movie_panels.compose_two_panel` does it that way.
+    # movie.
     if _geom is not None:
-        _compose_into_frame(m.frames, _geom, r, m.chrome,
-                            iso_in_panel=getattr(m, 'iso_in_panel', False))
+        _compose_into_frame(m.frames, _geom, r, m.chrome)
     return m.frames
 
 
@@ -1374,7 +1366,7 @@ def _png_info(meta):
     return info
 
 
-def _compose_into_frame(frames, geom, r, chrome=None, iso_in_panel=False):
+def _compose_into_frame(frames, geom, r, chrome=None):
     """Fit each board-box frame into its planned frame, IN PLACE.
 
     Two cases, and the first is the common one:
@@ -1394,8 +1386,7 @@ def _compose_into_frame(frames, geom, r, chrome=None, iso_in_panel=False):
     W, H = geom.frame.w, geom.frame.h
     # #1036: one per-frame transform. On a spool it is applied lazily while
     # the encoder streams; on a list it rewrites in place, as it always did.
-    chrome_fn = (_chrome_drawer(len(frames), geom, r, chrome,
-                                iso_in_panel=iso_in_panel)
+    chrome_fn = (_chrome_drawer(len(frames), geom, r, chrome)
                  if chrome and geom.rail.h > 0 else None)
 
     def _one(i, f):
@@ -1418,7 +1409,7 @@ def _compose_into_frame(frames, geom, r, chrome=None, iso_in_panel=False):
 STRIP_SUMMARY_MIN_PX = 90
 
 
-def _draw_panel(d, geom, r, c, iso_in_panel=False):
+def _draw_panel(d, geom, r, c):
     """The lower box, whichever of its four contents this phase asks for.
 
     Four REAL contents, not one content and three captions: the phase-1
@@ -1443,9 +1434,6 @@ def _draw_panel(d, geom, r, c, iso_in_panel=False):
         box = geom.panel
         d.rectangle([box.x, box.y, box.x + box.w - 1, box.y + box.h - 1],
                     fill=th.rgb('chrome_panel') if th else (14, 14, 18))
-        if iso_in_panel and geom.panel_split:
-            # the iso half is filled later by compose_two_panel(box=)
-            box = geom.panel_split[1]
         # THE GUTTER (#946 review): every content keeps the design system's
         # inner margin from its box -- the 4:3 inventory's counts touched
         # the frame's right edge.
@@ -1496,7 +1484,7 @@ def _draw_chrome(frames, geom, r, chrome):
     frame_spool.transform(frames, _chrome_drawer(len(frames), geom, r, chrome))
 
 
-def _chrome_drawer(n_frames, geom, r, chrome, iso_in_panel=False):
+def _chrome_drawer(n_frames, geom, r, chrome):
     """``fn(i, frame) -> frame`` drawing the rail and foot for frame ``i``.
 
     Each region is sized for ITS OWN content and ellipsises inside itself, so a
@@ -1510,18 +1498,17 @@ def _chrome_drawer(n_frames, geom, r, chrome, iso_in_panel=False):
                           if c.get('lap_at') is not None}))
 
     def _fn(i, f):
-        _draw_chrome_one(f, i, n, geom, r, chrome, th, ticks, iso_in_panel)
+        _draw_chrome_one(f, i, n, geom, r, chrome, th, ticks)
         return f
     return _fn
 
 
-def _draw_chrome_one(f, i, n, geom, r, chrome, th, ticks,
-                     iso_in_panel=False):
+def _draw_chrome_one(f, i, n, geom, r, chrome, th, ticks):
     from PIL import ImageDraw
     import render_chrome
     c = chrome[i] if i < len(chrome) else (chrome[-1] if chrome else {})
     d = ImageDraw.Draw(f)
-    _draw_panel(d, geom, r, c, iso_in_panel=iso_in_panel)
+    _draw_panel(d, geom, r, c)
     _seen = c.get('seen') or ()
     render_chrome.draw_rail(d, geom.rail, c.get('rail', ''),
                             c.get('rail_right', ''), theme=th,
@@ -1641,7 +1628,7 @@ def save_movie(frames, out, fps, end_hold, png_dir=None, frame_meta=None,
     #
     # It REPORTS AND PADS; it does not raise. Aborting a routing run for a
     # cosmetic reason is something this repo refuses elsewhere too
-    # (`movie_panels._finite` coerces a mistyped tuning value rather than
+    # (a mistyped tuning value is coerced rather than
     # taking the movie down), and all three of today's outcomes are worse than
     # a pad: Pillow silently resizes every later frame to the first, _write_mp4
     # fails loudly and falls back to the GIF that then absorbs it, and nothing

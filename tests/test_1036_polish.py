@@ -7,8 +7,8 @@
      ends on it; a static frame and the end of a camera film both fill >=85%
      of the box on the limiting axis.
   2. **The rail's left title is never a later board's name.**
-  3. **The iso caption follows the type scale** and shortens by dropping
-     parts (yaw first) -- never by cutting a word.
+  3. (The iso caption's check went with the iso panel: stage3d is the only
+     film layout.)
   4. **Layer cells are shaped like the board**, in a 2x2 grid in a tall
      column, one row in a wide box.
   5. **Every panel keeps the gutter**: no text within `gutter_px` of its box.
@@ -122,42 +122,6 @@ def test_the_title_is_never_a_later_boards_name():
         print('  PASS: %r for one directory, %r for a spread chain' % (t, t2))
 
 
-def test_the_iso_caption_drops_parts_and_never_cuts_a_word():
-    _mark = len(_FAIL)
-    from route_render import load_font
-    d = ImageDraw.Draw(Image.new('RGB', (10, 10)))
-    font = load_font(RC.type_px('caption', 788))
-    parts = [('placed_v2', 1), ('yaw 56 deg', 2),
-             ('3D models 213/224', 0, '213/224 3D')]
-    full = '  |  '.join(p[0] for p in parts) + ' 3D'
-    words = set(full.replace('|', ' ').split())
-    seen = []
-    for w in range(40, int(d.textlength(full, font=font)) + 20, 7):
-        txt = RC.fit_parts(d, parts, font, w)
-        if txt and d.textlength(txt, font=font) > w:
-            fail('%d px: %r overflows' % (w, txt))
-        for tok in txt.replace('|', ' ').replace('…', ' ').split():
-            if tok not in words:
-                fail('%d px: %r cuts a word (%r)' % (w, txt, tok))
-                break
-        if 'yaw' in txt and 'placed_v2' not in txt:
-            fail('%d px: the board name went before the yaw: %r' % (w, txt))
-        if txt and '213/224' not in txt:
-            fail('%d px: the model count was cut: %r' % (w, txt))
-        seen.append(txt)
-    if not any(t == 'placed_v2  |  3D models 213/224' for t in seen):
-        fail('the yaw is never the first part dropped: %r' % sorted(set(seen)))
-    # the caption's size is the TYPE SCALE's, not the box's
-    import movie_panels as MP
-    pan, _e = MP.iso_panel((330, 392), None, parts, caption_px=12)
-    strip = pan.convert('RGB').getpixel((2, 391))
-    if strip != MP._colours(None)[1]:
-        fail('the caption strip is not where a 12 px caption puts it')
-    if len(_FAIL) == _mark:
-        print('  PASS: %d widths; drops yaw, then name; the count is kept or '
-              'shortened by whole words' % len(seen))
-
-
 def test_layer_cells_have_the_boards_shape_in_a_grid():
     _mark = len(_FAIL)
     asp = 80.0 / 49.0
@@ -216,20 +180,19 @@ def test_every_panel_keeps_the_gutter():
     r = _R(pcb)
     inv = RP.inventory_counts(pcb, ())
     n = 0
-    for lk, rk, iso in (('stacked', '4:3', True), ('sidebar', '1:1', True),
-                        ('split', '16:9', False), ('stacked', '9:16', True)):
+    for lk, rk in (('stacked', '4:3'), ('sidebar', '1:1'),
+                   ('split', '16:9'), ('stacked', '9:16')):
         g = FL.plan_frame(r.bounds, layout=lk, ratio=FL.parse_ratio(rk),
-                          size=1400, panel=True, iso=iso)
+                          size=1400, panel=True)
         gut = RC.gutter_px(g.frame.w)
-        inner = g.panel_split[1] if (iso and g.panel_split) else g.panel
+        inner = g.panel
         for event, unplaced in (('moving 5 part(s)', True), ('route', False),
                                 ('input', False)):
             im = Image.new('RGB', (g.frame.w, g.frame.h))
             rec = _Rec(ImageDraw.Draw(im))
             A._draw_panel(rec, g, r, {'event': event, 'unplaced': unplaced,
                                       'inventory': inv, 'live': (),
-                                      'live_v': ()},
-                          iso_in_panel=iso)
+                                      'live_v': ()})
             for txt, bb in rec.boxes:
                 n += 1
                 if (bb[0] < inner.x + gut - 1 or bb[1] < inner.y + gut - 1
@@ -274,7 +237,6 @@ def test_the_event_key_is_in_the_rail_not_on_the_board():
 TESTS = (
     test_the_board_fills_its_box,
     test_the_title_is_never_a_later_boards_name,
-    test_the_iso_caption_drops_parts_and_never_cuts_a_word,
     test_layer_cells_have_the_boards_shape_in_a_grid,
     test_every_panel_keeps_the_gutter,
     test_the_event_key_is_in_the_rail_not_on_the_board,

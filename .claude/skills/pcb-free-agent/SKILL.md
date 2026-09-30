@@ -210,8 +210,8 @@ Read `--help` before assuming a flag does not exist. Two runs declared
        --board <board> --kind placement --parent <the board it was made from> \
        --lever "<what you did, one line>" --score-file <board>.score.json
    ```
-   - Use `--kind completion` for a routed board. The film's placement panels
-     are drawn from the `placement` rows.
+   - Use `--kind completion` for a routed board. The film's benchmark band
+     is drawn from these rows.
    - `record` refuses (exit 2) a score whose `blocking` is not a non-negative
      number, such as a per-term dict; record board_score's own JSON.
    - **Close the ledger** with one `record --final --stop-condition <1|2|3|4>`
@@ -223,7 +223,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 2. **The film**:
    ```bash
    python3 -X utf8 py_tools/make_film.py --from-ledger wk/<run>/ledger.jsonl \
-       --theme light --aspect 4:3 --layout sidebar --panels xray+iso \
+       --theme light --aspect 4:3 \
        --floorplan-intent <intent.json> -o wk/<run>/<run>_film.mp4
    ```
    Look at a few frames before you call it done.

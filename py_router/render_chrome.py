@@ -19,7 +19,7 @@ clean run never rips anything and must not advertise a rip colour.
 `except Exception: pass` with the comment "a legend is never worth failing a
 render over", and that is kept here. A movie is an artifact; losing one to a
 font metric is trading a cosmetic problem for a real one, which this repo
-refuses elsewhere too (`movie_panels._finite`).
+refuses elsewhere too.
 
 The mark vocabulary is `render_theme.MARKS`, unchanged from what `draw_legend`
 already drew, so that function ports as a caller rather than as a rewrite --
@@ -197,29 +197,6 @@ def fit_words(d, text, font, width):
         if d.textlength(cand, font=font) <= width:
             return cand
     return ''
-
-
-def fit_parts(d, parts, font, width, sep='  |  '):
-    """The longest caption that fits, dropping PARTS before cutting words.
-
-    `parts` is `[(text, drop_rank[, short]), ...]` in display order; rank 0
-    is never dropped, higher ranks go first. A rank-0 part may carry a SHORT
-    form ("213/224" for "3D models 213/224"), tried before any word is cut,
-    so the number a panel exists to show survives. Past that the result is
-    `fit_words` -- never a string cut mid-word.
-    """
-    keep = [(p[0], p[1], p[2] if len(p) > 2 else None)
-            for p in parts if p[0]]
-    ranks = sorted({r for _t, r, _s in keep if r > 0}, reverse=True)
-    for n_drop in range(len(ranks) + 1):
-        gone = set(ranks[:n_drop])
-        txt = sep.join(t for t, r, _s in keep if r not in gone)
-        if txt and d.textlength(txt, font=font) <= width:
-            return txt
-    short = sep.join((s or t) for t, r, s in keep if r == 0)
-    if short and d.textlength(short, font=font) <= width:
-        return short
-    return fit_words(d, short, font, width)
 
 
 def draw_key_inline(d, box, rows, *, theme=None, font=None):

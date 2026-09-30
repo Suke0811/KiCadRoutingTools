@@ -9,12 +9,10 @@ Unlike the KiCad-based renderer it replaces, none of this needs KiCad,
 geometry directly with [Pillow](https://python-pillow.org/), so a still is
 ~0.2 s and a full movie renders in about a second.
 
-That is still true of everything below **by default**, and it is the reason this
-subsystem exists. One opt-in feature does need `kicad-cli` — the 3D isometric
-panel (#887) — and it is off unless asked for, costs ~2-4 s per render when it
-is, and degrades to the ordinary single-panel movie, at full speed and with a
-stated reason, when the binary is absent. See
-[the 3D isometric panel](#the-3d-isometric-panel-and-the-run-clock-887).
+That is still true of everything below, and it is the reason this subsystem
+exists. (The 3D isometric `kicad-cli` panel #887 added is retired: the stage3d
+layout's own 3D board replaced it. `py_router/kicad_iso_render.py` remains as
+a standalone CLI.)
 
 Three pieces:
 
@@ -207,7 +205,7 @@ The **output extension picks the format**:
 
 `make_movie` spools every frame to a temp directory as it is drawn
 (`py_router/frame_spool.py`) and applies the post-passes (the planned frame,
-the attempts band, the run clock, the iso panel) per frame while the encoder
+the attempts band, the run clock) per frame while the encoder
 streams. Run 32's 22-board chain reached 29.5 GB before this change. How
 flat memory stays depends on the output. An `.mp4` (imageio-ffmpeg) is encoded
 one frame at a time, so memory does not grow with the frame count. A `.gif`,
@@ -220,7 +218,7 @@ an `.mp4`, or two GIFs both over the cap. Either way peak RSS stays flat,
 while the same frames held in a list grow by about 300 MB.
 
 **An overlay that fails costs the overlay, not the film.** The attempts band,
-the run clock and the iso panel are drawn while the encoder streams, so a frame
+and the run clock are drawn while the encoder streams, so a frame
 one of them cannot draw would otherwise surface in the encoder. That overlay is
 instead dropped from that frame to the end of the film, `movie: <overlay>
 DROPPED` is printed once, and the film is still written at one size. A frame
@@ -312,67 +310,7 @@ only touching the moves as a last resort.
 
 ---
 
-## The 3D isometric panel, and the run clock (#887)
-
-Two optional additions to the frame. **Both are off by default, and the fast
-path above is unchanged when they are** — which matters here more than it
-usually would, because this subsystem exists precisely because `kicad-cli` was
-taken out of it, and one of these puts it back on an opt-in path.
-
-### `--panels xray+iso` — a 3D view under the board
-
-```bash
-python3 py_router/make_movie.py WORKDIR --panels xray+iso -o routing.mp4
-KICAD_MOVIE_PANELS=xray+iso python3 py_router/make_movie.py WORKDIR   # env knob, same effect
-```
-
-The X-ray board view keeps the full frame width and a `kicad-cli pcb render` is
-stacked underneath it. Like the camera, it has no GUI control of its own: one
-variable covers the GUI recorder, `run_plan.py --movie` and the stress renderer
-at once.
-
-**What it does NOT show is routing progress.** Copper sits under soldermask, so
-the 3D view barely changes as tracks are laid. What it shows is the parts moving
-across placement rounds, and the board turning: shot *k* of *K* is rendered at
-`yaw0 + sweep·k/(K−1)`, one slow turn across the whole film. That sweep is what
-makes the panel animated, and it is free — a different `--rotate` costs exactly
-the same render.
-
-Measured on KiCad 10.0.0, and each number shapes the design:
-
-| | |
-|---|---|
-| one render, `--quality basic` | **1.4–2.7 s** serial on a quiet machine; **1.9–4.2 s** when four run at once, which is what `--iso-jobs 4` actually pays. Load matters more than the board: across tigard, lvds, ulx3s (225 models) and glasgow_revC (224), 3 reps each, one quiet pass spreads under 2x, with glasgow consistently slowest |
-| `--quality high` | **5.0–7.5 s** on the same four boards at 1035×700 — about 3x `basic`, which is why `basic` is the default. (#887's own table reports 12.6 s, but at 900×700 `--floor`, which is a different question) |
-| 8 renders, serial vs 6 workers | **~2.4x**, e.g. 24.0 s vs 10.2 s |
-| a 900×700 request returns | **872×672** |
-| a 640×480 request returns | **616×448** — the same for two very different boards, and across an 8-step yaw sweep |
-
-So: **one render per chain STEP, never per frame** (`--iso-max-renders`, default
-24, caps it — a COUNT rather than a number of seconds, so the same chain
-composes the same movie on a fast machine and a slow one), and **the returned
-size is never trusted**. Every panel is letterboxed into a box the composer
-chose, and the render is asked for at 1.15× that box so the fit downscales
-rather than blurs.
-
-**Component bodies depend on the board, and their absence is silent.**
-`kicad_files/tigard.kicad_pcb` renders as a *bare board* — pads, mask,
-silkscreen, no parts. Its 84 `(model …)` references are 81 `${KISYS3DMOD}` +
-3 `${KIPRJMOD}`, and 82 of them name a `.wrl`, while KiCad 10 ships `.step`;
-`-D KISYS3DMOD=…` does not fix it. `lvds_converter_dualclk` renders fully populated. `kicad-cli` says
-nothing either way, so the panel counts what is actually on disk and captions
-`3D models N/M`, adding `BARE BOARD` and the reason at zero — never an empty
-green rectangle that reads as a bug.
-
-Without `kicad-cli` you get the single-panel movie at full speed and a line
-saying so, naming `$KICAD_CLI`. That is a whole-movie decision taken **once**,
-before compositing, and it is made on a probe render rather than on the binary
-merely existing — because after the first composed frame the height is fixed and
-cannot change. A single failed render later keeps its box with the reason drawn
-inside it, for the same reason: mixed frame sizes make `_write_mp4` degrade the
-whole movie to GIF, silently.
-
-### The run clock
+## The run clock (#887)
 
 A run wrapped in `tests/stress/tee_cmd.py` leaves a `cmd_timing.jsonl`, and when
 the movie finds one beside the chain it draws a run-clock overlay bottom-left,
@@ -560,18 +498,10 @@ with a band came out taller than 16:9. `tests/test_946_frame_layout.py` checks
 the whole layout × ratio cross product as plan data, and encodes 30 real films
 (5 layouts × 3 ratios × 2 themes) and reads their size back. Two things still
 grow the frame, and the status lines say so: the run clock (its height is
-measured from the finished text) and the iso view on `legacy`/`inset`, which
-have no panel to put it in.
+measured from the finished text).
 
-**The 3D view goes into the layout's own panel** with `--panels xray+iso` on
-`make_movie.py` or `make_film.py`. On `stacked` and `split` the lower box is
-split left/right (the iso view gets 42% of the width). On `sidebar` the column
-is split top/bottom. The per-layer strip draws into the other half. The panel's
-gate is asked before the frame is planned (`movie_panels.preflight`), so a
-board that would be gated as mostly bare gets no empty box reserved for it.
-
-**Themes reach every region.** The cards and badges in `make_film`, the iso
-panel's ground, caption strip and error text, and the run clock's band draw in
+**Themes reach every region.** The cards and badges in `make_film`, the
+panels' ground and error text, and the run clock's band draw in
 the active theme. `--theme` takes `dark` or `light` in any case and refuses anything else.
 `--layer-alpha` defaults to the theme's own measured alpha (dark 150, light
 205). The CLIs used to pass 150 explicitly, so LIGHT's measured 205 was never
@@ -647,7 +577,7 @@ had written. Planning `legacy` too means the frame is even *before* the encoder.
 `frame_layout.assert_frames_uniform` is wired into `animate_route.save_movie`,
 the choke point every front end passes through. **On failure it reports loudly
 and pads; it does not raise** — aborting a routing run for a cosmetic reason is
-something this repo refuses elsewhere (`movie_panels._finite`). The film is
+something this repo refuses elsewhere. The film is
 produced, the defect is audible, and the distortion is a letterbox rather than
 a squash.
 
@@ -876,8 +806,8 @@ Placement gets three panels of its own beside the band
   else stacked with placement on top. The verdict graph gives up height down
   to its 64 px floor, and the band never takes more than `BAND_MAX_FRAC`
   (0.48) of the frame. A LANDSCAPE frame (w >= 1.25 h) with a band keeps
-  the side-column arrangement: board on the left, iso, layer grid and stats
-  in a right-hand column (`ISO_SIDE_FRAC`, with or without iso), and the
+  the side-column arrangement: board on the left, layer grid and stats
+  in a right-hand column (`ISO_SIDE_FRAC`), and the
   band as the one bottom row, placement panels left and verdict right. The
   band is capped there so the board box keeps `BOARD_MIN_SHARE` (0.55) of the
   frame height after the rail and the foot. Side by side, placement takes
@@ -989,11 +919,12 @@ control, which is the second arm of CLAUDE.md's CLI/GUI parity rule taken
 explicitly: the GUI's movie button passes no movie parameters at all
 (`movie_recorder.py:160` is `make_movie(boards, out=out, quiet=True)`), and the
 env knobs are how a feature with no dialog control of its own reaches every
-front end at once — the same rationale `KICAD_MOVIE_CAMERA` and
-`KICAD_MOVIE_PANELS` already carry.
+front end at once — the same rationale `KICAD_MOVIE_CAMERA` already
+carries. A RETIRED knob (`KICAD_MOVIE_PANELS`, the iso panel's) is not
+ignored in silence: `frame_layout.warn_retired_knobs` names it once, on
+stderr, as retired.
 
-**The env knob and the kwarg parse asymmetrically**, following
-`make_movie._panels_wanted`: an unknown value in the *knob* warns to stderr and
+**The env knob and the kwarg parse asymmetrically**: an unknown value in the *knob* warns to stderr and
 falls back (a typo in a shell must not abort a routing run that happened to ask
 for a movie), while an unknown value passed as a *kwarg* raises and names the
 accepted set (a typo in code is a bug).
@@ -1149,8 +1080,8 @@ test self-skips there and names why.
 
 `make_movie` and `make_film.build_film` compose their bands and panels through
 `py_router/film_passes.py`: `plan()` decides, before the frame is planned, what
-it must reserve (the attempts or benchmark band, the placement panels, the iso
-box); `compose()` and `compose_iso()` draw them. What stays in each front end
+it must reserve (the attempts or benchmark band, the placement panels);
+`compose()` draws them. What stays in each front end
 is its own: make_movie's run clock, make_film's badges and cards.
 
 ### The benchmark band

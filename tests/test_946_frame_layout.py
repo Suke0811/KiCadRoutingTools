@@ -324,7 +324,7 @@ def test_a_declared_ratio_is_the_size_asked_for_with_the_band_inside():
     the attempts band (`track_px`) and the clock (`foot_px`) come out of the
     board's share instead of growing the frame -- they used to be ADDED, so a
     16:9 film with a band was 1600x1036. The band sits inside the frame and
-    off the board, and with `iso=True` the split boxes sit inside the panel.
+    off the board.
     """
     _mark = len(_FAIL)
     n = 0
@@ -333,33 +333,22 @@ def test_a_declared_ratio_is_the_size_asked_for_with_the_band_inside():
             if not ratio:
                 continue
             for sn, bb in SHAPES.items():
-                for iso in (False, True):
-                    n += 1
-                    g = FL.plan_frame(bb, layout=lk, ratio=ratio, size=900,
-                                      panel=True, track_px=120, foot_px=0,
-                                      iso=iso)
-                    want = _declared(900, ratio)
-                    if (g.frame.w, g.frame.h) != want:
-                        fail('%s/%s/%s iso=%s: frame %dx%d, declared %dx%d'
-                             % (lk, rk, sn, iso, g.frame.w, g.frame.h,
-                                want[0], want[1]))
-                        continue
-                    t = g.track
-                    if t is None or not g.frame.contains(t):
-                        fail('%s/%s/%s: band %r is not inside the frame'
-                             % (lk, rk, sn, t))
-                    elif t.overlaps(g.board):
-                        fail('%s/%s/%s: band %r overlaps the board %r'
-                             % (lk, rk, sn, tuple(t), tuple(g.board)))
-                    if iso and g.panel_split:
-                        for b in g.panel_split:
-                            if not g.panel.contains(b):
-                                fail('%s/%s/%s: split box %r outside the '
-                                     'panel' % (lk, rk, sn, tuple(b)))
-                    if iso and g.layout in ('stacked', 'sidebar', 'split') \
-                            and not g.panel_split:
-                        fail('%s/%s/%s: iso asked, but no split box for the '
-                             '3D view' % (lk, rk, sn))
+                n += 1
+                g = FL.plan_frame(bb, layout=lk, ratio=ratio, size=900,
+                                  panel=True, track_px=120, foot_px=0)
+                want = _declared(900, ratio)
+                if (g.frame.w, g.frame.h) != want:
+                    fail('%s/%s/%s: frame %dx%d, declared %dx%d'
+                         % (lk, rk, sn, g.frame.w, g.frame.h,
+                            want[0], want[1]))
+                    continue
+                t = g.track
+                if t is None or not g.frame.contains(t):
+                    fail('%s/%s/%s: band %r is not inside the frame'
+                         % (lk, rk, sn, t))
+                elif t.overlaps(g.board):
+                    fail('%s/%s/%s: band %r overlaps the board %r'
+                         % (lk, rk, sn, tuple(t), tuple(g.board)))
     if len(_FAIL) == _mark:
         print('  PASS: %d declared plans hold their size, band inside, off '
               'the board' % n)

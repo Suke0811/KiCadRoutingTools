@@ -318,7 +318,7 @@ def build_film(shots, size=DEFAULT_SIZE, fps=DEFAULT_FPS, supersample=1,
                layer_alpha=None, rip_hold=2, chunks=6, camera='auto',
                camera_budget=0.0, tween=10, quiet=False, theme=None,
                attempts=None, attempts_from=None, layout=None, aspect=None,
-               panels=None, iso_opts=None, spool=False, max_frames=None,
+               spool=False, max_frames=None,
                placement=None):
     """Frames for the whole shot list. One render pass, one scale.
 
@@ -327,10 +327,6 @@ def build_film(shots, size=DEFAULT_SIZE, fps=DEFAULT_FPS, supersample=1,
     directory, because the sidecars that record the search sit next to the
     boards a film is made from. `None` after that is a real answer: a chain
     with no search behind it gets no band.
-
-    `panels` is make_movie's (#946/C4): 'xray' or 'xray+iso'. With the iso
-    view on, a layout that has a panel to split gives the 3D view a region of
-    its own; legacy and inset stack it under the frame.
 
     `spool=True` (#1036; `main()` passes it) streams the film through
     `frame_spool.FrameSpool`s -- the board frames, then the assembled film
@@ -404,19 +400,6 @@ def build_film(shots, size=DEFAULT_SIZE, fps=DEFAULT_FPS, supersample=1,
         if not quiet:
             print(f"make_film: no attempts ({exc})", file=sys.stderr)
         attempts = None
-    import make_movie as _mm
-    want_iso = _mm._panels_wanted(panels, quiet)
-    iso_box = False
-    if want_iso:
-        import movie_panels
-        import copy as _copy
-        # a COPY (#1036 review): the caller's IsoOpts is not ours to fill in
-        iso_opts = (_copy.copy(iso_opts) if iso_opts is not None
-                    else movie_panels.IsoOpts())
-        # the theme resolved ONCE, above -- never the name again
-        iso_opts.theme = _th
-        # whether the iso view gets a box of the layout's own is decided by
-        # film_passes.plan, once, for both front ends (#1087)
     import frame_spool
     # #1036 review: BOTH spools are closed on every way out -- an exception
     # anywhere below, and the empty-film return. They leaked two krt_frames_*
@@ -429,7 +412,7 @@ def build_film(shots, size=DEFAULT_SIZE, fps=DEFAULT_FPS, supersample=1,
         return _build_film_body(
             a, frame_spool, sink, steps, final, size, supersample,
             layer_alpha, rip_hold, chunks, stage, marks, _th, layout, aspect,
-            _geom, attempts, iso_box, want_iso, iso_opts, owner, shots, fps,
+            _geom, attempts, owner, shots, fps,
             boards, quiet, max_frames, placement)
     except BaseException:
         if sink is not None:
@@ -439,8 +422,7 @@ def build_film(shots, size=DEFAULT_SIZE, fps=DEFAULT_FPS, supersample=1,
 
 def _build_film_body(a, frame_spool, sink, steps, final, size, supersample,
                      layer_alpha, rip_hold, chunks, stage, marks, _th, layout,
-                     aspect, _geom, attempts, iso_box, want_iso, iso_opts,
-                     owner, shots, fps, boards, quiet, max_frames,
+                     aspect, _geom, attempts, owner, shots, fps, boards, quiet, max_frames,
                      placement=None):
     import make_movie as _mm
     # the ONE resolver make_movie uses: an explicit budget, else
@@ -457,30 +439,25 @@ def _build_film_body(a, frame_spool, sink, steps, final, size, supersample,
     _bands = film_passes.plan(
         steps, final, layout, attempts=attempts,
         attempts_from=placement.get('attempts_from'),
-        placement=placement, want_iso=want_iso, iso_opts=iso_opts,
-        quiet=quiet, who='make_film', aspect=aspect)
+        placement=placement, quiet=quiet, who='make_film', aspect=aspect)
     _lands = {}
     frames = a.build_boards(steps, final, size, supersample, layer_alpha,
                             rip_hold, chunks, stage=stage, marks=marks,
                             frames_sink=sink, max_frames=max_frames,
                             theme=_th, layout=layout, aspect=aspect,
                             geom_out=_geom, attempts_band=_bands.band,
-                            iso_panel=_bands.iso_box, lands_out=_lands,
+                            lands_out=_lands,
                             board3d=placement.get('board3d'), fps=fps)
     if not frames:
         if sink is not None:
             sink.close()
         return []
     _g0 = _geom[0] if _geom else None
-    # #1021. THE BANDS AND THE ISO VIEW GO HERE -- BEFORE THE BADGES AND THE
-    # CARDS: a badge draws a border on the frame it is given, so a band
+    # #1021. THE BANDS GO HERE -- BEFORE THE BADGES AND THE CARDS: a badge draws a border on the frame it is given, so a band
     # attached afterwards would sit outside it, and the cards are cut at the
     # composed, band-inclusive size so the film keeps ONE frame size.
     frames = film_passes.compose(frames, _bands, _g0, marks, _lands, _th,
                                  quiet=quiet, who='make_film')
-    if want_iso:
-        frames = film_passes.compose_iso(frames, _bands, _g0, marks, final,
-                                         iso_opts, _th, who='make_film')
 
     # Badge every frame that belongs to an attempt.
     by_step = {}
@@ -568,12 +545,6 @@ def _build_film_body(a, frame_spool, sink, steps, final, size, supersample,
     return out
 
 
-def _iso_opts(a):
-    import movie_panels
-    return movie_panels.IsoOpts(require_models=not a.iso_allow_bare,
-                                theme=a.theme)
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description=__doc__.split('\n')[0],
@@ -659,15 +630,6 @@ def main(argv=None):
     ap.add_argument('--aspect', default=None, metavar='W:H',
                     help="target frame aspect, or $KICAD_MOVIE_ASPECT; "
                          "'board' (default) keeps the board's own bounding box")
-    ap.add_argument('--panels', default=None, choices=('xray', 'xray+iso'),
-                    help="'xray' (default, or $KICAD_MOVIE_PANELS) or "
-                         "'xray+iso': a kicad-cli 3D view, in the layout's "
-                         "own panel when it has one to split (stacked, "
-                         "sidebar, split), else under the frame. Same gate "
-                         "as make_movie: a mostly-bare board gets none")
-    ap.add_argument('--iso-allow-bare', action='store_true',
-                    help='draw the 3D view even when its models do not '
-                         'resolve (#1016)')
     ap.add_argument('--no-attempts', action='store_true',
                     help="drop the attempts band -- the boards alone")
     ap.add_argument('--quiet', action='store_true')
@@ -717,7 +679,7 @@ def main(argv=None):
                         chunks=a.chunks, camera=a.camera,
                         camera_budget=a.camera_budget, tween=a.tween,
                         quiet=a.quiet, layout=a.layout, aspect=a.aspect,
-                        panels=a.panels, spool=True,
+                        spool=True,
                         max_frames=a.max_frames,
                         placement={'off': a.no_placement_panel,
                                    'ledger': (a.attempts_ledger
@@ -726,7 +688,6 @@ def main(argv=None):
                                    'benchmark_score': a.benchmark_score,
                                    'board3d': a.board_3d,
                                    'intent': a.floorplan_intent},
-                        iso_opts=_iso_opts(a),
                         attempts=attempts,
                         attempts_from=('' if a.no_attempts else
                                        (a.from_loop_dir or

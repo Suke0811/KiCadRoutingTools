@@ -103,7 +103,7 @@ adjacent to the board it annotates and the iso panel still stacks last.
 **ONE ORDERING CONSTRAINT, AND IT IS LOAD-BEARING.** `make_film.build_film`
 must call `attach()` **before** its badge loop. `_badge` draws a border on the
 frame it is given; attach the band afterwards and the border encloses only the
-board, which is precisely the trap `movie_panels.py:40-44` documents.
+board.
 """
 from __future__ import annotations
 
@@ -774,7 +774,7 @@ def draw_track(d, box, track: Optional[Track], *, upto=None, theme=None,
     `None`. `attach` reports the difference in its status line.
 
     Never raises: a band is an artifact, and taking a routing run down for a
-    font metric is the trade this repo refuses (`movie_panels._finite`).
+    font metric is the trade this repo refuses.
 
     **A reserved band is never left blank** (#1036 review): when the
     broken axis fails to draw, the plain linear axis is drawn instead
@@ -1196,8 +1196,7 @@ def attach(frames, track: Optional[Track], *, theme=None, marks=None,
 
 def status_line(report) -> str:
     """One line saying whether the band ran, was skipped, or failed -- the
-    same channel `movie_panels.iso_status_line` gives the iso panel, and for
-    the same reason: a feature with no dialog control needs a way to say what
+    same reason as every film status line: a feature with no dialog control needs a way to say what
     it did."""
     if not report:
         return 'attempts band: not asked for'

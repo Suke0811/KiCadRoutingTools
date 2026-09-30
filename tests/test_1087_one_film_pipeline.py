@@ -2,10 +2,9 @@
 """make_movie and make_film share ONE band/panel pipeline (#1087).
 
 `make_film.build_film` used to re-implement `make_movie`'s post-passes --
-attempts discovery, the placement panels, the band reservation, the iso
-preflight and the composition -- so every film-level feature had to be
-threaded twice. Both now go through `film_passes.plan` / `compose` /
-`compose_iso`. Pinned on the CALLS, not the text: each front end is run once
+attempts discovery, the placement panels, the band reservation and the
+composition -- so every film-level feature had to be threaded twice. Both
+now go through `film_passes.plan` / `compose`. Pinned on the CALLS, not the text: each front end is run once
 with `film_passes` spied, and each must plan, compose and hand the frames it
 got back onward.
 """
@@ -40,7 +39,7 @@ def _check(ok, msg):
 
 def _spied(run):
     calls = []
-    orig = (FP.plan, FP.compose, FP.compose_iso)
+    orig = (FP.plan, FP.compose)
 
     def _plan(*a, **k):
         calls.append(('plan', k.get('who')))
@@ -55,7 +54,7 @@ def _spied(run):
                 contextlib.redirect_stdout(io.StringIO()):
             run()
     finally:
-        FP.plan, FP.compose, FP.compose_iso = orig
+        FP.plan, FP.compose = orig
     return calls
 
 
@@ -81,8 +80,7 @@ def test_both_front_ends_run_the_one_pipeline():
         # the pipeline's own entry points are film_passes'; a front end that
         # calls one of them directly has grown a second copy again
         dup = [f for f in ('movie_attempts.attach(', 'movie_benchmark.attach(',
-                           'movie_placement.split_band(',
-                           'movie_panels.compose_two_panel(')
+                           'movie_placement.split_band(')
                if f in src]
         _check(not dup, '%s calls no band/panel composer itself (%s)'
                % (name, dup))

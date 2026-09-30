@@ -2207,12 +2207,10 @@ placement boards whose parts MOVE, `make_movie` turns its camera on by itself
 and glides the parts in first. `--camera off` keeps a copper-only film, and the
 movie then names the copper-free boards it skipped.
 
-Two optional panels, both off by default and both costing real time:
-`--panels xray+iso` adds a 3D isometric `kicad-cli` render (~2-4 s per render,
-and it shows the parts and the board turning — copper is under soldermask, so
-the 3D view shows no routing progress). With `--layout split`, `stacked` or
-`sidebar` it goes into the layout's own panel and the frame keeps its declared
-`--aspect`; otherwise it stacks under the board view. A run wrapped in
+The frame is the `stage3d` layout, the only one: the board (3D when Node,
+playwright-core and a Chromium are present, else the 2D X-ray, and it says
+which), a layer column beside it and a benchmark band under it; `--aspect`
+sets the frame's ratio. A run wrapped in
 `tests/stress/tee_cmd.py` gets a run-clock overlay read from its
 `cmd_timing.jsonl`. `--theme light` is for a figure going into a
 light-background document.

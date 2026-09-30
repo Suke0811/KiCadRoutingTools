@@ -77,7 +77,6 @@ TARGETS = {
     'panels': os.path.join(_ROOT, 'py_router', 'render_panels.py'),
     'attempts': os.path.join(_ROOT, 'py_router', 'movie_attempts.py'),
     'motion': os.path.join(_ROOT, 'py_router', 'copper_motion.py'),
-    'iso': os.path.join(_ROOT, 'py_router', 'movie_panels.py'),
 }
 
 
@@ -89,7 +88,6 @@ T_PAL = _t('test_946_palette_measures.py')
 T_THEME = _t('test_946_theme_completeness.py')
 T_KEY = _t('test_946_event_key.py')
 T_XING = _t('test_946_opaque_crossings.py')
-T_ISO = _t('test_946_iso_gate.py')
 T_PLAN = _t('test_946_plan_overlay.py')
 T_LAY = _t('test_946_frame_layout.py')
 T_CAP = _t('test_946_caption_split.py')
@@ -147,11 +145,8 @@ ROWS = [
      "        self.opaque_crossings = False",
      (T_XING,), 'KILLED'),
 
-    # --- P6: the iso gate ---------------------------------------------------
-    ('iso-panel-drawn-on-a-board-with-no-models', 'iso',
-     "        self.require_models = bool(require_models)",
-     "        self.require_models = False",
-     (T_ISO,), 'KILLED'),
+    # --- P6: the iso gate -- retired with the iso panel (stage3d is the
+    # only film layout); its row went with movie_panels.py.
 
     # --- P7: the declared plan ---------------------------------------------
     # The FULL diagonals, which is what the first version of this drew. The

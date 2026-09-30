@@ -372,8 +372,7 @@ def draw_inventory(d, box, *, counts, placed, total, theme):
 def draw_summary(d, box, *, lines, theme):
     """The bookend content: what this board IS, in numbers.
 
-    The 3D view is `movie_panels`' iso panel and stacks in its own slot; what
-    belongs in the lower box at the bookends is the thing a viewer wants at the
+    What belongs in the lower box at the bookends is the thing a viewer wants at the
     start and again at the end -- parts, nets, layers, copper -- so the closing
     frame can be read against the opening one.
     """

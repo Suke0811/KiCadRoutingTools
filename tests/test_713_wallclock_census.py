@@ -82,14 +82,9 @@ REGISTRY = {
         'hang_detector',
         'ISO_RENDER_HANG_GUARD_S on the kicad-cli pcb render child (#887). Its '
         'expiry returns a NAMED reason -- "kicad-cli pcb render timed out after '
-        'Ns" -- which the composer draws into the panel and counts as a failed '
-        'shot, so it never becomes a bare None. It is NOT the cost cap: that is '
-        '--iso-max-renders, a COUNT, chosen over a seconds budget so the same '
-        'chain composes the same movie on a fast machine and a slow one.'),
-    'py_router/movie_panels.py': (
-        'hang_detector',
-        'forwards ISO_RENDER_HANG_GUARD_S to the render child above; the value '
-        'is the only clock it touches, and it takes no decision from it.'),
+        'Ns" -- so it never becomes a bare None. It is NOT a cost cap: a '
+        'caller caps a COUNT of renders, chosen over a seconds budget so the '
+        'same work is done on a fast machine and a slow one.'),
     # #1081: the stage3d film's optional external children. Each expiry
     # returns a NAMED reason, and the film then keeps the 2D X-ray for EVERY
     # frame and says why -- a timeout never becomes a partial or silent film.

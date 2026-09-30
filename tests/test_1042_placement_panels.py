@@ -695,11 +695,10 @@ def test_series_colours_are_distinct_in_both_themes():
               'deuteranope too' % len(pairs))
 
 
-def _sweep_one(tr, lk, rk, size, verdict, iso=False):
+def _sweep_one(tr, lk, rk, size, verdict):
     bounds = (0, 0, 100, 60)
     kw = dict(layout=lk, ratio=FL.parse_ratio(rk), size=size,
-              panel=(lk != 'legacy'), legacy_size=(size, int(size * 0.6)),
-              iso=iso)
+              panel=(lk != 'legacy'), legacy_size=(size, int(size * 0.6)))
     g = FL.plan_frame(bounds, **kw)
     fn = MP.band_px(tr, verdict)
     bh = fn(g.frame.w, g.frame.h)
@@ -728,16 +727,12 @@ def test_readable_or_not_drawn_across_layouts_ratios_sizes():
     for lk in ('legacy', 'stacked', 'sidebar', 'inset', 'split'):
         for rk in (None, '16:9', '16:10', '9:16', '1:1', '4:3'):
             land = rk in ('16:9', '16:10')
-            for size, verdict, iso in [(s_, v_, i_) for s_ in (500, 1000,
-                                                               1400)
-                                       for v_ in (True, False)
-                                       for i_ in ((False, True) if land
-                                                  else (False,))]:
-                    tag = '%s/%s/%d/%s%s' % (lk, rk, size,
-                                             'both' if verdict else 'place',
-                                             '/iso' if iso else '')
+            for size, verdict in [(s_, v_) for s_ in (500, 1000, 1400)
+                                  for v_ in (True, False)]:
+                    tag = '%s/%s/%d/%s' % (lk, rk, size,
+                                           'both' if verdict else 'place')
                     plan, ok, dbg, geo = _sweep_one(tr, lk, rk, size,
-                                                    verdict, iso)
+                                                    verdict)
                     if plan.mode == 'declined':
                         declined += 1
                         declines.append(tag)
@@ -805,7 +800,7 @@ def test_readable_or_not_drawn_across_layouts_ratios_sizes():
     print('    %d drawn (%d with fewer panels, named), %d declined: %s'
           % (drawn, dropped, declined, ', '.join(declines)))
     if len(_FAIL) == _mark:
-        print('  PASS: 5 layouts x 6 ratios x 3 sizes x 2 bands (+iso on landscape) -- every '
+        print('  PASS: 5 layouts x 6 ratios x 3 sizes x 2 bands -- every '
               'plot >= %d px, every text whole, inside, unoverlapped'
               % MP.PLOT_MIN_PX)
 

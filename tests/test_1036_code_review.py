@@ -9,8 +9,7 @@
       the one `make_movie.resolve_max_frames`: None -> $KICAD_MOVIE_MAX_FRAMES
       -> 2400, and an explicit value (0 = none) wins. It used to hand None to
       build_boards, which reads it as "no budget".
-  4. An invalid $KICAD_RENDER_THEME warns ONCE per film, not per frame; a
-     caller's IsoOpts is not mutated.
+  4. An invalid $KICAD_RENDER_THEME warns ONCE per film, not per frame.
   5a. A synthesised placement step that also lays copper plays that copper
       through the normal reveal (its trace), not a silent snap.
   5b. Stage keys boards by resolved absolute path: two chain boards with one
@@ -201,23 +200,20 @@ def test_make_film_resolves_the_frame_budget_like_make_movie():
         print('  PASS: make_film and make_movie resolve one budget: %r' % got)
 
 
-def test_an_invalid_theme_warns_once_and_iso_opts_are_not_mutated():
+def test_an_invalid_theme_warns_once():
     _mark = len(_FAIL)
     import env_knobs
     import make_movie
-    import movie_panels
     old = os.environ.get('KICAD_RENDER_THEME')
     os.environ['KICAD_RENDER_THEME'] = 'chartreuse'
     env_knobs.refresh()
     err = io.StringIO()
-    opts = movie_panels.IsoOpts(max_renders=0)
     tmp = tempfile.mkdtemp(prefix='t1036th_')
     try:
         with contextlib.redirect_stderr(err):
             make_movie.make_movie([BOARD], out=os.path.join(tmp, 'm.gif'),
                                   size=200, quiet=True, attempts=False,
                                   layout='split', aspect='16:9',
-                                  panels='xray+iso', iso_opts=opts,
                                   # a run clock, so the per-FRAME clock band
                                   # (the path that warned once per frame)
                                   # is drawn
@@ -234,11 +230,8 @@ def test_an_invalid_theme_warns_once_and_iso_opts_are_not_mutated():
     n = err.getvalue().count("'chartreuse' is not one of")
     if n != 1:
         fail('an invalid $KICAD_RENDER_THEME warned %d times' % n)
-    if opts.theme is not None:
-        fail("the caller's IsoOpts was mutated: theme %r" % (opts.theme,))
     if len(_FAIL) == _mark:
-        print('  PASS: one warning for the film; the IsoOpts passed in is '
-              'unchanged')
+        print('  PASS: one warning for the film')
 
 
 def test_a_placement_step_that_lays_copper_plays_it():
@@ -693,7 +686,7 @@ def test_a_strided_gif_holds_exactly_the_cap():
 TESTS = (
     test_make_film_closes_its_spools_on_failure,
     test_make_film_resolves_the_frame_budget_like_make_movie,
-    test_an_invalid_theme_warns_once_and_iso_opts_are_not_mutated,
+    test_an_invalid_theme_warns_once,
     test_a_placement_step_that_lays_copper_plays_it,
     test_duplicate_references_pair_by_uuid,
     test_a_shared_uuid_is_not_an_identity,

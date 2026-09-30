@@ -55,7 +55,7 @@ def _check(ok, msg):
 def _plan(bb, ratio, size, track, foot=24):
     return FL.plan_frame(bb, layout='stage3d', ratio=FL.parse_ratio(ratio),
                          size=size, panel=True, foot_px=foot,
-                         track_px=track, iso=True, quiet=True)
+                         track_px=track, quiet=True)
 
 
 def test_the_board_keeps_seventy_by_seventy():

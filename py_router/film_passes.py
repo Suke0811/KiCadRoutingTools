@@ -3,15 +3,14 @@
 
 `make_movie` and `make_film.build_film` each re-implemented the same
 post-pass pipeline -- discover the search behind the film, measure the
-placement panels, reserve the band, ask whether the iso panel can run, then
-compose the placement panels, the attempts band (or, on stage3d, the
-benchmark band) and the iso panel -- so every film-level feature had to be
+placement panels, reserve the band, then compose the placement panels and
+the attempts band (or, on stage3d, the benchmark band) -- so every film-level feature had to be
 threaded twice, and #1081's stage3d band was the latest to pay that. This
 module is that pipeline, in two halves around `animate_route.build_boards`:
 
   * `plan(...)` runs BEFORE the frame is planned and answers what
-    `build_boards` must reserve (`attempts_band`, `iso_panel`);
-  * `compose(...)` and `compose_iso(...)` run AFTER, on the frames.
+    `build_boards` must reserve (`attempts_band`);
+  * `compose(...)` runs AFTER, on the frames.
 
 What stays in each front end is what is genuinely its own: make_movie's run
 clock, make_film's badges and cards. Every status line prints with the
@@ -22,7 +21,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple
 
 
 class Bands(NamedTuple):
@@ -34,7 +33,6 @@ class Bands(NamedTuple):
     pwhy: str
     pfn: Any                    # movie_placement.band_px(...)
     band: Any                   # what build_boards reserves (attempts_band)
-    iso_box: bool               # what build_boards reserves (iso_panel)
     placement_asked: Any
 
 
@@ -43,8 +41,7 @@ def _say(who, msg):
 
 
 def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
-         attempts_from=None, placement=None, want_iso=False, iso_opts=None,
-         quiet=False, who='make_movie', aspect=None) -> Bands:
+         attempts_from=None, placement=None, quiet=False, who='make_movie', aspect=None) -> Bands:
     """Everything the frame must reserve, decided before it is planned.
 
     `attempts`: a Track (use it), False (the OFF arm) or None (discover:
@@ -56,8 +53,7 @@ def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
     if stage3d:
         # the SAME fallback plan_frame takes: a declared aspect outside
         # 0.50..3.00 is a legacy frame, so it gets legacy's bands (a
-        # benchmark band drawn on a legacy frame, and the iso panel refused
-        # "because the board box IS the 3D view", were the half-fallback)
+        # benchmark band drawn on a legacy frame was the half-fallback)
         import frame_layout
         try:
             fa = frame_layout.parse_ratio(aspect) if aspect else None
@@ -71,8 +67,7 @@ def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
     if stage3d:
         # #1081. ONE band, the benchmark band, which folds the verdict band
         # and the placement panels into one curve -- neither is measured
-        # or reserved, and there is no iso panel: the board box IS the 3D
-        # view.
+        # or reserved.
         try:
             import movie_benchmark
             if attempts is not False and attempts_from != '':
@@ -90,7 +85,7 @@ def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
             btrack = None
         if btrack is not None and len(btrack.points) >= 2:
             return Bands(True, btrack, None, False, None, 'folded into the '
-                         'benchmark band (stage3d)', None, True, False, False)
+                         'benchmark band (stage3d)', None, True, False)
         # NO ledger behind the film -- a placement chain made from boards
         # alone: the placement panels stay (the final review: such a film
         # used to lose every placement number it had)
@@ -102,7 +97,7 @@ def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
             pfn = movie_placement.band_px(ptrack, False)
             band = pfn
         return Bands(True, None, None, False, ptrack, pwhy, pfn, band,
-                     False, placement.get('asked'))
+                     placement.get('asked'))
     # #946/C4: the attempts are found BEFORE the frame is planned, so the
     # band is RESERVED in the layout (`plan_frame(track_px=)`) rather than
     # grown under every frame afterwards.
@@ -134,22 +129,8 @@ def plan(steps, final, layout, *, attempts=None, attempts_ledger=None,
         # the band is SIZED for readable panels (`plan_band`), not scaled
         pfn = movie_placement.band_px(ptrack, verdict)
         band = pfn
-    # the iso view gets a region of the layout's own panel when the layout
-    # has one to split and the panel WOULD run -- asked before the frame is
-    # planned, because a region reserved for a gated-off panel is a blank box
-    iso_box = False
-    if want_iso and str(layout or 'legacy').lower() not in (
-            'legacy', 'inset', 'stage3d'):
-        try:
-            import movie_panels
-            if iso_opts is None:
-                iso_opts = movie_panels.IsoOpts()
-            iso_box = movie_panels.preflight(
-                steps[0][1] if steps else final, iso_opts) is None
-        except Exception:                                      # noqa: BLE001
-            iso_box = False
     return Bands(False, None, track, verdict, ptrack, pwhy, pfn, band,
-                 iso_box, placement.get('asked'))
+                 placement.get('asked'))
 
 
 def _placement(steps, placement, attempts_ledger, here, quiet):
@@ -174,7 +155,7 @@ def compose(frames, bands, geom, marks, lands, theme, *, quiet=False,
             who='make_movie'):
     """The bands, onto frames `build_boards` planned with `bands`. Order:
     placement panels, then the verdict band (or the benchmark band) -- all
-    before the run clock and the iso panel, so a band sits next to the board
+    before the run clock, so a band sits next to the board
     it annotates."""
     box = geom.track if geom is not None else None
     if bands.stage3d and bands.btrack is not None:
@@ -223,29 +204,3 @@ def compose(frames, bands, geom, marks, lands, theme, *, quiet=False,
             _say(who or 'make_movie', 'no attempts band (%s)' % exc)
     return frames
 
-
-def compose_iso(frames, bands, geom, marks, final, iso_opts, theme, *,
-                who='make_movie'):
-    """The iso panel, last of the post-passes (or the stage3d line saying
-    why there is none)."""
-    if bands.stage3d:
-        _say(who, 'iso panel: not drawn -- the stage3d board box IS the 3D '
-                  'view')
-        return frames
-    # bound through the module so a test that monkeypatches
-    # movie_panels.compose_two_panel still bites
-    import movie_panels
-    if iso_opts is None:
-        iso_opts = movie_panels.IsoOpts()
-    if iso_opts.theme is None:
-        iso_opts.theme = theme
-    box: Optional[Any] = None
-    if bands.iso_box and geom is not None and geom.panel_split:
-        box = geom.panel_split[0]
-    # `box=` only when there IS one: an in-process caller (and the tests)
-    # may stand in for compose_two_panel with the four-argument shape
-    frames, report = movie_panels.compose_two_panel(
-        frames, marks, final, iso_opts,
-        **({'box': box} if box is not None else {}))
-    _say(who, movie_panels.iso_status_line(report))
-    return frames
