@@ -401,21 +401,25 @@ class TestReviewFollowUps(unittest.TestCase):
         self.assertTrue(d['buildable'], r.stdout[-1500:])
 
     def test_a_plug_hanging_across_an_edge_is_not_seated(self):
-        """J1 parked across the body's west edge, fingers off the board: no
+        """J1 parked across the body's west edge, and J1 slid 3 mm out past
+        the tongue's tip (its fingers 1 mm off the board, every other seat
+        condition met -- the case only the copper-overrun test refuses): no
         region and no lock, so the search can still move it (and #1096
         reports its copper)."""
         import pose_score
         from kicad_parser import parse_kicad_pcb
-        with tempfile.TemporaryDirectory() as td:
-            p = board(td)
-            with open(p, encoding='utf-8') as fh:
-                text = fh.read()
-            with open(p, 'w', encoding='utf-8') as fh:
-                fh.write(text.replace('(at 15 32)\n', '(at 3 10 90)\n', 1))
-            self.assertEqual(keepouts(p), ())
-            st = pose_score.make_state(parse_kicad_pcb(p), p, clearance=0.1,
-                                       board_edge_clearance=0.1)
-            self.assertFalse(st.parts['J1'].locked)
+        for at in ('(at 3 10 90)', '(at 15 35)'):
+            with tempfile.TemporaryDirectory() as td:
+                p = board(td)
+                with open(p, encoding='utf-8') as fh:
+                    text = fh.read()
+                with open(p, 'w', encoding='utf-8') as fh:
+                    fh.write(text.replace('(at 15 32)\n', at + '\n', 1))
+                self.assertEqual(keepouts(p), (), at)
+                st = pose_score.make_state(parse_kicad_pcb(p), p,
+                                           clearance=0.1,
+                                           board_edge_clearance=0.1)
+                self.assertFalse(st.parts['J1'].locked, at)
 
     def test_check_assembly_grades_the_declared_region(self):
         """A declared `mating:J1` replaces the derived region in
