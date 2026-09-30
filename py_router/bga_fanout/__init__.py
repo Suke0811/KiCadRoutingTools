@@ -3141,9 +3141,18 @@ def _generate_bga_fanout_core(footprint: Footprint,
                         layers=_v.get('layers') or ['F.Cu', 'B.Cu'],
                         net_id=_v['net_id']))
                 _prog(f"escape priority pass 2 ({len(_extras)} extra ball(s))...")
+                # Pass 2 routes AROUND pass-1 copper, which the channel engine
+                # does not see: under 'auto' its extras crossed pass-1 tracks
+                # outright (zynq_ad9364 U1: VCC_1V0 extras at 0.000 mm from
+                # three other nets' pass-1 escapes), and since it dropped fewer
+                # balls than the under-pad retry, auto kept it -- then the guard
+                # below threw away 5 whole chains (14 balls). The under-pad
+                # engine builds its grid from the board's copper, so pass 2
+                # takes it whenever the caller left the choice to auto.
+                _kw2 = dict(_kw, escape_method='underpad') if escape_method == 'auto' else _kw
                 t2, v2, vr2, f2 = _generate_bga_fanout_core(
                     footprint, pcb_data, check_for_previous=True,
-                    _pad_filter=_extra_keys, _ignore_prefanned=True, **_kw)
+                    _pad_filter=_extra_keys, _ignore_prefanned=True, **_kw2)
             finally:
                 del pcb_data.segments[_n_seg0:]
                 del pcb_data.vias[_n_via0:]
@@ -3297,12 +3306,35 @@ def _generate_bga_fanout_core(footprint: Footprint,
                 print("  Escape priority: cancelled mid-pass -- keeping the "
                       "single-pass result")
                 return t0, v0, vr0, f0
-            if len(failed_nets) < len(f0):
-                print(f"  Escape priority wins: {len(f0)} -> "
-                      f"{len(failed_nets)} dropped ball(s); using it")
+            # Both results counted on the SAME terms, in this pass's own order:
+            # NETS left with no escaped ball first (net coverage -- a net needs
+            # one escape, its other balls are reached inside the array), then
+            # BARE BALLS. The two lists compared here before were not on the
+            # same terms: pass 1's failed NETS (an extra that stayed bare is a
+            # soft failure, absent from it) against the single pass's failed
+            # BALLS -- so a priority result that covered no more nets and left
+            # more balls bare could win (zynq_ad9364 U1 under-pad: a single
+            # pass with every net covered and 1 ball bare lost to one with 3).
+            _cands = [_p for _p in footprint.pads if _p.net_id and _p.net_name
+                      and not _p.net_name.lower().startswith('unconnected-')
+                      and _p.net_id not in _nc_ids and _p.net_id not in _prefanned
+                      and (not net_filter or matches_net_filter(_p.net_name, net_filter))]
+
+            def _score(vs, ts):
+                bare, cov = 0, {}
+                for _p in _cands:
+                    _c = ball_has_copper(_p, vs, ts, _tw)
+                    bare += not _c
+                    cov[_p.net_id] = cov.get(_p.net_id, False) or _c
+                return sum(1 for _c in cov.values() if not _c), bare
+            _s0, _s1 = _score(v0, t0), _score(vias_to_add, tracks)
+            if _s1 < _s0:
+                print(f"  Escape priority wins: {_s0[0]} -> {_s1[0]} net(s) with no "
+                      f"escape, {_s0[1]} -> {_s1[1]} bare ball(s); using it")
                 return tracks, vias_to_add, vias_to_remove, failed_nets
-            print(f"  Escape priority did not improve ({len(failed_nets)} vs "
-                  f"{len(f0)} dropped) - keeping the single-pass result")
+            print(f"  Escape priority did not improve ({_s1[0]} vs {_s0[0]} net(s) "
+                  f"with no escape, {_s1[1]} vs {_s0[1]} bare ball(s)) - keeping "
+                  f"the single-pass result")
             return t0, v0, vr0, f0
 
     # --layer-costs (issue #288): same semantics as route.py -- a NEGATIVE cost

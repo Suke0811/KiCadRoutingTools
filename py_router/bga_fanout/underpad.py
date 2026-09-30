@@ -2542,6 +2542,14 @@ def generate_underpad_escape(footprint: Footprint,
 
         def _via_ok(x, y, at_center, _cs=_cs, _cd=_cd, _nid=p.net_id,
                     _c=_ctx, _m=_memo, _p=p):
+            if at_center:
+                # judged where commit() puts it: the centre-cell via is emitted
+                # at the exact pad centre, and the cell's lattice node can be a
+                # whole cell away (a ball a tenth of a micron below a node
+                # truncates to the node below: zynq_ad9364 U1, 381 of 400
+                # balls, 25 um low -- the via judged there refused 27 balls
+                # whose real centre site was clear)
+                x, y = _p.global_x, _p.global_y
             if no_via_in_pad:
                 # #581: no via may overlap its own pad -- centre is out, and an
                 # off-centre via must clear the pad copper (circumscribed
