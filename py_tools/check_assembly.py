@@ -348,12 +348,19 @@ def main():
             # #1096: the DISTANCE the copper reaches past the outline. The
             # magnitude in `oob_pad_copper_refs` is a ranking sum (C20 read
             # "36.8mm" for copper 7.84 mm out) and is kept in the JSON.
-            print("    pad copper genuinely off the outline (per-pad, "
-                  "margin 0): "
-                  + ', '.join(f'{r} ({_overrun.get(r, a)}mm past the '
-                              f'outline)' for r, a in _exact)
-                  + " -- NOT BUILDABLE: a part not on the board cannot "
-                    "be assembled or routed")
+            _gate = set(leg.get('oob_pad_copper_gating_refs') or ())
+            if _gate:
+                print("    pad copper genuinely off the outline (per-pad, "
+                      "margin 0): "
+                      + ', '.join(f'{r} ({_overrun.get(r, a)}mm past the '
+                                  f'outline)' for r, a in _exact if r in _gate)
+                      + (" -- NOT BUILDABLE: a part not on the board cannot "
+                         "be assembled or routed" if _gate else ''))
+            _edge = [r for r, _a in _exact if r not in _gate]
+            if _edge:
+                print("    ...on the outline by design, not gated: "
+                      + ', '.join(_edge) + " (castellated pads, or a round "
+                      "pad whose bounding box, not its copper, crosses)")
         else:
             print("    ...but NO PAD crosses the real outline (per-pad, "
                   "margin 0, is empty). The count above is the part's "
@@ -603,7 +610,10 @@ def main():
     # reach it. CLAUDE.md ranks this the top-priority placement defect; a
     # part that is not on the board cannot be built. A lock does not exempt
     # it (placement stamps locks itself, #962's reasoning).
-    off_outline_pads = [r for r, _a in (leg.get('oob_pad_copper_refs') or [])]
+    # The GATING subset: a real distance past the outline on the true pad
+    # outlines, castellated pads left out (rp2350's Teensy U8 is ON the edge
+    # by design).
+    off_outline_pads = list(leg.get('oob_pad_copper_gating_refs') or [])
     # #1098, the SEVENTH: a part on a PCB-edge plug's mating region (run 36
     # put 8 back-side parts on StickHub's USB tongue, which must enter a
     # socket). Absolute, and no class waiver reaches it: the region is the
@@ -722,6 +732,10 @@ def main():
             'oob_pad_copper_refs': leg.get('oob_pad_copper_refs') or [],
             'oob_pad_copper_overrun_mm':
                 leg.get('oob_pad_copper_overrun_mm') or {},
+            'oob_pad_copper_gating_count':
+                leg.get('oob_pad_copper_gating_count', 0),
+            'oob_pad_copper_gating_refs':
+                leg.get('oob_pad_copper_gating_refs') or [],
             'mating_keepout_count': leg.get('mating_keepout_count', 0),
             'mating_keepout_refs': leg.get('mating_keepout_refs') or [],
             'oob_pad_copper_basis': leg.get('oob_pad_copper_basis'),

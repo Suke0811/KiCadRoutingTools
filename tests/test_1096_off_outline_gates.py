@@ -1,7 +1,7 @@
 """#1096: pad copper off the outline makes check_assembly NOT BUILDABLE.
 
 Run 36 (KiCad's StickHub demo, placed from a pile) left C20 at its staging
-pose, 7.24 mm below the board's south edge. check_assembly printed
+pose, its pad copper 7.84 mm below the board's south edge. check_assembly printed
 "pad copper genuinely off the outline (per-pad, margin 0): C20 (36.8mm)" and
 then `VERDICT: buildable (blocking 0)`; the run routed the board and the
 router took GND off the board to reach C20.
@@ -43,10 +43,14 @@ BOARD = (
 
 def run(y):
     """check_assembly on a 20x20 board with R1 at (10, y)."""
+    return _run_text(BOARD.format(y=y))
+
+
+def _run_text(text):
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, 'b.kicad_pcb')
         with open(path, 'w', encoding='utf-8') as fh:
-            fh.write(BOARD.format(y=y))
+            fh.write(text)
         js = os.path.join(td, 'a.json')
         r = subprocess.run([sys.executable, '-X', 'utf8',
                             os.path.join(ROOT, 'py_tools',
@@ -83,6 +87,39 @@ class TestOffOutline(unittest.TestCase):
         self.assertTrue(d['buildable'])
         self.assertEqual(d['oob_pad_copper_refs'], [])
 
+    def test_a_castellated_pad_on_the_edge_does_not_gate(self):
+        """A castellated module's half-holes are ON the outline by design
+        (rp2350's Teensy U8, 0.8 mm past it): disclosed, not gated."""
+        board = BOARD.replace(
+            '(pad "2" smd rect (at 0.5 0) (size 0.6 0.6) (layers "F.Cu")',
+            '(pad "2" thru_hole rect (at 0.5 0.4) (size 0.6 0.6) (drill 0.3)'
+            ' (layers "*.Cu") (property pad_prop_castellated)')
+        r, d = _run_text(board.format(y=19.5))
+        self.assertTrue(d['buildable'], r.stdout[-1500:])
+        self.assertEqual(d['oob_pad_copper_gating_refs'], [])
+        self.assertEqual([x[0] for x in d['oob_pad_copper_refs']], ['R1'])
+        self.assertIn('on the outline by design, not gated: R1', r.stdout)
+
+    def test_a_round_pad_inside_a_round_board_does_not_gate(self):
+        """A 1.6 mm round pad 0.3 mm inside a round outline at 45 degrees:
+        its bounding-box corner is 0.03 mm past the circle, its copper is
+        not."""
+        c = 10 + (10 - 0.8 - 0.3) / 2 ** 0.5
+        board = (
+            '(kicad_pcb (version 20240108) (generator pcbnew)\n'
+            '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal)'
+            ' (44 "Edge.Cuts" user))\n'
+            '  (net 0 "") (net 1 "N1")\n'
+            '  (gr_circle (center 10 10) (end 20 10) (stroke (width 0.1)'
+            ' (type default)) (layer "Edge.Cuts"))\n'
+            f'  (footprint "t:TP" (layer "F.Cu") (at {c:.4f} {c:.4f})\n'
+            '    (property "Reference" "TP1" (at 0 0) (layer "F.SilkS"))\n'
+            '    (pad "1" smd circle (at 0 0) (size 1.6 1.6) (layers "F.Cu")'
+            ' (net 1 "N1"))))\n')
+        r, d = _run_text(board)
+        self.assertTrue(d['buildable'], r.stdout[-1500:])
+        self.assertEqual(d['oob_pad_copper_gating_refs'], [])
+
     def test_board_score_counts_it(self):
         """board_score reads the verdict: NOT BUILDABLE at blocking 0 is 1,
         and the conjunct is named among the live ones."""
@@ -90,7 +127,7 @@ class TestOffOutline(unittest.TestCase):
         _r, d = run(27)
         comp = board_score.assembly_component(d, 4)
         self.assertEqual(comp['count'], 1)
-        self.assertIn('oob_pad_copper_count', comp['live_conjuncts_fired'])
+        self.assertIn('oob_pad_copper_gating_count', comp['live_conjuncts_fired'])
 
 
 if __name__ == '__main__':

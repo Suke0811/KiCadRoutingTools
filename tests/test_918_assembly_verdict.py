@@ -217,7 +217,7 @@ def main():
             {'blocking': 0, 'buildable': False, 'verdict': 'NOT BUILDABLE',
              'locked_contacts': 0, 'coincident_origins': 3,
              'containment_blocking': 5, 'courtyard_blocking_gating': None,
-             'oob_pad_copper_count': 0, 'mating_keepout_count': 0}, 4)
+             'oob_pad_copper_gating_count': 0, 'mating_keepout_count': 0}, 4)
         check('count is 1, not 8', r.get('count') == 1,
               f"count={r.get('count')!r} basis={r.get('count_basis')!r}")
         check('...and the basis says WHY it is not a sum',
@@ -269,7 +269,7 @@ def main():
         check('locked_contacts and courtyard gating are not among them',
               tuple(board_score.ASSEMBLY_LIVE_CONJUNCTS)
               == ('coincident_origins', 'containment_blocking',
-                  'oob_pad_copper_count', 'mating_keepout_count'),
+                  'oob_pad_copper_gating_count', 'mating_keepout_count'),
               repr(board_score.ASSEMBLY_LIVE_CONJUNCTS))
         r = board_score.assembly_component(
             {'blocking': 0, 'buildable': False, 'verdict': 'NOT BUILDABLE',
@@ -284,7 +284,7 @@ def main():
             {'blocking': 0, 'buildable': True, 'verdict': 'buildable',
              'locked_contacts': 0, 'coincident_origins': 0,
              'containment_blocking': 0, 'courtyard_blocking_gating': 0,
-             'oob_pad_copper_count': 0, 'mating_keepout_count': 0,
+             'oob_pad_copper_gating_count': 0, 'mating_keepout_count': 0,
              'courtyard_gating_basis': 'moved-vs-baseline'}, 0)
         check('a doc produced WITH --baseline reports the conjunct as armed',
               r.get('courtyard_gating_armed') is True

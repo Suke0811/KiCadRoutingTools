@@ -879,18 +879,28 @@ class BoardOutlineGate:
                 + max(0.0, rect[2] - u[2]) + max(0.0, rect[3] - u[3]))
 
     def rect_overrun_mm(self, rect) -> float:
-        """How far `rect` reaches past the outline, in mm: the largest
-        distance from one of its corners that is off the board to the
-        outline, 0.0 when every corner is on it (#1096).
+        """How far `rect` reaches past the outline, in mm (#1096): see
+        `points_overrun_mm`, over the rect's corners."""
+        x0, y0, x1, y1 = rect
+        return self.points_overrun_mm(((x0, y0), (x1, y0), (x1, y1),
+                                       (x0, y1)))
+
+    def points_overrun_mm(self, points) -> float:
+        """The largest distance from one of `points` that is off the board to
+        the outline, 0.0 when every one is on it (#1096).
 
         A DISTANCE, unlike `rect_outside_amount`, which sums an overshoot
         term per corner and per edge so that it can rank candidate poses: a
         0402 wholly off the board read "36.8mm" there, and its farthest
-        copper is 7.84 mm out. The corners suffice for a pad rect: its
-        farthest point from the board is a corner.
+        copper is 7.84 mm out. Pass the vertices of a shape's true outline
+        (`check_pads.pad_outline_polygon`), not its bbox: a round pad's bbox
+        corner leaves a round board where the pad does not. A vertex test
+        cannot see copper bridging a notch with every vertex on the board;
+        that is the same blind spot `rect_outside_amount` has.
         """
-        x0, y0, x1, y1 = rect
-        corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+        corners = tuple(points)
+        if not corners:
+            return 0.0
         if not self.rings:
             if self.bounds is None:
                 return 0.0
@@ -4403,10 +4413,31 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                        for r in rects), default=0.0)
             if amt > EPS:
                 oob_copper_refs.append([ref, round(amt, 4)])
-                # #1096: the DISTANCE past the outline, beside the magnitude.
-                oob_copper_overrun[ref] = round(max(
-                    (pad_gate.rect_overrun_mm(r[:4]) for r in rects),
-                    default=0.0), 4)
+                # #1096: the DISTANCE past the outline, measured on each
+                # pad's TRUE outline (`check_pads.pad_outline_polygon`, arcs
+                # sampled) rather than its rect, and without the pads that
+                # are ON the edge by design. This is what check_assembly's
+                # verdict gates on, so it must not charge:
+                #   * a castellated pad (rp2350's Teensy U8: 33 half-holes
+                #     0.8 mm past the outline, as a castellated module is);
+                #   * a round pad whose bbox corner, not its copper, leaves a
+                #     curved outline.
+                # The magnitude above keeps its rect currency (render_
+                # placement reads the same list, and ranking needs no
+                # exemption); a part it lists with a 0.0 here is disclosed,
+                # not gated.
+                from check_pads import pad_outline_polygon as _pop
+                _over = 0.0
+                for _p in pads_by_ref.get(ref, ()):
+                    if getattr(_p, 'castellated', False) or \
+                            getattr(_p, 'pad_type', '') == 'np_thru_hole':
+                        continue
+                    try:
+                        _pts = _pop(_p)
+                    except Exception:                     # noqa: BLE001
+                        continue
+                    _over = max(_over, pad_gate.points_overrun_mm(_pts))
+                oob_copper_overrun[ref] = round(_over, 4)
     # the resolved per-pad edge requirement (#986 moved it onto the context)
     graphic = _graphic_copper_channel(pcb_data, edge_ctx.required)
     # #1098: parts inside a PCB-edge plug's mating region, on either face.
@@ -4448,9 +4479,17 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             'oob_pad_copper_refs': sorted(oob_copper_refs),
             # #1096. `oob_pad_copper_refs` carries rect_outside_amount's
             # MAGNITUDE (a per-corner and per-edge sum, for ranking); this is
-            # how far each part's copper actually reaches past the outline.
+            # how far each part's copper actually reaches past the outline,
+            # on the true pad outlines, castellated pads left out.
             'oob_pad_copper_overrun_mm': dict(sorted(
                 oob_copper_overrun.items())),
+            # ...and the parts that GATE: a real distance past the outline.
+            # check_assembly's verdict and board_score read this, never the
+            # magnitude list, which also carries edge-by-design copper.
+            'oob_pad_copper_gating_refs': sorted(
+                r for r, d in oob_copper_overrun.items() if d > EPS),
+            'oob_pad_copper_gating_count': sum(
+                1 for d in oob_copper_overrun.values() if d > EPS),
             'oob_pad_copper_basis': ('per-PAD copper rects against the real '
                                      'outline at margin 0 (the authoritative '
                                      'measure; the same question '
