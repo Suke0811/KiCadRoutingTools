@@ -213,6 +213,19 @@ ROWS = [
      "        _say('stage3d: 2D X-ray in the board box -- %s' % why, notes)",
      "        pass",
      (T_E2E,), 'KILLED'),
+    # --- found by the esp_prog film (run 35) -------------------------------
+    ('the-camera-fitted-once-for-the-film', 'page',
+     "  fitCamera();",
+     "  // fitCamera();",
+     (T_E2E,), 'KILLED'),
+    ('the-caption-no-obstacle', 'bench',
+     "        occupied.append((bb[0] - 2, bb[1] - 1, bb[2] + 2, bb[3] + 1))",
+     "        pass",
+     (T_BAND,), 'KILLED'),
+    ('a-parts-own-copper-diffed-as-routing', 'anim',
+     "                and not (getattr(s, 'graphic', False)",
+     "                and not (False",
+     (T_REC,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)
