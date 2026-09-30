@@ -121,11 +121,9 @@ ROWS = [
      (T1096,), 'KILLED'),
     # --- #1098: a PCB-edge plug's mating region ------------------------------
     ('plug-keepout-front-only', 'fp',
-     "                    'rect': tuple(round(v, 4) for v in ins),
-"
+     "                    'rect': tuple(round(v, 4) for v in ins),\n"
      "                    'sides': ('F', 'B'),",
-     "                    'rect': tuple(round(v, 4) for v in ins),
-"
+     "                    'rect': tuple(round(v, 4) for v in ins),\n"
      "                    'sides': ('F',),",
      (T1098,), 'KILLED'),
     ('plug-slot-not-allowed', 'fp',
