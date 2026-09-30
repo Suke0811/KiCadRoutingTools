@@ -400,10 +400,12 @@ placement defect**, ahead of every clearance graze: its nets cannot be routed
 at all, so it converts one-for-one into `unrouted` and `broken`. Measured, run
 10: 11 such parts produced ALL 13 unrouted nets and most of the 37 broken ones.
 Read WHICH parts off `render_placement --json-out`'s
-`checklist.a_off_outline.pad_copper`. Since #1096 it also makes
-`check_assembly` NOT BUILDABLE (per pad, margin 0, a lock does not exempt it),
-because run 36 routed a board with C20 7.84 mm below its outline on a
-`buildable` verdict; `oob_pad_copper_overrun_mm` is the distance, and
+`checklist.a_off_outline.pad_copper_gating`; its sibling `pad_copper` also
+lists parts on the outline by design (a castellated module's half-holes, a
+round pad whose bbox corner crosses), which do not gate. Since #1096 a gating
+part makes `check_assembly` NOT BUILDABLE (per pad, margin 0, a lock does not
+exempt it), because run 36 routed a board with C20 7.84 mm below its outline
+on a `buildable` verdict; `oob_pad_copper_overrun_mm` is the distance, and
 `oob_pad_copper_refs` carries a ranking magnitude, not a distance.
 
 **Footprint GRAPHIC copper past the outline is the same defect (#962)**, and
