@@ -24,8 +24,9 @@ CHOSEN together, then laid together:
 4. The choice is handed to the production engine as a planned move for EVERY ball it covers
    (source_realize.full_move, strict), so no generic phase takes a planned ball's gap first.
 
-plan_array() returns the hints and a report; lay() runs the one engine call (the joint escape engine,
-py_router/bga_fanout/jointescape.py: the plan first, the plane balls dropped, each net held to its layers)."""
+plan_array() returns the hints and a report; lay() runs the one engine call (the under-pad engine's joint escape,
+py_router/bga_fanout/underpad.py with joint=True: the plan first, the plane balls dropped, each net held to its
+layers)."""
 
 KRT_TOOL = {'scope': [], 'kind': 'actor'}   # #937: a research tool (awx), catalogued, shown at no door
 import argparse
@@ -643,11 +644,11 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
 
 
 def lay(board, out, ref, bus, others, other_layers, hints, other_pairs=()):
-    """The plan laid in ONE call of the joint escape engine (py_router/bga_fanout/jointescape.py): the planned moves
-    on their own legs and the straps first, each net held to its layers (the bus to F/B, the others to
-    `other_layers`) and the bus first; then the balls the plan could not place, by the under-pad grid's generic
-    phases; the plane balls dropped (plane_drop auto: every net the call leaves out that owns a zone or six balls).
-    Returns (tracks, vias, failed nets)."""
+    """The plan laid in ONE call of the under-pad engine's joint escape (py_router/bga_fanout/underpad.py,
+    joint=True): the planned moves on their own legs and the straps first, each net held to its layers (the bus to
+    F/B, the others to `other_layers`) and the bus first; then the balls the plan could not place, by the under-pad
+    grid's generic phases; the plane balls dropped (plane_drop auto: every net the call leaves out that owns a zone
+    or six balls). Returns (tracks, vias, failed nets)."""
     import shutil
     from kicad_parser import parse_kicad_pcb
     from kicad_writer import add_tracks_and_vias_to_pcb
