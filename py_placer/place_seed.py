@@ -310,9 +310,14 @@ def gate_reason(unseated, own, my_pads, hole_delta, band=()):
         # #1099: NAME them. Run 36's seed exited 4 with this line and no
         # refs, the agent read "grade errors" and routed a board with C20
         # still in the staging pile. An unseated part is not on the board.
-        names = sorted(unseated)
+        names = (sorted(unseated)
+                 if isinstance(unseated, (list, tuple, set, frozenset))
+                 else [])
         shown = ', '.join(names[:12]) + (f" ... +{len(names) - 12} more"
                                          if len(names) > 12 else '')
+        if not names:
+            return ("place_seed: the seed does NOT satisfy its intent -- see "
+                    "the errors above." + tail)
         return (f"place_seed: {len(names)} part(s) UNSEATED, still in the "
                 f"staging pile and NOT placed: {shown}. The seed does NOT "
                 f"satisfy its intent -- seat them (--repair, or "

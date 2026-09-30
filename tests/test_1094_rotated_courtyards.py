@@ -241,16 +241,19 @@ class TestOutlineDetails(unittest.TestCase):
         self.assertEqual(courtyard_pairs(g), {('A', 'B')})
 
     def test_a_join_a_few_microns_open_still_closes(self):
-        """ulx3s BAT1's courtyard: ends that miss by ~2 um are joined, the
+        """ulx3s BAT1's courtyard: ends that miss by ~4 um are joined, the
         outline is the drawing, not its hull."""
         from placement.parser import OUTLINE_POLYGON, extract_courtyard_shapes
         tri = (line((0, 0), (4, 0)) + line((4, 0), (0, 3))
-               + line((0.000002, 3.000002), (0, 0)))
+               + line((0.004, 3.004), (0, 0)))
         with tempfile.TemporaryDirectory() as td:
             shp = extract_courtyard_shapes(raw_board(
                 td, fp('A', 10, 10, tri)))['A']['F']
         self.assertEqual(shp[1], OUTLINE_POLYGON)
-        self.assertAlmostEqual(shp[0].area, 6.0, places=3)
+        # The join moves the stray end by up to its gap, so the area is the
+        # triangle's within a few hundredths; the HOW is what tells a joined
+        # drawing from its hull (both a triangle here).
+        self.assertAlmostEqual(shp[0].area, 6.0, delta=0.05)
 
     def test_containment_is_measured_on_the_drawn_body(self):
         """B's .Fab body is a right triangle (area 2, box 4) wholly inside

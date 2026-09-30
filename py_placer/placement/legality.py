@@ -3882,6 +3882,51 @@ def footprint_at_pose(fp, pose):
     return out
 
 
+def _on_board(gate, x, y) -> bool:
+    """Is (x, y) on the board: the real rings when the gate has them, else
+    the bounds (a plain rectangular outline parses to no rings at all)."""
+    if gate.rings:
+        from check_drc import _point_on_board
+        return _point_on_board(x, y, gate.outer, gate.cutouts)
+    b = gate.bounds
+    return b is not None and b[0] <= x <= b[2] and b[1] <= y <= b[3]
+
+
+def pad_copper_overrun_mm(pads, gate) -> float:
+    """How far `pads`' copper reaches past the outline, in mm: THE gating
+    measure for pad copper off the board (#1096), shared by check_assembly
+    (via `grade_pad_legality`) and render_placement's `--gate`.
+
+    Each pad on its true outline (`check_pads.pad_outline_polygon`, arcs
+    sampled), so a round pad's bbox corner does not leave a curved board.
+    A CASTELLATED pad is exempt only while it STRADDLES the outline -- some
+    of its copper on the board, as a half-hole on a module edge is; one
+    wholly off the board counts like any other (a module parked off the
+    board is not on its edge). NPTH pads carry no copper. A pad whose
+    outline cannot be computed falls back to its rect, never to "clean".
+    """
+    from check_pads import pad_outline_polygon
+    over = 0.0
+    for p in pads or ():
+        if getattr(p, 'pad_type', '') == 'np_thru_hole':
+            continue
+        try:
+            pts = pad_outline_polygon(p)
+        except Exception:                                    # noqa: BLE001
+            pts = []
+        if len(pts) < 3:
+            hx, hy = pad_half_extents(p)
+            pts = [(p.global_x - hx, p.global_y - hy),
+                   (p.global_x + hx, p.global_y - hy),
+                   (p.global_x + hx, p.global_y + hy),
+                   (p.global_x - hx, p.global_y + hy)]
+        if getattr(p, 'castellated', False) and any(
+                _on_board(gate, x, y) for x, y in pts):
+            continue
+        over = max(over, gate.points_overrun_mm(pts))
+    return over
+
+
 class EdgeCopperContext:
     """`grade_pad_edge_clearance` with its per-board constants read once (#975).
 
@@ -4438,31 +4483,17 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                        for r in rects), default=0.0)
             if amt > EPS:
                 oob_copper_refs.append([ref, round(amt, 4)])
-                # #1096: the DISTANCE past the outline, measured on each
-                # pad's TRUE outline (`check_pads.pad_outline_polygon`, arcs
-                # sampled) rather than its rect, and without the pads that
-                # are ON the edge by design. This is what check_assembly's
-                # verdict gates on, so it must not charge:
-                #   * a castellated pad (rp2350's Teensy U8: 33 half-holes
-                #     0.8 mm past the outline, as a castellated module is);
-                #   * a round pad whose bbox corner, not its copper, leaves a
-                #     curved outline.
+                # #1096: the DISTANCE past the outline, on each pad's TRUE
+                # outline and without a castellated pad that straddles the
+                # edge (rp2350's Teensy U8: 33 half-holes 0.8 mm past it, as
+                # a castellated module is) -- `pad_copper_overrun_mm`, which
+                # render_placement's gate calls too.
                 # The magnitude above keeps its rect currency (render_
                 # placement reads the same list, and ranking needs no
                 # exemption); a part it lists with a 0.0 here is disclosed,
                 # not gated.
-                from check_pads import pad_outline_polygon as _pop
-                _over = 0.0
-                for _p in pads_by_ref.get(ref, ()):
-                    if getattr(_p, 'castellated', False) or \
-                            getattr(_p, 'pad_type', '') == 'np_thru_hole':
-                        continue
-                    try:
-                        _pts = _pop(_p)
-                    except Exception:                     # noqa: BLE001
-                        continue
-                    _over = max(_over, pad_gate.points_overrun_mm(_pts))
-                oob_copper_overrun[ref] = round(_over, 4)
+                oob_copper_overrun[ref] = round(pad_copper_overrun_mm(
+                    pads_by_ref.get(ref, ()), pad_gate), 4)
     # the resolved per-pad edge requirement (#986 moved it onto the context)
     graphic = _graphic_copper_channel(pcb_data, edge_ctx.required)
     # #1098: parts inside a PCB-edge plug's mating region, on either face.
@@ -4516,10 +4547,13 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             'oob_pad_copper_gating_count': sum(
                 1 for d in oob_copper_overrun.values() if d > EPS),
             'oob_pad_copper_basis': ('per-PAD copper rects against the real '
-                                     'outline at margin 0 (the authoritative '
-                                     'measure; the same question '
-                                     'render_placement answers in '
-                                     'checklist.a_off_outline.pad_copper)'),
+                                     'outline at margin 0, a ranking '
+                                     'MAGNITUDE (render_placement\'s '
+                                     'checklist.a_off_outline.pad_copper). '
+                                     'What gates is oob_pad_copper_gating_'
+                                     'refs: pad_copper_overrun_mm, on true '
+                                     'pad outlines with an edge-straddling '
+                                     'castellated pad exempt'),
             # WHICH QUANTITY THIS IS. Three tools print "pad copper
             # off-board" for three different measurements. This one is the
             # part's pad AABB against an outline inflated by the GRADING

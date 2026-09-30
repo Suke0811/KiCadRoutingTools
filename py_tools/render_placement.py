@@ -312,7 +312,8 @@ def legality_findings(model) -> Dict[str, object]:
     cached = getattr(model, '_legality_findings', None)
     if cached is not None:
         return cached
-    out = {'oob_refs_pad_copper': [], 'oob_refs_courtyard': [],
+    out = {'oob_refs_pad_copper': [], 'oob_refs_pad_copper_gating': [],
+           'oob_refs_courtyard': [],
            'oob_refs_graphic_copper': [], 'graphic_copper_unmeasured': [],
            'keepout_copper_refs': [], 'keepout_copper_pads': [],
            'keepout_copper_unmeasured': [],
@@ -394,6 +395,21 @@ def legality_findings(model) -> Dict[str, object]:
                        + max(0.0, b[1] - ext[1]) + max(0.0, ext[3] - b[3]))
             if oob > 1e-6:
                 out['oob_refs_pad_copper'].append([ref, round(oob, 4)])
+                # #1096: the subset that GATES, by check_assembly's own
+                # measure (`legality.pad_copper_overrun_mm`) at this pose.
+                _dist = None
+                if _pad_gate is not None:
+                    try:
+                        from placement import legality as _leg
+                        _fp = _leg.footprint_at_pose(
+                            state.pcb_data.footprints[ref], (p.x, p.y, p.rot))
+                        _dist = _leg.pad_copper_overrun_mm(_fp.pads,
+                                                           _pad_gate)
+                    except Exception:
+                        _dist = None
+                if _dist is None or _dist > 1e-6:
+                    out['oob_refs_pad_copper_gating'].append(
+                        [ref, round(_dist if _dist is not None else oob, 4)])
         # #962: the second off-outline channel, footprint GRAPHIC copper,
         # at the model's PROPOSED poses. It is check_drc's own census on a
         # copy of the board whose footprints carry those poses; the census
@@ -2479,6 +2495,10 @@ def main(argv=None):
         'checklist': {
             'a_off_outline': {
                 'pad_copper': fnd['oob_refs_pad_copper'],
+                # #1096: what gates -- check_assembly's measure. A part in
+                # `pad_copper` and not here is on the outline by design (a
+                # castellated module) or is a round pad's bbox corner.
+                'pad_copper_gating': fnd['oob_refs_pad_copper_gating'],
                 'courtyard': fnd['oob_refs_courtyard'],
                 # #962: footprint graphic copper past the outline
                 'graphic_copper': fnd.get('oob_refs_graphic_copper', []),
@@ -2647,8 +2667,8 @@ def main(argv=None):
         # exited 0, so a caller who wanted a verdict had to re-implement the
         # reading. --gate makes the picture's own findings decide.
         _fail = {
-            'a_off_outline.pad_copper':
-                len(doc['checklist']['a_off_outline']['pad_copper']),
+            'a_off_outline.pad_copper_gating':
+                len(doc['checklist']['a_off_outline']['pad_copper_gating']),
             'a_off_outline.courtyard':
                 len(doc['checklist']['a_off_outline']['courtyard']),
             'a_off_outline.graphic_copper':

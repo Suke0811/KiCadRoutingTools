@@ -29,8 +29,15 @@ BOARD = (
     '(kicad_pcb (version 20240108) (generator pcbnew)\n'
     '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))\n'
     '  (net 0 "") (net 1 "N1") (net 2 "N2")\n'
-    '  (gr_rect (start 0 0) (end 20 20) (stroke (width 0.1) (type default))'
-    ' (layer "Edge.Cuts"))\n'
+    # A notched outline, not a plain rectangle: on a rectangle the ranking
+    # magnitude and the distance coincide, and a test there cannot tell them
+    # apart (mutate_1094 `overrun-printed-as-the-sum` survived it).
+    + ''.join(f'  (gr_line (start {a[0]} {a[1]}) (end {b[0]} {b[1]}) (stroke'
+              f' (width 0.1) (type default)) (layer "Edge.Cuts"))\n'
+              for a, b in zip(
+                  [(0, 0), (15, 0), (15, 5), (20, 5), (20, 20), (0, 20)],
+                  [(15, 0), (15, 5), (20, 5), (20, 20), (0, 20), (0, 0)]))
+    +
     '  (footprint "t:R" (layer "F.Cu") (at 10 {y})\n'
     '    (property "Reference" "R1" (at 0 0) (layer "F.SilkS"))\n'
     '    (fp_rect (start -1 -0.5) (end 1 0.5) (stroke (width 0.05)'
@@ -99,6 +106,45 @@ class TestOffOutline(unittest.TestCase):
         self.assertEqual(d['oob_pad_copper_gating_refs'], [])
         self.assertEqual([x[0] for x in d['oob_pad_copper_refs']], ['R1'])
         self.assertIn('on the outline by design, not gated: R1', r.stdout)
+
+    def test_a_castellated_part_off_the_board_still_gates(self):
+        """The exemption holds only while a castellated pad STRADDLES the
+        edge: the same part parked 10 mm off the board is a part off the
+        board (#1096 verifier D8)."""
+        board = BOARD.replace(
+            '(pad "2" smd rect (at 0.5 0) (size 0.6 0.6) (layers "F.Cu")',
+            '(pad "2" thru_hole rect (at 0.5 0.4) (size 0.6 0.6) (drill 0.3)'
+            ' (layers "*.Cu") (property pad_prop_castellated)')
+        r, d = _run_text(board.format(y=30))
+        self.assertFalse(d['buildable'], r.stdout[-1500:])
+        self.assertEqual(d['oob_pad_copper_gating_refs'], ['R1'])
+
+    def test_render_placement_gates_the_same_parts(self):
+        """render_placement's `pad_copper_gating` is check_assembly's list:
+        the castellated edge part is in neither, the part off the board in
+        both (verifier D9: --gate and the free-agent's grade.py read it)."""
+        board = BOARD.replace(
+            '(pad "2" smd rect (at 0.5 0) (size 0.6 0.6) (layers "F.Cu")',
+            '(pad "2" thru_hole rect (at 0.5 0.4) (size 0.6 0.6) (drill 0.3)'
+            ' (layers "*.Cu") (property pad_prop_castellated)')
+        for y, want in ((19.5, []), (30, ['R1'])):
+            with tempfile.TemporaryDirectory() as td:
+                path = os.path.join(td, 'b.kicad_pcb')
+                with open(path, 'w', encoding='utf-8') as fh:
+                    fh.write(board.format(y=y))
+                js = os.path.join(td, 'r.json')
+                subprocess.run([sys.executable, '-X', 'utf8',
+                                os.path.join(ROOT, 'py_tools',
+                                             'render_placement.py'),
+                                path, '-o', os.path.join(td, 'r.png'),
+                                '--json-out', js],
+                               capture_output=True, text=True, cwd=ROOT)
+                with open(js, encoding='utf-8') as fh:
+                    off = json.load(fh)['checklist']['a_off_outline']
+            self.assertEqual([r for r, _d in off['pad_copper_gating']], want,
+                             (y, off))
+            _r, d = _run_text(board.format(y=y))
+            self.assertEqual(d['oob_pad_copper_gating_refs'], want, y)
 
     def test_a_round_pad_inside_a_round_board_does_not_gate(self):
         """A 1.6 mm round pad 0.3 mm inside a round outline at 45 degrees:

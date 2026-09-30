@@ -110,6 +110,46 @@ class TestDecapsFrom(unittest.TestCase):
                          census['emitted_max_distance_mm'])
         self.assertGreater(doc['decaps']['max_distance_mm'], 0.0)
 
+    def _emit(self, board, *extra):
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, 'i.json')
+            r = subprocess.run(
+                [sys.executable, '-X', 'utf8',
+                 os.path.join(ROOT, 'py_tools', 'check_floorplan.py'), board,
+                 '--allow-unplaced', '--emit-intent', out, *extra],
+                capture_output=True, text=True, cwd=ROOT)
+            doc = None
+            if os.path.isfile(out):
+                with open(out, encoding='utf-8') as fh:
+                    doc = json.load(fh)
+        return r, doc
+
+    def test_another_design_is_not_a_reference(self):
+        """#1099 verifier: esp_prog's pile took glasgow's 4.787 mm without
+        a word. The reference's parts must be on this board."""
+        glasgow = os.path.join(ROOT, 'kicad_files', 'glasgow_revC.kicad_pcb')
+        _r, doc = self._emit(PILE, '--decaps-from', glasgow)
+        self.assertNotIn('max_distance_mm', doc.get('decaps') or {})
+        held = doc['context']['budget_withheld']['decaps.max_distance_mm']
+        self.assertIn('not a placement of this design', held)
+
+    def test_a_pile_is_not_a_reference(self):
+        _r, doc = self._emit(PLACED, '--decaps-from', PILE)
+        self.assertNotIn('max_distance_mm', doc.get('decaps') or {})
+        held = doc['context']['budget_withheld']['decaps.max_distance_mm']
+        self.assertIn('not placed', held)
+
+    def test_the_basis_names_the_reference(self):
+        _r, doc = self._emit(PILE, '--decaps-from', PLACED)
+        self.assertEqual(doc['context']['basis']['decaps.max_distance_mm'],
+                         'reference:esp_prog.kicad_pcb')
+
+    def test_a_missing_reference_is_a_clean_error(self):
+        r, doc = self._emit(PILE, '--decaps-from', 'no/such/board.kicad_pcb')
+        self.assertEqual(r.returncode, 2, r.stderr[-800:])
+        self.assertIn('no such board', r.stderr)
+        self.assertNotIn('Traceback', r.stderr)
+
     def test_the_same_limit_as_declaring_on_the_reference(self):
         """`--decaps-from X` on a pile writes what `--declare-decaps` on X
         itself writes: one derivation, two sources."""

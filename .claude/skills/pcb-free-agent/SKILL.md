@@ -58,10 +58,6 @@ not.
   that you did. A pile has no decap distances to read, so without it the
   rule stays unarmed: run 36 left StickHub's hub decaps 2.1-9.8 mm from
   their pins, where the human board keeps them within 2.2 mm.
-- **When that reference places parts at 45 degrees, add
-  `--diagonal-rotations` to `place_seed`.** The seeder otherwise tries only
-  the 90-degree lattice, and StickHub's human packs 39 parts at +-45/+-135
-  degrees around a diagonal QFP.
 - **Give `--intent` to every placement tool.** It is a per-move gate only in
   tools that receive it. It stops a part LEAVING its zone; it never moves one
   back in.

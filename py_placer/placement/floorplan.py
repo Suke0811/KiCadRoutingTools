@@ -2151,6 +2151,12 @@ MATING_INSET_MM = 0.25
 MATING_PREFIX = 'mating:'
 
 
+#: `--decaps-from`: this share of the reference's pad-bearing parts must be
+#: on the board being emitted, under the same reference AND footprint, or
+#: the reference is another design and its limit is withheld (#1099).
+DECAPS_FROM_MIN_MATCH = 0.9
+
+
 def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
                             ) -> Tuple[Dict, ...]:
     """The keep-outs a board's PCB-edge plugs imply, one per plug (#1098).
@@ -7619,7 +7625,8 @@ def _decap_mode(v) -> str:
 
 
 def _emitted_basis(decaps, budget, conns, blocks,
-                   assembly=None, band_default=()) -> Dict[str, str]:
+                   assembly=None, band_default=(),
+                   decaps_basis: Optional[str] = None) -> Dict[str, str]:
     """`{intent path: basis}` for every number the emitter chose: what it
     READ off this board is `observed_baseline`; a constant of this module is
     `derived_default`. The envelope RECT is not here -- it is the outline,
@@ -7629,7 +7636,8 @@ def _emitted_basis(decaps, budget, conns, blocks,
         'defaults.zone_tolerance_mm': 'derived_default',
     }
     if 'max_distance_mm' in (decaps or {}):
-        out['decaps.max_distance_mm'] = 'observed_baseline'
+        # #1099: read off a REFERENCE board, not this one, says so.
+        out['decaps.max_distance_mm'] = decaps_basis or 'observed_baseline'
     for k in sorted(budget or {}):
         out[f'legality_budget.{k}'] = 'observed_baseline'
     for c in conns or ():
@@ -8087,10 +8095,32 @@ def emit_intent(pcb_data, pcb_file: str, *,
         # strict wrote 0.0 on run 29). Same derivation, same withholding;
         # the basis names the file, and it replaces `derive_decaps`.
         from kicad_parser import parse_kicad_pcb as _parse_ref
-        _ref_census = decap_census(_parse_ref(decaps_from))
+        from .placement_state import assess_placement as _assess
+        _ref_pcb = _parse_ref(decaps_from)
+        _ref_census = decap_census(_ref_pcb)
         _limit, _why = _decap_derivation(_ref_census)
         _census['reference_board'] = decaps_from
         _census['reference_tethers'] = _ref_census.get('tethers')
+        # The reference must BE a placement of THIS design: its pad-bearing
+        # parts on the board with the same footprint (#1099 verifier: an
+        # esp_prog intent took glasgow's 4.787 mm without a word), and
+        # placed (a pile blesses nothing -- auto refuses the same board).
+        def _parts(pcb):
+            return {(r, f.footprint_name) for r, f in
+                    (pcb.footprints or {}).items() if f.pads}
+        _theirs, _ours = _parts(_ref_pcb), _parts(pcb_data)
+        _match = (len(_theirs & _ours) / len(_theirs)) if _theirs else 0.0
+        _census['reference_part_match'] = round(_match, 3)
+        _ref_state = _assess(_ref_pcb, decaps_from)
+        if _match < DECAPS_FROM_MIN_MATCH:
+            _limit, _why = None, (
+                f"it is not a placement of this design: "
+                f"{_match:.0%} of its parts are on this board with the same "
+                f"footprint (at least {DECAPS_FROM_MIN_MATCH:.0%} needed)")
+        elif _ref_state.unplaced or _ref_state.partially_unplaced:
+            _limit, _why = None, (
+                "it is not placed (" + '; '.join(_ref_state.reasons[:2])
+                + "): a limit read off it would bless a pile")
         if _limit is None:
             _withheld['decaps.max_distance_mm'] = (
                 f"the reference board {decaps_from}: {_why}")
@@ -8233,8 +8263,11 @@ def emit_intent(pcb_data, pcb_file: str, *,
             # what it is -- a baseline OBSERVED on this board, not a
             # requirement anyone declared. Keyed by intent path; a brief
             # merged over it re-labels what it declares.
-            'basis': _emitted_basis(_decaps, _budget, conns, blocks,
-                                    _assembly, band_default),
+            'basis': _emitted_basis(
+                _decaps, _budget, conns, blocks, _assembly, band_default,
+                decaps_basis=(_census.get('decaps_basis')
+                              if str(_census.get('decaps_basis') or '')
+                              .startswith('reference:') else None)),
         },
     }
     if derive_arrays == 'auto':

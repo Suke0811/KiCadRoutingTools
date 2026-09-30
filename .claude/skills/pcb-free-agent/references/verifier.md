@@ -21,10 +21,11 @@ Trust nothing it told you. Measure it yourself, from the repo root.
 3. **Every mode** (read the whole output, not the first line):
    - `python3 -X utf8 py_tools/check_assembly.py <BOARD> --intent <INTENT>`: must be buildable. It names
      pad copper past the outline and any part on a PCB-edge plug's mating region (`mating_keepout_refs`);
-     name each one in your verdict;
+     name each one in your verdict. The run's `ledger.jsonl` names each seed's `unseated_refs`; any part
+     still in the staging pile on the board you grade is a FAIL;
    - `python3 -X utf8 py_tools/check_floorplan.py <BOARD> --intent <INTENT> --allow-routed`: 0 errors;
    - `python3 -X utf8 py_tools/render_placement.py <BOARD> --json-out <RUN DIR>/verify_<N>_render.json`:
-     `checklist.a_off_outline` must list no pad, graphic or keep-out (`keepout_copper`) copper; LOOK at the PNG;
+     `checklist.a_off_outline` must list no gating pad copper (`pad_copper_gating`), graphic or keep-out (`keepout_copper`) copper; LOOK at the PNG;
    - the mechanical facts above, measured from the board.
 4. **`full` and `route` modes, also:**
    - `python3 -X utf8 py_tools/board_score.py <BOARD> --intent <INTENT> <SPEC FLAGS> --baseline <INPUT BOARD> --json <RUN DIR>/verify_<N>_score.json`: blocking 0, unrouted 0, broken 0;

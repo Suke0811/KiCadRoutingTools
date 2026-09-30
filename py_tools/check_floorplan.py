@@ -505,6 +505,10 @@ def main(argv=None):
                         args.board_edge_clearance)[2]
 
     _require_brief_failed = False
+    if args.decaps_from and not os.path.isfile(args.decaps_from):
+        print(f"ERROR: --decaps-from {args.decaps_from}: no such board",
+              file=sys.stderr)
+        return 2
     if args.emit_intent:
         try:
             doc = emit_intent(pcb, args.board, group_sources=sources or (),
@@ -627,8 +631,12 @@ def main(argv=None):
             held = ((doc.get('context') or {}).get('budget_withheld')
                     or {}).get('decaps.max_distance_mm')
             if lim is not None:
+                _src = (f"{cen.get('reference_tethers')} tether(s) on the "
+                        f"reference {os.path.basename(cen['reference_board'])}"
+                        if cen.get('reference_board')
+                        else f"{cen.get('tethers')} tether(s)")
                 print(f"  decaps: max_distance_mm {lim} from "
-                      f"{cen.get('tethers')} tether(s) -- NOTE: place_seed "
+                      f"{_src} -- NOTE: place_seed "
                       f"READS this key and will seat "
                       f"{cen.get('seeder_pin_scope')} cap(s) per supply pin "
                       f"instead of zone-packing them")
