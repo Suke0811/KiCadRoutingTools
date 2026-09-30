@@ -7,17 +7,16 @@
      `STAGE3D_BOARD_H_FRAC` of the height -- checked over ratio x band.
   2. (The iso view's containment check went with the iso panel: stage3d is
      the only film layout.)
-  3. **The inventory follows the glide.** Mid-glide the box read the
-     destination's "272 of 272 placed" over parts still in the pile.
-  4. **No label overprints another** in the attempts band -- ticks and caption
-     included.
+  3./4. (The glide inventory and the attempts band's labels went with the
+     retired layouts: the stage3d layer column shows no inventory, and the
+     attempts band is not drawn. The glide's landing frame is pinned by
+     test_1042's placement panels.)
   5. **The Python heap does not grow with frames x segments.** `Movie.chrome`
      kept a tuple of the live copper per frame; it now keeps a position in an
      edit log. The slope is measured against the old storage as a control,
      and every frame's resolved copper is checked equal to what it was.
 
-Needs Pillow; renders small in-repo boards. The run-32 value check in (3)
-runs only when wk/run32 is present and says so when it is not.
+Needs Pillow; renders small in-repo boards.
 """
 import json
 import os
@@ -40,10 +39,9 @@ for _p in (ROOT, _TESTS, os.path.join(ROOT, 'py_router'),
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-try:
-    from PIL import Image, ImageDraw
-except ImportError as exc:
-    print('SKIP: needs Pillow (%s)' % exc)
+import importlib.util                                           # noqa: E402
+if importlib.util.find_spec('PIL') is None:
+    print('SKIP: needs Pillow')
     sys.exit(77)
 
 import animate_route as A          # noqa: E402
@@ -53,7 +51,6 @@ KF = os.path.join(ROOT, 'kicad_files')
 ROUTED = os.path.join(KF, 'routed_output.kicad_pcb')
 SEED = os.path.join(KF, 'interf_u_unrouted.kicad_pcb')
 PLACED = os.path.join(KF, 'interf_u_unrouted_placed.kicad_pcb')
-RUN32 = os.path.join(ROOT, 'wk', 'run32')
 
 _FAIL = []
 _NOTES = []
@@ -101,138 +98,6 @@ def test_the_board_keeps_its_share_at_every_ratio():
         print('  PASS: %d plans; worst board+band share %.2f (%s); 16:9 '
               '+ band board is %dx%d' % (n, worst[0], worst[1],
                                          g.board.w, g.board.h))
-
-
-# --------------------------------------------------------------------------
-def _glide_inventories(a, b):
-    """(label, inventory) per frame for a stage glide from a to b, on the
-    stage3d frame, whose layer column is the lower box."""
-    import movie_camera as MC
-    seen = []
-    orig = A.Movie._note_chrome
-
-    def _spy(self, label):
-        seen.append((label, self.inventory))
-        return orig(self, label)
-    A.Movie._note_chrome = _spy
-    try:
-        st = MC.Stage(MC.synth_rounds([a, b]), '', tween=4)
-        A.build_boards([('a', a, None), ('b', b, None)], b, 240, 1, None, 2,
-                       6, stage=st, aspect='16:9', board3d='2d')
-    finally:
-        A.Movie._note_chrome = orig
-    return seen
-
-
-def _placed(inv):
-    return sum(x for x, _y in (inv or {}).values())
-
-
-def test_the_inventory_follows_the_glide():
-    _mark = len(_FAIL)
-    seen = _glide_inventories(SEED, PLACED)
-    moving = [i for i, (lb, _v) in enumerate(seen) if 'moving' in lb]
-    if len(moving) < 2:
-        fail('BROKEN: no glide frames (%r)' % [lb for lb, _v in seen][:12])
-        return
-    before = seen[moving[0] - 1][1]
-    for i in moving[:-1]:
-        if seen[i][1] is not before:
-            fail('frame %d (%s) mid-glide already reads the destination '
-                 'inventory' % (i, seen[i][0]))
-            break
-    if seen[moving[-1]][1] is before:
-        fail('the landing frame still reads the source inventory')
-    # the VALUES, on the board the stills showed, when it is here
-    ua = os.path.join(RUN32, 'glasgow_unplaced.kicad_pcb')
-    ub = os.path.join(RUN32, 'placed_v2.kicad_pcb')
-    if os.path.isfile(ua) and os.path.isfile(ub):
-        s2 = _glide_inventories(ua, ub)
-        mv = [i for i, (lb, _v) in enumerate(s2) if 'moving' in lb]
-        mid = _placed(s2[mv[len(mv) // 2]][1])
-        land = _placed(s2[mv[-1]][1])
-        if mid >= land:
-            fail('run 32 mid-glide reads %d placed, the landing %d' % (mid,
-                                                                     land))
-        else:
-            print('    run 32: mid-glide %d placed, landing %d' % (mid, land))
-    else:
-        _NOTES.append('run-32 value check not run: wk/run32 absent')
-        print('    (run-32 value check not run: wk/run32 absent)')
-    if len(_FAIL) == _mark:
-        print('  PASS: %d glide frames read the source board; the landing '
-              'frame reads the destination' % (len(moving) - 1))
-
-
-# --------------------------------------------------------------------------
-class _Rec(object):
-    """An ImageDraw stand-in that records every text box it draws."""
-
-    def __init__(self, d):
-        self._d = d
-        self.boxes = []
-
-    def text(self, xy, txt, *a, **kw):
-        font = kw.get('font')
-        anchor = kw.get('anchor')
-        self.boxes.append((txt, self._d.textbbox(xy, txt, font=font,
-                                                 anchor=anchor)))
-        return self._d.text(xy, txt, *a, **kw)
-
-    def __getattr__(self, k):
-        return getattr(self._d, k)
-
-
-def test_no_band_label_overprints_another():
-    _mark = len(_FAIL)
-    import movie_attempts as MA
-    # run 32's opening: a pile at 12703, then a fast run of drops
-    scores = [12703, 267, 251, 239, 239, 239, 238, 604, 41, 40, 38, 33, 32,
-              31, 30, 30, 29, 28, 28, 27, 25, 23, 21, 21, 20, 19]
-    rows = tuple(MA.Attempt(i, 'l%d' % i, 'completion', i - 1 if i else None,
-                            True, False, float(s), s == 0, None)
-                 for i, s in enumerate(scores))
-    tracks = [('fixture', MA.Track(rows, 'blocking (lower better)',
-                                   'converge', 'fixture'))]
-    led = os.path.join(RUN32, 'ledger.jsonl')
-    if os.path.isfile(led):
-        tracks.append(('run32 ledger', MA.attempts_from_converge_ledger(led)))
-    else:
-        _NOTES.append('run-32 ledger absent: labels checked on the fixture')
-
-    def _over(a, b):
-        return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
-    n = placed_n = wanted_n = 0
-    for name, track in tracks:
-        for w, h in ((1400, 126), (788, 224), (600, 90)):
-            im = Image.new('RGB', (w, h))
-            rec = _Rec(ImageDraw.Draw(im))
-            dbg = {}
-            if not MA.draw_track(rec, FL.Box(0, 0, w, h), track, debug=dbg):
-                fail('%s: the band declined at %dx%d' % (name, w, h))
-                continue
-            # every text box, read INDEPENDENTLY of the drawer's own list
-            bx = rec.boxes
-            n += len(bx)
-            for i in range(len(bx)):
-                for j in range(i + 1, len(bx)):
-                    if _over(bx[i][1], bx[j][1]):
-                        fail('%s %dx%d: text %r overprints %r'
-                             % (name, w, h, bx[i][0], bx[j][0]))
-            # ...and every record label against every mark: node, kept
-            # ring, ungraded rail tick, tick label, caption
-            for txt, rect in dbg.get('labels', ()):
-                for o in dbg.get('obstacles', ()):
-                    if _over(rect, o):
-                        fail('%s %dx%d: label %r sits on a mark at %r'
-                             % (name, w, h, txt, o))
-                        break
-            placed_n += len(dbg.get('labels', ()))
-            wanted_n += len(dbg.get('wanted', ()))
-    if len(_FAIL) == _mark:
-        print('  PASS: %d text boxes over %d band(s), none overprinting; '
-              '%d of %d record labels found a free spot, none on a mark'
-              % (n, 3 * len(tracks), placed_n, wanted_n))
 
 
 # --------------------------------------------------------------------------
@@ -343,8 +208,6 @@ def test_the_heap_does_not_grow_with_frames_x_segments():
 
 TESTS = (
     test_the_board_keeps_its_share_at_every_ratio,
-    test_the_inventory_follows_the_glide,
-    test_no_band_label_overprints_another,
     test_the_heap_does_not_grow_with_frames_x_segments,
 )
 

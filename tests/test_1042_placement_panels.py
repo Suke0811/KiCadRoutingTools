@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The placement panels, in placement currency, beside the verdict band (#1042).
+"""The placement panels, in placement currency, off the verdict's axis (#1042).
 
   * **Run 32's table, reproduced to the digit** from the film's own boards
     (render_placement's numbers, measured in process) for the boards this
@@ -15,13 +15,13 @@
   * **Cheap gates first**: a copper-free-plus-routed chain, and a chain in
     which nothing moved, never reach the measurement.
   * every panel NAMES its instrument; the arrangement panel says it is a
-    screen, and "not the verdict -- see band" is rendered WHOLE wherever the
+    screen, and "a screen, not the verdict" is rendered WHOLE wherever the
     panel is drawn;
   * ONE point per placement BOARD, never per frame; before the first beat
     lands NOTHING of the future is drawn (no point, no flag);
   * units never mixed; axis tops are ROUND ticks; no intent reads
     'unmeasured', never a number;
-  * x is RUN TIME shared with the verdict band when the ledger carries `t`,
+  * x is RUN TIME over the ledger's own domain when the ledger carries `t`,
     else the board order, and the header says which;
   * READABLE OR NOT DRAWN, on the stage3d frame (the only layout) across
     ratio x size {500,1000,1400}:
@@ -575,7 +575,9 @@ def test_run_time_is_the_shared_x_axis():
             'board order' in tx for tx in rec2.texts):
         fail('an untimed track does not say x is the board order: %r'
              % dbg2.get('header'))
-    # the verdict band and the panels read ONE domain off one ledger
+    # the ledger's parsed track and the panels read ONE domain off one
+    # ledger (the verdict band that drew the track went with the retired
+    # layouts; the domain is still what both readers agree on)
     with tempfile.TemporaryDirectory() as td:
         p = os.path.join(td, 'ledger.jsonl')
         with open(p, 'w', encoding='utf-8') as f:
@@ -590,27 +592,9 @@ def test_run_time_is_the_shared_x_axis():
     if vt.x_domain != (1000.0, 9000.0) or dom != vt.x_domain:
         fail('the band domain %r is not the ledger\'s %r (placement lap '
              'included)' % (vt.x_domain, dom))
-    if not MA.x_is_time(vt):
-        fail('a timed converge track does not draw x as run time')
-    im = Image.new('RGB', (600, 160))
-    dbg3 = {}
-    MA.draw_track(ImageDraw.Draw(im), FL.Box(0, 0, 600, 160), vt, debug=dbg3)
-    if dbg3.get('x_mode') != 'time':
-        fail('the verdict band did not draw run time: %r'
-             % dbg3.get('x_mode'))
-    # beside the placement panels the band is narrow: its caption SHORTENS
-    # to a whole clause, it is never dropped
-    for w in (600, 300):
-        im = Image.new('RGB', (w, 160))
-        dbg4 = {}
-        MA.draw_track(ImageDraw.Draw(im), FL.Box(0, 0, w, 160), vt,
-                      debug=dbg4)
-        if not str(dbg4.get('caption') or '').startswith(vt.metric):
-            fail('a %d px verdict band has no caption: %r'
-                 % (w, dbg4.get('caption')))
     if len(_FAIL) == _mark:
-        print('  PASS: x is run time on both, over one ledger domain; the '
-              'board order says so when there is no clock')
+        print('  PASS: x is run time over one ledger domain; the board '
+              'order says so when there is no clock')
 
 
 def test_flags_stack_and_a_failure_repaints():
@@ -689,19 +673,18 @@ def test_series_colours_are_distinct_in_both_themes():
               'deuteranope too' % len(pairs))
 
 
-def _sweep_one(tr, rk, size, verdict=False):
+def _sweep_one(tr, rk, size):
     bounds = (0, 0, 100, 60)
     kw = dict(ratio=FL.parse_ratio(rk), size=size)
     g = FL.plan_frame(bounds, **kw)
-    fn = MP.band_px(tr, verdict)
+    fn = MP.band_px(tr)
     bh = fn(g.frame.w, g.frame.h)
     bh -= bh % 2
     plan = fn.plans[-1]
     if plan.mode == 'declined':
         return plan, None, None, None
     g2 = FL.plan_frame(bounds, track_px=bh, **kw)
-    pbox, vbox = MP.split_band(g2.track, both=verdict, track=tr,
-                               frame_h=g2.frame.h)
+    pbox, vbox = g2.track, None
     im = Image.new('RGB', (g2.frame.w, g2.frame.h))
     dbg = {}
     ok = MP.draw_panels(ImageDraw.Draw(im), pbox, tr, cur=2, theme='dark',
@@ -776,7 +759,7 @@ def test_readable_or_not_drawn_across_ratios_sizes():
                     if 'arrangement' in dbg['names'] and \
                             MP.SCREEN_NOTE not in texts:
                         fail('%s: the SCREEN note is not whole: %r'
-                             % (tag, [x for x in texts if 'verdict' in x]))
+                             % (tag, [x for x in texts if 'screen' in x]))
                     if len(dbg['names']) < 3:
                         dropped += 1
                         if not any('dropped' in h for h in dbg['header']):

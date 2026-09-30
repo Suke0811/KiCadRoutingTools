@@ -84,7 +84,7 @@ def plan(steps, final, *, attempts=None, attempts_ledger=None,
     if ptrack is not None:
         import movie_placement
         # the band is SIZED for readable panels (`plan_band`), not scaled
-        pfn = movie_placement.band_px(ptrack, False)
+        pfn = movie_placement.band_px(ptrack)
         band = pfn
     return Bands(None, ptrack, pwhy, pfn, band, placement.get('asked'))
 

@@ -223,10 +223,8 @@ ROWS = [
      "    if False:",
      (T_BOX,), 'KILLED'),
 
-    ('an-unplaced-board-pretends-it-was-repaired', 'panels',
-     "    if unplaced:\n        return 'seeding'",
-     "    pass",
-     (T_BOX,), 'KILLED'),
+    # 'an-unplaced-board-pretends-it-was-repaired' went with phase_for and the
+    # seeding inventory (the retired layouts' lower box).
 
     # --- P11: the attempts band --------------------------------------------
     ('the-axis-becomes-vias-instead-of-the-accept-rule', 'attempts',
@@ -283,10 +281,8 @@ ROWS = [
      "                and True",
      (T_ATT,), 'KILLED'),
 
-    ('the-off-arm-rebuilds-the-frame-list', 'attempts',
-     "        report['why'] = ('no loop_round*.json sidecars and no converge '\n                         'ledger: this chain is one attempt')\n        return frames, report",
-     "        report['why'] = ('no loop_round*.json sidecars and no converge '\n                         'ledger: this chain is one attempt')\n        return list(frames), report",
-     (T_ATT,), 'KILLED'),
+    # 'the-off-arm-rebuilds-the-frame-list' went with movie_attempts.attach:
+    # the attempts band is not drawn by any film layout left.
 
     ('attempts-are-synthesised-from-the-boards', 'attempts',
      "    loop = attempts_from_loop_dir(d)\n",

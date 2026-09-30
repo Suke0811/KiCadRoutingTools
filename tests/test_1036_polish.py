@@ -185,7 +185,6 @@ def test_every_panel_keeps_the_gutter():
     from kicad_parser import parse_kicad_pcb
     pcb = parse_kicad_pcb(ROUTED)
     r = _R(pcb)
-    inv = RP.inventory_counts(pcb, ())
     n = 0
     for rk in ('4:3', '1:1', '16:9', '9:16'):
         lk = 'stage3d'
@@ -195,12 +194,12 @@ def test_every_panel_keeps_the_gutter():
         if inner is None:
             fail('%s: the stage3d frame dropped its layer column' % rk)
             continue
-        for event, unplaced in (('moving 5 part(s)', True), ('route', False),
-                                ('input', False)):
+        # one content on every frame -- the layer strip and the board's
+        # numbers -- whatever the event
+        for event in ('moving 5 part(s)', 'route', 'input'):
             im = Image.new('RGB', (g.frame.w, g.frame.h))
             rec = _Rec(ImageDraw.Draw(im))
-            A._draw_panel(rec, g, r, {'event': event, 'unplaced': unplaced,
-                                      'inventory': inv, 'live': (),
+            A._draw_panel(rec, g, r, {'event': event, 'live': (),
                                       'live_v': ()})
             for txt, bb in rec.boxes:
                 n += 1
@@ -211,7 +210,7 @@ def test_every_panel_keeps_the_gutter():
                          '%r' % (lk, rk, event, txt, bb, gut, tuple(inner)))
                     break
     if len(_FAIL) == _mark:
-        print('  PASS: %d panel texts over 4 ratios x 3 contents, all '
+        print('  PASS: %d panel texts over 4 ratios x 3 events, all '
               'inside the gutter' % n)
 
 

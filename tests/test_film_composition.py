@@ -166,7 +166,7 @@ def test_the_film_shows_the_attempts_and_marks_them():
         #    nested rectangles around the WHOLE frame, so (0,0) is always badge
         #    colour on a badged frame and never on an unbadged one -- and
         #    unlike the mid-height pixel it is LAYOUT-INDEPENDENT.
-        #    `movie_panels.py:40-46` records that the old probe is exactly why
+        #    The retired iso panel recorded that the old probe is exactly why
         #    panels could never be wired into the film: stacking one moves
         #    `height//2` into the panel and reddens this test for a reason that
         #    has nothing to do with badging. It is moved here, once, for good.

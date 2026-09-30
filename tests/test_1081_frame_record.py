@@ -237,17 +237,13 @@ def test_the_stage3d_column_is_always_the_layer_strip():
     verification), which read as three widgets beside one 3D board."""
     import animate_route as A2
     import render_panels as RP
-    calls = {'strip': 0, 'inventory': 0}
-    o_strip, o_inv = RP.draw_layer_strip, RP.draw_inventory
+    calls = {'strip': 0}
+    o_strip = RP.draw_layer_strip
 
     def _strip(*a, **k):
         calls['strip'] += 1
         return o_strip(*a, **k)
-
-    def _inv(*a, **k):
-        calls['inventory'] += 1
-        return o_inv(*a, **k)
-    RP.draw_layer_strip, RP.draw_inventory = _strip, _inv
+    RP.draw_layer_strip = _strip
     try:
         with FC.Chain() as c:
             geom = []
@@ -259,10 +255,12 @@ def test_the_stage3d_column_is_always_the_layer_strip():
                                      geom_out=geom, board3d='2d')
             list(frames)
     finally:
-        RP.draw_layer_strip, RP.draw_inventory = o_strip, o_inv
-    _check(calls['strip'] == len(frames) and calls['inventory'] == 0,
-           'stage3d: the layer strip on all %d frames, the placement bars '
-           'on none (%s)' % (len(frames), calls))
+        RP.draw_layer_strip = o_strip
+    _check(calls['strip'] == len(frames),
+           'stage3d: the layer strip on all %d frames (%s)'
+           % (len(frames), calls))
+    _check(not any(hasattr(RP, n) for n in ('draw_inventory', 'phase_for')),
+           'and nothing else the column could switch to is left')
 
 
 TESTS = (

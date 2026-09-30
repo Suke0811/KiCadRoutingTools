@@ -229,7 +229,7 @@ REGISTRY = {
         'a joined place+route attempts graph puts first whichever record '
         'started first: the ledger\'s first row `t` vs the loop sidecars\' '
         'earliest st_mtime (#946/C4). Ordering of a rendered film only; no '
-        'elapsed time of ours. (`x_is_time(` also matches discovery.)'),
+        'elapsed time of ours.'),
     'py_router/route_planes.py': (
         'file_mtime',
         'compares the output file st_mtime before/after to detect that a '

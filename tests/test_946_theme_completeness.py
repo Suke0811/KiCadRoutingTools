@@ -328,7 +328,7 @@ def test_the_film_chrome_reads_the_active_theme():
     if 'DARK as _TH' in src or 'import DARK' in src:
         fail('make_film still binds DARK')
     if len(_FAIL) == _mark:
-        print('  PASS: cards, badges, iso panel and clock band draw in the '
+        print('  PASS: cards, badges and clock band draw in the '
               'active theme')
 
 

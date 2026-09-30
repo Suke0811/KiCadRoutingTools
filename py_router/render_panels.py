@@ -1,27 +1,15 @@
 #!/usr/bin/env python3
-"""One fixed lower box, four contents, switched by phase (#946 items 6/10/11,
-#1020).
+"""The stage3d layer column: the per-layer strip and the board's numbers
+(#946 items 6/10/11, #1020, #1081).
 
-The obvious way to bookend a 3D shot is to show the panel at the start and the
-end and drop it in between. **The frame geometry forbids exactly that**: every
-frame must be the same size, Pillow does not raise on a mismatch, and the GIF
-comes out valid and quietly distorted. A panel that appears and disappears is
-not available.
-
-And the default run is `place_route_loop`, so the combined film is the normal
-case, which settles what the box holds -- it cannot be the layer strip, because
-during a placement phase there is no copper; it cannot be the 3D view, because
-that is the bookend:
-
-    open / close   a board summary -- parts, nets, layers, copper
-    placement      the inventory: how much of the board is seated, by class
-    routing        the per-layer strip
-    seeding        the same inventory, emptying as the pile empties
-
-One box, four contents, switched by the phase the frame belongs to -- which the
-film already knows, because `Stage` is built from the round records and every
-frame belongs to a round. The frame height never changes, so the Pillow trap is
-not reintroduced.
+One fixed box, beside the board (a row under it on a portrait frame), the
+SAME content on every frame: the per-layer strip, with the board's summary
+-- parts, nets, layers, copper -- under it when there is room. It sits beside
+a 3D board that already shows the placement, so it no longer switches by
+phase: the placement inventory, the seeding pile and the bookend summary it
+used to swap between were the retired layouts' lower box. The frame height
+never changes, because Pillow does not raise on a mismatch and the GIF comes
+out valid and quietly distorted.
 
 **THE STRIP BUILDS NO SECOND RENDERER.** `tests/test_431_placement_movie.py:92`
 asserts exactly one `BoardRenderer` on the no-stage path, so a strip of ten
@@ -272,105 +260,10 @@ def draw_layer_strip(d, box, *, bounds, segments, layers, palette, theme,
         return out       # a panel is never worth failing a render over
 
 
-def inventory_counts(pcb, unseated=()):
-    """`{class: (seated, total)}` from the board itself.
-
-    The class is the reference's letter prefix -- `R`, `C`, `U`, `J` -- which
-    is what a person reads a BOM by, and it needs no data the film does not
-    already have. `unseated` is `assess_placement(...).stacked_suspect_refs`:
-    the parts still sitting on one another in the pile, which is precisely the
-    set that has not been placed yet.
-    """
-    out = {}
-    bad = set(unseated or ())
-    for ref in getattr(pcb, 'footprints', {}) or {}:
-        # a REFERENCE-LESS block is keyed `#<uuid>` (#726): its letters are
-        # hex digits, not a class -- it read as classes 'ab', 'dcd', 'edd'
-        cls = ('?' if str(ref).startswith('#') else
-               ''.join(ch for ch in str(ref) if ch.isalpha())[:3] or '?')
-        seated, total = out.get(cls, (0, 0))
-        out[cls] = (seated + (0 if ref in bad else 1), total + 1)
-    return out
-
-
-def draw_inventory(d, box, *, counts, placed, total, theme):
-    """The seeding content: what is LEFT in the pile, by part class.
-
-    It empties as the board fills, which is the one thing a viewer wants to
-    know during a phase where the board itself is mostly still empty -- and it
-    is the honest content for a phase where ghost-and-arrow is wrong, because
-    a part from a pile 200 mm away has a `from` that is noise.
-
-    Returns the rows it drew, for the same reason `draw_layer_strip` does.
-    """
-    drawn = []
-    if box is None or box.h <= 0:
-        return drawn
-    try:
-        import render_theme
-        from route_render import load_font
-        th = theme or render_theme.default_theme()
-        d.rectangle([box.x, box.y, box.x + box.w - 1, box.y + box.h - 1],
-                    fill=th.rgb('chrome_panel'))
-        rows = sorted(counts.items(), key=lambda kv: (-kv[1][1], kv[0]))
-        pad = 8
-        # EVERY CLASS LANDS, or the footer contradicts the bars on screen.
-        # Measured: a 6-class board drew 3 rows summing to 12 beside a footer
-        # reading `20 of 65`. `draw_summary` had the identical fault and was
-        # fixed; this is its sibling, in the same file, and was not. The layout
-        # is chosen from the row COUNT -- one column if they fit, two if they
-        # do not -- exactly as the summary does.
-        avail = box.h - 2 * pad - 18          # 18 = the footer's own line
-        n = max(1, len(rows))
-        cols = 1
-        while cols <= 2:
-            per = (n + cols - 1) // cols
-            if avail / max(1, per) >= 13 or cols == 2:
-                break
-            cols += 1
-        per = (n + cols - 1) // cols
-        font = load_font(max(8, min(14, int(avail / (1.7 * max(1, per))))))
-        lh = int(font.size * 1.7)
-        cw = box.w // cols
-        shown = 0
-        for i, (name, (done, tot)) in enumerate(rows):
-            col, row = i // per, i % per
-            x = box.x + pad + col * cw
-            y = box.y + pad + row * lh
-            if y + lh > box.y + box.h - pad - 18:
-                break
-            d.text((x, y), name, font=font, fill=th.rgb('chrome_text_dim'))
-            bx = x + int(cw * 0.30)
-            bw = int(cw * 0.42)
-            d.rectangle([bx, y + 2, bx + bw, y + font.size],
-                        fill=th.rgb('chrome_rule'))
-            if tot:
-                d.rectangle([bx, y + 2, bx + int(bw * done / float(tot)),
-                             y + font.size], fill=th.rgb('status_kept'))
-            txt = '%d/%d' % (done, tot)
-            d.text((x + cw - pad, y), txt, font=font,
-                   fill=th.rgb('chrome_text_faint'), anchor='ra')
-            drawn.append((name, txt))
-            shown += 1
-        foot = '%d of %d placed' % (placed, total)
-        # AND IF A CLASS STILL DID NOT FIT, the footer says so rather than
-        # letting the bars quietly disagree with it.
-        if shown < len(rows):
-            foot += '   (+%d class(es) not shown)' % (len(rows) - shown)
-        d.text((box.x + pad, box.y + box.h - pad - font.size), foot,
-               font=font, fill=th.rgb('pad'))
-        drawn.append(('', foot))
-        return drawn
-    except Exception:                                          # noqa: BLE001
-        return drawn
-
-
 def draw_summary(d, box, *, lines, theme):
-    """The bookend content: what this board IS, in numbers.
-
-    What belongs in the lower box at the bookends is the thing a viewer wants at the
-    start and again at the end -- parts, nets, layers, copper -- so the closing
-    frame can be read against the opening one.
+    """What this board IS, in numbers -- parts, nets, layers, copper -- under
+    the layer strip, so the closing frame can be read against the opening
+    one.
     """
     drawn = []
     if box is None or box.h <= 0 or not lines:
@@ -429,24 +322,3 @@ def board_summary(pcb, segments=(), vias=()):
             ('copper layers', len(layers)),
             ('segments', len(segments)),
             ('vias', len(vias))]
-
-
-def phase_for(label, *, unplaced=False):
-    """Which of the four contents this frame's label asks for.
-
-    `Stage` builds from the round records and every frame belongs to a round,
-    so the phase is already known -- this only names it.
-
-    `unplaced` comes from `placement.placement_state.assess_placement`, and it
-    wins over the label: on a board whose parts are still stacked at one
-    coordinate there is nothing to say about what moved, and the honest content
-    is the pile emptying.
-    """
-    s = (label or '').lower()
-    if unplaced:
-        return 'seeding'
-    if 'input' in s or 'overview' in s or 'routed' == s.strip():
-        return 'bookend'
-    if 'moving' in s or 'placing' in s or 're-placing' in s or 'moved' in s:
-        return 'placement'
-    return 'routing'

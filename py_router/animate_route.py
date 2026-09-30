@@ -242,11 +242,6 @@ class Movie:
         #: 7-frame 1701-segment reveal, and it grows with both), and a frame
         #: that dropped its layer row never draws a panel at all.
         self.want_panel = False
-        #: True when the board's parts are still stacked in a pile, from
-        #: `assess_placement`. It picks the box's SEEDING content, and it is
-        #: the only thing that can: a label cannot say whether the parts have
-        #: been seated yet.
-        self.unplaced = False
         #: The layer the current event is on, so the strip can light it.
         self.active_layer = None
         #: An extra `fn(draw, renderer)` drawn through `frame(overlays=...)`
@@ -265,9 +260,6 @@ class Movie:
         #: animation, just cut", and that is exactly the degradation this
         #: needs. It changes frame COUNT, never frame SIZE.
         self.motion = rip_hold > 0
-        #: `{class: (seated, total)}` for the box's inventory content,
-        #: computed ONCE over the board rather than per frame.
-        self.inventory = {}
         #: Edit logs behind the live copper (#1036): see `_OpLog`.
         self._log_s, self._log_v = _OpLog(), _OpLog()
         self.live_s: Dict[Tuple, _Seg] = _LoggedDict(self._log_s)
@@ -312,18 +304,18 @@ class Movie:
     def _render(self, label, **kw):
         """`r.frame(...)` for this frame, seen from the back when the Stage
         says so (#1082-#1085). A mirrored frame is flipped INSIDE the renderer,
-        before its downsample: the ghost mirrors with the board, while the key
-        (text) is drawn after the flip at the same supersampled resolution as
-        on the front, and the caption is stamped upright last. The front-side
-        call is exactly the call it always was."""
+        before its downsample, so the ghost mirrors with the board. Only a
+        film frame is ever mirrored, and every film frame has a rail, which
+        carries the key and the caption upright -- nothing text-like is drawn
+        on a mirrored board. (The in-frame key drawn after the flip was the
+        rail-less legacy frame's.) The front-side call is exactly the call it
+        always was."""
         if not self.mirrored:
             ov = self._overlays()
             return self.r.frame(label=label, overlays=ov or None, **kw)
-        key = self._key_overlay()
         return self.r.frame(label=label,
                             overlays=[self.overlay] if self.overlay else None,
                             mirror=True,
-                            overlays_after_mirror=[key] if key else None,
                             **kw)
 
     def _key_overlay(self):
@@ -366,8 +358,6 @@ class Movie:
                             'live_v': (_LiveRef(self._log_v,
                                                 len(self._log_v.ops))
                                        if self.want_panel else ()),
-                            'unplaced': self.unplaced,
-                            'inventory': self.inventory,
                             'active': self.active_layer,
                             # the key's rows as of THIS frame, for the rail
                             'seen': tuple(self.seen_events)})
@@ -465,76 +455,6 @@ class Movie:
         """Turn on the per-frame stage record (#1081)."""
         self.stage_log = []
         self.stage_epochs = []
-
-    def refresh_placement(self, pcb, path=None):
-        """Re-read the lower box's non-routing data from THIS board.
-
-        Three defects the round-2 verifier measured, all in one place:
-
-        * `assess_placement` lives in `py_placer/placement/`, which `py_router`
-          does not put on `sys.path`, so the import raised `ModuleNotFoundError`
-          into the swallow and `unplaced` was ALWAYS False -- the 'seeding'
-          content could not occur in a CLI film at all. Proven with a genuinely
-          piled board: the CLI arm reported `{'bookend': 1}` and the GUI arm,
-          with `py_placer` already on the path, reported `{'seeding': 1}`. The
-          path is added here rather than at module scope, because a movie must
-          not pay for a placement import it may never need.
-        * it read the CHAIN'S FINAL board, so a film OF a seeding run asked a
-          board that is by then placed. Every step re-reads its own.
-        * the inventory was computed once, so the bars never emptied.
-
-        Never raises: without `py_placer` the inventory still counts parts, it
-        just cannot tell a seated one from a piled one, and that is a strictly
-        better answer than no box.
-        """
-        if not self.want_panel or pcb is None:
-            return
-        import render_panels as _rp
-        unseated = ()
-        try:
-            import os as _os
-            import sys as _sys
-            _pp = _os.path.join(_os.path.dirname(_os.path.dirname(
-                _os.path.abspath(__file__))), 'py_placer')
-            if _os.path.isdir(_pp) and _pp not in _sys.path:
-                _sys.path.insert(0, _pp)
-            from placement.placement_state import assess_placement
-            st = assess_placement(pcb, path)
-            self.unplaced = bool(st.unplaced)
-            unseated = st.stacked_suspect_refs
-        except Exception:                                      # noqa: BLE001
-            pass
-        # A part ENTIRELY off the board is not placed either (#1036).
-        # `assess_placement` finds STACKED parts, and run 32's pile is laid out
-        # in rows beside the outline, not stacked: 247 of its 272 parts sit
-        # outside it, and the box read "272 of 272 placed" over the pile.
-        # ENTIRELY: the test is the part's pad extent against the outline, not
-        # its origin -- an edge connector whose origin overhangs the outline
-        # is placed, and read "N-1 of N" when the origin decided.
-        try:
-            bb = pcb.board_info.board_bounds
-            if bb:
-                x0, y0, x1, y1 = bb
-
-                def _off(fp):
-                    pads = fp.pads or ()
-                    if not pads:
-                        return not (x0 <= fp.x <= x1 and y0 <= fp.y <= y1)
-                    px0 = min(p.global_x - p.size_x / 2.0 for p in pads)
-                    px1 = max(p.global_x + p.size_x / 2.0 for p in pads)
-                    py0 = min(p.global_y - p.size_y / 2.0 for p in pads)
-                    py1 = max(p.global_y + p.size_y / 2.0 for p in pads)
-                    return px1 < x0 or px0 > x1 or py1 < y0 or py0 > y1
-                off = {ref for ref, fp in pcb.footprints.items()
-                       if _off(fp)}
-                if off:
-                    unseated = set(unseated or ()) | off
-        except Exception:                                      # noqa: BLE001
-            pass
-        try:
-            self.inventory = _rp.inventory_counts(pcb, unseated)
-        except Exception:                                      # noqa: BLE001
-            pass
 
     def _row(self, sg):
         """A live `_Seg` back as a trace row, for `copper_motion`."""
@@ -1076,15 +996,6 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     # also gates the per-frame copper snapshot, so a frame that dropped its
     # layer row retains nothing.
     m.want_panel = bool(_geom.panel is not None and _geom.panel.h > 0)
-    if m.want_panel:
-        # Seeded from the chain's FIRST board, not its last: the opening
-        # snapshot is of the board as it arrived, and a film of a seeding run
-        # asked the final board -- which is by then placed.
-        _seed = steps[0][1] if steps else final
-        try:
-            m.refresh_placement(parse_kicad_pcb(_seed), _seed)
-        except Exception:                                      # noqa: BLE001
-            pass
     # #1019. THE RAIL COUNTS LAPS, NOT STEPS. A loop revisits the same step, so
     # `step 2 - route` cannot say whether this is the first attempt or the
     # fourth. `placement_chain` labels its steps `round N` / `round N routed`,
@@ -1111,7 +1022,7 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     if stage is not None:
         stage.attach(m, r, layers)
     m.snapshot("input")
-    #: The board the previous step left, for a glide's source inventory.
+    #: The board the previous step left: a glide starts from it.
     _prev_board = steps[0][1] if steps else None
     for _step in steps:
         _lbl = str(_step[0])
@@ -1129,28 +1040,17 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
         _first = len(m.frames)
         pcb = parse_kicad_pcb(board)
         seg_rows, via_rows = _board_rows(pcb, layers)
-        # #1020: this step's OWN board answers the box, so the inventory
-        # empties as the board fills and a seeding beat is a seeding beat.
         _gliding = (stage is not None and mode != 'revert'
                     and stage.handles(board))
         if _gliding and _prev_board:
-            # #1036: a glide is drawn from the board it LEAVES. The box's
-            # inventory follows the parts, so it reads the source board until
-            # the glide lands -- it read "272 of 272 placed" mid-glide, the
-            # destination's count, over parts still in the pile. The stage
-            # calls `on_arrive` right before its landing frame.
-            m.refresh_placement(r.pcb, _prev_board)
-
-            def _on_arrive(_p=pcb, _b=board):
-                m.refresh_placement(_p, _b)
-                # #1042: the placement panels read the SAME landing frame,
-                # so their beat changes with the inventory, not before it.
+            # #1036/#1042: a glide is drawn from the board it LEAVES, and the
+            # placement panels change beat on the frame it LANDS on, not
+            # before. The stage calls `on_arrive` right before that frame.
+            def _on_arrive(_b=board):
                 if lands_out is not None:
                     lands_out.setdefault(
                         os.path.normcase(os.path.abspath(_b)), len(m.frames))
             stage.on_arrive = _on_arrive
-        else:
-            m.refresh_placement(pcb, board)
         _prev_board = board
         # Every step draws its OWN board's pads (#1036), stage or not. The
         # board it REPLACES is handed to the stage, whose camera shots before
@@ -1217,18 +1117,15 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
             marks.append((label, board, _first, len(m.frames)))
     # final trueup (in case the graded final differs from the last step board)
     fpcb = parse_kicad_pcb(final)
-    m.refresh_placement(fpcb, final)
     r.pcb = fpcb
     for _z in (getattr(fpcb, 'zones', None) or []):   # ensure every pour shows
         m.reveal_zone(_z.net_id)
     _before = len(m.frames)
     m.reconcile_to(*_board_rows(fpcb, layers), "routed")
-    # THE CLOSING BOOKEND. `reconcile_to` is silent when nothing changed, so a
-    # film whose last step already matched the final board ended on a ROUTING
-    # frame and never reached the bookend content at all -- half the "open and
-    # close" the lower box is designed around, missing.
-    #
-    # Only when a box EXISTS to hold it.
+    # THE CLOSING FRAME. `reconcile_to` is silent when nothing changed, so a
+    # film whose last step already matched the final board ended on its last
+    # ROUTING frame, never on 'routed' -- the column's closing numbers with
+    # the foot's closing event. Only when a column EXISTS to hold them.
     if m.want_panel and len(m.frames) == _before:
         m.snapshot("routed")
     if stage is not None:
@@ -1363,70 +1260,46 @@ STRIP_SUMMARY_MIN_PX = 90
 
 
 def _draw_panel(d, geom, r, c):
-    """The lower box, whichever of its four contents this phase asks for.
-
-    Four REAL contents, not one content and three captions: the phase-1
-    verifier measured that `draw_inventory` had no caller anywhere in the repo
-    and that `phase_for(unplaced=...)` was never called from production, so
-    'seeding' could not occur in a film at all and the other two branches drew
-    a literal string. Each branch now draws data the film already holds.
-    """
+    """The layer column (#1020, #1081): ONE thing on every frame, the
+    per-layer strip with the board's numbers under it -- it sits beside a 3D
+    board that already shows the placement, and a column that swapped panels
+    by phase read as three widgets."""
     if geom.panel is None or geom.panel.h <= 0 or geom.panel.w <= 0:
         return
     try:
         import render_panels
         th = getattr(r, 'theme', None)
-        phase = render_panels.phase_for(c.get('event', ''),
-                                        unplaced=bool(c.get('unplaced')))
-        if geom.layout == 'stage3d':
-            # #1081: the stage3d column is ONE thing, the per-layer strip
-            # with the board's numbers under it, on every frame -- it sits
-            # beside a 3D board that already shows the placement, and a
-            # column that swapped panels by phase read as three widgets
-            phase = 'routing'
         box = geom.panel
         d.rectangle([box.x, box.y, box.x + box.w - 1, box.y + box.h - 1],
                     fill=th.rgb('chrome_panel') if th else (14, 14, 18))
-        # THE GUTTER (#946 review): every content keeps the design system's
-        # inner margin from its box -- the 4:3 inventory's counts touched
-        # the frame's right edge.
+        # THE GUTTER (#946 review): the content keeps the design system's
+        # inner margin from its box -- a count once touched the frame's
+        # right edge.
         import render_chrome
         g = render_chrome.gutter_px(geom.frame.w)
         box = box._replace(x=box.x + g, y=box.y + g,
                            w=max(2, box.w - 2 * g), h=max(2, box.h - 2 * g))
-        if phase == 'routing':
-            # Cells shaped like the BOARD, in a grid when the box is tall
-            # (the 1:1 sidebar gave 85x500 cells). The grid is centred; when
-            # there is room under it, the board's numbers go there.
-            _x0, _y0, _x1, _y1 = r.bounds
-            _asp = max(_x1 - _x0, 1e-6) / max(_y1 - _y0, 1e-6)
-            _b, _n, gh = render_panels.grid_boxes(
-                box, len(r.copper_layers), _asp)
-            spare = box.h - gh
-            if _n and spare >= STRIP_SUMMARY_MIN_PX:
-                strip = box._replace(h=gh)
-                render_panels.draw_summary(
-                    d, box._replace(y=box.y + gh, h=spare), theme=th,
-                    lines=render_panels.board_summary(
-                        r.pcb, _live(c.get('live')), _live(c.get('live_v'))))
-            else:
-                strip = box._replace(y=box.y + max(0, spare) // 2,
-                                     h=min(box.h, gh) if _n else box.h)
-            render_panels.draw_layer_strip(
-                d, strip, bounds=r.bounds, segments=_live(c.get('live')),
-                layers=list(r.copper_layers), palette=r.palette, theme=th,
-                active=c.get('active'), grid=True)
-        elif phase == 'bookend':
+        # Cells shaped like the BOARD, in a grid when the box is tall. The
+        # grid is centred; when there is room under it, the board's numbers
+        # go there.
+        _x0, _y0, _x1, _y1 = r.bounds
+        _asp = max(_x1 - _x0, 1e-6) / max(_y1 - _y0, 1e-6)
+        _b, _n, gh = render_panels.grid_boxes(
+            box, len(r.copper_layers), _asp)
+        spare = box.h - gh
+        if _n and spare >= STRIP_SUMMARY_MIN_PX:
+            strip = box._replace(h=gh)
             render_panels.draw_summary(
-                d, box, theme=th,
+                d, box._replace(y=box.y + gh, h=spare), theme=th,
                 lines=render_panels.board_summary(
                     r.pcb, _live(c.get('live')), _live(c.get('live_v'))))
         else:
-            inv = c.get('inventory') or {}
-            done = sum(a for a, _b in inv.values())
-            tot = sum(b for _a, b in inv.values())
-            render_panels.draw_inventory(d, box, counts=inv, placed=done,
-                                         total=tot, theme=th)
+            strip = box._replace(y=box.y + max(0, spare) // 2,
+                                 h=min(box.h, gh) if _n else box.h)
+        render_panels.draw_layer_strip(
+            d, strip, bounds=r.bounds, segments=_live(c.get('live')),
+            layers=list(r.copper_layers), palette=r.palette, theme=th,
+            active=c.get('active'), grid=True)
     except Exception:                                          # noqa: BLE001
         pass
 

@@ -18,14 +18,14 @@
       count changed is not read as a move. A uuid two blocks SHARE is no
       identity: those pair by reference, so cap_chain against itself moves
       nothing.
-  6.  A part overhanging the outline is placed; only a part entirely off it
-      counts as unplaced.
+  6.  (The placement inventory's "an overhanging part is placed" went with
+      the inventory: the stage3d layer column shows none.)
   7.  `leading_copper_free` ignores `(arc` inside a zone's `(pts ...)`.
   GIF: a strided GIF holds EXACTLY `GIF_MAX_FRAMES`.
   Camera detection: a routing chain (no footprint pose changed) costs no
       board parse to learn that, and keeps the camera off; a move or a
       rotation alone still goes through the full diff.
-  Lazy overlays: a frame the attempts band or the run clock fails to draw
+  Lazy overlays: a frame the benchmark band or the run clock fails to draw
       drops THAT overlay for the rest of the film, said once, and the film
       is still written, one size throughout; a frame that cannot be PRODUCED
       is re-raised as itself, never reported as "mp4 encode failed".
@@ -620,41 +620,6 @@ def test_a_routing_chain_costs_no_parse_to_find_nothing_moved():
               'a move and a rotation alone are still diffed')
 
 
-def test_an_overhanging_part_is_placed():
-    _mark = len(_FAIL)
-
-    class _Pad(object):
-        def __init__(self, x, y):
-            self.global_x, self.global_y, self.size_x, self.size_y = \
-                x, y, 1.0, 1.0
-
-    class _F(object):
-        def __init__(self, x, y, pads):
-            self.x, self.y, self.pads = x, y, pads
-
-    class _BI(object):
-        board_bounds = (0.0, 0.0, 10.0, 10.0)
-        copper_layers = ['F.Cu', 'B.Cu']
-
-    pcb = type('P', (), {})()
-    pcb.board_info = _BI()
-    pcb.footprints = {
-        'J1': _F(10.8, 5.0, [_Pad(9.6, 5.0), _Pad(11.5, 5.0)]),   # overhangs
-        'R1': _F(5.0, 5.0, [_Pad(5.0, 5.0)]),
-        'C9': _F(30.0, 30.0, [_Pad(30.0, 30.0)]),                  # in a pile
-    }
-    m = A.Movie.__new__(A.Movie)
-    m.want_panel, m.unplaced, m.inventory = True, False, {}
-    m.refresh_placement(pcb, None)
-    placed = sum(a for a, _b in m.inventory.values())
-    if placed != 2:
-        fail('placed %d of 3 -- the overhanging J1 must count, the pile C9 '
-             'must not: %r' % (placed, m.inventory))
-    if len(_FAIL) == _mark:
-        print('  PASS: 2 of 3 placed: the overhanging connector is placed, '
-              'the part off the board is not')
-
-
 def test_leading_copper_free_ignores_arcs_inside_pts():
     _mark = len(_FAIL)
     import make_movie
@@ -708,7 +673,6 @@ TESTS = (
     test_a_shared_uuid_is_not_an_identity,
     test_a_failing_overlay_costs_the_overlay_not_the_film,
     test_a_routing_chain_costs_no_parse_to_find_nothing_moved,
-    test_an_overhanging_part_is_placed,
     test_leading_copper_free_ignores_arcs_inside_pts,
     test_a_strided_gif_holds_exactly_the_cap,
 )

@@ -93,10 +93,8 @@ ROWS = [
      "                            mirror=True,",
      "                            mirror=False,",
      (T_REC,), 'KILLED'),
-    ('key-drawn-before-the-mirror', 'anim',
-     "                            overlays_after_mirror=[key] if key else None,",
-     "                            overlays_after_mirror=None,",
-     (T_REC,), 'KILLED'),
+    # 'key-drawn-before-the-mirror' went with the in-frame key after the flip:
+    # only a rail-less (legacy) film frame had one; film frames are all railed.
     ('epoch-caught-mid-glide', 'anim',
      "            self.stage_epochs.append(_pose_table(pcb, self.moving_rest))",
      "            self.stage_epochs.append(_pose_table(pcb))",
@@ -172,10 +170,8 @@ ROWS = [
      "        if w == side and glide[last - 1]:",
      "        if False:",
      (T_TL,), 'KILLED'),
-    ('the-column-swaps-panels-again', 'anim',
-     "            phase = 'routing'",
-     "            pass",
-     (T_REC,), 'KILLED'),
+    # 'the-column-swaps-panels-again' went with the phase switch itself: the
+    # column has one content, so there is nothing left to swap to.
     ('glide-poses-not-recorded', 'anim',
      "                    moving[ref] = (fp.x, fp.y, fp.rotation or 0.0)",
      "                    pass",
