@@ -2210,6 +2210,27 @@ def _plug_seat_rect(ref, fp, crt, gate):
     return rect
 
 
+def seated_plugs(keepouts, pcb_data, pcb_file: Optional[str] = None
+                 ) -> set:
+    """The refs a mating keep-out LOCKS: the part a `mating:<ref>` entry
+    (declared or derived) names, only while `_plug_seat_rect` finds it
+    seated (#1098). A derived entry's plug is seated by construction; a
+    declared one's may be in the staging pile, and a lock would leave it
+    there unseated and unreported."""
+    fps = getattr(pcb_data, 'footprints', None) or {}
+    named = sorted({str(k.get('name', ''))[len(MATING_PREFIX):]
+                    for k in keepouts or ()
+                    if str(k.get('name', '')).startswith(MATING_PREFIX)}
+                   & set(fps))
+    bi = getattr(pcb_data, 'board_info', None)
+    if not named or bi is None:
+        return set()
+    from .parser import extract_courtyard_sides
+    path = pcb_file or getattr(pcb_data, 'source_path', None)
+    crt = extract_courtyard_sides(path) if path else {}
+    gate = legality.BoardOutlineGate(bi, 0.0)
+    return {r for r in named
+            if _plug_seat_rect(r, fps[r], crt, gate) is not None}
 
 
 def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None

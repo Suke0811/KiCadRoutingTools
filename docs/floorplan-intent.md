@@ -1831,9 +1831,16 @@ per side.
 the consumers rather than written into the intent:
 
 - **a plug is** a footprint KiCad does not assemble (`board_only` or
-  `exclude_from_pos_files`, and no 3D model), not a net-tie, with >= 2 netted
-  pads and none drilled, >= 2 of them within 1 mm of the outline, and a
-  courtyard that is on the board and reaches the outline;
+  `exclude_from_pos_files`, and no 3D model), not a net-tie, with >= 4 netted
+  pads (a USB-A PCB plug has four; KiCad's 2- and 3-pad solder jumpers carry
+  the same attrs) and none drilled;
+- **it is seated** while none of its pad copper is past the outline, >= 2 of
+  its netted pads are within 1 mm of the outline, and its courtyard is on the
+  board and reaches the outline. Only a seated plug derives a region, and only
+  a seated plug is locked -- by the quench, and by `place_pose`, which refuses
+  to move it unless it is named in `unlock`, since the region moves with it.
+  A plug in the staging pile or hanging across an edge is free to move, and
+  #1096's gate reports its off-board copper;
 - **the region is** that courtyard's board rect inset by 0.25 mm, on BOTH
   faces, allowing the plug itself and every part with no copper pad (a slot
   such as StickHub's H1). The inset keeps a neighbour's courtyard margin that

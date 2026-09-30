@@ -720,18 +720,27 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
         # #1098: a PCB-edge plug seated at its edge carries the keep-out that
         # keeps parts off its tongue; moving it inland would take the region
         # with it and read as an improvement. Treated as a lock: `unlock`
-        # the ref in the same call if the move is meant.
-        from placement.floorplan import MATING_PREFIX, derived_mating_keepouts
-        _plugs = {str(k['name'])[len(MATING_PREFIX):]
-                  for k in derived_mating_keepouts(pcb, board_path)}
+        # the ref in the same call if the move is meant. The quench's own
+        # set (`seated_plugs`): a plug named by a declared `mating:` keep-out
+        # counts too, and a plug that is NOT seated (in the pile, hanging
+        # across an edge) is free to move.
+        from placement.floorplan import seated_plugs, with_derived_keepouts
+        try:
+            _plugs = seated_plugs(
+                with_derived_keepouts(declared_keepouts, pcb, board_path),
+                pcb, board_path)
+        except Exception as exc:                             # noqa: BLE001
+            raise PoseRefusal(
+                "cannot tell whether a moved part is a seated PCB-edge plug "
+                "(%s: %s); nothing was written" % (type(exc).__name__, exc))
         _moved_plugs = sorted({p['reference'] for p in placements}
                               & (_plugs - set(unlock_refs)))
         if _moved_plugs:
             raise PoseRefusal(
                 "%s %s a PCB-edge plug seated at its edge: its tongue's "
-                "keep-out (mating:%s) is derived from that pose, and moving "
-                "it would move the region too. Name it in `unlock` in the "
-                "same call if you mean it."
+                "keep-out (mating:%s) belongs to that pose, and moving it "
+                "would move the region too or leave it behind. Name it in "
+                "`unlock` in the same call if you mean it."
                 % (', '.join(_moved_plugs),
                    'is' if len(_moved_plugs) == 1 else 'are',
                    _moved_plugs[0]),

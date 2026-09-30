@@ -455,6 +455,59 @@ class TestReviewFollowUps(unittest.TestCase):
         self.assertEqual(r.returncode, 0, (r.stdout + r.stderr)[-2000:])
         self.assertTrue(wrote)
 
+    def test_place_pose_locks_the_plug_a_declaration_names(self):
+        """place_pose refuses to move a SEATED plug a declared `mating:J1`
+        names (here J1 carries a model, so nothing is derived), like the
+        quench does -- and lets the same plug out of the pile."""
+        tip = {'name': 'mating:J1', 'rect': [10, 20, 20, 32],
+               'sides': ['F', 'B'], 'allow': ['J1']}
+        said = 'is a PCB-edge plug seated at its edge'
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td, model=True)
+            intent = write_intent(td, [tip])
+            out = os.path.join(td, 'o.kicad_pcb')
+            seated = place_pose(p, out, 'set', 'J1', '15', '10', '--rot',
+                                '0', '--intent', intent)
+            with open(p, encoding='utf-8') as fh:
+                text = fh.read()
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write(text.replace('(at 15 32)\n', '(at 60 60)\n', 1))
+            pile = place_pose(p, out, 'set', 'J1', '15', '32', '--rot', '0',
+                              '--intent', intent)
+        self.assertIn(said, seated.stdout + seated.stderr)
+        self.assertNotIn(said, pile.stdout + pile.stderr)
+
+    def test_a_declared_plug_in_the_pile_is_not_locked(self):
+        """A plug in the staging pile that a declared `mating:J1` names is
+        free: the seeder seats it (or names it unseated) instead of writing
+        it back where it was."""
+        import dataclasses
+        import random
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        from placement import seeder
+        from placement.floorplan import empty_intent
+        decl = {'name': 'mating:J1', 'rect': (10.0, 20.0, 20.0, 32.0),
+                'sides': ('F', 'B'), 'allow': ('J1',)}
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td, r1=(60, 70, 'B.Cu'))
+            with open(p, encoding='utf-8') as fh:
+                text = fh.read()
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write(text.replace('(at 15 32)\n', '(at 60 60)\n', 1))
+            it = dataclasses.replace(empty_intent(p), keepouts=(decl,))
+            st = pose_score.make_state(parse_kicad_pcb(p), p, clearance=0.1,
+                                       board_edge_clearance=0.1,
+                                       keepouts=(decl,))
+            self.assertFalse(st.parts['J1'].locked)
+            res = seeder.seed_from_intent(
+                parse_kicad_pcb(p), p, it, random.Random('1'), clearance=0.1,
+                board_edge_clearance=0.1, grid_step=0.25)
+        at = {q['reference']: (q['new_x'], q['new_y'])
+              for q in res['placements']}
+        self.assertTrue('J1' in res['unseated'] or at.get('J1') != (60, 60),
+                        (at.get('J1'), res['unseated']))
+
 
 if __name__ == '__main__':
     unittest.main()

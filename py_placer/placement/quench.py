@@ -1078,11 +1078,12 @@ class QuenchState:
         # derived from: moved inland, the region would go with it and the
         # parts it kept off the tongue would be free to return (#1098
         # review). So the search never moves it -- as with a KiCad lock.
-        for _k in self.keepouts:
-            _ref = str(_k.get('name', ''))[len(_fpk.MATING_PREFIX):] \
-                if str(_k.get('name', '')).startswith(_fpk.MATING_PREFIX) \
-                else None
-            if _ref and _ref in self.parts:
+        # Only while it IS seated (`seated_plugs`): a plug a declared
+        # `mating:` keep-out names but which sits in the staging pile, or
+        # hangs across an edge, must stay free, or the seeder writes it back
+        # where it was and reports nothing unseated.
+        for _ref in _fpk.seated_plugs(self.keepouts, pcb_data, pcb_file):
+            if _ref in self.parts:
                 self.parts[_ref].locked = True
         self.keepouts_for: Dict[str, Tuple[Dict, ...]] = {}
         if self.keepouts:

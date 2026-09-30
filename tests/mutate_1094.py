@@ -173,8 +173,10 @@ ROWS = [
      "        if False:",
      (T1098,), 'KILLED'),
     ('seated-plug-free-to-move', 'quench',
-     "            if _ref and _ref in self.parts:",
-     "            if False:",
+     "            if _ref in self.parts:\n"
+     "                self.parts[_ref].locked = True",
+     "            if False:\n"
+     "                self.parts[_ref].locked = True",
      (T1098,), 'KILLED'),
     ('place-pose-moves-the-plug', 'pose',
      "        if _moved_plugs:",
@@ -270,6 +272,15 @@ ROWS = [
     ('place-pose-drops-declared-region', 'pose',
      "    declared_keepouts = tuple(getattr(intent, 'keepouts', None) or ())",
      "    declared_keepouts = ()",
+     (T1098,), 'KILLED'),
+    ('pile-plug-locked', 'quench',
+     "        for _ref in _fpk.seated_plugs(self.keepouts, pcb_data, pcb_file):",
+     "        for _ref in [str(k.get('name', ''))[len(_fpk.MATING_PREFIX):] "
+     "for k in self.keepouts]:",
+     (T1098,), 'KILLED'),
+    ('place-pose-blind-to-declared-plug', 'pose',
+     "                with_derived_keepouts(declared_keepouts, pcb, board_path),",
+     "                with_derived_keepouts((), pcb, board_path),",
      (T1098,), 'KILLED'),
 ]
 
