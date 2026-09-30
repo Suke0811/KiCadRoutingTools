@@ -1,0 +1,254 @@
+"""The #1094-#1099 mutation battery: the checker and placement defects run 36
+found on KiCad's StickHub demo.
+
+One row per load-bearing line, each reverting it; every row names the test
+that must fail. **THE ROWS TO LOOK AT FIRST if this file ever goes red**
+restore a defect somebody measured:
+
+  * `graded-parts-lose-their-outline` (#1094) -- 74 phantom courtyard pairs
+    and six phantom containments made the human StickHub NOT BUILDABLE;
+  * `off-outline-not-a-conjunct` (#1096) -- run 36 routed with C20 7.84 mm
+    below the board on a `buildable`;
+  * `plug-keepout-front-only` (#1098) -- 8 back-side parts on the USB tongue;
+  * `unseated-parts-unnamed` (#1099) -- the exit line that let C20 through.
+
+NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
+the sources in place. One writer per tree. It refuses to start on a dirty
+target, and it runs every witness UNMUTATED first -- a witness that already
+fails would score every row as killed.
+
+    python3 tests/mutate_1094.py
+    python3 tests/mutate_1094.py --row off-outline-not-a-conjunct
+
+A row is KILLED by a failure or an error. An anchor that does not match
+EXACTLY ONCE is BROKEN, never skipped; `preflight()` runs right after `ROWS`.
+Edits are `str.replace(old, new, 1)`; anchors are LF and translated to the
+target's own ending.
+"""
+from __future__ import annotations
+
+import argparse
+import io
+import os
+import subprocess
+import sys
+
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_TESTS)
+_PL = os.path.join(_ROOT, 'py_placer', 'placement')
+
+TARGETS = {
+    'leg': os.path.join(_PL, 'legality.py'),
+    'parser': os.path.join(_PL, 'parser.py'),
+    'seeder': os.path.join(_PL, 'seeder.py'),
+    'fp': os.path.join(_PL, 'floorplan.py'),
+    'quench': os.path.join(_PL, 'quench.py'),
+    'asm': os.path.join(_ROOT, 'py_tools', 'check_assembly.py'),
+    'seed': os.path.join(_ROOT, 'py_placer', 'place_seed.py'),
+}
+
+
+def _t(name):
+    return os.path.join(_TESTS, name)
+
+
+T1094 = _t('test_1094_rotated_courtyards.py')
+T1095 = _t('test_1095_project_severity.py')
+T1096 = _t('test_1096_off_outline_gates.py')
+T1098 = _t('test_1098_mating_keepout.py')
+T1099 = _t('test_1099_seed_gaps.py')
+
+# (name, target, old, new, tests, expect)
+ROWS = [
+    # --- #1094: courtyards and bodies as drawn -------------------------------
+    ('graded-parts-lose-their-outline', 'leg',
+     "                              poly=occupancy_shape(fp, lb, bodies.get(ref))))",
+     "                              poly=None))",
+     (T1094,), 'KILLED'),
+    ('fab-bodies-back-to-boxes', 'leg',
+     "                ov, _depth, _ix = shape_overlap(sha, shb)",
+     "                from shapely.geometry import box as _bx; ov, _depth, _ix = shape_overlap(_bx(*rca), _bx(*rcb))",
+     (T1094,), 'KILLED'),
+    ('containment-on-box-areas', 'leg',
+     "                    _cf = containment_frac_of_areas(ov, sha.area, shb.area)",
+     "                    _cf = containment_frac(ov, rca, rcb)",
+     (T1094,), 'KILLED'),
+    ('occupancy-without-its-pads', 'leg',
+     "            if pp.is_valid and not shape.contains(pp):",
+     "            if False:",
+     (T1094,), 'KILLED'),
+    ('pad-turn-grows-the-seed-box', 'leg',
+     "                    HX, HY = px * tc + py * ts, px * ts + py * tc",
+     "                    HX, HY = hx * tc + hy * ts, hx * ts + hy * tc",
+     (T1094,), 'KILLED'),
+    ('fixed-pose-seat-on-boxes', 'seeder',
+     "        if ga.poly is not None or gb.poly is not None:",
+     "        if False:",
+     (T1094,), 'KILLED'),
+    ('open-outline-no-hull', 'parser',
+     "            shape, how = MultiPoint(pts).convex_hull, OUTLINE_HULL",
+     "            shape, how = shape, OUTLINE_HULL",
+     (T1094,), 'KILLED'),
+    ('micron-gap-not-joined', 'parser',
+     "            snapped = shapely.snap(ml, ml, _OUTLINE_JOIN_MM)",
+     "            snapped = ml",
+     (T1094,), 'KILLED'),
+    # --- #1095: the project's courtyard severity -----------------------------
+    ('project-ignore-not-read', 'leg',
+     "                  if _cy_sev == 'ignore' else '')",
+     "                  if False else '')",
+     (T1095,), 'KILLED'),
+    ('project-ignore-stops-at-a-lock', 'leg',
+     "        if p.waiver.startswith(PROJECT_SEVERITY_WAIVER):",
+     "        if False:",
+     (T1095,), 'KILLED'),
+    ('legacy-tool-ignore-trusted', 'leg',
+     "        if all(sev.get(c) == 'ignore' for c in legacy):",
+     "        if False:",
+     (T1095,), 'KILLED'),
+    # --- #1096: pad copper off the outline -----------------------------------
+    ('off-outline-not-a-conjunct', 'asm',
+     "                         or courtyard_gating or off_outline_pads or mating)",
+     "                         or courtyard_gating or mating)",
+     (T1096,), 'KILLED'),
+    ('overrun-printed-as-the-sum', 'asm',
+     "                      + ', '.join(f'{r} ({_overrun.get(r, a)}mm past the '",
+     "                      + ', '.join(f'{r} ({a}mm past the '",
+     (T1096,), 'KILLED'),
+    ('castellated-pads-gate', 'leg',
+     "                    if getattr(_p, 'castellated', False) or \\",
+     "                    if getattr(_p, 'pad_type', '') == 'np_thru_hole' or \\",
+     (T1096,), 'KILLED'),
+    # --- #1098: a PCB-edge plug's mating region ------------------------------
+    ('plug-keepout-front-only', 'fp',
+     "                    'sides': ('F', 'B'),",
+     "                    'sides': ('F',),",
+     (T1098,), 'KILLED'),
+    ('plug-slot-not-allowed', 'fp',
+     "                    'allow': (_glob.escape(ref),) + free,",
+     "                    'allow': (_glob.escape(ref),),",
+     (T1098,), 'KILLED'),
+    ('net-tie-read-as-a-plug', 'fp',
+     "        if getattr(fp, 'net_tie_groups', None):",
+     "        if False:",
+     (T1098,), 'KILLED'),
+    ('plug-not-a-conjunct', 'asm',
+     "                         or courtyard_gating or off_outline_pads or mating)",
+     "                         or courtyard_gating or off_outline_pads)",
+     (T1098,), 'KILLED'),
+    ('grade-blind-to-the-plug', 'fp',
+     "        if len(_ks) != len(intent.keepouts or ()):",
+     "        if False:",
+     (T1098,), 'KILLED'),
+    ('seat-blind-to-the-plug', 'quench',
+     "        self.keepouts = _fpk.with_derived_keepouts(keepouts, pcb_data,",
+     "        self.keepouts = tuple(keepouts or ()) or _fpk.with_derived_keepouts((), None,",
+     (T1098,), 'KILLED'),
+    # --- #1099: the seed ------------------------------------------------------
+    ('unseated-parts-unnamed', 'seed',
+     "    if unseated:",
+     "    if False:",
+     (T1099,), 'KILLED'),
+    ('decaps-from-ignored', 'fp',
+     "    if decaps_from:",
+     "    if False:",
+     (T1099,), 'KILLED'),
+    ('no-diagonal-pass', 'seeder',
+     "                        for d in (45.0, 135.0, 225.0, 315.0)])",
+     "                        for d in ()])",
+     (T1099,), 'KILLED'),
+]
+
+sys.path.insert(0, _TESTS)
+from mutation_anchors import preflight   # noqa: E402
+preflight(__file__)
+
+
+def _dirty(path):
+    p = subprocess.run(['git', 'status', '--porcelain', '--', path],
+                       capture_output=True, text=True, cwd=_ROOT)
+    return bool(p.stdout.strip())
+
+
+def _run_tests(tests):
+    failed = []
+    for t in tests:
+        p = subprocess.run([sys.executable, '-X', 'utf8', t],
+                           capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=2400, cwd=_ROOT)
+        if p.returncode not in (0,):
+            failed.append((os.path.basename(t), p.returncode,
+                           [ln.strip()[:90] for ln in
+                            ((p.stdout or '') + (p.stderr or '')).splitlines()
+                            if 'FAIL' in ln or 'Error' in ln][:2]))
+    return failed
+
+
+def run(only=None):
+    rows = [r for r in ROWS if only is None or r[0] == only]
+    if not rows:
+        print('no row named %r' % only)
+        return 1
+    for path in TARGETS.values():
+        if _dirty(path):
+            print('REFUSING: %s has uncommitted changes. Commit or stash '
+                  'first -- this battery restores by overwriting.'
+                  % os.path.basename(path))
+            return 2
+    # THE UNMUTATED BASELINE: every witness must pass as the code stands,
+    # or a row it "kills" proves nothing.
+    witnesses = sorted({t for r in rows for t in r[4]})
+    base_fail = _run_tests(witnesses)
+    if base_fail:
+        print('REFUSING: witnesses fail UNMUTATED -- %s' % base_fail)
+        return 2
+    print('baseline: %d witnesses pass unmutated' % len(witnesses))
+    orig = {k: io.open(v, encoding='utf-8', newline='').read()
+            for k, v in TARGETS.items()}
+    results = []
+    try:
+        for name, tgt, old, new, tests, expect in rows:
+            path = TARGETS[tgt]
+            base = orig[tgt]
+            o, n = old, new
+            if '\r\n' in base:
+                o, n = o.replace('\n', '\r\n'), n.replace('\n', '\r\n')
+            if base.count(o) != 1 or o == n:
+                results.append((name, 'BROKEN', expect,
+                                ['anchor matched %d times' % base.count(o)]))
+                continue
+            io.open(path, 'w', encoding='utf-8', newline='').write(
+                base.replace(o, n, 1))
+            try:
+                failed = _run_tests(tests)
+            finally:
+                io.open(path, 'w', encoding='utf-8', newline='').write(base)
+            results.append((name, 'KILLED' if failed else 'SURVIVED',
+                            expect, [str(f)[:150] for f in failed[:2]]))
+            print('%-36s %s' % (name, results[-1][1]), flush=True)
+    finally:
+        for k, v in TARGETS.items():
+            io.open(v, 'w', encoding='utf-8', newline='').write(orig[k])
+    wrong = [r for r in results if r[1] != r[2]]
+    print('')
+    for name, verdict, expect, why in results:
+        print('%-36s %-9s%s' % (name, verdict, '' if verdict == expect else
+                                '   <-- WRONG, expected %s' % expect))
+        for w in why:
+            print('      %s' % w)
+    print('\n%d rows: %d killed, %d survived, %d broken'
+          % (len(results), sum(r[1] == 'KILLED' for r in results),
+             sum(r[1] == 'SURVIVED' for r in results),
+             sum(r[1] == 'BROKEN' for r in results)))
+    return 1 if wrong else 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--row', default=None, help='run only this row')
+    a = ap.parse_args()
+    return run(a.row)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

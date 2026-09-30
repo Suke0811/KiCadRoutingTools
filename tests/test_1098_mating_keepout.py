@@ -172,6 +172,21 @@ class TestGraders(unittest.TestCase):
         self.assertTrue(d['buildable'], r.stdout[-1500:])
         self.assertEqual(d['mating_keepout_refs'], [])
 
+    def test_the_floorplan_grade_charges_it(self):
+        """check_floorplan -- and place_seed --repair, which charges grade
+        errors -- see the derived keep-out with an intent that declares
+        none (#1098 verifier D4)."""
+        from kicad_parser import parse_kicad_pcb
+        from placement.floorplan import empty_intent, grade
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td, r1=(15, 26, 'B.Cu'))
+            g = grade(empty_intent(p), parse_kicad_pcb(p), p)
+            p2 = board(td, r1=(25, 10, 'B.Cu'))
+            g2 = grade(empty_intent(p2), parse_kicad_pcb(p2), p2)
+        self.assertEqual([(v.rule, v.ref) for v in g.errors
+                          if v.rule == 'keepout'], [('keepout', 'R1')])
+        self.assertEqual([v for v in g2.errors if v.rule == 'keepout'], [])
+
     def test_the_slot_in_the_tongue_is_allowed(self):
         """H1, a copper-less slot at the tongue's root, is not a finding
         (StickHub's H1 sits exactly there)."""
