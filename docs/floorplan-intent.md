@@ -1439,8 +1439,10 @@ PLACED REFERENCE of the same design instead -- a human layout, an earlier
 placement -- which is the only way to arm the rule on a pile, where there is
 nothing to read. Same derivation and withholding; the basis is
 `reference:<file>`, in the census and in `context.basis`. It withholds when
-under 90% of the reference's pad-bearing parts are on the board with the same
-footprint (another design), and when the reference is itself unplaced.
+the two boards share, under the same reference and footprint, under 90% of
+EITHER board's pad-bearing parts (another design: a small board of generic
+passives shares most of ITS parts with almost any large one), and when the
+reference is itself unplaced.
 StickHub's human board gives 2.18 mm from 38 tethers; run 36, with no limit
 armed, left the hub's decaps 2.1-9.8 mm from their pins. Since #1102 it also
 derives the PIN limit, `max_pin_distance_mm` (see "The emitter derives no pin

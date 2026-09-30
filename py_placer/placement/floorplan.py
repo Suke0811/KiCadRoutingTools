@@ -2159,9 +2159,12 @@ MATING_INSET_MM = 0.25
 MATING_PREFIX = 'mating:'
 
 
-#: `--decaps-from`: this share of the reference's pad-bearing parts must be
-#: on the board being emitted, under the same reference AND footprint, or
-#: the reference is another design and its limit is withheld (#1099).
+#: `--decaps-from`: at least this share of EACH board's pad-bearing parts
+#: must be on the other under the same reference AND footprint, or the
+#: reference is another design and its limit is withheld (#1099). Both
+#: directions, because generic passives match: a 20-part H3/DDR board has 18
+#: of its parts on tigard (C1-C12, R1-R6, all 0402), but tigard has 18 of
+#: its 89 on it.
 DECAPS_FROM_MIN_MATCH = 0.9
 
 
@@ -8282,18 +8285,24 @@ def emit_intent(pcb_data, pcb_file: str, *,
         # parts on the board with the same footprint (#1099 verifier: an
         # esp_prog intent took glasgow's 4.787 mm without a word), and
         # placed (a pile blesses nothing -- auto refuses the same board).
+        # In BOTH directions: the lower of the two shares is the match, so a
+        # small board of generic passives is not a placement of a large one.
         def _parts(pcb):
             return {(r, f.footprint_name) for r, f in
                     (pcb.footprints or {}).items() if f.pads}
         _theirs, _ours = _parts(_ref_pcb), _parts(pcb_data)
-        _match = (len(_theirs & _ours) / len(_theirs)) if _theirs else 0.0
+        _common = len(_theirs & _ours)
+        _match = (min(_common / len(_theirs), _common / len(_ours))
+                  if _theirs and _ours else 0.0)
         _census['reference_part_match'] = round(_match, 3)
         _ref_state = _assess(_ref_pcb, decaps_from)
         if _match < DECAPS_FROM_MIN_MATCH:
             _limit, _why = None, (
-                f"it is not a placement of this design: "
-                f"{_match:.0%} of its parts are on this board with the same "
-                f"footprint (at least {DECAPS_FROM_MIN_MATCH:.0%} needed)")
+                f"it is not a placement of this design: they share "
+                f"{_common} part(s) under the same reference and footprint, "
+                f"{_common}/{len(_theirs)} of its parts and "
+                f"{_common}/{len(_ours)} of this board's (at least "
+                f"{DECAPS_FROM_MIN_MATCH:.0%} of each needed)")
         elif _ref_state.unplaced or _ref_state.partially_unplaced:
             _limit, _why = None, (
                 "it is not placed (" + '; '.join(_ref_state.reasons[:2])

@@ -286,6 +286,10 @@ ROWS = [
      "    if after.get('mating_keepout_error'):",
      "    if False:",
      (T1098,), 'KILLED'),
+    ('decaps-from-one-way', 'fp',
+     "        _match = (min(_common / len(_theirs), _common / len(_ours))",
+     "        _match = (min(_common / len(_theirs), _common / len(_theirs))",
+     (T1099,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

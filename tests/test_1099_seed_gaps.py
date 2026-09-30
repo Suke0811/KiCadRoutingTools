@@ -133,6 +133,19 @@ class TestDecapsFrom(unittest.TestCase):
         held = doc['context']['budget_withheld']['decaps.max_distance_mm']
         self.assertIn('not a placement of this design', held)
 
+    def test_a_small_design_of_generic_parts_is_not_a_reference(self):
+        """#1098 review: an H3/DDR board (20 parts, 18 of them 0402 C1-C12
+        and R1-R6, all on tigard under the same ref and footprint) armed
+        tigard's intent with its 4.11 mm. The match is taken both ways."""
+        tigard = os.path.join(ROOT, 'kicad_files', 'tigard.kicad_pcb')
+        h3 = os.path.join(ROOT, 'awx', 'fb_t2q_fresh.kicad_pcb')
+        _r, doc = self._emit(tigard, '--decaps-from', h3)
+        self.assertNotIn('max_distance_mm', doc.get('decaps') or {})
+        held = doc['context']['budget_withheld']['decaps.max_distance_mm']
+        self.assertIn('not a placement of this design', held)
+        self.assertLess(doc['context']['decap_census']['reference_part_match'],
+                        0.9)
+
     def test_a_pile_is_not_a_reference(self):
         _r, doc = self._emit(PLACED, '--decaps-from', PILE)
         self.assertNotIn('max_distance_mm', doc.get('decaps') or {})
