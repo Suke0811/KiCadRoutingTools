@@ -29,6 +29,14 @@ import os
 import sys
 import tempfile
 
+# #887 is the iso panel, which the stage3d layout -- the film default since
+# #1081 -- replaces with its 3D board. These tests are about the LEGACY
+# frame and its iso panel, so they say so before env_knobs is read.
+os.environ.setdefault('KICAD_MOVIE_LAYOUT', 'legacy')
+# ...and in the DARK theme: its extent checks find a shot by the pixels that
+# are not the dark ground (the default theme is light since #1081).
+os.environ.setdefault('KICAD_RENDER_THEME', 'dark')
+
 RUN_ALL_FAST_OK = True
 RUN_ALL_TIMEOUT = 300
 

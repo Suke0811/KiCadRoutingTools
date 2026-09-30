@@ -430,7 +430,7 @@ LIGHT = Theme('light', _LIGHT, _DARK_MARKS, _LIGHT_LAYERS, 205)
 #: theme is worse than no theme.
 THEMES: Dict[str, Theme] = {'dark': DARK, 'light': LIGHT}
 
-DEFAULT_THEME_NAME = 'dark'
+DEFAULT_THEME_NAME = 'light'
 
 
 def theme(name=None, *, strict=True) -> Theme:
@@ -483,7 +483,8 @@ def layer_palette(copper_layers: Sequence[str],
     Moved here from `route_render` unchanged, so that a theme can supply a
     different set of ten without every caller learning about it.
     """
-    th = DARK if th is None else th
+    # the CONFIGURED default (#1081: light), like every other None-theme
+    th = default_theme() if th is None else th
     pal = th.layers
     out: Dict[str, RGB] = {}
     inner = 2

@@ -69,7 +69,10 @@ from kicad_parser import parse_kicad_pcb
 # The second block that used to sit MID-FILE (C_CONFLICT / C_HOLE /
 # C_COURT_OVL, declared after `draw_courtyards`) is folded in here: there was
 # no reason for a palette to be in two places except that nobody owned it.
-from render_theme import DARK as _THEME_DARK
+# The CONFIGURED default theme (#1081: light, or $KICAD_RENDER_THEME) --
+# these were DARK's roles whatever theme the board itself was drawn in.
+from render_theme import default_theme as _default_theme
+_THEME_DARK = _default_theme()  # the name predates the default changing
 
 C_COURT_F = _THEME_DARK.rgb('place_court_front')   # front courtyard
 C_COURT_B = _THEME_DARK.rgb('place_court_back')    # back courtyard
@@ -1881,7 +1884,7 @@ Examples:
                         "JSON checklist then carries d={moved, expected, "
                         "match} -- mandate 8's question (d), quotable instead "
                         'of recalled (run-4 G5)')
-    p.add_argument('--theme', default=None, type=str.lower, choices=('dark', 'light'), help="'dark' (default, or $KICAD_RENDER_THEME) or 'light'. A light ground is for a figure going into a light-background document; the file's ground cannot be changed afterwards.")
+    p.add_argument('--theme', default=None, type=str.lower, choices=('dark', 'light'), help="'light' (default, or $KICAD_RENDER_THEME) or 'dark' (KiCad's own canvas). The file's ground cannot be changed afterwards.")
     p.add_argument('--quiet', action='store_true',
                    help='suppress narration. With --json-out it now also '
                         'suppresses the stdout JSON_SUMMARY echo and the '

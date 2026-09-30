@@ -476,11 +476,17 @@ plus `py_router/movie_attempts.py` (the attempts band) and
 
 ### Themes
 
-`--theme dark` (the default) or `--theme light`, on `make_movie.py`,
-`make_film.py` and `render_placement.py`, or `$KICAD_RENDER_THEME`.
+`--theme light` (the default since #1081) or `--theme dark`, on
+`make_movie.py`, `make_film.py`, `route_render.py` and `render_placement.py`,
+or `$KICAD_RENDER_THEME`. **Every** render that names no theme is light:
+`render_theme.default_theme()` is the one resolver, and every place that used
+to fall back to `DARK` by hand -- `BoardRenderer(theme=None)`,
+`layer_palette`, the chrome, the panels, the placement renders, the fanout
+animator -- now asks it. `$KICAD_RENDER_THEME=dark` restores KiCad's own
+canvas everywhere at once.
 
-The dark theme's values **are** the constants the renderers used before, so an
-unthemed render is byte-identical. The light theme is a genuinely second
+The dark theme's values **are** the constants the renderers used before
+#1081, so a dark render is byte-identical to one from then. The light theme is a genuinely second
 measured palette, not a transform of the first, and three measurements say why:
 
 - **on a light board the outline vanishes.** `board_edge` measures 12.33:1
@@ -538,11 +544,13 @@ regression.
 `--layout` and `--aspect` on `make_movie.py`, or `$KICAD_MOVIE_LAYOUT` /
 `$KICAD_MOVIE_ASPECT`.
 
-`legacy` is the default and reproduces today's frame exactly. That is deliberate
-and is the same call the camera knob already made (*"'off' (default) keeps every
-existing movie bit-for-bit"*): making `auto` the default would change the shape
-of every existing artifact — the GUI recorder's, `place_route_loop`'s
-`placement.mp4`, `render_run`'s.
+`stage3d` is the film's default since #1081, at the requester's call: the 3D
+board, the layer column and the benchmark band (see *The stage3d film* below)
+-- for `make_movie`, `make_film`, the GUI recorder and `place_route_loop`'s
+film alike, through the one resolver `frame_layout.resolve_layout_aspect`.
+`legacy` still reproduces the old frame exactly (`--layout legacy` or
+`$KICAD_MOVIE_LAYOUT=legacy`), and `plan_frame(layout=None)` still means
+legacy for a caller that plans a frame directly.
 
 **A declared size is kept.** With `--aspect` given, or a layout with an aspect
 of its own (`stacked`, `sidebar`, `split`), the frame is exactly that size.
@@ -989,3 +997,184 @@ front end at once — the same rationale `KICAD_MOVIE_CAMERA` and
 falls back (a typo in a shell must not abort a routing run that happened to ask
 for a movie), while an unknown value passed as a *kwarg* raises and names the
 accepted set (a typo in code is a bug).
+
+## The stage3d film: a 3D board and one benchmark band (#1081)
+
+`--layout stage3d` on `make_movie.py` or `make_film.py` (or
+`$KICAD_MOVIE_LAYOUT=stage3d`). It has three regions:
+
+- **the board**, top-left, at least 70 % of the frame's width and height, drawn
+  in 3D;
+- **the layer column** on its right: the lower box's own contents by phase, with
+  the per-layer strip while routing;
+- **one benchmark band** along the bottom, full width.
+
+`auto` never picks it, because like C and D it is a stance.
+
+### Geometry
+
+The floor is a promise the frame keeps before anything else gets room. A band
+that would push the board below it is shrunk, then declined. A portrait frame
+turns the column into a row under the board, and drops the row when it would be
+too short to read. A declared aspect outside 0.50–3.00 falls back to `legacy` at
+the board's own aspect. A frame too small to keep the floor at all still
+renders. Each of these is written to `FrameGeometry.notes`, and
+`frame_status_line` prints them, so no give-up is silent.
+
+`layout_budget` does not measure stage3d on purpose. px/mm varies across a
+perspective view, so the figure would not compare with the flat layouts'.
+
+| constant | value |
+|---|---|
+| `STAGE3D_BOARD_W_FRAC` (`py_router/frame_layout.py`) | 0.70 |
+| `STAGE3D_BOARD_H_FRAC` (`py_router/frame_layout.py`) | 0.70 |
+| `STAGE3D_BAND_MIN_PX` (`py_router/frame_layout.py`) | 64 |
+| `STAGE3D_ROW_MIN_PX` (`py_router/frame_layout.py`) | 90 |
+
+### The 3D board
+
+The board is drawn by a pinned three.js (r186, vendored unmodified under
+`py_router/stage3d/vendor/three`, MIT). It runs in headless Chromium, driven
+from Node by `playwright-core`, which is pinned by `py_router/stage3d/package.json`
+and its lockfile.
+
+Three tools are optional:
+
+- **Node**: `$KICAD_STAGE3D_NODE`, else `node` on PATH.
+- **`playwright-core`**: run `npm ci` in `py_router/stage3d`.
+- **A Chromium**: `$KICAD_STAGE3D_CHROMIUM`, else Playwright's own browser
+  cache, else an installed Chrome.
+
+Without any one of them the board box holds the 2D X-ray, and the film says why.
+The line reads, for example, `stage3d: 2D X-ray in the board box -- no Node.js
+on PATH`.
+
+**Choosing the board.** `--board-3d auto|2d|blender` on either CLI, else
+`$KICAD_MOVIE_BOARD3D` (default `auto`: the 3D board when this machine can
+render it). The variable is the only way for a front end with no flag of its
+own -- the GUI recorder and place_route_loop's film -- to choose; `2d` asks for
+the X-ray.
+
+The 3D state frames live in a temp directory until the film is written, and the
+front ends remove them right after `save_movie` (`stage3d.film.cleanup()`), not
+only at exit: in a long-lived KiCad process an exit handler would be the only
+removal, and every film would leave its PNGs behind.
+
+**A hi-fi backend (#1089):** `--board-3d blender` renders the SAME scene and
+timeline in Blender's Cycles on the CPU (`py_router/stage3d/blender_scene.py`,
+run inside `blender -b -P`; `$KICAD_STAGE3D_BLENDER`, else `blender` on PATH, else a
+standard install). Physically lit, several times slower, and deterministic the
+same way: CPU device, fixed seed and samples, no denoiser, and the PNGs
+re-encoded without Cycles' render-time metadata (identical pictures were
+different files). `tests/test_1081_blender.py` self-skips without Blender.
+
+**The 3D board replays the film; it does not re-derive it.**
+`animate_route.build_boards` records one stage state per frame. Each record
+holds:
+
+- the position in the copper edit logs;
+- the keys a growth stage hides under itself;
+- the highlight rows;
+- the poses of the parts mid-glide;
+- the side and flip.
+
+`stage3d.timeline` turns those records into copper with lifetimes plus
+per-frame states. `tests/test_1081_timeline.py` checks every frame of a film with
+a flip, a glide, a rip-and-retract and a regrowth. For each frame, the record
+alone must rebuild exactly the copper the X-ray drew, so the two views cannot
+disagree event for event.
+
+**The board faces the work** (`stage3d.timeline.activity_sides`), turning
+about the screen-vertical axis, so the far side comes up mirrored left-right as
+the 2D film shows it. A glide faces the side its parts are on, copper faces the
+layer it lands on, an inner layer keeps whatever face is showing, and the board
+turns about a second BEFORE the work begins. This is deliberately not the 2D
+Stage's rule, which flips for placement only and never flips back. Stray work
+does not turn it:
+
+| constant (`py_router/stage3d/timeline.py`) | value | meaning |
+|---|---|---|
+| `AUTO_DWELL_S` | 1.0 | a glide on the other face turns the board once it lasts this long |
+| `COPPER_DWELL_S` | 4.0 | copper must hold the other face this long |
+| `HOLD_S` | 6.0 | after a turn copper decided, no copper turn sooner than this |
+
+A routing film lands copper chunk after chunk on alternating layers; on one
+853-frame film of a routed board (a review run, not a committed fixture) a 1 s
+dwell turned the board 27 times, and these values turn it 6 times. The timeline's `side_rule` names the rule and the count.
+
+**Parts** are always a body box plus their pads, read from the board itself, in
+each part's own frame, so a part that turns while it glides (#1086) turns in 3D
+too. A part whose pad field spans the board, such as a castellated carrier, gets
+no box. When kicad-cli can export them, the parts' real models replace the
+boxes. `kicad-cli pcb export glb` names each part's node by its bare refdes, and
+the page re-poses a node by `F(now) * F(final)^-1`.
+
+KiCad 10 ships only `.step` models and silently drops a missing `.wrl`: 55 of 58
+were missing on splitflap. So the board is staged with each missing `.wrl`
+pointed at its `.step` twin, and the status line counts the matches
+(`GLB: 48 of 61 parts have a model`). `$KICAD_STAGE3D_MODELS=0` keeps the boxes.
+
+**Plane pours, pad outlines and drills (#1090).** Each zone's outline is on
+the 3D board from the frame its net's fill is revealed, as the 2D film draws
+it; a custom pad is its real outline (not the parser's board-space bbox); and
+every drill is drawn at its own centre (an offset drill is not the copper's).
+
+**Rendering is all-or-nothing.** Every distinct state is rendered to disk
+before any frame is composed. Only when all of them succeed is the board box
+mapped onto them. A lazy per-frame pass that failed mid-stream would either
+delete the film or switch from 3D to 2D half way through.
+
+**Only SwiftShader is accepted.** The page reports its WebGL renderer, and a
+render that ran anywhere else is refused, because a GPU's pixels depend on the
+machine and its driver. On SwiftShader two renders of one timeline are
+byte-identical state for state (`tests/test_1081_render3d.py`), at about
+60–120 ms per state. The Modal suite image has no Node or Chromium, so that
+test self-skips there and names why.
+
+### One pipeline for both front ends (#1087)
+
+`make_movie` and `make_film.build_film` compose their bands and panels through
+`py_router/film_passes.py`: `plan()` decides, before the frame is planned, what
+it must reserve (the attempts or benchmark band, the placement panels, the iso
+box); `compose()` and `compose_iso()` draw them. What stays in each front end
+is its own: make_movie's run clock, make_film's badges and cards.
+
+### The benchmark band
+
+This band replaces the attempts band and the placement panels in this layout.
+Placement and routing laps become one curve on one run-time axis, split into two
+regimes by one line (`movie_benchmark`, `ledger_score`).
+
+**Above the line** is `blocking` on a log scale, which is not working yet. The
+axis is clamped at twice its 90th percentile, so one huge pile at lap 0 cannot
+flatten the rest.
+
+**The line is working**, as defined by `ledger_score.row_done`: blocking 0,
+nothing `unknown`, no lens FAILed, and a score about this board. An `ungraded`
+list does not stop it, exactly as it does not stop `converge verdict`'s DONE,
+but the chip counts it (`WORKING @ 0:40:00 (measured, 2 unexamined)`).
+
+Only the run's accepted spine moves the story. The ground is green while the
+latest ACCEPTED lap is working, and a later accepted lap that falls back ends the
+span with `not working @ t`. A rejected lap never makes the board working. The
+phase-4 verification found three real ledgers whose first blocking-0 lap was one
+the run itself had thrown away. `--final` and `--exhausted` rows are not laps
+(`converge._is_lap`); the last final row's verdict is named in the caption.
+
+**Below the line: better.** Records are the running best over accepted laps on
+the run's own order: working first, then `blocking`, then
+`(vias, copper_mm, segments)`, lexicographic. It is never a weighted sum.
+`ledger_score.quality_key` is held to `converge._score_key`'s quality half on 400
+shuffled documents. y is the via count as a percentage. A lap that ties on vias
+but wins on copper is still a record, labelled with the term that decided it
+(`copper -9.5 mm`).
+
+**The human benchmark is optional** (`--benchmark-board`, graded by
+`--benchmark-score` or by running `board_score` once).
+
+- **Given a benchmark:** 100 % is its via count, a dashed line marks it, and
+  the first record strictly better on the full key earns a gold marker. That
+  requires the benchmark to be a working board itself. A tie reads "matches".
+  A score naming another board by `board_sha` is refused.
+- **Without one:** 100 % is the first working board, there is no line and no
+  gold, and the caption says "no benchmark board".

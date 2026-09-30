@@ -1076,7 +1076,7 @@ _UNRESOLVABLE = {}
 #: for pcb-free-agent and `mutate_890.py` (whose only target was
 #: loop_driver.py) went with them; 59 before #1066, #1068 and #1044 added
 #: `mutate_1066.py`, `mutate_1068.py` and `mutate_1044.py`.
-_BATTERY_COUNT = 62
+_BATTERY_COUNT = 63
 
 #: A floor well under today's 831, not a target. Same purpose as
 #: `test_the_scanners_still_match_something`: prove the corpus is populated.

@@ -97,6 +97,22 @@ BOARD_MIN_SHARE = 0.55
 #: 16:9 split frame put a 248 px band over an 86 px board before this.
 BOARD_ALONE_MIN_SHARE = 0.30
 
+#: #1081 `stage3d` (F): the 3D board is the film, so its box gets AT LEAST
+#: this share of the frame's width and of its height -- the rail, the foot,
+#: the clock and the benchmark band all fit in the rest, and a band that would
+#: push the board under the floor is shrunk, then declined, never the board.
+STAGE3D_BOARD_W_FRAC = 0.70
+STAGE3D_BOARD_H_FRAC = 0.70
+#: A benchmark band shorter than this cannot hold its curve and its labels;
+#: below it the band is declined, and the status line says so.
+STAGE3D_BAND_MIN_PX = 64
+#: A PORTRAIT stage3d frame (aspect below `ISO_SIDE_ASPECT`) has no width
+#: for a side column, so the layer column becomes a ROW under the board --
+#: dropped, and said, when it would be shorter than this. Not 40: a 52 px
+#: row at 9:16 drew six 8 px-wide cells with their names cut to "In" (the
+#: phase-3 verifier's render) -- a row too short to read is not a row.
+STAGE3D_ROW_MIN_PX = 90
+
 
 class Box(NamedTuple):
     x: int
@@ -121,7 +137,8 @@ class LayoutSpec(NamedTuple):
     title: str
     #: None = take the BOARD's own aspect (C, and 'legacy')
     aspect: Optional[float]
-    panel: Optional[str]        # 'below' | 'right' | 'inset' | 'split' | None
+    panel: Optional[str]        # 'below' | 'right' | 'inset' | 'split' |
+    #                             'column' (stage3d) | None
     overlays_board: bool
 
 
@@ -135,6 +152,9 @@ LAYOUTS: Dict[str, LayoutSpec] = {
     'split':   LayoutSpec('split', 'D', 'Split panel', 16.0 / 10.0, 'split',
                           False),
     'auto':    LayoutSpec('auto', 'E', 'Adaptive A/B', None, None, False),
+    # #1081. Never chosen by 'auto': a stance, like C and D.
+    'stage3d': LayoutSpec('stage3d', 'F', '3D stage', 16.0 / 9.0, 'column',
+                          False),
 }
 
 #: Named target aspects. `'board'` is today's behaviour and the default.
@@ -166,6 +186,10 @@ class FrameGeometry(NamedTuple):
     foot: Box
     track: Optional[Box]        # the attempts band (#1021), when asked for
     overlays_board: bool
+    #: What the layout had to give up to keep its promise, in words for
+    #: `frame_status_line` (#1081: a declined band, a dropped layer row, a
+    #: stage3d frame too extreme to hold one). Empty = nothing given up.
+    notes: Tuple[str, ...] = ()
 
 
 def even(n) -> int:
@@ -173,10 +197,26 @@ def even(n) -> int:
     return max(2, int(n) & ~1)
 
 
+def layout_choices() -> str:
+    """`'legacy' | auto | stacked | ...` -- every key in `LAYOUTS`, for a
+    `--layout` help string. Generated, so a new layout cannot be missing from
+    the CLIs that accept it (#1081)."""
+    return ' | '.join(["'%s'" % DEFAULT_FILM_LAYOUT]
+                      + [k for k in LAYOUTS if k != DEFAULT_FILM_LAYOUT])
+
+
+#: The film's layout when nothing names one (#1081, at the requester's
+#: call): the 3D board, the layer column and the benchmark band.
+#: `plan_frame(layout=None)` still means 'legacy' -- today's frame -- for a
+#: caller that plans a frame directly; this is the FILM's default, which
+#: `make_movie` and `make_film` resolve through `resolve_layout_aspect`.
+DEFAULT_FILM_LAYOUT = 'stage3d'
+
+
 def resolve_layout_aspect(layout=None, aspect=None):
     """`(layout, aspect)` for a render: an explicit argument wins, and `None`
     falls back to `$KICAD_MOVIE_LAYOUT` / `$KICAD_MOVIE_ASPECT` (env_knobs),
-    then to `'legacy'` / the board's own aspect.
+    then to `DEFAULT_FILM_LAYOUT` (stage3d) / the board's own aspect.
 
     The ONE resolution, for make_movie and make_film's build_film alike. It
     lived inline in make_movie only, so a film -- the render that actually
@@ -188,7 +228,7 @@ def resolve_layout_aspect(layout=None, aspect=None):
         except Exception:                                       # noqa: BLE001
             _ek = None
         if layout is None:
-            layout = getattr(_ek, 'MOVIE_LAYOUT', 'legacy')
+            layout = getattr(_ek, 'MOVIE_LAYOUT', DEFAULT_FILM_LAYOUT)
         if aspect is None:
             aspect = getattr(_ek, 'MOVIE_ASPECT', '') or None
     return layout, aspect
@@ -300,6 +340,19 @@ def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
     """
     key, why = resolve_layout(layout, board_bounds, quiet=quiet)
     spec = LAYOUTS[key]
+    notes = []
+    if key == 'stage3d':
+        # A declared frame this far from square cannot hold a 70 x 70 board
+        # box AND a column or row beside it; the honest answer is the frame
+        # whose box IS the board -- the same rule `auto` applies to a board.
+        fa = ratio if ratio else spec.aspect
+        if fa and not (EXTREME_ASPECT_LO <= fa <= EXTREME_ASPECT_HI):
+            notes.append('stage3d: frame aspect %.2f is outside %.2f..%.2f, '
+                         "so the legacy frame at the board's own aspect"
+                         % (fa, EXTREME_ASPECT_LO, EXTREME_ASPECT_HI))
+            key, spec, ratio = 'legacy', LAYOUTS['legacy'], None
+            panel = False           # legacy has no lower box
+            why = notes[-1]
 
     # An explicit ratio always wins: `legacy_size` is a shortcut for
     # reproducing today's frame EXACTLY, and asking for a ratio is asking
@@ -342,12 +395,34 @@ def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
     foot_h = max(FOOT_MIN_PX, even(H * foot_frac)) if foot_frac else 0
     band_h = even(foot_px) if foot_px else 0
     track_h = even(track_px) if track_px else 0
+    if spec.panel == 'column':
+        track_h, why_band = _stage3d_band(H, rail_h, foot_h, band_h, track_h)
+        if why_band:
+            notes.append(why_band)
     inner_y = rail_h
     inner_h = max(2, H - rail_h - foot_h - band_h - track_h)
 
     panel_box = None
     split = None
-    if not panel or spec.panel is None:
+    if spec.panel == 'column':
+        board, panel_box, why_col = _stage3d_boxes(W, H, inner_y, inner_h)
+        if why_col:
+            notes.append(why_col)
+        if iso:
+            notes.append('stage3d: no iso panel -- the board box IS the 3D '
+                         'view')
+        # The floor is a PROMISE only a frame big enough can keep. A tiny
+        # frame, or a clock band taller than the frame can spare, breaks it
+        # -- and says so rather than shipping a smaller board quietly.
+        if (board.h < STAGE3D_BOARD_H_FRAC * H
+                or (W >= ISO_SIDE_ASPECT * H
+                    and board.w < STAGE3D_BOARD_W_FRAC * W)):
+            notes.append('stage3d: the frame is too small for the %d%% x '
+                         '%d%% board (%dx%d of %dx%d)'
+                         % (round(100 * STAGE3D_BOARD_W_FRAC),
+                            round(100 * STAGE3D_BOARD_H_FRAC),
+                            board.w, board.h, W, H))
+    elif not panel or spec.panel is None:
         board = Box(0, inner_y, W, inner_h)
     elif (spec.panel in ('below', 'split') and (iso or track_h)
           and W >= ISO_SIDE_ASPECT * H):
@@ -403,9 +478,54 @@ def plan_frame(board_bounds, *, layout='legacy', ratio=None, size=1000,
         layout=key, requested_layout=str(layout or 'legacy'), chosen_by=why,
         aspect=aspect, frame=Box(0, 0, W, H), board=board, panel=panel_box,
         panel_split=split, rail=Box(0, 0, W, rail_h), foot=foot_box,
-        track=track_box, overlays_board=spec.overlays_board)
+        track=track_box, overlays_board=spec.overlays_board,
+        notes=tuple(notes))
     _self_check(geom)
     return geom
+
+
+def _up_even(n) -> int:
+    """Smallest even integer at or above `n`."""
+    v = int(math.ceil(n))
+    return v + (v % 2)
+
+
+def _stage3d_band(H, rail_h, foot_h, band_h, track_h):
+    """`(track_h, why)`: the benchmark band's height, capped so the board
+    keeps `STAGE3D_BOARD_H_FRAC` of the frame; `why` names a shrink or a
+    decline, None when the band fit as asked."""
+    if not track_h:
+        return 0, None
+    need = _up_even(STAGE3D_BOARD_H_FRAC * H)
+    cap = H - rail_h - foot_h - band_h - need
+    if cap < STAGE3D_BAND_MIN_PX:
+        return 0, ('stage3d: no benchmark band -- %d px is left once the '
+                   'board keeps its %d px floor, and the band needs %d'
+                   % (max(0, cap), need, STAGE3D_BAND_MIN_PX))
+    if track_h > cap:
+        return even(cap), ('stage3d: benchmark band %d -> %d px so the '
+                           'board keeps %d%% of the height'
+                           % (track_h, even(cap),
+                              round(100 * STAGE3D_BOARD_H_FRAC)))
+    return track_h, None
+
+
+def _stage3d_boxes(W, H, inner_y, inner_h):
+    """`(board, panel, why)` for stage3d: the board top-left, and the layer
+    column beside it (landscape) or a row under it (portrait)."""
+    if W >= ISO_SIDE_ASPECT * H:
+        bw = min(W - 2, _up_even(STAGE3D_BOARD_W_FRAC * W))
+        return (Box(0, inner_y, bw, inner_h),
+                Box(bw, inner_y, W - bw, inner_h), None)
+    need = min(inner_h, _up_even(STAGE3D_BOARD_H_FRAC * H))
+    row = inner_h - need
+    if row < STAGE3D_ROW_MIN_PX:
+        return (Box(0, inner_y, W, inner_h), None,
+                'stage3d: portrait frame -- no layer row (%d px left under '
+                'the board, needs %d)' % (row, STAGE3D_ROW_MIN_PX))
+    return (Box(0, inner_y, W, need), Box(0, inner_y + need, W, row),
+            'stage3d: portrait frame -- the layer column is a row under '
+            'the board')
 
 
 def _cap_panel(ph, H, inner_h, track_h):
@@ -440,6 +560,16 @@ def _self_check(g: FrameGeometry) -> None:
             raise FrameSizeError('layout %r: the panel %s overlaps the board '
                                  '%s but this layout does not overlay'
                                  % (g.layout, tuple(g.panel), tuple(g.board)))
+    if (g.layout == 'stage3d' and g.track is not None
+            and g.frame.w >= ISO_SIDE_ASPECT * g.frame.h
+            and (g.board.w < STAGE3D_BOARD_W_FRAC * g.frame.w
+                 or g.board.h < STAGE3D_BOARD_H_FRAC * g.frame.h)):
+        raise FrameSizeError('layout stage3d: board %dx%d is under %d%% x '
+                             '%d%% of the frame %dx%d'
+                             % (g.board.w, g.board.h,
+                                round(100 * STAGE3D_BOARD_W_FRAC),
+                                round(100 * STAGE3D_BOARD_H_FRAC),
+                                g.frame.w, g.frame.h))
     if g.frame.w % 2 or g.frame.h % 2:
         raise FrameSizeError('layout %r: frame %dx%d is not even on both axes '
                              '-- _write_mp4 crops with & ~1 on BOTH'
@@ -485,7 +615,12 @@ def frame_status_line(geom: FrameGeometry) -> str:
             % (title, letter, geom.frame.w, geom.frame.h, geom.aspect,
                geom.board.w, geom.board.h))
     if geom.track is not None:
-        line += ', attempts band %dpx inside' % geom.track.h
+        line += ', %s band %dpx inside' % (
+            'benchmark' if geom.layout == 'stage3d' else 'attempts',
+            geom.track.h)
     if geom.requested_layout != geom.layout:
         line += '  |  %s -> %s' % (geom.requested_layout, geom.chosen_by)
+    for note in geom.notes:
+        if note != geom.chosen_by:
+            line += '  |  ' + note
     return line

@@ -242,7 +242,8 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
                panels=None, iso_opts=None, timing=None, theme=None,
                layout=None, aspect=None, attempts=None, max_frames=None,
                title=None, attempts_ledger=None, benchmark_board=None,
-               floorplan_intent=None, placement_panel=None):
+               floorplan_intent=None, placement_panel=None, board3d=None,
+               benchmark_score=None):
     """Render the movie. ``inputs`` is a run dir (one entry) or a board sequence.
 
     Returns the path actually written -- which is a sibling ``.gif`` when an
@@ -272,6 +273,7 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
             benchmark_board=benchmark_board,
             floorplan_intent=floorplan_intent,
             placement_panel=placement_panel,
+            board3d=board3d, benchmark_score=benchmark_score,
             spool=spool)
     finally:
         spool.close()
@@ -282,7 +284,7 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                 panels, iso_opts, timing, theme, layout, aspect, attempts,
                 max_frames, spool, title=None, attempts_ledger=None,
                 benchmark_board=None, floorplan_intent=None,
-                placement_panel=None):
+                placement_panel=None, board3d=None, benchmark_score=None):
     import animate_route as a
     if isinstance(inputs, str):
         inputs = [inputs]
@@ -448,142 +450,44 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
     max_frames = resolve_max_frames(max_frames)
     max_frames = spool_budget(spool, steps, size, max_frames, rip_hold,
                               who='make_movie')
-    # #946/C4: THE ATTEMPTS ARE FOUND BEFORE THE FRAME IS PLANNED, so the
-    # band is RESERVED in the layout (`plan_frame(track_px=)`) instead of
-    # grown under every frame afterwards -- which is what made a declared
-    # `--aspect 16:9` film come out taller than 16:9.
-    _track = None
-    try:
-        import movie_attempts
-        # `False` is the OFF arm (`--no-attempts`); `None` means "look", which
-        # is the default because the sidecars sit next to the boards and the
-        # feature has no GUI control of its own -- same posture as the camera
-        # and panels knobs.
-        if attempts is False:
-            _track = None
-        elif attempts is not None:
-            _track = attempts
-        elif attempts_ledger:
-            # #1042: a ledger named on the command line, for a film rendered
-            # from copies away from the run's work dir (`discover` only looks
-            # beside the boards, and run 32 had to render from copies).
-            _track = movie_attempts.attempts_from_converge_ledger(
-                attempts_ledger)
-        else:
-            _track = movie_attempts.discover(
-                os.path.dirname(os.path.abspath(final)))
-    except Exception as exc:                                    # noqa: BLE001
-        if not quiet:
-            print('make_movie: no attempts band (%s)' % exc, file=sys.stderr)
-        _track = None
-    # The band is reserved only when there is a graph to draw in it: one
-    # attempt is a single point under a flat staircase, which `attach`
-    # declines -- and a reserved band left empty is a stripe of nothing.
-    _verdict = bool(_track is not None and len(_track.attempts) >= 2)
-    # #1042: THE PLACEMENT PANELS, in placement currency, beside the verdict
-    # band and never on its axis. Measured on the film's own placement boards
-    # (render_placement's functions IN PROCESS, ~3 s each, cached per board
-    # sha) BEFORE the frame is planned, so their region is reserved like the
-    # band's. `build_track` runs its cheap gates first -- two copper-free
-    # boards and a part that moved -- so a routing chain measures nothing.
-    _ptrack, _pwhy, _pfn = None, 'off (--no-placement-panel)', None
-    if placement_panel is not False:
-        try:
-            import movie_placement
-            _pled = attempts_ledger
-            if not _pled:
-                _cand = os.path.join(os.path.dirname(os.path.abspath(final)),
-                                     'ledger.jsonl')
-                _pled = _cand if os.path.isfile(_cand) else None
-            _ptrack, _pwhy = movie_placement.build_track(
-                steps, [], ledger=_pled, benchmark=benchmark_board,
-                intent=floorplan_intent, quiet=quiet)
-        except Exception as exc:                                # noqa: BLE001
-            _ptrack, _pwhy = None, 'could not measure (%s)' % exc
+    # THE BANDS AND PANELS (#1087): one implementation for make_movie and
+    # make_film, planned BEFORE the frame so their regions are reserved --
+    # the attempts band or (stage3d) the benchmark band, the placement
+    # panels, and whether the iso panel gets a box of the layout's own.
+    import film_passes
+    _bands = film_passes.plan(
+        steps, final, layout, attempts=attempts,
+        attempts_ledger=attempts_ledger,
+        placement={'off': placement_panel is False,
+                   'asked': placement_panel,
+                   'ledger': attempts_ledger,
+                   'benchmark': benchmark_board,
+                   'benchmark_score': benchmark_score,
+                   'intent': floorplan_intent},
+        want_iso=want_iso, iso_opts=iso_opts, quiet=quiet, who='make_movie',
+        aspect=aspect)
     _lands = {}
-    if _ptrack is not None:
-        import movie_placement
-        if marks is None:
-            marks = []
-        # the band is SIZED for readable panels (`plan_band`), not scaled
-        _pfn = movie_placement.band_px(_ptrack, _verdict)
-        _band = _pfn
-    else:
-        _band = bool(_verdict)
-    # The 3D view gets a region of the layout's own panel (#946/C4) when the
-    # layout has one to split and the panel WOULD run -- asked now, before
-    # the frame is planned, because a region reserved for a panel that is
-    # then gated off would be a blank box in every frame.
-    _iso_box = False
-    if want_iso and str(layout or 'legacy').lower() not in ('legacy',
-                                                            'inset'):
-        try:
-            import movie_panels
-            if iso_opts is None:
-                iso_opts = movie_panels.IsoOpts()
-            _iso_box = movie_panels.preflight(
-                steps[0][1] if steps else final, iso_opts) is None
-        except Exception:                                      # noqa: BLE001
-            _iso_box = False
+    if _bands.ptrack is not None and marks is None:
+        marks = []
+    _band, _iso_box = _bands.band, _bands.iso_box
     frames = a.build_boards(steps, final, size, supersample, layer_alpha,
                             rip_hold, chunks, stage=stage, marks=marks,
                             theme=theme, layout=layout, aspect=aspect,
                             geom_out=geom_out, title=_title,
                             frames_sink=spool, max_frames=max_frames,
                             attempts_band=_band, iso_panel=_iso_box,
-                            lands_out=_lands)
+                            lands_out=_lands, board3d=board3d, fps=fps)
     if not frames:
         if not quiet:
             print("make_movie: no frames (nothing routed?)", file=sys.stderr)
         return None
     _geom0 = geom_out[0] if geom_out else None
-    # #1021. THE ATTEMPTS BAND, before the clock and before the iso panel:
-    # composition order is board -> attempts -> clock -> iso, so the band sits
-    # adjacent to the board it annotates and the iso panel still stacks last.
-    #
-    # Imported HERE, like movie_panels below, so the GUI recorder and the
-    # in-process callers do not pay for a feature they did not ask for.
-    _pbox, _vbox = None, (_geom0.track if _geom0 is not None else None)
-    _plan = None
-    if _ptrack is not None:
-        import movie_placement
-        _plan = _pfn.plans[-1] if _pfn is not None and _pfn.plans else None
-        if _plan is not None and _plan.mode == 'declined':
-            _ptrack, _pwhy = None, 'declined: %s' % _plan.why
-        elif _geom0 is not None and _geom0.track is not None:
-            _pbox, _vbox = movie_placement.split_band(
-                _geom0.track, both=_verdict, track=_ptrack,
-                frame_h=_geom0.frame.h)
-            _ptrack = movie_placement.with_firsts(_ptrack, marks, _lands)
-            frames = movie_placement.compose(frames, _pbox, _ptrack, marks,
-                                             theme, _geom0.frame.h)
-        else:
-            _ptrack, _pwhy = None, 'no band could be reserved in this frame'
-    # SAID whenever a placement was found, drawn or declined
-    if _ptrack is not None or placement_panel or _plan is not None:
-        import movie_placement
-        print(movie_placement.status_line(_ptrack, _pwhy, _plan),
-              file=sys.stderr)
-    try:
-        import movie_attempts
-        frames, _arep = movie_attempts.attach(
-            frames, _track if _vbox is not None or _ptrack is None else None,
-            theme=theme, marks=marks, box=_vbox)
-        # PRINTED EVEN WHEN QUIET, for the reason iso_status_line is: this is
-        # the only channel that says whether the band ran, and the front end
-        # the discovery exists for (place_route_loop's film, the GUI recorder)
-        # calls make_movie with quiet=True.
-        #
-        # SILENT on a chain with no attempts on disk, which is most chains:
-        # the band is discovered rather than asked for, so a line saying it did
-        # not happen would appear on every ordinary movie. It speaks whenever
-        # there IS a search behind the film -- drawn or declined, with the
-        # reason.
-        if _arep.get('drawn') or _arep.get('attempts'):
-            print(movie_attempts.status_line(_arep), file=sys.stderr)
-    except Exception as exc:                                    # noqa: BLE001
-        if not quiet:
-            print('make_movie: no attempts band (%s)' % exc, file=sys.stderr)
+    # #1021. THE BANDS, before the clock and before the iso panel:
+    # composition order is board -> bands -> clock -> iso, so a band sits
+    # adjacent to the board it annotates and the iso panel still stacks
+    # last. Status lines print EVEN WHEN QUIET (bare, as they always did).
+    frames = film_passes.compose(frames, _bands, _geom0, marks, _lands, theme,
+                                 quiet=quiet, who='')
 
     frame_meta = None
     if ledger:
@@ -624,42 +528,29 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
             if not quiet:
                 print('make_movie: no run clock (%s)' % exc, file=sys.stderr)
     if want_iso:
-        # Imported HERE, not at module scope: make_movie is imported in-process
-        # by the GUI recorder, run_plan.py, place_route_loop.py and
-        # render_run.py, and none of them should pay for a feature they did not
-        # ask for. Bound through the module rather than `from ... import`, so a
-        # test that monkeypatches movie_panels.compose_two_panel still bites.
-        import movie_panels
-        if iso_opts is None:
-            iso_opts = movie_panels.IsoOpts()
-        if iso_opts.theme is None:
-            iso_opts.theme = theme
-        _box = None
-        if _iso_box and _geom0 is not None and _geom0.panel_split:
-            _box = _geom0.panel_split[0]
-        # `box=` only when there IS one: an in-process caller (and the tests)
-        # may stand in for compose_two_panel with the four-argument shape.
-        frames, report = movie_panels.compose_two_panel(
-            frames, marks, final, iso_opts,
-            **({'box': _box} if _box is not None else {}))
-        # PRINTED EVEN WHEN QUIET. `quiet` silences the ordinary progress
-        # chatter, but this line is the only channel that says whether the
-        # panel ran, was skipped, or failed -- and the one front end the env
-        # knob exists for, the GUI recorder, calls make_movie with quiet=True
-        # (movie_recorder.py:160). Suppressing it there meant a user could turn
-        # the panel on, pay 15 s of kicad-cli, and be told nothing at all.
-        # The panel is opt-in, so this line only ever appears when it was asked
-        # for.
-        print(movie_panels.iso_status_line(report), file=sys.stderr)
+        # PRINTED EVEN WHEN QUIET: the only channel that says whether the
+        # panel ran, was skipped, or failed -- and the GUI recorder, the front
+        # end the env knob exists for, calls make_movie with quiet=True.
+        frames = film_passes.compose_iso(frames, _bands, _geom0, marks, final,
+                                         iso_opts, theme, who='')
     if geom_out and not quiet:
         import frame_layout
         print(frame_layout.frame_status_line(geom_out[0]), file=sys.stderr)
     out = out or default_output(inputs)
     out = os.path.abspath(out)
     os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
-    if not a.save_movie(frames, out, fps=fps, end_hold=end_hold,
-                        png_dir=png_dir, frame_meta=frame_meta, theme=theme):
-        return None
+    try:
+        if not a.save_movie(frames, out, fps=fps, end_hold=end_hold,
+                            png_dir=png_dir, frame_meta=frame_meta,
+                            theme=theme):
+            return None
+    finally:
+        # the 3D board's state frames, once the film is written (#1081)
+        try:
+            from stage3d import film as _s3f
+            _s3f.cleanup()
+        except Exception:                                      # noqa: BLE001
+            pass
     # save_movie falls back .mp4 -> .gif when imageio-ffmpeg is missing; report
     # the file that actually exists so callers (and the GUI) point at it.
     if out.lower().endswith('.mp4') and not os.path.exists(out):
@@ -709,13 +600,16 @@ def main():
                     help='also dump the raw PNG frames here')
     ap.add_argument('--png', action='store_true',
                     help='also write a full-resolution still of the final board')
+    import frame_layout as _fl
     ap.add_argument('--layout', default=None,
-                    help="'legacy' (default, or $KICAD_MOVIE_LAYOUT) "
-                         "| auto | stacked | sidebar | inset | split. "
+                    help=_fl.layout_choices()
+                         + " ('stage3d' is the default, or "
+                         "$KICAD_MOVIE_LAYOUT; 'legacy' is the old frame). "
                          "auto picks stacked-vs-sidebar from the "
                          "board's own aspect; inset-vs-split is a "
                          "stance about what the viewer is there to "
-                         "read, so it is never inferred")
+                         "read, so it is never inferred, and so is "
+                         "stage3d (the 3D board, #1081)")
     ap.add_argument('--aspect', default=None, metavar='W:H',
                     help="target frame aspect, or $KICAD_MOVIE_ASPECT. "
                          "'board' (default) keeps today's behaviour: "
@@ -730,9 +624,23 @@ def main():
                          'the placement panels from, instead of looking '
                          'beside the boards (#1042)')
     ap.add_argument('--benchmark-board', default=None, metavar='PATH',
-                    help="a benchmark placement (the human's board, or a "
-                         "previous run) drawn DASHED on the placement "
-                         "arrangement panel -- a screen, not the verdict")
+                    help="a benchmark board (the human's, or a previous "
+                         "run): drawn DASHED on the placement arrangement "
+                         "panel, and -- with --layout stage3d -- the 100%% "
+                         "line of the benchmark band, gold once a WORKING "
+                         "board beats it on (vias, copper, segments)")
+    ap.add_argument('--benchmark-score', default=None, metavar='PATH',
+                    help="the benchmark board's `board_score --json` "
+                         "document (must name that board by board_sha); "
+                         "without it board_score is run once to grade it")
+    ap.add_argument('--board-3d', default=None, choices=('auto', '2d', 'blender'),
+                    help="stage3d only: 'auto' (default) draws the 3D board "
+                         "when Node, playwright-core (npm ci in "
+                         "py_router/stage3d) and a Chromium are present, "
+                         "else the 2D X-ray and says why; '2d' always the "
+                         "X-ray; 'blender' the hi-fi backend: the same "
+                         "scene in Blender's Cycles on the CPU "
+                         "($KICAD_STAGE3D_BLENDER, #1089)")
     ap.add_argument('--floorplan-intent', default=None, metavar='PATH',
                     help='the floorplan intent to grade placement boards the '
                          'ledger does not name (check_floorplan --intent)')
@@ -742,7 +650,7 @@ def main():
                     help="the film's name on the rail's left (default: the "
                          "run directory, or the directory the chain's boards "
                          "share; never a later board's name)")
-    ap.add_argument('--theme', default=None, type=str.lower, choices=('dark', 'light'), help="'dark' (default, or $KICAD_RENDER_THEME) or 'light'. A light ground is for a figure going into a light-background document; the file's ground cannot be changed afterwards.")
+    ap.add_argument('--theme', default=None, type=str.lower, choices=('dark', 'light'), help="'light' (default, or $KICAD_RENDER_THEME) or 'dark' (KiCad's own canvas). The file's ground cannot be changed afterwards.")
     ap.add_argument('--quiet', action='store_true')
     ap.add_argument('--camera', default=None,
                     choices=('off', 'auto'),
@@ -863,6 +771,8 @@ def main():
                          max_frames=args.max_frames, title=args.title,
                          attempts_ledger=args.attempts_ledger,
                          benchmark_board=args.benchmark_board,
+                         benchmark_score=args.benchmark_score,
+                         board3d=args.board_3d,
                          floorplan_intent=args.floorplan_intent,
                          placement_panel=(False if args.no_placement_panel
                                           else None),

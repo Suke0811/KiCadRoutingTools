@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""Every frame of a film goes through ONE path, flipped or not (#1082-#1085).
+
+A Stage flip to the back side used to hand its frames to a second render path
+(`Stage._snap`'s mirrored branch, `_emit_flip`) that appended straight to
+`movie.frames`. Four defects came out of that one bypass, all measured on the
+chain in `film_chain_1081.py` (a flip at frames 35..41 of 73):
+
+  * **#1082** -- no chrome record for those frames: 73 frames, 42 records, so
+    the rail and the layer strip of 38 frames were drawn from ANOTHER frame's
+    record (the flip read the copper of a step that had not happened yet);
+  * **#1083** -- the caption stamped over the board on a layout whose rail
+    already carries it (31 stamps);
+  * **#1084** -- no `overlays=`, so a back-side glide drew no ghost or arrow;
+  * **#1085** -- the copper a routing step reveals after the flip went
+    through Movie's own path, which never mirrored: the hook meant to
+    (`Stage.exit_step`) had no caller, so the film read B, F, B.
+
+The fix mirrors inside `Movie._push_frame`, the one place a frame joins the
+film. This file pins each symptom on the REAL `build_boards` + `Stage` path,
+plus the stage-state record #1081's 3D board is rebuilt from, which must be
+exactly as long as the film.
+"""
+import os
+import sys
+
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+if _TESTS not in sys.path:
+    sys.path.insert(0, _TESTS)
+
+try:
+    from PIL import ImageChops, ImageOps
+except ImportError as exc:
+    print('SKIP: needs Pillow (%s)' % exc)
+    sys.exit(77)
+
+import film_chain_1081 as FC                                    # noqa: E402
+import animate_route as A                                       # noqa: E402
+import route_render as RR                                       # noqa: E402
+
+_FAIL = []
+
+
+def _check(ok, msg):
+    print('  %s %s' % ('ok  ' if ok else 'FAIL', msg))
+    if not ok:
+        _FAIL.append(msg)
+
+
+def _shots(st, kind):
+    return [(a, b) for k, a, b in st.frame_log() if k == kind]
+
+
+def test_one_chrome_record_and_one_stage_record_per_frame():
+    """#1082: the rail and the strip of frame i are frame i's."""
+    with FC.Chain() as c:
+        out = {}
+        frames, m, st, _g = FC.film(c.boards, stage_out=out)
+        n = len(frames)
+        _check(bool(_shots(st, 'flip')), 'the fixture flips (%s)'
+               % [k for k, _a, _b in st.frame_log()])
+        _check(len(m.chrome) == n,
+               'one chrome record per frame: %d records, %d frames'
+               % (len(m.chrome), n))
+        _check(len(out.get('log') or ()) == n,
+               'one stage record per frame: %d records, %d frames'
+               % (len(out.get('log') or ()), n))
+        # The flip happens on a copper-free board (S1 -> S2 are stripped), so
+        # a flip frame's layer strip must show NO copper. Before the fix it
+        # read the records the later copper reveal wrote: 151, then 604.
+        a, b = _shots(st, 'flip')[0]
+        live = [len(A._live(m.chrome[i]['live'])) for i in range(a, b)]
+        _check(live and not any(live),
+               'the flip frames\' strip copper is the board\'s (0): %s' % live)
+        kinds = [r['kind'] for r in out['log'][a:b]]
+        _check(kinds == ['flip'] * (b - a),
+               'the stage record calls the flip frames flips: %s' % kinds)
+        # The poses the 3D board reads. `moving` names what glides on each
+        # glide frame (it was never set: 0 of 73 records), and every epoch's
+        # table holds RESTING poses -- a glide mutates the footprints in
+        # place, so the first table of a glide board used to catch C26 at a
+        # pose no board has (the phase-1 verifier's finding).
+        from kicad_parser import parse_kicad_pcb
+        glides = [i for s in _shots(st, 'action') for i in range(*s)]
+        named = [i for i in glides if out['log'][i]['moving']]
+        _check(glides and named == glides,
+               'every glide frame names what moves (%d of %d)'
+               % (len(named), len(glides)))
+        rest = set()
+        for bd in c.boards:
+            fps = parse_kicad_pcb(bd).footprints
+            for ref in ('C26', 'U1'):
+                fp = fps[ref]
+                rest.add((ref, round(fp.x, 6), round(fp.y, 6)))
+        bad = [(e, ref, tab[ref][:2])
+               for e, tab in enumerate(out['epochs'])
+               for ref in ('C26', 'U1')
+               if (ref, round(tab[ref][0], 6), round(tab[ref][1], 6))
+               not in rest]
+        _check(not bad, 'every epoch holds a board\'s resting poses %s'
+               % (bad[:3],))
+
+
+def test_no_caption_over_the_board_when_a_rail_carries_it():
+    """#1083: 0 over-board stamps on a rail layout -- and the legacy frame,
+    which has no rail, still gets its caption (the stamp was not just
+    deleted)."""
+    calls = []
+    orig = RR.BoardRenderer._label
+
+    def _spy(self, img, text, *a, **k):
+        calls.append(text)
+        return orig(self, img, text, *a, **k)
+    RR.BoardRenderer._label = _spy
+    try:
+        with FC.Chain() as c:
+            FC.film(c.boards, layout='sidebar')
+            rail = list(calls)
+            del calls[:]
+            FC.film(c.boards, layout='legacy')
+            legacy = list(calls)
+    finally:
+        RR.BoardRenderer._label = orig
+    _check(rail == [], 'sidebar (rail): no over-board caption (%d stamps: %s)'
+           % (len(rail), rail[:3]))
+    _check(any('B side' in t for t in legacy),
+           'legacy (no rail): the flip is still captioned (%d stamps)'
+           % len(legacy))
+
+
+def test_a_back_side_glide_draws_its_ghost():
+    """#1084: the ghost/arrow reaches the renderer on the back as on the
+    front, and it changes pixels there (a control with the ghost disabled)."""
+    import movie_camera as MC
+    import place_motion as PM
+    seen = []
+    orig_frame = RR.BoardRenderer.frame
+    orig_snap = MC.Stage._snap
+    last = {}
+
+    def _frame(self, *a, **k):
+        last['ov'] = k.get('overlays')
+        return orig_frame(self, *a, **k)
+
+    def _snap(self, label):
+        last.clear()
+        ov = self.movie.overlay is not None
+        mirrored = self._mirror
+        out = orig_snap(self, label)
+        if ov:
+            seen.append((mirrored, last.get('ov') is not None))
+        return out
+    with FC.Chain() as c:
+        RR.BoardRenderer.frame, MC.Stage._snap = _frame, _snap
+        try:
+            frames, _m, st, _g = FC.film(c.boards)
+        finally:
+            RR.BoardRenderer.frame, MC.Stage._snap = orig_frame, orig_snap
+        back = [got for mir, got in seen if mir]
+        front = [got for mir, got in seen if not mir]
+        _check(front and all(front), 'front glide: ghost passed %d/%d'
+               % (sum(front), len(front)))
+        _check(back and all(back), 'back glide: ghost passed %d/%d'
+               % (sum(back), len(back)))
+        og = PM.ghost_overlay
+        PM.ghost_overlay = lambda *a, **k: None
+        try:
+            plain, _m2, _st2, _g2 = FC.film(c.boards)
+        finally:
+            PM.ghost_overlay = og
+        flip_at = _shots(st, 'flip')[0][0]
+        a, b = [s for s in _shots(st, 'action') if s[0] >= flip_at][0]
+        changed = sum(1 for i in range(a, b)
+                      if ImageChops.difference(frames[i].convert('RGB'),
+                                               plain[i].convert('RGB'))
+                      .getbbox())
+        _check(changed > 0, 'the back glide\'s ghost changes %d of %d frames'
+               % (changed, b - a))
+
+
+def test_copper_revealed_after_the_flip_is_mirrored():
+    """#1085: the copper reveal after a flip to B is seen from the back. The
+    last reveal frame and the first outro frame show one state at one view
+    (the settle already brought the camera home), so their board boxes are
+    EQUAL -- before the fix the outro frame equalled the reveal's MIRROR."""
+    with FC.Chain() as c:
+        out = {}
+        frames, _m, st, g = FC.film(c.boards, stage_out=out)
+        outro = _shots(st, 'outro')[0][0]
+        flip_end = _shots(st, 'flip')[0][1]
+        bx = g.board
+        box = (bx.x, bx.y + bx.h // 3, bx.x + bx.w, bx.y + bx.h)
+        rev = frames[outro - 1].convert('RGB').crop(box)
+        first = frames[outro].convert('RGB').crop(box)
+        same = ImageChops.difference(rev, first).getbbox()
+        mirr = ImageChops.difference(ImageOps.mirror(rev), first).getbbox()
+        _check(same is None and mirr is not None,
+               'reveal frame %d and outro frame %d agree (diff %s; vs the '
+               'mirror %s)' % (outro - 1, outro, same, mirr))
+        # ...and the COPPER-STEP frames themselves (kind 'frame', Movie's
+        # own path) -- the ones #1085 was about. Frame `outro - 1` is a
+        # reconcile SNAPSHOT, which a Stage-side mirror alone would already
+        # fix (the phase-1 verifier reverted `_frame`'s mirror and the checks
+        # above still passed). A reveal frame differs from the snapshot after
+        # it only by its highlight, so it must sit far closer to that
+        # snapshot than to its mirror image.
+        log = out['log']
+        reveal = [i for i in range(flip_end, outro - 1)
+                  if log[i]['kind'] == 'frame']
+        _check(bool(reveal), 'the fixture reveals copper through Movie\'s '
+               'own path after the flip (%d frames)' % len(reveal))
+        if reveal:
+            k = reveal[-1]
+            fk = frames[k].convert('RGB').crop(box)
+            snap = frames[outro - 1].convert('RGB').crop(box)
+
+            def _n(a, b):
+                d = ImageChops.difference(a, b).convert('L')
+                return d.point(lambda v: 255 if v else 0).histogram()[255]
+            near, far = _n(fk, snap), _n(ImageOps.mirror(fk), snap)
+            _check(near * 4 < far,
+                   'copper-step frame %d is seen from the back: %d px off '
+                   'the mirrored snapshot, %d px off its mirror image'
+                   % (k, near, far))
+        flags = [r['mirror'] for r in out['log'][flip_end:]]
+        _check(flags and all(flags),
+               'every frame after the flip is recorded mirrored (%d of %d)'
+               % (sum(flags), len(flags)))
+
+
+def test_the_key_is_drawn_after_the_mirror_at_any_supersample():
+    """The in-frame key (legacy layout, no rail) is TEXT: on a back-side
+    frame it must be drawn AFTER the mirror, at the renderer's supersampled
+    resolution -- the phase-2 verifier measured 94 of 140 key pixels wrong
+    at supersample 2 when it was drawn at 1x after the frame was finished.
+    Pinned structurally, on the calls the renderer receives: every mirrored
+    frame that carries a key carries it in `overlays_after_mirror`, never in
+    `overlays`, which the mirror would reverse."""
+    calls = []
+    orig = RR.BoardRenderer.frame
+
+    def _frame(self, *a, **k):
+        calls.append((k.get('mirror', False), list(k.get('overlays') or ()),
+                      list(k.get('overlays_after_mirror') or ())))
+        return orig(self, *a, **k)
+
+    def _is_key(fn):
+        return '_key_overlay' in getattr(fn, '__qualname__', '')
+    RR.BoardRenderer.frame = _frame
+    try:
+        with FC.Chain() as c:
+            import os as _os
+            tr = FC.rip_trace(c.boards[-1], _os.path.join(c.dir, 't.json'))
+            FC.film(c.boards, layout='legacy', traces={3: tr})
+    finally:
+        RR.BoardRenderer.frame = orig
+    mirrored = [x for x in calls if x[0]]
+    keyed = [x for x in mirrored if any(_is_key(f) for f in x[2])]
+    _check(mirrored and keyed,
+           '%d mirrored frames, %d carry the key after the mirror'
+           % (len(mirrored), len(keyed)))
+    _check(not any(_is_key(f) for x in mirrored for f in x[1]),
+           'no mirrored frame draws the key before the mirror')
+    _check(not any(x[2] for x in calls if not x[0]),
+           'the front side draws nothing after a mirror it does not have')
+
+
+def test_the_stage3d_column_is_always_the_layer_strip():
+    """#1081's layer column is ONE thing on every frame: the per-layer strip
+    (with the board's numbers under it). It used to switch by phase between
+    the strip, a placement bar chart and a stats table (the phase-7
+    verification), which read as three widgets beside one 3D board."""
+    import animate_route as A2
+    import render_panels as RP
+    calls = {'strip': 0, 'inventory': 0}
+    o_strip, o_inv = RP.draw_layer_strip, RP.draw_inventory
+
+    def _strip(*a, **k):
+        calls['strip'] += 1
+        return o_strip(*a, **k)
+
+    def _inv(*a, **k):
+        calls['inventory'] += 1
+        return o_inv(*a, **k)
+    RP.draw_layer_strip, RP.draw_inventory = _strip, _inv
+    try:
+        with FC.Chain() as c:
+            geom = []
+            steps = [('step %d' % i, b, None) for i, b in enumerate(c.boards)]
+            import movie_camera as MC
+            st = MC.Stage(MC.synth_rounds(c.boards), '', tween=4, quiet=True)
+            frames = A2.build_boards(steps, c.boards[-1], 480, 1, None, 2, 6,
+                                     stage=st, layout='stage3d',
+                                     geom_out=geom, board3d='2d')
+            list(frames)
+    finally:
+        RP.draw_layer_strip, RP.draw_inventory = o_strip, o_inv
+    _check(calls['strip'] == len(frames) and calls['inventory'] == 0,
+           'stage3d: the layer strip on all %d frames, the placement bars '
+           'on none (%s)' % (len(frames), calls))
+
+
+TESTS = (
+    test_one_chrome_record_and_one_stage_record_per_frame,
+    test_no_caption_over_the_board_when_a_rail_carries_it,
+    test_a_back_side_glide_draws_its_ghost,
+    test_copper_revealed_after_the_flip_is_mirrored,
+    test_the_key_is_drawn_after_the_mirror_at_any_supersample,
+    test_the_stage3d_column_is_always_the_layer_strip,
+)
+
+
+def main():
+    for fn in TESTS:
+        print('%s:' % fn.__name__)
+        fn()
+    if _FAIL:
+        print('')
+        print('%d FAILURE(S)' % len(_FAIL))
+        for msg in _FAIL:
+            print('  - %s' % msg)
+        return 1
+    print('')
+    print('all %d checks passed' % len(TESTS))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

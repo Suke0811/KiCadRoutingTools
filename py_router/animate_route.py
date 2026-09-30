@@ -37,6 +37,7 @@ from typing import Dict, List, Optional, Tuple
 from route_trace import (load_trace, _Seg, _Via, seg_key_row, via_key_row)
 
 from render_theme import DARK as _THEME_DARK
+from render_theme import default_theme as _default_theme
 
 #: Aliases onto the dark theme, kept as names for out-of-repo callers. The
 #: EVENT colours are the two #946 opened on: `_RIP` and `_RESTORE` differ
@@ -51,7 +52,7 @@ _RESTORE = _THEME_DARK.rgb('event_restored')
 def _add_color(event: str, theme=None) -> Tuple[int, int, int]:
     """Which event colour an 'add' carries. Resolves a ROLE, not an RGB, so a
     themed movie flashes in its own palette."""
-    th = theme or _THEME_DARK
+    th = theme or _default_theme()
     e = (event or '').lower()
     if 'reroute' in e or 'restore' in e or 'rescue' in e:
         return th.rgb('event_restored')
@@ -168,6 +169,28 @@ class _LiveRef(object):
         return self.log.state_at(self.n)
 
 
+def _pose_table(pcb, rest=None):
+    """`{ref: (x, y, rot, layer)}` of every footprint on `pcb` -- the parts'
+    resting poses for one stage-log epoch (#1081). Small (a few KB per board),
+    so a film can keep one per board without keeping the boards. `rest`
+    (`{ref: (x, y, rot)}`) overrides a part that is mid-glide right now."""
+    if pcb is None:
+        return {}
+    out = {}
+    for ref, fp in pcb.footprints.items():
+        x, y, rot = (rest or {}).get(ref) or (fp.x, fp.y, fp.rotation or 0.0)
+        out[ref] = (x, y, rot, fp.layer or 'F.Cu')
+    return out
+
+
+def _via_row(v, li):
+    """A via adapter back as a trace row `[x, y, size, drill, la, lb]`."""
+    ls = getattr(v, 'layers', None) or []
+    a = li.get(ls[0], 0) if ls else 0
+    b = li.get(ls[-1], max(0, len(li) - 1)) if ls else max(0, len(li) - 1)
+    return (v.x, v.y, v.size, v.drill, a, b)
+
+
 def _live(value):
     """A chrome record's copper as a tuple, whether stored as a `_LiveRef`
     or (from an older caller) as the tuple itself."""
@@ -188,7 +211,7 @@ class Movie:
     def __init__(self, renderer, layers, rip_hold: int = 2, theme=None):
         self.r = renderer
         # Off the renderer by default, so no call site has to learn about it.
-        self.theme = theme or getattr(renderer, 'theme', _THEME_DARK)
+        self.theme = theme or getattr(renderer, 'theme', None) or _default_theme()
         # #1014: which event roles this run has ACTUALLY produced, so far. The
         # key draws only these -- #896's rule, ported from
         # `render_placement.draw_legend`: a legend listing a mark the picture
@@ -254,6 +277,25 @@ class Movie:
         # frame its taps first land, rather than being an always-on backdrop.
         self.zone_avail = renderer.zone_net_ids() if getattr(renderer, 'dynamic_zones', False) else set()
         self.revealed_zones: set = set()
+        #: True while a Stage is showing the BACK of the board (#1082-#1085).
+        #: Every frame is then mirrored HERE, on the one path every frame
+        #: takes, so the chrome record, the ghost overlay, the rail's caption
+        #: rule and the copper a routing step reveals all flip together. It
+        #: used to be done by a second, Stage-side path that skipped all four.
+        self.mirrored = False
+        #: #1081. One stage-state record per frame when set to a list (the
+        #: stage3d layout's 3D board is rebuilt from these); None = off, and
+        #: then nothing is recorded, so no other film pays for it.
+        self.stage_log = None
+        self.stage_epochs = []
+        #: Refs whose pose is mid-glide on this frame, and `{ref: (x, y, rot)}`
+        #: the pose each lands on -- both set by `Stage._tween` for a glide.
+        self.moving = ()
+        self.moving_rest = {}
+        #: `(t, to_side)` on a Stage flip frame, else None.
+        self.flip = None
+        self._epoch_pcb = None
+        self._epoch = -1
 
     def reveal_zone(self, net_id) -> None:
         if net_id in self.zone_avail:
@@ -266,6 +308,23 @@ class Movie:
     def _overlays(self):
         """Everything to draw above the copper this frame, in draw order."""
         return [o for o in (self.overlay, self._key_overlay()) if o]
+
+    def _render(self, label, **kw):
+        """`r.frame(...)` for this frame, seen from the back when the Stage
+        says so (#1082-#1085). A mirrored frame is flipped INSIDE the renderer,
+        before its downsample: the ghost mirrors with the board, while the key
+        (text) is drawn after the flip at the same supersampled resolution as
+        on the front, and the caption is stamped upright last. The front-side
+        call is exactly the call it always was."""
+        if not self.mirrored:
+            ov = self._overlays()
+            return self.r.frame(label=label, overlays=ov or None, **kw)
+        key = self._key_overlay()
+        return self.r.frame(label=label,
+                            overlays=[self.overlay] if self.overlay else None,
+                            mirror=True,
+                            overlays_after_mirror=[key] if key else None,
+                            **kw)
 
     def _key_overlay(self):
         """The in-frame key, drawn through `frame(overlays=...)`.
@@ -324,21 +383,87 @@ class Movie:
         animates, so the live state is already correct there and passing it
         explicitly is pixel-identical (verified). `base_v` is gone for the same
         reason: it never had a caller."""
-        ov = self._overlays()
         self._note_chrome(label)
         # #1019: when a rail is going to carry this, the over-board strip is a
         # DUPLICATE, and a duplicate that sits on the copper is worse than no
         # strip at all. `_label` stays for the legacy frame, which has no rail.
         if self.split_caption:
             label = None
-        self.frames.append(self.r.frame(
+        img = self._render(
+            label,
             segments=(list(self.live_s.values()) if base_s is None
                       else list(base_s)),
             vias=list(self.live_v.values()),
             highlight_segments=hl_s, highlight_vias=hl_v,
-            highlight_color=color, highlight_mark=mark, label=label,
-            zone_net_ids=self.revealed_zones,
-            overlays=ov or None))
+            highlight_color=color, highlight_mark=mark,
+            zone_net_ids=self.revealed_zones)
+        self._push_frame(img, label, 'frame', hl_s=hl_s, hl_v=hl_v,
+                         color=color, mark=mark, base_s=base_s)
+
+    def _push_frame(self, img, label, kind, *, hl_s=(), hl_v=(), color=None,
+                    mark='solid', base_s=None, record_chrome=False):
+        """THE one place a frame joins the film (#1082).
+
+        Appends the frame and -- when on -- its stage-state record, so
+        `frames`, `chrome` and `stage_log` stay the same length by
+        construction. A mirrored frame arrives already mirrored (`_render`);
+        a FLIP frame is built by the Stage, so its caption is stamped here,
+        upright after the rotation, and only when no rail carries it.
+        `record_chrome` is for a caller that has not noted the chrome yet
+        (the Stage's flip frames).
+        """
+        if record_chrome:
+            self._note_chrome(label)
+            if self.split_caption:
+                label = None
+        if kind == 'flip' and label:
+            self.r._label(img, label)       # upright, after the rotation
+        self.frames.append(img)
+        if self.stage_log is not None:
+            self.stage_log.append(self._stage_record(
+                kind, hl_s, hl_v, color, mark, base_s))
+
+    def _stage_record(self, kind, hl_s, hl_v, color, mark, base_s):
+        """What the 3D board needs to redraw THIS frame (#1081): positions in
+        the copper edit logs rather than copies (`_LiveRef`'s reasoning), the
+        highlight rows, the keys a growth stage hides under itself, and the
+        poses of whatever is mid-glide."""
+        pcb = getattr(self.r, 'pcb', None)
+        if pcb is not self._epoch_pcb:
+            self._epoch_pcb = pcb
+            self._epoch += 1
+            # A board's RESTING poses: a glide mutates its footprints in
+            # place, so a part mid-glide reads its landing pose from the
+            # Stage instead of from the footprint.
+            self.stage_epochs.append(_pose_table(pcb, self.moving_rest))
+        hide = ()
+        if base_s is not None:
+            keep = {id(sg) for sg in base_s}
+            hide = tuple(k for k, sg in self.live_s.items()
+                         if id(sg) not in keep)
+        moving = {}
+        if self.moving and pcb is not None:
+            for ref in self.moving:
+                fp = pcb.footprints.get(ref)
+                if fp is not None:
+                    moving[ref] = (fp.x, fp.y, fp.rotation or 0.0)
+        return {'kind': kind,
+                'ns': len(self._log_s.ops), 'nv': len(self._log_v.ops),
+                'hide': hide,
+                'hl_s': tuple(tuple(self._row(sg)) for sg in (hl_s or ())),
+                'hl_v': tuple(_via_row(v, self._li) for v in (hl_v or ())),
+                'color': tuple(color) if color is not None else None,
+                'mark': mark,
+                'zones': tuple(sorted(self.revealed_zones)),
+                'epoch': self._epoch, 'moving': moving,
+                'mirror': self.mirrored, 'flip': self.flip,
+                'view': getattr(self.r, '_view', None),
+                'active': self.active_layer}
+
+    def start_stage_log(self):
+        """Turn on the per-frame stage record (#1081)."""
+        self.stage_log = []
+        self.stage_epochs = []
 
     def refresh_placement(self, pcb, path=None):
         """Re-read the lower box's non-routing data from THIS board.
@@ -488,14 +613,14 @@ class Movie:
         ghost hooked only into `_frame` would never appear on the frames it
         exists for.
         """
-        ov = self._overlays()
         self._note_chrome(label)
         if self.split_caption:
             label = None
-        self.frames.append(self.r.frame(
+        img = self._render(
+            label,
             segments=list(self.live_s.values()), vias=list(self.live_v.values()),
-            label=label, zone_net_ids=self.revealed_zones,
-            overlays=ov or None))
+            zone_net_ids=self.revealed_zones)
+        self._push_frame(img, label, 'snap')
 
     def add(self, seg_rows, via_rows, event, label, only_new=False):
         """Add copper and emit a frame highlighting what landed."""
@@ -819,13 +944,24 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
                  marks=None, theme=None, layout=None, aspect=None,
                  geom_out=None, title=None, frames_sink=None,
                  max_frames=None, notes=None, attempts_band=False,
-                 iso_panel=False, lands_out=None):
+                 iso_panel=False, lands_out=None, stage_out=None,
+                 board3d=None, fps=None):
     """Frames for a chain given as [(label, board, trace|None), ...] plus the
     final board. ``build_run`` is this with the chain discovered from a run dir.
 
     ``lands_out`` (#1042), a dict when passed, collects ``{normcased abs
     board path: frame}`` -- the frame a GLIDE lands on, which is where the
     placement panels change beat (a glide shows the SOURCE board until then).
+
+    ``stage_out`` (#1081), a dict when passed, turns on the per-frame stage
+    record and receives it: ``log`` (one record per frame, same length as the
+    frames), ``epochs`` (each board's part poses), ``layers``, ``chrome`` and
+    the copper edit logs ``ops_s`` / ``ops_v`` the records index into.
+
+    ``board3d`` (#1081) applies to the ``stage3d`` layout only: ``'auto'``
+    (default) puts the 3D board in the board box when this machine can
+    render it and says why when it cannot; ``'2d'`` keeps the X-ray.
+    See `stage3d.film.apply` -- all frames 3D, or all X-ray, never mixed.
 
     ``stage`` (movie_camera.Stage, #431) adds a camera and animates FOOTPRINT
     motion for placement rounds. With ``stage=None`` -- every existing caller --
@@ -943,6 +1079,26 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
         if geom_out is not None:
             geom_out.append(_g)
     m = Movie(r, layers, rip_hold=rip_hold)
+    if board3d is None:                  # no flag: $KICAD_MOVIE_BOARD3D
+        try:
+            import env_knobs as _ek
+            board3d = getattr(_ek, 'MOVIE_BOARD3D', 'auto') or 'auto'
+        except Exception:                                      # noqa: BLE001
+            board3d = 'auto'
+    _s3d = (_geom is not None and _geom.layout == 'stage3d'
+            and board3d not in ('2d', 'off'))
+    if stage_out is None and _s3d:
+        stage_out = {}                  # the 3D board is rebuilt from it
+    if stage_out is not None:
+        # #1081: the per-frame stage record, handed back to the caller
+        # (the stage3d layout's 3D board) with the layer names it indexes.
+        m.start_stage_log()
+        stage_out['log'] = m.stage_log
+        stage_out['epochs'] = m.stage_epochs
+        stage_out['layers'] = list(layers)
+        stage_out['ops_s'] = m._log_s.ops
+        stage_out['ops_v'] = m._log_v.ops
+        stage_out['chrome'] = m.chrome
     if frames_sink is not None:
         m.frames = frames_sink
     # #1036: the frame budget, shared FAIRLY among the traced steps -- a
@@ -1119,6 +1275,15 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
         m.snapshot("routed")
     if stage is not None:
         stage.outro()
+    # #1081: the stage3d layout's board box holds the 3D board -- rendered
+    # in full before any frame is composed, or not at all.
+    if _geom is not None and _geom.layout == 'stage3d':
+        from stage3d import film as _s3f
+        m.frames, _s3rep = _s3f.apply(
+            m.frames, stage_out, final, _geom, r.theme,
+            stage_present=stage is not None,
+            mode=board3d if _s3d else '2d', notes=notes,
+            fps=fps or getattr(stage, 'fps', None) or 6.0)
     # #1018: the board was rendered into its PLANNED BOX; the frame is the
     # planned FRAME. Composing here rather than leaving the box as the frame is
     # what makes the size claim real -- the rail, the panel and the foot exist
@@ -1269,6 +1434,12 @@ def _draw_panel(d, geom, r, c, iso_in_panel=False):
         th = getattr(r, 'theme', None)
         phase = render_panels.phase_for(c.get('event', ''),
                                         unplaced=bool(c.get('unplaced')))
+        if geom.layout == 'stage3d':
+            # #1081: the stage3d column is ONE thing, the per-layer strip
+            # with the board's numbers under it, on every frame -- it sits
+            # beside a 3D board that already shows the placement, and a
+            # column that swapped panels by phase read as three widgets
+            phase = 'routing'
         box = geom.panel
         d.rectangle([box.x, box.y, box.x + box.w - 1, box.y + box.h - 1],
                     fill=th.rgb('chrome_panel') if th else (14, 14, 18))

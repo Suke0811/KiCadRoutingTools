@@ -206,8 +206,9 @@ def test_the_refusals_are_armed():
         fail('theme("chartreuse") was accepted in strict mode')
     except ValueError:
         pass
-    if RT.theme('chartreuse', strict=False) is not RT.THEMES['dark']:
-        fail('lenient resolution did not fall back to dark')
+    if RT.theme('chartreuse', strict=False) is not             RT.THEMES[RT.DEFAULT_THEME_NAME]:
+        fail('lenient resolution did not fall back to the default (%s)'
+             % RT.DEFAULT_THEME_NAME)
     if not _FAIL:
         print('  PASS: 5 refusals armed (3 malformed themes, 2 name modes)')
 
@@ -280,7 +281,8 @@ def test_layer_palette_matches_route_renders_assignment():
             fail('layer_palette differs on %d layers: %s vs %s'
                  % (len(st), a, b))
             return
-        if a['F.Cu'] != RT.DARK.layers[0] or a.get('B.Cu') != RT.DARK.layers[1]:
+        _d = RT.default_theme()          # None-theme = the configured one
+        if a['F.Cu'] != _d.layers[0] or a.get('B.Cu') != _d.layers[1]:
             fail('F.Cu/B.Cu are not slots 0 and 1 on a %d-layer stack'
                  % len(st))
             return

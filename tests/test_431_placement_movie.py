@@ -95,7 +95,7 @@ def _count_renderers(boards, **kw):
     set_view calls, and capturing stderr."""
     import contextlib
     import io
-    made = {'ctor': 0, 'set_view': 0}
+    made = {'ctor': 0, 'set_view': 0, 'aims': 0}
     orig = RR.BoardRenderer
 
     class Counting(orig):
@@ -105,6 +105,10 @@ def _count_renderers(boards, **kw):
 
         def set_view(self, *a, **k):
             made['set_view'] += 1
+            # an AIM is a view; `set_view(None)` is the board re-fitting its
+            # own box (`__init__`, and `set_canvas` on a planned layout)
+            if (a[0] if a else k.get('view')) is not None:
+                made['aims'] += 1
             return super().set_view(*a, **k)
 
     RR.BoardRenderer = Counting
@@ -147,8 +151,10 @@ def test_no_stage_means_no_camera_and_one_renderer():
         made, err = _count_renderers(boards, **kw)
         assert made['ctor'] == 1, (why, f"{made['ctor']} renderers built "
                                    "(expected 1)")
-        # exactly the one inside __init__; the camera never aims it
-        assert made['set_view'] == 1, (why, made['set_view'])
+        # the camera never AIMS it. (#1081: the default film is stage3d, a
+        # planned layout, whose `set_canvas` re-fits the board box with a
+        # second set_view(None) -- not an aim; legacy has only __init__'s.)
+        assert made['aims'] == 0, (why, made)
         assert 'camera auto' not in err, (why, err)
 
 
@@ -159,8 +165,7 @@ def test_a_placement_chain_turns_the_camera_on_by_itself():
     so on stderr, even under quiet=True."""
     made, err = _count_renderers([SEED, PLACED])
     assert 'camera auto' in err, err
-    assert made['set_view'] > 1, ('the stage never aimed the camera',
-                                  made['set_view'])
+    assert made['aims'] > 0, ('the stage never aimed the camera', made)
     # --camera off on the same chain says what it skipped only when there is
     # something to skip: interf_u's boards carry no copper, and the whole chain
     # being copper-free is not "leading" boards skipped before routing.

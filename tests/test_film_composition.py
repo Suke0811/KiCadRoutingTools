@@ -193,7 +193,9 @@ def test_a_diagnostic_card_is_spliced_in_at_frame_size():
         frames = mf.build_film(shots, size=400, fps=6.0, camera='off',
                                quiet=True)
         assert len({f.size for f in frames}) == 1, "one size across the film"
-        assert frames[0].getpixel((5, 5)) == (14, 14, 18), \
+        import render_theme as _rt
+        assert frames[0].getpixel((5, 5)) == \
+            _rt.default_theme().rgb('chrome_panel'), \
             "a leading card opens the film, ahead of the input snapshot"
     print("  PASS: cards are letterboxed to frame size and placed in order")
 
@@ -310,8 +312,10 @@ def test_the_movie_layout_knobs_reach_the_film():
             os.environ.pop(n, None)
         env_knobs.refresh()
         mf.build_film(shots, size=300, fps=6.0, camera='off', quiet=True)
-        assert seen['got'] == ('legacy', None), \
-            f"with neither set, legacy and the board's own aspect: {seen['got']}"
+        # #1081: the film's default layout is stage3d (at the requester's
+        # call); its aspect comes from the layout, so none is passed
+        assert seen['got'] == ('stage3d', None), \
+            f"with neither set, stage3d and no forced aspect: {seen['got']}"
     finally:
         animate_route.build_boards = real
         for n, v in saved.items():

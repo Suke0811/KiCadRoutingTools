@@ -389,13 +389,26 @@ def test_a_placement_only_ledger_keeps_its_band():
                 contextlib.redirect_stdout(io.StringIO()):
             rc = make_film.main(['--from-ledger', led, '-o',
                                  os.path.join(d, 'place.gif'), '--size',
-                                 '400', '--no-placement-panel'])
+                                 '400', '--no-placement-panel',
+                                 '--layout', 'legacy'])
         e = err.getvalue()
         if rc != 0:
             fail('make_film --from-ledger exited %r: %s' % (rc, e[-400:]))
         if 'attempts band: 3 attempts from converge' not in e:
             fail('the placement film has no attempts band: %s'
                  % [ln for ln in e.splitlines() if 'attempts' in ln])
+        # #1081: the DEFAULT film is stage3d, whose one band -- the benchmark
+        # band -- must carry the same three placement laps
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err),                 contextlib.redirect_stdout(io.StringIO()):
+            rc = make_film.main(['--from-ledger', led, '-o',
+                                 os.path.join(d, 'place3d.gif'), '--size',
+                                 '960', '--board-3d', '2d'])
+        e = err.getvalue()
+        if rc != 0 or 'benchmark band: converge (3 laps' not in e:
+            fail('the default (stage3d) film does not draw the 3 laps in '
+                 'its benchmark band: rc %r, %s' % (rc, [
+                     ln for ln in e.splitlines() if 'band' in ln]))
     finally:
         shutil.rmtree(d, ignore_errors=True)
     if len(_FAIL) == _mark:

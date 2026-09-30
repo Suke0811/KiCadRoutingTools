@@ -62,6 +62,12 @@ CELLS = 4
 #: matters, so this is a scale, not a claim about any particular board.
 BOARD_MM = 100.0
 
+#: `stage3d` (#1081) is deliberately NOT measured here: its board box holds a
+#: PERSPECTIVE view, where px/mm varies across the board and with the camera,
+#: so a px/mm figure would not be comparable with the flat X-ray layouts'. Its
+#: promise is a floor instead (`frame_layout.STAGE3D_BOARD_W_FRAC` / `_H_FRAC`),
+#: pinned by `tests/test_1081_stage3d_layout.py`, which also pins this
+#: exclusion so it cannot be dropped by accident.
 LAYOUTS = ('stacked', 'sidebar', 'inset', 'split')
 
 

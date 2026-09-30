@@ -81,7 +81,7 @@ def draw_key(d, rows: Sequence[Row], *, width: int, height: int,
     try:
         import render_theme
         from route_render import load_font
-        th = theme or render_theme.DARK
+        th = theme or render_theme.default_theme()
         font = load_font(max(10, height // 78))
         pad = 6 * max(1, int(pad_scale))
         sw = max(10, height // 90)
@@ -231,7 +231,7 @@ def draw_key_inline(d, box, rows, *, theme=None, font=None):
     try:
         import render_theme
         from route_render import load_font
-        th = theme or render_theme.DARK
+        th = theme or render_theme.default_theme()
         font = font or load_font(max(9, int(box.h * 0.36)))
         sw = max(8, int(box.h * 0.36))
         items = [(rgb, mark, t, d.textlength(t, font=font))
@@ -285,7 +285,7 @@ def draw_rail(d, box, left, right, *, theme, pad_scale=1, progress=None,
     try:
         import render_theme
         from route_render import load_font
-        th = theme or render_theme.DARK
+        th = theme or render_theme.default_theme()
         ss = max(1, int(pad_scale))
         pad = 6 * ss
         font = load_font(max(10, int(box.h * 0.42)))
@@ -345,7 +345,7 @@ def draw_totals(d, box, text, *, theme, pad_scale=1):
     try:
         import render_theme
         from route_render import load_font
-        th = theme or render_theme.DARK
+        th = theme or render_theme.default_theme()
         ss = max(1, int(pad_scale))
         font = load_font(max(9, int(box.h * 0.34)))
         pad = 6 * ss

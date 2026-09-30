@@ -291,25 +291,30 @@ def refresh() -> None:
     # feature with no dialog control of its own reaches every front end at once.
     g['MOVIE_PANELS'] = _s('KICAD_MOVIE_PANELS', 'xray')
 
-    # #946/#1012: the render theme. 'dark' (default) is the domain convention
-    # -- KiCad's own canvas, and what every existing pixel-probing test
-    # assumes. Same shape and same reason as MOVIE_CAMERA and MOVIE_PANELS
+    # #946/#1012: the render theme. 'light' (default since #1081, at the
+    # requester's call: the stage3d film's mockup is light) for EVERY render;
+    # 'dark' -- KiCad's own canvas -- is one flag or variable away. Same shape and same reason as MOVIE_CAMERA and MOVIE_PANELS
     # above: the GUI recorder passes no render parameters at all
     # (movie_recorder.py:160 is `make_movie(boards, out=out, quiet=True)`), so
     # one variable is how a feature with no dialog control of its own reaches
     # every front end at once. The knob is for a PRODUCER making a figure for a
     # light-background document, not for a viewer -- a rendered file's ground
     # cannot be changed afterwards.
-    g['RENDER_THEME'] = _s('KICAD_RENDER_THEME', 'dark')
+    g['RENDER_THEME'] = _s('KICAD_RENDER_THEME', 'light')
 
-    # #946/#1018: the named frame layout, and the target aspect. 'legacy'
-    # (default) is EXACTLY the frame every movie has always had -- the frame IS
-    # the board's bounding box -- so every existing artifact stays bit-for-bit
-    # what it was. 'auto' is the adaptive stacked-vs-sidebar rule, read from
+    # #946/#1018: the named frame layout, and the target aspect. 'stage3d'
+    # (default since #1081, at the requester's call): the 3D board, the layer
+    # column and the benchmark band. 'legacy' is EXACTLY the frame every movie
+    # had before -- the frame IS the board's bounding box. 'auto' is the adaptive stacked-vs-sidebar rule, read from
     # board_bounds. Same shape and same reason as MOVIE_CAMERA and
     # MOVIE_PANELS: one variable reaches every front end at once.
-    g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'legacy')
+    g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'stage3d')
     g['MOVIE_ASPECT'] = _s('KICAD_MOVIE_ASPECT', '')
+    # #1081: the stage3d board -- 'auto' (the 3D board when this machine can
+    # render it, else the X-ray, said), '2d' (always the X-ray) or 'blender'
+    # (the hi-fi Cycles backend, #1089). The one way a front end with no
+    # flag of its own -- the GUI recorder, place_route_loop -- chooses.
+    g['MOVIE_BOARD3D'] = _s('KICAD_MOVIE_BOARD3D', 'auto')
 
     # #1036: the routing movie's FRAME BUDGET. A per-segment route trace
     # (KICAD_ROUTE_TRACE=1) plays one frame per event, and run 32's 22-board

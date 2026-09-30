@@ -90,6 +90,28 @@ REGISTRY = {
         'hang_detector',
         'forwards ISO_RENDER_HANG_GUARD_S to the render child above; the value '
         'is the only clock it touches, and it takes no decision from it.'),
+    # #1081: the stage3d film's optional external children. Each expiry
+    # returns a NAMED reason, and the film then keeps the 2D X-ray for EVERY
+    # frame and says why -- a timeout never becomes a partial or silent film.
+    'py_router/stage3d/render3d.py': (
+        'hang_detector',
+        'STATE_BUDGET_S / BLENDER_STATE_BUDGET_S on the node+Chromium and '
+        'Blender render children, and a 30 s `node --version` probe. Expiry '
+        'returns "the 3D render took over N s", and stage3d.film keeps the '
+        'X-ray and prints that reason. The budget scales with the state '
+        'COUNT, so it is a hang guard, not a cost cap.'),
+    'py_router/stage3d/scene.py': (
+        'hang_detector',
+        'GLB_TIMEOUT_S on the kicad-cli pcb export glb child; expiry returns '
+        'a named reason and the parts stay boxes (no models).'),
+    'py_router/movie_benchmark.py': (
+        'hang_detector',
+        'the one board_score child that grades a --benchmark-board without a '
+        '--benchmark-score; expiry leaves the benchmark ungraded, which the '
+        'band names and which can never earn gold.'),
+    'py_router/stage3d/blender_scene.py': (
+        'reporting',
+        'ms_per_state on the Blender render, printed in the status line.'),
     'kicad_routing_plugin/ai_gui.py': (
         'hang_detector', 'a stderr reader thread join.'),
     'kicad_routing_plugin/ai_plan.py': (
