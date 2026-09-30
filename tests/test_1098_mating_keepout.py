@@ -39,9 +39,11 @@ OUTLINE = [(0, 0), (30, 0), (30, 20), (20, 20), (20, 32), (10, 32), (10, 20),
 
 
 def board(td, *, r1=(25, 10, 'B.Cu'), attr='exclude_from_pos_files',
-          model=False, drilled=False, hole=True, keepouts_note=''):
+          model=False, drilled=False, hole=True, keepouts_note='',
+          xs=(-3.8, -1.3, 1.3, 3.8)):
     """A 30x20 board with a 10x12 tongue at x 10-20, y 20-32. J1 is the
-    plug: its F courtyard IS the tongue, its four SMD fingers carry nets."""
+    plug: its F courtyard IS the tongue, its four SMD fingers (at local
+    `xs`) carry nets."""
     segs = ''.join(
         f'  (gr_line (start {a[0]} {a[1]}) (end {b[0]} {b[1]}) (stroke '
         f'(width 0.1) (type default)) (layer "Edge.Cuts"))\n'
@@ -51,7 +53,7 @@ def board(td, *, r1=(25, 10, 'B.Cu'), attr='exclude_from_pos_files',
         f'rect (at {x} -6) (size 1.5 8)'
         + (' (drill 0.8)' if drilled and i == 0 else '')
         + f' (layers "F.Cu") (net {i + 1} "N{i + 1}"))\n'
-        for i, x in enumerate((-3.8, -1.3, 1.3, 3.8)))
+        for i, x in enumerate(xs))
     x, y, side = r1
     s = side[0]
     text = (
@@ -347,6 +349,73 @@ class TestRealBoards(unittest.TestCase):
             if ks:
                 fired[b] = [k['name'] for k in ks]
         self.assertEqual(fired, {})
+
+
+
+def write_intent(td, keepouts):
+    """A minimal intent declaring `keepouts` (the #701 channel)."""
+    path = os.path.join(td, 'intent.json')
+    with open(path, 'w', encoding='utf-8') as fh:
+        json.dump({'schema': 1, 'kind': 'floorplan-intent',
+                   'keepouts': keepouts}, fh)
+    return path
+
+
+def place_pose(board_path, out, *args):
+    return subprocess.run(
+        [sys.executable, '-X', 'utf8',
+         os.path.join(ROOT, 'py_placer', 'place_pose.py'), board_path, out,
+         *args], capture_output=True, text=True, cwd=ROOT)
+
+
+#: #1098 review: tigard's JP1 (`Jumper:SolderJumper-2_P1.3mm_Bridged_...`,
+#: exclude_from_pos_files, no model, no net-tie group, two netted pads)
+#: moved to the board's north edge, pads 0.55 mm from it, under J3.
+TIGARD = os.path.join(ROOT, 'kicad_files', 'tigard.kicad_pcb')
+TIGARD_JP1_AT = '(at 35.85 53.4 180)'
+TIGARD_JP1_EDGE = '(at 45 31.3 180)'
+
+
+class TestReviewFollowUps(unittest.TestCase):
+    """The #1098 review's findings, each pinned where it failed."""
+
+    def test_two_or_three_fingers_are_not_a_plug(self):
+        """A 2- or 3-pad part at the edge (KiCad's solder jumpers, a DNP
+        passive) is not a plug; four fingers still are."""
+        for xs, want in (((-3.8, 3.8), 0), ((-3.8, 0.0, 3.8), 0),
+                         ((-3.8, -1.3, 1.3, 3.8), 1)):
+            with tempfile.TemporaryDirectory() as td:
+                self.assertEqual(len(keepouts(board(td, xs=xs))), want, xs)
+
+    def test_a_solder_jumper_at_tigards_edge_stays_buildable(self):
+        with open(TIGARD, encoding='utf-8') as fh:
+            text = fh.read()
+        self.assertEqual(text.count(TIGARD_JP1_AT), 1)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'tigard_jp1.kicad_pcb')
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write(text.replace(TIGARD_JP1_AT, TIGARD_JP1_EDGE))
+            self.assertEqual(keepouts(path), ())
+            r, d = check_assembly(path)
+        self.assertEqual(d['mating_keepout_refs'], [], r.stdout[-1500:])
+        self.assertTrue(d['buildable'], r.stdout[-1500:])
+
+    def test_a_plug_hanging_across_an_edge_is_not_seated(self):
+        """J1 parked across the body's west edge, fingers off the board: no
+        region and no lock, so the search can still move it (and #1096
+        reports its copper)."""
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td)
+            with open(p, encoding='utf-8') as fh:
+                text = fh.read()
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write(text.replace('(at 15 32)\n', '(at 3 10 90)\n', 1))
+            self.assertEqual(keepouts(p), ())
+            st = pose_score.make_state(parse_kicad_pcb(p), p, clearance=0.1,
+                                       board_edge_clearance=0.1)
+            self.assertFalse(st.parts['J1'].locked)
 
 
 if __name__ == '__main__':

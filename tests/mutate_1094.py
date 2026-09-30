@@ -181,8 +181,10 @@ ROWS = [
      "        if False:",
      (T1098,), 'KILLED'),
     ('fingers-need-not-reach-the-edge', 'fp',
-     "        if near < 2:",
-     "        if False:",
+     "    if near < 2:\n"
+     "        return None",
+     "    if False:\n"
+     "        return None",
      (T1098,), 'KILLED'),
     ('seat-blind-to-the-plug', 'quench',
      "        self.keepouts = _fpk.with_derived_keepouts(keepouts, pcb_data,",
@@ -248,6 +250,15 @@ ROWS = [
      "        if not (part.sides & op.sides):",
      "        if False:",
      (T1101,), 'KILLED'),
+    # --- #1098/#1099 review follow-ups ----------------------------------------
+    ('jumper-read-as-a-plug', 'fp',
+     "        if sum(1 for p in pads if p.net_id) < MATING_MIN_FINGERS:",
+     "        if sum(1 for p in pads if p.net_id) < 2:",
+     (T1098,), 'KILLED'),
+    ('plug-seated-across-an-edge', 'fp',
+     "    if legality.pad_copper_overrun_mm(pads, gate) > legality.EPS:",
+     "    if False:",
+     (T1098,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

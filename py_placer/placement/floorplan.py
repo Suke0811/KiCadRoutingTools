@@ -2143,6 +2143,14 @@ MATING_ATTRS = ('board_only', 'exclude_from_pos_files')
 #: StickHub J1's fingers stop 0.6 mm short of the tongue's tip, as a USB-A
 #: plug's do; a solder jumper's pads do not reach an edge at all.
 MATING_FINGER_EDGE_MM = 1.0
+#: A plug carries at least this many netted finger pads: a USB-A PCB plug,
+#: the smallest board-copper plug, has four (VBUS, D-, D+, GND), and a card
+#: edge has more. KiCad's own Jumper library draws its 2- and 3-pad solder
+#: jumpers `exclude_from_pos_files` with no model, most without a net-tie
+#: group, and a DNP passive can carry the same attrs; at 2 fingers any of
+#: them sitting at an edge read as a plug (#1098 review: tigard's JP1 moved
+#: to its edge turned the board NOT BUILDABLE and was locked there).
+MATING_MIN_FINGERS = 4
 #: The courtyard is inset by this before it becomes the keep-out. StickHub's
 #: J2 and J6 courtyards reach 0.15 mm past the tongue's root; the inset keeps
 #: a neighbour's courtyard margin that grazes the root from reading as a part
@@ -2157,17 +2165,64 @@ MATING_PREFIX = 'mating:'
 DECAPS_FROM_MIN_MATCH = 0.9
 
 
+def _copper_pads(fp):
+    return [p for p in (fp.pads or ())
+            if getattr(p, 'pad_type', '') != 'np_thru_hole']
+
+
+def _plug_seat_rect(ref, fp, crt, gate):
+    """The board rect of `ref`'s courtyard while the part is SEATED at the
+    outline the way a plug is, else None (#1098).
+
+    Seated means: no pad copper past the outline (`pad_copper_overrun_mm`,
+    the measure #1096's gate reports -- a plug hanging across an edge is
+    misplaced, and a lock would keep it there), >= 2 netted pads within
+    `MATING_FINGER_EDGE_MM` of the outline, and a courtyard that is on the
+    board and reaches the outline. Geometry only: whether the part IS a plug
+    is `derived_mating_keepouts`' question, or the author's when a keep-out
+    names it."""
+    from .parser import courtyard_for_side
+    from .part_class import SEAT_TOL_MM
+    pads = _copper_pads(fp)
+    if legality.pad_copper_overrun_mm(pads, gate) > legality.EPS:
+        return None
+    near = 0
+    for p in pads:
+        if not p.net_id:
+            continue
+        hx, hy = legality.pad_half_extents(p)
+        pr = (p.global_x - hx, p.global_y - hy,
+              p.global_x + hx, p.global_y + hy)
+        if gate.edge_clearance(pr) <= MATING_FINGER_EDGE_MM:
+            near += 1
+    if near < 2:
+        return None
+    loc = courtyard_for_side((crt or {}).get(ref), legality.footprint_side(fp))
+    if loc is None:
+        return None
+    x0, y0, x1, y1 = legality.rotate_local_bounds(*loc, fp.rotation or 0.0)
+    rect = (fp.x + x0, fp.y + y0, fp.x + x1, fp.y + y1)
+    if gate.out_of_board_area(rect) >= legality.rect_area(rect) - 1e-6:
+        return None             # wholly off the board: not at an edge
+    if not (gate.rect_outside_amount(rect) > legality.EPS
+            or gate.edge_clearance(rect) <= SEAT_TOL_MM):
+        return None
+    return rect
+
+
+
+
 def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
                             ) -> Tuple[Dict, ...]:
     """The keep-outs a board's PCB-edge plugs imply, one per plug (#1098).
 
     A footprint is a plug when it is not assembled (an attr in
     `MATING_ATTRS` and no 3D model), is not a net-tie (a solder jumper
-    shorts pad groups; a plug does not), carries >= 2 netted pads and no
-    drilled one (finger copper, not a connector body) of which >= 2 reach
-    within `MATING_FINGER_EDGE_MM` of the outline, and draws a courtyard
-    that is ON the board (not wholly off it -- a jumper parked in a pile is
-    not at an edge) and reaches the outline. The keep-out is the courtyard's board rect inset by
+    shorts pad groups; a plug does not), carries >= `MATING_MIN_FINGERS`
+    netted pads and no drilled one (finger copper, not a connector body),
+    and is SEATED (`_plug_seat_rect`: no pad copper past the outline, >= 2
+    fingers within `MATING_FINGER_EDGE_MM` of it, a courtyard on the board
+    that reaches it). The keep-out is the courtyard's board rect inset by
     `MATING_INSET_MM`, on both faces, allowing the plug itself and every
     part with no copper pad (a slot like StickHub's H1, a logo).
 
@@ -2185,51 +2240,26 @@ def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
              and not getattr(fp, 'has_model', False)]
     if not cands:
         return ()
-    from .parser import courtyard_for_side, extract_courtyard_sides
-    from .part_class import SEAT_TOL_MM
+    from .parser import extract_courtyard_sides
     try:
         crt = extract_courtyard_sides(path)
     except Exception:                                        # noqa: BLE001
         return ()
     gate = legality.BoardOutlineGate(bi, 0.0)
-
-    def copper_pads(fp):
-        return [p for p in (fp.pads or ())
-                if getattr(p, 'pad_type', '') != 'np_thru_hole']
-
     free = tuple(_glob.escape(r) for r, fp in sorted(fps.items())
-                 if not copper_pads(fp))
+                 if not _copper_pads(fp))
     out = []
     for ref in sorted(cands):
         fp = fps[ref]
-        pads = copper_pads(fp)
+        pads = _copper_pads(fp)
         if any((p.drill or 0) > 0 for p in pads):
             continue
         if getattr(fp, 'net_tie_groups', None):
             continue
-        fingers = [p for p in pads if p.net_id]
-        if len(fingers) < 2:
+        if sum(1 for p in pads if p.net_id) < MATING_MIN_FINGERS:
             continue
-        near = 0
-        for p in fingers:
-            hx, hy = legality.pad_half_extents(p)
-            pr = (p.global_x - hx, p.global_y - hy,
-                  p.global_x + hx, p.global_y + hy)
-            if (gate.rect_outside_amount(pr) > legality.EPS
-                    or gate.edge_clearance(pr) <= MATING_FINGER_EDGE_MM):
-                near += 1
-        if near < 2:
-            continue
-        loc = courtyard_for_side(crt.get(ref), legality.footprint_side(fp))
-        if loc is None:
-            continue
-        x0, y0, x1, y1 = legality.rotate_local_bounds(*loc,
-                                                      fp.rotation or 0.0)
-        rect = (fp.x + x0, fp.y + y0, fp.x + x1, fp.y + y1)
-        if gate.out_of_board_area(rect) >= legality.rect_area(rect) - 1e-6:
-            continue            # wholly off the board: not at an edge
-        if not (gate.rect_outside_amount(rect) > legality.EPS
-                or gate.edge_clearance(rect) <= SEAT_TOL_MM):
+        rect = _plug_seat_rect(ref, fp, crt, gate)
+        if rect is None:
             continue
         ins = (rect[0] + MATING_INSET_MM, rect[1] + MATING_INSET_MM,
                rect[2] - MATING_INSET_MM, rect[3] - MATING_INSET_MM)
