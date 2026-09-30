@@ -1,0 +1,124 @@
+"""#1101: the seeder honours the project's own courtyard waiver.
+
+On KiCad's StickHub demo placed from a pile, `place_seed` never seated the
+USB port capacitors C14-C20: the column between the JST ports is 1.14 mm
+between their courtyards, and a 2012 cap needs at least 1.45. The human
+layout overlaps those courtyards by 0.68 mm -- which the project allows:
+StickHub's `.kicad_pro` sets `courtyards_overlap` to `ignore`, and since
+#1095 check_assembly grades it that way. The seeder refused anyway, so the
+generator was stricter than the checker on exactly the board that says so.
+
+At `ignore` (the author's, `legality.courtyard_severity_of`: not a
+tool-written legacy ignore) the seat now spaces PAD COPPER at the seat
+clearance instead of courtyards; pads, holes and .Fab bodies are still
+checked. Measured on StickHub's locked pile, seed 1: unseated 6 -> 1 (C17,
+whose census now names C16 as the blocker), 50 min -> 5 min.
+
+And the no-pose census stops naming parts on the OTHER face as blockers of
+an SMD part (it named StickHub's back-side U1, C23, C27 for a front cap).
+"""
+
+import json
+import os
+import random
+import sys
+import tempfile
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'py_placer'))
+sys.path.insert(0, os.path.join(ROOT, 'py_router'))
+
+#: A 12 x 4 board and two 5 x 3 parts whose PADS are small and central. Side
+#: by side they need 10 mm plus clearance of courtyard, which the board has;
+#: stacked on one axis they need their courtyards to overlap... so the board
+#: is made 9 mm wide: both fit only if the courtyards may overlap (the pads
+#: stay 3+ mm apart).
+BOARD = (
+    '(kicad_pcb (version 20240108) (generator pcbnew)\n'
+    '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))\n'
+    '  (net 0 "") (net 1 "A") (net 2 "B")\n'
+    '  (gr_rect (start 0 0) (end 9 4) (stroke (width 0.1) (type default))'
+    ' (layer "Edge.Cuts"))\n'
+    '{parts})\n')
+PART = (
+    '  (footprint "t:{ref}" (layer "F.Cu") (at {x} 20)\n'
+    '    (property "Reference" "{ref}" (at 0 0) (layer "F.SilkS"))\n'
+    '    (fp_rect (start -2.5 -1.5) (end 2.5 1.5) (stroke (width 0.05)'
+    ' (type default)) (layer "F.CrtYd"))\n'
+    '    (pad "1" smd rect (at -0.4 0) (size 0.5 0.5) (layers "F.Cu")'
+    ' (net 1 "A"))\n'
+    '    (pad "2" smd rect (at 0.4 0) (size 0.5 0.5) (layers "F.Cu")'
+    ' (net 2 "B")))\n')
+
+
+def seed(severity):
+    from kicad_parser import parse_kicad_pcb
+    from placement import seeder
+    from placement.floorplan import empty_intent
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'b.kicad_pcb')
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(BOARD.format(parts=PART.format(ref='A', x=30)
+                                  + PART.format(ref='B', x=40)))
+        sev = {} if severity is None else {'courtyards_overlap': severity}
+        with open(os.path.join(td, 'b.kicad_pro'), 'w',
+                  encoding='utf-8') as fh:
+            json.dump({'board': {'design_settings':
+                                 {'rule_severities': sev}}}, fh)
+        return seeder.seed_from_intent(
+            parse_kicad_pcb(path), path, empty_intent(path),
+            random.Random('1'), clearance=0.15, board_edge_clearance=0.1,
+            grid_step=0.1)
+
+
+class TestWaivedCourtyards(unittest.TestCase):
+    def test_the_projects_ignore_lets_both_parts_seat(self):
+        self.assertEqual(seed('ignore')['unseated'], [])
+
+    def test_at_error_the_courtyards_still_keep_them_apart(self):
+        for sev in ('error', 'warning', None):
+            self.assertEqual(len(seed(sev)['unseated']), 1, sev)
+
+    def test_pads_are_still_spaced(self):
+        """With courtyards waived the pad boxes keep the clearance: the
+        seated parts' pad copper is at least 0.15 mm apart."""
+        res = seed('ignore')
+        pose = {p['reference']: (p['new_x'], p['new_y'])
+                for p in res['placements']}
+        (ax, ay), (bx, by) = pose['A'], pose['B']
+        # pad boxes are +-0.65 x +-0.25 around each centre
+        gap_x, gap_y = abs(ax - bx) - 1.3, abs(ay - by) - 0.5
+        self.assertGreaterEqual(max(gap_x, gap_y), 0.15 - 1e-6, pose)
+
+
+class TestCensusSides(unittest.TestCase):
+    def test_a_back_side_part_is_not_a_blocker_of_a_front_part(self):
+        """The eviction census lists only parts sharing a face (or drilled);
+        it named StickHub's back-side U1, C23, C27 for a front cap."""
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        from placement import seeder
+        back = PART.replace('(layer "F.Cu") (at', '(layer "B.Cu") (at')             .replace('"F.CrtYd"', '"B.CrtYd"').replace(
+            '(layers "F.Cu")', '(layers "B.Cu")')
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'b.kicad_pcb')
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write(BOARD.format(
+                    parts=PART.format(ref='A', x=30).replace('(at 30 20)',
+                                                             '(at 3 2)')
+                    + PART.format(ref='F', x=5).replace('(at 5 20)',
+                                                        '(at 5 2)')
+                    + back.format(ref='K', x=4).replace('(at 4 20)',
+                                                        '(at 4 2)')))
+            st = pose_score.make_state(parse_kicad_pcb(path), path,
+                                       clearance=0.15,
+                                       board_edge_clearance=0.1)
+            got = seeder._evict_candidates(st, 'A', 3.0, 2.0, {'F', 'K'},
+                                           set())
+        self.assertIn('F', got)
+        self.assertNotIn('K', got)
+
+
+if __name__ == '__main__':
+    unittest.main()

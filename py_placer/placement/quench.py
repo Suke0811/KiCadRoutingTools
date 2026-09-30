@@ -691,7 +691,7 @@ class _Part:
     __slots__ = ('ref', 'pads_local', 'pin_count', 'bounds_by_rot',
                  'seed_x', 'seed_y', 'x', 'y', 'rot', 'locked',
                  'nets', 'halo', 'footprint_name', 'orig_rot',
-                 'side', 'has_tht', 'sides', 'tht_by_rot')
+                 'side', 'has_tht', 'sides', 'tht_by_rot', 'padbox_local')
 
     def __init__(self, ref, fp, courtyard_sides, locked, halo_base, halo_coef,
                  body_local=None):
@@ -727,6 +727,11 @@ class _Part:
             if lb is None:
                 lb = compute_footprint_bbox_local(fp)
         self.bounds_by_rot = {r: _rotate_local_bounds(*lb, r) for r in ROTATIONS}
+        # #1101: the PAD copper box, for a board whose project waives the
+        # courtyard rule -- the seat then spaces pads, not courtyards. None
+        # for a pad-less footprint (a logo occupies no copper).
+        self.padbox_local = (compute_footprint_bbox_local(fp)
+                             if fp.pads else None)
         tlb = through_pad_bounds_local(fp) if self.has_tht else None
         self.tht_by_rot = ({r: _rotate_local_bounds(*tlb, r) for r in ROTATIONS}
                            if tlb is not None else None)
@@ -756,6 +761,16 @@ class _Part:
         b = self.bounds_by_rot.get(rot % 360)
         if b is None:
             b = self.bounds_by_rot[0.0]
+        return (x + b[0], y + b[1], x + b[2], y + b[3])
+
+    def padbox(self, x=None, y=None, rot=None):
+        """The part's pad-copper box at a pose (#1101), or None (no pads)."""
+        if self.padbox_local is None:
+            return None
+        x = self.x if x is None else x
+        y = self.y if y is None else y
+        rot = self.rot if rot is None else rot
+        b = _rotate_local_bounds(*self.padbox_local, rot % 360)
         return (x + b[0], y + b[1], x + b[2], y + b[3])
 
     def tht_rect(self, x=None, y=None, rot=None):
@@ -1038,6 +1053,20 @@ class QuenchState:
         # no seat, nudge or swap puts a part on a USB tongue whatever the
         # intent says. Empty on a board with no such plug.
         from . import floorplan as _fpk
+        # #1101: the board's OWN `courtyards_overlap` severity, read the way
+        # check_assembly reads it (#1095, `legality.courtyard_severity_of`:
+        # an `ignore` this repo's old route steps wrote is not the author's).
+        # At `ignore` the author said courtyards may overlap and KiCad checks
+        # none; refusing them here made StickHub's port capacitors unseatable
+        # -- the column between the JST ports is 1.14 mm between courtyards,
+        # and the human's caps overlap them by 0.68 mm. Pads, holes and .Fab
+        # bodies are still checked. Inert on every board that does not say
+        # `ignore` (none in the tracked corpus).
+        try:
+            from .legality import courtyard_severity_of as _cso
+            self.courtyards_ignored = _cso(pcb_file)[0] == 'ignore'
+        except Exception:                                    # noqa: BLE001
+            self.courtyards_ignored = False
         self.keepouts = _fpk.with_derived_keepouts(keepouts, pcb_data,
                                                    pcb_file)
         # A plug SEATED at its edge is the mechanical fact its keep-out is
@@ -2046,7 +2075,25 @@ class QuenchState:
             if near and self.edge_gate.rect_blocked(
                     rect, edges=near, skip_rings=self._owned_rings(ref)):
                 legal = False
-        if legal:
+        if legal and getattr(self, 'courtyards_ignored', False):
+            # #1101: courtyards waived by the project, so the neighbour test
+            # spaces PAD COPPER at the same clearance instead. Without this
+            # the seed-relative pad layer is all that is left, and on a pile
+            # its neighbours are the pile's: measured on StickHub, 19 new pad
+            # conflicts.
+            mine = part.padbox(x, y, rot)
+            if mine is not None:
+                clr = self.clearance
+                for other_ref, other in self.parts.items():
+                    if other_ref == ref or (exclude and other_ref in exclude):
+                        continue
+                    if not (part.sides & other.sides):
+                        continue
+                    ob = other.padbox()
+                    if ob is not None and rect_gap(mine, ob) < clr:
+                        legal = False
+                        break
+        elif legal:
             if self._neighbors is not None and ref in self._neighbors:
                 others = ((o, self.parts[o]) for o in self._neighbors[ref])
             else:

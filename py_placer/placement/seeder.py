@@ -424,6 +424,11 @@ def _evict_candidates(state, ref: str, tx: float, ty: float,
         if other == ref or other not in state.parts:
             continue
         op = state.parts[other]
+        # #1101: a part on the OTHER face cannot be in this one's way unless
+        # one of them is drilled; the census named StickHub's back-side U1,
+        # C23, C27 as blockers of a front-side cap.
+        if not (part.sides & op.sides):
+            continue
         orect = op.rect(op.x, op.y, op.rot)
         if (orect[2] + clr < bx0 or orect[0] - clr > bx1
                 or orect[3] + clr < by0 or orect[1] - clr > by1):
@@ -3500,6 +3505,10 @@ def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
     is the courtyard rects' intersection, for the refusal's text only."""
     from .legality import (graded_part_at_pose, pair_overlap_area,
                            pair_overlap_area_exact)
+    if getattr(state, 'courtyards_ignored', False):
+        # #1101: the project waives KiCad's courtyard rule, so a declared
+        # pose is not refused for one (its drill holes still are, below).
+        return 0.0, 0.0, 0.0
     pa, pb = state.parts[a], state.parts[b]
     ra, ta = pa.rect(*pose_a), pa.tht_rect(*pose_a)
     rb, tb = pb.rect(*pose_b), pb.tht_rect(*pose_b)
