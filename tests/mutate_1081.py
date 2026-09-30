@@ -234,6 +234,14 @@ ROWS = [
      "        _say('stage3d: 2D X-ray in the board box -- %s' % why, notes)",
      "        pass",
      (T_E2E,), 'KILLED'),
+    # the missing-tool arm expects the reason for whichever tool is missing
+    # FIRST (playwright-core on a machine with no `npm ci`), so a fallback
+    # that names no tool must still fail it
+    ('a-2d-fallback-that-names-no-tool', 'film',
+     "        _say('stage3d: 2D X-ray in the board box -- %s' % why, notes)",
+     "        _say('stage3d: 2D X-ray in the board box -- a tool is "
+     "missing', notes)",
+     (T_E2E,), 'KILLED'),
     # --- found by the esp_prog film (run 35) -------------------------------
     ('the-camera-fitted-once-for-the-film', 'page',
      "  fitCamera();",
