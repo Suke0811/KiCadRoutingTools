@@ -53,6 +53,7 @@ TARGETS = {
     'render': os.path.join(_ROOT, 'py_router', 'route_render.py'),
     'r3d': os.path.join(_S3D, 'render3d.py'),
     'fp': os.path.join(_ROOT, 'py_router', 'film_passes.py'),
+    'scene': os.path.join(_S3D, 'scene.py'),
 }
 
 
@@ -230,6 +231,10 @@ ROWS = [
      "            if bb[0] < x0:",
      "            if False:",
      (T_BAND,), 'KILLED'),
+    ('a-flat-model-path-not-looked-up', 'scene',
+     "        found = _by_name(path, dirs)",
+     "        found = None",
+     (T_TL,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

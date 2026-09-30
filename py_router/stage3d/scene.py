@@ -33,7 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 #: Board thickness when the stackup does not say.
 DEFAULT_THICKNESS = 1.6
@@ -174,7 +174,49 @@ def _resolve(path, dirs) -> str:
 TWIN_EXTS = ('.step', '.STEP', '.stp', '.STP')
 
 
-def stage_models(board_text, dirs, board_dir=None) -> Tuple[str, int]:
+#: Every model file under KiCad's library dirs, by lower-case stem, built
+#: once per process: {stem: [paths]}.
+_INDEX = {}
+
+
+def _library_index(dirs) -> Dict[str, List[str]]:
+    """The model files under the LIBRARY dirs in `dirs` (not KIPRJMOD, the
+    board's own folder), by lower-case stem, each list sorted so a lookup is
+    deterministic."""
+    roots = sorted({v for k, v in dirs.items()
+                    if k != 'KIPRJMOD' and v and os.path.isdir(v)})
+    key = tuple(roots)
+    if key not in _INDEX:
+        idx = {}
+        for root in roots:
+            for d, _sub, files in os.walk(root):
+                for fn in files:
+                    stem, ext = os.path.splitext(fn)
+                    if ext.lower() in ('.step', '.stp', '.wrl', '.vrml'):
+                        idx.setdefault(stem.lower(), []).append(
+                            os.path.join(d, fn))
+        for v in idx.values():
+            v.sort()
+        _INDEX[key] = idx
+    return _INDEX[key]
+
+
+def _by_name(path, dirs):
+    """A model the reference names but whose path does not exist, found by
+    its file NAME in the library dirs, `.step` preferred. Old boards (and
+    Olimex's) spell `${KISYS3DMOD}/R_0402_1005Metric.wrl` FLAT, where KiCad
+    10 keeps `3dmodels/Resistor_SMD.3dshapes/R_0402_1005Metric.step`:
+    esp_prog's 16 references found 0 models that way (run 35)."""
+    stem = os.path.splitext(os.path.basename(path.replace('\\', '/')))[0]
+    hits = _library_index(dirs).get(stem.lower()) or []
+    for ext in ('.step', '.stp', '.wrl', '.vrml'):
+        for h in hits:
+            if h.lower().endswith(ext):
+                return h
+    return None
+
+
+def stage_models(board_text, dirs, board_dir=None) -> Tuple[str, int, int]:
     """Make every model reference survive the board being re-written into a
     temp dir, and point a missing `.wrl` at an existing `.step` twin.
 
@@ -183,8 +225,11 @@ def stage_models(board_text, dirs, board_dir=None) -> Tuple[str, int]:
     would point at nothing there (the phase-5 verifier: ulx3s, orangecrab,
     watchy and tigard use KIPRJMOD, glasgow `../../packages3D/`). Every
     reference that resolves is therefore rewritten to its ABSOLUTE path.
-    Returns `(text, n_twins)`: how many `.wrl` were pointed at a twin."""
-    n = [0]
+    A reference that still resolves to nothing is looked up by its file name
+    in the library dirs (`_by_name`), last.
+    Returns `(text, n_twins, n_named)`: how many `.wrl` were pointed at a
+    twin, and how many references were found by name."""
+    n = [0, 0]
 
     def fix(m):
         path = m.group(2)
@@ -200,8 +245,12 @@ def stage_models(board_text, dirs, board_dir=None) -> Tuple[str, int]:
                     n[0] += 1
                     return (m.group(1) + (stem + ext).replace('\\', '/')
                             + m.group(3))
+        found = _by_name(path, dirs)
+        if found:
+            n[1] += 1
+            return m.group(1) + found.replace('\\', '/') + m.group(3)
         return m.group(0)
-    return _MODEL_RE.sub(fix, board_text), n[0]
+    return _MODEL_RE.sub(fix, board_text), n[0], n[1]
 
 
 def _glb_node_names(glb_path):
@@ -233,7 +282,7 @@ def export_glb(board_path, pcb, out_dir, cli=None,
     tmp = tempfile.mkdtemp(prefix='stage3d_glb_')
     try:
         src = open(board_path, encoding='utf-8').read()
-        text, nfix = stage_models(
+        text, nfix, nnamed = stage_models(
             src, kir.model_dirs(cli, board_path),
             os.path.dirname(os.path.abspath(board_path)))
         staged = os.path.join(tmp, os.path.basename(board_path))
@@ -274,9 +323,11 @@ def export_glb(board_path, pcb, out_dir, cli=None,
         return ({'path': out,
                  'matched': sorted({r.split('~')[0] for r in refs}),
                  'poses': poses},
-                'GLB: %d of %d parts have a model%s'
+                'GLB: %d of %d parts have a model%s%s'
                 % (len(refs), n, (' (%d .wrl -> .step)' % nfix)
-                   if nfix else ''))
+                   if nfix else '',
+                   (' (%d found by file name in the library)' % nnamed)
+                   if nnamed else ''))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
