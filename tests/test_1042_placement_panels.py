@@ -766,6 +766,24 @@ def test_readable_or_not_drawn_across_ratios_sizes():
                             fail('%s: %d panel(s), and the header does not '
                                  'say which were dropped' % (
                                      tag, len(dbg['names'])))
+    # The stage3d sweep draws all three panels wherever it draws at all, so
+    # the FEWER-PANELS arm is driven directly: a box too narrow for three
+    # keeps fewer and its header names the dropped ones (the retired
+    # layouts' narrow columns used to reach this arm from the sweep).
+    for w in (220, 400):
+        im = Image.new('RGB', (w, 300))
+        dbg = {}
+        MP.draw_panels(ImageDraw.Draw(im), FL.Box(0, 0, w, 300), tr, cur=2,
+                       theme='dark', frame_h=900, routing=True, debug=dbg)
+        if len(dbg.get('names') or ()) >= 3:
+            fail('BROKEN: a %d px box held all three panels, so the '
+                 'fewer-panels arm is not reached' % w)
+        elif not any('dropped' in h for h in dbg.get('header') or ()):
+            fail('a %d px box drew %d panel(s) and the header does not say '
+                 'which were dropped: %r' % (w, len(dbg.get('names') or ()),
+                                             dbg.get('header')))
+        else:
+            dropped += 1
     print('    %d drawn (%d with fewer panels, named), %d declined: %s'
           % (drawn, dropped, declined, ', '.join(declines)))
     # The stage3d frame keeps its board at 70% of the height, so on a wide
