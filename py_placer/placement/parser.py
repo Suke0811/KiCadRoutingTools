@@ -266,7 +266,50 @@ OUTLINE_HULL = 'hull'
 _SHAPE_CACHE: Dict[tuple, Dict[str, Dict[str, tuple]]] = {}
 
 
-def _outline_shapes_by_side(fp_text: str, layer_re: str) -> Dict[str, tuple]:
+def _nested_even_odd(geoms):
+    """One outline from closed contours the way KiCad assembles a courtyard
+    (`ConvertOutlineToPolygon`): a contour enclosed by an ODD number of the
+    others is a hole in its parent, one enclosed by an even number an
+    outline. So two concentric circles are a RING -- glasgow MK1-MK4's
+    mounting-hole keep-outs, 34 mm2 in KiCad, which a plain union filled to
+    78.5 mm2. Contours that overlap without one enclosing the other are
+    united, and an exact duplicate counts once.
+    """
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    contours = []
+    for g in geoms:
+        stack = [g]
+        while stack:
+            h = stack.pop()
+            if h is None or h.is_empty:
+                continue
+            if h.geom_type == 'Polygon':
+                c = Polygon(h.exterior)
+                if c.area > 0 and not any(c.equals(q) for q in contours):
+                    contours.append(c)
+            else:
+                stack.extend(getattr(h, 'geoms', ()))
+    if not contours:
+        return None
+    depth = [sum(1 for j, q in enumerate(contours)
+                 if j != i and q.contains(c))
+             for i, c in enumerate(contours)]
+    shape = None
+    for d in sorted(set(depth)):
+        level = unary_union([c for c, k in zip(contours, depth) if k == d])
+        if shape is None:
+            shape = level
+        elif d % 2:
+            shape = shape.difference(level)
+        else:
+            shape = shape.union(level)
+    return shape
+
+
+def _outline_shapes_by_side(fp_text: str, layer_re: str,
+                            even_odd: bool = False) -> Dict[str, tuple]:
     """The TRUE drawn outline of one footprint on `layer_re`, per side (#1094).
 
     `{side: (shapely geometry in the local frame, how)}`, where `how` is
@@ -280,6 +323,11 @@ def _outline_shapes_by_side(fp_text: str, layer_re: str) -> Dict[str, tuple]:
     oriented bbox cannot either, because a stepped courtyard such as StickHub
     U1's 24 segments still over-states its corners by 2 mm2. This keeps the
     shape.
+
+    `even_odd` assembles nested contours as KiCad assembles a COURTYARD
+    (`_nested_even_odd`: a contour inside another is a hole). Off, every
+    closed contour is united -- a .Fab drawing's inner circle is a detail
+    of the body (a button, a lens), not a hole through it.
     """
     from shapely.geometry import LineString, Point, Polygon, box
     from shapely.ops import polygonize, unary_union
@@ -352,13 +400,14 @@ def _outline_shapes_by_side(fp_text: str, layer_re: str) -> Dict[str, tuple]:
         return float(shapely.distance(shape, shapely.points(pts)).max()
                      ) <= _OUTLINE_COVER_TOL_MM
 
+    compose = _nested_even_odd if even_odd else unary_union
     out: Dict[str, tuple] = {}
     for side in set(verts) | set(areas):
         parts = list(areas.get(side, []))
         if lines.get(side):
             parts.extend(polygonize(unary_union(lines[side])))
         how = OUTLINE_POLYGON
-        shape = unary_union(parts) if parts else None
+        shape = compose(parts) if parts else None
         pts = verts.get(side, [])
         if pts and lines.get(side) and not covers(shape, pts):
             # Ends that miss each other by a few microns (ulx3s BAT1's
@@ -372,7 +421,7 @@ def _outline_shapes_by_side(fp_text: str, layer_re: str) -> Dict[str, tuple]:
             retry = list(areas.get(side, [])) + list(
                 polygonize(unary_union(snapped)))
             if retry:
-                cand = unary_union(retry)
+                cand = compose(retry)
                 if covers(cand, pts):
                     shape = cand
         if pts and not covers(shape, pts):
@@ -384,18 +433,19 @@ def _outline_shapes_by_side(fp_text: str, layer_re: str) -> Dict[str, tuple]:
     return out
 
 
-def _extract_outline_shapes(pcb_file: str, layer_re: str, marker: str
+def _extract_outline_shapes(pcb_file: str, layer_re: str, marker: str,
+                            even_odd: bool = False
                             ) -> Dict[str, Dict[str, tuple]]:
     import os as _os
     try:
         st = _os.stat(pcb_file)
         key = (_os.path.abspath(pcb_file), st.st_mtime_ns, st.st_size,
-               layer_re)
+               layer_re, even_odd)
     except OSError:
         key = None
     if key is not None and key in _SHAPE_CACHE:
         return dict(_SHAPE_CACHE[key])
-    result = _read_outline_shapes(pcb_file, layer_re, marker)
+    result = _read_outline_shapes(pcb_file, layer_re, marker, even_odd)
     if key is not None:
         if len(_SHAPE_CACHE) > 16:
             _SHAPE_CACHE.clear()
@@ -403,14 +453,15 @@ def _extract_outline_shapes(pcb_file: str, layer_re: str, marker: str
     return dict(result)
 
 
-def _read_outline_shapes(pcb_file: str, layer_re: str, marker: str
+def _read_outline_shapes(pcb_file: str, layer_re: str, marker: str,
+                         even_odd: bool = False
                          ) -> Dict[str, Dict[str, tuple]]:
     blocks = _file_blocks(pcb_file)
     result: Dict[str, Dict[str, tuple]] = {}
     for ref, fp_text in blocks:
         if marker not in fp_text:
             continue
-        by_side = _outline_shapes_by_side(fp_text, layer_re)
+        by_side = _outline_shapes_by_side(fp_text, layer_re, even_odd)
         if by_side:
             result[ref] = by_side
     return result
@@ -424,7 +475,8 @@ def extract_courtyard_shapes(pcb_file: str) -> Dict[str, Dict[str, tuple]]:
     function returns, so a consumer can use the bbox as a broad phase and this
     as the exact test.
     """
-    return _extract_outline_shapes(pcb_file, _CRTYD_LAYER, '.CrtYd"')
+    return _extract_outline_shapes(pcb_file, _CRTYD_LAYER, '.CrtYd"',
+                                   even_odd=True)
 
 
 def extract_fab_shapes(pcb_file: str) -> Dict[str, Dict[str, tuple]]:

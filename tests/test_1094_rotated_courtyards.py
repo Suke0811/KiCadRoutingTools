@@ -270,6 +270,31 @@ class TestOutlineDetails(unittest.TestCase):
         self.assertAlmostEqual(fab[0].area_mm2, 2.0, places=3)
         self.assertEqual(fab[0].contained_frac, 1.0)
 
+    def test_concentric_circles_are_a_ring(self):
+        """Two concentric courtyard circles are a RING, as KiCad assembles a
+        courtyard (glasgow MK1-MK4: 34 mm2 in pcbnew's GetCourtyard, 78.5
+        as a filled disc). A part inside the hole does not pair; one on the
+        ring does. A .Fab drawing's inner circle stays a body detail."""
+        import math
+        from placement.parser import (extract_courtyard_shapes,
+                                      extract_fab_shapes)
+        ring = ''.join(
+            f'    (fp_circle (center 0 0) (end {r} 0) (stroke (width 0.05)'
+            f' (type default)) (layer "{ly}"))\n'
+            for r in (3, 2) for ly in ('F.CrtYd', 'F.Fab'))
+        small = ('    (fp_rect (start -0.6 -0.6) (end 0.6 0.6) (stroke (width'
+                 ' 0.05) (type default)) (layer "F.CrtYd"))\n')
+        for bx, want in ((11.0, set()), (12.5, {('A', 'B')})):
+            with tempfile.TemporaryDirectory() as td:
+                p = raw_board(td, fp('A', 10, 10, ring)
+                              + fp('B', bx, 10, small, net=2))
+                crt = extract_courtyard_shapes(p)['A']['F'][0]
+                fab = extract_fab_shapes(p)['A']['F'][0]
+                g = grade(p)
+            self.assertAlmostEqual(crt.area, math.pi * (9 - 4), delta=0.1)
+            self.assertAlmostEqual(fab.area, math.pi * 9, delta=0.1)
+            self.assertEqual(courtyard_pairs(g), want, bx)
+
     def test_an_l_shaped_graze_is_as_thin_as_it_is(self):
         """B (3.2 mm square) sits in the corner notch of A's stepped
         courtyard and grazes both arms 0.2 mm deep: an L of 0.84 mm2. Its
