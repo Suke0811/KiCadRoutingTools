@@ -4,7 +4,7 @@
   1. **The board keeps its share.** A 16:9 `split` film left the board a
      1400x342 strip. A landscape frame with a band now puts its panel in a
      side column and every lower box is capped so board + attempts band keep
-     `BOARD_MIN_SHARE` of the height -- checked over layout x ratio x band.
+     `STAGE3D_BOARD_H_FRAC` of the height -- checked over ratio x band.
   2. (The iso view's containment check went with the iso panel: stage3d is
      the only film layout.)
   3. **The inventory follows the glide.** Mid-glide the box read the
@@ -25,6 +25,11 @@ import shutil
 import sys
 import tempfile
 import tracemalloc
+
+# stage3d is the only film layout, so an unnamed layout is a stage3d
+# frame. These tests grade the 2D board, not the Node/Chromium 3D
+# render: set before env_knobs is read.
+os.environ.setdefault('KICAD_MOVIE_BOARD3D', '2d')
 
 RUN_ALL_TIMEOUT = 900
 
@@ -60,49 +65,48 @@ def fail(msg):
 
 
 # --------------------------------------------------------------------------
-def test_the_board_keeps_its_share_at_every_layout_and_ratio():
+def test_the_board_keeps_its_share_at_every_ratio():
+    """On the stage3d frame (the only layout) -- the sweep used to run
+    over every layout; the retired ones are gone."""
     _mark = len(_FAIL)
     bb = (50.0, 71.0, 130.0, 120.0)            # glasgow's 1.63:1 outline
     n, worst = 0, (9.0, None)
-    for lk in FL.LAYOUTS:
+    for lk in ('stage3d',):
         for rk, ratio in FL.RATIOS.items():
             for band in (0, 1):
                 n += 1
-                g0 = FL.plan_frame(bb, layout=lk, ratio=ratio, size=1400,
-                                   panel=True)
+                g0 = FL.plan_frame(bb, ratio=ratio, size=1400)
                 tp = int(0.16 * g0.frame.h) if band else 0
-                g = FL.plan_frame(bb, layout=lk, ratio=ratio, size=1400,
-                                  panel=True, track_px=tp)
+                g = FL.plan_frame(bb, ratio=ratio, size=1400, track_px=tp)
                 tr = g.track.h if g.track else 0
                 share = (g.board.h + tr) / float(g.frame.h)
                 wshare = g.board.w / float(g.frame.w)
                 if share < worst[0]:
                     worst = (share, (lk, rk, band))
-                if share < FL.BOARD_MIN_SHARE - 0.01:
+                if share < FL.STAGE3D_BOARD_H_FRAC - 0.01:
                     fail('%s/%s band=%s: board+band %.2f of the '
                          'height (floor %.2f)'
-                         % (lk, rk, band, share, FL.BOARD_MIN_SHARE))
+                         % (lk, rk, band, share, FL.STAGE3D_BOARD_H_FRAC))
                 if wshare < 0.5:
                     fail('%s/%s: board %.2f of the width'
                          % (lk, rk, wshare))
     # the case the stills showed
-    g = FL.plan_frame(bb, layout='split', ratio=16 / 9.0, size=1400,
-                      panel=True, track_px=126)
+    g = FL.plan_frame(bb, ratio=16 / 9.0, size=1400, track_px=126)
     if g.board.h < 0.7 * g.frame.h:
-        fail('16:9 split + band: board %dx%d in a %dx%d frame -- still a '
+        fail('16:9 + band: board %dx%d in a %dx%d frame -- still a '
              'strip' % (g.board.w, g.board.h, g.frame.w, g.frame.h))
     if g.panel is None or g.panel.x < g.board.w:
-        fail('16:9 split + band: the panel is not in a side column')
+        fail('16:9 + band: the panel is not in a side column')
     if len(_FAIL) == _mark:
-        print('  PASS: %d plans; worst board+band share %.2f (%s); 16:9 split '
-              '+ band board is now %dx%d' % (n, worst[0], worst[1],
-                                             g.board.w, g.board.h))
+        print('  PASS: %d plans; worst board+band share %.2f (%s); 16:9 '
+              '+ band board is %dx%d' % (n, worst[0], worst[1],
+                                         g.board.w, g.board.h))
 
 
 # --------------------------------------------------------------------------
 def _glide_inventories(a, b):
-    """(label, inventory) per frame for a stage glide from a to b, split
-    layout so the lower box exists."""
+    """(label, inventory) per frame for a stage glide from a to b, on the
+    stage3d frame, whose layer column is the lower box."""
     import movie_camera as MC
     seen = []
     orig = A.Movie._note_chrome
@@ -114,7 +118,7 @@ def _glide_inventories(a, b):
     try:
         st = MC.Stage(MC.synth_rounds([a, b]), '', tween=4)
         A.build_boards([('a', a, None), ('b', b, None)], b, 240, 1, None, 2,
-                       6, stage=st, layout='split', aspect='16:9')
+                       6, stage=st, aspect='16:9', board3d='2d')
     finally:
         A.Movie._note_chrome = orig
     return seen
@@ -278,7 +282,7 @@ def _peak(n, tmp, old_storage=False, check=False):
     try:
         with frame_spool.FrameSpool() as sp:
             A.build_boards([('route', board, tr)], board, 200, 1, None, 2, 6,
-                           layout='split', aspect='16:9', frames_sink=sp,
+                           aspect='16:9', frames_sink=sp, board3d='2d',
                            max_frames=0)
             nf = len(sp)
         _c, peak = tracemalloc.get_traced_memory()
@@ -338,7 +342,7 @@ def test_the_heap_does_not_grow_with_frames_x_segments():
 
 
 TESTS = (
-    test_the_board_keeps_its_share_at_every_layout_and_ratio,
+    test_the_board_keeps_its_share_at_every_ratio,
     test_the_inventory_follows_the_glide,
     test_no_band_label_overprints_another,
     test_the_heap_does_not_grow_with_frames_x_segments,

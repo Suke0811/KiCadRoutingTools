@@ -57,14 +57,10 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 #: Below this cell width a layer cell cannot show a route, only that copper
-#: exists. Measured against the px-per-layer-cell figures: at one pixel
-#: budget the inset layout gives **28 490** px per cell against the split
+#: exists. Measured when there were several layouts: at one pixel budget
+#: the (retired) inset layout gave 28 490 px per cell against the split
 #: layout's 128 800 -- a 4.5x penalty, which is what makes a floor on the
 #: CELL rather than on the count the right guard.
-#:
-#: That 28 490 was quoted as "32k" here and in three other places until the
-#: PR's fact-checker reconstructed it: a 12% error in the number this
-#: constant leans on, uncatchable because nothing computed it. `py_router/layout_budget.py` computes these; `tests/test_946_layout_budget.py` pins them.
 CELL_MIN_W = 26
 
 #: And below THIS a cell cannot be drawn at all -- `d.rectangle` raises when
@@ -77,7 +73,7 @@ CELL_FLOOR_W = 8
 #: cell top, so a short cell inverts that rectangle and `d.rectangle` raises
 #: "y1 must be greater than or equal to y0". **1143 of 4010 (width, height)
 #: combinations** did it, at panel heights 13/14/20 px -- rects
-#: `frame_layout.plan_frame` produces on its own (`legacy --size 100` gives a
+#: the retired layouts produced on their own (`legacy --size 100` gave a
 #: 100x16 panel). Every one was swallowed into a blank box with nothing said.
 CELL_FLOOR_H = 6
 

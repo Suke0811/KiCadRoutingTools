@@ -102,9 +102,11 @@ def test_one_chrome_record_and_one_stage_record_per_frame():
 
 
 def test_no_caption_over_the_board_when_a_rail_carries_it():
-    """#1083: 0 over-board stamps on a rail layout -- and the legacy frame,
-    which has no rail, still gets its caption (the stamp was not just
-    deleted)."""
+    """#1083: 0 over-board stamps on a film -- every film frame has a rail
+    (stage3d is the only layout) -- and a frame with NO rail still gets its
+    caption, so the stamp was not just deleted. The rail-less control is
+    `build_single`, the one path that plans no frame; the flip-caption
+    control this used to run was the retired legacy frame's."""
     calls = []
     orig = RR.BoardRenderer._label
 
@@ -114,18 +116,18 @@ def test_no_caption_over_the_board_when_a_rail_carries_it():
     RR.BoardRenderer._label = _spy
     try:
         with FC.Chain() as c:
-            FC.film(c.boards, layout='sidebar')
+            FC.film(c.boards)
             rail = list(calls)
             del calls[:]
-            FC.film(c.boards, layout='legacy')
-            legacy = list(calls)
+            A.build_single({'events': []}, c.boards[-1], 320, 1, None, 2)
+            bare = list(calls)
     finally:
         RR.BoardRenderer._label = orig
-    _check(rail == [], 'sidebar (rail): no over-board caption (%d stamps: %s)'
+    _check(rail == [], 'stage3d (rail): no over-board caption (%d stamps: %s)'
            % (len(rail), rail[:3]))
-    _check(any('B side' in t for t in legacy),
-           'legacy (no rail): the flip is still captioned (%d stamps)'
-           % len(legacy))
+    _check(any('routed' in (t or '') for t in bare),
+           'no rail (build_single): the frame is still captioned (%s)'
+           % bare[:3])
 
 
 def test_a_back_side_glide_draws_its_ghost():
@@ -228,43 +230,6 @@ def test_copper_revealed_after_the_flip_is_mirrored():
                % (sum(flags), len(flags)))
 
 
-def test_the_key_is_drawn_after_the_mirror_at_any_supersample():
-    """The in-frame key (legacy layout, no rail) is TEXT: on a back-side
-    frame it must be drawn AFTER the mirror, at the renderer's supersampled
-    resolution -- the phase-2 verifier measured 94 of 140 key pixels wrong
-    at supersample 2 when it was drawn at 1x after the frame was finished.
-    Pinned structurally, on the calls the renderer receives: every mirrored
-    frame that carries a key carries it in `overlays_after_mirror`, never in
-    `overlays`, which the mirror would reverse."""
-    calls = []
-    orig = RR.BoardRenderer.frame
-
-    def _frame(self, *a, **k):
-        calls.append((k.get('mirror', False), list(k.get('overlays') or ()),
-                      list(k.get('overlays_after_mirror') or ())))
-        return orig(self, *a, **k)
-
-    def _is_key(fn):
-        return '_key_overlay' in getattr(fn, '__qualname__', '')
-    RR.BoardRenderer.frame = _frame
-    try:
-        with FC.Chain() as c:
-            import os as _os
-            tr = FC.rip_trace(c.boards[-1], _os.path.join(c.dir, 't.json'))
-            FC.film(c.boards, layout='legacy', traces={3: tr})
-    finally:
-        RR.BoardRenderer.frame = orig
-    mirrored = [x for x in calls if x[0]]
-    keyed = [x for x in mirrored if any(_is_key(f) for f in x[2])]
-    _check(mirrored and keyed,
-           '%d mirrored frames, %d carry the key after the mirror'
-           % (len(mirrored), len(keyed)))
-    _check(not any(_is_key(f) for x in mirrored for f in x[1]),
-           'no mirrored frame draws the key before the mirror')
-    _check(not any(x[2] for x in calls if not x[0]),
-           'the front side draws nothing after a mirror it does not have')
-
-
 def test_the_stage3d_column_is_always_the_layer_strip():
     """#1081's layer column is ONE thing on every frame: the per-layer strip
     (with the board's numbers under it). It used to switch by phase between
@@ -290,7 +255,7 @@ def test_the_stage3d_column_is_always_the_layer_strip():
             import movie_camera as MC
             st = MC.Stage(MC.synth_rounds(c.boards), '', tween=4, quiet=True)
             frames = A2.build_boards(steps, c.boards[-1], 480, 1, None, 2, 6,
-                                     stage=st, layout='stage3d',
+                                     stage=st,
                                      geom_out=geom, board3d='2d')
             list(frames)
     finally:
@@ -305,7 +270,6 @@ TESTS = (
     test_no_caption_over_the_board_when_a_rail_carries_it,
     test_a_back_side_glide_draws_its_ghost,
     test_copper_revealed_after_the_flip_is_mirrored,
-    test_the_key_is_drawn_after_the_mirror_at_any_supersample,
     test_the_stage3d_column_is_always_the_layer_strip,
 )
 

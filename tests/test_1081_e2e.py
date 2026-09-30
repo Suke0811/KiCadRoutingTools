@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The stage3d film, end to end, through both front ends (#1081).
 
-`make_movie(layout='stage3d')` and `make_film.build_film(layout='stage3d')`
+`make_movie` and `make_film.build_film` (stage3d, the only film layout)
 on the film_chain fixture (placement glides, a flip to the back, copper) with
 a converge ledger beside the boards:
 
@@ -71,7 +71,7 @@ def _movie(boards, led, png, **kw):
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         out = MM.make_movie(boards, out=os.path.join(png, 'film.mp4'),
-                            layout='stage3d', size=960, camera='auto',
+                            size=960, camera='auto',
                             attempts_ledger=led, png_dir=png, quiet=False,
                             **kw)
     from PIL import Image
@@ -178,7 +178,7 @@ def test_make_film_stage3d():
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             frames = MF.build_film(shots, size=960, fps=6.0, camera='auto',
-                                   quiet=True, layout='stage3d',
+                                   quiet=True,
                                    placement={'ledger': led,
                                               'board3d': '2d'})
         frames = list(frames or [])

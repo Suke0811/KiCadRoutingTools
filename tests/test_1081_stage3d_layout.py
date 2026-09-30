@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The `stage3d` layout (#1081): the board gets at least 70% x 70%.
 
-`stage3d` (F) is the layout whose board box holds the 3D board, with the layer
+`stage3d` is the film's only layout: its board box holds the 3D board, with the layer
 column to its right and one benchmark band along the bottom. Its promise is a
 FLOOR, not a ratio: the box is at least `STAGE3D_BOARD_W_FRAC` of the frame's
 width and `STAGE3D_BOARD_H_FRAC` of its height, whatever else asks for room.
@@ -18,11 +18,9 @@ What this file pins:
   * **an extreme declared aspect stays a stage3d frame at the ratio asked
     for**, board-only: no layer column, the board box the full width, the
     band only if it fits -- and said;
-  * **`auto` never picks it**: it is a stance, like C and D;
-  * **every layout key is in both CLIs' `--layout` help** -- the help used to
-    be hand-listed, and a new layout is exactly what such a list forgets;
-  * **`layout_budget` excludes it on purpose** (px/mm under perspective is not
-    comparable), so the exclusion cannot silently become an omission.
+  * **the retired flags are gone**: neither CLI offers `--layout` or
+    `--panels`, and a script still passing one is refused (exit 2) by
+    argparse, naming the flag, rather than ignored.
 """
 import os
 import subprocess
@@ -37,7 +35,6 @@ for _p in (ROOT, _TESTS, os.path.join(ROOT, 'py_router')):
         sys.path.insert(0, _p)
 
 import frame_layout as FL                                       # noqa: E402
-import layout_budget as LB                                      # noqa: E402
 
 _FAIL = []
 
@@ -54,8 +51,8 @@ def _check(ok, msg):
 
 
 def _plan(bb, ratio, size, track, foot=24):
-    return FL.plan_frame(bb, layout='stage3d', ratio=FL.parse_ratio(ratio),
-                         size=size, panel=True, foot_px=foot,
+    return FL.plan_frame(bb, ratio=FL.parse_ratio(ratio),
+                         size=size, foot_px=foot,
                          track_px=track, quiet=True)
 
 
@@ -93,9 +90,6 @@ def test_the_board_keeps_seventy_by_seventy():
                         _check(g.track.w == W and g.track.y >= g.board.y
                                + g.board.h, '%s: the band is full width '
                                'under the board' % tag)
-                    _check(g.panel_split is None,
-                           '%s: no iso split -- the board box is the 3D '
-                           'view' % tag)
     if len(_FAIL) == mark:
         print('  PASS: 70 x 70 holds on %d plans' % n)
 
@@ -187,44 +181,33 @@ def test_an_extreme_aspect_is_a_board_only_stage3d_frame_and_says_so():
         print('  PASS: extreme aspects are board-only stage3d frames, said')
 
 
-def test_auto_never_picks_it():
-    mark = len(_FAIL)
-    for sn, bb in SHAPES.items():
-        for size in (400, 1000):
-            g = FL.plan_frame(bb, layout='auto', size=size, panel=True,
-                              quiet=True)
-            _check(g.layout != 'stage3d', 'auto on %s chose stage3d' % sn)
-    if len(_FAIL) == mark:
-        print('  PASS: auto never infers stage3d')
-
-
-def test_every_layout_is_in_both_clis_help():
+def test_the_retired_flags_are_gone_from_both_clis():
+    """stage3d is the only film layout, so neither CLI offers `--layout` or
+    `--panels` any more, and a script still passing one is REFUSED by
+    argparse (exit 2, naming the flag) rather than silently ignored."""
     mark = len(_FAIL)
     for script in (os.path.join(ROOT, 'py_router', 'make_movie.py'),
                    os.path.join(ROOT, 'py_tools', 'make_film.py')):
+        name = os.path.basename(script)
         r = subprocess.run([sys.executable, script, '--help'],
                            capture_output=True, text=True, timeout=120,
                            cwd=ROOT)
         _check(r.returncode == 0, '%s --help exited %d: %s'
-               % (os.path.basename(script), r.returncode, r.stderr[-300:]))
-        text = ' '.join(r.stdout.split())
-        for key in FL.LAYOUTS:
-            _check(key in text, '%s --help does not name %r'
-                   % (os.path.basename(script), key))
+               % (name, r.returncode, r.stderr[-300:]))
+        for flag in ('--layout', '--panels'):
+            _check(flag not in r.stdout, '%s --help still offers %s'
+                   % (name, flag))
+        _check('--aspect' in r.stdout, '%s --help lost --aspect' % name)
+        for flag, value in (('--layout', 'sidebar'), ('--panels', 'xray')):
+            r = subprocess.run([sys.executable, script, 'x.kicad_pcb', flag,
+                                value], capture_output=True, text=True,
+                               timeout=120, cwd=ROOT)
+            _check(r.returncode == 2
+                   and 'unrecognized arguments: %s' % flag in r.stderr,
+                   '%s %s %s: exit %d, %r' % (name, flag, value,
+                                              r.returncode, r.stderr[-200:]))
     if len(_FAIL) == mark:
-        print('  PASS: both --help texts name every layout')
-
-
-def test_layout_budget_excludes_stage3d_on_purpose():
-    mark = len(_FAIL)
-    _check('stage3d' not in LB.LAYOUTS,
-           'layout_budget measures stage3d -- px/mm under perspective is '
-           'not comparable with the flat layouts\'')
-    _check(set(LB.LAYOUTS) == set(FL.LAYOUTS) - {'legacy', 'auto', 'stage3d'},
-           'layout_budget measures %s, expected every flat chrome layout'
-           % (LB.LAYOUTS,))
-    if len(_FAIL) == mark:
-        print('  PASS: the exclusion is deliberate and exact')
+        print('  PASS: --layout and --panels are gone, and refused')
 
 
 TESTS = (
@@ -233,9 +216,7 @@ TESTS = (
     test_a_floor_it_cannot_keep_is_said,
     test_portrait_makes_the_column_a_row_or_says_why_not,
     test_an_extreme_aspect_is_a_board_only_stage3d_frame_and_says_so,
-    test_auto_never_picks_it,
-    test_every_layout_is_in_both_clis_help,
-    test_layout_budget_excludes_stage3d_on_purpose,
+    test_the_retired_flags_are_gone_from_both_clis,
 )
 
 

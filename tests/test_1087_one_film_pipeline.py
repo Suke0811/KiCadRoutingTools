@@ -66,10 +66,11 @@ def test_both_front_ends_run_the_one_pipeline():
     import make_movie as MM
     import make_film as MF
     mm = _spied(lambda: MM.make_movie(boards, out=os.path.join(d, 'a.gif'),
-                                      size=240, quiet=True, layout='legacy'))
+                                      size=240, quiet=True, board3d='2d'))
     mf = _spied(lambda: MF.build_film(MF.parse_positional(boards, []),
                                       size=240, fps=6.0, camera='off',
-                                      quiet=True, layout='legacy'))
+                                      quiet=True,
+                                      placement={'board3d': '2d'}))
     _check(('plan', 'make_movie') in mm and ('compose', '') in mm,
            'make_movie plans and composes through film_passes (%s)' % mm)
     _check(('plan', 'make_film') in mf and ('compose', 'make_film') in mf,
@@ -94,24 +95,26 @@ def test_stage3d_without_a_ledger_keeps_the_placement_panels():
     with FC.Chain() as c:
         steps = [('s%d' % i, b, None) for i, b in enumerate(c.boards[:3])]
         with contextlib.redirect_stderr(io.StringIO()):
-            b = FP.plan(steps, c.boards[2], 'stage3d', quiet=True)
-        _check(b.stage3d and b.btrack is None and b.ptrack is not None
+            b = FP.plan(steps, c.boards[2], quiet=True)
+        _check(b.btrack is None and b.ptrack is not None
                and b.band, 'stage3d, no ledger: the placement panels are '
                'measured and reserved (%s, band %r)' % (b.pwhy, b.band))
 
 
-def test_an_extreme_aspect_keeps_stage3d_bands():
-    """Outside 0.50..3.00 plan_frame draws a board-only STAGE3D frame
-    (there is no legacy frame any more), so the bands stay stage3d's."""
-    with contextlib.redirect_stderr(io.StringIO()):
-        b = FP.plan([], None, 'stage3d', aspect='4:1', quiet=True,
-                    attempts=False)
-    _check(b.stage3d, 'stage3d at 4:1 plans stage3d bands')
+def test_plan_takes_no_layout_and_no_aspect():
+    """There is one layout, so the band plan cannot depend on one: an
+    extreme aspect (outside 0.50..3.00) is still a stage3d frame, a
+    board-only one, and its band is decided by plan_frame's height floor,
+    not by a second plan here (the legacy half-fallback this replaced)."""
+    import inspect
+    params = inspect.signature(FP.plan).parameters
+    _check('layout' not in params and 'aspect' not in params,
+           'film_passes.plan takes neither (%s)' % list(params))
 
 
 TESTS = (test_both_front_ends_run_the_one_pipeline,
          test_stage3d_without_a_ledger_keeps_the_placement_panels,
-         test_an_extreme_aspect_keeps_stage3d_bands)
+         test_plan_takes_no_layout_and_no_aspect)
 
 
 def main():

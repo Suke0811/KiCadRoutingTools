@@ -183,10 +183,8 @@ ROWS = [
      "    H = even(H)",
      (T_LAY,), 'KILLED'),
 
-    ('auto-infers-a-stance-it-must-never-infer', 'layout',
-     "    if a > ADAPTIVE_ASPECT_CUT:\n        return 'sidebar', ('adaptive: board aspect %.2f > %.2f'\n                           % (a, ADAPTIVE_ASPECT_CUT))",
-     "    if a > ADAPTIVE_ASPECT_CUT:\n        return 'split', ('adaptive: board aspect %.2f > %.2f'\n                         % (a, ADAPTIVE_ASPECT_CUT))",
-     (T_LAY,), 'KILLED'),
+    # 'auto-infers-a-stance-it-must-never-infer' went with 'auto': stage3d
+    # is the only film layout.
 
     ('mixed-frame-sizes-are-squashed-silently', 'anim',
      "        frame_layout.assert_frames_uniform(sorted(sizes))",

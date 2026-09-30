@@ -218,7 +218,7 @@ def test_an_invalid_theme_warns_once():
         with contextlib.redirect_stderr(err):
             make_movie.make_movie([BOARD], out=os.path.join(tmp, 'm.gif'),
                                   size=200, quiet=True, attempts=False,
-                                  layout='split', aspect='16:9',
+                                  aspect='16:9',
                                   # a run clock, so the per-FRAME clock band
                                   # (the path that warned once per frame)
                                   # is drawn
@@ -376,12 +376,20 @@ def test_a_shared_uuid_is_not_an_identity():
               'moves nothing, and a real move is still C2 alone')
 
 
-def _two_attempts_track():
-    import movie_attempts as MA
-    return MA.Track(tuple(MA.Attempt(i, 'r%d' % i, 'round',
-                                     (i - 1) if i else None, True, False,
-                                     float(10 - i), False, 'b')
-                          for i in range(4)), 'failures', 'loop', 'x')
+def _two_lap_ledger(d):
+    """A converge ledger with three laps: enough for a benchmark band."""
+    t0 = 1.7e9
+    rows = [{'iteration': 0, 'kind': 'placement', 'accepted': True, 't': t0,
+             'score': {'blocking': 40}},
+            {'iteration': 1, 'kind': 'completion', 'accepted': True,
+             't': t0 + 900, 'score': {'blocking': 3}},
+            {'iteration': 2, 'kind': 'completion', 'accepted': True,
+             't': t0 + 1800, 'score': {'blocking': 0}}]
+    p = os.path.join(d, 'ledger.jsonl')
+    with open(p, 'w', encoding='utf-8') as f:
+        for r in rows:
+            f.write(json.dumps(r) + '\n')
+    return p
 
 
 def _gif_frames(path):
@@ -396,44 +404,44 @@ def test_a_failing_overlay_costs_the_overlay_not_the_film():
     _mark = len(_FAIL)
     import cmd_timing
     import make_movie
-    import movie_attempts as MA
+    import movie_benchmark as MB
     clock = os.path.join(_TESTS, 'fixtures', 'cmd_timing',
                          'synthetic_run.jsonl')
     tmp = tempfile.mkdtemp(prefix='t1036ov_')
 
-    def _film(name, **kw):
+    def _film(name, size=400, **kw):
         err = io.StringIO()
         out = os.path.join(tmp, name + '.gif')
         got = None
         with contextlib.redirect_stderr(err):
-            # 400 px: at 200 the band declines (over its share of the frame)
             try:
-                # 'legacy': the ATTEMPTS band is that layout's (stage3d,
-                # the default since #1081, folds it into the benchmark band)
-                got = make_movie.make_movie([BOARD], out=out, size=400,
+                got = make_movie.make_movie([BOARD], out=out, size=size,
                                             quiet=True, camera='off',
                                             placement_panel=False,
-                                            layout='legacy', **kw)
+                                            board3d='2d', **kw)
             except Exception as exc:                            # noqa: BLE001
                 # the regression itself: the overlay's error escaped
                 err.write(' RAISED %s: %s' % (type(exc).__name__, exc))
         return got, err.getvalue()
 
     try:
-        # the attempts band: the probe draw passes, frame 2's draw raises
-        ok_path, _e = _film('band_ok', attempts=_two_attempts_track())
-        orig, calls = MA.draw_track, [0]
+        # the benchmark band (the attempts band's successor on the one
+        # stage3d frame): the probe draw passes, frame 2's draw raises.
+        # 1000 px: at 400 the band declines under the board's 70% floor.
+        led = _two_lap_ledger(tmp)
+        ok_path, _e = _film('band_ok', size=1000, attempts_ledger=led)
+        orig, calls = MB.draw_band, [0]
 
         def _boom(*a, **k):
             calls[0] += 1
             if calls[0] >= 3:
                 raise RuntimeError('band draw failed (injected)')
             return orig(*a, **k)
-        MA.draw_track = _boom
+        MB.draw_band = _boom
         try:
-            got, err = _film('band', attempts=_two_attempts_track())
+            got, err = _film('band', size=1000, attempts_ledger=led)
         finally:
-            MA.draw_track = orig
+            MB.draw_band = orig
         # the run clock: frame 2's band raises
         c_ok, _e2 = _film('clock_ok', attempts=False, timing=clock)
         c_orig, c_calls = cmd_timing.add_clock_band, [0]
@@ -448,7 +456,10 @@ def test_a_failing_overlay_costs_the_overlay_not_the_film():
             c_got, c_err = _film('clock', attempts=False, timing=clock)
         finally:
             cmd_timing.add_clock_band = c_orig
-        for what, path, e, ctl in (('attempts band', got, err, ok_path),
+        if calls[0] < 3:
+            fail('BROKEN: the benchmark band was never drawn, so its arm '
+                 'pins nothing')
+        for what, path, e, ctl in (('benchmark band', got, err, ok_path),
                                    ('run clock', c_got, c_err, c_ok)):
             if not (path and os.path.isfile(path)):
                 fail('%s: a failed overlay frame lost the film: %r'

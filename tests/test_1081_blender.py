@@ -132,8 +132,7 @@ def test_the_film_takes_the_blender_board():
         steps = [('step %d' % i, b, None) for i, b in enumerate(c.boards)]
         with contextlib.redirect_stderr(err):
             frames = A.build_boards(steps, c.boards[-1], 400, 1, None, 2, 6,
-                                    stage=st, layout='stage3d',
-                                    board3d='blender')
+                                    stage=st, board3d='blender')
         frames = list(frames)
         e = err.getvalue()
         _check('stage3d: 3D board' in e and 'Cycles CPU' in e,

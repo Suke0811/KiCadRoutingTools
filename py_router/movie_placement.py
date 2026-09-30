@@ -730,14 +730,16 @@ def plan_band(track, W, H, verdict):
     import movie_attempts as MA
     import frame_layout as FL
     cap = int(BAND_MAX_FRAC * H)
-    if W >= FL.ISO_SIDE_ASPECT * H:
-        # LANDSCAPE: the panel is a side column and the band the one bottom
-        # row, so the band is all that stands between the board box and
-        # BOARD_MIN_SHARE of the frame -- after the rail and the foot.
-        chrome = (max(FL.RAIL_MIN_PX, FL.even(H * FL.RAIL_FRAC))
-                  + max(FL.FOOT_MIN_PX, FL.even(H * FL.FOOT_FRAC)))
-        cap = min(cap, H - chrome
-                  - int(math.ceil(FL.BOARD_MIN_SHARE * H)))
+    # The stage3d frame (the only film layout) keeps its board box at
+    # STAGE3D_BOARD_H_FRAC of the height after the rail and the foot, and
+    # shrinks, then declines, a band that would breach that. So the band is
+    # SIZED under the same floor here: a band planned taller than the frame
+    # will keep is drawn into a box too short for the panels it was sized
+    # for (measured: panels sized at 200 px drawn into a 1000x118 box).
+    chrome = (max(FL.RAIL_MIN_PX, FL.even(H * FL.RAIL_FRAC))
+              + max(FL.FOOT_MIN_PX, FL.even(H * FL.FOOT_FRAC)))
+    need = int(math.ceil(FL.STAGE3D_BOARD_H_FRAC * H))
+    cap = min(cap, H - chrome - (need + need % 2))
     vh = MA.band_height(W, H) if verdict else 0
     if verdict and not vh:
         verdict = False

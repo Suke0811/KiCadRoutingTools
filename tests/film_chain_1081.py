@@ -129,7 +129,7 @@ def rip_trace(board, path, n=240, rip=24):
     return path
 
 
-def film(boards, layout='stage3d', tween=4, size=320, stage_out=None,
+def film(boards, tween=4, size=320, stage_out=None,
          traces=None, board3d='2d'):
     """`(frames, movie, stage, geom)` from the real build_boards + Stage.
     `traces` maps a step index to a trace file for that step. The board is
@@ -149,7 +149,7 @@ def film(boards, layout='stage3d', tween=4, size=320, stage_out=None,
         steps = [('step %d' % i, b, (traces or {}).get(i))
                  for i, b in enumerate(boards)]
         frames = A.build_boards(steps, boards[-1], size, 1, None, 2, 6,
-                                stage=st, layout=layout, geom_out=geom,
+                                stage=st, geom_out=geom,
                                 stage_out=stage_out, board3d=board3d)
     finally:
         MC.Stage.attach = orig

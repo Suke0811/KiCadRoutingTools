@@ -44,6 +44,11 @@ What this file pins:
 import os
 import sys
 
+# stage3d is the only film layout, so an unnamed layout is a stage3d
+# frame. These tests grade the 2D board, not the Node/Chromium 3D
+# render: set before env_knobs is read.
+os.environ.setdefault('KICAD_MOVIE_BOARD3D', '2d')
+
 RUN_ALL_FAST_OK = True
 
 _TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -300,22 +305,24 @@ def test_the_box_rect_never_changes_between_phases():
     changes frame height, and Pillow does not raise on that."""
     _mark = len(_FAIL)
     rects = set()
-    for lk in ('stacked', 'sidebar', 'split'):
-        g = FL.plan_frame((0, 0, 185, 100), layout=lk, size=700, panel=True)
+    for lk in ('16:9', '4:3', '9:16'):
+        g = FL.plan_frame((0, 0, 185, 100), ratio=FL.parse_ratio(lk),
+                          size=700)
         rects.add((lk, tuple(g.panel) if g.panel else None))
         for label in ('input', 'step1 route', 'round 2 moving 4 part(s)',
                       'routed'):
             phase = RP.phase_for(label)
             if phase not in ('bookend', 'placement', 'routing', 'seeding'):
                 fail('%r mapped to an unknown phase %r' % (label, phase))
-        # the box is a property of the LAYOUT, not of the phase
-        g2 = FL.plan_frame((0, 0, 185, 100), layout=lk, size=700, panel=True)
+        # the box is a property of the FRAME, not of the phase
+        g2 = FL.plan_frame((0, 0, 185, 100), ratio=FL.parse_ratio(lk),
+                           size=700)
         if tuple(g.panel or ()) != tuple(g2.panel or ()):
             fail('%s: the panel rect is not deterministic' % lk)
     if RP.phase_for('anything', unplaced=True) != 'seeding':
         fail('an unplaced board does not get the seeding content')
     if len(_FAIL) == _mark:
-        print('  PASS: one rect per layout, four contents, phase chooses only '
+        print('  PASS: one rect per frame, four contents, phase chooses only '
               'the content')
 
 
@@ -478,8 +485,9 @@ def test_the_film_actually_reaches_its_closing_bookend():
         `step1 -> step4` read `step4_restored` on frame 1 -- the one field
         that does not change frame to frame, named after the last step.
 
-    Gated on a panel EXISTING, because on 'legacy' the closing snapshot would
-    add a frame to every movie this repo has ever written.
+    Gated on a panel EXISTING: the control is a 9:16 stage3d frame too
+    small to keep its layer row (the legacy frame was the control until
+    stage3d became the only layout).
     """
     _mark = len(_FAIL)
     import animate_route as A
@@ -491,10 +499,10 @@ def test_the_film_actually_reaches_its_closing_bookend():
         shutil.copyfile(BOARD, a)
         shutil.copyfile(BOARD, b)
         steps = [('step1 route', a, None), ('step2 route', b, None)]
-        for layout, want_close in (('split', True), ('legacy', False)):
+        for layout, want_close in (('16:9', True), ('9:16', False)):
             chrome, geom = [], []
             frames = A.build_boards(steps, b, 240, 1, 150, 2, 3,
-                                    layout=layout, geom_out=geom)
+                                    aspect=layout, geom_out=geom)
             if not frames:
                 fail('%s: no frames' % layout)
                 continue
@@ -516,16 +524,21 @@ def test_the_film_actually_reaches_its_closing_bookend():
             del labels
         # the REAL check, on the frames themselves: with a panel, the film
         # must be one frame longer than without the closing snapshot.
+        g_row = []
         n_split = len(A.build_boards(steps, b, 240, 1, 150, 2, 3,
-                                     layout='split'))
+                                     aspect='16:9'))
         n_legacy = len(A.build_boards(steps, b, 240, 1, 150, 2, 3,
-                                      layout='legacy'))
+                                      aspect='9:16', geom_out=g_row))
+        if not g_row or g_row[0].panel is not None:
+            fail('BROKEN CONTROL: the 9:16 frame at 240 px kept its layer '
+                 'row, so it cannot stand for a frame with no box')
         if n_split <= n_legacy:
-            fail('the panelled film (%d) is not longer than legacy (%d) -- '
-                 'the closing bookend was not emitted' % (n_split, n_legacy))
+            fail('the panelled film (%d) is not longer than the one with no '
+                 'box (%d) -- the closing bookend was not emitted'
+                 % (n_split, n_legacy))
         else:
-            print('    split %d frames vs legacy %d -- the closing bookend is '
-                  'the difference' % (n_split, n_legacy))
+            print('    16:9 %d frames vs 9:16 with no row %d -- the closing '
+                  'bookend is the difference' % (n_split, n_legacy))
 
     # and the rail's stable left is the BOARD, not the last step
     if A.board_title('/x/step4_restored.kicad_pcb',

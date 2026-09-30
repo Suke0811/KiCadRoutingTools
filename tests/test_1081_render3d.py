@@ -74,7 +74,7 @@ def test_the_board_renders_deterministically():
         with FC.Chain() as c:
             out = {}
             tr = FC.rip_trace(c.boards[-1], os.path.join(c.dir, 'tr.json'))
-            _f, _m, st, _g = FC.film(c.boards, layout='stage3d', size=480,
+            _f, _m, st, _g = FC.film(c.boards, size=480,
                                      stage_out=out, traces={3: tr})
             tl = TL.build(out)
             sc = SC.build_scene(parse_kicad_pcb(c.boards[-1]))

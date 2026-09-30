@@ -23,14 +23,15 @@
     'unmeasured', never a number;
   * x is RUN TIME shared with the verdict band when the ledger carries `t`,
     else the board order, and the header says which;
-  * READABLE OR NOT DRAWN, across layout x ratio x size {500,1000,1400}:
+  * READABLE OR NOT DRAWN, on the stage3d frame (the only layout) across
+    ratio x size {500,1000,1400}:
     every plot >= 48 px, every text inside its panel, no two overlapping,
     fewer panels (named in the header) when narrow, a decline disclosed when
     the frame is too small;
   * a glide shows the SOURCE board's numbers until it lands; flags on one
     beat stack; a failed draw repaints; an unmeasured board is not zero;
   * `--attempts-ledger` works from COPIES rendered away from the run dir;
-  * exact frame sizes across layout x ratio x theme with the panels on.
+  * exact frame sizes across ratio x theme with the panels on.
 
 Needs Pillow; renders small in-repo boards.
 """
@@ -42,6 +43,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+# stage3d is the only film layout, so an unnamed layout is a stage3d
+# frame. These tests grade the 2D board, not the Node/Chromium 3D
+# render: set before env_knobs is read.
+os.environ.setdefault('KICAD_MOVIE_BOARD3D', '2d')
 
 RUN_ALL_TIMEOUT = 1500
 
@@ -384,21 +390,9 @@ def test_a_placement_only_ledger_keeps_its_band():
                                     'result_sha': sha, 'parent_sha': par,
                                     'accepted': acc,
                                     'score': {'blocking': b}}) + '\n')
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err), \
-                contextlib.redirect_stdout(io.StringIO()):
-            rc = make_film.main(['--from-ledger', led, '-o',
-                                 os.path.join(d, 'place.gif'), '--size',
-                                 '400', '--no-placement-panel',
-                                 '--layout', 'legacy'])
-        e = err.getvalue()
-        if rc != 0:
-            fail('make_film --from-ledger exited %r: %s' % (rc, e[-400:]))
-        if 'attempts band: 3 attempts from converge' not in e:
-            fail('the placement film has no attempts band: %s'
-                 % [ln for ln in e.splitlines() if 'attempts' in ln])
-        # #1081: the DEFAULT film is stage3d, whose one band -- the benchmark
-        # band -- must carry the same three placement laps
+        # #1081: the film is stage3d (the only layout), whose one band --
+        # the benchmark band -- must carry the three placement laps. (The
+        # legacy film's attempts-band arm went with the legacy frame.)
         err = io.StringIO()
         with contextlib.redirect_stderr(err),                 contextlib.redirect_stdout(io.StringIO()):
             rc = make_film.main(['--from-ledger', led, '-o',
@@ -695,10 +689,9 @@ def test_series_colours_are_distinct_in_both_themes():
               'deuteranope too' % len(pairs))
 
 
-def _sweep_one(tr, lk, rk, size, verdict):
+def _sweep_one(tr, rk, size, verdict=False):
     bounds = (0, 0, 100, 60)
-    kw = dict(layout=lk, ratio=FL.parse_ratio(rk), size=size,
-              panel=(lk != 'legacy'), legacy_size=(size, int(size * 0.6)))
+    kw = dict(ratio=FL.parse_ratio(rk), size=size)
     g = FL.plan_frame(bounds, **kw)
     fn = MP.band_px(tr, verdict)
     bh = fn(g.frame.w, g.frame.h)
@@ -716,7 +709,11 @@ def _sweep_one(tr, lk, rk, size, verdict):
     return plan, ok, dbg, (g2, pbox, vbox)
 
 
-def test_readable_or_not_drawn_across_layouts_ratios_sizes():
+def test_readable_or_not_drawn_across_ratios_sizes():
+    """On the stage3d frame (the only layout), whose one band carries the
+    placement panels when there is no ledger for a benchmark band -- so the
+    panels are sized alone (the verdict-graph arm went with the verdict
+    band), and the frame keeps its board floor."""
     _mark = len(_FAIL)
     tr = _track(flags=(MP.Flag(1, 'ONE pocket', 8),
                        MP.Flag(2, 'Focus panels', 49),
@@ -724,48 +721,37 @@ def test_readable_or_not_drawn_across_layouts_ratios_sizes():
                                'this film)', 94)))
     drawn = declined = dropped = 0
     declines = []
-    for lk in ('legacy', 'stacked', 'sidebar', 'inset', 'split'):
+    for lk in ('stage3d',):
         for rk in (None, '16:9', '16:10', '9:16', '1:1', '4:3'):
-            land = rk in ('16:9', '16:10')
-            for size, verdict in [(s_, v_) for s_ in (500, 1000, 1400)
-                                  for v_ in (True, False)]:
-                    tag = '%s/%s/%d/%s' % (lk, rk, size,
-                                           'both' if verdict else 'place')
-                    plan, ok, dbg, geo = _sweep_one(tr, lk, rk, size,
-                                                    verdict)
+            land = rk in (None, '16:9', '16:10', '4:3')
+            for size in (500, 1000, 1400):
+                    tag = '%s/%s/%d' % (lk, rk, size)
+                    plan, ok, dbg, geo = _sweep_one(tr, rk, size)
                     if plan.mode == 'declined':
                         declined += 1
                         declines.append(tag)
                         if not plan.why:
                             fail('%s: declined without a reason' % tag)
-                        if size >= 1000:
-                            fail('%s: declined at size %d (%s)'
-                                 % (tag, size, plan.why))
                         continue
                     if not ok:
                         fail('%s: planned but not drawn: %r' % (tag, dbg))
                         continue
                     drawn += 1
                     g2, pbox, vbox = geo
-                    if verdict and (vbox is None or vbox.h < 64):
-                        fail('%s: the verdict graph lost its band (%r)'
-                             % (tag, vbox))
-                    if g2.board.h < 0.30 * g2.frame.h - 1:
-                        fail('%s: the board box is %d px of %d'
-                             % (tag, g2.board.h, g2.frame.h))
-                    # LANDSCAPE keeps r4's arrangement: the board box at
-                    # >= 55% of the frame height, panel in a side column,
-                    # the band the one bottom row (#1042 review: 16:9 split
-                    # gave the board 1000x170 under a full-width lower box)
-                    if land and g2.board.h < 0.55 * g2.frame.h:
-                        fail('%s: landscape board box %dx%d is %.0f%% of a '
-                             '%d px frame' % (tag, g2.board.w, g2.board.h,
-                                              100.0 * g2.board.h
-                                              / g2.frame.h, g2.frame.h))
-                    if (land and lk in ('split', 'stacked')
-                            and g2.panel is not None
-                            and g2.panel.y >= g2.board.y + g2.board.h):
-                        fail('%s: a full-width lower box beside the band '
+                    if pbox is None:
+                        # the frame declined the band under the board's
+                        # height floor -- said in its notes
+                        if not any('band' in x for x in g2.notes):
+                            fail('%s: no band and no note saying why' % tag)
+                        continue
+                    if g2.board.h < FL.STAGE3D_BOARD_H_FRAC * g2.frame.h - 1:
+                        fail('%s: the board box is %d px of %d, under the '
+                             'stage3d floor' % (tag, g2.board.h, g2.frame.h))
+                    # LANDSCAPE: the layer column beside the board, the
+                    # band the one bottom row
+                    if land and (g2.panel is None
+                                 or g2.panel.x < g2.board.x + g2.board.w):
+                        fail('%s: the layer column is not beside the board '
                              '(%r)' % (tag, g2.panel))
                     for name, p in dbg['plots'].items():
                         # 48 is the SPEC (#1042 verification), not the
@@ -799,8 +785,16 @@ def test_readable_or_not_drawn_across_layouts_ratios_sizes():
                                      tag, len(dbg['names'])))
     print('    %d drawn (%d with fewer panels, named), %d declined: %s'
           % (drawn, dropped, declined, ', '.join(declines)))
+    # The stage3d frame keeps its board at 70% of the height, so on a wide
+    # frame the band is short and the panels are often DECLINED, said --
+    # never drawn into a box too short for them (measured before the band
+    # was sized under that floor: planned at ~200 px, drawn into 1000x118,
+    # nothing readable, and the status line said drawn). They must still
+    # be drawn where the frame has the room.
+    if not drawn:
+        fail('the panels were declined on every stage3d frame')
     if len(_FAIL) == _mark:
-        print('  PASS: 5 layouts x 6 ratios x 3 sizes x 2 bands -- every '
+        print('  PASS: 6 ratios x 3 sizes on the stage3d frame -- every '
               'plot >= %d px, every text whole, inside, unoverlapped'
               % MP.PLOT_MIN_PX)
 
@@ -813,8 +807,8 @@ def _sha(p):
 
 def test_attempts_ledger_from_copies():
     """Run 32 had to render from copies: the boards away from the run dir,
-    the ledger named with --attempts-ledger. Both the verdict band and the
-    placement panels must read it."""
+    the ledger named with --attempts-ledger. The benchmark band must read
+    it, and so must the placement panels' track (`build_track`)."""
     _mark = len(_FAIL)
     import make_movie
     d = tempfile.mkdtemp(prefix='t1042c_')
@@ -846,12 +840,13 @@ def test_attempts_ledger_from_copies():
         with contextlib.redirect_stderr(err):
             got = make_movie.make_movie(
                 [a, b], out=os.path.join(d, 'f.gif'), size=1000, quiet=True,
-                layout='split', aspect='16:9', camera='off',
+                aspect='16:9', camera='off', board3d='2d',
                 attempts_ledger=led)
         e = err.getvalue()
-        for want in ('from converge', 'placement panels: 2 placement '
-                     'board(s)', 'x run time',
-                     'intent from ledger board_score'):
+        # a ledger makes the stage3d film's band the BENCHMARK band, which
+        # folds the placement laps in; the panels' own reading of the ledger
+        # is `build_track`'s, checked below
+        for want in ('benchmark band: converge',):
             if want not in e:
                 fail('from copies: %r not in the status lines:\n%s'
                      % (want, e[-600:]))
@@ -870,8 +865,8 @@ def test_attempts_ledger_from_copies():
     finally:
         shutil.rmtree(d, ignore_errors=True)
     if len(_FAIL) == _mark:
-        print('  PASS: --attempts-ledger read by both the band and the '
-              'panels, with the boards copied away from the run dir')
+        print('  PASS: --attempts-ledger read by the benchmark band and the '
+              'panel track, with the boards copied away from the run dir')
 
 
 def test_exact_frame_sizes_with_the_panels():
@@ -880,9 +875,9 @@ def test_exact_frame_sizes_with_the_panels():
     tmp = tempfile.mkdtemp(prefix='t1042f_')
     n = drawn = 0
     try:
-        for lk in ('split', 'stacked', 'sidebar', 'inset', 'legacy'):
+        for lk in ('stage3d',):
             for rk in ('16:9', '9:16', '1:1', '4:3'):
-                for th in (('dark', 'light') if lk == 'split'
+                for th in (('dark', 'light') if rk == '16:9'
                            else ('light',)):
                     err = io.StringIO()
                     out = os.path.join(tmp, '%s_%s_%s.gif'
@@ -890,8 +885,8 @@ def test_exact_frame_sizes_with_the_panels():
                     with contextlib.redirect_stderr(err):
                         got = make_movie.make_movie(
                             [SEED, PLACED], out=out, size=1000, quiet=True,
-                            layout=lk, aspect=rk, theme=th, attempts=False,
-                            camera='off')
+                            aspect=rk, theme=th, attempts=False,
+                            camera='off', board3d='2d')
                     n += 1
                     e = err.getvalue()
                     if 'placement panels: 2 placement board(s)' in e:
@@ -909,12 +904,14 @@ def test_exact_frame_sizes_with_the_panels():
                                  % (lk, rk, th, im.size, want))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    if drawn != n:
-        fail('%d of %d films at size 1000 declined the panels' % (n - drawn,
-                                                                   n))
+    # a decline is said (checked above); at 1000 the 70% board floor leaves
+    # a 16:9 frame no room for them, and a squarer frame keeps them
+    if not drawn:
+        fail('all %d films at size 1000 declined the panels' % n)
     if len(_FAIL) == _mark:
-        print('  PASS: %d films (5 layouts x 4 ratios, both themes on split) '
-              'with the panels drawn, each the declared size' % n)
+        print('  PASS: %d films (4 ratios, both themes on 16:9), %d with '
+              'the panels drawn and the rest declined and said, each the '
+              'declared size' % (n, drawn))
 
 
 TESTS = (
@@ -929,7 +926,7 @@ TESTS = (
     test_run_time_is_the_shared_x_axis,
     test_flags_stack_and_a_failure_repaints,
     test_series_colours_are_distinct_in_both_themes,
-    test_readable_or_not_drawn_across_layouts_ratios_sizes,
+    test_readable_or_not_drawn_across_ratios_sizes,
     test_attempts_ledger_from_copies,
     test_exact_frame_sizes_with_the_panels,
 )

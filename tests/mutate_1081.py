@@ -113,9 +113,12 @@ ROWS = [
      (T_ROT,), 'KILLED'),
 
     # --- the layout ----------------------------------------------------------
-    ('auto-picks-stage3d', 'layout',
-     "        return 'sidebar', ('adaptive: board aspect %.2f > %.2f'",
-     "        return 'stage3d', ('adaptive: board aspect %.2f > %.2f'",
+    # 'auto-picks-stage3d' went with 'auto': stage3d is the only layout.
+    # Its replacement pins the one frame-shape decision left -- a frame too
+    # extreme to hold a column is BOARD-ONLY, not a squeezed column.
+    ('an-extreme-frame-keeps-a-column', 'layout',
+     "        board, panel_box = Box(0, inner_y, W, inner_h), None",
+     "        board, panel_box, _w = _stage3d_boxes(W, H, inner_y, inner_h)",
      (T_LAY,), 'KILLED'),
     ('board-below-seventy', 'layout',
      "        bw = min(W - 2, _up_even(STAGE3D_BOARD_W_FRAC * W))",
@@ -190,9 +193,12 @@ ROWS = [
      "      part.body.position.y = h / 2 + 0.06;",
      (T_R3D,), 'KILLED'),
     # --- the defaults (#1081), Blender (#1089), one pipeline (#1087) -------
-    ('the-film-default-back-to-legacy', 'env',
-     "    g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'stage3d')",
-     "    g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'legacy')",
+    # 'the-film-default-back-to-legacy' went with KICAD_MOVIE_LAYOUT: there
+    # is no layout to default to. What replaces it is the retired knob's
+    # warning -- a value set in a shell must be SAID, not ignored.
+    ('a-retired-knob-goes-silent', 'layout',
+     "    print(line, file=sys.stderr)\n    return line",
+     "    return line",
      (T_DEF,), 'KILLED'),
     ('the-theme-default-back-to-dark', 'env',
      "    g['RENDER_THEME'] = _s('KICAD_RENDER_THEME', 'light')",
@@ -206,9 +212,12 @@ ROWS = [
      "        px.save(p, format='PNG')",
      "        pass",
      (T_BL,), 'KILLED'),
-    ('the-pipeline-drops-the-verdict-band', 'fp',
-     "        track = bands.track if (vbox is not None or ptrack is None) else None",
-     "        track = None",
+    # 'the-pipeline-drops-the-verdict-band' went with the verdict band (no
+    # stage3d film draws it). The pipeline's other band still must land.
+    ('the-pipeline-drops-the-placement-panels', 'fp',
+     "            frames = movie_placement.compose(frames, box, ptrack, marks,\n"
+     "                                             theme, geom.frame.h)",
+     "            pass",
      (T_1042,), 'KILLED'),
     ('a-2d-fallback-that-says-nothing', 'film',
      "        _say('stage3d: 2D X-ray in the board box -- %s' % why, notes)",

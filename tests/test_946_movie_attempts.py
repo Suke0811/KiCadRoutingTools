@@ -43,6 +43,11 @@ import os
 import sys
 import tempfile
 
+# stage3d is the only film layout, so an unnamed layout is a stage3d
+# frame. These tests grade the 2D board, not the Node/Chromium 3D
+# render: set before env_knobs is read.
+os.environ.setdefault('KICAD_MOVIE_BOARD3D', '2d')
+
 RUN_ALL_TIMEOUT = 900
 
 _TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -560,8 +565,9 @@ def test_make_film_attaches_before_it_badges():
 
     `_badge` draws nested rectangles around the WHOLE frame it is given. Attach
     the band afterwards and the border encloses only the board, so the bottom
-    rows of a badged frame stop being badge colour -- which is exactly the trap
-    `movie_panels.py:40-44` documents for panels.
+    rows of a badged frame stop being badge colour. The band is the stage3d
+    frame's benchmark band (the only film layout; it folded the attempts band
+    in), discovered from the loop sidecars.
     """
     _mark = len(_FAIL)
     try:
@@ -578,19 +584,18 @@ def test_make_film_attaches_before_it_badges():
         _variant(BOARD, bad, dx=-4.0, dy=3.0, n=4)
         shots = mf.parse_positional([BOARD, good, bad],
                                     [os.path.basename(bad)])
-        t = MA.attempts_from_loop_dir(_loop_dir(td))
-        # camera='auto' and this size deliberately: with the camera off a
-        # placement-only attempt changes NO copper, so its beat is one frame
-        # and nothing is badged -- the probe would then pass vacuously on an
-        # unbadged film. `test_film_composition` uses the same arm.
-        # `layout='split'` because the band now REFUSES a frame too short to
-        # carry it, and this board is 6.5:1 -- at size 400 its legacy frame is
-        # 400x62, where a legible band would be over a third of the picture.
-        # A declared layout gives the frame its own aspect and the band room.
-        off = mf.build_film(shots, size=400, fps=6.0, camera='auto',
-                            quiet=True, attempts_from='', layout='split')
-        on = mf.build_film(shots, size=400, fps=6.0, camera='auto',
-                           quiet=True, attempts=t, layout='split')
+        loop = _loop_dir(td)
+        # camera='auto' deliberately: with the camera off a placement-only
+        # attempt changes NO copper, so its beat is one frame and nothing is
+        # badged -- the probe would then pass vacuously on an unbadged film.
+        # `test_film_composition` uses the same arm. Size 1000: the band is
+        # declined under the stage3d board's 70% height floor below that.
+        off = mf.build_film(shots, size=1000, fps=6.0, camera='auto',
+                            quiet=True, attempts_from='',
+                            placement={'board3d': '2d'})
+        on = mf.build_film(shots, size=1000, fps=6.0, camera='auto',
+                           quiet=True, attempts_from=loop,
+                           placement={'board3d': '2d'})
         if not off or not on:
             fail('no frames')
             return
@@ -648,14 +653,24 @@ def test_a_card_and_a_band_in_one_film_are_one_size():
         _variant(BOARD, good, n=3)
         png = os.path.join(td, 'why.png')
         _I.new('RGB', (1234, 200), (10, 90, 160)).save(png)
-        t = MA.attempts_from_loop_dir(_loop_dir(td))
+        loop = _loop_dir(td)
         shots = ([mf.card_shot(png, 'the delta that motivated this')] +
                  mf.parse_positional([BOARD, good], []))
-        frames = mf.build_film(shots, size=300, fps=6.0, camera='off',
-                               quiet=True, attempts=t, layout='split')
-        if not frames:
+        # size 1000: below it the stage3d frame declines the band
+        frames = mf.build_film(shots, size=1000, fps=6.0, camera='off',
+                               quiet=True, attempts_from=loop,
+                               placement={'board3d': '2d'})
+        bare = mf.build_film(shots, size=1000, fps=6.0, camera='off',
+                             quiet=True, attempts_from='',
+                             placement={'board3d': '2d'})
+        if not frames or not bare:
             fail('no frames')
             return
+        from PIL import ImageChops
+        if ImageChops.difference(frames[-1].convert('RGB'),
+                                 bare[-1].convert('RGB')).getbbox() is None:
+            fail('BROKEN: no band was drawn, so the card/band size claim '
+                 'is vacuous')
         sizes = {f.size for f in frames}
         if len(sizes) != 1:
             fail('a film with a card AND a band has %d sizes: %s -- the card '

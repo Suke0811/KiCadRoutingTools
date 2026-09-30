@@ -239,8 +239,8 @@ class Movie:
         #: gates the per-frame copper snapshot below: retaining
         #: `tuple(self.live_s.values())` on every frame costs
         #: O(frames x segments) references (measured: 5961 refs / 48 KB on a
-        #: 7-frame 1701-segment reveal, and it grows with both), and 'legacy'
-        #: -- the default -- never draws a panel at all.
+        #: 7-frame 1701-segment reveal, and it grows with both), and a frame
+        #: that dropped its layer row never draws a panel at all.
         self.want_panel = False
         #: True when the board's parts are still stacked in a pile, from
         #: `assess_placement`. It picks the box's SEEDING content, and it is
@@ -386,7 +386,8 @@ class Movie:
         self._note_chrome(label)
         # #1019: when a rail is going to carry this, the over-board strip is a
         # DUPLICATE, and a duplicate that sits on the copper is worse than no
-        # strip at all. `_label` stays for the legacy frame, which has no rail.
+        # strip at all. `_label` stays for a frame with no rail
+        # (`build_single`, which plans no frame).
         if self.split_caption:
             label = None
         img = self._render(
@@ -941,7 +942,7 @@ class _OverBudget(Exception):
 
 
 def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
-                 marks=None, theme=None, layout=None, aspect=None,
+                 marks=None, theme=None, aspect=None,
                  geom_out=None, title=None, frames_sink=None,
                  max_frames=None, notes=None, attempts_band=False,
                  lands_out=None, stage_out=None,
@@ -958,8 +959,9 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     frames), ``epochs`` (each board's part poses), ``layers``, ``chrome`` and
     the copper edit logs ``ops_s`` / ``ops_v`` the records index into.
 
-    ``board3d`` (#1081) applies to the ``stage3d`` layout only: ``'auto'``
-    (default) puts the 3D board in the board box when this machine can
+    The frame is the stage3d frame (the only film layout), at ``aspect`` or
+    its own 16:9. ``board3d`` (#1081): ``'auto'`` (default, or
+    ``$KICAD_MOVIE_BOARD3D``) puts the 3D board in the board box when this machine can
     render it and says why when it cannot; ``'2d'`` keeps the X-ray.
     See `stage3d.film.apply` -- all frames 3D, or all X-ray, never mixed.
 
@@ -1002,80 +1004,46 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     # renderer.pcb, so re-pointing that attribute moves the parts.
     r, layers = _renderer(final, None, size, ss, alpha, dynamic_zones=True,
                           theme=theme)
-    # #1018. The frame shape is decided ONCE, here, before any frame exists --
-    # and only when a layout was actually asked for. 'legacy' (the default) is
-    # left completely alone so every existing movie stays bit-for-bit what it
-    # was, which is the same posture KICAD_MOVIE_CAMERA takes.
+    # #1018. The frame shape is decided ONCE, here, before any frame exists:
+    # the stage3d frame (the only layout), at `aspect` or its own 16:9. The
+    # even-forcing is part of it: `_write_mp4` crops `a.shape[0] & ~1` AND
+    # `a.shape[1] & ~1`, so the frame is even BEFORE the encoder.
     #
     # `geom_out` follows the idiom `marks` already established in this
     # signature: when a list is passed, it collects what a composer needs,
-    # without changing the return type.
-    # ALWAYS planned, including 'legacy'. The even-forcing is a FIX, not a
-    # layout feature: `_write_mp4` crops `a.shape[0] & ~1` AND
-    # `a.shape[1] & ~1`, so an odd frame has always been losing that row or
-    # column -- silently, in every movie this repo has written. Planning
-    # legacy too means the frame is even BEFORE the encoder, so nothing is
-    # cropped away.
-    #
-    # DISCLOSED: on a board whose aspect gives an odd dimension (most of them:
-    # routed_output at size 500 is 500x309) the legacy frame is now 1 px
-    # shorter or narrower than it used to be. That pixel was being thrown away
-    # by the encoder anyway; the difference is that now the picture knows.
-    _geom = None
-    if True:
-        import frame_layout
-        _plan_kw = dict(
-            layout=layout or frame_layout.DEFAULT_FILM_LAYOUT,
-            ratio=frame_layout.parse_ratio(aspect), size=size,
-            # A panel is reserved for every layout that declares one, EXCEPT
-            # 'legacy' -- which has no chrome at all, because legacy means
-            # today's frame and today's frame has no lower box.
-            panel=(str(layout or 'stage3d').lower() != 'legacy'),
-            legacy_size=(r.W, r.H))
-        _g = frame_layout.plan_frame(r.pcb.board_info.board_bounds,
-                                     **_plan_kw)
-        if attempts_band:
-            # The band's height is a fraction of the FRAME it sits in, so the
-            # frame is planned once to learn its size and once more with the
-            # band reserved. Two calls of pure arithmetic, no pixels.
-            try:
-                import movie_attempts
-                if callable(attempts_band):
-                    # #1042: the caller SIZES the band for this frame -- the
-                    # placement panels' `band_px`, which reserves room for
-                    # readable panels (plot >= PLOT_MIN_PX) beside or above
-                    # the verdict graph, or 0 when the frame cannot hold them.
-                    _bh = int(attempts_band(_g.frame.w, _g.frame.h) or 0)
-                    _bh -= _bh % 2
-                else:
-                    _bh = movie_attempts.band_height(_g.frame.w, _g.frame.h)
-            except Exception:                                  # noqa: BLE001
-                _bh = 0
-            if _bh:
-                _g = frame_layout.plan_frame(r.pcb.board_info.board_bounds,
-                                             track_px=_bh, **_plan_kw)
-        # Only when the layout genuinely MOVES the board box. On 'legacy' the
-        # box is the renderer's own size evened, and the evening is applied by
-        # cropping the composed frame instead -- because
-        # `tests/test_431_placement_movie.py:92-121` pins exactly ONE
-        # `set_view` on the no-stage path, and that assertion is this phase's
-        # own falsifier: if the layout work needs a second aim, the layout work
-        # is wrong.
-        moved = (_g.board.w, _g.board.h) != (r.W, r.H)
-        # A legacy frame with a DECLARED ratio or a reserved band is not
-        # today's frame any more, so its board box is honoured too; the plain
-        # legacy frame keeps the one-set_view path the test pins.
-        if moved and (_g.layout != 'legacy' or aspect or _g.track):
-            r.set_canvas(_g.board.w, _g.board.h)
-        # `geom_out` is an OUTPUT collector, never the switch. It was both
-        # until a full film was rendered twice: `build_boards(layout='split')`
-        # WITHOUT a `geom_out` list silently produced today's frame -- no rail,
-        # no lower box, no composition -- so the layout took effect only for a
-        # caller that happened to ask for the geometry back. `make_film` is
-        # exactly such a caller.
-        _geom = _g
-        if geom_out is not None:
-            geom_out.append(_g)
+    # without changing the return type. It is an OUTPUT collector, never the
+    # switch -- a layout that took effect only for a caller that asked for
+    # the geometry back is how `make_film` once rendered the wrong frame.
+    import frame_layout
+    _plan_kw = dict(ratio=frame_layout.parse_ratio(aspect), size=size)
+    _g = frame_layout.plan_frame(r.pcb.board_info.board_bounds, **_plan_kw)
+    if attempts_band:
+        # The band's height is a fraction of the FRAME it sits in, so the
+        # frame is planned once to learn its size and once more with the
+        # band reserved. Two calls of pure arithmetic, no pixels.
+        try:
+            import movie_attempts
+            if callable(attempts_band):
+                # #1042: the caller SIZES the band for this frame -- the
+                # placement panels' `band_px`, which reserves room for
+                # readable panels (plot >= PLOT_MIN_PX), or 0 when the frame
+                # cannot hold them.
+                _bh = int(attempts_band(_g.frame.w, _g.frame.h) or 0)
+                _bh -= _bh % 2
+            else:
+                _bh = movie_attempts.band_height(_g.frame.w, _g.frame.h)
+        except Exception:                                      # noqa: BLE001
+            _bh = 0
+        if _bh:
+            _g = frame_layout.plan_frame(r.pcb.board_info.board_bounds,
+                                         track_px=_bh, **_plan_kw)
+    # The board is rendered into its planned BOX: re-fit the canvas when the
+    # box is not the renderer's own size (it never is, in practice).
+    if (_g.board.w, _g.board.h) != (r.W, r.H):
+        r.set_canvas(_g.board.w, _g.board.h)
+    _geom = _g
+    if geom_out is not None:
+        geom_out.append(_g)
     m = Movie(r, layers, rip_hold=rip_hold)
     if board3d is None:                  # no flag: $KICAD_MOVIE_BOARD3D
         try:
@@ -1083,8 +1051,7 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
             board3d = getattr(_ek, 'MOVIE_BOARD3D', 'auto') or 'auto'
         except Exception:                                      # noqa: BLE001
             board3d = 'auto'
-    _s3d = (_geom is not None and _geom.layout == 'stage3d'
-            and board3d not in ('2d', 'off'))
+    _s3d = board3d not in ('2d', 'off')
     if stage_out is None and _s3d:
         stage_out = {}                  # the 3D board is rebuilt from it
     if stage_out is not None:
@@ -1106,10 +1073,9 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     _budget = int(max_frames or 0)
     _traced_left = sum(1 for _s in steps if len(_s) > 2 and _s[2])
     # #1020: the lower box's non-routing contents, decided ONCE. `want_panel`
-    # also gates the per-frame copper snapshot, so a legacy film -- which has
-    # no box -- retains nothing.
-    m.want_panel = bool(_geom is not None and _geom.panel is not None
-                        and _geom.panel.h > 0)
+    # also gates the per-frame copper snapshot, so a frame that dropped its
+    # layer row retains nothing.
+    m.want_panel = bool(_geom.panel is not None and _geom.panel.h > 0)
     if m.want_panel:
         # Seeded from the chain's FIRST board, not its last: the opening
         # snapshot is of the board as it arrived, and a film of a seeding run
@@ -1129,7 +1095,7 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
                     (re.match(r'round (\d+)', str(st[0])) for st in steps)
                     if mm})
     m.rail_left = board_title(final, steps, title)
-    m.split_caption = bool(_geom is not None and _geom.rail.h > 0)
+    m.split_caption = bool(_geom.rail.h > 0)
     # #1036: the SUBSTRATE is each step's own board. The renderer is built
     # from the FINAL board (it fixes the canvas and the scale), and until this
     # change only a Stage re-pointed `r.pcb` per step -- so without one, the
@@ -1262,21 +1228,19 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     # frame and never reached the bookend content at all -- half the "open and
     # close" the lower box is designed around, missing.
     #
-    # Only when a box EXISTS to hold it: on 'legacy' this would add a frame to
-    # every existing movie, and legacy is the arm that must not move.
+    # Only when a box EXISTS to hold it.
     if m.want_panel and len(m.frames) == _before:
         m.snapshot("routed")
     if stage is not None:
         stage.outro()
-    # #1081: the stage3d layout's board box holds the 3D board -- rendered
-    # in full before any frame is composed, or not at all.
-    if _geom is not None and _geom.layout == 'stage3d':
-        from stage3d import film as _s3f
-        m.frames, _s3rep = _s3f.apply(
-            m.frames, stage_out, final, _geom, r.theme,
-            stage_present=stage is not None,
-            mode=board3d if _s3d else '2d', notes=notes,
-            fps=fps or getattr(stage, 'fps', None) or 6.0)
+    # #1081: the stage3d board box holds the 3D board -- rendered in full
+    # before any frame is composed, or not at all.
+    from stage3d import film as _s3f
+    m.frames, _s3rep = _s3f.apply(
+        m.frames, stage_out, final, _geom, r.theme,
+        stage_present=stage is not None,
+        mode=board3d if _s3d else '2d', notes=notes,
+        fps=fps or getattr(stage, 'fps', None) or 6.0)
     # #1018: the board was rendered into its PLANNED BOX; the frame is the
     # planned FRAME. Composing here rather than leaving the box as the frame is
     # what makes the size claim real -- the rail, the panel and the foot exist
@@ -1284,8 +1248,7 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     #
     # In place, so peak memory stays about two frames rather than twice the
     # movie.
-    if _geom is not None:
-        _compose_into_frame(m.frames, _geom, r, m.chrome)
+    _compose_into_frame(m.frames, _geom, r, m.chrome)
     return m.frames
 
 
@@ -1369,15 +1332,9 @@ def _png_info(meta):
 def _compose_into_frame(frames, geom, r, chrome=None):
     """Fit each board-box frame into its planned frame, IN PLACE.
 
-    Two cases, and the first is the common one:
-
-    * the frame IS the board box, to within the even-forcing -- so the frame is
-      CROPPED to the planned size. That is exactly what `_write_mp4` already
-      did with `& ~1`, made explicit and applied to the GIF path too, where it
-      was not happening at all;
-    * the frame is larger, because the layout reserved a rail, a panel or a
-      foot -- so the board is pasted into its box on a frame-sized canvas, and
-      the reserved regions are ground until #1019/#1020/#1021 fill them.
+    The board is pasted into its box on a frame-sized canvas, and the
+    reserved regions -- the rail, the layer column, the foot -- are ground
+    until #1019/#1020/#1021 fill them.
     """
     from PIL import Image
     import frame_spool
@@ -1391,13 +1348,9 @@ def _compose_into_frame(frames, geom, r, chrome=None):
 
     def _one(i, f):
         if f.size != (W, H):
-            if (f.width >= W and f.height >= H and geom.board.x == 0
-                    and geom.board.y == 0 and geom.panel is None):
-                f = f.crop((0, 0, W, H))
-            else:
-                canvas = Image.new('RGB', (W, H), bg)
-                canvas.paste(f, (geom.board.x, geom.board.y))
-                f = canvas
+            canvas = Image.new('RGB', (W, H), bg)
+            canvas.paste(f, (geom.board.x, geom.board.y))
+            f = canvas
         if chrome_fn is not None:
             f = chrome_fn(i, f)
         return f

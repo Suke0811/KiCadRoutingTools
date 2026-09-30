@@ -199,7 +199,7 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
                end_hold=DEFAULT_END_HOLD, png_dir=None, quiet=False,
                camera=None, camera_budget=60.0, tween=10,
                timing=None, theme=None,
-               layout=None, aspect=None, attempts=None, max_frames=None,
+               aspect=None, attempts=None, max_frames=None,
                title=None, attempts_ledger=None, benchmark_board=None,
                floorplan_intent=None, placement_panel=None, board3d=None,
                benchmark_score=None):
@@ -226,7 +226,7 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
             layer_alpha=layer_alpha, rip_hold=rip_hold, chunks=chunks,
             end_hold=end_hold, png_dir=png_dir, quiet=quiet, camera=camera,
             camera_budget=camera_budget, tween=tween,
-            timing=timing, theme=theme, layout=layout,
+            timing=timing, theme=theme,
             aspect=aspect, attempts=attempts, max_frames=max_frames,
             title=title, attempts_ledger=attempts_ledger,
             benchmark_board=benchmark_board,
@@ -240,7 +240,7 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
 
 def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                 chunks, end_hold, png_dir, quiet, camera, camera_budget, tween,
-                timing, theme, layout, aspect, attempts,
+                timing, theme, aspect, attempts,
                 max_frames, spool, title=None, attempts_ledger=None,
                 benchmark_board=None, floorplan_intent=None,
                 placement_panel=None, board3d=None, benchmark_score=None):
@@ -382,10 +382,10 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                 ledger = None
     marks = [] if ledger else None
     # #1018: resolved once inside build_boards; collected here so the status
-    # line can say which layout ran and why.
+    # line can say what frame ran and what it gave up.
     geom_out = []
     import frame_layout
-    layout, aspect = frame_layout.resolve_layout_aspect(layout, aspect)
+    aspect = frame_layout.resolve_aspect(aspect)
     # The run directory's own name is the closest thing a multi-step chain has
     # to a board name, and it is what the rail's stable left should carry.
     # `title` (--title) wins; else the run directory; else `board_title`
@@ -398,11 +398,10 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                               who='make_movie')
     # THE BANDS AND PANELS (#1087): one implementation for make_movie and
     # make_film, planned BEFORE the frame so their regions are reserved --
-    # the attempts band or (stage3d) the benchmark band, and the placement
-    # panels.
+    # the benchmark band, or the placement panels.
     import film_passes
     _bands = film_passes.plan(
-        steps, final, layout, attempts=attempts,
+        steps, final, attempts=attempts,
         attempts_ledger=attempts_ledger,
         placement={'off': placement_panel is False,
                    'asked': placement_panel,
@@ -410,15 +409,14 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                    'benchmark': benchmark_board,
                    'benchmark_score': benchmark_score,
                    'intent': floorplan_intent},
-        quiet=quiet, who='make_movie',
-        aspect=aspect)
+        quiet=quiet, who='make_movie')
     _lands = {}
     if _bands.ptrack is not None and marks is None:
         marks = []
     _band = _bands.band
     frames = a.build_boards(steps, final, size, supersample, layer_alpha,
                             rip_hold, chunks, stage=stage, marks=marks,
-                            theme=theme, layout=layout, aspect=aspect,
+                            theme=theme, aspect=aspect,
                             geom_out=geom_out, title=_title,
                             frames_sink=spool, max_frames=max_frames,
                             attempts_band=_band,
@@ -539,33 +537,26 @@ def main():
                     help='also dump the raw PNG frames here')
     ap.add_argument('--png', action='store_true',
                     help='also write a full-resolution still of the final board')
-    import frame_layout as _fl
-    ap.add_argument('--layout', default=None,
-                    help=_fl.layout_choices()
-                         + " ('stage3d' is the default, or "
-                         "$KICAD_MOVIE_LAYOUT; 'legacy' is the old frame). "
-                         "auto picks stacked-vs-sidebar from the "
-                         "board's own aspect; inset-vs-split is a "
-                         "stance about what the viewer is there to "
-                         "read, so it is never inferred, and so is "
-                         "stage3d (the 3D board, #1081)")
     ap.add_argument('--aspect', default=None, metavar='W:H',
                     help="target frame aspect, or $KICAD_MOVIE_ASPECT. "
-                         "'board' (default) keeps today's behaviour: "
-                         "the frame IS the board's bounding box")
+                         "Default 16:9, the stage3d frame's own (the only "
+                         "film layout: the board, a layer column and one "
+                         "band). Outside 1:2..3:1 the frame is board-only, "
+                         "and says so")
     ap.add_argument('--no-attempts', action='store_true',
-                    help="drop the attempts band (#1021). The band is drawn "
-                         "when loop_round*.json sidecars or a converge ledger "
-                         "sit next to the boards; a chain with no search "
-                         "behind it has none and says so.")
+                    help="drop the benchmark band (#1021, #1081). The band "
+                         "is drawn when loop_round*.json sidecars or a "
+                         "converge ledger sit next to the boards; a chain "
+                         "with no search behind it gets the placement "
+                         "panels instead, and says so.")
     ap.add_argument('--attempts-ledger', default=None, metavar='PATH',
-                    help='the converge ledger to draw the attempts band and '
-                         'the placement panels from, instead of looking '
-                         'beside the boards (#1042)')
+                    help='the converge ledger to draw the benchmark band '
+                         'from, instead of looking beside the boards '
+                         '(#1042)')
     ap.add_argument('--benchmark-board', default=None, metavar='PATH',
                     help="a benchmark board (the human's, or a previous "
                          "run): drawn DASHED on the placement arrangement "
-                         "panel, and -- with --layout stage3d -- the 100%% "
+                         "panel, and the 100%% "
                          "line of the benchmark band, gold once a WORKING "
                          "board beats it on (vias, copper, segments)")
     ap.add_argument('--benchmark-score', default=None, metavar='PATH',
@@ -573,7 +564,7 @@ def main():
                          "document (must name that board by board_sha); "
                          "without it board_score is run once to grade it")
     ap.add_argument('--board-3d', default=None, choices=('auto', '2d', 'blender'),
-                    help="stage3d only: 'auto' (default) draws the 3D board "
+                    help="'auto' (default) draws the 3D board "
                          "when Node, playwright-core (npm ci in "
                          "py_router/stage3d) and a Chromium are present, "
                          "else the 2D X-ray and says why; '2d' always the "
@@ -628,7 +619,7 @@ def main():
 
     try:
         out = make_movie(args.inputs, out=args.output, theme=args.theme,
-                         layout=args.layout, aspect=args.aspect,
+                         aspect=args.aspect,
                          size=args.size, fps=args.fps,
                          supersample=args.supersample, layer_alpha=args.layer_alpha,
                          rip_hold=args.rip_hold, chunks=args.chunks,

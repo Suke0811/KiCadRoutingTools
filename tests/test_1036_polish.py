@@ -20,6 +20,11 @@ Needs Pillow; renders small in-repo boards, no kicad-cli.
 import os
 import sys
 
+# stage3d is the only film layout, so an unnamed layout is a stage3d
+# frame. These tests grade the 2D board, not the Node/Chromium 3D
+# render: set before env_knobs is read.
+os.environ.setdefault('KICAD_MOVIE_BOARD3D', '2d')
+
 RUN_ALL_TIMEOUT = 900
 
 _TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -74,31 +79,33 @@ def test_the_board_fills_its_box():
     _mark = len(_FAIL)
     ground = RT.theme('dark').rgb('ground')
     worst = (9.0, None)
-    for lk in ('stacked', 'sidebar', 'split', 'inset', 'legacy'):
-        for rk in ('16:9', '9:16', '1:1', '4:3'):
-            geo = []
-            fr = A.build_boards([('s', ROUTED, None)], ROUTED, 400, 1, None,
-                                2, 6, layout=lk, aspect=rk, geom_out=geo,
-                                theme='dark')
-            f = _fill(fr[0], geo[0].board, ground)
-            if f < worst[0]:
-                worst = (f, (lk, rk))
-            if f < 0.85:
-                fail('%s/%s: the board spans %.0f%% of its %dx%d box'
-                     % (lk, rk, 100 * f, geo[0].board.w, geo[0].board.h))
+    # the stage3d frame (the only layout) at every named ratio, and a
+    # board-only extreme one
+    for rk in ('16:9', '9:16', '1:1', '4:3', '4:1'):
+        geo = []
+        fr = A.build_boards([('s', ROUTED, None)], ROUTED, 400, 1, None,
+                            2, 6, aspect=rk, geom_out=geo, theme='dark',
+                            board3d='2d')
+        f = _fill(fr[0], geo[0].board, ground)
+        if f < worst[0]:
+            worst = (f, rk)
+        if f < 0.85:
+            fail('%s: the board spans %.0f%% of its %dx%d box'
+                 % (rk, 100 * f, geo[0].board.w, geo[0].board.h))
     # ...and a CAMERA film ends on the board, not on the pile overview
     import movie_camera as MC
     st = MC.Stage(MC.synth_rounds([SEED, PLACED]), '', tween=3)
     geo = []
     fr = A.build_boards([('a', SEED, None), ('b', PLACED, None)], PLACED,
-                        400, 1, None, 2, 6, stage=st, layout='split',
-                        aspect='16:9', geom_out=geo, theme='dark')
+                        400, 1, None, 2, 6, stage=st,
+                        aspect='16:9', geom_out=geo, theme='dark',
+                        board3d='2d')
     f = _fill(fr[-1], geo[0].board, ground)
     if f < 0.85:
         fail('the camera film ends with the board at %.0f%% of its box -- '
              'still at the pile overview' % (100 * f))
     if len(_FAIL) == _mark:
-        print('  PASS: 20 static frames fill >= %.0f%% (worst %s); the camera '
+        print('  PASS: 5 static frames fill >= %.0f%% (worst %s); the camera '
               'film ends at %.0f%%' % (100 * worst[0], worst[1], 100 * f))
 
 
@@ -180,12 +187,14 @@ def test_every_panel_keeps_the_gutter():
     r = _R(pcb)
     inv = RP.inventory_counts(pcb, ())
     n = 0
-    for lk, rk in (('stacked', '4:3'), ('sidebar', '1:1'),
-                   ('split', '16:9'), ('stacked', '9:16')):
-        g = FL.plan_frame(r.bounds, layout=lk, ratio=FL.parse_ratio(rk),
-                          size=1400, panel=True)
+    for rk in ('4:3', '1:1', '16:9', '9:16'):
+        lk = 'stage3d'
+        g = FL.plan_frame(r.bounds, ratio=FL.parse_ratio(rk), size=1400)
         gut = RC.gutter_px(g.frame.w)
         inner = g.panel
+        if inner is None:
+            fail('%s: the stage3d frame dropped its layer column' % rk)
+            continue
         for event, unplaced in (('moving 5 part(s)', True), ('route', False),
                                 ('input', False)):
             im = Image.new('RGB', (g.frame.w, g.frame.h))
@@ -202,7 +211,7 @@ def test_every_panel_keeps_the_gutter():
                          '%r' % (lk, rk, event, txt, bb, gut, tuple(inner)))
                     break
     if len(_FAIL) == _mark:
-        print('  PASS: %d panel texts over 4 layouts x 3 contents, all '
+        print('  PASS: %d panel texts over 4 ratios x 3 contents, all '
               'inside the gutter' % n)
 
 
@@ -216,7 +225,7 @@ def test_the_event_key_is_in_the_rail_not_on_the_board():
         fail('a layout with a rail still draws the key over the board')
     m.split_caption = False
     if m._key_overlay() is None:
-        fail('legacy (no rail) lost its key')
+        fail('a frame with no rail (build_single) lost its key')
     rail = FL.Box(0, 0, 1400, 36)
     im = Image.new('RGB', (1400, 60))
     rec = _Rec(ImageDraw.Draw(im))
@@ -230,8 +239,8 @@ def test_the_event_key_is_in_the_rail_not_on_the_board():
         if bb[3] > rail.y + rail.h:
             fail('a key label leaves the rail: %r' % (bb,))
     if len(_FAIL) == _mark:
-        print('  PASS: key in the rail on a railed layout; corner key kept '
-              'for legacy')
+        print('  PASS: key in the rail on a railed frame; corner key kept '
+              'for a frame with no rail')
 
 
 TESTS = (

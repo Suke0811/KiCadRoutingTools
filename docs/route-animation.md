@@ -380,8 +380,6 @@ python3 -X utf8 py_router/cmd_timing.py WORKDIR --json
 
 ## The render design system (#946)
 
-![one board, every layout, one pixel budget](946-layouts.png)
-
 ![the same board in both measured themes](946-themes.png)
 
 ![every event and defect role, authored and deuteranope](946-palette.png)
@@ -405,7 +403,7 @@ Four modules now hold it, and every renderer imports them:
 | module | owns |
 |---|---|
 | `py_router/render_theme.py` | *what things look like* — semantic roles, two measured themes, the mark vocabulary. **Imports no PIL**, so `render_placement` can import it at module scope |
-| `py_router/frame_layout.py` | *where things are* — named layouts, aspect presets, every box in final pixels. Pure geometry, no PIL, no board reads |
+| `py_router/frame_layout.py` | *where things are* — the stage3d frame, aspect presets, every box in final pixels. Pure geometry, no PIL, no board reads |
 | `py_router/render_chrome.py` | the in-frame key, the rail and the totals |
 | `py_router/render_panels.py` | the lower box and its four contents |
 
@@ -477,28 +475,28 @@ margin that silently collapsed from 12.0× to 4.6×, and a baseline alone cannot
 say whether the new number is acceptable, so regenerating it launders a
 regression.
 
-### Ratios and layouts
+### The frame and its aspect
 
-`--layout` and `--aspect` on `make_movie.py`, or `$KICAD_MOVIE_LAYOUT` /
-`$KICAD_MOVIE_ASPECT`.
+There is one film layout, `stage3d` (see *The stage3d film* below): the board,
+a layer column beside it, a rail along the top, a foot along the bottom, and one
+band above the foot -- for `make_movie`, `make_film`, the GUI recorder and
+`place_route_loop`'s film alike. The legacy board-aspect frame and the
+`stacked` / `sidebar` / `inset` / `split` / `auto` layouts are retired, and so
+are the layout flag and `$KICAD_MOVIE_LAYOUT`: a script still passing the flag
+is refused by argparse (exit 2), and the variable, if still set, is named once
+on stderr as retired (`frame_layout.warn_retired_knobs`).
 
-`stage3d` is the film's default since #1081, at the requester's call: the 3D
-board, the layer column and the benchmark band (see *The stage3d film* below)
--- for `make_movie`, `make_film`, the GUI recorder and `place_route_loop`'s
-film alike, through the one resolver `frame_layout.resolve_layout_aspect`.
-`legacy` still reproduces the old frame exactly (`--layout legacy` or
-`$KICAD_MOVIE_LAYOUT=legacy`), and `plan_frame(layout=None)` still means
-legacy for a caller that plans a frame directly.
+`--aspect` on `make_movie.py` or `make_film.py`, or `$KICAD_MOVIE_ASPECT`,
+declares the frame's ratio; without one it is 16:9. Both front ends resolve it
+through the one function `frame_layout.resolve_aspect`.
 
-**A declared size is kept.** With `--aspect` given, or a layout with an aspect
-of its own (`stacked`, `sidebar`, `split`), the frame is exactly that size.
-The attempts band is reserved inside it (`plan_frame(track_px=)`), out of the
-board's share. It used to be grown under every frame afterwards, so a 16:9 film
-with a band came out taller than 16:9. `tests/test_946_frame_layout.py` checks
-the whole layout × ratio cross product as plan data, and encodes 30 real films
-(5 layouts × 3 ratios × 2 themes) and reads their size back. Two things still
-grow the frame, and the status lines say so: the run clock (its height is
-measured from the finished text).
+**A declared size is kept.** The frame is exactly the declared size. The band
+is reserved inside it (`plan_frame(track_px=)`), out of the board's share. It
+used to be grown under every frame afterwards, so a 16:9 film with a band came
+out taller than 16:9. `tests/test_946_frame_layout.py` checks the ratio cross
+product as plan data, and encodes real films in both themes and reads their
+size back. One thing still grows the frame, and the status line says so: the
+run clock (its height is measured from the finished text).
 
 **Themes reach every region.** The cards and badges in `make_film`, the
 panels' ground and error text, and the run clock's band draw in
@@ -507,59 +505,19 @@ the active theme. `--theme` takes `dark` or `light` in any case and refuses anyt
 205). The CLIs used to pass 150 explicitly, so LIGHT's measured 205 was never
 used.
 
-| layout | arrangement | frame aspect | px/mm on copper | px per layer cell |
-|---|---|---|---|---|
-| `stacked` | board full width, panel below | 0.62:1 | 10.00 | 113 000 |
-| `sidebar` | board left, panel a right column | 1.78:1 | 12.38 | 100 050 |
-| `inset` | board fills frame, panel a corner inset | 1.85:1 | **15.76** | 28 490 |
-| `split` | board on top, lower box split | 1.60:1 | 11.06 | **128 800** |
-| `auto` | `sidebar` on a wide board, `stacked` otherwise, **`legacy` on an extreme one** | — | — | — |
-
-`inset` covers part of the board with its corner panel **by design**. It is the layout that trades the panel for copper pixels, and the pads under the inset are hidden for the whole film. Use `split` or `stacked` when every pad must stay visible.
-
-*(one pixel budget — 1.62 Mpx — on a 1.85:1 board, four cells across the
-panel.)* **Re-derive it rather than trusting it:**
-
-```bash
-python3 -X utf8 py_router/layout_budget.py --swing
-```
-
-Every figure above is that command's output, and
-`tests/test_946_layout_budget.py` compares the two on every run. It has to:
-`inset`'s px-per-layer-cell was quoted as "32k" in four places — including the
-comment on `CELL_MIN_W`, the constant that leans on it — and is **28 490**. A
-12% error that nothing could catch, because nothing computed it.
-
-**No layout wins both metrics, on any board shape.** `inset` wins px/mm
-everywhere and loses px-per-layer-cell everywhere (28 490 against `split`'s
-128 800, a **4.5× penalty**); `split` is the mirror image. `stacked` and
-`sidebar` genuinely swap, by **8.8–23.8%**, on board aspect — and the crossover
-falls exactly at `ADAPTIVE_ASPECT_CUT`, which is the number `auto` branches on. That asymmetry is the design rule:
-
-> **`stacked`-vs-`sidebar` is INFERRED; `inset`-vs-`split` is DECLARED.**
-> Picking between the first pair from `board_info.board_bounds` costs one
-> comparison and is right across the corpus. Choosing `inset` over `split` is a
-> decision about what the film is *for*, so it is a flag, never an inference.
-
-**`auto` gives up its chrome outside `EXTREME_ASPECT_LO`..`EXTREME_ASPECT_HI`.** Every chrome layout has a FIXED board-box aspect and only `legacy` inherits the board's, so a board far outside the corpus range fills very little of whichever box it is given — and the adaptive cut, tuned on 0.5–2.5, picked the *second worst* option for a 6.5:1 board. Measured at size 560 on such a board:
-
-| layout | board box aspect | the board fills |
-|---|---|---|
-| `legacy` | 6.51 | **100%** |
-| `split` | 2.95 | 45% |
-| `inset` | 14.74 | 44% |
-| `sidebar` | 1.53 | 24% |
-| `stacked` | 0.98 | 15% |
-
-In a real placement film that showed up as the board holding **4.6–4.9% of the frame** during the beats where parts were moving — the camera zoomed *in* and the subject got *smaller*. Chrome you cannot afford is not a feature, so outside the band `auto` returns `legacy` and says so.
+**A frame too far from square is board-only.** Outside
+`EXTREME_ASPECT_LO`..`EXTREME_ASPECT_HI` a 70 x 70 board box and a layer column
+cannot both fit. The frame stays a stage3d frame at the declared ratio, with
+its rail and foot, but the board box takes the whole width, there is no layer
+column, the band is drawn only if the board keeps its height floor, and
+`FrameGeometry.notes` says so.
 
 | constant | value |
 |---|---|
 | `EXTREME_ASPECT_LO` (`py_router/frame_layout.py`) | 0.50 |
 | `EXTREME_ASPECT_HI` (`py_router/frame_layout.py`) | 3.00 |
 
-`FrameGeometry.chosen_by` carries the sentence — `"adaptive: board aspect 1.41 >
-1.25"` — and `frame_layout.frame_status_line` prints it.
+`frame_layout.frame_status_line` prints the frame and every note.
 
 | constant | value |
 |---|---|
@@ -567,12 +525,11 @@ In a real placement film that showed up as the board holding **4.6–4.9% of the
 | `FOOT_FRAC` (`py_router/frame_layout.py`) | 0.045 |
 | `RAIL_MIN_PX` (`py_router/frame_layout.py`) | 22 |
 | `FOOT_MIN_PX` (`py_router/frame_layout.py`) | 26 |
-| `ADAPTIVE_ASPECT_CUT` (`py_router/frame_layout.py`) | 1.25 |
 
 **Both frame dimensions are forced even.** Only the height ever was, while
 `animate_route._write_mp4` crops `a.shape[0] & ~1` **and** `a.shape[1] & ~1` —
 so a taller-than-wide board silently lost a pixel column in every mp4 this repo
-had written. Planning `legacy` too means the frame is even *before* the encoder.
+had written. The planned frame is even *before* the encoder.
 
 `frame_layout.assert_frames_uniform` is wired into `animate_route.save_movie`,
 the choke point every front end passes through. **On failure it reports loudly
@@ -914,15 +871,16 @@ raise has to come past the measurement rather than around it.
 
 ### No GUI control
 
-None of `--theme`, `--layout`, `--aspect` or `--no-attempts` adds a dialog
+None of `--theme`, `--aspect`, `--board-3d` or `--no-attempts` adds a dialog
 control, which is the second arm of CLAUDE.md's CLI/GUI parity rule taken
 explicitly: the GUI's movie button passes no movie parameters at all
 (`movie_recorder.py:160` is `make_movie(boards, out=out, quiet=True)`), and the
 env knobs are how a feature with no dialog control of its own reaches every
 front end at once — the same rationale `KICAD_MOVIE_CAMERA` already
-carries. A RETIRED knob (`KICAD_MOVIE_PANELS`, the iso panel's) is not
-ignored in silence: `frame_layout.warn_retired_knobs` names it once, on
-stderr, as retired.
+carries. A RETIRED knob (`KICAD_MOVIE_LAYOUT`, which chose between the
+retired layouts, and `KICAD_MOVIE_PANELS`, the iso panel's) is not ignored in
+silence: `frame_layout.warn_retired_knobs` names every one still set, in one
+line, once, on stderr.
 
 **The env knob and the kwarg parse asymmetrically**: an unknown value in the *knob* warns to stderr and
 falls back (a typo in a shell must not abort a routing run that happened to ask
@@ -931,29 +889,24 @@ accepted set (a typo in code is a bug).
 
 ## The stage3d film: a 3D board and one benchmark band (#1081)
 
-`--layout stage3d` on `make_movie.py` or `make_film.py` (or
-`$KICAD_MOVIE_LAYOUT=stage3d`). It has three regions:
+The film's only layout, on `make_movie.py`, `make_film.py`, the GUI recorder
+and `place_route_loop`'s film. It has three regions:
 
 - **the board**, top-left, at least 70 % of the frame's width and height, drawn
   in 3D;
-- **the layer column** on its right: the lower box's own contents by phase, with
-  the per-layer strip while routing;
+- **the layer column** on its right: the per-layer strip, with the board's
+  numbers under it, on every frame;
 - **one benchmark band** along the bottom, full width.
-
-`auto` never picks it, because like C and D it is a stance.
 
 ### Geometry
 
 The floor is a promise the frame keeps before anything else gets room. A band
 that would push the board below it is shrunk, then declined. A portrait frame
 turns the column into a row under the board, and drops the row when it would be
-too short to read. A declared aspect outside 0.50–3.00 falls back to `legacy` at
-the board's own aspect. A frame too small to keep the floor at all still
+too short to read. A declared aspect outside 0.50–3.00 is a board-only frame
+at that ratio: no layer column, the band only if it fits. A frame too small to keep the floor at all still
 renders. Each of these is written to `FrameGeometry.notes`, and
 `frame_status_line` prints them, so no give-up is silent.
-
-`layout_budget` does not measure stage3d on purpose. px/mm varies across a
-perspective view, so the figure would not compare with the flat layouts'.
 
 | constant | value |
 |---|---|
