@@ -510,23 +510,26 @@ def grade_counts(board, nets):
                           if nm.get(s.net_id) in nets))))
 
 
-def chain(K, o, R=3):
-    """whole_chain.sh K OUTDIR ROUNDS: the exit code, the grade the last line printed"""
+def chain(K, o, R=3, base=None, dest=None, settings=None):
+    """whole_chain.sh K OUTDIR ROUNDS: the exit code, the grade the last line printed. The bench and its destination
+    are `base` and `dest` when given (route_bus.py), else BASE and DEST from the environment; `settings` go over the
+    environment for every stage (route_bus.py's caches off)"""
     o = os.path.abspath(o)
     os.makedirs(o, exist_ok=True)
     t0 = time.time()
     secs = lambda: int(time.time() - t0)
     env = dict(os.environ)
+    env.update(settings or {})
+    if base:                                     # (BASE and DEST reach a stage only when given or set)
+        env['BASE'] = base
+    if dest:
+        env['DEST'] = dest
     base = env.get('BASE') or 'fb_t2q_pairs.kicad_pcb'
     dest = env.get('DEST') or 'DU1'
     env.update(OMP_NUM_THREADS='1', VECLIB_MAXIMUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
                TAUT_MEMO=env.get('TAUT_MEMO') or '1', PROBE_MEMO=env.get('PROBE_MEMO') or '1')
     env.update(PLAN_PAGES='1', PLAN_JUDGE='ends', BRAID_PAIRS='1', PLAN_PAIRS='1',
                BRAID_EXACT_PAGES='0', PLAN_PAGES_SIDERS='2')
-    if 'BASE' in os.environ:                     # (the shell's BASE and DEST reach a stage only when the caller set them)
-        env['BASE'] = base
-    if 'DEST' in os.environ:
-        env['DEST'] = dest
     nets_out = run(['coherent_nets.py', str(K), f'--board={base}'], env)[1]
     NETS = (nets_out.splitlines() or [''])[-1]
     FB = os.path.join(o, 'feedback.json')

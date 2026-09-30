@@ -50,9 +50,12 @@ def make_config(pcb: PCBData, track: float, clearance: float,
                 via_size: float, via_drill: float, grid_step: float = 0.05,
                 **kw) -> GridRouteConfig:
     """A routing config for connections: the caller's geometry, the
-    board's own copper layers, a fine grid (the trunk is drawn at
-    arbitrary angles, so the exit points are not on any coarse grid)."""
-    layers = list(pcb.board_info.copper_layers or ['F.Cu', 'B.Cu'])
+    board's OUTER copper layers, a fine grid (the trunk is drawn at
+    arbitrary angles, so the exit points are not on any coarse grid).
+    A board with inner layers routes on F and B too: its lanes are
+    planned on the two pages, and a via is a through via that passes
+    the inner layers."""
+    layers = [L for L in (pcb.board_info.copper_layers or ['F.Cu', 'B.Cu']) if L in ('F.Cu', 'B.Cu')]
     return GridRouteConfig(track_width=track, clearance=clearance,
                            via_size=via_size, via_drill=via_drill,
                            grid_step=grid_step, layers=layers, **kw)

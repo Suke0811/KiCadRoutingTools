@@ -171,6 +171,61 @@ settings through `awx_settings`, which the driver gives each stage's for the
 stage (with nothing given, the environment answers, as for a process of its
 own).
 
+### The bus step on a real board
+
+`route_bus.py` is the step the production chain will call. It takes a board
+as the chain hands it on and two arrays, and writes the board back with the
+bus laid, in the board's own frame:
+
+- the bus is every net between the two arrays that the ladder admits, and
+  their copper, if any, is stripped;
+- the source array is fanned out for them, and the board is turned into the
+  flow frame;
+- the whole route runs on the ladder's nets (`--k K` for its first K);
+- the routed board is turned back.
+
+It is graded where it is written:
+- every bus net connected;
+- no DRC violation on a bus net;
+- the whole board no worse than it came.
+
+A board with inner copper layers is taken as it is. The lanes run on F.Cu
+and B.Cu, and the inner layers' copper meets the through vias only.
+
+`zynq_ad9364` from GitHub, its planes poured as the stress run poured them,
+and the whole bus:
+
+```bash
+cd awx
+mkdir -p tmp/zynq/src/boards_set1
+U=https://raw.githubusercontent.com/kangyuzhe666/ZYNQ7010-7020_AD9363/main/kicad/ZYNQ7020_AD9364_V2
+curl -L -o tmp/zynq/src/boards_set1/zynq_ad9364.kicad_pcb $U.kicad_pcb
+curl -L -o tmp/zynq/src/boards_set1/zynq_ad9364.kicad_pro $U.kicad_pro
+STRESS_DIR=tmp/zynq/src /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 \
+    ../tests/stress/strip_routing.py zynq_ad9364
+python3 ../py_router/route_planes.py tmp/zynq/src/boards_unrouted_set1/zynq_ad9364.kicad_pcb tmp/zynq/planes.kicad_pcb \
+    --nets GND RFGND VCC_1V8 --plane-layers In1.Cu In1.Cu In2.Cu --layers F.Cu In1.Cu In2.Cu B.Cu \
+    --clearance-ceiling 0.2 --hole-to-hole-clearance 0.25 --via-size 0.45 --via-drill 0.3 \
+    --power-nets GND RFGND VCC_1V8 --power-nets-widths 0.4 0.4 0.4
+python3 route_bus.py tmp/zynq/planes.kicad_pcb tmp/zynq/bus.kicad_pcb --src U1 --dest U2 --inproc
+```
+
+On a Mac (2026-09-29), 48 nets run between U1 and U2:
+- the CK pair is refused, because it passes through its termination
+  resistor R20 and the whole route lays no waypoint;
+- the source fanout refuses A14 and CAS;
+- the other 44 route in their bands, in two fanout rounds, with 72 vias and
+  1329 mm of copper, connected and DRC-clean on the whole board, in 636 s
+  and a 1.1 GB process.
+
+Its last line is the grade:
+
+```
+BUS U1->U2 K=.. round=.. lanes=../.. vias=.. copper=..mm connected=0|1 drc=0|1 secs=.. | on the board: ...
+```
+
+It exits 0 when the bus is routed, connected and clean, and 1 when it is not.
+
 ### Building the zynq article
 
 The second bench is built from a public board: `ZYNQ7020_AD9364_V2` from
@@ -2199,6 +2254,7 @@ shared and are not.
 
 | | |
 |---|---|
+| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed by the whole route in the board's own frame, graded on the board (`BUS ..`) |
 | `whole_route.py`, `modal_whole.py` | one rung of the whole route end to end on our own ends -- fanout, solve, loop, route, checks, and the feedback rounds -- graded in one line (`WHOLE K=..`); the ladder in the cloud, one container per rung, and one command replayed there on the laptop's files at their own paths (`modal_whole.py::stage`) |
 | `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the whole route's own choice of ends (the fanout's `PLAN_JUDGE=ends`); its own frame of a bench; the audits' findings at the ends, back to the fanout |
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP, the polish, the snap onto the router's grid (the loop that drives them is `whole_route.py`'s) |
@@ -2339,43 +2395,51 @@ plan lays, and are worth nothing without them.
 The chain:
 
 - pour the planes;
-- fan out every array, all nets, plane drops included;
+- **the bus step**: it fans out both ends of its own nets;
+- fan out every array's other nets, plane drops included;
 - the cap nudge;
-- **the bus step**;
 - the other differential pairs;
 - the impedance pass;
 - `route.py` on the rest, with the plane finalize.
+
+The bus comes before the other fanouts, so it takes its arrays' faces and
+channels first, and the other escapes leave round it. Laid after them, their
+escapes interleave with its teeth at both arrays, where no lane can pass. On
+`zynq_ad9364` with its planes poured, the whole bus routes clean
+([The bus step on a real board](#the-bus-step-on-a-real-board)).
 
 The basics come first, in this order. Length matching and routing on inner
 layers follow once the basics route real boards (*later*, below).
 
 1. **An engine function, `route_bus`.**
-   - One call on a parsed board. The CLI and the GUI call the same code.
-     It stays in `awx/` until the basics route real boards, then moves
-     into a `py_router/bus_topo/` package that awx's harnesses import
-     from: code that is still changing is not moved.
-   - The driver is `whole_route.py`. It runs each stage as a process of
-     its own; the GUI needs them as calls in its own process.
+   - `route_bus.py` holds it: one call on a board file, which the CLI
+     makes and the GUI will make. The caches are off, and everything the
+     step writes goes beside its output (`<OUT>.bus/`). It stays in `awx/`
+     until the basics route real boards, then moves into a
+     `py_router/bus_topo/` package that awx's harnesses import from: code
+     that is still changing is not moved.
    - Each stage becomes a function driven by its arguments, not by argv
-     and the environment.
+     and the environment. Today `whole_route.py --inproc` runs the stage
+     scripts in its own process.
    - Importing `whole_ctx` no longer changes directory.
-   - The caches are off, and everything the step writes goes beside the
-     board.
 2. **The real board as it is.**
-   - The flow frame's quarter turn is done in memory, and the copper is
-     written back in the board's own frame. Today the board must be turned
-     beforehand, and the output is not turned back.
-   - A board with inner copper layers is accepted. The lanes run on F and
-     B, and the inner layers are obstacles the through vias pass.
-   - The outline is read as drawn, not as its bounding box, and zones and
-     keepouts are read.
+   - Done: the step turns the board into the flow frame and the routed
+     board back, exactly (a quarter turn about a point on the 0.1 mm
+     lattice), and a board with inner copper layers is taken as it is:
+     the lanes run on F and B, and the inner layers' copper meets the
+     through vias only.
+   - Still to do: the outline read as drawn, not as its bounding box, and
+     keepouts that forbid tracks or vias. `zynq_ad9364` has neither (a
+     rectangle; its 21 keepouts forbid pours only).
 3. **Other nets' copper in every stage.**
    - Today only the snap and the polish see foreign tracks and vias,
      through the production obstacle map.
    - The geometry and the solve see only pads and array stubs, so a plan
      can run through a foreign via and fail late, in the audit.
-   - The benches carried no foreign copper. A real board carries every
-     other ball's escape and plane drop.
+   - The benches carried no foreign copper. With the bus before the other
+     fanouts, the chain's own boards bring the planes step's vias and the
+     copper graphics; a board handed over partly routed brings more. A
+     board's inner layers already meet the vias only (item 2).
 4. **The router's rules.**
    - Clearance, track and via come from the same resolution `route.py`
      makes: net classes, `.kicad_dru` layer rules, the fab tier and
@@ -2387,7 +2451,9 @@ layers follow once the basics route real boards (*later*, below).
      nets and have an array on at least one side. The step takes the whole
      bus, not a ladder prefix.
    - Pairs are found by their name suffixes, and termination parts serve
-     as waypoints, as today.
+     as waypoints, as they do in the braid chain. Today the step refuses
+     such a pair and names it (the zynq's CK through R20): the whole route
+     lays no waypoint yet.
    - Fly-by and multi-drop nets stay with A*, and are reported by name.
 6. **The handoff.**
    - The step writes its laid nets into the project's `protected_nets`.
@@ -2399,13 +2465,14 @@ layers follow once the basics route real boards (*later*, below).
      routes exactly those.
    - The bus's own pairs belong to the step, so the routing skill stops
      sending them to `route_diff`.
-7. **Plane vias before the bus.**
+7. **Plane vias and the bus.**
    - Pads of plane nets inside the bus's area (decoupling capacitors,
      termination resistors, VREF) get their plane vias before the plan.
-     The plan then sees them as copper, the way the fanout's plane drops
-     already take their sites first.
-   - Today they are tapped by `route.py`'s finalize, after the bus, when
-     the lanes may already have closed round them.
+     The plan then sees them as copper. Today they are tapped by
+     `route.py`'s finalize, after the bus, when the lanes may already have
+     closed round them.
+   - The arrays' own plane balls get their drops in the fanout after the
+     bus, among its escapes: count what that fanout refuses there.
 8. **Crossings, measured.** Some other nets have pads on both sides of the
    bus's corridor, so their copper must get across it. The expectation is
    that A* weaves them through the bus's gaps and layer changes, or routes
@@ -2463,6 +2530,10 @@ layers follow once the basics route real boards (*later*, below).
   signal layers than the bus uses.
 - **Feedback from `route.py`:** failures that name bus copper as the
   blocker are sent back to a re-run of the step as reservations.
+- **The bus's fanout and the other nets' fanout as one:** each array fanned
+  out once for all its nets, the bus's ends chosen together with the
+  others', so that neither blocks the other. Until then the bus goes
+  first.
 
 ### Next, the whole route (`whole_*.py`)
 

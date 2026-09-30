@@ -186,8 +186,13 @@ for ref, fp in ctx.pcb.footprints.items():
 for (ref, Ls), bxs in ISL.items():
     STATIC.append((min(b[0] for b in bxs), min(b[1] for b in bxs), max(b[2] for b in bxs), max(b[3] for b in bxs),
                    set(Ls), ref))
+OUTER = ('F.Cu', 'B.Cu')                     # the pages; copper on an inner layer meets a via's barrel, never a lane
+VIA_ONLY = []                                # a tooth on an inner layer: a via's piece, on both pages (VSTUB, below)
 for (x, y, r, L, nm) in whole_ctx.foreign_teeth(ctx, M, BOX):      # the teeth of the nets outside the bus
-    STATIC.append((x - r, y - r, x + r, y + r, {F(L)}, 'tooth ' + nm))
+    if L in OUTER:
+        STATIC.append((x - r, y - r, x + r, y + r, {F(L)}, 'tooth ' + nm))
+    else:
+        VIA_ONLY.append((x - r, y - r, x + r, y + r, {0, 1}, 'tooth ' + nm, None))
 
 
 # every other lane's tooth and berth END on the box line, on its stub's layer (a pair: both legs' ends)
@@ -223,10 +228,14 @@ for n in M:
     for leg in prs.get(n, ()):
         if leg in ctx.byname:
             NET_LANE[ctx.byname[leg][0]] = n
-def stub_pieces(reach):
-    """every base segment END within `reach` of a pad box line, clipped to `reach` along the segment"""
+def stub_pieces(reach, lanes=False):
+    """every base segment END within `reach` of a pad box line, clipped to `reach` along the segment; for `lanes`,
+    the pages' copper only (a piece on an inner layer is a via's, on both pages)"""
     out = []
     for s_ in ctx.base_segments:
+        inner = s_.layer not in OUTER
+        if inner and lanes:
+            continue
         own_ = NET_LANE.get(s_.net_id)
         for (ax, ay), (bx_, by_) in (((s_.start_x, s_.start_y), (s_.end_x, s_.end_y)), ((s_.end_x, s_.end_y), (s_.start_x, s_.start_y))):
             near = any(min(abs(ax - b[0]), abs(ax - b[2])) < reach and b[1] - reach <= ay <= b[3] + reach or
@@ -237,7 +246,8 @@ def stub_pieces(reach):
             f_ = min(1.0, reach / L_) if L_ > 1e-9 else 0.0
             cx, cy = ax + (bx_ - ax) * f_, ay + (by_ - ay) * f_
             r = s_.width / 2
-            out.append((min(ax, cx) - r, min(ay, cy) - r, max(ax, cx) + r, max(ay, cy) + r, {F(s_.layer)},
+            out.append((min(ax, cx) - r, min(ay, cy) - r, max(ax, cx) + r, max(ay, cy) + r,
+                        {0, 1} if inner else {F(s_.layer)},
                         'stub ' + (own_ or ctx.pcb.nets[s_.net_id].name.split('/')[-1]), own_))
     return out
 
@@ -245,8 +255,8 @@ def stub_pieces(reach):
 # a VIA beside the box line meets stub copper within its reach; a LANE (never inside the box) only the copper
 # within a clearance block of the line
 REACH = VIA_ST + bd.VIA_NEED
-VSTUB = stub_pieces(REACH)                   # (x0, y0, x1, y1, {layer}, label, owner)
-LSTUB = stub_pieces(TW + CL)
+VSTUB = stub_pieces(REACH) + VIA_ONLY        # (x0, y0, x1, y1, {layer}, label, owner)
+LSTUB = stub_pieces(TW + CL, lanes=True)
 # base VIAS near the box lines (a stub ending in a via: SDQM1's berth) -- discs on both layers
 for v_ in ctx.base_vias:
     own_ = NET_LANE.get(v_.net_id)

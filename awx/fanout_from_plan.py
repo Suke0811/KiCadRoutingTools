@@ -297,6 +297,13 @@ def plan_state(pcb, names, banned=frozenset()):
         dmenu[nm] = _force(FORCE_DST, nm, dmenu[nm], 'destination')
         launch[nm] = ends[nm][0]
         others = [p for p in net.pads if p.component_ref != ends[nm][2]]
+        if len(others) > 1:
+            # the source pad is the one the net's source stub leaves (its copper walked from the launch point), not
+            # the first other pad: a pair's termination part between the arrays carries a pad of the net too (the
+            # zynq's R20 on CK), and first in the net's pad order it took the source's place -- no source menu, no
+            # laid tooth, and the ends model had no option for the pair
+            own = te._owner(ends[nm][0], [s for s in pcb.segments if s.net_id == nid], others)
+            others.sort(key=lambda p: p.component_ref != own)
         src_pad[nm] = others[0] if others else None
     refs = {}
     for nm in names:
@@ -1541,7 +1548,14 @@ def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
                         '--clearance-margin', '0.1',
                         # or check_drc truncates each category at 20 and the
                         # nets beyond that are never banned, never freed
-                        '--max-print', '0'],
+                        '--max-print', '0',
+                        # the violations of the run's nets, as the chain grades
+                        # its routed board: a board the chain hands on carries
+                        # its earlier steps' violations between other nets (the
+                        # zynq's NetC146_2 endpoint gap, an earlier step's),
+                        # which no fanout of the run's nets made or can mend,
+                        # and read whole it failed every fanout of the run
+                        '--nets'] + [f'*{nm}' for nm in names],
                        capture_output=True, text=True, env=awx_settings.environ())
     _drc_txt = r.stdout + r.stderr
     clean = 'NO DRC VIOLATIONS' in _drc_txt

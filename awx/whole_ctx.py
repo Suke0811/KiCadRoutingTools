@@ -173,7 +173,8 @@ def plan(quiet=True):
 def _guard(out, nets, dest):
     """the plan, on a bench the whole route is written for -- else a stop that says why: the CANONICAL FRAME (the run's
     source-to-destination direction along +x, so the trunk arrives at the destination's west face and the rings run
-    north and south of it: flow_frame.py turns a board into it) and TWO copper layers (a lane's layer is one bit)"""
+    north and south of it: flow_frame.py turns a board into it) and the two OUTER copper layers (a lane's layer is one
+    bit: it runs on F.Cu or B.Cu; inner layers, where a board has them, are passed by the through vias)"""
     ctx, _cs = out
     import flow_frame
     k, _cx, _cy = flow_frame.quarter_of(ctx.pcb, dest, set(nets))
@@ -181,8 +182,8 @@ def _guard(out, nets, dest):
         raise SystemExit(f'whole route: the bench is not in the canonical frame (its source-to-destination direction '
                          f'is a quarter turn {k} from +x) -- turn it with flow_frame.py first')
     cu = list(ctx.pcb.board_info.copper_layers)
-    if sorted(cu) != ['B.Cu', 'F.Cu']:
-        raise SystemExit(f'whole route: the bench has copper layers {cu} -- the whole route plans two (F.Cu, B.Cu)')
+    if not {'F.Cu', 'B.Cu'} <= set(cu):
+        raise SystemExit(f'whole route: the bench has copper layers {cu} -- the whole route plans on F.Cu and B.Cu')
     return out
 
 

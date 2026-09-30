@@ -931,7 +931,8 @@ def generate_underpad_escape(footprint: Footprint,
     layer_set = set(layers)
     route_net_ids = {p.net_id for p in signal_pads}
     for s in pcb_data.segments:
-        if s.layer not in layer_set:
+        routed = s.layer in layer_set
+        if not routed and not (s.layer or '').endswith('.Cu'):
             continue
         if not (bounds[0] <= s.start_x <= bounds[2] and bounds[1] <= s.start_y <= bounds[3]):
             continue
@@ -941,6 +942,18 @@ def generate_underpad_escape(footprint: Footprint,
             # priority extras pass (#129, only_pad_keys set) the set nets'
             # existing copper is their PASS-1 primary escape -- real committed
             # copper every extra (own net included) must route clear of.
+            continue
+        if not routed:
+            # A track on a copper layer this fanout does not route (an inner
+            # layer when it escapes on F.Cu and B.Cu): no escape runs there, but
+            # every via's barrel spans the stack and meets it, so it joins the
+            # via-site checks (_via_site_conflict) with no routing layer --
+            # as the channel engine's via_in_pad_conflict (#370 B4) and the
+            # base obstacle map's out-of-config copper already count it. Left
+            # out, an under-pad via on a 4-layer board fanned on F/B landed on
+            # an In2.Cu VCC_3V3 track (zynq_ad9364, the bus step's source fan).
+            exact_segs.append((s.start_x, s.start_y, s.end_x, s.end_y,
+                               (s.width or 0.0) / 2.0, s.net_id, None))
             continue
         li = layers.index(s.layer)
         occ.block_segment(li, (s.start_x, s.start_y), (s.end_x, s.end_y),
@@ -1141,7 +1154,9 @@ def generate_underpad_escape(footprint: Footprint,
 
         for (x1, y1, x2, y2, half_w, nid, li) in exact_segs:
             keep = half_w + track_width / 2 + clearance
-            if nid in net_ids or not seg_near(x1, y1, x2, y2, home_r + keep):
+            if li is None or nid in net_ids or not seg_near(x1, y1, x2, y2, home_r + keep):
+                # (li None: a track on a layer this fanout does not route --
+                # a via check's only, no routing layer's cells to carve)
                 continue
             add_seg(x1, y1, x2, y2, keep, li)
         for tr in tracks:

@@ -303,6 +303,9 @@ for n in sorted(HELD):
 OWN = {n: {ctx.byname[n][0]} | {ctx.byname[leg][0] for leg in prs.get(n, ()) if leg in ctx.byname} for n in LANES}
 # static objects binned by bounding box; a query looks SREACH round its point: the widest bar to static copper
 SCELL = 2 * _pairs.pitch(TW)
+# the layers a via's barrel meets: the two pages, then a board's inner layers, whose copper no lane meets and every via
+# does (a 2-layer board: the pages alone, in the order the rows were always built)
+VIA_LAYERS = ('F.Cu', 'B.Cu') + tuple(L for L in ctx.pcb.board_info.copper_layers if L not in ('F.Cu', 'B.Cu'))
 SREACH = (max(NEED_VST + OFF + g2, NEED_ST + HALF_SNAP + g2, BLOCK + 2 * (HALF_SNAP + g2)) + MARGIN
           + _pairs.corner_buffer(cfg.grid_step))            # (a pad's corner buffer: pad_dist)
 SGRID = collections.defaultdict(list)
@@ -636,7 +639,7 @@ def gather():
                         continue
                     nv = (B - C) / d
                     rows.append(([(n, i, nv), (m, k, -nv)], need + EPS - d, 'via-via', f'{n}~{m}', d - need))
-            for L in ('F.Cu', 'B.Cu'):
+            for L in VIA_LAYERS:
                 for dd, q, lab in static_near(B, L, OWN[n], pair=n in prs):
                     need = NEED_VST + vx
                     if lab.endswith((' end leg', ' crossover leg')):
