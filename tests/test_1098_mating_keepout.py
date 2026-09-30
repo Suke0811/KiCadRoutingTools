@@ -30,10 +30,9 @@ sys.path.insert(0, os.path.join(ROOT, 'py_tools'))
 
 from test_1094_rotated_courtyards import stickhub  # noqa: E402
 
-RUN36 = [
-    os.environ.get('KICAD_RUN36_FINAL', ''),
-    'C:/Users/rob/Documents/prive/git/krt-1081/wk/run36/final.kicad_pcb',
-]
+#: Run 36's final board is a local run artifact (and CC BY-NC-SA); point
+#: KICAD_RUN36_FINAL at it to run that arm.
+RUN36 = [os.environ.get('KICAD_RUN36_FINAL', '')]
 
 OUTLINE = [(0, 0), (30, 0), (30, 20), (20, 20), (20, 32), (10, 32), (10, 20),
            (0, 20)]
@@ -147,6 +146,20 @@ class TestDerivation(unittest.TestCase):
                 fh.write(off)
             self.assertEqual(keepouts(p), ())
 
+    def test_fingers_that_do_not_reach_the_edge_are_not_a_plug(self):
+        """The courtyard reaches the tip, but the netted pads are 0.5 x 1 mm
+        islands more than 1 mm from every edge of the tongue: a jumper or a
+        logo with a courtyard, not a plug."""
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td)
+            text = open(p, encoding='utf-8').read()
+            text = text.replace('(size 1.5 8)', '(size 0.5 1)').replace(
+                '(at -3.8 -6)', '(at -2.5 -6)').replace('(at 3.8 -6)',
+                                                        '(at 2.5 -6)')
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write(text)
+            self.assertEqual(keepouts(p), ())
+
     def test_board_only_counts_too(self):
         with tempfile.TemporaryDirectory() as td:
             self.assertEqual(len(keepouts(board(td, attr='board_only'))), 1)
@@ -251,6 +264,30 @@ class TestGenerator(unittest.TestCase):
             self.assertEqual(hit, not clear, (x, y))
             if hit:
                 self.assertFalse(seat, (x, y))
+
+    def test_a_seated_plug_does_not_move(self):
+        """Moving the plug inland took its region with it and read as an
+        improvement (final review). The quench locks it and place_pose
+        refuses to move it unless it is named in `unlock`."""
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td, r1=(15, 26, 'B.Cu'))
+            st = pose_score.make_state(parse_kicad_pcb(p), p, clearance=0.1,
+                                       board_edge_clearance=0.1)
+            self.assertTrue(st.parts['J1'].locked)
+            out = os.path.join(td, 'o.kicad_pcb')
+            cmd = [sys.executable, '-X', 'utf8',
+                   os.path.join(ROOT, 'py_placer', 'place_pose.py'), p, out]
+            r = subprocess.run(cmd + ['set', 'J1', '15', '10', '--rot', '0'],
+                               capture_output=True, text=True, cwd=ROOT)
+            refused = (r.returncode, os.path.exists(out))
+            r2 = subprocess.run(cmd + ['unlock', 'J1', 'set', 'J1', '15',
+                                       '10', '--rot', '0', '--force'],
+                                capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(refused, (4, False), r.stdout[-1500:])
+        self.assertIn('PCB-edge plug', r.stdout + r.stderr)
+        self.assertNotIn('PCB-edge plug seated', r2.stdout + r2.stderr)
 
     def test_a_declared_keepout_of_that_name_wins(self):
         from kicad_parser import parse_kicad_pcb

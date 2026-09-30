@@ -127,6 +127,29 @@ class TestOffOutline(unittest.TestCase):
         self.assertFalse(d['buildable'], r.stdout[-1500:])
         self.assertEqual(d['oob_pad_copper_gating_refs'], ['R1'])
 
+    def test_a_castellated_pad_on_a_plain_rectangle(self):
+        """A plain rectangular outline parses to no rings at all; the
+        straddle test falls back to the bounds (final review: only the
+        notched outline was tested)."""
+        notch = ''.join(
+            f'  (gr_line (start {a[0]} {a[1]}) (end {b[0]} {b[1]}) (stroke'
+            f' (width 0.1) (type default)) (layer "Edge.Cuts"))\n'
+            for a, b in zip(
+                [(0, 0), (15, 0), (15, 5), (20, 5), (20, 20), (0, 20)],
+                [(15, 0), (15, 5), (20, 5), (20, 20), (0, 20), (0, 0)]))
+        self.assertIn(notch, BOARD)
+        rect = BOARD.replace(
+            notch, '  (gr_rect (start 0 0) (end 20 20) (stroke (width 0.1)'
+                   ' (type default)) (layer "Edge.Cuts"))\n')
+        rect = rect.replace(
+            '(pad "2" smd rect (at 0.5 0) (size 0.6 0.6) (layers "F.Cu")',
+            '(pad "2" thru_hole rect (at 0.5 0.4) (size 0.6 0.6) (drill 0.3)'
+            ' (layers "*.Cu") (property pad_prop_castellated)')
+        self.assertIn('gr_rect', rect)
+        _r, d = _run_text(rect.format(y=19.5))
+        self.assertTrue(d['buildable'])
+        self.assertEqual(d['oob_pad_copper_gating_refs'], [])
+
     def test_render_placement_gates_the_same_parts(self):
         """render_placement's `pad_copper_gating` is check_assembly's list:
         the castellated edge part is in neither, the part off the board in

@@ -45,6 +45,7 @@ TARGETS = {
     'quench': os.path.join(_PL, 'quench.py'),
     'asm': os.path.join(_ROOT, 'py_tools', 'check_assembly.py'),
     'seed': os.path.join(_ROOT, 'py_placer', 'place_seed.py'),
+    'pose': os.path.join(_PL, 'pose_ops.py'),
 }
 
 
@@ -144,6 +145,18 @@ ROWS = [
      (T1098,), 'KILLED'),
     ('grade-blind-to-the-plug', 'fp',
      "        if len(_ks) != len(intent.keepouts or ()):",
+     "        if False:",
+     (T1098,), 'KILLED'),
+    ('seated-plug-free-to-move', 'quench',
+     "            if _ref and _ref in self.parts:",
+     "            if False:",
+     (T1098,), 'KILLED'),
+    ('place-pose-moves-the-plug', 'pose',
+     "        if _moved_plugs:",
+     "        if False:",
+     (T1098,), 'KILLED'),
+    ('fingers-need-not-reach-the-edge', 'fp',
+     "        if near < 2:",
      "        if False:",
      (T1098,), 'KILLED'),
     ('seat-blind-to-the-plug', 'quench',

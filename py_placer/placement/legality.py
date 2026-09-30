@@ -4497,11 +4497,14 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
     # the resolved per-pad edge requirement (#986 moved it onto the context)
     graphic = _graphic_copper_channel(pcb_data, edge_ctx.required)
     # #1098: parts inside a PCB-edge plug's mating region, on either face.
+    mating_error = None
     try:
         from .floorplan import mating_keepout_findings
         mating = mating_keepout_findings(pcb_data, pcb_file)
-    except Exception:                                        # noqa: BLE001
-        mating = []
+    except Exception as exc:                                 # noqa: BLE001
+        # Not "clean": an unmeasured tongue is reported, and check_assembly
+        # fails closed on it (#1098 review).
+        mating, mating_error = [], f"{type(exc).__name__}: {exc}"
     # #1031: board-level rule-area keep-outs, the third pad-copper channel.
     keepout = keepout_pad_findings(
         RuleAreaKeepouts.for_board(pcb_data, clearance, pcb_file), parts,
@@ -4531,6 +4534,7 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             'mating_keepout_amount': round(sum(m['area_mm2']
                                                for m in mating), 4),
             'mating_keepout_refs': mating,
+            'mating_keepout_error': mating_error,
             'oob_pad_copper_count': len(oob_copper_refs),
             'oob_pad_copper_refs': sorted(oob_copper_refs),
             # #1096. `oob_pad_copper_refs` carries rect_outside_amount's

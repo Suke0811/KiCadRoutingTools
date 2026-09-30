@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """`board_score`'s assembly component must read the VERDICT, not one conjunct (#918).
 
-`check_assembly` decides NOT BUILDABLE on five conjuncts
+`check_assembly` decides NOT BUILDABLE on seven conjuncts
 (`py_tools/check_assembly.py`)::
 
     not_buildable = bool(g['blocking'] or locked_contact or stack_groups
                          or g['containment_blocking']
-                         or courtyard_gating)
+                         or courtyard_gating or off_outline_pads or mating)
 
-`blocking` is the FIRST of them and means "pad intersections". `board_score`'s
+(the last two since #1096 and #1098). `blocking` is the FIRST of them and means "pad intersections". `board_score`'s
 `score_assembly` read that scalar alone and accepted `rc in (0, 4)`, so a board
 that is unbuildable through any of the other four contributed **0** to the
 number the whole placement/routing loop ranks and stops on.

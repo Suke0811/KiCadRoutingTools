@@ -505,6 +505,10 @@ def main(argv=None):
                         args.board_edge_clearance)[2]
 
     _require_brief_failed = False
+    if args.decaps_from and not args.emit_intent:
+        print("ERROR: --decaps-from derives a limit INTO an emitted intent; "
+              "pass --emit-intent with it", file=sys.stderr)
+        return 2
     if args.decaps_from and not os.path.isfile(args.decaps_from):
         print(f"ERROR: --decaps-from {args.decaps_from}: no such board",
               file=sys.stderr)
@@ -653,7 +657,10 @@ def main(argv=None):
             # not exist. A reader cannot act on a conflated count: the
             # first is a grading hole to widen or accept, the second is a
             # design fact about caps that have no IC at all.
-            if cen.get('beyond_radius'):
+            # A limit read off a --decaps-from reference owes nothing to THIS
+            # board's census, so the "not derived from them" line is only
+            # true without one.
+            if cen.get('beyond_radius') and not cen.get('reference_board'):
                 print(f"  decap census: {cen['beyond_radius']} rail-sharing "
                       f"cap(s) lie beyond the {cen['search_radius_mm']}mm "
                       f"search radius (worst {cen['worst_beyond_mm']}mm), "

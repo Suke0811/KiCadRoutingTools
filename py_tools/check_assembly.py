@@ -619,6 +619,12 @@ def main():
     # socket). Absolute, and no class waiver reaches it: the region is the
     # plug's own courtyard, and whatever sits there cannot be plugged in.
     mating = leg.get('mating_keepout_refs') or []
+    if leg.get('mating_keepout_error'):
+        # Unmeasured is not clean: fail closed, and say why.
+        print(f"  PLUG MATING REGION NOT MEASURED -- "
+              f"{leg['mating_keepout_error']} -- NOT BUILDABLE until it is")
+        mating = mating or [{'ref': '?', 'keepout': 'unmeasured',
+                             'side': '?', 'area_mm2': 0.0}]
     if mating:
         print(f"  ON A PLUG'S MATING REGION ({len(mating)}): these must "
               f"enter the socket with the plug -- NOT BUILDABLE")
@@ -665,7 +671,7 @@ def main():
             # by-design containments the corpus ships legitimately (orangecrab
             # FID2/J5 at 100%) and so names a defect where there is none. The
             # number has existed in the grade dict since the channel was added
-            # and has decided the verdict at :508-510 ever since; it just never
+            # and has decided the verdict at its `not_buildable` line ever since; it just never
             # reached a reader (#918).
             'containment_blocking': g['containment_blocking'],
             'containments': [q._asdict() for q in g['containment_pairs']],

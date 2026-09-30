@@ -78,7 +78,7 @@ BUILDABLE. `board_score` decides NOTHING here — record its `unrouted` and
 the end of the chain.
 
 Classify from the JSON fields, not from exit status: `check_assembly` exits 4
-for any of its five conjuncts and its VERDICT line already says which one.
+for any of its seven conjuncts and its VERDICT line already says which one.
 
 - **NOT BUILDABLE** -> stop. This is placement work. Use `/pcb-free-agent place`
   for the placement alone, or `/pcb-free-agent full` when the board needs both.

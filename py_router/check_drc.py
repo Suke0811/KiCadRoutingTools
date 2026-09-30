@@ -2607,9 +2607,10 @@ def rule_severity(pcb_file: str, key: str) -> Optional[str]:
     """The board's own DRC severity for rule `key` ('error' / 'warning' /
     'ignore') from the sibling .kicad_pro, or None when unset / no project.
 
-    ONE reader for `rule_severities`, so every tool grading a KiCad rule
-    grades it at the severity the board declares (#1095: check_assembly
-    graded courtyard overlaps StickHub's project sets to `ignore`)."""
+    `edge_clearance_severity` reads through it. #1095's courtyard grade
+    reads the same key in `legality.courtyard_severity_of`, which also needs
+    the project's `kicad_routing_tools.saved_severities` and so opens the
+    file itself."""
     import os as _os
     import json as _json
     pro = _os.path.splitext(pcb_file)[0] + '.kicad_pro'

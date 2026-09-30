@@ -1040,6 +1040,16 @@ class QuenchState:
         from . import floorplan as _fpk
         self.keepouts = _fpk.with_derived_keepouts(keepouts, pcb_data,
                                                    pcb_file)
+        # A plug SEATED at its edge is the mechanical fact its keep-out is
+        # derived from: moved inland, the region would go with it and the
+        # parts it kept off the tongue would be free to return (#1098
+        # review). So the search never moves it -- as with a KiCad lock.
+        for _k in self.keepouts:
+            _ref = str(_k.get('name', ''))[len(_fpk.MATING_PREFIX):] \
+                if str(_k.get('name', '')).startswith(_fpk.MATING_PREFIX) \
+                else None
+            if _ref and _ref in self.parts:
+                self.parts[_ref].locked = True
         self.keepouts_for: Dict[str, Tuple[Dict, ...]] = {}
         if self.keepouts:
             from . import floorplan as _fp

@@ -365,8 +365,8 @@ def unrouted_shape(board: str, unrouted_names) -> dict:
             'open': sorted(open_nets)}
 
 
-#: check_assembly's five `not_buildable` conjuncts, by the JSON key each one
-#: publishes (check_assembly.py:508-510). `blocking` -- pad INTERSECTIONS -- is
+#: check_assembly's seven `not_buildable` conjuncts, by the JSON key each one
+#: publishes (check_assembly's `not_buildable = ...` line). `blocking` -- pad INTERSECTIONS -- is
 #: the first of them and is the only one this component used to read (#918).
 #:
 #: THEY ARE NOT DISJOINT AND THEY ARE NOT ONE CURRENCY, which is why `count`
@@ -412,7 +412,7 @@ ASSEMBLY_LIVE_CONJUNCTS = ('coincident_origins', 'containment_blocking',
 
 
 def assembly_component(doc: dict, rc: int) -> dict:
-    """check_assembly's VERDICT, not one of its five conjuncts (#918).
+    """check_assembly's VERDICT, not one of its seven conjuncts (#918).
 
     `not_buildable` is `blocking or locked_contact or stack_groups or
     containment_blocking or courtyard_gating`. This component read `blocking`
@@ -457,8 +457,9 @@ def assembly_component(doc: dict, rc: int) -> dict:
     if not isinstance(buildable, bool):
         return skipped(
             "check_assembly published no `buildable` key: `blocking` alone is "
-            "1 of its 5 not_buildable conjuncts (check_assembly.py:508-510), "
-            "and this component will not re-derive the other four")
+            "1 of its 7 not_buildable conjuncts (check_assembly's "
+            "`not_buildable` line), and this component will not re-derive "
+            "the other six")
     if (rc == 4) != (not buildable):
         return skipped(
             f"check_assembly contradicts itself: exit {rc} with "

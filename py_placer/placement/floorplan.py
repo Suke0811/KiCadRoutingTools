@@ -8101,6 +8101,9 @@ def emit_intent(pcb_data, pcb_file: str, *,
         _limit, _why = _decap_derivation(_ref_census)
         _census['reference_board'] = decaps_from
         _census['reference_tethers'] = _ref_census.get('tethers')
+        # The reference REPLACES the auto/strict arms: an auto withholding
+        # about THIS board is not a statement about the number written.
+        _census.pop('auto_withheld', None)
         # The reference must BE a placement of THIS design: its pad-bearing
         # parts on the board with the same footprint (#1099 verifier: an
         # esp_prog intent took glasgow's 4.787 mm without a word), and
