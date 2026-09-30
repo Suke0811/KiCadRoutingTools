@@ -234,8 +234,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 2. **The film**:
    ```bash
    python3 -X utf8 py_tools/make_film.py --from-ledger wk/<run>/ledger.jsonl \
-       --theme light --aspect 4:3 \
-       --floorplan-intent <intent.json> -o wk/<run>/<run>_film.mp4
+       --theme light --aspect 4:3 -o wk/<run>/<run>_film.mp4
    ```
    Look at a few frames before you call it done.
 3. **`wk/<run>/REPORT.md`**, containing:
