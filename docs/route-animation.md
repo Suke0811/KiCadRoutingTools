@@ -403,7 +403,7 @@ Four modules now hold it, and every renderer imports them:
 | `py_router/render_theme.py` | *what things look like* — semantic roles, two measured themes, the mark vocabulary. **Imports no PIL**, so `render_placement` can import it at module scope |
 | `py_router/frame_layout.py` | *where things are* — the stage3d frame, aspect presets, every box in final pixels. Pure geometry, no PIL, no board reads |
 | `py_router/render_chrome.py` | the in-frame key, the rail and the totals |
-| `py_router/render_panels.py` | the lower box and its four contents |
+| `py_router/render_panels.py` | the layer column (the per-layer strip) and the board summary |
 
 plus `py_router/movie_attempts.py` (the search behind a film) and
 `py_router/copper_motion.py` (retract and grow).

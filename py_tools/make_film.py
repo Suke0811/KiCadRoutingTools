@@ -440,6 +440,11 @@ def _build_film_body(a, frame_spool, sink, steps, final, size, supersample,
             sink.close()
         return []
     _g0 = _geom[0] if _geom else None
+    if _g0 is not None and not quiet:
+        # the frame's give-ups (a board-only frame at an extreme aspect, a
+        # declined band) are said, as make_movie says them
+        import frame_layout
+        print(frame_layout.frame_status_line(_g0), file=sys.stderr)
     # #1021. THE BANDS GO HERE -- BEFORE THE BADGES AND THE CARDS: a badge draws a border on the frame it is given, so a band
     # attached afterwards would sit outside it, and the cards are cut at the
     # composed, band-inclusive size so the film keeps ONE frame size.

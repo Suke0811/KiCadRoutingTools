@@ -766,7 +766,11 @@ def build_run(run_dir, size, ss, alpha, rip_hold, chunks):
     steps, final = discover_steps(run_dir)
     if not final:
         return []
-    return build_boards(steps, final, size, ss, alpha, rip_hold, chunks)
+    # the ONE aspect resolution (it honours $KICAD_MOVIE_ASPECT and says a
+    # retired knob once), as make_movie and make_film resolve it
+    import frame_layout
+    return build_boards(steps, final, size, ss, alpha, rip_hold, chunks,
+                        aspect=frame_layout.resolve_aspect(None))
 
 
 def render_chrome_lap(n, laps, label):
@@ -908,12 +912,12 @@ def build_boards(steps, final, size, ss, alpha, rip_hold, chunks, stage=None,
     printed LOUDLY and appended to ``notes`` when a list is passed. ``None``
     or 0 = no budget, today's behaviour.
 
-    ``attempts_band`` (#946/C4) reserves the attempts band INSIDE the planned
-    frame (`plan_frame(track_px=)`), so a declared ratio keeps its size. A
-    CALLABLE ``(frame_w, frame_h) -> px`` sizes it instead (#1042: the
-    placement panels' `movie_placement.band_px`); the
-    band's box is `geom_out[0].track` and `movie_attempts.attach(box=)` draws
-    into it.
+    ``attempts_band`` reserves the film's band INSIDE the planned frame
+    (`plan_frame(track_px=)`), so a declared ratio keeps its size. A CALLABLE
+    ``(frame_w, frame_h) -> px`` sizes it instead (#1042: the placement
+    panels' `movie_placement.band_px`); the band's box is
+    `geom_out[0].track`, and `movie_benchmark.attach(box=)` or the placement
+    panels draw into it.
     """
     from kicad_parser import parse_kicad_pcb
     if not final:
