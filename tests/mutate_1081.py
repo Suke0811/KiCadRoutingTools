@@ -241,8 +241,8 @@ ROWS = [
      "        found = None",
      (T_TL,), 'KILLED'),
     ('a-copper-only-part-gets-a-box', 'scene',
-     "            if words & {'board_only', 'exclude_from_pos_files'}:",
-     "            if False:",
+     "            & {'board_only', 'exclude_from_pos_files'}}",
+     "            & set()}",
      (T_TL,), 'KILLED'),
 ]
 

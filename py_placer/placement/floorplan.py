@@ -2125,6 +2125,134 @@ def keepout_hit(entry, rects) -> float:
     return hit if hit > legality.EPS else 0.0
 
 
+# --- #1098: a PCB-edge plug's mating region, kept clear on BOTH faces --------
+# Run 36 placed 8 back-side parts on the tongue of StickHub's USB-A plug --
+# the part of the board that slides into a socket -- and every instrument
+# passed it. The plug (`USB_A_PCB_traces_small`) is board copper: SMD finger
+# pads, `exclude_from_pos_files`, no 3D model, a courtyard on F.CrtYd only
+# and no keep-out. Courtyards are per side, so a B-side part never pairs with
+# it. The region is derived from the footprint and handed to every consumer
+# of the #701 keep-out channel, which already enforces a rect on both faces
+# with an `allow` exemption (seeder pose_ok, quench, grade), plus the two
+# graders that run without an intent (grade_pad_legality -> place_pose, and
+# check_assembly).
+
+#: Attrs that say the footprint is not placed by the assembly house.
+MATING_ATTRS = ('board_only', 'exclude_from_pos_files')
+#: The courtyard is inset by this before it becomes the keep-out. StickHub's
+#: J2 and J6 courtyards reach 0.15 mm past the tongue's root; the inset keeps
+#: a neighbour's courtyard margin that grazes the root from reading as a part
+#: on the plug, and still catches all 8 run-36 parts.
+MATING_INSET_MM = 0.25
+MATING_PREFIX = 'mating:'
+
+
+def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
+                            ) -> Tuple[Dict, ...]:
+    """The keep-outs a board's PCB-edge plugs imply, one per plug (#1098).
+
+    A footprint is a plug when it is not assembled (an attr in
+    `MATING_ATTRS` and no 3D model), carries >= 2 netted pads and no drilled
+    one (finger copper, not a connector body), draws a courtyard, and that
+    courtyard reaches the outline (overhangs it or lies within the seat
+    tolerance of it). The keep-out is the courtyard's board rect inset by
+    `MATING_INSET_MM`, on both faces, allowing the plug itself and every
+    part with no copper pad (a slot like StickHub's H1, a logo).
+
+    Declared, not guessed, wins: an intent or brief keep-out named
+    `mating:<ref>` replaces the derived one (see `with_derived_keepouts`).
+    """
+    import glob as _glob
+    path = pcb_file or getattr(pcb_data, 'source_path', None)
+    fps = getattr(pcb_data, 'footprints', None) or {}
+    bi = getattr(pcb_data, 'board_info', None)
+    if not path or not fps or bi is None:
+        return ()
+    cands = [r for r, fp in fps.items()
+             if set(getattr(fp, 'attrs', ()) or ()) & set(MATING_ATTRS)
+             and not getattr(fp, 'has_model', False)]
+    if not cands:
+        return ()
+    from .parser import courtyard_for_side, extract_courtyard_sides
+    from .part_class import SEAT_TOL_MM
+    try:
+        crt = extract_courtyard_sides(path)
+    except Exception:                                        # noqa: BLE001
+        return ()
+    gate = legality.BoardOutlineGate(bi, 0.0)
+
+    def copper_pads(fp):
+        return [p for p in (fp.pads or ())
+                if getattr(p, 'pad_type', '') != 'np_thru_hole']
+
+    free = tuple(_glob.escape(r) for r, fp in sorted(fps.items())
+                 if not copper_pads(fp))
+    out = []
+    for ref in sorted(cands):
+        fp = fps[ref]
+        pads = copper_pads(fp)
+        if any((p.drill or 0) > 0 for p in pads):
+            continue
+        if sum(1 for p in pads if p.net_id) < 2:
+            continue
+        loc = courtyard_for_side(crt.get(ref), legality.footprint_side(fp))
+        if loc is None:
+            continue
+        x0, y0, x1, y1 = legality.rotate_local_bounds(*loc,
+                                                      fp.rotation or 0.0)
+        rect = (fp.x + x0, fp.y + y0, fp.x + x1, fp.y + y1)
+        if not (gate.rect_outside_amount(rect) > legality.EPS
+                or gate.edge_clearance(rect) <= SEAT_TOL_MM):
+            continue
+        ins = (rect[0] + MATING_INSET_MM, rect[1] + MATING_INSET_MM,
+               rect[2] - MATING_INSET_MM, rect[3] - MATING_INSET_MM)
+        if ins[2] <= ins[0] or ins[3] <= ins[1]:
+            continue
+        out.append({'name': MATING_PREFIX + ref,
+                    'rect': tuple(round(v, 4) for v in ins),
+                    'sides': ('F', 'B'),
+                    'allow': (_glob.escape(ref),) + free,
+                    'context': {'source': 'derived',
+                                'derived_from': f"footprint {ref}: "
+                                f"{'/'.join(sorted(set(fp.attrs) & set(MATING_ATTRS)))}"
+                                f", no 3D model, courtyard at the outline",
+                                'inset_mm': MATING_INSET_MM}})
+    return tuple(out)
+
+
+def with_derived_keepouts(keepouts, pcb_data, pcb_file: Optional[str] = None
+                          ) -> Tuple[Dict, ...]:
+    """`keepouts` plus the derived mating keep-outs no entry already names
+    (#1098). A declared `mating:<ref>` replaces the derived one."""
+    declared = tuple(keepouts or ())
+    names = {k.get('name') for k in declared}
+    return declared + tuple(k for k in derived_mating_keepouts(pcb_data,
+                                                               pcb_file)
+                            if k['name'] not in names)
+
+
+def mating_keepout_findings(pcb_data, pcb_file: Optional[str] = None,
+                            graded=None, keepouts=None) -> List[Dict]:
+    """`[{ref, keepout, side, area_mm2}]`: parts inside a derived mating
+    keep-out at the file's poses (#1098). `keepout_hit` over each part's
+    (courtyard, drilled-pad) rects, resolved by `keepouts_for_ref` -- the
+    same two functions the seeder and the grade call."""
+    ks = (derived_mating_keepouts(pcb_data, pcb_file)
+          if keepouts is None else tuple(keepouts))
+    if not ks:
+        return []
+    if graded is None:
+        graded = legality.graded_parts_from_file(pcb_data, pcb_file)
+    out = []
+    for g in graded:
+        for k in keepouts_for_ref(ks, g.ref, g.sides):
+            a = keepout_hit(k, (g.rect, g.tht_rect))
+            if a:
+                out.append({'ref': g.ref, 'keepout': k['name'],
+                            'side': g.side, 'area_mm2': round(a, 4)})
+    return sorted(out, key=lambda f: (f['keepout'], f['ref']))
+
+
 # --------------------------------------------------------------------------
 # the board's own outline, checked before anything is graded against it
 # --------------------------------------------------------------------------

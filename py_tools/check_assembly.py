@@ -544,6 +544,9 @@ def main():
     # whenever it waived anything, with the file it came from, because a
     # courtyard census that silently shrank would read as a fix.
     _cy_w = g.get('courtyard_severity_waiver') or ''
+    _cy_basis = g.get('courtyard_severity_basis') or ''
+    if _cy_basis.startswith('legacy severity plan'):
+        print(f"  courtyard severity: graded at error -- {_cy_basis}.")
     if _cy_w:
         _n_sev = sum(1 for q in g['pairs']
                      if q.kind == 'courtyard' and q.waiver == _cy_w)
@@ -601,9 +604,20 @@ def main():
     # part that is not on the board cannot be built. A lock does not exempt
     # it (placement stamps locks itself, #962's reasoning).
     off_outline_pads = [r for r, _a in (leg.get('oob_pad_copper_refs') or [])]
+    # #1098, the SEVENTH: a part on a PCB-edge plug's mating region (run 36
+    # put 8 back-side parts on StickHub's USB tongue, which must enter a
+    # socket). Absolute, and no class waiver reaches it: the region is the
+    # plug's own courtyard, and whatever sits there cannot be plugged in.
+    mating = leg.get('mating_keepout_refs') or []
+    if mating:
+        print(f"  ON A PLUG'S MATING REGION ({len(mating)}): these must "
+              f"enter the socket with the plug -- NOT BUILDABLE")
+        for m in mating:
+            print(f"    {m['ref']} ({m['side']}) in {m['keepout']}  "
+                  f"{m['area_mm2']}mm2")
     not_buildable = bool(g['blocking'] or locked_contact or stack_groups
                          or g['containment_blocking']
-                         or courtyard_gating or off_outline_pads)
+                         or courtyard_gating or off_outline_pads or mating)
     verdict = 'NOT BUILDABLE' if not_buildable else 'buildable (blocking 0)'
     print(f"  VERDICT: {verdict}")
 
@@ -666,6 +680,7 @@ def main():
             # #1095: the severity the courtyard channel was graded at (None
             # = KiCad's default, error) and the waiver label it gave.
             'courtyard_severity': g.get('courtyard_severity'),
+            'courtyard_severity_basis': g.get('courtyard_severity_basis'),
             'courtyard_severity_waiver': g.get('courtyard_severity_waiver')
             or None,
             'courtyard_gating_basis': ('moved-vs-baseline'
@@ -707,6 +722,8 @@ def main():
             'oob_pad_copper_refs': leg.get('oob_pad_copper_refs') or [],
             'oob_pad_copper_overrun_mm':
                 leg.get('oob_pad_copper_overrun_mm') or {},
+            'mating_keepout_count': leg.get('mating_keepout_count', 0),
+            'mating_keepout_refs': leg.get('mating_keepout_refs') or [],
             'oob_pad_copper_basis': leg.get('oob_pad_copper_basis'),
             # #962: footprint GRAPHIC copper against the outline -- the second
             # off-outline channel, same non-gating contract as the pad one.

@@ -1481,16 +1481,56 @@ def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
 PROJECT_SEVERITY_WAIVER = 'project_severity_'
 
 
-def courtyard_severity_of(pcb_file: Optional[str]) -> Optional[str]:
-    """The board's `courtyards_overlap` severity, or None (no project, or
-    unset: KiCad's default is error)."""
+def courtyard_severity_of(pcb_file: Optional[str]) -> Tuple[Optional[str],
+                                                          str]:
+    """`(severity, basis)`: the AUTHOR's `courtyards_overlap` severity for
+    the board, or None (no project, unset -- KiCad's default is error -- or
+    not the author's), and where it came from (#1095).
+
+    An 'ignore' is only trusted as the author's. This repository's own
+    tools wrote it too: before #856 every route step applied
+    `fix_kicad_drc_settings.severity_plan`, whose early form set
+    courtyards_overlap to ignore along with the rest of its categories, and
+    the writeback only ever loosens, so it carries down every later copy
+    (241 local run outputs carry it; glasgow_revC's routed loop outputs read
+    0 courtyard-blocking pairs under it and 24-25 without). So:
+
+    - `kicad_routing_tools.saved_severities.courtyards_overlap` exists: a
+      current tool changed the value and kept the author's; that is the
+      answer ('saved: author's value').
+    - the project ignores EVERY category the legacy plan ignored: tool
+      written, graded at error ('legacy severity plan').
+    - otherwise the project's own value ('project').
+    """
     if not pcb_file:
-        return None
+        return None, 'no board file'
+    import json as _json
+    pro = os.path.splitext(pcb_file)[0] + '.kicad_pro'
     try:
-        from check_drc import rule_severity
-        return rule_severity(pcb_file, 'courtyards_overlap')
-    except Exception:                                        # noqa: BLE001
-        return None
+        with open(pro, encoding='utf-8') as fh:
+            doc = _json.load(fh)
+    except (OSError, ValueError):
+        return None, 'no project'
+    sev = (((doc.get('board') or {}).get('design_settings') or {})
+           .get('rule_severities') or {})
+    saved = (((doc.get('kicad_routing_tools') or {})
+              .get('saved_severities') or {}).get('courtyards_overlap'))
+    if saved is not None:
+        return saved, "saved: the author's value, kept when a tool changed it"
+    value = sev.get('courtyards_overlap')
+    if value == 'ignore':
+        try:
+            from fix_kicad_drc_settings import (COURTYARD_CATS,
+                                                FOOTPRINT_CATS, MASK_CATS)
+            legacy = set(COURTYARD_CATS) | set(MASK_CATS) | set(FOOTPRINT_CATS)
+        except Exception:                                    # noqa: BLE001
+            legacy = set()
+        if legacy and all(sev.get(c) == 'ignore' for c in legacy):
+            return None, ("legacy severity plan: the project ignores all of "
+                          + ', '.join(sorted(legacy)) + ", which this "
+                          "repo's pre-#856 route steps wrote, so the ignore "
+                          "is not taken as the author's")
+    return value, 'project'
 
 
 def grade_body_overlap(pcb_data, clearance: float,
@@ -1527,9 +1567,11 @@ def grade_body_overlap(pcb_data, clearance: float,
     """
     from placement.part_class import classify_part
 
-    _cy_sev = (courtyard_severity_of(pcb_file
-                                     or getattr(pcb_data, 'source_path', None))
-               if courtyard_severity == 'auto' else courtyard_severity)
+    if courtyard_severity == 'auto':
+        _cy_sev, _cy_basis = courtyard_severity_of(
+            pcb_file or getattr(pcb_data, 'source_path', None))
+    else:
+        _cy_sev, _cy_basis = courtyard_severity, 'caller'
     _cy_waiver = (PROJECT_SEVERITY_WAIVER + _cy_sev
                   if _cy_sev == 'ignore' else '')
 
@@ -1964,6 +2006,7 @@ def grade_body_overlap(pcb_data, clearance: float,
     from placement.body import tightest_body_seam as _tbs
     _seam = _tbs(seam_parts)
     return {'courtyard_severity': _cy_sev,
+            'courtyard_severity_basis': _cy_basis,
             'courtyard_severity_waiver': _cy_waiver,
             'blocking': len(blocking),
             'advisory': len(advisory),
@@ -4366,6 +4409,12 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                     default=0.0), 4)
     # the resolved per-pad edge requirement (#986 moved it onto the context)
     graphic = _graphic_copper_channel(pcb_data, edge_ctx.required)
+    # #1098: parts inside a PCB-edge plug's mating region, on either face.
+    try:
+        from .floorplan import mating_keepout_findings
+        mating = mating_keepout_findings(pcb_data, pcb_file)
+    except Exception:                                        # noqa: BLE001
+        mating = []
     # #1031: board-level rule-area keep-outs, the third pad-copper channel.
     keepout = keepout_pad_findings(
         RuleAreaKeepouts.for_board(pcb_data, clearance, pcb_file), parts,
@@ -4388,6 +4437,13 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             # checklist.a_off_outline.pad_copper") -- carried here too so a
             # consumer holding only the assembly report can act on it without
             # also rendering, and so the two numbers can be read side by side.
+            # #1098: a part on a PCB-edge plug's mating region (a USB tongue
+            # that has to enter a socket), either face. place_pose gates on
+            # the count and the summed overlap area.
+            'mating_keepout_count': len({m['ref'] for m in mating}),
+            'mating_keepout_amount': round(sum(m['area_mm2']
+                                               for m in mating), 4),
+            'mating_keepout_refs': mating,
             'oob_pad_copper_count': len(oob_copper_refs),
             'oob_pad_copper_refs': sorted(oob_copper_refs),
             # #1096. `oob_pad_copper_refs` carries rect_outside_amount's

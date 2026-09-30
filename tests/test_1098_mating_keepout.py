@@ -1,0 +1,254 @@
+"""#1098: nothing may sit on a PCB-edge plug's mating region, either face.
+
+Run 36 placed 8 back-side parts (C2 C21 C24 C28 D23 D24 JP1 R1) on the
+tongue of KiCad StickHub's USB-A plug J1 -- the part of the board that slides
+into a socket -- and check_assembly, check_floorplan and place_pose all
+passed it. J1 (`USB_A_PCB_traces_small`) is board copper: SMD fingers,
+`exclude_from_pos_files`, no 3D model, a courtyard on F.CrtYd only. Since
+courtyards are per side, a B-side part never paired with it.
+
+The fix derives the region from the footprint (`floorplan.
+derived_mating_keepouts`: courtyard inset 0.25 mm, both faces, the plug and
+copper-less parts such as a slot allowed) and hands it to the #701 keep-out
+channel the seeder and quench enforce, to `grade_pad_legality` (place_pose
+gates on it) and to check_assembly (a NOT BUILDABLE conjunct). A declared
+keep-out named `mating:<ref>` replaces the derived one.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'py_placer'))
+sys.path.insert(0, os.path.join(ROOT, 'py_router'))
+sys.path.insert(0, os.path.join(ROOT, 'py_tools'))
+
+from test_1094_rotated_courtyards import stickhub  # noqa: E402
+
+RUN36 = [
+    os.environ.get('KICAD_RUN36_FINAL', ''),
+    'C:/Users/rob/Documents/prive/git/krt-1081/wk/run36/final.kicad_pcb',
+]
+
+OUTLINE = [(0, 0), (30, 0), (30, 20), (20, 20), (20, 32), (10, 32), (10, 20),
+           (0, 20)]
+
+
+def board(td, *, r1=(25, 10, 'B.Cu'), attr='exclude_from_pos_files',
+          model=False, drilled=False, hole=True, keepouts_note=''):
+    """A 30x20 board with a 10x12 tongue at x 10-20, y 20-32. J1 is the
+    plug: its F courtyard IS the tongue, its four SMD fingers carry nets."""
+    segs = ''.join(
+        f'  (gr_line (start {a[0]} {a[1]}) (end {b[0]} {b[1]}) (stroke '
+        f'(width 0.1) (type default)) (layer "Edge.Cuts"))\n'
+        for a, b in zip(OUTLINE, OUTLINE[1:] + OUTLINE[:1]))
+    fingers = ''.join(
+        f'    (pad "{i + 1}" {"thru_hole" if drilled and i == 0 else "smd"} '
+        f'rect (at {x} -6) (size 1.5 8)'
+        + (' (drill 0.8)' if drilled and i == 0 else '')
+        + f' (layers "F.Cu") (net {i + 1} "N{i + 1}"))\n'
+        for i, x in enumerate((-3.8, -1.3, 1.3, 3.8)))
+    x, y, side = r1
+    s = side[0]
+    text = (
+        '(kicad_pcb (version 20240108) (generator pcbnew)\n'
+        '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal)'
+        ' (44 "Edge.Cuts" user))\n'
+        '  (net 0 "") (net 1 "N1") (net 2 "N2") (net 3 "N3") (net 4 "N4")\n'
+        + segs +
+        '  (footprint "t:USB_A_PCB_traces" (layer "F.Cu") (at 15 32)\n'
+        '    (property "Reference" "J1" (at 0 0) (layer "F.SilkS"))\n'
+        + (f'    (attr smd {attr})\n' if attr else '    (attr smd)\n') +
+        '    (fp_rect (start -5 -12) (end 5 0) (stroke (width 0.05)'
+        ' (type default)) (layer "F.CrtYd"))\n'
+        + fingers
+        + ('    (model "x.wrl")\n' if model else '') +
+        '  )\n'
+        + ('  (footprint "t:Slot" (layer "F.Cu") (at 15 21)\n'
+           '    (property "Reference" "H1" (at 0 0) (layer "F.SilkS"))\n'
+           '    (attr exclude_from_pos_files)\n'
+           '    (pad "" np_thru_hole circle (at 0 0) (size 1.5 1.5)'
+           ' (drill 1.5) (layers "*.Cu" "*.Mask")))\n' if hole else '') +
+        f'  (footprint "t:R" (layer "{side}") (at {x} {y})\n'
+        '    (property "Reference" "R1" (at 0 0) (layer "F.SilkS"))\n'
+        '    (attr smd)\n'
+        f'    (fp_rect (start -1 -0.5) (end 1 0.5) (stroke (width 0.05)'
+        f' (type default)) (layer "{s}.CrtYd"))\n'
+        f'    (pad "1" smd rect (at -0.5 0) (size 0.6 0.6) (layers "{side}")'
+        ' (net 1 "N1"))\n'
+        f'    (pad "2" smd rect (at 0.5 0) (size 0.6 0.6) (layers "{side}")'
+        ' (net 2 "N2")))\n'
+        ')\n')
+    path = os.path.join(td, 'b.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(text)
+    return path
+
+
+def keepouts(path):
+    from kicad_parser import parse_kicad_pcb
+    from placement.floorplan import derived_mating_keepouts
+    return derived_mating_keepouts(parse_kicad_pcb(path), path)
+
+
+def findings(path):
+    from kicad_parser import parse_kicad_pcb
+    from placement.floorplan import mating_keepout_findings
+    return mating_keepout_findings(parse_kicad_pcb(path), path)
+
+
+def check_assembly(path):
+    js = path + '.json'
+    r = subprocess.run([sys.executable, '-X', 'utf8',
+                        os.path.join(ROOT, 'py_tools', 'check_assembly.py'),
+                        path, '--json', js],
+                       capture_output=True, text=True, cwd=ROOT)
+    assert os.path.isfile(js), r.stderr[-2000:]
+    with open(js, encoding='utf-8') as fh:
+        return r, json.load(fh)
+
+
+class TestDerivation(unittest.TestCase):
+    def test_the_plug_derives_its_tongue_inset(self):
+        with tempfile.TemporaryDirectory() as td:
+            ks = keepouts(board(td))
+        self.assertEqual([k['name'] for k in ks], ['mating:J1'])
+        self.assertEqual(ks[0]['rect'], (10.25, 20.25, 19.75, 31.75))
+        self.assertEqual(ks[0]['sides'], ('F', 'B'))
+        # The plug itself, and the copper-less slot, are allowed.
+        self.assertEqual(ks[0]['allow'], ('J1', 'H1'))
+
+    def test_what_is_not_a_plug(self):
+        """An assembled part (no such attr), a part with a model, and one
+        with a drilled pad derive nothing."""
+        for kw in ({'attr': ''}, {'model': True}, {'drilled': True}):
+            with tempfile.TemporaryDirectory() as td:
+                self.assertEqual(keepouts(board(td, **kw)), (), kw)
+
+    def test_board_only_counts_too(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(len(keepouts(board(td, attr='board_only'))), 1)
+
+
+class TestGraders(unittest.TestCase):
+    def test_a_back_side_part_on_the_tongue_is_not_buildable(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td, r1=(15, 26, 'B.Cu'))
+            self.assertEqual([f['ref'] for f in findings(p)], ['R1'])
+            r, d = check_assembly(p)
+        self.assertEqual(r.returncode, 4, r.stdout[-1500:])
+        self.assertFalse(d['buildable'])
+        self.assertEqual([m['ref'] for m in d['mating_keepout_refs']],
+                         ['R1'])
+        self.assertIn("ON A PLUG'S MATING REGION", r.stdout)
+
+    def test_the_control_off_the_tongue_is_buildable(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td)
+            self.assertEqual(findings(p), [])
+            r, d = check_assembly(p)
+        self.assertTrue(d['buildable'], r.stdout[-1500:])
+        self.assertEqual(d['mating_keepout_refs'], [])
+
+    def test_the_slot_in_the_tongue_is_allowed(self):
+        """H1, a copper-less slot at the tongue's root, is not a finding
+        (StickHub's H1 sits exactly there)."""
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(findings(board(td, r1=(25, 10, 'B.Cu'))), [])
+
+    def test_place_pose_refuses_a_move_onto_the_tongue(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td)
+            out = os.path.join(td, 'o.kicad_pcb')
+            r = subprocess.run(
+                [sys.executable, '-X', 'utf8',
+                 os.path.join(ROOT, 'py_placer', 'place_pose.py'), p, out,
+                 'set', 'R1', '15', '26', '--rot', '0'],
+                capture_output=True, text=True, cwd=ROOT)
+            wrote = os.path.exists(out)
+        self.assertEqual(r.returncode, 4, (r.stdout + r.stderr)[-2000:])
+        self.assertFalse(wrote)
+        self.assertIn('mating_keepout', r.stdout)
+
+
+class TestGenerator(unittest.TestCase):
+    def test_the_seat_predicate_refuses_the_tongue(self):
+        """The seeder's `pose_ok` refuses R1 on the tongue and accepts it on
+        the board body: the derived keep-out is in the quench state even
+        though no intent declared it."""
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        from placement import seeder
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td)
+            st = pose_score.make_state(parse_kicad_pcb(p), p, clearance=0.1,
+                                       board_edge_clearance=0.1)
+            self.assertIn('mating:J1', [k['name'] for k in st.keepouts])
+            self.assertIn('mating:J1', [k['name'] for k in
+                                        st.keepouts_for.get('R1', ())])
+            on = seeder.pose_ok(st, 'R1', 15.0, 26.0, 0.0, set())
+            off = seeder.pose_ok(st, 'R1', 5.0, 10.0, 0.0, set())
+        self.assertFalse(on)
+        self.assertTrue(off)
+
+    def test_a_declared_keepout_of_that_name_wins(self):
+        from kicad_parser import parse_kicad_pcb
+        from placement.floorplan import with_derived_keepouts
+        with tempfile.TemporaryDirectory() as td:
+            p = board(td)
+            mine = {'name': 'mating:J1', 'rect': (10, 30, 20, 32),
+                    'sides': ('F', 'B'), 'allow': ('J1',)}
+            got = with_derived_keepouts([mine], parse_kicad_pcb(p), p)
+        self.assertEqual(got, (mine,))
+
+
+class TestRealBoards(unittest.TestCase):
+    def test_stickhub_human_board_is_clean(self):
+        path = stickhub()
+        if not path:
+            self.skipTest('KiCad StickHub demo not installed')
+        from kicad_parser import parse_kicad_pcb
+        from placement.floorplan import (derived_mating_keepouts,
+                                         mating_keepout_findings)
+        pcb = parse_kicad_pcb(path)
+        self.assertEqual([k['name'] for k in
+                          derived_mating_keepouts(pcb, path)], ['mating:J1'])
+        self.assertEqual(mating_keepout_findings(pcb, path), [])
+
+    def test_run36_final_names_the_eight_parts(self):
+        path = next((p for p in RUN36 if p and os.path.isfile(p)), None)
+        if not path:
+            self.skipTest('run 36 final board not present')
+        got = sorted({f['ref'] for f in findings(path)})
+        self.assertEqual(got, ['C2', 'C21', 'C24', 'C28', 'D23', 'D24',
+                               'JP1', 'R1'])
+
+    def test_no_tracked_board_has_a_plug(self):
+        """The detector fires on nothing in the tracked corpus (glasgow's
+        overhanging mounting holes and JP-style jumpers are the near misses
+        it must not take)."""
+        from kicad_parser import parse_kicad_pcb
+        ls = subprocess.run(['git', 'ls-files', '*.kicad_pcb'], cwd=ROOT,
+                            capture_output=True, text=True).stdout.split()
+        self.assertGreaterEqual(len(ls), 20)
+        from placement.floorplan import derived_mating_keepouts
+        fired = {}
+        for b in ls:
+            path = os.path.join(ROOT, b)
+            try:
+                pcb = parse_kicad_pcb(path)
+            except Exception:
+                continue
+            ks = derived_mating_keepouts(pcb, path)
+            if ks:
+                fired[b] = [k['name'] for k in ks]
+        self.assertEqual(fired, {})
+
+
+if __name__ == '__main__':
+    unittest.main()

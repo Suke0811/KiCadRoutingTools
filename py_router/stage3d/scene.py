@@ -130,27 +130,13 @@ def _not_assembled(pcb) -> set:
     -- no pick-and-place). StickHub's J1 is a USB-A plug MADE of board
     copper, H1 a plain hole, JP1 a solder jumper; a box drawn on the plug's
     tongue read as a part that is not there (run 36). A part with no model
-    that IS assembled keeps its box, as the user chose. Read from the board
-    file itself (the parser keeps neither the attributes nor the models);
-    an unreadable file changes nothing."""
-    path = getattr(pcb, 'source_path', '') or ''
-    if not path or not os.path.isfile(path):
-        return set()
-    try:
-        import kicad_parser
-        text = open(path, encoding='utf-8').read()
-        out = set()
-        for _s, _e, fp_text, _raw, key in kicad_parser.iter_footprint_blocks(
-                text):
-            if '(model ' in fp_text:
-                continue
-            m = re.search(r'\(attr\b([^)]*)\)', fp_text)
-            words = set(m.group(1).split()) if m else set()
-            if words & {'board_only', 'exclude_from_pos_files'}:
-                out.add(key)
-        return out
-    except Exception:                                          # noqa: BLE001
-        return set()
+    that IS assembled keeps its box, as the user chose. Read off the
+    parser's `Footprint.attrs` / `has_model` (#1098), the same facts the
+    placement tools use to keep that tongue clear."""
+    return {ref for ref, fp in (getattr(pcb, 'footprints', None) or {}).items()
+            if not getattr(fp, 'has_model', False)
+            and set(getattr(fp, 'attrs', ()) or ())
+            & {'board_only', 'exclude_from_pos_files'}}
 
 
 def build_scene(pcb) -> dict:

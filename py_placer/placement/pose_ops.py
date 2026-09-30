@@ -72,7 +72,8 @@ FACE_ALIASES = {'n': 'north', 'north': 'north',
 LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
                  'pad_edge_conflicts', 'pad_edge_unmeasured',
                  'oob_keepout_copper_count',
-                 'oob_graphic_copper_count')
+                 'oob_graphic_copper_count',
+                 'mating_keepout_count')
 
 #: The MAGNITUDES, and they are not a nicety: a count arm alone accepts a
 #: request that keeps the tally and deepens the damage. Measured on the
@@ -85,14 +86,16 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
 #: The graphic-copper overrun is one for the same reason (#962).
 MAGNITUDE_KEYS = ('pad_shortfall', 'oob_pad_amount', 'pad_edge_shortfall',
                   'oob_keepout_copper_amount',
-                  'oob_graphic_copper_amount')
+                  'oob_graphic_copper_amount',
+                  'mating_keepout_amount')
 
 #: What `legal` does and does NOT cover, published with every summary (#962
 #: follow-up item 4). A partial claim must read as partial.
 LEGAL_SCOPE = ('pad-pad clearance', 'hole-hole clearance', 'pad copper vs the '
                'outline', 'pad copper vs the edge-clearance floor',
                'footprint graphic copper vs the outline',
-               'pad copper vs a board rule-area keep-out band (#1031)')
+               'pad copper vs a board rule-area keep-out band (#1031)',
+               "part bodies vs a PCB-edge plug's mating region (#1098)")
 LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     '(disclosed as graphic_edge_shortfall_refs, not gated)',
                     'footprint copper the parser does not model: pad-less '

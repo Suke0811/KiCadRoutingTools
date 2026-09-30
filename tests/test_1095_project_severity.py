@@ -42,9 +42,11 @@ PART = (
     ' (net {n} "N{n}")))\n')
 
 
-def board(td, parts, severity=None):
+def board(td, parts, severity=None, extra_sev=None, saved=None,
+          locked=()):
     """`parts` = [(ref, x, courtyard half, fab half)]; a .kicad_pro beside
-    it carries `severity` for courtyards_overlap (None: key absent)."""
+    it carries `severity` for courtyards_overlap (None: key absent), plus
+    `extra_sev` severities and a `saved_severities` record."""
     text = ('(kicad_pcb (version 20240108) (generator pcbnew)\n'
             '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal)'
             ' (44 "Edge.Cuts" user))\n'
@@ -52,14 +54,21 @@ def board(td, parts, severity=None):
             '  (gr_rect (start 0 0) (end 30 30) (stroke (width 0.1)'
             ' (type default)) (layer "Edge.Cuts"))\n'
             + ''.join(PART.format(ref=r, x=x, c=c, f=f, n=i + 1)
+                      .replace('(layer "F.Cu") (at',
+                               '(layer "F.Cu") (locked yes) (at'
+                               if r in locked else '(layer "F.Cu") (at')
                       for i, (r, x, c, f) in enumerate(parts)) + ')\n')
     path = os.path.join(td, 'b.kicad_pcb')
     with open(path, 'w', encoding='utf-8') as fh:
         fh.write(text)
     sev = {} if severity is None else {'courtyards_overlap': severity}
+    sev.update(extra_sev or {})
+    doc = {'board': {'design_settings': {'rule_severities': sev}}}
+    if saved is not None:
+        doc['kicad_routing_tools'] = {
+            'saved_severities': {'courtyards_overlap': saved}}
     with open(os.path.join(td, 'b.kicad_pro'), 'w', encoding='utf-8') as fh:
-        json.dump({'board': {'design_settings': {'rule_severities': sev}}},
-                  fh)
+        json.dump(doc, fh)
     return path
 
 
@@ -105,6 +114,41 @@ class TestSynthetic(unittest.TestCase):
         g = self._blocking('ignore', intent_waivers=[('A', 'B')])
         cy = [q for q in g['pairs'] if q.kind == 'courtyard']
         self.assertEqual([q.waiver for q in cy], ['intent_declared'])
+
+    def test_ignore_also_covers_a_locked_part(self):
+        """KiCad's own DRC skips the rule for locked parts too, so the
+        project waiver outranks run-8's no-class-waiver-on-locked rule."""
+        with tempfile.TemporaryDirectory() as td:
+            g = grade(board(td, DEEP, 'ignore', locked=('A',)))
+        self.assertEqual(g['courtyard_blocking_pairs'], [])
+        with tempfile.TemporaryDirectory() as td:
+            g = grade(board(td, DEEP, 'error', locked=('A',)))
+        self.assertEqual(len(g['courtyard_blocking_pairs']), 1)
+
+    def test_a_legacy_tool_written_ignore_is_graded_at_error(self):
+        """The pre-#856 severity plan ignored courtyards_overlap together
+        with every other category it managed; such a project's ignore is
+        this repo's, not the author's."""
+        from fix_kicad_drc_settings import (COURTYARD_CATS, FOOTPRINT_CATS,
+                                            MASK_CATS)
+        legacy = {c: 'ignore' for c in COURTYARD_CATS + MASK_CATS
+                  + FOOTPRINT_CATS}
+        with tempfile.TemporaryDirectory() as td:
+            g = grade(board(td, DEEP, 'ignore', extra_sev=legacy))
+        self.assertEqual(len(g['courtyard_blocking_pairs']), 1)
+        self.assertIsNone(g['courtyard_severity'])
+        self.assertTrue(g['courtyard_severity_basis'].startswith(
+            'legacy severity plan'))
+
+    def test_a_saved_author_value_wins_over_a_tool_ignore(self):
+        """A current tool that loosened the project records the author's
+        value; that value is what is graded."""
+        with tempfile.TemporaryDirectory() as td:
+            g = grade(board(td, DEEP, 'ignore', saved='error'))
+        self.assertEqual(len(g['courtyard_blocking_pairs']), 1)
+        with tempfile.TemporaryDirectory() as td:
+            g = grade(board(td, DEEP, 'ignore', saved='ignore'))
+        self.assertEqual(g['courtyard_blocking_pairs'], [])
 
     def test_containment_is_not_the_courtyard_rule(self):
         """B's fab body wholly inside A's: contained at every severity."""

@@ -1033,7 +1033,13 @@ class QuenchState:
         # `keepouts_for` is EMPTY on every board that declares no keep-out --
         # which is every board in the corpus today -- and `pose_ok` guards on
         # that emptiness, so the whole channel is inert unless asked for.
-        self.keepouts = tuple(keepouts or ())
+        # #1098: plus the mating region of every PCB-edge plug on the board
+        # (derived from the footprint; a declared `mating:<ref>` wins), so
+        # no seat, nudge or swap puts a part on a USB tongue whatever the
+        # intent says. Empty on a board with no such plug.
+        from . import floorplan as _fpk
+        self.keepouts = _fpk.with_derived_keepouts(keepouts, pcb_data,
+                                                   pcb_file)
         self.keepouts_for: Dict[str, Tuple[Dict, ...]] = {}
         if self.keepouts:
             from . import floorplan as _fp
