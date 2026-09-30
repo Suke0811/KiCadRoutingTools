@@ -853,10 +853,28 @@ def test_attempts_ledger_from_copies():
 
 
 def test_exact_frame_sizes_with_the_panels():
+    """Every film the declared size, the panels drawn or declined and SAID
+    -- and where they are said to be drawn, the band's pixels carry them:
+    the status line is written from the PLAN, so a pipeline that planned the
+    panels and then never composed them would still print "2 placement
+    board(s)" over an empty band."""
     _mark = len(_FAIL)
+    import film_passes
     import make_movie
     tmp = tempfile.mkdtemp(prefix='t1042f_')
     n = drawn = 0
+    ink = {}
+    orig = film_passes.compose
+
+    def _spy(frames, bands, geom, *a, **k):
+        out = orig(frames, bands, geom, *a, **k)
+        if geom is not None and geom.track is not None and len(out):
+            t = geom.track
+            band = out[len(out) - 1].convert('RGB').crop(
+                (t.x, t.y, t.x + t.w, t.y + t.h))
+            ink[_spy.key] = len(band.getcolors(1 << 20) or ())
+        return out
+    film_passes.compose = _spy
     try:
         for lk in ('stage3d',):
             for rk in ('16:9', '9:16', '1:1', '4:3'):
@@ -865,6 +883,7 @@ def test_exact_frame_sizes_with_the_panels():
                     err = io.StringIO()
                     out = os.path.join(tmp, '%s_%s_%s.gif'
                                        % (lk, rk.replace(':', 'x'), th))
+                    _spy.key = (rk, th)
                     with contextlib.redirect_stderr(err):
                         got = make_movie.make_movie(
                             [SEED, PLACED], out=out, size=1000, quiet=True,
@@ -874,6 +893,10 @@ def test_exact_frame_sizes_with_the_panels():
                     e = err.getvalue()
                     if 'placement panels: 2 placement board(s)' in e:
                         drawn += 1
+                        if ink.get((rk, th), 0) < 3:
+                            fail('%s/%s/%s: the panels are said to be drawn '
+                                 'but the band holds %d colour(s)'
+                                 % (lk, rk, th, ink.get((rk, th), 0)))
                     elif 'placement panels: not drawn -- declined' not in e:
                         fail('%s/%s/%s: the panels neither drew nor said '
                              'why: %s' % (lk, rk, th, e[-300:]))
@@ -886,6 +909,7 @@ def test_exact_frame_sizes_with_the_panels():
                             fail('%s/%s/%s: %r, declared %r'
                                  % (lk, rk, th, im.size, want))
     finally:
+        film_passes.compose = orig
         shutil.rmtree(tmp, ignore_errors=True)
     # a decline is said (checked above); at 1000 the 70% board floor leaves
     # a 16:9 frame no room for them, and a squarer frame keeps them
