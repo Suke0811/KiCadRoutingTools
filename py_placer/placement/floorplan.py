@@ -5663,6 +5663,10 @@ _WITHHELD_RULE = {
     'decaps.max_distance_mm': (
         ('decap_distance', 'decap_ungraded'),
         lambda i: (i.decaps or {}).get('max_distance_mm') is not None),
+    # #1102: withheld by --decaps-from when the reference cannot say it.
+    'decaps.max_pin_distance_mm': (
+        ('decap_pin_distance',),
+        lambda i: (i.decaps or {}).get('max_pin_distance_mm') is not None),
 }
 
 
@@ -7537,6 +7541,53 @@ def decap_census(pcb_data, radius: float = None) -> Dict:
     return out
 
 
+def _pin_census_of(pcb_data) -> Dict[str, object]:
+    """The supply-pin census `decap_pin_distance` grades, on one board
+    (#1102): every graded pin's gap to the nearest decoupling cap on its net,
+    with the rule's own functions -- `supply_pins`, `decap_pin_caps`,
+    `nearest_rail_cap` -- and no exemptions."""
+    pins = supply_pins(pcb_data)
+    by_net = _decap_caps_by_net(pcb_data)
+    gaps, uncovered, total = [], 0, 0
+    for ref, rec in sorted(pins.items()):
+        fp_ = (pcb_data.footprints or {}).get(ref)
+        if fp_ is None:
+            continue
+        side = legality.footprint_side(fp_)
+        for pad, _net in rec['pins']:
+            total += 1
+            _on, caps = decap_pin_caps({}, ref, side, pad, by_net)
+            hit = nearest_rail_cap(pad, caps)
+            if hit is None:
+                uncovered += 1
+            else:
+                gaps.append(hit[0])
+    # `max_raw` unrounded: `_ceil4` must see the true max, or rounding first
+    # can land the limit BELOW it and fail the reference against itself.
+    return {'pins': total, 'covered': len(gaps), 'uncovered': uncovered,
+            'max_mm': round(max(gaps), 4) if gaps else None,
+            'max_raw': max(gaps) if gaps else None}
+
+
+def _decap_pin_derivation(pcb_data) -> Tuple[Optional[float], Optional[str]]:
+    """`(max_pin_distance_mm, withheld_reason)` off a REFERENCE (#1102):
+    `_ceil4` of the largest covered pin gap, the fixed point
+    `_decap_derivation` argues for. Withheld when fewer than
+    `DECAP_MIN_SAMPLE` pins are covered, or when more than
+    `DECAP_MAX_CENSORED` of the graded pins have no cap on their net at all
+    -- an uncovered pin contributes no distance, so a max over the rest would
+    be censored (docs/floorplan-intent.md, "The emitter derives no pin
+    limit")."""
+    c = _pin_census_of(pcb_data)
+    if c['covered'] < DECAP_MIN_SAMPLE:
+        return None, (f"{c['covered']} supply pin(s) have a cap on their "
+                      f"net (at least {DECAP_MIN_SAMPLE} needed)")
+    if c['pins'] and c['uncovered'] / c['pins'] > DECAP_MAX_CENSORED:
+        return None, (f"{c['uncovered']} of {c['pins']} supply pins have no "
+                      f"cap on their net, so a max over the rest is censored")
+    return _ceil4(c['max_raw']), None
+
+
 def _decap_derivation(census: Dict) -> Tuple[Optional[float], Optional[str]]:
     """`(max_distance_mm, withheld_reason)` -- exactly one of them is None.
 
@@ -7638,6 +7689,8 @@ def _emitted_basis(decaps, budget, conns, blocks,
     if 'max_distance_mm' in (decaps or {}):
         # #1099: read off a REFERENCE board, not this one, says so.
         out['decaps.max_distance_mm'] = decaps_basis or 'observed_baseline'
+    if 'max_pin_distance_mm' in (decaps or {}) and decaps_basis:
+        out['decaps.max_pin_distance_mm'] = decaps_basis
     for k in sorted(budget or {}):
         out[f'legality_budget.{k}'] = 'observed_baseline'
     for c in conns or ():
@@ -7749,6 +7802,27 @@ def emit_intent(pcb_data, pcb_file: str, *,
         zoned.add(key)
 
     blocks = []
+    # #1103: on a PILE the poses are staging, not decisions -- run 37's
+    # emit read 87 "edge connectors" off StickHub's staging ring (every cap,
+    # U1, Y1), each one nearest SOME edge. Nothing read off an unlocked
+    # part's pose is written then: no observed edge claim, no zone, no
+    # oob_count baseline. A KiCad-locked part's pose IS a decision and keeps
+    # its claims; a brief or mechanical.json still merge after this.
+    from .placement_state import assess_placement as _assess_pile
+    _pile_st = _assess_pile(pcb_data, pcb_file)
+    # `s3_outside` too: a staging RING (run 36/37's pile) is spread, not
+    # stacked, so it reads neither unplaced nor partially unplaced, yet
+    # 93% of its parts sit off the board.
+    # NOT any `partially_unplaced`: two stacked parts on a placed board set
+    # it, and that board's other claims are real; a heap is at least half
+    # stacked (run 29's pile: 83%).
+    _sig = _pile_st.signals or {}
+    _pile = bool(_pile_st.unplaced or _sig.get('s3_outside')
+                 or (_pile_st.partially_unplaced
+                     and (_sig.get('duplicate_fraction') or 0) >= 0.5))
+    _pile_locked = set(extract_locked_refs_safe(pcb_file)) if _pile else set()
+    _pose_withheld: List[str] = []
+
     for key in sorted(cand):
         members, rect = cand[key]
         sides = {parts[r].side for r in members}
@@ -7757,7 +7831,10 @@ def emit_intent(pcb_data, pcb_file: str, *,
             'group': groups_mod.short_name(key),
             'refs': sorted(members),
         }
-        if key in zoned:
+        if key in zoned and _pile and not set(members) <= _pile_locked:
+            entry['note'] = ('the board is a pile, so its members\' bounding '
+                             'box is staging, not a zone (#1103)')
+        elif key in zoned:
             entry['zone'] = [round(v, 3) for v in rect]
             entry['note'] = 'derived from the board; tighten or delete'
         else:
@@ -7850,6 +7927,10 @@ def emit_intent(pcb_data, pcb_file: str, *,
     band_default = set()
     for ref in sorted(parts):
         amt = state.edge_gate.rect_outside_amount(parts[ref].rect)
+        if _pile and ref not in _pile_locked:
+            if amt > legality.EPS:
+                _pose_withheld.append(ref)
+            continue
         if amt > legality.EPS:
             # An OBSERVED overhang above the sanity cap is not a band. Emitting
             # it as one launders the damage into the spec that is supposed to
@@ -7987,8 +8068,10 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 conns.append({
                     'ref': ref, 'class': pc.name, 'source': 'auto-class',
                     'overhang_mm': {'min': 0.0},
-                    'note': (f'connector-family part, no edge claim; '
-                             f'measured {clr:.2f}mm from the nearest edge')})
+                    'note': ('connector-family part, no edge claim'
+                             + ('' if (_pile and ref not in _pile_locked)
+                                else f'; measured {clr:.2f}mm from the '
+                                     f'nearest edge'))})
                 continue
             if pc.name != 'edge_receptacle':
                 # actuators make no claim unless they actually overhang
@@ -7999,7 +8082,12 @@ def emit_intent(pcb_data, pcb_file: str, *,
             entry = {'ref': ref, 'class': pc.name, 'source': 'auto-class',
                      'overhang_mm': default_band(pc.name, fp)}
             band_default.add(ref)
-            if plaus:
+            if _pile and ref not in _pile_locked:
+                # #1103: a class is pose-free and stays; an edge read off a
+                # staging pose would be an invention.
+                entry['note'] = ('edge-receptacle class on a pile: no edge '
+                                 'declared -- its staging pose says nothing')
+            elif plaus:
                 entry['edge'] = _nearest_edge(parts[ref].rect, bounds)
             else:
                 entry['note'] = (
@@ -8048,7 +8136,11 @@ def emit_intent(pcb_data, pcb_file: str, *,
             f'auto-budget would bless them')
     else:
         _budget['overlap_area'] = _ceil4(float(leg['overlap_area']))
-    if not _suspects:
+    if _pile:
+        _withheld['oob_count'] = (
+            'the board is a pile: its off-board count is staging, not a '
+            'baseline (#1103)')
+    elif not _suspects:
         _budget['oob_count'] = int(leg['oob_count'])
     else:
         _withheld['oob_count'] = (
@@ -8072,6 +8164,9 @@ def emit_intent(pcb_data, pcb_file: str, *,
     if _sup:
         _census['superseded'] = dict(sorted(_sup.items()))
     _decaps: Dict[str, object] = {}
+    # #1102: rule severities an emitted number argues for (the intent's
+    # top-level `severity`); empty unless --decaps-from promotes one.
+    _severity_extra: Dict[str, str] = {}
     _mode = _decap_mode(derive_decaps)
     _derive = _mode == 'strict'
     if _mode == 'auto':
@@ -8124,6 +8219,9 @@ def emit_intent(pcb_data, pcb_file: str, *,
             _limit, _why = None, (
                 "it is not placed (" + '; '.join(_ref_state.reasons[:2])
                 + "): a limit read off it would bless a pile")
+        _ref_ok = (_match >= DECAPS_FROM_MIN_MATCH
+                   and not (_ref_state.unplaced
+                            or _ref_state.partially_unplaced))
         if _limit is None:
             _withheld['decaps.max_distance_mm'] = (
                 f"the reference board {decaps_from}: {_why}")
@@ -8132,6 +8230,34 @@ def emit_intent(pcb_data, pcb_file: str, *,
             _census['emitted_max_distance_mm'] = _limit
             _census['decaps_basis'] = ('reference:'
                                        + os.path.basename(decaps_from))
+            # #1102: the tether currency is the cap to the chip's inflated
+            # PAD BBOX, and it stops at the 5 mm search radius -- a cap
+            # left 10 mm away is only `decap_ungraded`, a WARN. When the
+            # reference itself keeps EVERY rail cap inside the radius, a cap
+            # beyond it on this board is a regression, not a horizon: run
+            # 37 stranded C3, C7, C12 at 7.8-10.2 mm with no error.
+            if not _ref_census.get('beyond_radius'):
+                _severity_extra['decap_ungraded'] = ERROR
+                _census['decap_ungraded_promoted'] = (
+                    'the reference keeps every rail cap within '
+                    f"{_ref_census.get('search_radius_mm')} mm of a chip")
+        # #1102, the PIN currency: every supply pin to the nearest cap on its
+        # net, pad edge to pad edge (`decap_pin_distance`, #705). A cap 1.6
+        # mm from a QFP's box can be 5 mm from the pin it decouples; the
+        # tether limit cannot see that, the pin limit can. Derived only from
+        # a REFERENCE: off the board being graded it would be vacuous (the
+        # board grades clean against its own max by construction).
+        _pin_limit, _pin_why = (None, "the reference is not usable (above)"
+                                ) if not _ref_ok else \
+            _decap_pin_derivation(_ref_pcb)
+        _census['reference_pin_census'] = _pin_census_of(_ref_pcb) \
+            if _ref_ok else None
+        if _pin_limit is None:
+            _withheld['decaps.max_pin_distance_mm'] = (
+                f"the reference board {decaps_from}: {_pin_why}")
+        else:
+            _decaps['max_pin_distance_mm'] = _pin_limit
+            _census['emitted_max_pin_distance_mm'] = _pin_limit
         _derive = False
     if _derive:
         _limit, _why = _decap_derivation(_census)
@@ -8216,6 +8342,8 @@ def emit_intent(pcb_data, pcb_file: str, *,
         'keepouts': [],
         'edge_connectors': conns,
         'decaps': _decaps,
+        **({'severity': dict(sorted(_severity_extra.items()))}
+           if _severity_extra else {}),
         # must_lock is a REQUIREMENT ("these refs must end up locked"), and an
         # emitted intent describes a board rather than making demands of it.
         # Filling it with the board's own locked set (as this did) closed a
@@ -8262,6 +8390,19 @@ def emit_intent(pcb_data, pcb_file: str, *,
             # to `must_lock` by hand if you want the lock GRADED as a
             # requirement.
             'file_locked': locked,
+            # #1103: what a PILE withheld, and why -- kept out of
+            # budget_withheld so an emit changes no exit code.
+            **({'pose_claims_withheld': {
+                'reason': ('the board is a pile ('
+                           + '; '.join(_pile_st.reasons[:2])
+                           + '): staging poses are not claims'),
+                'withheld': ['edge_connectors[].edge read off a pose',
+                             'blocks[].zone',
+                             'legality_budget.oob_count'],
+                'refs_off_board': sorted(_pose_withheld),
+                'kept': ('KiCad-locked parts; a brief / mechanical.json '
+                         'merged after this')}}
+               if _pile else {}),
             # #959 comment 3.2: every number this emitter chose, labelled as
             # what it is -- a baseline OBSERVED on this board, not a
             # requirement anyone declared. Keyed by intent path; a brief

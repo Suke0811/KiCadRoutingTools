@@ -84,6 +84,10 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
 #: the
 #: outline the top-priority placement defect, so its AMOUNT is an arm too.
 #: The graphic-copper overrun is one for the same reason (#962).
+#: #1100: conflicting PAIRS, compared as sets -- a new pair is refused even
+#: when the counts tie.
+PAIR_KEYS = ('pad_conflict_pairs', 'hole_conflict_pairs')
+
 MAGNITUDE_KEYS = ('pad_shortfall', 'oob_pad_amount', 'pad_edge_shortfall',
                   'oob_keepout_copper_amount',
                   'oob_graphic_copper_amount',
@@ -427,7 +431,27 @@ def worsened(before: Dict, after: Dict) -> List[str]:
                     < (before.get('oob_graphic_copper_amount') or 0.0) - MAGNITUDE_EPS)
         if new and not improved:
             out.append('oob_graphic_copper_refs')
+    # #1100: the same question for pad and hole conflicts, with NO
+    # improvement exemption. Run 37 seated C18 so that it left a conflict it
+    # had in the off-board pile and made one on the board with D11: the
+    # count tied (2 -> 2) and the board was written with a short. A pair
+    # that did not exist before is new damage whatever else went away; a
+    # report without the pair list (an older one) leaves the arm off.
+    for pair_key in PAIR_KEYS:
+        if pair_key in before:
+            had = {tuple(p[:2]) for p in (before.get(pair_key) or ())}
+            fresh = [p for p in (after.get(pair_key) or ())
+                     if tuple(p[:2]) not in had]
+            if fresh:
+                out.append(pair_key)
     return out
+
+
+def new_pairs(before: Dict, after: Dict, pair_key: str) -> List[str]:
+    """`["A/B", ...]`: the pairs in `after[pair_key]` that `before` lacks."""
+    had = {tuple(p[:2]) for p in (before.get(pair_key) or ())}
+    return ['%s/%s' % (p[0], p[1]) for p in (after.get(pair_key) or ())
+            if tuple(p[:2]) not in had]
 
 
 def is_clean(report: Dict) -> bool:
@@ -1279,8 +1303,13 @@ def _promote(staged: str, out_path: str, summary: Optional[Dict] = None, *,
 
 def _refusal_reason(bad, strict, before, after, summary) -> str:
     if bad:
-        parts = ', '.join('%s %s -> %s' % (k, before.get(k), after.get(k))
-                          for k in bad)
+        # A pair list is named by its NEW pairs, not dumped (a pile has
+        # dozens of inherited ones).
+        parts = ', '.join(
+            ('%s new: %s' % (k, ', '.join(new_pairs(before, after, k)))
+             if k in PAIR_KEYS else
+             '%s %s -> %s' % (k, before.get(k), after.get(k)))
+            for k in bad)
         # NO verdict verb in the sentence. It used to end "Refused rather
         # than written", and `--force` reprints this text on a run that WROTE
         # -- so the finding contradicted the outcome in its own last clause.

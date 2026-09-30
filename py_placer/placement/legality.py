@@ -4317,6 +4317,11 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
     pad_shortfall = 0.0
     hole_conflicts = 0
     worst: List[Tuple[str, str, float]] = []
+    # #1100: WHICH pairs conflict, uncapped (`worst` is capped at `worst_n`
+    # and the hole channel records none), so place_pose can refuse a move
+    # that makes a NEW pair while the counts merely tie.
+    pad_pairs: List[List[str]] = []
+    hole_pairs: List[List[str]] = []
     required: List[list] = []
     seen_pairs = set()
     for ref in sorted(parts):
@@ -4374,6 +4379,7 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                 pad_conflicts += 1
                 pad_shortfall += pair_mm
                 worst.append((key[0], key[1], round(pair_mm, 4)))
+                pad_pairs.append([key[0], key[1]])
                 if pair_source:
                     required.append([key[0], key[1],
                                      round(pair_required, 4), pair_source])
@@ -4401,6 +4407,7 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                         hole_req = req
             if hole_pen > EPS:
                 hole_conflicts += 1
+                hole_pairs.append([key[0], key[1]])
                 # Above the board-wide clearance only, so a plain hole at the
                 # flat scalar stays quiet. NOT literally the pad channel's
                 # bar, which is `pair_source != ''` and therefore sits at
@@ -4530,6 +4537,8 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             # #1098: a part on a PCB-edge plug's mating region (a USB tongue
             # that has to enter a socket), either face. place_pose gates on
             # the count and the summed overlap area.
+            'pad_conflict_pairs': sorted(pad_pairs),
+            'hole_conflict_pairs': sorted(hole_pairs),
             'mating_keepout_count': len({m['ref'] for m in mating}),
             'mating_keepout_amount': round(sum(m['area_mm2']
                                                for m in mating), 4),

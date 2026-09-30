@@ -1786,6 +1786,17 @@ censoring failure `--declare-decaps` spends a table on — and a limit derived
 from a board and then graded against that board is vacuous. The distribution
 goes to `context.decap_census` instead, which has no key set to grow.
 
+**Except from a reference (#1102).** `--decaps-from <placed board>` derives
+`max_pin_distance_mm` from the REFERENCE, where neither objection holds: it is
+not the board being graded, and the derivation is withheld when more than 25%
+of the reference's supply pins have no cap on their net (the censoring case) or
+fewer than 3 are covered. When the reference also keeps every rail cap inside
+the 5 mm tether radius, the intent promotes `decap_ungraded` to error, so a cap
+stranded beyond it is named. Run 37 (StickHub) stranded C3, C7, C12 at 7.8-10.2
+mm with no error; with the human board as reference it gets 10 pin errors and
+those 4 caps by name, and the human board grades clean against its own
+limits (1.7716 mm pins, 2.1828 mm tethers).
+
 `READER_VERSION` stays 1. `_reject_unknown` already refuses an unknown `decaps`
 key loudly and automatically, and `min_reader` exists for what refusal *cannot*
 see: a widened value set, a changed meaning, a changed default. Adding keys is

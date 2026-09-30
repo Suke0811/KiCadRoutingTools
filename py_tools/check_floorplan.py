@@ -646,6 +646,19 @@ def main(argv=None):
                       f"instead of zone-packing them")
             elif held:
                 print(f"  decaps: max_distance_mm WITHHELD -- {held}")
+            # #1102: the pin limit --decaps-from derives beside it.
+            _plim = (doc.get('decaps') or {}).get('max_pin_distance_mm')
+            _pheld = ((doc.get('context') or {}).get('budget_withheld')
+                      or {}).get('decaps.max_pin_distance_mm')
+            if _plim is not None:
+                _pc = cen.get('reference_pin_census') or {}
+                print(f"  decaps: max_pin_distance_mm {_plim} from "
+                      f"{_pc.get('covered')} supply pin(s) on the reference"
+                      + ("; decap_ungraded promoted to error (the "
+                         "reference keeps every rail cap in the radius)"
+                         if cen.get('decap_ungraded_promoted') else ''))
+            elif _pheld:
+                print(f"  decaps: max_pin_distance_mm WITHHELD -- {_pheld}")
             elif cen.get('auto_withheld'):
                 # #959: auto's withholding is kept out of budget_withheld
                 # (no exit change), and printed here so it is not silent.
