@@ -173,6 +173,9 @@ function buildPours(scene, tl, colors, root) {
     m.renderOrder = 1;
     m.visible = false;
     m.userData.net = z.net;
+    // a zone OUTLINE may run far past the board (KiCad clips the fill), so
+    // it never sets the camera's fit
+    m.userData.noFit = true;
     root.add(m);
     S.pours.push(m);
   }
@@ -286,6 +289,9 @@ function buildParts(scene, colors, root) {
       side: THREE.DoubleSide }));
     ghost.renderOrder = 4;
     ghost.visible = false;
+    // the glide's decorations switch on in one frame; fitting them made the
+    // camera pop at every glide's start and end
+    halo.userData.noFit = ghost.userData.noFit = true;
     root.add(ghost);
     root.add(grp);
     S.parts[ref] = { grp, faces, body, side: P.side, d, halo, ghost };
@@ -508,7 +514,7 @@ function fitCamera() {
   S.world.updateMatrixWorld(true);
   _fitBox.makeEmpty();
   S.pivot.traverseVisible(o => {
-    if (!o.isMesh || o.isInstancedMesh || !o.geometry) return;
+    if (!o.isMesh || o.isInstancedMesh || !o.geometry || o.userData.noFit) return;
     if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
     _b.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld);
     _fitBox.union(_b);

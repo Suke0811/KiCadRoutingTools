@@ -501,9 +501,6 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
             if bb[2] > x1:
                 shift = bb[2] - x1
                 bb = (bb[0] - shift, bb[1], bb[2] - shift, bb[3])
-            if bb[0] < x0:                # ...and never out past the axis
-                shift = x0 - bb[0]
-                bb = (bb[0] + shift, bb[1], bb[2] + shift, bb[3])
             rect = (bb[0] - 2, bb[1] - 1, bb[2] + 2, bb[3] + 1)
             if rect[1] < box.y or rect[3] > box.y + box.h:
                 continue

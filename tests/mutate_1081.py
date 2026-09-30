@@ -222,10 +222,10 @@ ROWS = [
      "        occupied.append((bb[0] - 2, bb[1] - 1, bb[2] + 2, bb[3] + 1))",
      "        pass",
      (T_BAND,), 'KILLED'),
-    ('a-parts-own-copper-diffed-as-routing', 'anim',
-     "                and not (getattr(s, 'graphic', False)",
-     "                and not (False",
-     (T_REC,), 'KILLED'),
+    ('a-pour-outline-sets-the-fit', 'page',
+     "    if (!o.isMesh || o.isInstancedMesh || !o.geometry || o.userData.noFit) return;",
+     "    if (!o.isMesh || o.isInstancedMesh || !o.geometry) return;",
+     (T_R3D,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

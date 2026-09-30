@@ -360,6 +360,7 @@ def main():
             if not e:
                 part['e'].hide_render = True
                 continue
+            part['e'].hide_render = False       # present again after a gap
             m = st['moving'].get(ref)
             x, y, rot = (m[0], m[1], m[2]) if m else (e[0], e[1], e[2])
             back = str(e[3]).startswith('B')
@@ -402,8 +403,11 @@ def fit_camera(sc, cam, pivot, el):
                 return True
             o = o.parent
         return False
+    # a pour is built from the zone OUTLINE, which may run far past the board
+    # (KiCad clips the fill), so it never sets the fit
     pts = [o.matrix_world @ Vector(c) for o in bpy.data.objects
-           if o.type == 'MESH' and shown(o) for c in o.bound_box]
+           if o.type == 'MESH' and 'net' not in o and shown(o)
+           for c in o.bound_box]
     if not pts:
         return
     lo = Vector([min(p[i] for p in pts) for i in range(3)])

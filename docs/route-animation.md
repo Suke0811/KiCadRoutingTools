@@ -1109,11 +1109,8 @@ pile beside the board and a board standing on its edge mid-flip, so every
 ordinary frame drew the board at about a third of its box. The fit is a
 pure function of the state, so renders stay byte-identical;
 `tests/test_1081_e2e.py` holds the last frame's board to at least 60 % of
-its box on the binding axis.
-
-A footprint's own copper (a SOT-89 tab, an antenna, #908) belongs to its
-part, and is not diffed as routing: a placement move used to read as a rip
-of it and flash it red at the part's old pose.
+its box on the binding axis. Pours (built from the zone OUTLINE, which may
+run past the board) and a glide's halo and ghost never set the fit.
 
 **Parts** are always a body box plus their pads, read from the board itself, in
 each part's own frame, so a part that turns while it glides (#1086) turns in 3D
