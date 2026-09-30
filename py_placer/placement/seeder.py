@@ -3930,8 +3930,8 @@ def _ang_close(a: float, b: float, eps: float = 1e-6) -> bool:
 #: default: tests/test_placement_ab.py's `diag-seed-*` rows wrote identical
 #: poses in both arms on all five boards -- none of their unseated parts is
 #: one the diagonals seat -- so the table has no evidence to make it a
-#: default. `place_seed --diagonal-rotations` opts in; the free-agent skill
-#: passes it when the design's reference placement is diagonal.
+#: default. `place_seed --diagonal-rotations` opts in, for a caller whose
+#: reference placement is diagonal; no skill passes it.
 DIAGONAL_ROTATIONS_DEFAULT = False
 
 

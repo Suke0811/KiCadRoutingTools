@@ -21,8 +21,9 @@ Trust nothing it told you. Measure it yourself, from the repo root.
 3. **Every mode** (read the whole output, not the first line):
    - `python3 -X utf8 py_tools/check_assembly.py <BOARD> --intent <INTENT>`: must be buildable. It names
      pad copper past the outline and any part on a PCB-edge plug's mating region (`mating_keepout_refs`);
-     name each one in your verdict. The run's `ledger.jsonl` names each seed's `unseated_refs`; any part
-     still in the staging pile on the board you grade is a FAIL;
+     name each one in your verdict. A part still in the staging pile is pad copper off the outline, so it is
+     in `oob_pad_copper_gating_refs`; any such part on the board you grade is a FAIL. (`place_seed` names its
+     unseated parts in its `JSON_SUMMARY` line, `unseated_refs`, and its exit-4 message, not in the ledger.)
    - `python3 -X utf8 py_tools/check_floorplan.py <BOARD> --intent <INTENT> --allow-routed`: 0 errors;
    - `python3 -X utf8 py_tools/render_placement.py <BOARD> --json-out <RUN DIR>/verify_<N>_render.json`:
      `checklist.a_off_outline` must list no gating pad copper (`pad_copper_gating`), graphic or keep-out (`keepout_copper`) copper; LOOK at the PNG;
