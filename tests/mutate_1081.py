@@ -226,6 +226,10 @@ ROWS = [
      "    if (!o.isMesh || o.isInstancedMesh || !o.geometry || o.userData.noFit) return;",
      "    if (!o.isMesh || o.isInstancedMesh || !o.geometry) return;",
      (T_R3D,), 'KILLED'),
+    ('a-label-off-the-bands-left-edge', 'bench',
+     "            if bb[0] < x0:",
+     "            if False:",
+     (T_BAND,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

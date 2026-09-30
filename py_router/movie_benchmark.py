@@ -495,12 +495,20 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
 
     def put(x, y, text, f, fill, tries=((0, 0),)):
         """Draw `text` at the first offset that overlaps nothing drawn yet;
-        right-shifted text is pulled back inside the plot. False = dropped."""
+        text shifted past either end is pulled back inside the plot.
+        False = dropped."""
         for dx, dy in tries:
             bb = d.textbbox((x + dx, y + dy), text, font=f)
             if bb[2] > x1:
                 shift = bb[2] - x1
                 bb = (bb[0] - shift, bb[1], bb[2] - shift, bb[3])
+            # a left-shifted try at a lap on the axis ran off the band: two
+            # placement laps 2.6 s apart both sit at x0 (esp_prog, run 35)
+            if bb[0] < x0:
+                shift = x0 - bb[0]
+                bb = (bb[0] + shift, bb[1], bb[2] + shift, bb[3])
+                if bb[2] > x1:                  # wider than the plot
+                    continue
             rect = (bb[0] - 2, bb[1] - 1, bb[2] + 2, bb[3] + 1)
             if rect[1] < box.y or rect[3] > box.y + box.h:
                 continue

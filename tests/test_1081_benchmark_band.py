@@ -426,17 +426,20 @@ def test_labels_never_overprint_and_outliers_do_not_flatten_the_axis():
     # the band's left end. The caption and the axis words were drawn AFTER
     # the labels and were not obstacles, so a label printed under the
     # caption, and one ran off the band's left edge.
-    rows = [_row(0, 288, kind='placement',
+    # The lap times are the run's own: the two placement laps 2.6 s apart
+    # both sit on the axis, and the second's label tried a left offset.
+    rows = [_row(0, 288, kind='placement', t=T0,
                  score={'blocking': 288, 'quality': {},
                         'blocking_by': {'assembly': 76, 'drc': 195,
                                         'unrouted': 17}}),
-            _row(1, 25, kind='placement',
+            _row(1, 25, kind='placement', t=T0 + 2.6,
                  score={'blocking': 25, 'quality': {},
                         'blocking_by': {'drc': 2, 'unrouted': 17,
                                         'floorplan': 6}}),
-            _row(2, 17, kind='placement'),
-            _row(3, 1, 37, 399.0, 314), _row(4, 0, 37, 399.9, 314),
-            _row(5, 0, 36, 339.4, 250)]
+            _row(2, 17, kind='placement', t=T0 + 67.7),
+            _row(3, 1, 37, 399.0, 314, t=T0 + 205.2),
+            _row(4, 0, 37, 399.9, 314, t=T0 + 366.0),
+            _row(5, 0, 36, 339.4, 250, t=T0 + 733.0)]
     tr = MB.from_converge_ledger(_ledger(rows))
     for size in ((900, 126), (1400, 126), (560, 90)):
         img = Image.new('RGB', size)
