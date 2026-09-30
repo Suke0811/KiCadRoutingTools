@@ -286,8 +286,14 @@ class TestGenerator(unittest.TestCase):
                                        '10', '--rot', '0', '--force'],
                                 capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(refused, (4, False), r.stdout[-1500:])
-        self.assertIn('PCB-edge plug', r.stdout + r.stderr)
-        self.assertNotIn('PCB-edge plug seated', r2.stdout + r2.stderr)
+        # The REASON, not just the refusal: without the plug guard the move
+        # is still refused, by the ordinary legality gate, and every summary
+        # carries "PCB-edge plug" in its legal_scope (mutate_1094's
+        # `place-pose-moves-the-plug` survived that weaker assertion).
+        self.assertIn('is a PCB-edge plug seated at its edge',
+                      r.stdout + r.stderr)
+        self.assertNotIn('is a PCB-edge plug seated at its edge',
+                         r2.stdout + r2.stderr)
 
     def test_a_declared_keepout_of_that_name_wins(self):
         from kicad_parser import parse_kicad_pcb
