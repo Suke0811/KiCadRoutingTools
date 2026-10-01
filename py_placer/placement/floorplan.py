@@ -6436,6 +6436,9 @@ class _PosedState:
         self._exclude = frozenset(exclude)
         self._poses = dict(poses or {})
         self.edge_gate = state.edge_gate
+        # #1104: `legality_metrics` reads it; without it a posed view of a
+        # courtyard-waived board priced courtyard overlap again.
+        self.courtyards_ignored = getattr(state, 'courtyards_ignored', False)
 
     def pose(self, ref):
         if ref in self._poses:

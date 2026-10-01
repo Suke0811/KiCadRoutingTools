@@ -1787,6 +1787,11 @@ class QuenchState:
             others = ((o, self.parts[o]) for o in self._neighbors[ref])
         else:
             others = self.parts.items()
+        if getattr(self, 'courtyards_ignored', False):
+            # #1104: the courtyard is waived, so the overlap term is the pad
+            # and hole one the waived seat asks (#1101), absolutely.
+            return board, self._waived_overlap(ref, x, y, rot, others,
+                                               exclude, limit, board)
         clr = self.clearance
         rect = rects[0]
         tht = part.has_tht
@@ -1856,6 +1861,39 @@ class QuenchState:
             return True
         return all(v <= t.threshold
                    for v, t in zip(self.intent_terms(ref, rects), spec))
+
+    def _waived_overlap(self, ref, x, y, rot, others, exclude, limit, board):
+        """`violation_parts`' overlap term on a courtyard-waived project
+        (#1104): per neighbour on a shared face, the absolute pad + hole
+        shortfall (`pair_shortfall`), a pad short or stack counted as the
+        clearance, and a stacked drill hole likewise -- the questions the
+        #1101 waived seat asks, as a distance rather than a verdict."""
+        from .seeder import _drill_conflict
+        part = self.parts[ref]
+        x = part.x if x is None else x
+        y = part.y if y is None else y
+        rot = part.rot if rot is None else rot
+        ctx = self.legality_ctx
+        drilled = self._drilled_refs()
+        clr = self.clearance
+        overlap = 0.0
+        for other_ref, other in others:
+            if other_ref == ref or (exclude and other_ref in exclude):
+                continue
+            if not (part.sides & other.sides):
+                continue
+            if (ref in drilled and other_ref in drilled and _drill_conflict(
+                    self, ref, (x, y, rot), other_ref,
+                    (other.x, other.y, other.rot))):
+                overlap += clr
+            if ctx is not None:
+                sf = ctx.pair_shortfall(ref, other_ref, pose_a=(x, y, rot))
+                overlap += max(0.0, sf.pad) + max(0.0, sf.hole)
+                if sf.pad_overlap or sf.stack:
+                    overlap += clr
+            if limit is not None and board + overlap > limit:
+                break
+        return overlap
 
     def _drilled_refs(self):
         """Refs with any drilled pad (plated or not), cached -- the parts a
@@ -3015,9 +3053,18 @@ class QuenchState:
                 oob_count += 1
                 oob_amount += amt
                 oob_area += self.edge_gate.out_of_board_area(p.rect)
-        out = {'overlap_area': legality.placement_overlap_area(parts),
+        overlap = legality.placement_overlap_area(parts)
+        out = {'overlap_area': overlap,
                'oob_count': oob_count, 'oob_amount': oob_amount,
                'oob_area': oob_area, 'hpwl': self.hpwl()}
+        if getattr(self, 'courtyards_ignored', False):
+            # #1104: the project waives courtyard overlap (#1101's
+            # predicate), so it is not a legality cost here -- the decap
+            # rung, the reseat/evict gates and the portfolio all compare this
+            # key, and each refused the moves the waiver exists for. The
+            # measurement is kept, under its own name, for disclosure.
+            out['overlap_area'] = 0.0
+            out['overlap_area_waived'] = overlap
         out.update(self.pad_legality_metrics())
         return out
 

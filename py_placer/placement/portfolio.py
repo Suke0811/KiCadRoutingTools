@@ -431,7 +431,16 @@ def perturb_swaps(state, blocks: Dict[str, Sequence[str]], rng: random.Random,
             continue
         # candidate_valid excluded the partner, so the two NEW poses were
         # never tested against each other; do it exactly.
-        gap = pa.gap_to(pb, pa.rects(bx, by, pa.rot), pb.rects(ax, ay, pb.rot))
+        if getattr(state, 'courtyards_ignored', False):
+            # #1104: courtyards waived; the swapped pads may not come closer
+            # than the clearance (pad boxes, conservatively).
+            ba, bb = pa.padbox(bx, by, pa.rot), pb.padbox(ax, ay, pb.rot)
+            from .quench import rect_gap
+            gap = (rect_gap(ba, bb) if ba is not None and bb is not None
+                   and (pa.sides & pb.sides) else None)
+        else:
+            gap = pa.gap_to(pb, pa.rects(bx, by, pa.rot),
+                            pb.rects(ax, ay, pb.rot))
         if gap is not None and gap < state.clearance:
             continue
         state.apply_move(a, bx, by, pa.rot)
