@@ -2188,6 +2188,10 @@ class QuenchState:
             # and the containment conjunct below only refuses half of a body
             # or more: without this, two parts seated with 40% of their
             # .Fab bodies overlapping, pads clear (#1101 review).
+            if legal and self._pads_under_body_at(ref, x, y, rot, exclude):
+                # #1106: courtyards are waived, so a body-less part's pads
+                # are what it occupies; they may not go under a drawn body.
+                legal = False
             if legal and self._body_overlap_at(ref, x, y, rot, exclude):
                 legal = False
         elif legal:
@@ -2871,6 +2875,50 @@ class QuenchState:
                 return True            # unmeasurable: the rects overlap
             if mine.intersection(theirs).area > _BODY_OVERLAP_EPS:
                 return True
+        return False
+
+    def _pads_under_body_at(self, ref, x, y, rot, exclude=None):
+        """Would `ref` at this pose put a BODY-LESS part's pad copper under a
+        same-face drawn body (#1106)? Either direction of the move: `ref`
+        body-less landing under a neighbour's body, or `ref`'s body landing
+        over a body-less neighbour. `legality.pads_under_body_frac` at
+        `CONTAINMENT_FRAC` -- the checker's own predicate. Marker and
+        container parts are exempt, as in the checker's gate."""
+        exempt = self.body_exempt_refs()
+        if ref in exempt:
+            return False
+        fps = getattr(self.pcb_data, 'footprints', {}) or {}
+        part = self.parts[ref]
+        mine_body = self.fab_shape(ref, x, y, rot)
+        mine_pads = None
+        if mine_body is None:
+            fp = fps.get(ref)
+            mine_pads = (legality.bodyless_pad_shape(fp, x, y, rot)
+                         if fp is not None else None)
+            if mine_pads is None:
+                return False
+        for other_ref, other in self.parts.items():
+            if other_ref == ref or (exclude and other_ref in exclude):
+                continue
+            if other_ref in exempt or not (part.sides & other.sides):
+                continue
+            if mine_pads is not None:
+                theirs = self.fab_shape(other_ref)
+                if theirs is None:
+                    continue
+                if (legality.pads_under_body_frac(mine_pads, theirs)
+                        >= legality.CONTAINMENT_FRAC):
+                    return True
+            elif self.fab_shape(other_ref) is None:
+                fo = fps.get(other_ref)
+                theirs_pads = (legality.bodyless_pad_shape(fo, other.x,
+                                                           other.y, other.rot)
+                               if fo is not None else None)
+                if theirs_pads is None:
+                    continue
+                if (legality.pads_under_body_frac(theirs_pads, mine_body)
+                        >= legality.CONTAINMENT_FRAC):
+                    return True
         return False
 
     def body_exempt_refs(self):

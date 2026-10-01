@@ -1163,6 +1163,47 @@ def placement_out_of_board(parts: Sequence[GradedPart], board_info,
 # KB), member classifies an edge class (shells overhang neighbors by design),
 # or the pair is declared in the intent's overlap_waivers (authored only).
 
+def pads_under_body_frac(pad_shape, body_shape):
+    """Share of a BODY-LESS part's pad copper (`pad_shape`, the union of its
+    copper pads at the pose) that lies under another part's drawn body
+    (#1106), or 0.0. One-directional by construction: a part with no drawn
+    body can only be the one UNDER a body, never the one containing others
+    -- the direction the run-6 fallback measured (+77 fab pairs, led by
+    rp2350's body-less Teensy40 "swallowing" 56 neighbours) never arises.
+    Read by the checker (`grade_body_overlap`) and the generator (quench's
+    waived seat), so neither can be more permissive than the other."""
+    if pad_shape is None or body_shape is None:
+        return 0.0
+    area = pad_shape.area
+    if area <= EPS:
+        return 0.0
+    return pad_shape.intersection(body_shape).area / area
+
+
+def bodyless_pad_shape(fp, x=None, y=None, rot=None):
+    """Union of a footprint's COPPER pads (NPTH skipped) at a pose, as a
+    board-frame shapely geometry, or None when it has none. Pads are taken
+    as their rectangles about their own centres at the footprint's angle --
+    the coarse, conservative reading a 'pad under a body' question needs."""
+    from shapely.geometry import box
+    from shapely.ops import unary_union
+    x = fp.x if x is None else x
+    y = fp.y if y is None else y
+    rot = (fp.rotation or 0.0) if rot is None else rot
+    boxes = []
+    for p in fp.pads or ():
+        if getattr(p, 'pad_type', '') == 'np_thru_hole':
+            continue
+        lx, ly = float(p.local_x), float(p.local_y)
+        # local size: board-space size_x/size_y were resolved at the file's
+        # angle; a pad box about its own centre is all this needs.
+        hx = max(float(p.size_x), float(p.size_y)) / 2.0
+        boxes.append(box(lx - hx, ly - hx, lx + hx, ly + hx))
+    if not boxes:
+        return None
+    return place_local_shape(unary_union(boxes), x, y, rot)
+
+
 class BodyOverlapPair(NamedTuple):
     a: str
     b: str
@@ -1811,6 +1852,37 @@ def grade_body_overlap(pcb_data, clearance: float,
                         contained_frac=_cf, contained=_cf is not None
                         and _cf >= CONTAINMENT_FRAC,
                         depth_mm=round(max(0.0, _depth), 4)))
+        # #1106: a part that draws NO body (no .Fab, no usable silk) was
+        # skipped above, so nothing graded it sitting under another part's
+        # body -- StickHub's J9 (a 1-pad GND land) and JP1 (a solder jumper)
+        # were seeded inside U1's LQFP-48 and every checker said buildable.
+        # Its pad copper is what it occupies: judged against each same-face
+        # drawn body, one-directionally (`pads_under_body_frac`).
+        for ref in sorted(fab_unjudged):
+            fp = fps.get(ref)
+            if fp is None:
+                continue
+            _ps = bodyless_pad_shape(fp)
+            if _ps is None:
+                continue
+            _sides = sides_occupied(footprint_side(fp),
+                                    footprint_has_through_pads(fp))
+            _pb = _ps.bounds
+            for rb, sb, rcb, shb in fab_parts:
+                if sb not in _sides:
+                    continue
+                if rect_overlap_area(_pb, rcb) <= EPS:
+                    continue
+                _f = pads_under_body_frac(_ps, shb)
+                if _f >= CONTAINMENT_FRAC:
+                    waiver = _waiver_for(ref, rb)
+                    pairs.append(BodyOverlapPair(
+                        a=min(ref, rb), b=max(ref, rb),
+                        kind='pads_under_body',
+                        area_mm2=round(_f * _ps.area, 4), side=sb,
+                        waived=bool(waiver), waiver=waiver,
+                        contained_frac=round(_f, 3), contained=True,
+                        depth_mm=0.0))
 
     # -- pad_intersection channel (never waivable) ----------------------------
     # AABB broad phase in the gate currency, then exact re-verification at
