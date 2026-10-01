@@ -328,8 +328,58 @@ def protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[str, str]
     KiCad-locked copper. 'locked' wins where both apply -- unlike the .pro
     reasons it has NO exact-name override (locked means never)."""
     m = read_for_pcb_data(pcb_data, input_file)
+    for name in disconnected_pair_members(pcb_data, m):
+        # #1107: a diff pair protects COUPLED copper a later step cannot
+        # redo -- but a member whose pads are still disconnected is broken,
+        # and protecting it froze it broken (run 38: /U1D- from the diff
+        # step to the final board, named as a blocker in every failing box).
+        # Once connected it is protected again; cparti's by-design deferred
+        # leg is connected by the very next single-ended step.
+        m.pop(name, None)
+        if name not in _LIFTED_SAID:
+            _LIFTED_SAID.add(name)
+            print(f"Protection lifted: {name} (diff-pair) has disconnected "
+                  f"member pads, so it may be ripped and finished (#1107)")
     m.update({n: 'locked' for n in locked_net_names(pcb_data)})
     return m
+
+
+#: Names already reported as lifted in this process (one line per net).
+_LIFTED_SAID: Set[str] = set()
+
+
+def disconnected_pair_members(pcb_data, protected: Dict[str, str]) -> List[str]:
+    """The 'diff-pair' protected nets whose pads are NOT all connected on
+    `pcb_data`'s copper (`check_net_connectivity`, the member audit's
+    checker). A net with fewer than two pads is connected by definition."""
+    names = [n for n, why in (protected or {}).items() if why == 'diff-pair']
+    if not names:
+        return []
+    try:
+        from check_connected import check_net_connectivity
+    except Exception:                                      # noqa: BLE001
+        return []
+    by_name = {net.name: nid for nid, net in (pcb_data.nets or {}).items()
+               if getattr(net, 'name', None)}
+    out = []
+    for name in sorted(names):
+        nid = by_name.get(name)
+        if nid is None:
+            continue
+        pads = (getattr(pcb_data, 'pads_by_net', {}) or {}).get(nid, [])
+        if len(pads) < 2:
+            continue
+        try:
+            r = check_net_connectivity(
+                nid, [s for s in pcb_data.segments if s.net_id == nid],
+                [v for v in pcb_data.vias if v.net_id == nid], pads,
+                [z for z in (getattr(pcb_data, 'zones', None) or [])
+                 if z.net_id == nid])
+        except Exception:                                  # noqa: BLE001
+            continue          # unmeasurable: keep the protection
+        if not r.get('connected'):
+            out.append(name)
+    return out
 
 
 
