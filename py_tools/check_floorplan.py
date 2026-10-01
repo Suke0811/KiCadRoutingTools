@@ -662,10 +662,7 @@ def main(argv=None):
             if _plim is not None:
                 _pc = cen.get('reference_pin_census') or {}
                 print(f"  decaps: max_pin_distance_mm {_plim} from "
-                      f"{_pc.get('covered')} supply pin(s) on the reference"
-                      + ("; decap_ungraded promoted to error (the "
-                         "reference keeps every rail cap in the radius)"
-                         if cen.get('decap_ungraded_promoted') else ''))
+                      f"{_pc.get('covered')} supply pin(s) on the reference")
             elif cen.get('pin_limit_withheld'):
                 print(f"  decaps: max_pin_distance_mm not derived -- "
                       f"{cen['pin_limit_withheld']}")
@@ -674,6 +671,12 @@ def main(argv=None):
                 # (no exit change), and printed here so it is not silent.
                 print(f"  decaps: max_distance_mm not derived (auto) -- "
                       f"{cen['auto_withheld']}")
+            # A severity the emit RAISED is said whether or not a pin limit
+            # came with it: it rides on the tether limit, and the esp_prog
+            # fixtures promote with the pin limit withheld (2 covered pins).
+            if cen.get('decap_ungraded_promoted'):
+                print(f"  decaps: decap_ungraded promoted to error -- "
+                      f"{cen['decap_ungraded_promoted']}")
             # The two causes are printed SEPARATELY (#792). One number
             # used to carry both, and the doc explained it with a third
             # cause -- a predicate mismatch -- that measurement says does

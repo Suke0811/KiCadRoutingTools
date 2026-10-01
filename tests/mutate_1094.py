@@ -46,6 +46,7 @@ TARGETS = {
     'asm': os.path.join(_ROOT, 'py_tools', 'check_assembly.py'),
     'seed': os.path.join(_ROOT, 'py_placer', 'place_seed.py'),
     'pose': os.path.join(_PL, 'pose_ops.py'),
+    'cfp': os.path.join(_ROOT, 'py_tools', 'check_floorplan.py'),
 }
 
 
@@ -290,6 +291,10 @@ ROWS = [
      "        _match = (min(_common / len(_theirs), _common / len(_ours))",
      "        _match = (min(_common / len(_theirs), _common / len(_theirs))",
      (T1099,), 'KILLED'),
+    ('promotion-said-only-beside-a-pin-limit', 'cfp',
+     "            if cen.get('decap_ungraded_promoted'):",
+     "            if False:",
+     (T1100,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

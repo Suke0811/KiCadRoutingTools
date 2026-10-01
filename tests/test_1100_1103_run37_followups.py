@@ -125,6 +125,20 @@ class TestPinLimitFromTheReference(unittest.TestCase):
                                capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(g.returncode, 0, g.stdout[-1500:])
 
+    def test_a_promotion_without_a_pin_limit_is_said(self):
+        """The run25 esp_prog fixture keeps all 4 tethered caps inside the
+        radius, so `decap_ungraded` is promoted to error, while only 2 supply
+        pins are covered and the pin limit is withheld. The promotion was
+        printed only beside a derived pin limit, so here the emit raised a
+        severity without a word."""
+        board = os.path.join(ROOT, 'tests', 'fixtures', 'run25',
+                             'esp_prog_placed.kicad_pcb')
+        r, doc = emit(board, '--decaps-from', board)
+        self.assertEqual((doc.get('severity') or {}).get('decap_ungraded'),
+                         'error')
+        self.assertNotIn('max_pin_distance_mm', doc.get('decaps') or {})
+        self.assertIn('decap_ungraded promoted to error', r.stdout)
+
     def test_a_derived_pin_limit_carries_its_basis(self):
         """flat_hierarchy derives a pin limit with no tether limit beside it;
         the pin limit is still labelled with its reference."""
