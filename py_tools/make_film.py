@@ -691,7 +691,29 @@ def main(argv=None):
             _s3f.cleanup()
         except Exception:                                      # noqa: BLE001
             pass
+    _board_box_line()
     return 0
+
+
+def _board_box_line():
+    """#1109: say on STDOUT, last, which board box the film got. A 3D film
+    that fell back to the 2D X-ray (no `npm ci` in py_router/stage3d, no
+    browser) used to say so only on stderr, mid-log, and still exit 0 --
+    run 38 published a 2D film it believed was 3D."""
+    try:
+        from stage3d import film as _s3f
+        rep = dict(_s3f.LAST_REPORT)
+    except Exception:                                          # noqa: BLE001
+        return
+    if not rep:
+        return
+    if rep.get('mode') == '3d':
+        print("make_film: board box: 3D (%s)" % (rep.get('renderer') or '?'))
+    elif rep.get('asked') in ('2d', 'off'):
+        print("make_film: board box: 2D X-ray, as asked")
+    else:
+        print("make_film: WARNING board box: 2D X-ray, NOT the 3D board -- %s"
+              % (rep.get('why') or 'unknown reason'))
 
 
 if __name__ == '__main__':

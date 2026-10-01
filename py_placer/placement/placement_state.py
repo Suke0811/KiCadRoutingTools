@@ -80,6 +80,26 @@ class PlacementState:
     vias: int = 0
 
     @property
+    def pile(self) -> bool:
+        """The poses carry no placement decisions (#1103, #1109).
+
+        `unplaced`, OR a staging ring (`s3_outside`: spread, not stacked, so
+        it reads neither unplaced nor partially unplaced -- run 36/37's
+        StickHub pile, 93% off the board), OR a heap: at least
+        `DUP_FRACTION` of the parts stacked in a way a placed board does not
+        explain (`stacked_suspect_refs`, which excuses far-side and marker
+        co-locations; the raw `duplicate_fraction` read a placed orangecrab
+        as a pile). The ONE pile test: emit_intent and board_brief both read
+        it, and the free-agent skill chooses its mode from it.
+        """
+        sig = self.signals or {}
+        n = max(1, self.n_footprints or 0)
+        return bool(self.unplaced or sig.get('s3_outside')
+                    or (self.partially_unplaced
+                        and len(self.stacked_suspect_refs) / n
+                        >= DUP_FRACTION))
+
+    @property
     def blocked(self) -> bool:
         """Either gate says a placement tool should not proceed."""
         return self.unplaced or self.has_copper

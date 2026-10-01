@@ -323,6 +323,10 @@ def state_section(pcb, pcb_file, skipped):
     from placement.placement_state import assess_placement
     st = assess_placement(pcb, pcb_file)
     return {'unplaced': st.unplaced,
+            # #1109: the pile test emit_intent uses. `unplaced` alone misses
+            # a staging ring (run 38: 93% of StickHub's parts off the board
+            # read `unplaced: false`).
+            'pile': st.pile,
             # WHY, not just the verdict. Dropping these left a JSON reader
             # with a bare boolean and no way to see what fired -- and they
             # are what `position_dependent.because` quotes.
@@ -774,7 +778,8 @@ def build_brief(pcb, pcb_file, *, clearance=None, board_edge_clearance=None,
     # new parts on a placed board is 3/65 = 0.046 and stays unmarked, which
     # is the case `partially_unplaced` exists for.
     dup = st.get('duplicate_fraction') or 0.0
-    piled = bool(st.get('unplaced')) or dup >= PILE_FRACTION
+    piled = (bool(st.get('unplaced')) or bool(st.get('pile'))
+             or dup >= PILE_FRACTION)
     if piled:
         nulled = [p for p in POSITION_DEPENDENT
                   if _null_path(brief, p.split('.'))]
@@ -1048,6 +1053,7 @@ def main(argv=None):
         {'board': a.board, 'parts': brief['board'].get('footprints'),
          'nets': brief['board'].get('nets'),
          'unplaced': (brief.get('state') or {}).get('unplaced'),
+         'pile': (brief.get('state') or {}).get('pile'),
          'sections': sorted(k for k, v in brief.items()
                             if isinstance(v, (dict, list))
                             and k not in ('sources', 'skipped')),
