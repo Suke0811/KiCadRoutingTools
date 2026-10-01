@@ -1,4 +1,4 @@
-"""The #1104-#1109 mutation battery: the defects run 38 found on StickHub.
+"""The #1104/#1106/#1108/#1109 mutation battery: the defects run 38 found on StickHub.
 
 One row per load-bearing line, each reverting it; every row names the test
 that must fail. **THE ROWS TO LOOK AT FIRST if this file ever goes red**
@@ -7,8 +7,7 @@ restore a defect somebody measured:
   * `metrics-price-waived-overlap` (#1104) -- run 38's decap repair reverted
     six cap moves that would have cleared their finding, on courtyards the
     project waives;
-  * `escape-ignores-pads-under-body` (#1106) -- J9 seated under U1's body;
-  * `broken-pair-stays-protected` (#1107) -- /U1D- frozen broken.
+  * `escape-ignores-pads-under-body` (#1106) -- J9 seated under U1's body.
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty
@@ -16,7 +15,7 @@ target, and it runs every witness UNMUTATED first -- a witness that already
 fails would score every row as killed.
 
     python3 tests/mutate_1104.py
-    python3 tests/mutate_1104.py --row broken-pair-stays-protected
+    python3 tests/mutate_1104.py --row escape-ignores-pads-under-body
 
 A row is KILLED by a failure or an error. An anchor that does not match
 EXACTLY ONCE is BROKEN, never skipped; `preflight()` runs right after `ROWS`.
@@ -45,7 +44,6 @@ TARGETS = {
     'quench': os.path.join(_PL, 'quench.py'),
     'reseat': os.path.join(_PL, 'reseat.py'),
     'pstate': os.path.join(_PL, 'placement_state.py'),
-    'pn': os.path.join(_ROOT, 'py_router', 'protected_nets.py'),
     'rp': os.path.join(_ROOT, 'py_router', 'route_planes.py'),
     'film': os.path.join(_ROOT, 'py_tools', 'make_film.py'),
 }
@@ -56,9 +54,7 @@ def _t(name):
 
 
 T1104 = _t('test_1104_waiver_every_gate.py')
-T1105 = _t('test_1105_decap_owners_first.py')
 T1106 = _t('test_1106_pads_under_body.py')
-T1107 = _t('test_1107_broken_pair_not_protected.py')
 T1108 = _t('test_1108_route_planes_exit.py')
 T1109 = _t('test_1109_pile_and_film.py')
 
@@ -93,15 +89,6 @@ ROWS = [
      "    if False:\n"
      "        # #1104: the project waives courtyards; the pad copper is what may",
      (T1104,), 'KILLED'),
-    # --- #1105: decap owners first (opt-in) ---------------------------------
-    ('owners-never-seated', 'seeder',
-     "    if decap_scope and (DECAP_OWNERS_FIRST_DEFAULT",
-     "    if False and (DECAP_OWNERS_FIRST_DEFAULT",
-     (T1105,), 'KILLED'),
-    ('owners-first-by-default', 'seeder',
-     "DECAP_OWNERS_FIRST_DEFAULT = False",
-     "DECAP_OWNERS_FIRST_DEFAULT = True",
-     (T1105,), 'KILLED'),
     # --- #1106: pads under a body ------------------------------------------
     ('checker-skips-bodyless', 'leg',
      "                if _f >= CONTAINMENT_FRAC:",
@@ -125,11 +112,6 @@ ROWS = [
      "        for other_ref in bodyless:",
      "        for other_ref in ():",
      (T1106,), 'KILLED'),
-    # --- #1107: a broken pair member is rippable ----------------------------
-    ('broken-pair-stays-protected', 'pn',
-     "        m.pop(name, None)",
-     "        pass",
-     (T1107,), 'KILLED'),
     # --- #1108: route_planes refusals exit non-zero -------------------------
     ('no-output-exits-zero', 'rp',
      "    return 1 if _no_output else 0",

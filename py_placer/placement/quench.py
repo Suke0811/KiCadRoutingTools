@@ -2933,10 +2933,11 @@ class QuenchState:
         body-less landing under a neighbour's body, or `ref`'s body landing
         over a body-less neighbour. `legality.pads_under_body_frac` at
         `CONTAINMENT_FRAC`, the checker's predicate; marker and container
-        parts are exempt, as in the checker's gate. The checker's "no body"
-        also accepts a silk outline; this one reads .Fab only, so it is the
-        stricter of the two, never the more permissive. Rect broad phase
-        first, so a board with no body-less part pays a set lookup."""
+        parts are exempt, as in the checker's gate. The body-less set is the
+        checker's own (`_bodyless_refs`); the covering body is read from .Fab
+        only, which is still the checker's gate, since a pair whose body
+        came from silk never gates. Rect broad phase first, so a board with
+        no body-less part pays a set lookup."""
         bodyless = self._bodyless_refs()
         if not bodyless:
             return False

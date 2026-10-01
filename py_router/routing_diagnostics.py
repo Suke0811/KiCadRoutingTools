@@ -513,10 +513,8 @@ def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
     # names, so no authority machinery ever receives them (a47f244).
     prot_txt = ""
     try:
-        # The memo the rip ladders read (#1107: a call per failed net
-        # re-measured every protected pair member's connectivity).
-        from protected_nets import cached_protection_map
-        _pmap = cached_protection_map(pcb_data,
+        from protected_nets import protection_map
+        _pmap = protection_map(pcb_data,
                                getattr(pcb_data, 'source_path', None))
         if _pmap and anchors:
             from geometry_utils import point_to_segment_distance
