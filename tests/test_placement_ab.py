@@ -613,6 +613,43 @@ ROWS += [
               'orangecrab_ext_pll.kicad_pcb', 'glasgow_revC.kicad_pcb')
 ]
 
+# #1105: seat the decap owner ICs before stage 2.5 (`decap_owners_first`),
+# OFF vs ON, both arms seeded and graded under the SAME auto intent (which
+# arms `decaps.max_distance_mm`). The flat boards are the case: nothing seats
+# an IC before stage 2.5 there, so the OFF arm's pin stage claims nothing --
+# the reason the decaps-auto rows above read neutral on them.
+_OWNER_BOARDS = ('esp_prog.kicad_pcb', 'splitflap_driver.kicad_pcb',
+                 'tigard.kicad_pcb', 'watchy.kicad_pcb')
+ROWS += [
+    {
+        'name': f'decap-owners-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'corridors': [],
+        'engine': 'seed',
+        'seed_intents': {'off': 'auto', 'on': 'auto', 'grade': 'auto'},
+        'seed_off': {'decap_owners_first': False},
+        'seed_on': {'decap_owners_first': True},
+        'ignore_nets': ['GND'],
+        'signal': 'intent_errors',
+        'guard': ('crossings', 'hpwl', 'unseated', 'body_blocking'),
+        # REJECTED as a default (#1105): a guard regressed on all four boards
+        # (crossings and wire length everywhere) while the signal moved on
+        # one. An IC seated before its caps and passives is seated against
+        # nothing, so its pose serves the pin stage and not the netlist. It
+        # stays `place_seed --decap-owners-first`, for a pile on which stage
+        # 2.5 claims nothing (run 38's StickHub: 10 -> 1 seed errors, which
+        # no committed board can carry -- StickHub is CC BY-NC-SA).
+        'rejected': True,
+        'expect': 'regress',
+        'why': ('MECHANISM: the ON arm seats the ICs carrying a scoped '
+                'cap\'s rail with the centroid stage\'s own seat just before '
+                'stage 2.5, so the pin stage finds pins and claims caps at '
+                'them; the OFF arm seats those ICs in stage 3, after every '
+                'cap has fallen through to the centroid.'),
+    }
+    for b in _OWNER_BOARDS
+]
+
 # --- #1051 / #1053 / #1043 / #1052: declared structure, OFF vs ON ----------
 #
 # Every row below varies ONE emitter parameter between its arms

@@ -3939,6 +3939,16 @@ def _ang_close(a: float, b: float, eps: float = 1e-6) -> bool:
 #: reference placement is diagonal; no skill passes it.
 DIAGONAL_ROTATIONS_DEFAULT = False
 
+#: #1105: seat the ICs that own a scoped decap's rail BEFORE stage 2.5, with
+#: stage 3's own seat. Stage 2.5 reads its pins off PLACED ICs, and on a
+#: flat seed or a pile none is placed before it, so it claimed 0 of 38 caps
+#: on run 38's StickHub pile ("no PLACED IC carries a scoped cap's rail").
+#: OFF by default: tests/test_placement_ab.py's `decap-owners-*` rows
+#: REJECTED it (a guard -- crossings, wire length -- regressed on all four
+#: flat boards). `place_seed --decap-owners-first` opts in; the free-agent
+#: skill says when (a pile whose decap_stage claims 0).
+DECAP_OWNERS_FIRST_DEFAULT = False
+
 
 def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      group_sources: Sequence[str] = (),
@@ -3954,7 +3964,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      body_model: bool = False,
                      rotate_by_facing: bool = False,
                      array_pose_cap: int = ARRAY_SEAT_POSE_CAP,
-                     diagonal_rotations: Optional[bool] = None) -> Dict:
+                     diagonal_rotations: Optional[bool] = None,
+                     decap_owners_first: Optional[bool] = None) -> Dict:
     """Compute a full placement for an unplaced board from its intent.
 
     Returns {'placements': [...], 'lock_refs': [...], 'unseated': [...],
@@ -4802,6 +4813,49 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                          f"that declared rows serve, before the decap/array "
                          f"stages (" + ', '.join(served_first) + ")")
 
+    # ---- 2.5a the decap owners (#1105) --------------------------------------
+    # Stage 2.5 below reads its pins off PLACED ICs. Without a lock, a zone or
+    # a declared row nothing seats an IC before it, so on a flat seed or a
+    # pile it claimed nothing and every scoped cap fell to the centroid stage.
+    # Seat the ICs that carry a scoped cap's rail first, with stage 3's own
+    # seat (`_centroid_seat`), in stage 3's order -- exactly as 2.4 does for a
+    # row's served part. Row members and refused fixed poses keep their turn.
+    owners_first: List[str] = []
+    if decap_scope and (DECAP_OWNERS_FIRST_DEFAULT
+                        if decap_owners_first is None
+                        else bool(decap_owners_first)):
+        _rails45: Set[int] = set()
+        for ref in decap_scope:
+            if ref not in unplaced or ref not in state.parts:
+                continue
+            rail = min((nid for nid in state.parts[ref].nets
+                        if len(state.net_refs.get(nid, ())) >= 2),
+                       key=lambda nid: (len(state.net_refs[nid]), nid),
+                       default=None)
+            if rail is not None:
+                _rails45.add(rail)
+        if _rails45:
+            from placement import groups as _g45
+            _chips45 = (_g45.chip_refs(pcb_data) if decap_owner_chips
+                        else None)
+            want45 = [r for r in _order(sorted(unplaced))
+                      if r not in decap_scope and r not in array_members
+                      and r not in held and r in state.parts
+                      and ((r in _chips45) if _chips45 is not None
+                           else r[0:1] == 'U')
+                      and set(state.parts[r].nets) & _rails45]
+            for ref in want45:
+                clr, _t, _jx, _jy = _centroid_seat(ref)
+                if clr is not None:
+                    owners_first.append(ref)
+                else:
+                    notes.append(f"{ref}: stage 2.5a (a decap owner) found "
+                                 f"no seat -- left to the centroid stage")
+            if owners_first:
+                notes.append(f"stage 2.5a: seated {len(owners_first)} decap "
+                             f"owner IC(s) before the pin stage ("
+                             + ', '.join(owners_first) + ")")
+
     # ---- 2.5 decap-governed caps: one cap per supply PIN -------------------
     # A 100nF's two nets are a rail and GND -- both usually above the fanout
     # cap -- so the generic centroid stage would park every decap mid-board
@@ -5056,8 +5110,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             elif not decap_pins:
                 _why = ("no PLACED IC carries a scoped cap's rail (pins 0) "
                         "-- no owner IC is seated before this stage (a "
-                        "fixed pose, must_lock, a zoned block or a declared "
-                        "row's `serves` seats one earlier)"
+                        "fixed pose, must_lock, a zoned block, a declared "
+                        "row's `serves`, or --decap-owners-first seats one "
+                        "earlier)"
                         + ('' if decap_owner_chips else
                            '; owners must be U-prefixed unless '
                            'decap_owner_chips'))
@@ -5069,6 +5124,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                        'put_back': len(decap_put_back),
                        'pins': decap_pins, 'reason': _why,
                        'served_first': list(served_first),
+                       'owners_first': list(owners_first),
                        'array_members_skipped': list(decap_array_skipped)}
         if decap_scope and not decap_claimed:
             notes.append(f"decap stage 2.5: {len(decap_scope)} cap(s) in "

@@ -402,6 +402,14 @@ Examples:
                         "pads face the edge, more crossings and pin-order "
                         "inversions). Opt in when that trade is the one you "
                         "want; a tie keeps the input rotation first.")
+    p.add_argument("--decap-owners-first", action="store_true",
+                   help="Seat the ICs that carry a scoped decoupling cap's "
+                        "rail BEFORE the per-pin decap stage (#1105), with "
+                        "the centroid stage's own seat. That stage reads its "
+                        "pins off PLACED ICs, so on a flat board or a pile, "
+                        "where nothing seats an IC earlier, it claims no cap "
+                        "(decap_stage.reason says so). Only acts when the "
+                        "intent arms decaps.max_distance_mm.")
     p.add_argument("--diagonal-rotations", action="store_true",
                    help="Also try the 45-degree lattice (#1099): a part that "
                         "fits at no 90-degree angle at any clearance step "
@@ -1060,7 +1068,8 @@ Examples:
         anchor_rounds=args.anchor_rounds,
         evict_depth=args.evict_depth,
         rotate_by_facing=args.rotate_by_facing,
-        diagonal_rotations=args.diagonal_rotations)
+        diagonal_rotations=args.diagonal_rotations,
+        decap_owners_first=(True if args.decap_owners_first else None))
     for note in result['notes']:
         print(f"  NOTE: {note}")
     print(f"Seeded {len(result['placements'])} part(s); "
