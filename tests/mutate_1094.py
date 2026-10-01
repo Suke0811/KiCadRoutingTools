@@ -236,10 +236,10 @@ ROWS = [
     ('escape-branch-skips-bodies', 'quench',
      "        if self._body_contained_at(ref, x, y, rot, exclude):\n"
      "            return False\n"
-     "        # The unfreeze branch",
+     "        # #1106: and the body-less half of it.",
      "        if False:\n"
      "            return False\n"
-     "        # The unfreeze branch",
+     "        # #1106: and the body-less half of it.",
      (T1101,), 'KILLED'),
     ('waived-seat-stacks-holes', 'quench',
      "                            and _drill_conflict(",
