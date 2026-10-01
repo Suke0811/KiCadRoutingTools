@@ -2764,11 +2764,18 @@ class QuenchState:
         key = (ref, rot % 360)
         local = self._fab_cache.get(key)
         if local is None:
-            own = 'B' if str(getattr(p, 'side', 'F')).upper().startswith('B')                 else 'F'
+            own = self._fab_side(p)
             lb = sides.get(own) or next(iter(sides.values()))
             local = rotate_local_bounds(*lb, rot)
             self._fab_cache[key] = local
         return (x + local[0], y + local[1], x + local[2], y + local[3])
+
+    @staticmethod
+    def _fab_side(p):
+        """The side whose .Fab drawing `fab_rect` and `fab_shape` read:
+        the part's already-resolved `side`, upper-cased defensively."""
+        return 'B' if str(getattr(p, 'side', 'F')).upper().startswith('B') \
+            else 'F'
 
     def fab_shape(self, ref, x=None, y=None, rot=None):
         """The part's DRAWN .Fab body at a pose (board-frame geometry), on the
@@ -2784,8 +2791,7 @@ class QuenchState:
         sides = self._fab_shapes.get(ref)
         if p is None or not sides:
             return None
-        own = 'B' if str(getattr(p, 'side', 'F')).upper().startswith('B') \
-            else 'F'
+        own = self._fab_side(p)
         got = sides.get(own) or next(iter(sides.values()))
         return legality.place_local_shape(
             got[0], p.x if x is None else x, p.y if y is None else y,

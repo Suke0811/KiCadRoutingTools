@@ -103,8 +103,9 @@ _DECLARED = {
             'tests/mutate_834_835.py. Unifying it is a behaviour change no '
             'corpus board can witness, so it needs its own issue, not a '
             'ride-along on #878.'),
-    ('py_placer/placement/quench.py', 'QuenchState.fab_rect'):
-        (1, 'reads an already-resolved `p.side`, not a layer, and adds a '
+    ('py_placer/placement/quench.py', 'QuenchState._fab_side'):
+        (1, 'the one .Fab side pick `fab_rect` and `fab_shape` (#1101) '
+            'share. Reads an already-resolved `p.side`, not a layer, and adds a '
             'defensive .upper(). `side_of_layer` has none, so converting '
             'would silently drop the hardening.'),
     ('py_router/movie_camera.py', '_moved_side'):
