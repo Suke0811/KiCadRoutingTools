@@ -4651,6 +4651,31 @@ def generate_bga_fanout(footprint: Footprint,
         from protected_nets import read_snpc_for_pcb_data as _read_snpc581
         same_net_pad_clearance = _read_snpc581(pcb_data)
     _ref = getattr(footprint, 'reference', '?')
+    # The plane under the array (plane_lattice): a pour over it that cannot
+    # pass between two of this fanout's vias one pitch apart is islands under
+    # the array, every drop on it serves nothing, and the route step's plane
+    # repair rips signals to tap those balls. The pour's own clearance is the
+    # first lever (route_planes lowers it to what threads); when it stands
+    # too wide, the via steps down the same ladder the rescues and drops walk
+    # -- even below an explicit via size, and disclosed as they are.
+    from plane_lattice import plane_web_via
+    _ncu_pw = len(pcb_data.board_info.copper_layers or []) or 4
+    _pw = plane_web_via(footprint, pcb_data, via_size, via_drill, clearance,
+                        escalation_rungs(_ncu_pw))
+    if _pw is not None and _pw['threads']:
+        print(f"  Plane web under {_ref} ({_pw['pitch']:g}mm pitch; "
+              f"{', '.join(_pw['nets'])} poured at clearance {_pw['clearance']:g}, "
+              f"min width {_pw['min_width']:g}): no plane passes between "
+              f"{via_size:g}mm vias -- fanning out at {_pw['via']:g}/{_pw['drill']:g}")
+        if _pw['via'] < fab_floors(_ncu_pw)['via_diameter'] - 1e-9:
+            warn_fab_escalation(f'plane web under {_ref}')
+        via_size, via_drill = _pw['via'], _pw['drill']
+    elif _pw is not None:
+        print(f"  WARNING: plane web under {_ref} ({_pw['pitch']:g}mm pitch; "
+              f"{', '.join(_pw['nets'])} poured at clearance {_pw['clearance']:g}, "
+              f"min width {_pw['min_width']:g}): no via on the fab ladder lets "
+              f"the plane pass between its vias -- its drops there may be "
+              f"islands; lower the pour's clearance")
     if progress_callback:
         _nballs = sum(1 for _p in footprint.pads if _p.net_id)
         progress_callback(0, 0, f"BGA fanout {_ref}: escaping {_nballs} ball(s)...")
@@ -4786,6 +4811,12 @@ def generate_bga_fanout(footprint: Footprint,
         tracks = tracks + d_tracks
         vias_to_add = vias_to_add + d_vias
         LAST_PLANE_DROP_REPORT.update(rep)
+    if _pw is not None and _pw['threads']:
+        from fab_tiers import note_narrowing
+        note_narrowing(None, 'via_diameter', _pw['asked'], _pw['via'],
+                       f'plane web under {_ref}',
+                       count=sum(1 for _v in vias_to_add
+                                 if (_v.get('size') or 0) <= _pw['via'] + 1e-9) or 1)
     # #962: via-in-pad needs IPC-4761 Type VII, DECLARED on each via rather
     # than only printed: (capping yes) (filling yes). Once, here, over EVERY
     # via this fanout returns -- the channel escape's in-pad vias (manage_vias

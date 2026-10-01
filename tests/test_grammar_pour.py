@@ -69,7 +69,9 @@ def test_composition():
     assert out is not None
     assert out[1] == [SHEET], "board-wide pad set must own the background sheet"
     assert len(out[2]) == 1, f"one tight cluster -> one island, got {len(out[2])}"
-    assert len(out[3]) == 2, f"two clusters -> two islands, got {len(out[3])}"
+    # two clusters -> two hull islands, then JOINED by a corridor into one region (_grammar_join, V2): nothing of
+    # another net lies between them and the sheet stays whole
+    assert len(out[3]) == 1, f"two clusters -> one joined region, got {len(out[3])}"
     for nid, pts in ((2, minor_a), (3, minor_b)):
         for x, y in pts:
             assert any(_grammar_point_in_poly(x, y, poly) for poly in out[nid]), \
