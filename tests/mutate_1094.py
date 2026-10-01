@@ -253,6 +253,16 @@ ROWS = [
      "        if not (part.sides & op.sides):",
      "        if False:",
      (T1101,), 'KILLED'),
+    # The #1101 review: with the courtyard waived only containment kept
+    # bodies apart (StickHub from a pile: 14 .Fab overlaps, C17 45% in J2).
+    ('waived-seat-stacks-bodies', 'quench',
+     "            if legal and self._body_overlap_at(ref, x, y, rot, exclude):",
+     "            if False:",
+     (T1101,), 'KILLED'),
+    ('waived-body-on-its-box', 'quench',
+     "            if mine.intersection(theirs).area > _BODY_OVERLAP_EPS:",
+     "            if True:",
+     (T1101,), 'KILLED'),
     # --- #1098/#1099 review follow-ups ----------------------------------------
     ('jumper-read-as-a-plug', 'fp',
      "        if sum(1 for p in pads if p.net_id) < MATING_MIN_FINGERS:",

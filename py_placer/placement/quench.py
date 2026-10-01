@@ -65,6 +65,9 @@ ROTATIONS = [0.0, 90.0, 180.0, 270.0]
 #: behaviour exactly. Not a supported flag; a debugging lever.
 _CONTAINMENT_GATE = os.environ.get('KRT_NO_CONTAINMENT_GATE', '') != '1'
 EPS_IMPROVE = 1e-6
+#: mm2 of .Fab body overlap `_body_overlap_at` counts: bodies that abut
+#: (a shared edge, area 0) are not overlapping.
+_BODY_OVERLAP_EPS = 1e-6
 
 #: The floorplan rules the quench ENFORCES per move (#702), as opposed to the
 #: ones it is merely graded on afterwards. Exported so `test_placement_ab.py`
@@ -2142,6 +2145,13 @@ class QuenchState:
                         if ob is not None and rect_gap(mine, ob) < clr:
                             legal = False
                             break
+            # The courtyard is body + margin, and the project waived the
+            # MARGIN. Two bodies in one place are still two parts colliding,
+            # and the containment conjunct below only refuses half of a body
+            # or more: without this, two parts seated with 40% of their
+            # .Fab bodies overlapping, pads clear (#1101 review).
+            if legal and self._body_overlap_at(ref, x, y, rot, exclude):
+                legal = False
         elif legal:
             if self._neighbors is not None and ref in self._neighbors:
                 others = ((o, self.parts[o]) for o in self._neighbors[ref])
@@ -2759,6 +2769,65 @@ class QuenchState:
             local = rotate_local_bounds(*lb, rot)
             self._fab_cache[key] = local
         return (x + local[0], y + local[1], x + local[2], y + local[3])
+
+    def fab_shape(self, ref, x=None, y=None, rot=None):
+        """The part's DRAWN .Fab body at a pose (board-frame geometry), on the
+        side `fab_rect` picks, or None when its footprint draws no .Fab.
+        Lazy, like `fab_rect`: nothing is read until the first call."""
+        if getattr(self, '_fab_shapes', None) is None:
+            try:
+                from placement.parser import extract_fab_shapes
+                self._fab_shapes = extract_fab_shapes(self.pcb_file) or {}
+            except Exception:                                # noqa: BLE001
+                self._fab_shapes = {}
+        p = self.parts.get(ref)
+        sides = self._fab_shapes.get(ref)
+        if p is None or not sides:
+            return None
+        own = 'B' if str(getattr(p, 'side', 'F')).upper().startswith('B') \
+            else 'F'
+        got = sides.get(own) or next(iter(sides.values()))
+        return legality.place_local_shape(
+            got[0], p.x if x is None else x, p.y if y is None else y,
+            p.rot if rot is None else rot)
+
+    def _body_overlap_at(self, ref, x, y, rot, exclude=None):
+        """Would this pose put any of `ref`'s .Fab body over a same-side
+        neighbour's? `fab_rect` is the broad phase and the drawn bodies
+        decide, as check_assembly's fab channel measures them (#1094), so a
+        diagonal part is not refused on its box. Marker and container parts
+        are exempt (`body_exempt_refs`); a part with no .Fab is unjudged.
+
+        For a board whose project waives the courtyard rule (#1101), where
+        the courtyard no longer keeps bodies apart."""
+        exempt = self.body_exempt_refs()
+        if ref in exempt:
+            return False
+        ra = self.fab_rect(ref, x, y, rot)
+        if ra is None:
+            return False
+        part = self.parts[ref]
+        if self._neighbors is not None and ref in self._neighbors:
+            others = [(o, self.parts[o]) for o in self._neighbors[ref]]
+        else:
+            others = list(self.parts.items())
+        mine = None
+        for other_ref, other in others:
+            if other_ref == ref or (exclude and other_ref in exclude):
+                continue
+            if other_ref in exempt or other.side != part.side:
+                continue
+            rb = self.fab_rect(other_ref)
+            if rb is None or rect_overlap_area(ra, rb) <= _BODY_OVERLAP_EPS:
+                continue
+            if mine is None:
+                mine = self.fab_shape(ref, x, y, rot)
+            theirs = self.fab_shape(other_ref)
+            if mine is None or theirs is None:
+                return True            # unmeasurable: the rects overlap
+            if mine.intersection(theirs).area > _BODY_OVERLAP_EPS:
+                return True
+        return False
 
     def body_exempt_refs(self):
         """Refs whose body may legitimately swallow or be swallowed.
