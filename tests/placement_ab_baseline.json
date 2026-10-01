@@ -533,6 +533,176 @@
    "unseated": null
   }
  },
+ "decap-owners-esp_prog": {
+  "board": "esp_prog.kicad_pcb",
+  "mark": "regress",
+  "off": {
+   "body_advisory": 18,
+   "body_blocking": 0,
+   "crossings": 47,
+   "edge_facing_pads": 3,
+   "health_block_displacement_max_mm": null,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 240.97,
+   "intent_errors": 1,
+   "intent_errors_by_rule": {
+    "decap_distance": 1
+   },
+   "intent_errors_enforced": 1,
+   "intent_errors_other": 0,
+   "inversions": 15,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
+   "unseated": 0
+  },
+  "on": {
+   "body_advisory": 18,
+   "body_blocking": 4,
+   "crossings": 52,
+   "edge_facing_pads": 11,
+   "health_block_displacement_max_mm": null,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 223.8,
+   "intent_errors": 1,
+   "intent_errors_by_rule": {
+    "legality": 1
+   },
+   "intent_errors_enforced": 0,
+   "intent_errors_other": 1,
+   "inversions": 27,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
+   "unseated": 1
+  }
+ },
+ "decap-owners-splitflap_driver": {
+  "board": "splitflap_driver.kicad_pcb",
+  "mark": "regress",
+  "off": {
+   "body_advisory": 2,
+   "body_blocking": 0,
+   "crossings": 556,
+   "edge_facing_pads": 2,
+   "health_block_displacement_max_mm": null,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 3093.66,
+   "intent_errors": 1,
+   "intent_errors_by_rule": {
+    "legality": 1
+   },
+   "intent_errors_enforced": 0,
+   "intent_errors_other": 1,
+   "inversions": 194,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
+   "unseated": 0
+  },
+  "on": {
+   "body_advisory": 2,
+   "body_blocking": 0,
+   "crossings": 568,
+   "edge_facing_pads": 2,
+   "health_block_displacement_max_mm": null,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 3128.65,
+   "intent_errors": 1,
+   "intent_errors_by_rule": {
+    "legality": 1
+   },
+   "intent_errors_enforced": 0,
+   "intent_errors_other": 1,
+   "inversions": 209,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
+   "unseated": 0
+  }
+ },
+ "decap-owners-tigard": {
+  "board": "tigard.kicad_pcb",
+  "mark": "regress",
+  "off": {
+   "body_advisory": 1,
+   "body_blocking": 0,
+   "crossings": 510,
+   "edge_facing_pads": 1,
+   "health_block_displacement_max_mm": null,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 1499.61,
+   "intent_errors": 4,
+   "intent_errors_by_rule": {
+    "decap_distance": 4
+   },
+   "intent_errors_enforced": 4,
+   "intent_errors_other": 0,
+   "inversions": 211,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
+   "unseated": 2
+  },
+  "on": {
+   "body_advisory": 1,
+   "body_blocking": 0,
+   "crossings": 595,
+   "edge_facing_pads": 5,
+   "health_block_displacement_max_mm": null,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 1580.23,
+   "intent_errors": 4,
+   "intent_errors_by_rule": {
+    "decap_distance": 4
+   },
+   "intent_errors_enforced": 4,
+   "intent_errors_other": 0,
+   "inversions": 217,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
+   "unseated": 1
+  }
+ },
+ "decap-owners-watchy": {
+  "board": "watchy.kicad_pcb",
+  "mark": "regress",
+  "off": {
+   "body_advisory": 1,
+   "body_blocking": 0,
+   "crossings": 151,
+   "edge_facing_pads": 1,
+   "health_block_displacement_max_mm": null,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 748.86,
+   "intent_errors": 15,
+   "intent_errors_by_rule": {
+    "decap_distance": 4,
+    "edge_connector": 11
+   },
+   "intent_errors_enforced": 4,
+   "intent_errors_other": 11,
+   "inversions": 78,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
+   "unseated": 0
+  },
+  "on": {
+   "body_advisory": 1,
+   "body_blocking": 0,
+   "crossings": 177,
+   "edge_facing_pads": 0,
+   "health_block_displacement_max_mm": null,
+   "health_bus_foreign_crossings": null,
+   "hpwl": 771.58,
+   "intent_errors": 12,
+   "intent_errors_by_rule": {
+    "decap_distance": 1,
+    "edge_connector": 11
+   },
+   "intent_errors_enforced": 1,
+   "intent_errors_other": 11,
+   "inversions": 79,
+   "oob_keepout_copper_amount": 0.0,
+   "oob_keepout_copper_count": 0,
+   "unseated": 0
+  }
+ },
  "decaps-auto-esp_prog": {
   "board": "esp_prog.kicad_pcb",
   "mark": "neutral",
