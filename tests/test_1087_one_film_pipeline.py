@@ -2,10 +2,9 @@
 """make_movie and make_film share ONE band/panel pipeline (#1087).
 
 `make_film.build_film` used to re-implement `make_movie`'s post-passes --
-attempts discovery, the placement panels, the band reservation, the iso
-preflight and the composition -- so every film-level feature had to be
-threaded twice. Both now go through `film_passes.plan` / `compose` /
-`compose_iso`. Pinned on the CALLS, not the text: each front end is run once
+attempts discovery, the placement panels, the band reservation and the
+composition -- so every film-level feature had to be threaded twice. Both
+now go through `film_passes.plan` / `compose`. Pinned on the CALLS, not the text: each front end is run once
 with `film_passes` spied, and each must plan, compose and hand the frames it
 got back onward.
 """
@@ -40,7 +39,7 @@ def _check(ok, msg):
 
 def _spied(run):
     calls = []
-    orig = (FP.plan, FP.compose, FP.compose_iso)
+    orig = (FP.plan, FP.compose)
 
     def _plan(*a, **k):
         calls.append(('plan', k.get('who')))
@@ -55,7 +54,7 @@ def _spied(run):
                 contextlib.redirect_stdout(io.StringIO()):
             run()
     finally:
-        FP.plan, FP.compose, FP.compose_iso = orig
+        FP.plan, FP.compose = orig
     return calls
 
 
@@ -67,10 +66,11 @@ def test_both_front_ends_run_the_one_pipeline():
     import make_movie as MM
     import make_film as MF
     mm = _spied(lambda: MM.make_movie(boards, out=os.path.join(d, 'a.gif'),
-                                      size=240, quiet=True, layout='legacy'))
+                                      size=240, quiet=True, board3d='2d'))
     mf = _spied(lambda: MF.build_film(MF.parse_positional(boards, []),
                                       size=240, fps=6.0, camera='off',
-                                      quiet=True, layout='legacy'))
+                                      quiet=True,
+                                      placement={'board3d': '2d'}))
     _check(('plan', 'make_movie') in mm and ('compose', '') in mm,
            'make_movie plans and composes through film_passes (%s)' % mm)
     _check(('plan', 'make_film') in mf and ('compose', 'make_film') in mf,
@@ -81,8 +81,7 @@ def test_both_front_ends_run_the_one_pipeline():
         # the pipeline's own entry points are film_passes'; a front end that
         # calls one of them directly has grown a second copy again
         dup = [f for f in ('movie_attempts.attach(', 'movie_benchmark.attach(',
-                           'movie_placement.split_band(',
-                           'movie_panels.compose_two_panel(')
+                           'movie_placement.split_band(')
                if f in src]
         _check(not dup, '%s calls no band/panel composer itself (%s)'
                % (name, dup))
@@ -96,24 +95,26 @@ def test_stage3d_without_a_ledger_keeps_the_placement_panels():
     with FC.Chain() as c:
         steps = [('s%d' % i, b, None) for i, b in enumerate(c.boards[:3])]
         with contextlib.redirect_stderr(io.StringIO()):
-            b = FP.plan(steps, c.boards[2], 'stage3d', quiet=True)
-        _check(b.stage3d and b.btrack is None and b.ptrack is not None
+            b = FP.plan(steps, c.boards[2], quiet=True)
+        _check(b.btrack is None and b.ptrack is not None
                and b.band, 'stage3d, no ledger: the placement panels are '
                'measured and reserved (%s, band %r)' % (b.pwhy, b.band))
 
 
-def test_an_extreme_aspect_gets_legacy_bands():
-    """plan_frame falls stage3d back to legacy outside 0.50..3.00; the
-    bands must follow, or a benchmark band lands on a legacy frame."""
-    with contextlib.redirect_stderr(io.StringIO()):
-        b = FP.plan([], None, 'stage3d', aspect='4:1', quiet=True,
-                    attempts=False)
-    _check(not b.stage3d, 'stage3d at 4:1 plans legacy bands')
+def test_plan_takes_no_layout_and_no_aspect():
+    """There is one layout, so the band plan cannot depend on one: an
+    extreme aspect (outside 0.50..3.00) is still a stage3d frame, a
+    board-only one, and its band is decided by plan_frame's height floor,
+    not by a second plan here (the legacy half-fallback this replaced)."""
+    import inspect
+    params = inspect.signature(FP.plan).parameters
+    _check('layout' not in params and 'aspect' not in params,
+           'film_passes.plan takes neither (%s)' % list(params))
 
 
 TESTS = (test_both_front_ends_run_the_one_pipeline,
          test_stage3d_without_a_ledger_keeps_the_placement_panels,
-         test_an_extreme_aspect_gets_legacy_bands)
+         test_plan_takes_no_layout_and_no_aspect)
 
 
 def main():

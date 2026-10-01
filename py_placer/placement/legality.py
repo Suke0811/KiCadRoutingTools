@@ -147,6 +147,100 @@ def rect_area(rect):
     return max(0.0, rect[2] - rect[0]) * max(0.0, rect[3] - rect[1])
 
 
+# --- drawn outlines (#1094) ----------------------------------------------------
+# The rect primitives above are exact only for an axis-aligned part. A part at
+# 45 degrees graded as the box around its rotated box reported 74 courtyard
+# pairs on KiCad's StickHub demo where KiCad reports 0, and six fab
+# CONTAINMENTS that made the human board NOT BUILDABLE. The graders keep the
+# rects as their broad phase and measure a pair the rects say overlaps on the
+# drawn outlines below, which is what KiCad measures.
+
+def place_local_shape(shape, x, y, rotation):
+    """A local-frame shapely geometry at the pose (x, y, rotation).
+
+    The same sign as `rotate_local_bounds`, so the bbox of the result is the
+    rect that function would give for an axis-aligned shape.
+    """
+    from shapely import affinity
+    rot = (rotation or 0.0) % 360
+    g = shape if abs(rot) < 0.01 else affinity.rotate(shape, -rot,
+                                                      origin=(0, 0))
+    return affinity.translate(g, x, y)
+
+
+def shape_overlap(a, b):
+    """(area, depth, rect) of two board-frame geometries' intersection.
+
+    `depth` is `overlap_thickness` of the intersection -- for two
+    axis-aligned rects exactly `min(dx, dy)`, the rect channel's own depth
+    -- and `rect` its bounding box, which is what the edge-class waiver
+    tests against the outline. (0.0, 0.0, None) when they do not overlap.
+    """
+    ix = a.intersection(b)
+    area = ix.area
+    if area <= EPS:
+        return 0.0, 0.0, None
+    return area, overlap_thickness(ix), tuple(ix.bounds)
+
+
+#: The precision (mm) `overlap_thickness` measures a non-rectangular region
+#: to: the last decimal `depth_mm` is rounded to. A rectangle is exact.
+THICKNESS_TOL_MM = 1e-4
+
+
+def _areal_parts(geom):
+    """The Polygon parts of any geometry: an intersection can be a Polygon, a
+    MultiPolygon, or a collection that also carries lines and points."""
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == 'Polygon':
+        return [geom] if geom.area > EPS else []
+    out = []
+    for g in getattr(geom, 'geoms', ()):
+        out.extend(_areal_parts(g))
+    return out
+
+
+def _inscribed_radius(poly) -> float:
+    """Radius of the largest circle inside `poly`, to `THICKNESS_TOL_MM`.
+    shapely 2.1 has `maximum_inscribed_circle`; before it, `polylabel` finds
+    the same centre (the pole of inaccessibility)."""
+    import shapely
+    mic = getattr(shapely, 'maximum_inscribed_circle', None)
+    if mic is not None:
+        return float(mic(poly, tolerance=THICKNESS_TOL_MM).length)
+    from shapely.ops import polylabel
+    return float(poly.boundary.distance(
+        polylabel(poly, tolerance=THICKNESS_TOL_MM)))
+
+
+def overlap_thickness(geom) -> float:
+    """How thick an overlap region is, in mm: twice the radius of the largest
+    circle it contains, over its thickest part.
+
+    For a rectangle that is its shorter side -- the rect channel's
+    `min(dx, dy)` -- and a rectangular region is measured exactly so, with
+    no search. The shorter side of the region's minimum ROTATED rectangle,
+    which this replaced, spans the whole region instead of its thickness: a
+    part tucked into a stepped courtyard's corner notch, grazing both arms
+    0.2 mm deep, read 2.2 mm and tripped the 0.3 mm blocking floor, and two
+    disjoint slivers read as one region as wide as the gap between them.
+    """
+    best = 0.0
+    for p in _areal_parts(geom):
+        mrr = p.minimum_rotated_rectangle
+        cs = list(mrr.exterior.coords) if hasattr(mrr, 'exterior') else []
+        if len(cs) < 4:
+            continue
+        short = min(math.hypot(cs[1][0] - cs[0][0], cs[1][1] - cs[0][1]),
+                    math.hypot(cs[2][0] - cs[1][0], cs[2][1] - cs[1][1]))
+        if abs(mrr.area - p.area) <= 1e-9 * max(1.0, mrr.area):
+            best = max(best, short)            # the region IS a rectangle
+        else:
+            best = max(best, min(short, 2.0 * _inscribed_radius(p)))
+    return best
+
+
 #: A body overlap at or above this fraction of the SMALLER body is a
 #: CONTAINMENT rather than a kiss. Corpus-calibrated on the 33 boards in
 #: kicad_files/, measured (not assumed), in the FAB currency:
@@ -201,7 +295,13 @@ def containment_frac(area, ra, rb):
     overlap is everything to a 0402 and nothing to a connector. Returns
     0.0..1.0, or None when either body has no area (nothing to be inside of).
     """
-    small = min(rect_area(ra), rect_area(rb))
+    return containment_frac_of_areas(area, rect_area(ra), rect_area(rb))
+
+
+def containment_frac_of_areas(area, area_a, area_b):
+    """`containment_frac` for bodies known by their AREAS (#1094: a drawn
+    outline is not a rect, and its bbox area over-states the body)."""
+    small = min(area_a, area_b)
     if small <= EPS:
         return None
     return round(min(1.0, area / small), 4)
@@ -827,6 +927,42 @@ class BoardOutlineGate:
         return (max(0.0, u[0] - rect[0]) + max(0.0, u[1] - rect[1])
                 + max(0.0, rect[2] - u[2]) + max(0.0, rect[3] - u[3]))
 
+    def rect_overrun_mm(self, rect) -> float:
+        """How far `rect` reaches past the outline, in mm (#1096): see
+        `points_overrun_mm`, over the rect's corners."""
+        x0, y0, x1, y1 = rect
+        return self.points_overrun_mm(((x0, y0), (x1, y0), (x1, y1),
+                                       (x0, y1)))
+
+    def points_overrun_mm(self, points) -> float:
+        """The largest distance from one of `points` that is off the board to
+        the outline, 0.0 when every one is on it (#1096).
+
+        A DISTANCE, unlike `rect_outside_amount`, which sums an overshoot
+        term per corner and per edge so that it can rank candidate poses: a
+        0402 wholly off the board read "36.8mm" there, and its farthest
+        copper is 7.84 mm out. Pass the vertices of a shape's true outline
+        (`check_pads.pad_outline_polygon`), not its bbox: a round pad's bbox
+        corner leaves a round board where the pad does not. A vertex test
+        cannot see copper bridging a notch with every vertex on the board;
+        that is the same blind spot `rect_outside_amount` has.
+        """
+        corners = tuple(points)
+        if not corners:
+            return 0.0
+        if not self.rings:
+            if self.bounds is None:
+                return 0.0
+            bx0, by0, bx1, by1 = self.bounds
+            return max(math.hypot(max(bx0 - x, 0.0, x - bx1),
+                                  max(by0 - y, 0.0, y - by1))
+                       for x, y in corners)
+        from check_drc import _point_on_board, _point_to_rings_distance
+        return max((_point_to_rings_distance(x, y, self.rings)
+                    for x, y in corners
+                    if not _point_on_board(x, y, self.outer, self.cutouts)),
+                   default=0.0)
+
     def rect_outside_amount(self, rect, exact: bool = True, edges=None,
                             skip_rings=None) -> float:
         """Magnitude of a rect's board-boundary violation; 0 iff fully legal.
@@ -945,6 +1081,12 @@ class GradedPart(NamedTuple):
     # pad bbox and a pair reported against a drawn housing are different
     # claims, and a reader could not tell them apart.
     source: str = ''
+    # #1094. The part's OWN-side occupancy as board-frame shapely geometry:
+    # the drawn courtyard outline united with its pads' copper, or the
+    # oriented occupancy box on the other rungs. `rect` bounds it and stays
+    # the broad phase; None (a generator's own record) means the pair is
+    # measured on the rects alone.
+    poly: object = None
 
     @property
     def sides(self) -> frozenset:
@@ -1093,6 +1235,72 @@ class BodyOverlapPair(NamedTuple):
     contained: bool = False
 
 
+def _pair_exact(a: GradedPart, b: GradedPart, s: str, ra, rb):
+    """(area, depth, overlap_rect, area_a, area_b) of a pair on shared side
+    `s`: on the drawn outlines where the parts carry them, else the rects.
+
+    A part's `poly` is used only on its OWN side; the far side of a
+    through-hole part is its drilled-pad box, which is a rect by definition.
+    """
+    pa = a.poly if (s == a.side and a.poly is not None) else None
+    pb = b.poly if (s == b.side and b.poly is not None) else None
+    if pa is None and pb is None:
+        ix = (max(ra[0], rb[0]), max(ra[1], rb[1]),
+              min(ra[2], rb[2]), min(ra[3], rb[3]))
+        return (rect_overlap_area(ra, rb), min(ix[2] - ix[0], ix[3] - ix[1]),
+                ix, rect_area(ra), rect_area(rb))
+    from shapely.geometry import box
+    ga = pa if pa is not None else box(*ra)
+    gb = pb if pb is not None else box(*rb)
+    area, depth, ix = shape_overlap(ga, gb)
+    return area, depth, ix, ga.area, gb.area
+
+
+def pair_overlap_area_exact(a: GradedPart, b: GradedPart) -> float:
+    """`pair_overlap_area` measured the way `body_overlap_pairs` measures it
+    (#1094): the rects as broad phase, the drawn outlines deciding.
+
+    For a GENERATOR that must not refuse what the checker accepts on the same
+    geometry -- the #1054 fixed-pose seating refused StickHub's declared
+    human poses at -135 degrees on the rects alone.
+    """
+    worst = 0.0
+    for s in (a.sides & b.sides):
+        ra = rect_on(s, a.side, a.rect, a.tht_rect)
+        rb = rect_on(s, b.side, b.rect, b.tht_rect)
+        if ra is None or rb is None or rect_overlap_area(ra, rb) <= EPS:
+            continue
+        worst = max(worst, _pair_exact(a, b, s, ra, rb)[0])
+    return worst
+
+
+def graded_part_at_pose(pcb_data, ref: str, pose, side: str, rect, tht_rect,
+                        has_tht: bool, pcb_file: Optional[str] = None,
+                        cache: Optional[dict] = None) -> GradedPart:
+    """A `GradedPart` for `ref` at a pose nothing has written yet, carrying
+    its drawn occupancy outline there (#1094). `cache` (any dict the caller
+    keeps) holds the one board read this needs across calls."""
+    if cache is None:
+        cache = {}
+    if 'bodies' not in cache:
+        try:
+            cache['bodies'] = _part_local_bounds_and_bodies(pcb_data, pcb_file)
+        except Exception:                                    # noqa: BLE001
+            cache['bodies'] = ({}, {})
+    lbs, bodies = cache['bodies']
+    lb = lbs.get(ref)
+    fp = (pcb_data.footprints or {}).get(ref)
+    poly = None
+    if lb is not None and fp is not None:
+        try:
+            poly = occupancy_shape(footprint_at_pose(fp, tuple(pose)), lb,
+                                   bodies.get(ref))
+        except Exception:                                    # noqa: BLE001
+            poly = None
+    return GradedPart(ref=ref, side=side, rect=rect, tht_rect=tht_rect,
+                      has_tht=has_tht, poly=poly)
+
+
 def body_overlap_pairs(parts: Sequence[GradedPart]) -> List[BodyOverlapPair]:
     """Per-PAIR side-aware courtyard intersections (kind='courtyard').
 
@@ -1108,28 +1316,29 @@ def body_overlap_pairs(parts: Sequence[GradedPart]) -> List[BodyOverlapPair]:
         for b in items[i + 1:]:
             worst = 0.0
             worst_side = ''
-            worst_rects = None
+            worst_geo = None
             for s in (a.sides & b.sides):
                 ra = rect_on(s, a.side, a.rect, a.tht_rect)
                 rb = rect_on(s, b.side, b.rect, b.tht_rect)
                 if ra is None or rb is None:
                     continue
-                area = rect_overlap_area(ra, rb)
+                if rect_overlap_area(ra, rb) <= EPS:
+                    continue
+                # The rects overlap: measure the pair on the drawn outlines
+                # (#1094), a rect standing in for a side that has none.
+                area, depth, ix, fa, fb = _pair_exact(a, b, s, ra, rb)
                 if area > worst:
                     worst = area
                     worst_side = s
-                    worst_rects = (ra, rb)
+                    worst_geo = (depth, ix, fa, fb)
             if worst > EPS:
-                ra, rb = worst_rects
-                ix = (max(ra[0], rb[0]), max(ra[1], rb[1]),
-                      min(ra[2], rb[2]), min(ra[3], rb[3]))
-                _dx, _dy = ix[2] - ix[0], ix[3] - ix[1]
+                depth, ix, fa, fb = worst_geo
                 out.append(BodyOverlapPair(
                     a=min(a.ref, b.ref), b=max(a.ref, b.ref),
                     kind='courtyard', area_mm2=round(worst, 4),
                     side=worst_side, waived=False, waiver='',
-                    contained_frac=containment_frac(worst, *worst_rects),
-                    depth_mm=round(max(0.0, min(_dx, _dy)), 4),
+                    contained_frac=containment_frac_of_areas(worst, fa, fb),
+                    depth_mm=round(max(0.0, depth), 4),
                     overlap_rect=tuple(round(v, 4) for v in ix)))
     out.sort(key=lambda p: (-p.area_mm2, p.a, p.b))
     return out
@@ -1206,6 +1415,14 @@ def part_local_bounds(pcb_data, pcb_file: Optional[str] = None
     A ref is ABSENT when even the pad fallback raised -- the same parts
     `graded_parts_from_file` skips, so both consumers see one universe.
     """
+    return _part_local_bounds_and_bodies(pcb_data, pcb_file)[0]
+
+
+def _part_local_bounds_and_bodies(pcb_data, pcb_file: Optional[str] = None):
+    """`part_local_bounds` plus the `board_bodies` it was read from, so
+    `graded_parts_from_file` gets the drawn outlines (#1094) without a second
+    file read. `LocalBounds` itself stays shape-free: its `_asdict()` feeds
+    JSON (floorplan's `measured`), which a shapely object would break."""
     from placement.body import (SOURCE_COURTYARD, SOURCE_NONE, board_bodies)
     from placement.utility import compute_footprint_bbox_local
 
@@ -1255,7 +1472,40 @@ def part_local_bounds(pcb_data, pcb_file: Optional[str] = None
                                has_tht=has_tht, synthetic=synthetic,
                                from_courtyard=(source == SOURCE_COURTYARD),
                                source=source, silk_rejected=silk_rejected)
-    return out
+    return out, bodies
+
+
+def occupancy_shape(fp, lb: 'LocalBounds', geom=None):
+    """A part's own-side occupancy as board-frame geometry at its file pose
+    (#1094): the drawn courtyard outline united with the part's pad copper
+    when the courtyard rung answered, else the occupancy box, oriented.
+
+    The pads are united pad by pad (`check_pads`' outline, the checker that
+    already measures pad copper) rather than as their bbox: a stepped QFP
+    courtyard hugs its pin rows, and the pad BBOX would put back the corners
+    the drawing cut away (StickHub U1<->Y1, 2.01 mm2, which KiCad does not
+    report).
+    """
+    from shapely.geometry import Polygon, box
+    from shapely.ops import unary_union
+    court = getattr(geom, 'court_shape_local', None) if geom else None
+    if court is None or lb.synthetic:
+        return place_local_shape(box(*lb.local), fp.x, fp.y, fp.rotation)
+    shape = place_local_shape(court, fp.x, fp.y, fp.rotation)
+    from check_pads import pad_outline_polygon
+    extra = []
+    for pad in (fp.pads or ()):
+        if getattr(pad, 'pad_type', '') == 'np_thru_hole':
+            continue
+        try:
+            pts = pad_outline_polygon(pad)
+        except Exception:                                    # noqa: BLE001
+            continue
+        if len(pts) >= 3:
+            pp = Polygon(pts)
+            if pp.is_valid and not shape.contains(pp):
+                extra.append(pp)
+    return unary_union([shape] + extra) if extra else shape
 
 
 def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
@@ -1267,7 +1517,8 @@ def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
     that needs the box at ANOTHER rotation does not grow a second copy of it.
     """
     out: List[GradedPart] = []
-    for ref, lb in part_local_bounds(pcb_data, pcb_file).items():
+    lbs, bodies = _part_local_bounds_and_bodies(pcb_data, pcb_file)
+    for ref, lb in lbs.items():
         fp = pcb_data.footprints[ref]
         rot = fp.rotation or 0.0
         lx0, ly0, lx1, ly1 = rotate_local_bounds(*lb.local, rot)
@@ -1278,13 +1529,88 @@ def graded_parts_from_file(pcb_data, pcb_file: Optional[str] = None
             tht = (fp.x + tx0, fp.y + ty0, fp.x + tx1, fp.y + ty1)
         out.append(GradedPart(ref=ref, side=lb.side, rect=rect,
                               tht_rect=tht, has_tht=lb.has_tht,
-                              synthetic=lb.synthetic, source=lb.source))
+                              synthetic=lb.synthetic, source=lb.source,
+                              poly=occupancy_shape(fp, lb, bodies.get(ref))))
     return out
+
+
+#: The waiver label a courtyard pair carries when the board's own project
+#: sets KiCad's `courtyards_overlap` to a non-error severity (#1095); the
+#: severity is appended, e.g. 'project_severity_ignore'.
+PROJECT_SEVERITY_WAIVER = 'project_severity_'
+
+
+#: The categories the pre-#856 `fix_kicad_drc_settings.severity_plan` set to
+#: ignore on every route step, as they were THEN. A literal on purpose: built
+#: from the live plan, a category added to it later would make every old
+#: tool-written ignore read as the author's again.
+LEGACY_SEVERITY_PLAN_IGNORES = (
+    'annular_width', 'courtyards_overlap', 'lib_footprint_issues',
+    'lib_footprint_mismatch', 'malformed_courtyard', 'npth_inside_courtyard',
+    'pth_inside_courtyard', 'solder_mask_bridge')
+
+
+def courtyard_severity_of(pcb_file: Optional[str]) -> Tuple[Optional[str],
+                                                          str]:
+    """`(severity, basis)`: the AUTHOR's `courtyards_overlap` severity for
+    the board, or None (no project, unset -- KiCad's default is error -- or
+    not the author's), and where it came from (#1095).
+
+    An 'ignore' is only trusted as the author's. This repository's own
+    tools wrote it too: before #856 every route step applied
+    `fix_kicad_drc_settings.severity_plan`, whose early form set
+    courtyards_overlap to ignore along with the rest of its categories, and
+    the writeback only ever loosens, so it carries down every later copy
+    (run outputs of that era carry it: glasgow_revC's routed loop outputs
+    read 0 courtyard-blocking pairs under it and 24-25 without). So:
+
+    - `kicad_routing_tools.saved_severities.courtyards_overlap` exists: a
+      current tool changed the value and kept the author's; that is the
+      answer ('saved: author's value').
+    - the project ignored EVERY category the legacy plan ignored BEFORE any
+      current tool touched it: tool written, graded at error ('legacy
+      severity plan'). "Before" is each category's `saved_severities`
+      record where it has one, else its value. The pre-#856 writer never
+      wrote that record (it did not exist until #856), and a current
+      `--relax-severities` records every category it changes -- so an
+      author's own `ignore` followed by a relax, which ignores the other
+      seven, reads as the author's, while a legacy project a current tool
+      later touched still reads as legacy (its categories were already at
+      ignore, so nothing was recorded for them).
+    - otherwise the project's own value ('project').
+    """
+    if not pcb_file:
+        return None, 'no board file'
+    import json as _json
+    pro = os.path.splitext(pcb_file)[0] + '.kicad_pro'
+    try:
+        with open(pro, encoding='utf-8') as fh:
+            doc = _json.load(fh)
+    except (OSError, ValueError):
+        return None, 'no project'
+    sev = (((doc.get('board') or {}).get('design_settings') or {})
+           .get('rule_severities') or {})
+    saved_all = ((doc.get('kicad_routing_tools') or {})
+                 .get('saved_severities') or {})
+    saved = saved_all.get('courtyards_overlap')
+    if saved is not None:
+        return saved, "saved: the author's value, kept when a tool changed it"
+    value = sev.get('courtyards_overlap')
+    if value == 'ignore':
+        legacy = LEGACY_SEVERITY_PLAN_IGNORES
+        if all(saved_all.get(c, sev.get(c)) == 'ignore' for c in legacy):
+            return None, ("legacy severity plan: the project ignores all of "
+                          + ', '.join(sorted(legacy)) + ", which this "
+                          "repo's pre-#856 route steps wrote, so the ignore "
+                          "is not taken as the author's")
+    return value, 'project'
 
 
 def grade_body_overlap(pcb_data, clearance: float,
                        intent_waivers: Sequence[Sequence[str]] = (),
-                       pcb_file: Optional[str] = None) -> Dict[str, object]:
+                       pcb_file: Optional[str] = None,
+                       courtyard_severity: Optional[str] = 'auto'
+                       ) -> Dict[str, object]:
     """Board-level ASSEMBLY audit at the file's own poses.
 
     Returns {'blocking': int, 'advisory': int, 'waived': int,
@@ -1294,8 +1620,33 @@ def grade_body_overlap(pcb_data, clearance: float,
     courtyard pairs -- fix targets for the placement loop, dispositioned by
     the boundary verifier, never a gate by themselves (see the module
     comment's corpus census for why).
+
+    `courtyard_severity` (#1095) is KiCad's `courtyards_overlap` severity to
+    grade the COURTYARD channel at: 'auto' reads the board's own project,
+    None grades at error whatever the project says (the OFF arm). At
+    'ignore' every courtyard pair the intent does not already waive carries
+    `PROJECT_SEVERITY_WAIVER + 'ignore'` and never gates: KiCad runs no
+    courtyard check at all then, and reports none of them.
+
+    'warning' is graded as error, deliberately. KiCad still REPORTS a
+    warning, and `fix_kicad_drc_settings --relax-severities` writes exactly
+    that demotion into a project on the promise that check_assembly stays
+    the arbiter -- honouring it would switch the courtyard gate off on every
+    board that tool ever relaxed.
+
+    The fab/containment, pad and locked-contact channels are NOT KiCad's
+    courtyard rule and are graded as before: a severity is the board's word
+    about courtyards, not about two bodies in one place.
     """
     from placement.part_class import classify_part
+
+    if courtyard_severity == 'auto':
+        _cy_sev, _cy_basis = courtyard_severity_of(
+            pcb_file or getattr(pcb_data, 'source_path', None))
+    else:
+        _cy_sev, _cy_basis = courtyard_severity, 'caller'
+    _cy_waiver = (PROJECT_SEVERITY_WAIVER + _cy_sev
+                  if _cy_sev == 'ignore' else '')
 
     fps = pcb_data.footprints or {}
     waiver_sets = {frozenset(p) for p in intent_waivers if len(p) == 2}
@@ -1384,6 +1735,10 @@ def grade_body_overlap(pcb_data, clearance: float,
     # -- courtyard channel (advisory + the run-23 blocking policy below) ------
     for p in body_overlap_pairs(_graded):
         waiver = _waiver_for(p.a, p.b)
+        # #1095: the board's own severity outranks every inferred class
+        # label, and only an authored intent waiver outranks it.
+        if _cy_waiver and waiver != 'intent_declared':
+            waiver = _cy_waiver
         pairs.append(p._replace(waived=bool(waiver), waiver=waiver))
 
     # -- DRAWN BODY channel (advisory) ----------------------------------------
@@ -1415,7 +1770,14 @@ def grade_body_overlap(pcb_data, clearance: float,
             rot = fp.rotation or 0.0
             x0, y0, x1, y1 = rotate_local_bounds(*lb, rot)
             _rect = (fp.x + x0, fp.y + y0, fp.x + x1, fp.y + y1)
-            fab_parts.append((ref, own, _rect))
+            # #1094: the drawn .Fab outline at the pose, when the fab rung
+            # answered; the rect is only its broad phase. A silk-rung body is
+            # a box by construction (silk U pads) and is measured oriented.
+            _drawn = getattr(geom, 'drawn_shape_local', None)
+            from shapely.geometry import box as _box
+            _shape = place_local_shape(_drawn if _drawn is not None
+                                       else _box(*lb), fp.x, fp.y, rot)
+            fab_parts.append((ref, own, _rect, _shape))
             # #896 seam input. The drilled-pad box rides along so the seam
             # obeys the same shared-side rule the graders use: a B-side part
             # and an F-side part have no seam at all unless a barrel makes
@@ -1429,23 +1791,26 @@ def grade_body_overlap(pcb_data, clearance: float,
                     _tht = (fp.x + tx0, fp.y + ty0, fp.x + tx1, fp.y + ty1)
             seam_parts.append((ref, sides_occupied(own, _has_tht), own,
                                _rect, _tht, body_sources[ref]))
-        for i, (ra, sa, rca) in enumerate(fab_parts):
-            for rb, sb, rcb in fab_parts[i + 1:]:
+        for i, (ra, sa, rca, sha) in enumerate(fab_parts):
+            for rb, sb, rcb, shb in fab_parts[i + 1:]:
                 if sa != sb:
                     continue
-                ov = rect_overlap_area(rca, rcb)
+                if rect_overlap_area(rca, rcb) <= EPS:
+                    continue
+                # #1094: the rects overlap; the drawn bodies decide. U1 at
+                # -135 degrees on StickHub "contained" six passives on the
+                # rects, which overlap its drawn body by 0.0 mm2.
+                ov, _depth, _ix = shape_overlap(sha, shb)
                 if ov > EPS:
                     waiver = _waiver_for(ra, rb)
-                    _cf = containment_frac(ov, rca, rcb)
-                    _dx = min(rca[2], rcb[2]) - max(rca[0], rcb[0])
-                    _dy = min(rca[3], rcb[3]) - max(rca[1], rcb[1])
+                    _cf = containment_frac_of_areas(ov, sha.area, shb.area)
                     pairs.append(BodyOverlapPair(
                         a=min(ra, rb), b=max(ra, rb), kind='fab',
                         area_mm2=round(ov, 4), side=sa,
                         waived=bool(waiver), waiver=waiver,
                         contained_frac=_cf, contained=_cf is not None
                         and _cf >= CONTAINMENT_FRAC,
-                        depth_mm=round(max(0.0, min(_dx, _dy)), 4)))
+                        depth_mm=round(max(0.0, _depth), 4)))
 
     # -- pad_intersection channel (never waivable) ----------------------------
     # AABB broad phase in the gate currency, then exact re-verification at
@@ -1661,6 +2026,11 @@ def grade_body_overlap(pcb_data, clearance: float,
         # human decision about this exact pair.
         if p.waiver == 'intent_declared':
             return True
+        # #1095: the board declared KiCad's courtyard rule non-blocking. Its
+        # own DRC reports none of these pairs, locked or not, so neither do
+        # we; the pair stays in the census with its label.
+        if p.waiver.startswith(PROJECT_SEVERITY_WAIVER):
+            return True
         # No CLASS waiver blesses contact with a KiCad-LOCKED part (the
         # run-8 E6 principle, extended to the courtyard channel): a locked
         # pose is a decision somebody made, and a class label chosen for
@@ -1708,7 +2078,10 @@ def grade_body_overlap(pcb_data, clearance: float,
         and not _silk_occupancy_pair(p)]
     from placement.body import tightest_body_seam as _tbs
     _seam = _tbs(seam_parts)
-    return {'blocking': len(blocking),
+    return {'courtyard_severity': _cy_sev,
+            'courtyard_severity_basis': _cy_basis,
+            'courtyard_severity_waiver': _cy_waiver,
+            'blocking': len(blocking),
             'advisory': len(advisory),
             'waived': sum(1 for p in pairs if p.waived),
             'pairs': pairs,
@@ -2310,7 +2683,7 @@ class PartPads:
     keep-clear declaration push a part off the board outline.
     """
 
-    __slots__ = ('ref', 'side', 'has_tht', 'seed_rot', 'pads_local',
+    __slots__ = ('ref', 'side', 'has_tht', 'seed_rot', 'pads_local', '_pad_tilt',
                  'holes_local', 'holes_extent', 'n_pads', '_pad_cache',
                  '_hole_cache', '_keepout_cache', '_ext_cache', 'pad_floors',
                  'max_floor', 'clearance', 'hole_reach', 'holes_req',
@@ -2335,6 +2708,13 @@ class PartPads:
         # without one.
         self.clearance = float(clearance)
         self.pads_local = []    # (off_x, off_y, half_x, half_y, net_id, pside)
+        # #1094: each pad's own box and tilt, parallel to `pads_local`, for
+        # the off-lattice turns in `_rotated`. `(hx, hy, tilt)`: the seed
+        # AABB with tilt 0 for a pad square to the board, else the pad's
+        # size and residual angle -- growing the seed AABB of an already
+        # tilted pad again double-inflates it (a 0.4 x 1.2 pad seeded at 45
+        # read 0.8 x 0.8 half-extents at 0 and at 90).
+        self._pad_tilt = []
         self.holes_local = []   # (off_x, off_y, radius) -- NPTH keepouts, inflated
         self.holes_extent = []  # ...the same holes at their EXTENT radius (#730)
         self.holes_req = []     # ...and the REQUIREMENT each one resolved to (#761)
@@ -2480,6 +2860,12 @@ class PartPads:
             phx, phy = pad_half_extents(p)
             self.pads_local.append((p.global_x - fp.x, p.global_y - fp.y,
                                     phx, phy, p.net_id, pside))
+            _tilt = float(getattr(p, 'rect_rotation', 0.0) or 0.0)
+            if abs(_tilt - 90.0 * round(_tilt / 90.0)) < 1e-6:
+                self._pad_tilt.append((phx, phy, 0.0))
+            else:
+                self._pad_tilt.append((p.size_x / 2.0, p.size_y / 2.0,
+                                       _tilt))
             if model is not None:
                 floor = model.pad_floor(p)
                 self.pad_floors.append(floor)
@@ -2542,11 +2928,30 @@ class PartPads:
             rad = math.radians(-key)
             c, s = math.cos(rad), math.sin(rad)
             swap = round(key) % 180 == 90
+            # #1094: off a 90-degree step the pad box is not swapped but
+            # TURNED, and its axis-aligned half-extents grow to
+            # hx|c| + hy|s|. Swapping only at 90/270 left a 45-degree pad at
+            # its seed-pose extents -- smaller than the copper, so this gate
+            # (which may falsely reject, never falsely accept) accepted pad
+            # overlaps the written board then failed. The orthogonal steps
+            # keep the exact swap, so they stay bit-identical.
+            ortho = abs(key - 90.0 * round(key / 90.0)) < 1e-9
             cache = []
-            for ox, oy, hx, hy, net, pside in self.pads_local:
+            for i, (ox, oy, hx, hy, net, pside) in enumerate(self.pads_local):
                 rx = ox * c - oy * s
                 ry = ox * s + oy * c
-                HX, HY = (hy, hx) if swap else (hx, hy)
+                if ortho:
+                    HX, HY = (hy, hx) if swap else (hx, hy)
+                else:
+                    # The pad's own box turned to its new tilt, then boxed:
+                    # a footprint turn of `key` turns each pad by -key in
+                    # this frame (the sign `rotate_local_bounds` uses).
+                    px, py, tilt = (self._pad_tilt[i]
+                                    if i < len(self._pad_tilt)
+                                    else (hx, hy, 0.0))
+                    t = math.radians(tilt - key)
+                    tc, ts = abs(math.cos(t)), abs(math.sin(t))
+                    HX, HY = px * tc + py * ts, px * ts + py * tc
                 cache.append((rx, ry, HX, HY, net, pside))
             self._pad_cache[key] = cache
         return cache
@@ -3535,6 +3940,51 @@ def footprint_at_pose(fp, pose):
     return out
 
 
+def _on_board(gate, x, y) -> bool:
+    """Is (x, y) on the board: the real rings when the gate has them, else
+    the bounds (a plain rectangular outline parses to no rings at all)."""
+    if gate.rings:
+        from check_drc import _point_on_board
+        return _point_on_board(x, y, gate.outer, gate.cutouts)
+    b = gate.bounds
+    return b is not None and b[0] <= x <= b[2] and b[1] <= y <= b[3]
+
+
+def pad_copper_overrun_mm(pads, gate) -> float:
+    """How far `pads`' copper reaches past the outline, in mm: THE gating
+    measure for pad copper off the board (#1096), shared by check_assembly
+    (via `grade_pad_legality`) and render_placement's `--gate`.
+
+    Each pad on its true outline (`check_pads.pad_outline_polygon`, arcs
+    sampled), so a round pad's bbox corner does not leave a curved board.
+    A CASTELLATED pad is exempt only while it STRADDLES the outline -- some
+    of its copper on the board, as a half-hole on a module edge is; one
+    wholly off the board counts like any other (a module parked off the
+    board is not on its edge). NPTH pads carry no copper. A pad whose
+    outline cannot be computed falls back to its rect, never to "clean".
+    """
+    from check_pads import pad_outline_polygon
+    over = 0.0
+    for p in pads or ():
+        if getattr(p, 'pad_type', '') == 'np_thru_hole':
+            continue
+        try:
+            pts = pad_outline_polygon(p)
+        except Exception:                                    # noqa: BLE001
+            pts = []
+        if len(pts) < 3:
+            hx, hy = pad_half_extents(p)
+            pts = [(p.global_x - hx, p.global_y - hy),
+                   (p.global_x + hx, p.global_y - hy),
+                   (p.global_x + hx, p.global_y + hy),
+                   (p.global_x - hx, p.global_y + hy)]
+        if getattr(p, 'castellated', False) and any(
+                _on_board(gate, x, y) for x, y in pts):
+            continue
+        over = max(over, gate.points_overrun_mm(pts))
+    return over
+
+
 class EdgeCopperContext:
     """`grade_pad_edge_clearance` with its per-board constants read once (#975).
 
@@ -3811,7 +4261,8 @@ def grade_pad_edge_clearance(pcb_data, required: float, pcb_file=None) -> Dict:
 def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                        edge_margin: Optional[float] = None,
                        worst_n: int = 10,
-                       pcb_file: str = None) -> Dict[str, object]:
+                       pcb_file: str = None,
+                       declared_keepouts=()) -> Dict[str, object]:
     """Board-level pad/hole legality audit at the FILE's own poses.
 
     AABB broad phase over all cross-footprint pad pairs; with `exact` (the
@@ -3925,6 +4376,11 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
     pad_shortfall = 0.0
     hole_conflicts = 0
     worst: List[Tuple[str, str, float]] = []
+    # #1100: WHICH pairs conflict, uncapped (`worst` is capped at `worst_n`
+    # and the hole channel records none), so place_pose can refuse a move
+    # that makes a NEW pair while the counts merely tie.
+    pad_pairs: List[List[str]] = []
+    hole_pairs: List[List[str]] = []
     required: List[list] = []
     seen_pairs = set()
     for ref in sorted(parts):
@@ -3982,6 +4438,7 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                 pad_conflicts += 1
                 pad_shortfall += pair_mm
                 worst.append((key[0], key[1], round(pair_mm, 4)))
+                pad_pairs.append([key[0], key[1]])
                 if pair_source:
                     required.append([key[0], key[1],
                                      round(pair_required, 4), pair_source])
@@ -4009,6 +4466,7 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                         hole_req = req
             if hole_pen > EPS:
                 hole_conflicts += 1
+                hole_pairs.append([key[0], key[1]])
                 # Above the board-wide clearance only, so a plain hole at the
                 # flat scalar stays quiet. NOT literally the pad channel's
                 # bar, which is `pair_source != ''` and therefore sits at
@@ -4036,6 +4494,7 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
     #: The PER-PAD census beside the AABB one (#937). See its basis string
     #: below for why both travel and neither replaces the other.
     oob_copper_refs = []
+    oob_copper_overrun: Dict[str, float] = {}
     board_info = getattr(pcb_data, 'board_info', None)
     if board_info is not None and getattr(board_info, 'board_bounds', None):
         gate = BoardOutlineGate(board_info, clearance)
@@ -4090,8 +4549,33 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                        for r in rects), default=0.0)
             if amt > EPS:
                 oob_copper_refs.append([ref, round(amt, 4)])
+                # #1096: the DISTANCE past the outline, on each pad's TRUE
+                # outline and without a castellated pad that straddles the
+                # edge (rp2350's Teensy U8: 33 half-holes 0.8 mm past it, as
+                # a castellated module is) -- `pad_copper_overrun_mm`, which
+                # render_placement's gate calls too.
+                # The magnitude above keeps its rect currency (render_
+                # placement reads the same list, and ranking needs no
+                # exemption); a part it lists with a 0.0 here is disclosed,
+                # not gated.
+                oob_copper_overrun[ref] = round(pad_copper_overrun_mm(
+                    pads_by_ref.get(ref, ()), pad_gate), 4)
     # the resolved per-pad edge requirement (#986 moved it onto the context)
     graphic = _graphic_copper_channel(pcb_data, edge_ctx.required)
+    # #1098: parts inside a PCB-edge plug's mating region, on either face.
+    # `declared_keepouts` is the intent's `keepouts`: a declared
+    # `mating:<ref>` replaces the derived region here as it does in the
+    # seeder and the floorplan grade, so the checker grades the rect the
+    # generator was held to.
+    mating_error = None
+    try:
+        from .floorplan import mating_keepout_findings
+        mating = mating_keepout_findings(pcb_data, pcb_file,
+                                         declared=declared_keepouts)
+    except Exception as exc:                                 # noqa: BLE001
+        # Not "clean": an unmeasured tongue is reported, and check_assembly
+        # fails closed on it (#1098 review).
+        mating, mating_error = [], f"{type(exc).__name__}: {exc}"
     # #1031: board-level rule-area keep-outs, the third pad-copper channel.
     keepout = keepout_pad_findings(
         RuleAreaKeepouts.for_board(pcb_data, clearance, pcb_file), parts,
@@ -4114,13 +4598,39 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             # checklist.a_off_outline.pad_copper") -- carried here too so a
             # consumer holding only the assembly report can act on it without
             # also rendering, and so the two numbers can be read side by side.
+            # #1098: a part on a PCB-edge plug's mating region (a USB tongue
+            # that has to enter a socket), either face. place_pose gates on
+            # the count and the summed overlap area.
+            'pad_conflict_pairs': sorted(pad_pairs),
+            'hole_conflict_pairs': sorted(hole_pairs),
+            'mating_keepout_count': len({m['ref'] for m in mating}),
+            'mating_keepout_amount': round(sum(m['area_mm2']
+                                               for m in mating), 4),
+            'mating_keepout_refs': mating,
+            'mating_keepout_error': mating_error,
             'oob_pad_copper_count': len(oob_copper_refs),
             'oob_pad_copper_refs': sorted(oob_copper_refs),
+            # #1096. `oob_pad_copper_refs` carries rect_outside_amount's
+            # MAGNITUDE (a per-corner and per-edge sum, for ranking); this is
+            # how far each part's copper actually reaches past the outline,
+            # on the true pad outlines, castellated pads left out.
+            'oob_pad_copper_overrun_mm': dict(sorted(
+                oob_copper_overrun.items())),
+            # ...and the parts that GATE: a real distance past the outline.
+            # check_assembly's verdict and board_score read this, never the
+            # magnitude list, which also carries edge-by-design copper.
+            'oob_pad_copper_gating_refs': sorted(
+                r for r, d in oob_copper_overrun.items() if d > EPS),
+            'oob_pad_copper_gating_count': sum(
+                1 for d in oob_copper_overrun.values() if d > EPS),
             'oob_pad_copper_basis': ('per-PAD copper rects against the real '
-                                     'outline at margin 0 (the authoritative '
-                                     'measure; the same question '
-                                     'render_placement answers in '
-                                     'checklist.a_off_outline.pad_copper)'),
+                                     'outline at margin 0, a ranking '
+                                     'MAGNITUDE (render_placement\'s '
+                                     'checklist.a_off_outline.pad_copper). '
+                                     'What gates is oob_pad_copper_gating_'
+                                     'refs: pad_copper_overrun_mm, on true '
+                                     'pad outlines with an edge-straddling '
+                                     'castellated pad exempt'),
             # WHICH QUANTITY THIS IS. Three tools print "pad copper
             # off-board" for three different measurements. This one is the
             # part's pad AABB against an outline inflated by the GRADING

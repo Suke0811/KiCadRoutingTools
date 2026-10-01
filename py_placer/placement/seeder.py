@@ -424,6 +424,11 @@ def _evict_candidates(state, ref: str, tx: float, ty: float,
         if other == ref or other not in state.parts:
             continue
         op = state.parts[other]
+        # #1101: a part on the OTHER face cannot be in this one's way unless
+        # one of them is drilled; the census named StickHub's back-side U1,
+        # C23, C27 as blockers of a front-side cap.
+        if not (part.sides & op.sides):
+            continue
         orect = op.rect(op.x, op.y, op.rot)
         if (orect[2] + clr < bx0 or orect[0] - clr > bx1
                 or orect[3] + clr < by0 or orect[1] - clr > by1):
@@ -509,6 +514,10 @@ def count_legal_poses(state, ref: str, tx: float, ty: float,
     part = state.parts[ref]
     rots = list(rotations) if rotations is not None \
         else [part.rot] + [(part.rot + d) % 360 for d in (90.0, 180.0, 270.0)]
+    if rotations is None and getattr(state, 'diagonal_fallback', False):
+        # #1099: `_try_place`'s fallback pass, so a census of legal poses
+        # counts what the seat search can really reach.
+        rots += [(part.rot + d) % 360 for d in (45.0, 135.0, 225.0, 315.0)]
     in_zone, _anchor = zone_gate(part, constraint, tol)
     if constraint is None:
         offsets = _offsets(radius, step)
@@ -1266,96 +1275,111 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
     if anchor_zone and info is not None:
         info['anchor_zone'] = True
 
+    # #1099: PREFER, THEN FALL BACK. The 90-degree lattice (or the
+    # declared ladder) is searched at every clearance step first, exactly
+    # as before; only when it seats NOTHING anywhere does a second pass try
+    # the diagonals -- so a part that fits orthogonally lands where it
+    # always did, and the diagonals can only turn an unseated part into a
+    # seated one. A declared ladder is the author's decision and gets no
+    # fallback. StickHub's human packs 39 parts at +-45/+-135 degrees
+    # around its diagonal QFP; the seeder could not produce one.
+    _passes = [rotations]
+    if rotations is None and getattr(state, 'diagonal_fallback', False):
+        _passes.append([(part.rot + d) % 360
+                        for d in (45.0, 135.0, 225.0, 315.0)])
     full = state.clearance
     try:
-        for clr in seat_clearances(full):
-            _set_seat_clearance(state, clr)
-            # #893. `rotations` is the DECLARED ladder when an intent gave
-            # this ref one -- a single angle for `blocks[].rotation`, the
-            # author's set for `rotation_candidates` -- in the author's order,
-            # because this search keeps the FIRST pose that fits and a
-            # reordered ladder changes which angle wins. None keeps the
-            # fallback ladder every caller had before #893, byte for byte.
-            _ladder_rots = (list(rotations) if rotations is not None
-                            else [part.rot] + [(part.rot + d) % 360
-                                               for d in (90.0, 180.0, 270.0)])
-            # #893 (PR932 form, VERBATIM -- see the commit message).
-            for _r in _ladder_rots:
-                if _r not in part.bounds_by_rot:
-                    from placement.legality import rotate_local_bounds
-                    part.bounds_by_rot[_r] = rotate_local_bounds(
-                        *part.bounds_by_rot[0.0], _r)
-                if (part.tht_by_rot is not None
-                        and _r not in part.tht_by_rot):
-                    from placement.legality import rotate_local_bounds
-                    part.tht_by_rot[_r] = rotate_local_bounds(
-                        *part.tht_by_rot[0.0], _r)
-            # OPT-IN (`seed_from_intent(rotate_by_facing=True)`): let every
-            # angle of the ladder find its own first fit, and keep the pose
-            # with the fewest connected pads on a row facing the outline
-            # with nothing beyond; a tie keeps #893's author order, and with
-            # the preference unset the search below is the one it always
-            # was. Why not a cost: this search has none (it keeps the first
-            # pose that fits), and the quench that follows it runs with its
-            # facing terms at zero (measured to fail a 4-board A/B, #932).
-            # MEASURED (tests/test_placement_ab.py, the facing-seed rows):
-            # the count it ranks by falls on two boards of three, and a
-            # guard rises on both of them (pin-order inversions on both;
-            # crossings and wire length on one), so it is REJECTED as a
-            # default and stays opt-in for a caller who has read that
-            # trade. The numbers are in the baseline file.
-            _pref = getattr(state, 'rotation_prefer', None)
+        for _pass_i, _pass_rots in enumerate(_passes):
+            if _pass_i and info is not None:
+                info['diagonal_fallback'] = True
+            for clr in seat_clearances(full):
+                _set_seat_clearance(state, clr)
+                # #893. `rotations` is the DECLARED ladder when an intent gave
+                # this ref one -- a single angle for `blocks[].rotation`, the
+                # author's set for `rotation_candidates` -- in the author's order,
+                # because this search keeps the FIRST pose that fits and a
+                # reordered ladder changes which angle wins. None keeps the
+                # fallback ladder every caller had before #893, byte for byte.
+                _ladder_rots = (list(_pass_rots) if _pass_rots is not None
+                                else [part.rot] + [(part.rot + d) % 360
+                                                   for d in (90.0, 180.0, 270.0)])
+                # #893 (PR932 form, VERBATIM -- see the commit message).
+                for _r in _ladder_rots:
+                    if _r not in part.bounds_by_rot:
+                        from placement.legality import rotate_local_bounds
+                        part.bounds_by_rot[_r] = rotate_local_bounds(
+                            *part.bounds_by_rot[0.0], _r)
+                    if (part.tht_by_rot is not None
+                            and _r not in part.tht_by_rot):
+                        from placement.legality import rotate_local_bounds
+                        part.tht_by_rot[_r] = rotate_local_bounds(
+                            *part.tht_by_rot[0.0], _r)
+                # OPT-IN (`seed_from_intent(rotate_by_facing=True)`): let every
+                # angle of the ladder find its own first fit, and keep the pose
+                # with the fewest connected pads on a row facing the outline
+                # with nothing beyond; a tie keeps #893's author order, and with
+                # the preference unset the search below is the one it always
+                # was. Why not a cost: this search has none (it keeps the first
+                # pose that fits), and the quench that follows it runs with its
+                # facing terms at zero (measured to fail a 4-board A/B, #932).
+                # MEASURED (tests/test_placement_ab.py, the facing-seed rows):
+                # the count it ranks by falls on two boards of three, and a
+                # guard rises on both of them (pin-order inversions on both;
+                # crossings and wire length on one), so it is REJECTED as a
+                # default and stays opt-in for a caller who has read that
+                # trade. The numbers are in the baseline file.
+                _pref = getattr(state, 'rotation_prefer', None)
 
-            def _first_fit(rot):
-                """The first legal (x, y) for `rot` in the order
-                `seat_candidates` yields, or None. A closure so the
-                preferred-rotation path below can ask it once per angle; the
-                ORDER lives in `seat_candidates`, which the row seat
-                (`_seat_block`, #1051) walks too."""
-                # The rings, then (unconstrained and uncapped only) the
-                # whole-board sweep -- PER ANGLE. The sweep is part of "first
-                # fit": the first lift of the rings into a closure left it
-                # outside the OFF path, and splitflap's default seed went from
-                # 0 to 6 unseated parts. `_in_zone` is trivially true on the
-                # sweep, which is only reached with no constraint.
-                for x, y in seat_candidates(state, tx, ty, max_disp=max_disp,
-                                            sweep=constraint is None):
-                    if not _in_zone(x, y, rot):
-                        continue
-                    if _ok(x, y, rot):
-                        return x, y
-                return None
+                def _first_fit(rot):
+                    """The first legal (x, y) for `rot` in the order
+                    `seat_candidates` yields, or None. A closure so the
+                    preferred-rotation path below can ask it once per angle; the
+                    ORDER lives in `seat_candidates`, which the row seat
+                    (`_seat_block`, #1051) walks too."""
+                    # The rings, then (unconstrained and uncapped only) the
+                    # whole-board sweep -- PER ANGLE. The sweep is part of "first
+                    # fit": the first lift of the rings into a closure left it
+                    # outside the OFF path, and splitflap's default seed went from
+                    # 0 to 6 unseated parts. `_in_zone` is trivially true on the
+                    # sweep, which is only reached with no constraint.
+                    for x, y in seat_candidates(state, tx, ty, max_disp=max_disp,
+                                                sweep=constraint is None):
+                        if not _in_zone(x, y, rot):
+                            continue
+                        if _ok(x, y, rot):
+                            return x, y
+                    return None
 
-            if _pref is None or len(_ladder_rots) < 2:
-                # The search as it has always been: the first angle of the
-                # ladder that fits anywhere (rings, then the sweep) wins.
-                for rot in _ladder_rots:
-                    hit = _first_fit(rot)
-                    if hit is not None:
-                        state.apply_move(ref, hit[0], hit[1], rot)
+                if _pref is None or len(_ladder_rots) < 2:
+                    # The search as it has always been: the first angle of the
+                    # ladder that fits anywhere (rings, then the sweep) wins.
+                    for rot in _ladder_rots:
+                        hit = _first_fit(rot)
+                        if hit is not None:
+                            state.apply_move(ref, hit[0], hit[1], rot)
+                            return clr
+                else:
+                    # OPT-IN (`seed_from_intent(rotate_by_facing=True)`): every
+                    # angle finds ITS OWN first fit, and the pose with the fewest
+                    # connected pads on a row facing the outline wins; ties keep
+                    # #893's ladder order. Ranked at the pose each angle actually
+                    # takes, not at the target: the first form of this ranked the
+                    # ladder at (tx, ty) and then let the search seat the winner
+                    # anywhere -- measured on esp_prog, the count it was chosen
+                    # for did not move (3 -> 3) while crossings, hpwl and
+                    # inversions all worsened. Costs up to four searches per part
+                    # instead of one.
+                    best = None
+                    for i, rot in enumerate(_ladder_rots):
+                        hit = _first_fit(rot)
+                        if hit is None:
+                            continue
+                        key = (_pref(ref, hit[0], hit[1], rot, exclude), i)
+                        if best is None or key < best[0]:
+                            best = (key, hit[0], hit[1], rot)
+                    if best is not None:
+                        state.apply_move(ref, best[1], best[2], best[3])
                         return clr
-            else:
-                # OPT-IN (`seed_from_intent(rotate_by_facing=True)`): every
-                # angle finds ITS OWN first fit, and the pose with the fewest
-                # connected pads on a row facing the outline wins; ties keep
-                # #893's ladder order. Ranked at the pose each angle actually
-                # takes, not at the target: the first form of this ranked the
-                # ladder at (tx, ty) and then let the search seat the winner
-                # anywhere -- measured on esp_prog, the count it was chosen
-                # for did not move (3 -> 3) while crossings, hpwl and
-                # inversions all worsened. Costs up to four searches per part
-                # instead of one.
-                best = None
-                for i, rot in enumerate(_ladder_rots):
-                    hit = _first_fit(rot)
-                    if hit is None:
-                        continue
-                    key = (_pref(ref, hit[0], hit[1], rot, exclude), i)
-                    if best is None or key < best[0]:
-                        best = (key, hit[0], hit[1], rot)
-                if best is not None:
-                    state.apply_move(ref, best[1], best[2], best[3])
-                    return clr
     finally:
         _set_seat_clearance(state, full)
     return None
@@ -3474,14 +3498,31 @@ def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
     """`(area mm^2, w, h)` of the courtyard overlap of `a` at `pose_a` with
     `b` at `pose_b`. The VERDICT is `legality.pair_overlap_area` -- the
     side-aware measure `legality_metrics`' `overlap_area` and the seeder's
-    `_overlap_at` use -- called, not re-derived; `w` x `h` is the courtyard
-    rects' intersection, for the refusal's text only."""
-    from .legality import pair_overlap_area
+    `_overlap_at` use -- called, not re-derived, and where those rects
+    overlap, `legality.pair_overlap_area_exact` on the drawn outlines, the
+    measure `check_assembly` grades the seated pose with (#1094: StickHub's
+    declared -135 degree human poses were refused on rects alone). `w` x `h`
+    is the courtyard rects' intersection, for the refusal's text only."""
+    from .legality import (graded_part_at_pose, pair_overlap_area,
+                           pair_overlap_area_exact)
+    if getattr(state, 'courtyards_ignored', False):
+        # #1101: the project waives KiCad's courtyard rule, so a declared
+        # pose is not refused for one (its drill holes still are, below).
+        return 0.0, 0.0, 0.0
     pa, pb = state.parts[a], state.parts[b]
     ra, ta = pa.rect(*pose_a), pa.tht_rect(*pose_a)
     rb, tb = pb.rect(*pose_b), pb.tht_rect(*pose_b)
     area = pair_overlap_area(pa.sides, pa.side, ra, ta,
                              pb.sides, pb.side, rb, tb)
+    if area > FIXED_OVERLAP_EPS_MM2:
+        cache = state.__dict__.setdefault('_exact_overlap_cache', {})
+        pcb_file = getattr(state, 'pcb_file', None)
+        ga = graded_part_at_pose(state.pcb_data, a, pose_a, pa.side, ra, ta,
+                                 ta is not None, pcb_file, cache)
+        gb = graded_part_at_pose(state.pcb_data, b, pose_b, pb.side, rb, tb,
+                                 tb is not None, pcb_file, cache)
+        if ga.poly is not None or gb.poly is not None:
+            area = pair_overlap_area_exact(ga, gb)
     w = max(0.0, min(ra[2], rb[2]) - max(ra[0], rb[0]))
     h = max(0.0, min(ra[3], rb[3]) - max(ra[1], rb[1]))
     return area, w, h
@@ -3519,13 +3560,21 @@ def _drill_conflict(state, a: str, pose_a, b: str, pose_b) -> Optional[str]:
     da, db = drills(a, pose_a), drills(b, pose_b)
     if not da or not db:
         return None
-    floor = 0.0
-    try:
-        from list_nets import board_constraint
-        floor = float(board_constraint(state.pcb_file, 'min_hole_to_hole')
-                      or 0.0)
-    except Exception:                                      # noqa: BLE001
+    # Read once per state: the waived-courtyard seat (#1101) calls this per
+    # candidate pose, and the constraint is a file read.
+    floor = getattr(state, '_h2h_floor', None)
+    if floor is None:
         floor = 0.0
+        try:
+            from list_nets import board_constraint
+            floor = float(board_constraint(state.pcb_file,
+                                           'min_hole_to_hole') or 0.0)
+        except Exception:                                  # noqa: BLE001
+            floor = 0.0
+        try:
+            state._h2h_floor = floor
+        except Exception:                                  # noqa: BLE001
+            pass
     worst = None
     for ax, ay, ar, an in da:
         for bx, by, br, bn in db:
@@ -3624,6 +3673,13 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
                 else:
                     conflicts[other] = (f"courtyard overlaps {other} by "
                                         f"{w:.2f}x{h:.2f}mm ({area:.3f}mm2)")
+            elif getattr(state, 'courtyards_ignored', False):
+                # #1101: the project waives the courtyard, and with it the
+                # only branch above that asked about stacked holes; holes are
+                # not waived (review: two coincident NPTH seated).
+                _dh = _drill_conflict(state, ref, pose, other, opose)
+                if _dh:
+                    conflicts[other] = _dh
         if ctx is not None:
             sf = ctx.pair_shortfall(ref, other, pose_a=pose, pose_b=opose)
             # `pads_ok`'s conjuncts, ABSOLUTE rather than seed-relative: a
@@ -3869,6 +3925,16 @@ def _ang_close(a: float, b: float, eps: float = 1e-6) -> bool:
     return min(d, 360.0 - d) <= eps
 
 
+#: #1099: after the 90-degree lattice seats nothing, try the diagonals (and
+#: seat a cap on a diagonal chip on the chip's lattice first). OFF by
+#: default: tests/test_placement_ab.py's `diag-seed-*` rows wrote identical
+#: poses in both arms on all five boards -- none of their unseated parts is
+#: one the diagonals seat -- so the table has no evidence to make it a
+#: default. `place_seed --diagonal-rotations` opts in, for a caller whose
+#: reference placement is diagonal; no skill passes it.
+DIAGONAL_ROTATIONS_DEFAULT = False
+
+
 def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      group_sources: Sequence[str] = (),
                      clearance: float = 0.25,
@@ -3882,7 +3948,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      immovable_extra: Sequence[str] = (),
                      body_model: bool = False,
                      rotate_by_facing: bool = False,
-                     array_pose_cap: int = ARRAY_SEAT_POSE_CAP) -> Dict:
+                     array_pose_cap: int = ARRAY_SEAT_POSE_CAP,
+                     diagonal_rotations: Optional[bool] = None) -> Dict:
     """Compute a full placement for an unplaced board from its intent.
 
     Returns {'placements': [...], 'lock_refs': [...], 'unseated': [...],
@@ -3974,6 +4041,11 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # Opt-in (OFF by default until `tests/test_placement_ab.py` pins its
     # rows): `_try_place` reads `state.rotation_prefer` and, when set, ranks
     # its rotation ladder by `_facing_rank`. Unset, the ladder is untouched.
+    # #1099: the diagonal fallback pass in `_try_place`, and a decoupling
+    # cap on a diagonal chip trying the chip's lattice first (stage 2.5).
+    state.diagonal_fallback = (DIAGONAL_ROTATIONS_DEFAULT
+                               if diagonal_rotations is None
+                               else bool(diagonal_rotations))
     if rotate_by_facing:
         import functools
         state.rotation_prefer = functools.partial(
@@ -4803,13 +4875,31 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 if r in decap_scope and r not in zone_of_cap:
                     zone_of_cap[r] = zones_by_name[name]
 
+        def _cap_ladder(ref, owner):
+            """#1099: a cap on a chip seated OFF the 90-degree lattice tries
+            the chip's own lattice first -- StickHub's U1 at -135 degrees
+            has every strap resistor and decap at +-45/+-135 -- then its own
+            orthogonal one. A declared ladder wins; a chip on the lattice
+            leaves the default search untouched."""
+            declared = _rot_ladder(ref)
+            if declared is not None or not state.diagonal_fallback:
+                return declared
+            o = state.parts.get(owner)
+            if o is None or abs(((o.rot % 90.0) + 45.0) % 90.0 - 45.0) < 1e-6:
+                return None
+            p = state.parts[ref]
+            chip = [(o.rot + d) % 360 for d in (0.0, 90.0, 180.0, 270.0)]
+            own = [(p.rot + d) % 360 for d in (0.0, 90.0, 180.0, 270.0)]
+            return chip + [r for r in own if r not in chip]
+
         def _seat(ref, tx, ty, owner, pn, constraint=None, tol=0.5):
+            _ladder = _cap_ladder(ref, owner)
             clr = _try_place(state, ref, tx, ty, unplaced - {ref},
                              constraint=constraint, tol=tol,
-                             rotations=_rot_ladder(ref))
+                             rotations=_ladder)
             if clr is None and constraint is not None:
                 clr = _try_place(state, ref, tx, ty, unplaced - {ref},
-                                 rotations=_rot_ladder(ref))
+                                 rotations=_ladder)
             if clr is None:
                 return False
             avail.remove(ref)

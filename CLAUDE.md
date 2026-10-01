@@ -192,7 +192,8 @@ Validate routed boards against the *real* spec, with the right checker — most
   `<board>.design-brief.json`.** Placement otherwise infers everything from the
   board: `emit_intent` is "a starter intent READ OFF the board", and every
   connector's edge is guessed from its current pose by `_nearest_edge`, which is
-  the only source of an edge in the toolchain. The brief is the channel for the
+  the only source of an edge in the toolchain -- except on a PILE, where no
+  UNLOCKED part's pose is read (#1103: `context.pose_claims_withheld`). The brief is the channel for the
   facts a board file cannot contain -- which connectors are user-facing, which
   edge each belongs on and **where along it**, what the enclosure forbids. It is
   auto-discovered by `check_floorplan.py` and `board_brief.py` the way
@@ -398,9 +399,14 @@ So, when grading a placement:
 placement defect**, ahead of every clearance graze: its nets cannot be routed
 at all, so it converts one-for-one into `unrouted` and `broken`. Measured, run
 10: 11 such parts produced ALL 13 unrouted nets and most of the 37 broken ones.
-Read it off `render_placement --json-out`'s
-`checklist.a_off_outline.pad_copper` — a whole-board pass/fail verdict is the
-wrong channel for it.
+Read WHICH parts off `render_placement --json-out`'s
+`checklist.a_off_outline.pad_copper_gating`; its sibling `pad_copper` also
+lists parts on the outline by design (a castellated module's half-holes, a
+round pad whose bbox corner crosses), which do not gate. Since #1096 a gating
+part makes `check_assembly` NOT BUILDABLE (per pad, margin 0, a lock does not
+exempt it), because run 36 routed a board with C20 7.84 mm below its outline
+on a `buildable` verdict; `oob_pad_copper_overrun_mm` is the distance, and
+`oob_pad_copper_refs` carries a ranking magnitude, not a distance.
 
 **Footprint GRAPHIC copper past the outline is the same defect (#962)**, and
 it used to be invisible: a drawn tab or antenna is not a pad, and check_drc's

@@ -105,7 +105,11 @@ def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None,
                                 '--json-out', rj, '-o',
                                 os.path.join(tmp, 'render.png'), '--quiet'])
     off = ((_load(rj) or {}).get('checklist') or {}).get('a_off_outline') or {}
-    out['off_outline_pad_copper'] = off.get('pad_copper')
+    # #1096: the gating subset (castellated edges exempt), the list
+    # check_assembly's verdict reads; an older render has only pad_copper.
+    out['off_outline_pad_copper'] = (off.get('pad_copper_gating')
+                                     if 'pad_copper_gating' in off
+                                     else off.get('pad_copper'))
     out['off_outline_graphic_copper'] = off.get('graphic_copper')
     # a pad in a (keepout (tracks not_allowed)) band cannot be routed (#1031)
     out['keepout_copper'] = off.get('keepout_copper')

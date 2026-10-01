@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The `stage3d` layout (#1081): the board gets at least 70% x 70%.
 
-`stage3d` (F) is the layout whose board box holds the 3D board, with the layer
+`stage3d` is the film's only layout: its board box holds the 3D board, with the layer
 column to its right and one benchmark band along the bottom. Its promise is a
 FLOOR, not a ratio: the box is at least `STAGE3D_BOARD_W_FRAC` of the frame's
 width and `STAGE3D_BOARD_H_FRAC` of its height, whatever else asks for room.
@@ -15,13 +15,16 @@ What this file pins:
     that nothing explains reads as a missing feature;
   * **portrait turns the column into a row** under the board, and drops it
     (said) when it would be too short to read;
-  * **an extreme declared aspect falls back to `legacy`**, said, at the
-    board's own aspect -- a declared ratio kept would starve the legacy frame;
-  * **`auto` never picks it**: it is a stance, like C and D;
-  * **every layout key is in both CLIs' `--layout` help** -- the help used to
-    be hand-listed, and a new layout is exactly what such a list forgets;
-  * **`layout_budget` excludes it on purpose** (px/mm under perspective is not
-    comparable), so the exclusion cannot silently become an omission.
+  * **an extreme declared aspect stays a stage3d frame at the ratio asked
+    for**, board-only: no layer column, the board box the full width, the
+    band only if it fits -- and said;
+  * **the retired flags are gone**: neither CLI offers `--layout` or
+    `--panels`, and a script still passing one is refused (exit 2) by
+    argparse, naming the flag, rather than ignored;
+  * **a retired layout name given as the ASPECT** (`--aspect stacked`,
+    `$KICAD_MOVIE_ASPECT=sidebar`, `build_boards(aspect='inset')`) is said
+    once as retired and films at the default 16:9 on every path, where it
+    used to raise and lose the movie.
 """
 import os
 import subprocess
@@ -36,7 +39,6 @@ for _p in (ROOT, _TESTS, os.path.join(ROOT, 'py_router')):
         sys.path.insert(0, _p)
 
 import frame_layout as FL                                       # noqa: E402
-import layout_budget as LB                                      # noqa: E402
 
 _FAIL = []
 
@@ -53,9 +55,9 @@ def _check(ok, msg):
 
 
 def _plan(bb, ratio, size, track, foot=24):
-    return FL.plan_frame(bb, layout='stage3d', ratio=FL.parse_ratio(ratio),
-                         size=size, panel=True, foot_px=foot,
-                         track_px=track, iso=True, quiet=True)
+    return FL.plan_frame(bb, ratio=FL.parse_ratio(ratio),
+                         size=size, foot_px=foot,
+                         track_px=track, quiet=True)
 
 
 def test_the_board_keeps_seventy_by_seventy():
@@ -67,7 +69,7 @@ def test_the_board_keeps_seventy_by_seventy():
                 for track in (0, 120, 400):
                     g = _plan(bb, ratio, size, track)
                     n += 1
-                    if g.layout != 'stage3d':
+                    if any('outside' in x for x in g.notes):
                         continue            # an extreme ratio; tested below
                     W, H = g.frame.w, g.frame.h
                     land = W >= FL.ISO_SIDE_ASPECT * H
@@ -92,9 +94,6 @@ def test_the_board_keeps_seventy_by_seventy():
                         _check(g.track.w == W and g.track.y >= g.board.y
                                + g.board.h, '%s: the band is full width '
                                'under the board' % tag)
-                    _check(g.panel_split is None,
-                           '%s: no iso split -- the board box is the 3D '
-                           'view' % tag)
     if len(_FAIL) == mark:
         print('  PASS: 70 x 70 holds on %d plans' % n)
 
@@ -155,64 +154,183 @@ def test_portrait_makes_the_column_a_row_or_says_why_not():
         print('  PASS: portrait row, or a stated drop')
 
 
-def test_an_extreme_aspect_falls_back_to_legacy_and_says_so():
+def test_an_extreme_aspect_is_a_board_only_stage3d_frame_and_says_so():
+    """No legacy frame to fall back to any more. The declared ratio is
+    KEPT, the board box takes the whole width under the rail, there is no
+    layer column, and a band only when the board keeps its height floor."""
     mark = len(_FAIL)
     for ratio in ('4:1', '1:3'):
-        for track in (0, 120):
-            g = _plan(SHAPES['wide 1.85'], ratio, 500, track)
-            line = FL.frame_status_line(g)
-            _check(g.layout == 'legacy' and 'outside' in line,
-                   '%s band %d: legacy, said (%s: %r)'
-                   % (ratio, track, g.layout, line))
-            bw = SHAPES['wide 1.85'][2] / float(SHAPES['wide 1.85'][3])
-            # the legacy FRAME grows by the clock band; its board box is
-            # the board's own aspect
-            got = g.board.w / float(g.board.h)
-            _check(abs(got - bw) < 0.05,
-                   '%s band %d: the board box is the board\'s own aspect '
-                   '%.2f (got %.2f)' % (ratio, track, bw, got))
+        want = FL.parse_ratio(ratio)
+        for size in (500, 1400):
+            for track in (0, 120):
+                g = _plan(SHAPES['wide 1.85'], ratio, size, track)
+                line = FL.frame_status_line(g)
+                tag = '%s size %d band %d' % (ratio, size, track)
+                _check(g.layout == 'stage3d' and 'outside' in line
+                       and 'no layer column' in line,
+                       '%s: stage3d, board-only, said (%s: %r)'
+                       % (tag, g.layout, line))
+                _check(abs(g.frame.w / float(g.frame.h) - want) < 0.05,
+                       '%s: the declared ratio is kept (%dx%d)'
+                       % (tag, g.frame.w, g.frame.h))
+                _check(g.panel is None and g.board.w == g.frame.w
+                       and g.board.y == g.rail.h and g.rail.h > 0,
+                       '%s: the board box is the full width under the rail, '
+                       'no column (%s, panel %s)' % (tag, g.board, g.panel))
+                if g.track is not None:
+                    _check(g.board.h >= FL.STAGE3D_BOARD_H_FRAC * g.frame.h,
+                           '%s: a band only when the board keeps its floor'
+                           % tag)
     if len(_FAIL) == mark:
-        print('  PASS: extreme aspects fall back, said')
+        print('  PASS: extreme aspects are board-only stage3d frames, said')
 
 
-def test_auto_never_picks_it():
-    mark = len(_FAIL)
-    for sn, bb in SHAPES.items():
-        for size in (400, 1000):
-            g = FL.plan_frame(bb, layout='auto', size=size, panel=True,
-                              quiet=True)
-            _check(g.layout != 'stage3d', 'auto on %s chose stage3d' % sn)
-    if len(_FAIL) == mark:
-        print('  PASS: auto never infers stage3d')
-
-
-def test_every_layout_is_in_both_clis_help():
+def test_the_retired_flags_are_gone_from_both_clis():
+    """stage3d is the only film layout, so neither CLI offers `--layout` or
+    `--panels` any more, and a script still passing one is REFUSED by
+    argparse (exit 2, naming the flag) rather than silently ignored."""
     mark = len(_FAIL)
     for script in (os.path.join(ROOT, 'py_router', 'make_movie.py'),
                    os.path.join(ROOT, 'py_tools', 'make_film.py')):
+        name = os.path.basename(script)
         r = subprocess.run([sys.executable, script, '--help'],
                            capture_output=True, text=True, timeout=120,
                            cwd=ROOT)
         _check(r.returncode == 0, '%s --help exited %d: %s'
-               % (os.path.basename(script), r.returncode, r.stderr[-300:]))
-        text = ' '.join(r.stdout.split())
-        for key in FL.LAYOUTS:
-            _check(key in text, '%s --help does not name %r'
-                   % (os.path.basename(script), key))
+               % (name, r.returncode, r.stderr[-300:]))
+        for flag in ('--layout', '--panels'):
+            _check(flag not in r.stdout, '%s --help still offers %s'
+                   % (name, flag))
+        _check('--aspect' in r.stdout, '%s --help lost --aspect' % name)
+        for flag, value in (('--layout', 'sidebar'), ('--panels', 'xray')):
+            r = subprocess.run([sys.executable, script, 'x.kicad_pcb', flag,
+                                value], capture_output=True, text=True,
+                               timeout=120, cwd=ROOT)
+            _check(r.returncode == 2
+                   and 'unrecognized arguments: %s' % flag in r.stderr,
+                   '%s %s %s: exit %d, %r' % (name, flag, value,
+                                              r.returncode, r.stderr[-200:]))
     if len(_FAIL) == mark:
-        print('  PASS: both --help texts name every layout')
+        print('  PASS: --layout and --panels are gone, and refused')
 
 
-def test_layout_budget_excludes_stage3d_on_purpose():
+_BOARD = os.path.join(ROOT, 'kicad_files', 'cap_chain.kicad_pcb')
+_MOVIE_KNOBS = ('KICAD_MOVIE_LAYOUT', 'KICAD_MOVIE_PANELS',
+                'KICAD_MOVIE_ASPECT', 'KICAD_MOVIE_BOARD3D')
+
+_PARSE_PROBE = r'''
+import sys
+sys.path[:0] = [%r]
+import frame_layout as FL
+for name in FL.RETIRED_LAYOUTS + ('STACKED',):
+    print('RATIO', name, FL.parse_ratio(name), FL.parse_ratio(name))
+try:
+    FL.parse_ratio('banana')
+    print('GARBAGE accepted')
+except ValueError:
+    print('GARBAGE raises')
+'''
+
+_API_PROBE = r'''
+import sys
+sys.path[:0] = [%r, %r]
+import animate_route as A
+g = []
+A.build_boards([('s', %r, None)], %r, 320, 1, None, 2, 6, aspect='inset',
+               board3d='2d', geom_out=g)
+print('FRAME', g[0].frame.w, g[0].frame.h)
+'''
+
+
+def _run(argv, env_extra=None):
+    env = {k: v for k, v in os.environ.items() if k not in _MOVIE_KNOBS}
+    env['KICAD_MOVIE_BOARD3D'] = '2d'
+    env.update(env_extra or {})
+    return subprocess.run([sys.executable, '-X', 'utf8'] + argv,
+                          capture_output=True, text=True, timeout=300,
+                          cwd=ROOT, env=env)
+
+
+def _said(stderr, name):
+    return [ln for ln in stderr.splitlines()
+            if "aspect '%s' is retired" % name in ln]
+
+
+def _gif_size(path):
+    from PIL import Image
+    if not os.path.isfile(path):
+        return None
+    with Image.open(path) as im:
+        return im.size
+
+
+def test_a_retired_layout_name_as_the_aspect_is_said_not_fatal():
+    """`--aspect stacked` was the stacked layout's ratio, and a layout name
+    can still arrive where the aspect goes -- on the CLI, in
+    `$KICAD_MOVIE_ASPECT`, or through the API. Each is SAID once as retired
+    and the frame is the default stage3d 16:9; it must not take the movie
+    down. A value that is no ratio and no retired name still raises."""
     mark = len(_FAIL)
-    _check('stage3d' not in LB.LAYOUTS,
-           'layout_budget measures stage3d -- px/mm under perspective is '
-           'not comparable with the flat layouts\'')
-    _check(set(LB.LAYOUTS) == set(FL.LAYOUTS) - {'legacy', 'auto', 'stage3d'},
-           'layout_budget measures %s, expected every flat chrome layout'
-           % (LB.LAYOUTS,))
+    import tempfile
+    r = _run(['-c', _PARSE_PROBE % os.path.join(ROOT, 'py_router')])
+    _check(r.returncode == 0, 'the parse probe ran: %s' % r.stderr[-300:])
+    for name in FL.RETIRED_LAYOUTS:
+        _check('RATIO %s None None' % name in r.stdout,
+               'parse_ratio(%r) declares nothing (%r)' % (name, r.stdout))
+        _check(len(_said(r.stderr, name)) == 1,
+               '%r is said once over two calls (%r)'
+               % (name, _said(r.stderr, name)))
+    _check('RATIO STACKED None None' in r.stdout,
+           'a retired name is matched case-blind')
+    _check('GARBAGE raises' in r.stdout,
+           'a value that is no ratio and no retired name still raises')
+    d = tempfile.mkdtemp(prefix='t1081_aspect_')
+    arms = []
+    out = os.path.join(d, 'cli.gif')
+    arms.append(('make_movie --aspect stacked', 'stacked', out,
+                 _run([os.path.join(ROOT, 'py_router', 'make_movie.py'),
+                       _BOARD, '--aspect', 'stacked', '--size', '320',
+                       '-o', out])))
+    out = os.path.join(d, 'env.gif')
+    arms.append(('make_movie $KICAD_MOVIE_ASPECT=split', 'split', out,
+                 _run([os.path.join(ROOT, 'py_router', 'make_movie.py'),
+                       _BOARD, '--size', '320', '-o', out],
+                      {'KICAD_MOVIE_ASPECT': 'split'})))
+    out = os.path.join(d, 'film.gif')
+    arms.append(('make_film --aspect sidebar', 'sidebar', out,
+                 _run([os.path.join(ROOT, 'py_tools', 'make_film.py'),
+                       _BOARD, '--aspect', 'sidebar', '--size', '320',
+                       '--no-cards', '-o', out])))
+    run_dir = os.path.join(d, 'run')
+    os.makedirs(run_dir)
+    import shutil
+    shutil.copy(_BOARD, run_dir)
+    out = os.path.join(d, 'run.gif')
+    arms.append(('animate_route --run-dir $KICAD_MOVIE_ASPECT=legacy',
+                 'legacy', out,
+                 _run([os.path.join(ROOT, 'py_router', 'animate_route.py'),
+                       '--run-dir', run_dir, '--size', '320', '-o', out],
+                      {'KICAD_MOVIE_ASPECT': 'legacy'})))
+    for tag, name, out, r in arms:
+        _check(r.returncode == 0, '%s: exit %d (%s)'
+               % (tag, r.returncode, r.stderr[-300:]))
+        _check(_gif_size(out) == (320, 180),
+               '%s: the film is the default 16:9 frame (%s)'
+               % (tag, _gif_size(out)))
+        _check(len(_said(r.stderr, name)) == 1,
+               '%s: the retired name is said once (%r)'
+               % (tag, _said(r.stderr, name)))
+    r = _run(['-c', _API_PROBE % (ROOT, os.path.join(ROOT, 'py_router'),
+                                  _BOARD, _BOARD)])
+    _check(r.returncode == 0 and 'FRAME 320 180' in r.stdout
+           and len(_said(r.stderr, 'inset')) == 1,
+           "build_boards(aspect='inset'): the default 16:9 frame, said "
+           "(exit %d, %r, %r)" % (r.returncode, r.stdout[-200:],
+                                  r.stderr[-300:]))
+    shutil.rmtree(d, ignore_errors=True)
     if len(_FAIL) == mark:
-        print('  PASS: the exclusion is deliberate and exact')
+        print('  PASS: a retired layout name as the aspect is said once and '
+              'films at 16:9, on the CLI, env and API paths')
 
 
 TESTS = (
@@ -220,10 +338,9 @@ TESTS = (
     test_a_band_is_shrunk_then_declined_and_either_is_said,
     test_a_floor_it_cannot_keep_is_said,
     test_portrait_makes_the_column_a_row_or_says_why_not,
-    test_an_extreme_aspect_falls_back_to_legacy_and_says_so,
-    test_auto_never_picks_it,
-    test_every_layout_is_in_both_clis_help,
-    test_layout_budget_excludes_stage3d_on_purpose,
+    test_an_extreme_aspect_is_a_board_only_stage3d_frame_and_says_so,
+    test_the_retired_flags_are_gone_from_both_clis,
+    test_a_retired_layout_name_as_the_aspect_is_said_not_fatal,
 )
 
 

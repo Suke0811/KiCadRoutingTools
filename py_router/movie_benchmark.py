@@ -36,7 +36,7 @@ caption says "no benchmark board" so the absence reads as a fact.
 `--final` rows and `--exhausted` declarations are not laps
 (`converge._is_lap`); the last final row's verdict is named in the caption.
 Degradation is never silent: `attach` returns the frames untouched and says
-why, like `movie_attempts.attach`.
+why.
 """
 from __future__ import annotations
 
@@ -693,8 +693,8 @@ def draw_band(d, box, track, *, upto=None, theme=None, debug=None) -> bool:
 
 def attach(frames, track, *, box, theme=None, marks=None):
     """Draw the band into `box` (the layout's reserved band) on every frame,
-    revealing laps as the film's steps pass -- `movie_attempts.attach`'s
-    horizon rule. Returns `(frames, report)`; with nothing to draw the frames
+    revealing laps as the film's steps pass (the lap's time against the
+    film's clock). Returns `(frames, report)`; with nothing to draw the frames
     come back untouched and the report says why."""
     report = {'drawn': False, 'why': '', 'laps': 0}
     if not frames:

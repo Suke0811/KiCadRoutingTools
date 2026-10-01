@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The stage3d film, end to end, through both front ends (#1081).
 
-`make_movie(layout='stage3d')` and `make_film.build_film(layout='stage3d')`
+`make_movie` and `make_film.build_film` (stage3d, the only film layout)
 on the film_chain fixture (placement glides, a flip to the back, copper) with
 a converge ledger beside the boards:
 
@@ -15,7 +15,9 @@ a converge ledger beside the boards:
     (the board box is the 3D view).
 
 The 3D arm self-skips its own checks, naming why, on a machine that cannot
-render (no Node / `npm ci` / Chromium); the X-ray arms always run.
+render (no Node / `npm ci` / Chromium); the X-ray arms always run, and the
+missing-tool arm expects the reason for whichever tool is missing FIRST --
+its fake Node when the others are present, else (no `npm ci`) playwright-core.
 """
 import contextlib
 import io
@@ -41,6 +43,20 @@ from stage3d import render3d as R3                              # noqa: E402
 
 _FAIL = []
 CAN_3D, WHY_3D = R3.available()
+
+
+def _missing_reason():
+    """`(why, token)` for the 'missing' arm, read under ITS environment:
+    the reason `render3d.available` gives, which names whichever tool it
+    finds missing FIRST. It checks playwright-core and a Chromium before it
+    spawns Node, so on a machine with no `npm ci` the reason names
+    playwright-core, not the fake Node the arm points at. `token` is what
+    the film's line must carry: the fake Node's name when the other two
+    tools are present, else the reason itself."""
+    ok, why = R3.available()
+    others = all(fn()[0] for fn in (R3.resolve_playwright,
+                                    R3.resolve_browser))
+    return why, ('no-node' if others else why)
 
 
 def _check(ok, msg):
@@ -71,7 +87,7 @@ def _movie(boards, led, png, **kw):
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         out = MM.make_movie(boards, out=os.path.join(png, 'film.mp4'),
-                            layout='stage3d', size=960, camera='auto',
+                            size=960, camera='auto',
                             attempts_ledger=led, png_dir=png, quiet=False,
                             **kw)
     from PIL import Image
@@ -111,6 +127,7 @@ def test_make_movie_stage3d_three_ways():
     with FC.Chain() as c:
         led = _ledger(c.dir)
         runs = {}
+        expect_missing = None
         arms = [('2d', {'board3d': '2d'}, {}),
                 ('knob', {}, {'KICAD_MOVIE_BOARD3D': '2d'}),
                 ('missing', {}, {'KICAD_STAGE3D_NODE':
@@ -125,6 +142,8 @@ def test_make_movie_stage3d_three_ways():
             import env_knobs                 # it reads the env at import
             env_knobs.refresh()
             try:
+                if name == 'missing':
+                    expect_missing = _missing_reason()
                 png = tempfile.mkdtemp(prefix='t1081e_', dir=c.dir)
                 runs[name] = _movie(c.boards, led, png, **kw)
             finally:
@@ -164,10 +183,12 @@ def test_make_movie_stage3d_three_ways():
         _check(not _s3f._LIVE, 'the 3D state frames are removed once the '
                'film is written, not at exit (%s)' % _s3f._LIVE)
         miss = runs['missing'][1]
-        _check('stage3d: 2D X-ray in the board box' in miss
-               and 'no-node' in miss,
-               'a missing tool: the X-ray, and the reason names it (%r)'
-               % [l for l in miss.splitlines() if 'stage3d' in l])
+        why, token = expect_missing
+        lines = [l for l in miss.splitlines()
+                 if l.startswith('stage3d: 2D X-ray in the board box -- ')]
+        _check(len(lines) == 1 and why in lines[0] and token in lines[0],
+               'a missing tool: the X-ray, and the reason names the tool '
+               'missing first -- %r (%r)' % (token, lines))
 
 
 def test_make_film_stage3d():
@@ -178,7 +199,7 @@ def test_make_film_stage3d():
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             frames = MF.build_film(shots, size=960, fps=6.0, camera='auto',
-                                   quiet=True, layout='stage3d',
+                                   quiet=True,
                                    placement={'ledger': led,
                                               'board3d': '2d'})
         frames = list(frames or [])

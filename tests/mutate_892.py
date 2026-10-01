@@ -147,10 +147,8 @@ ROWS = [
      (T_POSE,), 'KILLED'),
 
     ('the-lock-guard-is-skipped', 'o',
-     "    if placements:\n"
-     "        from placement.parser import extract_locked_refs",
-     "    if False:\n"
-     "        from placement.parser import extract_locked_refs",
+     "        locked_now = extract_locked_refs(board_path)",
+     "        locked_now = set()",
      (T_POSE,), 'KILLED'),
 
     ('lock-and-unlock-of-one-ref-is-allowed-again', 'o',

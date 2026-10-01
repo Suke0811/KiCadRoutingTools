@@ -32,8 +32,7 @@ _ROOT = os.path.dirname(_TESTS)
 
 MA = os.path.join(_ROOT, 'py_router', 'movie_attempts.py')
 MP = os.path.join(_ROOT, 'py_router', 'movie_placement.py')
-FLY = os.path.join(_ROOT, 'py_router', 'frame_layout.py')
-TARGETS = {'ma': MA, 'mp': MP, 'fl': FLY}
+TARGETS = {'ma': MA, 'mp': MP}
 
 T1042 = os.path.join(_TESTS, 'test_1042_placement_panels.py')
 T946 = os.path.join(_TESTS, 'test_946_movie_attempts.py')
@@ -128,10 +127,8 @@ ROWS = [
      "        'marker': 'chrome_text_dim',",
      "        'marker': 'status_best',",
      (T1042,), 'KILLED'),
-    ('a-tall-band-shrinks-the-board', 'fl',
-     "    board_min = int(math.ceil(max(0.0, BOARD_MIN_SHARE * H - track_h,",
-     "    board_min = int(math.ceil(max(0.0, BOARD_MIN_SHARE * H - track_h, 0.0 *",
-     (T1042,), 'KILLED'),
+    # 'a-tall-band-shrinks-the-board' went with frame_layout._cap_panel: the
+    # stage3d frame's own floor is mutate_1081's 'board-below-seventy'.
 ]
 
 # Every anchor must match its target exactly once BEFORE anything is

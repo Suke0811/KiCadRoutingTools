@@ -16,6 +16,11 @@ import shutil
 import sys
 import tempfile
 
+# stage3d is the only film layout, so an unnamed layout is a stage3d
+# frame. These tests grade the 2D board, not the Node/Chromium 3D
+# render: set before env_knobs is read.
+os.environ.setdefault('KICAD_MOVIE_BOARD3D', '2d')
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # fixture_boards
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'py_placer'))  # placement split
@@ -290,17 +295,25 @@ def test_each_step_draws_its_own_boards_pads():
     every frame used to draw the final board's pads -- so a film opening on an
     unplaced pile showed the finished placement from frame one. Each step now
     re-points `r.pcb` at its own board. The opening frame of [SEED, PLACED]
-    must therefore be SEED's picture, not PLACED's."""
+    must therefore be SEED's picture, not PLACED's -- in the BOARD BOX: the
+    stage3d chrome around it (the rail's step label and progress, the layer
+    column) legitimately differs between a one-step and a two-step film."""
+    geom = []
     fr = A.build_boards([('seed', SEED, None), ('placed', PLACED, None)],
-                        PLACED, 200, 1, 150, 2, 6)
+                        PLACED, 200, 1, 150, 2, 6, geom_out=geom)
     seed_only = A.build_boards([('seed', SEED, None)], PLACED, 200, 1, 150, 2,
                                6)
     placed_only = A.build_boards([('placed', PLACED, None)], PLACED, 200, 1,
                                  150, 2, 6)
-    assert ImageChops.difference(fr[0].convert('RGB'),
-                                 seed_only[0].convert('RGB')).getbbox() is None
-    assert ImageChops.difference(fr[0].convert('RGB'),
-                                 placed_only[0].convert('RGB')).getbbox(), \
+    b = geom[0].board
+    box = (b.x, b.y, b.x + b.w, b.y + b.h)
+
+    def _board(f):
+        return f.convert('RGB').crop(box)
+    assert ImageChops.difference(_board(fr[0]),
+                                 _board(seed_only[0])).getbbox() is None
+    assert ImageChops.difference(_board(fr[0]),
+                                 _board(placed_only[0])).getbbox(), \
         'the opening frame still shows the FINAL board\'s pads'
 
 
@@ -445,12 +458,22 @@ def test_sidecar_loader_orders_by_round_not_by_name():
 
 # --- the camera in the pipeline ---------------------------------------------
 
+#: The last `_camera_frames` film's board box: the stage3d rail's progress
+#: bar advances on EVERY frame, so "the camera held" is a claim about the
+#: board box, not the whole frame.
+_BOARD_BOX = []
+
+
 def _camera_frames(size=240):
     d, n_moved = _work_dir()
     try:
         steps, final = MM.placement_chain(d)
         stage = Stage(load_round_sidecars(d), d, tween=6)
-        frames = A.build_boards(steps, final, size, 1, 150, 2, 6, stage=stage)
+        geom = []
+        frames = A.build_boards(steps, final, size, 1, 150, 2, 6, stage=stage,
+                                geom_out=geom)
+        b = geom[0].board
+        _BOARD_BOX[:] = [(b.x, b.y, b.x + b.w, b.y + b.h)]
         return frames, stage, n_moved
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -474,8 +497,11 @@ def test_the_camera_moves_and_then_holds():
     kinds = [k for k, _a, _b in log]
     assert 'establish' in kinds or 'transit' in kinds, kinds
 
+    box = _BOARD_BOX[0]
+
     def changed(i):
-        return ImageChops.difference(frames[i], frames[i + 1]).getbbox() is not None
+        return ImageChops.difference(frames[i].crop(box),
+                                     frames[i + 1].crop(box)).getbbox() is not None
 
     moved_any = False
     for kind, a, b in log:
@@ -599,10 +625,14 @@ def test_going_to_the_back_flips_the_board_and_mirrors_what_follows():
         assert flipped.tobytes() == ImageOps.mirror(plain).tobytes(),             "a frame emitted while looking at the back is not mirrored"
         assert flipped.tobytes() != plain.tobytes(), "the board is symmetric?"
 
-        # ...and the caption survives the flip the right way up: a mirrored
-        # frame WITH a caption must differ from the plain mirror.
+        # ...and the caption: every film frame has a rail (stage3d is the
+        # only film layout), so the caption is the RAIL's, drawn upright when
+        # the frame is composed -- none is stamped on the mirrored board. (The
+        # over-board caption that had to survive the flip upright was the
+        # rail-less legacy frame's, and went with it.)
+        assert st.movie.split_caption
         st._snap('round 2')
-        assert st.movie.frames[-1].tobytes() != flipped.tobytes()
+        assert st.movie.frames[-1].tobytes() == flipped.tobytes()
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

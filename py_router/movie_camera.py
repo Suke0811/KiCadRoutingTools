@@ -617,10 +617,10 @@ class Stage:
     def _arrive(self):
         """Call `on_arrive` once, right before the frame the parts LAND on.
 
-        `build_boards` sets it so the lower box's inventory reads the SOURCE
-        board through the glide and the destination only from the landing
-        frame (#1036) -- it read the destination's "272 of 272 placed" over
-        parts still in the pile.
+        `build_boards` sets it so the placement panels change beat on the
+        landing frame, not before (#1036, #1042): the SOURCE board holds
+        through the glide and the destination only from the frame the parts
+        land on.
         """
         fn, self.on_arrive = getattr(self, 'on_arrive', None), None
         if fn is not None:

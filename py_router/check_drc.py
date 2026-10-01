@@ -2603,6 +2603,26 @@ def _edge_phrase(edge: str) -> str:
     return f"too close to {edge} board edge"  # bbox fallback: left/right/top/bottom
 
 
+def rule_severity(pcb_file: str, key: str) -> Optional[str]:
+    """The board's own DRC severity for rule `key` ('error' / 'warning' /
+    'ignore') from the sibling .kicad_pro, or None when unset / no project.
+
+    `edge_clearance_severity` reads through it. #1095's courtyard grade
+    reads the same key in `legality.courtyard_severity_of`, which also needs
+    the project's `kicad_routing_tools.saved_severities` and so opens the
+    file itself."""
+    import os as _os
+    import json as _json
+    pro = _os.path.splitext(pcb_file)[0] + '.kicad_pro'
+    try:
+        with open(pro, encoding='utf-8') as f:
+            j = _json.load(f)
+    except (OSError, ValueError):
+        return None
+    return (((j.get('board', {}) or {}).get('design_settings', {}) or {})
+            .get('rule_severities', {}) or {}).get(key)
+
+
 def edge_clearance_severity(pcb_file: str) -> Optional[str]:
     """Return the board's ``copper_edge_clearance`` DRC severity from the sibling
     .kicad_pro ('error' / 'warning' / 'ignore'), or None when unset / no project.
@@ -2615,16 +2635,7 @@ def edge_clearance_severity(pcb_file: str) -> Optional[str]:
     from the KiCad oracle. check_drc reads the same setting and skips its
     board-edge check to match, instead of manufacturing phantom SEGMENT-BOARD-EDGE
     items the board's own DRC deliberately suppresses (#427)."""
-    import os as _os
-    import json as _json
-    pro = _os.path.splitext(pcb_file)[0] + '.kicad_pro'
-    try:
-        with open(pro, encoding='utf-8') as f:
-            j = _json.load(f)
-    except (OSError, ValueError):
-        return None
-    return (((j.get('board', {}) or {}).get('design_settings', {}) or {})
-            .get('rule_severities', {}) or {}).get('copper_edge_clearance')
+    return rule_severity(pcb_file, 'copper_edge_clearance')
 
 
 def _np_capsule_to_tracks(h1x, h1y, h2x, h2y,

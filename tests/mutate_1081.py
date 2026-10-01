@@ -93,10 +93,8 @@ ROWS = [
      "                            mirror=True,",
      "                            mirror=False,",
      (T_REC,), 'KILLED'),
-    ('key-drawn-before-the-mirror', 'anim',
-     "                            overlays_after_mirror=[key] if key else None,",
-     "                            overlays_after_mirror=None,",
-     (T_REC,), 'KILLED'),
+    # 'key-drawn-before-the-mirror' went with the in-frame key after the flip:
+    # only a rail-less (legacy) film frame had one; film frames are all railed.
     ('epoch-caught-mid-glide', 'anim',
      "            self.stage_epochs.append(_pose_table(pcb, self.moving_rest))",
      "            self.stage_epochs.append(_pose_table(pcb))",
@@ -113,9 +111,12 @@ ROWS = [
      (T_ROT,), 'KILLED'),
 
     # --- the layout ----------------------------------------------------------
-    ('auto-picks-stage3d', 'layout',
-     "        return 'sidebar', ('adaptive: board aspect %.2f > %.2f'",
-     "        return 'stage3d', ('adaptive: board aspect %.2f > %.2f'",
+    # 'auto-picks-stage3d' went with 'auto': stage3d is the only layout.
+    # Its replacement pins the one frame-shape decision left -- a frame too
+    # extreme to hold a column is BOARD-ONLY, not a squeezed column.
+    ('an-extreme-frame-keeps-a-column', 'layout',
+     "        board, panel_box = Box(0, inner_y, W, inner_h), None",
+     "        board, panel_box, _w = _stage3d_boxes(W, H, inner_y, inner_h)",
      (T_LAY,), 'KILLED'),
     ('board-below-seventy', 'layout',
      "        bw = min(W - 2, _up_even(STAGE3D_BOARD_W_FRAC * W))",
@@ -169,10 +170,8 @@ ROWS = [
      "        if w == side and glide[last - 1]:",
      "        if False:",
      (T_TL,), 'KILLED'),
-    ('the-column-swaps-panels-again', 'anim',
-     "            phase = 'routing'",
-     "            pass",
-     (T_REC,), 'KILLED'),
+    # 'the-column-swaps-panels-again' went with the phase switch itself: the
+    # column has one content, so there is nothing left to swap to.
     ('glide-poses-not-recorded', 'anim',
      "                    moving[ref] = (fp.x, fp.y, fp.rotation or 0.0)",
      "                    pass",
@@ -190,10 +189,28 @@ ROWS = [
      "      part.body.position.y = h / 2 + 0.06;",
      (T_R3D,), 'KILLED'),
     # --- the defaults (#1081), Blender (#1089), one pipeline (#1087) -------
-    ('the-film-default-back-to-legacy', 'env',
-     "    g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'stage3d')",
-     "    g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'legacy')",
+    # 'the-film-default-back-to-legacy' went with KICAD_MOVIE_LAYOUT: there
+    # is no layout to default to. What replaces it is the retired knob's
+    # warning -- a value set in a shell must be SAID, not ignored.
+    ('a-retired-knob-goes-silent', 'layout',
+     "    print(line, file=sys.stderr)\n    return line",
+     "    return line",
      (T_DEF,), 'KILLED'),
+    # A retired layout NAME given as the aspect (`--aspect stacked`,
+    # `$KICAD_MOVIE_ASPECT=sidebar`) raised out of build_boards and lost
+    # the movie; it is said once and declares nothing.
+    ('a-retired-aspect-name-kills-the-movie', 'layout',
+     "    if key in RETIRED_LAYOUTS:",
+     "    if False:",
+     (T_LAY,), 'KILLED'),
+    ('a-retired-aspect-name-goes-silent', 'layout',
+     "        warn_retired_aspect(key)",
+     "        pass",
+     (T_LAY,), 'KILLED'),
+    ('a-retired-aspect-name-said-every-call', 'layout',
+     "    if name in _RETIRED_ASPECT_SAID:",
+     "    if False:",
+     (T_LAY,), 'KILLED'),
     ('the-theme-default-back-to-dark', 'env',
      "    g['RENDER_THEME'] = _s('KICAD_RENDER_THEME', 'light')",
      "    g['RENDER_THEME'] = _s('KICAD_RENDER_THEME', 'dark')",
@@ -206,13 +223,24 @@ ROWS = [
      "        px.save(p, format='PNG')",
      "        pass",
      (T_BL,), 'KILLED'),
-    ('the-pipeline-drops-the-verdict-band', 'fp',
-     "        track = bands.track if (vbox is not None or ptrack is None) else None",
-     "        track = None",
+    # 'the-pipeline-drops-the-verdict-band' went with the verdict band (no
+    # stage3d film draws it). The pipeline's other band still must land.
+    ('the-pipeline-drops-the-placement-panels', 'fp',
+     "            frames = movie_placement.compose(frames, box, ptrack, marks,\n"
+     "                                             theme, geom.frame.h)",
+     "            pass",
      (T_1042,), 'KILLED'),
     ('a-2d-fallback-that-says-nothing', 'film',
      "        _say('stage3d: 2D X-ray in the board box -- %s' % why, notes)",
      "        pass",
+     (T_E2E,), 'KILLED'),
+    # the missing-tool arm expects the reason for whichever tool is missing
+    # FIRST (playwright-core on a machine with no `npm ci`), so a fallback
+    # that names no tool must still fail it
+    ('a-2d-fallback-that-names-no-tool', 'film',
+     "        _say('stage3d: 2D X-ray in the board box -- %s' % why, notes)",
+     "        _say('stage3d: 2D X-ray in the board box -- a tool is "
+     "missing', notes)",
      (T_E2E,), 'KILLED'),
     # --- found by the esp_prog film (run 35) -------------------------------
     ('the-camera-fitted-once-for-the-film', 'page',
@@ -236,8 +264,8 @@ ROWS = [
      "        found = None",
      (T_TL,), 'KILLED'),
     ('a-copper-only-part-gets-a-box', 'scene',
-     "            if words & {'board_only', 'exclude_from_pos_files'}:",
-     "            if False:",
+     "            & {'board_only', 'exclude_from_pos_files'}}",
+     "            & set()}",
      (T_TL,), 'KILLED'),
 ]
 

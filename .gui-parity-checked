@@ -1074,3 +1074,15 @@ spends five items forbidding. It is now REGISTERED in
 tests/test_713_wallclock_census.py with that weakness named, rather than left
 invisible: the census could not even see it before, because its timeout is
 passed positionally. Changing the GUI save path is its own change.
+
+NOTE 2026-09-30 (stage3d-only film layout; not an audit, so the first token
+above is unchanged). The film layouts other than stage3d are retired:
+--layout (make_movie, make_film), --panels and every --iso-* flag and
+--kicad-cli (make_movie), --panels / --iso-allow-bare (make_film), and the
+KICAD_MOVIE_LAYOUT / KICAD_MOVIE_PANELS knobs. The entries above that name
+them describe the code as it was. No GUI surface changes: the GUI's movie
+button calls make_movie(boards, out=out, quiet=True), which already
+rendered stage3d; there was never a dialog control or settings key for a
+layout or the iso panel, and settings_persistence is untouched. A retired
+knob still set in the environment is now said once on stderr
+(frame_layout.warn_retired_knobs) instead of choosing a layout.

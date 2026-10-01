@@ -193,54 +193,13 @@ def default_output(inputs):
     return os.path.splitext(os.path.abspath(inputs[-1]))[0] + '_routing.mp4'
 
 
-#: What `panels` accepts. 'xray' is the single full-frame board view this movie
-#: has always been; 'xray+iso' stacks a 3D isometric render under it (#887).
-PANEL_SETS = ('xray', 'xray+iso')
-
-
-def _panels_wanted(panels, quiet=False):
-    """True when the iso panel was asked for. Handles the env knob and typos.
-
-    Deliberately ASYMMETRIC, and both halves are audible:
-
-    * an unknown value passed as the KWARG raises, naming the accepted set -- a
-      typo in code is a bug, and silently rendering the wrong movie hides it;
-    * an unknown value in the ENV KNOB warns and falls back to 'xray' -- a typo
-      in a shell must not abort a routing run that happened to ask for a movie.
-
-    This is stricter than the #431 camera, which turns ON for any unrecognised
-    string (`make_movie.py:140`). Do not copy that here: 'xray' is the safe
-    default and an unreadable value must not silently buy 20 seconds of
-    kicad-cli.
-    """
-    if panels is None:
-        try:
-            import env_knobs
-            raw = getattr(env_knobs, 'MOVIE_PANELS', 'xray')
-        except Exception:                                       # noqa: BLE001
-            raw = 'xray'
-        val = str(raw or 'xray').strip().lower()
-        if val not in PANEL_SETS:
-            if not quiet:
-                print("make_movie: KICAD_MOVIE_PANELS=%r is not one of %s; "
-                      "using 'xray'" % (raw, ', '.join(PANEL_SETS)),
-                      file=sys.stderr)
-            val = 'xray'
-        return val == 'xray+iso'
-    val = str(panels).strip().lower()
-    if val not in PANEL_SETS:
-        raise ValueError('make_movie: panels=%r is not one of %s'
-                         % (panels, ', '.join(PANEL_SETS)))
-    return val == 'xray+iso'
-
-
 def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
                supersample=DEFAULT_SUPERSAMPLE, layer_alpha=DEFAULT_LAYER_ALPHA,
                rip_hold=DEFAULT_RIP_HOLD, chunks=DEFAULT_CHUNKS,
                end_hold=DEFAULT_END_HOLD, png_dir=None, quiet=False,
                camera=None, camera_budget=60.0, tween=10,
-               panels=None, iso_opts=None, timing=None, theme=None,
-               layout=None, aspect=None, attempts=None, max_frames=None,
+               timing=None, theme=None,
+               aspect=None, attempts=None, max_frames=None,
                title=None, attempts_ledger=None, benchmark_board=None,
                floorplan_intent=None, placement_panel=None, board3d=None,
                benchmark_score=None):
@@ -252,7 +211,7 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
 
     Frames are SPOOLED to disk as they are drawn (#1036,
     `frame_spool.FrameSpool`) and every post-pass -- the planned frame, the
-    attempts band, the run clock, the iso panel -- is a per-frame transform
+    benchmark band, the run clock -- is a per-frame transform
     applied while the encoder streams, so an .mp4's memory does not grow
     with the frame count (a .gif's grows up to `animate_route.GIF_MAX_FRAMES`
     frames, which Pillow's writer holds). ``max_frames`` is the film's frame budget (None = $KICAD_MOVIE_MAX_FRAMES,
@@ -266,8 +225,8 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
             inputs, out=out, size=size, fps=fps, supersample=supersample,
             layer_alpha=layer_alpha, rip_hold=rip_hold, chunks=chunks,
             end_hold=end_hold, png_dir=png_dir, quiet=quiet, camera=camera,
-            camera_budget=camera_budget, tween=tween, panels=panels,
-            iso_opts=iso_opts, timing=timing, theme=theme, layout=layout,
+            camera_budget=camera_budget, tween=tween,
+            timing=timing, theme=theme,
             aspect=aspect, attempts=attempts, max_frames=max_frames,
             title=title, attempts_ledger=attempts_ledger,
             benchmark_board=benchmark_board,
@@ -281,7 +240,7 @@ def make_movie(inputs, out=None, size=DEFAULT_SIZE, fps=DEFAULT_FPS,
 
 def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                 chunks, end_hold, png_dir, quiet, camera, camera_budget, tween,
-                panels, iso_opts, timing, theme, layout, aspect, attempts,
+                timing, theme, aspect, attempts,
                 max_frames, spool, title=None, attempts_ledger=None,
                 benchmark_board=None, floorplan_intent=None,
                 placement_panel=None, board3d=None, benchmark_score=None):
@@ -297,17 +256,11 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
         return None
     # THE THEME, RESOLVED ONCE (#1036 review). Passed down as a NAME, every
     # region resolved it again -- and an invalid $KICAD_RENDER_THEME warned
-    # once per FRAME from the clock band and once per shot from the iso
-    # panel. A name given in code still refuses (strict); the environment's
+    # once per FRAME from the clock band. A name given in code still refuses (strict); the environment's
     # warns, here, once.
     import render_theme as _rt
     theme = (_rt.theme(theme) if theme is not None
              else _rt.default_theme())
-    if iso_opts is not None:
-        # a COPY: the caller's IsoOpts is theirs, and filling in its theme
-        # here leaked this film's theme into their next call
-        import copy as _copy
-        iso_opts = _copy.copy(iso_opts)
     # #431: the camera is OPT-IN. camera=None falls back to the env knob, so
     # one variable turns it on for the GUI recorder, run_plan.py --movie and the
     # stress renderer at once -- and OFF is the default everywhere, because
@@ -392,19 +345,12 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                   'change no copper, so a film without the camera shows '
                   'nothing for them; use --camera auto (or make_film) to film '
                   'the placement' % _lead, file=sys.stderr)
-    # #887: the second panel is OPT-IN, exactly like the camera above, and for
-    # the same reason -- one variable turns it on for the GUI recorder,
-    # run_plan.py --movie and the stress renderer at once. `marks` is asked for
-    # ONLY when the panel is on, and `marks=None` is build_boards' own default,
-    # so the fast path below is not merely equivalent to what it was: it is the
-    # same call.
     # #887: the run clock is PRESENCE-GATED, not a mode. cmd_timing.jsonl
     # exists only in a teed stress-run work dir, so every existing movie --
     # the GUI recorder's, place_route_loop's, render_run's, and every
     # board-sequence invocation outside such a run -- is untouched. That is a
     # far narrower trigger than the #431 camera's, which is why the camera is
     # opt-in and this is not.
-    want_iso = _panels_wanted(panels, quiet)
     ledger = None
     # `timing is None` is AUTO, and testing it as a string was a real bug:
     # `str(None).lower()` is 'none', which the off-list contained, so the
@@ -434,12 +380,12 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                 ledger = cmd_timing.find_ledger(inputs[0])
             except Exception:                                   # noqa: BLE001
                 ledger = None
-    marks = [] if (want_iso or ledger) else None
+    marks = [] if ledger else None
     # #1018: resolved once inside build_boards; collected here so the status
-    # line can say which layout ran and why, the way iso_status_line does.
+    # line can say what frame ran and what it gave up.
     geom_out = []
     import frame_layout
-    layout, aspect = frame_layout.resolve_layout_aspect(layout, aspect)
+    aspect = frame_layout.resolve_aspect(aspect)
     # The run directory's own name is the closest thing a multi-step chain has
     # to a board name, and it is what the rail's stable left should carry.
     # `title` (--title) wins; else the run directory; else `board_title`
@@ -452,11 +398,10 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                               who='make_movie')
     # THE BANDS AND PANELS (#1087): one implementation for make_movie and
     # make_film, planned BEFORE the frame so their regions are reserved --
-    # the attempts band or (stage3d) the benchmark band, the placement
-    # panels, and whether the iso panel gets a box of the layout's own.
+    # the benchmark band, or the placement panels.
     import film_passes
     _bands = film_passes.plan(
-        steps, final, layout, attempts=attempts,
+        steps, final, attempts=attempts,
         attempts_ledger=attempts_ledger,
         placement={'off': placement_panel is False,
                    'asked': placement_panel,
@@ -464,28 +409,26 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
                    'benchmark': benchmark_board,
                    'benchmark_score': benchmark_score,
                    'intent': floorplan_intent},
-        want_iso=want_iso, iso_opts=iso_opts, quiet=quiet, who='make_movie',
-        aspect=aspect)
+        quiet=quiet, who='make_movie')
     _lands = {}
     if _bands.ptrack is not None and marks is None:
         marks = []
-    _band, _iso_box = _bands.band, _bands.iso_box
+    _band = _bands.band
     frames = a.build_boards(steps, final, size, supersample, layer_alpha,
                             rip_hold, chunks, stage=stage, marks=marks,
-                            theme=theme, layout=layout, aspect=aspect,
+                            theme=theme, aspect=aspect,
                             geom_out=geom_out, title=_title,
                             frames_sink=spool, max_frames=max_frames,
-                            attempts_band=_band, iso_panel=_iso_box,
+                            attempts_band=_band,
                             lands_out=_lands, board3d=board3d, fps=fps)
     if not frames:
         if not quiet:
             print("make_movie: no frames (nothing routed?)", file=sys.stderr)
         return None
     _geom0 = geom_out[0] if geom_out else None
-    # #1021. THE BANDS, before the clock and before the iso panel:
-    # composition order is board -> bands -> clock -> iso, so a band sits
-    # adjacent to the board it annotates and the iso panel still stacks
-    # last. Status lines print EVEN WHEN QUIET (bare, as they always did).
+    # #1021. THE BANDS, before the clock: composition order is board ->
+    # bands -> clock, so a band sits adjacent to the board it annotates.
+    # Status lines print EVEN WHEN QUIET (bare, as they always did).
     frames = film_passes.compose(frames, _bands, _geom0, marks, _lands, theme,
                                  quiet=quiet, who='')
 
@@ -527,12 +470,6 @@ def _make_movie(inputs, out, size, fps, supersample, layer_alpha, rip_hold,
             # A clock is decoration; it may never take the movie down.
             if not quiet:
                 print('make_movie: no run clock (%s)' % exc, file=sys.stderr)
-    if want_iso:
-        # PRINTED EVEN WHEN QUIET: the only channel that says whether the
-        # panel ran, was skipped, or failed -- and the GUI recorder, the front
-        # end the env knob exists for, calls make_movie with quiet=True.
-        frames = film_passes.compose_iso(frames, _bands, _geom0, marks, final,
-                                         iso_opts, theme, who='')
     if geom_out and not quiet:
         import frame_layout
         print(frame_layout.frame_status_line(geom_out[0]), file=sys.stderr)
@@ -600,33 +537,27 @@ def main():
                     help='also dump the raw PNG frames here')
     ap.add_argument('--png', action='store_true',
                     help='also write a full-resolution still of the final board')
-    import frame_layout as _fl
-    ap.add_argument('--layout', default=None,
-                    help=_fl.layout_choices()
-                         + " ('stage3d' is the default, or "
-                         "$KICAD_MOVIE_LAYOUT; 'legacy' is the old frame). "
-                         "auto picks stacked-vs-sidebar from the "
-                         "board's own aspect; inset-vs-split is a "
-                         "stance about what the viewer is there to "
-                         "read, so it is never inferred, and so is "
-                         "stage3d (the 3D board, #1081)")
     ap.add_argument('--aspect', default=None, metavar='W:H',
                     help="target frame aspect, or $KICAD_MOVIE_ASPECT. "
-                         "'board' (default) keeps today's behaviour: "
-                         "the frame IS the board's bounding box")
+                         "Default 16:9, the stage3d frame's own (the only "
+                         "film layout: the board, a layer column and one "
+                         "band). Outside 1:2..3:1 the frame is board-only, "
+                         "and says so")
     ap.add_argument('--no-attempts', action='store_true',
-                    help="drop the attempts band (#1021). The band is drawn "
-                         "when loop_round*.json sidecars or a converge ledger "
-                         "sit next to the boards; a chain with no search "
-                         "behind it has none and says so.")
+                    help="drop the benchmark band (#1021, #1081). The band "
+                         "is drawn when loop_round*.json sidecars or a "
+                         "converge ledger sit next to the boards; a chain "
+                         "with no search behind it gets the placement "
+                         "panels instead, and says so.")
     ap.add_argument('--attempts-ledger', default=None, metavar='PATH',
-                    help='the converge ledger to draw the attempts band and '
-                         'the placement panels from, instead of looking '
-                         'beside the boards (#1042)')
+                    help='the converge ledger to draw the benchmark band '
+                         'from, instead of looking beside the boards; the '
+                         'placement panels read their laps and scores from '
+                         'it too (#1042)')
     ap.add_argument('--benchmark-board', default=None, metavar='PATH',
                     help="a benchmark board (the human's, or a previous "
                          "run): drawn DASHED on the placement arrangement "
-                         "panel, and -- with --layout stage3d -- the 100%% "
+                         "panel, and the 100%% "
                          "line of the benchmark band, gold once a WORKING "
                          "board beats it on (vias, copper, segments)")
     ap.add_argument('--benchmark-score', default=None, metavar='PATH',
@@ -634,7 +565,7 @@ def main():
                          "document (must name that board by board_sha); "
                          "without it board_score is run once to grade it")
     ap.add_argument('--board-3d', default=None, choices=('auto', '2d', 'blender'),
-                    help="stage3d only: 'auto' (default) draws the 3D board "
+                    help="'auto' (default) draws the 3D board "
                          "when Node, playwright-core (npm ci in "
                          "py_router/stage3d) and a Chromium are present, "
                          "else the 2D X-ray and says why; '2d' always the "
@@ -665,60 +596,6 @@ def main():
     ap.add_argument('--tween', type=int, default=10,
                     help='frames per placement glide; 0 = no glide, cut '
                          'straight to the new placement (default: 10)')
-    iso = ap.add_argument_group(
-        '3D isometric panel (#887)',
-        'Stack a kicad-cli 3D render UNDER the X-ray board view. OFF by '
-        'default: a render costs ~2-4 s against a whole movie of about a '
-        'second, and this subsystem exists precisely because kicad-cli was '
-        'dropped from it (#482). Every flag here is inert under --panels xray.')
-    iso.add_argument('--panels', default=None, choices=PANEL_SETS,
-                     help="'xray' (default, or $KICAD_MOVIE_PANELS) or "
-                          "'xray+iso'")
-    iso.add_argument('--iso-max-renders', type=int, default=24, metavar='N',
-                     help='THE cost cap, as a COUNT of renders rather than a '
-                          'number of seconds, so the same chain composes the '
-                          'same movie on a fast machine and a slow one. '
-                          '0 disables the panel even with --panels xray+iso. '
-                          '(default: 24, about 20 s over 4 workers: 6 waves of 4)')
-    iso.add_argument('--iso-height-frac', type=float, default=0.62,
-                     metavar='F',
-                     help='iso panel height as a fraction of the X-ray panel '
-                          '(default: 0.62)')
-    iso.add_argument('--iso-sweep', type=float, default=60.0, metavar='DEG',
-                     help='total yaw travelled across the whole film -- what '
-                          'makes the bottom panel animated rather than a '
-                          'still, at no extra cost (default: 60)')
-    iso.add_argument('--iso-quality', default='basic',
-                     choices=('basic', 'high', 'user', 'job_settings'),
-                     help='basic measured 1.4-2.7 s serial and 1.9-4.2 s '
-                          'four at once; high measured 5.0-7.5 s on the '
-                          'same four boards, about 3x (default: basic)')
-    iso.add_argument('--iso-allow-bare', action='store_true',
-                     help='draw the iso panel even when the 3D models do not '
-                          'resolve. #1016: by default a MOSTLY BARE board gets '
-                          'no panel, because 38%% of every frame would be a '
-                          'rotating rectangle showing no routing')
-    iso.add_argument('--iso-floor', action='store_true',
-                     help='kicad-cli --floor: shadows and post-processing')
-    iso.add_argument('--iso-perspective', action='store_true',
-                     help='perspective instead of orthographic. Off by '
-                          'default: orthographic keeps the board the same '
-                          'apparent size across the yaw sweep')
-    iso.add_argument('--iso-zoom', type=float, default=None)
-    iso.add_argument('--iso-jobs', type=int, default=None, metavar='N',
-                     help='parallel renders (default: min(4, cpu count)). The '
-                          'movie is identical at any value. (At '
-                          '--iso-quality high kicad-cli is not reproducible '
-                          'against itself run to run, on any worker count; '
-                          'basic is.)')
-    iso.add_argument('--iso-timeout', type=float, default=120.0,
-                     metavar='SECONDS',
-                     help='HANG GUARD on ONE render -- not a budget, and it '
-                          'trims no content. The cost cap is '
-                          '--iso-max-renders (default: 120)')
-    iso.add_argument('--kicad-cli', default=None, metavar='PATH',
-                     help='explicit binary; else $KICAD_CLI, else the shared '
-                          'resolver')
     clock = ap.add_argument_group(
         'run clock (#887)',
         'A run wrapped in tests/stress/tee_cmd.py leaves a cmd_timing.jsonl. '
@@ -741,29 +618,9 @@ def main():
             and not os.path.isfile(args.timing)):
         ap.error('--timing-ledger: no such file: %s' % args.timing)
 
-    # UNCONDITIONALLY. Gating this on `args.panels == 'xray+iso'` dropped every
-    # --iso-* flag whenever the panel was turned on by KICAD_MOVIE_PANELS
-    # instead of by the flag: the panel ran at full defaults and nine options
-    # were discarded in silence. It looked correct in the obvious test, because
-    # `--panels xray+iso --iso-quality high` does set both. The comparison
-    # against the default 24 had the same shape -- typing the default
-    # explicitly was indistinguishable from not typing it.
-    #
-    # Building it always costs nothing: IsoOpts is inert under `--panels xray`,
-    # where compose_two_panel is never called at all.
-    import movie_panels
-    iso_opts = movie_panels.IsoOpts(
-        max_renders=args.iso_max_renders,
-        height_frac=args.iso_height_frac, sweep_deg=args.iso_sweep,
-        quality=args.iso_quality, floor=args.iso_floor,
-        require_models=not args.iso_allow_bare,
-        perspective=args.iso_perspective, zoom=args.iso_zoom,
-        jobs=args.iso_jobs, timeout=args.iso_timeout,
-        cli=args.kicad_cli)
-
     try:
         out = make_movie(args.inputs, out=args.output, theme=args.theme,
-                         layout=args.layout, aspect=args.aspect,
+                         aspect=args.aspect,
                          size=args.size, fps=args.fps,
                          supersample=args.supersample, layer_alpha=args.layer_alpha,
                          rip_hold=args.rip_hold, chunks=args.chunks,
@@ -780,7 +637,6 @@ def main():
                        camera=args.camera,
                        camera_budget=args.camera_budget,
                        tween=args.tween,
-                       panels=args.panels, iso_opts=iso_opts,
                        attempts=(False if args.no_attempts else None),
                        timing=args.timing)
     except FileNotFoundError as e:

@@ -112,6 +112,19 @@ def build_parser():
                         'labelled an observed regression baseline; a pile '
                         'records why in context.decap_census.auto_withheld '
                         'rather than a limit of 0.0 (#959)')
+    p.add_argument('--decaps-from', default=None, metavar='BOARD',
+                   help='with --emit-intent: derive decaps.max_distance_mm '
+                        'from this PLACED reference board of the same design '
+                        '(a human layout, an earlier placement) instead of '
+                        'the board being emitted -- the way to arm the decap '
+                        'rule on a pile, where nothing can be read (#1099). '
+                        'Same derivation and withholding as --declare-decaps; '
+                        'the census records decaps_basis reference:<file>. '
+                        'Also derives decaps.max_pin_distance_mm (supply pin '
+                        'to nearest cap, #1102) and, when the reference keeps '
+                        'every rail cap inside the search radius, promotes '
+                        'decap_ungraded to error. Overrides the '
+                        '--*declare-decaps arms')
     p.add_argument('--declare-decaps', dest='declare_decaps',
                    action='store_const', const='strict',
                    help='with --emit-intent: ALSO derive decaps.'
@@ -496,12 +509,21 @@ def main(argv=None):
                         args.board_edge_clearance)[2]
 
     _require_brief_failed = False
+    if args.decaps_from and not args.emit_intent:
+        print("ERROR: --decaps-from derives a limit INTO an emitted intent; "
+              "pass --emit-intent with it", file=sys.stderr)
+        return 2
+    if args.decaps_from and not os.path.isfile(args.decaps_from):
+        print(f"ERROR: --decaps-from {args.decaps_from}: no such board",
+              file=sys.stderr)
+        return 2
     if args.emit_intent:
         try:
             doc = emit_intent(pcb, args.board, group_sources=sources or (),
                               declare_classes=args.declare_classes,
                               derive_decaps=args.declare_decaps,
-                              brief_fragment=brief_fragment or None)
+                              brief_fragment=brief_fragment or None,
+                              decaps_from=args.decaps_from)
         except UntrustworthyOutline as exc:
             print(f"ERROR: {args.board}: {exc}", file=sys.stderr)
             return UNPLACED_EXIT
@@ -611,31 +633,60 @@ def main(argv=None):
                   f"{len(doc['must_lock'])} locked part(s)")
             print(f"  envelope {doc['envelope']['rect']} -- read from the "
                   f"board. The outline is not editable by this toolchain")
+            # #1103: a pile says what it did not read off its poses.
+            _pcw = (doc.get('context') or {}).get('pose_claims_withheld')
+            if _pcw:
+                print(f"  pile: {_pcw['reason']} -- withheld "
+                      f"{', '.join(_pcw['withheld'])} for "
+                      f"{len(_pcw['refs_off_board'])} unlocked part(s) off the board; "
+                      f"kept: {_pcw['kept']}")
             # #704: the decap number and what it COSTS, next to each other.
             cen = (doc.get('context') or {}).get('decap_census') or {}
             lim = (doc.get('decaps') or {}).get('max_distance_mm')
             held = ((doc.get('context') or {}).get('budget_withheld')
                     or {}).get('decaps.max_distance_mm')
             if lim is not None:
+                _src = (f"{cen.get('reference_tethers')} tether(s) on the "
+                        f"reference {os.path.basename(cen['reference_board'])}"
+                        if cen.get('reference_board')
+                        else f"{cen.get('tethers')} tether(s)")
                 print(f"  decaps: max_distance_mm {lim} from "
-                      f"{cen.get('tethers')} tether(s) -- NOTE: place_seed "
+                      f"{_src} -- NOTE: place_seed "
                       f"READS this key and will seat "
                       f"{cen.get('seeder_pin_scope')} cap(s) per supply pin "
                       f"instead of zone-packing them")
             elif held:
                 print(f"  decaps: max_distance_mm WITHHELD -- {held}")
+            # #1102: the pin limit --decaps-from derives beside it.
+            _plim = (doc.get('decaps') or {}).get('max_pin_distance_mm')
+            if _plim is not None:
+                _pc = cen.get('reference_pin_census') or {}
+                print(f"  decaps: max_pin_distance_mm {_plim} from "
+                      f"{_pc.get('covered')} supply pin(s) on the reference")
+            elif cen.get('pin_limit_withheld'):
+                print(f"  decaps: max_pin_distance_mm not derived -- "
+                      f"{cen['pin_limit_withheld']}")
             elif cen.get('auto_withheld'):
                 # #959: auto's withholding is kept out of budget_withheld
                 # (no exit change), and printed here so it is not silent.
                 print(f"  decaps: max_distance_mm not derived (auto) -- "
                       f"{cen['auto_withheld']}")
+            # A severity the emit RAISED is said whether or not a pin limit
+            # came with it: it rides on the tether limit, and the esp_prog
+            # fixtures promote with the pin limit withheld (2 covered pins).
+            if cen.get('decap_ungraded_promoted'):
+                print(f"  decaps: decap_ungraded promoted to error -- "
+                      f"{cen['decap_ungraded_promoted']}")
             # The two causes are printed SEPARATELY (#792). One number
             # used to carry both, and the doc explained it with a third
             # cause -- a predicate mismatch -- that measurement says does
             # not exist. A reader cannot act on a conflated count: the
             # first is a grading hole to widen or accept, the second is a
             # design fact about caps that have no IC at all.
-            if cen.get('beyond_radius'):
+            # A limit read off a --decaps-from reference owes nothing to THIS
+            # board's census, so the "not derived from them" line is only
+            # true without one.
+            if cen.get('beyond_radius') and not cen.get('reference_board'):
                 print(f"  decap census: {cen['beyond_radius']} rail-sharing "
                       f"cap(s) lie beyond the {cen['search_radius_mm']}mm "
                       f"search radius (worst {cen['worst_beyond_mm']}mm), "

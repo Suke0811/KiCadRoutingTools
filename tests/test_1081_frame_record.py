@@ -102,9 +102,11 @@ def test_one_chrome_record_and_one_stage_record_per_frame():
 
 
 def test_no_caption_over_the_board_when_a_rail_carries_it():
-    """#1083: 0 over-board stamps on a rail layout -- and the legacy frame,
-    which has no rail, still gets its caption (the stamp was not just
-    deleted)."""
+    """#1083: 0 over-board stamps on a film -- every film frame has a rail
+    (stage3d is the only layout) -- and a frame with NO rail still gets its
+    caption, so the stamp was not just deleted. The rail-less control is
+    `build_single`, the one path that plans no frame; the flip-caption
+    control this used to run was the retired legacy frame's."""
     calls = []
     orig = RR.BoardRenderer._label
 
@@ -114,18 +116,18 @@ def test_no_caption_over_the_board_when_a_rail_carries_it():
     RR.BoardRenderer._label = _spy
     try:
         with FC.Chain() as c:
-            FC.film(c.boards, layout='sidebar')
+            FC.film(c.boards)
             rail = list(calls)
             del calls[:]
-            FC.film(c.boards, layout='legacy')
-            legacy = list(calls)
+            A.build_single({'events': []}, c.boards[-1], 320, 1, None, 2)
+            bare = list(calls)
     finally:
         RR.BoardRenderer._label = orig
-    _check(rail == [], 'sidebar (rail): no over-board caption (%d stamps: %s)'
+    _check(rail == [], 'stage3d (rail): no over-board caption (%d stamps: %s)'
            % (len(rail), rail[:3]))
-    _check(any('B side' in t for t in legacy),
-           'legacy (no rail): the flip is still captioned (%d stamps)'
-           % len(legacy))
+    _check(any('routed' in (t or '') for t in bare),
+           'no rail (build_single): the frame is still captioned (%s)'
+           % bare[:3])
 
 
 def test_a_back_side_glide_draws_its_ghost():
@@ -182,10 +184,27 @@ def test_copper_revealed_after_the_flip_is_mirrored():
     """#1085: the copper reveal after a flip to B is seen from the back. The
     last reveal frame and the first outro frame show one state at one view
     (the settle already brought the camera home), so their board boxes are
-    EQUAL -- before the fix the outro frame equalled the reveal's MIRROR."""
+    EQUAL -- before the fix the outro frame equalled the reveal's MIRROR.
+
+    Those two checks are RELATIVE: a film that stopped mirroring after the
+    flip altogether is self-consistent and passes them (on the stage3d
+    frame, measured: `mutate_1081`'s copper-after-the-flip-unmirrored
+    survived). So the renderer's own calls are counted too -- every frame
+    recorded as seen from the back must have been rendered with
+    `mirror=True`."""
+    calls = []
+    orig = RR.BoardRenderer.frame
+
+    def _frame(self, *a, **k):
+        calls.append(bool(k.get('mirror')))
+        return orig(self, *a, **k)
     with FC.Chain() as c:
         out = {}
-        frames, _m, st, g = FC.film(c.boards, stage_out=out)
+        RR.BoardRenderer.frame = _frame
+        try:
+            frames, _m, st, g = FC.film(c.boards, stage_out=out)
+        finally:
+            RR.BoardRenderer.frame = orig
         outro = _shots(st, 'outro')[0][0]
         flip_end = _shots(st, 'flip')[0][1]
         bx = g.board
@@ -222,47 +241,14 @@ def test_copper_revealed_after_the_flip_is_mirrored():
                    'copper-step frame %d is seen from the back: %d px off '
                    'the mirrored snapshot, %d px off its mirror image'
                    % (k, near, far))
+        n_back = sum(1 for r in out['log'] if r['mirror'])
+        _check(n_back and sum(calls) >= n_back,
+               'every back-side frame is rendered mirrored (%d mirror=True '
+               'renders for %d back-side frames)' % (sum(calls), n_back))
         flags = [r['mirror'] for r in out['log'][flip_end:]]
         _check(flags and all(flags),
                'every frame after the flip is recorded mirrored (%d of %d)'
                % (sum(flags), len(flags)))
-
-
-def test_the_key_is_drawn_after_the_mirror_at_any_supersample():
-    """The in-frame key (legacy layout, no rail) is TEXT: on a back-side
-    frame it must be drawn AFTER the mirror, at the renderer's supersampled
-    resolution -- the phase-2 verifier measured 94 of 140 key pixels wrong
-    at supersample 2 when it was drawn at 1x after the frame was finished.
-    Pinned structurally, on the calls the renderer receives: every mirrored
-    frame that carries a key carries it in `overlays_after_mirror`, never in
-    `overlays`, which the mirror would reverse."""
-    calls = []
-    orig = RR.BoardRenderer.frame
-
-    def _frame(self, *a, **k):
-        calls.append((k.get('mirror', False), list(k.get('overlays') or ()),
-                      list(k.get('overlays_after_mirror') or ())))
-        return orig(self, *a, **k)
-
-    def _is_key(fn):
-        return '_key_overlay' in getattr(fn, '__qualname__', '')
-    RR.BoardRenderer.frame = _frame
-    try:
-        with FC.Chain() as c:
-            import os as _os
-            tr = FC.rip_trace(c.boards[-1], _os.path.join(c.dir, 't.json'))
-            FC.film(c.boards, layout='legacy', traces={3: tr})
-    finally:
-        RR.BoardRenderer.frame = orig
-    mirrored = [x for x in calls if x[0]]
-    keyed = [x for x in mirrored if any(_is_key(f) for f in x[2])]
-    _check(mirrored and keyed,
-           '%d mirrored frames, %d carry the key after the mirror'
-           % (len(mirrored), len(keyed)))
-    _check(not any(_is_key(f) for x in mirrored for f in x[1]),
-           'no mirrored frame draws the key before the mirror')
-    _check(not any(x[2] for x in calls if not x[0]),
-           'the front side draws nothing after a mirror it does not have')
 
 
 def test_the_stage3d_column_is_always_the_layer_strip():
@@ -272,17 +258,13 @@ def test_the_stage3d_column_is_always_the_layer_strip():
     verification), which read as three widgets beside one 3D board."""
     import animate_route as A2
     import render_panels as RP
-    calls = {'strip': 0, 'inventory': 0}
-    o_strip, o_inv = RP.draw_layer_strip, RP.draw_inventory
+    calls = {'strip': 0}
+    o_strip = RP.draw_layer_strip
 
     def _strip(*a, **k):
         calls['strip'] += 1
         return o_strip(*a, **k)
-
-    def _inv(*a, **k):
-        calls['inventory'] += 1
-        return o_inv(*a, **k)
-    RP.draw_layer_strip, RP.draw_inventory = _strip, _inv
+    RP.draw_layer_strip = _strip
     try:
         with FC.Chain() as c:
             geom = []
@@ -290,14 +272,16 @@ def test_the_stage3d_column_is_always_the_layer_strip():
             import movie_camera as MC
             st = MC.Stage(MC.synth_rounds(c.boards), '', tween=4, quiet=True)
             frames = A2.build_boards(steps, c.boards[-1], 480, 1, None, 2, 6,
-                                     stage=st, layout='stage3d',
+                                     stage=st,
                                      geom_out=geom, board3d='2d')
             list(frames)
     finally:
-        RP.draw_layer_strip, RP.draw_inventory = o_strip, o_inv
-    _check(calls['strip'] == len(frames) and calls['inventory'] == 0,
-           'stage3d: the layer strip on all %d frames, the placement bars '
-           'on none (%s)' % (len(frames), calls))
+        RP.draw_layer_strip = o_strip
+    _check(calls['strip'] == len(frames),
+           'stage3d: the layer strip on all %d frames (%s)'
+           % (len(frames), calls))
+    _check(not any(hasattr(RP, n) for n in ('draw_inventory', 'phase_for')),
+           'and nothing else the column could switch to is left')
 
 
 TESTS = (
@@ -305,7 +289,6 @@ TESTS = (
     test_no_caption_over_the_board_when_a_rail_carries_it,
     test_a_back_side_glide_draws_its_ghost,
     test_copper_revealed_after_the_flip_is_mirrored,
-    test_the_key_is_drawn_after_the_mirror_at_any_supersample,
     test_the_stage3d_column_is_always_the_layer_strip,
 )
 

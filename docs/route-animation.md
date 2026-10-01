@@ -9,12 +9,10 @@ Unlike the KiCad-based renderer it replaces, none of this needs KiCad,
 geometry directly with [Pillow](https://python-pillow.org/), so a still is
 ~0.2 s and a full movie renders in about a second.
 
-That is still true of everything below **by default**, and it is the reason this
-subsystem exists. One opt-in feature does need `kicad-cli` — the 3D isometric
-panel (#887) — and it is off unless asked for, costs ~2-4 s per render when it
-is, and degrades to the ordinary single-panel movie, at full speed and with a
-stated reason, when the binary is absent. See
-[the 3D isometric panel](#the-3d-isometric-panel-and-the-run-clock-887).
+That is still true of everything below, and it is the reason this subsystem
+exists. (The 3D isometric `kicad-cli` panel #887 added is retired: the stage3d
+layout's own 3D board replaced it. `py_router/kicad_iso_render.py` remains as
+a standalone CLI.)
 
 Three pieces:
 
@@ -207,7 +205,7 @@ The **output extension picks the format**:
 
 `make_movie` spools every frame to a temp directory as it is drawn
 (`py_router/frame_spool.py`) and applies the post-passes (the planned frame,
-the attempts band, the run clock, the iso panel) per frame while the encoder
+the band, the run clock) per frame while the encoder
 streams. Run 32's 22-board chain reached 29.5 GB before this change. How
 flat memory stays depends on the output. An `.mp4` (imageio-ffmpeg) is encoded
 one frame at a time, so memory does not grow with the frame count. A `.gif`,
@@ -219,8 +217,8 @@ render, from the platform's own peak-RSS counter (no psutil): 6x the frames as
 an `.mp4`, or two GIFs both over the cap. Either way peak RSS stays flat,
 while the same frames held in a list grow by about 300 MB.
 
-**An overlay that fails costs the overlay, not the film.** The attempts band,
-the run clock and the iso panel are drawn while the encoder streams, so a frame
+**An overlay that fails costs the overlay, not the film.** The band
+and the run clock are drawn while the encoder streams, so a frame
 one of them cannot draw would otherwise surface in the encoder. That overlay is
 instead dropped from that frame to the end of the film, `movie: <overlay>
 DROPPED` is printed once, and the film is still written at one size. A frame
@@ -312,67 +310,7 @@ only touching the moves as a last resort.
 
 ---
 
-## The 3D isometric panel, and the run clock (#887)
-
-Two optional additions to the frame. **Both are off by default, and the fast
-path above is unchanged when they are** — which matters here more than it
-usually would, because this subsystem exists precisely because `kicad-cli` was
-taken out of it, and one of these puts it back on an opt-in path.
-
-### `--panels xray+iso` — a 3D view under the board
-
-```bash
-python3 py_router/make_movie.py WORKDIR --panels xray+iso -o routing.mp4
-KICAD_MOVIE_PANELS=xray+iso python3 py_router/make_movie.py WORKDIR   # env knob, same effect
-```
-
-The X-ray board view keeps the full frame width and a `kicad-cli pcb render` is
-stacked underneath it. Like the camera, it has no GUI control of its own: one
-variable covers the GUI recorder, `run_plan.py --movie` and the stress renderer
-at once.
-
-**What it does NOT show is routing progress.** Copper sits under soldermask, so
-the 3D view barely changes as tracks are laid. What it shows is the parts moving
-across placement rounds, and the board turning: shot *k* of *K* is rendered at
-`yaw0 + sweep·k/(K−1)`, one slow turn across the whole film. That sweep is what
-makes the panel animated, and it is free — a different `--rotate` costs exactly
-the same render.
-
-Measured on KiCad 10.0.0, and each number shapes the design:
-
-| | |
-|---|---|
-| one render, `--quality basic` | **1.4–2.7 s** serial on a quiet machine; **1.9–4.2 s** when four run at once, which is what `--iso-jobs 4` actually pays. Load matters more than the board: across tigard, lvds, ulx3s (225 models) and glasgow_revC (224), 3 reps each, one quiet pass spreads under 2x, with glasgow consistently slowest |
-| `--quality high` | **5.0–7.5 s** on the same four boards at 1035×700 — about 3x `basic`, which is why `basic` is the default. (#887's own table reports 12.6 s, but at 900×700 `--floor`, which is a different question) |
-| 8 renders, serial vs 6 workers | **~2.4x**, e.g. 24.0 s vs 10.2 s |
-| a 900×700 request returns | **872×672** |
-| a 640×480 request returns | **616×448** — the same for two very different boards, and across an 8-step yaw sweep |
-
-So: **one render per chain STEP, never per frame** (`--iso-max-renders`, default
-24, caps it — a COUNT rather than a number of seconds, so the same chain
-composes the same movie on a fast machine and a slow one), and **the returned
-size is never trusted**. Every panel is letterboxed into a box the composer
-chose, and the render is asked for at 1.15× that box so the fit downscales
-rather than blurs.
-
-**Component bodies depend on the board, and their absence is silent.**
-`kicad_files/tigard.kicad_pcb` renders as a *bare board* — pads, mask,
-silkscreen, no parts. Its 84 `(model …)` references are 81 `${KISYS3DMOD}` +
-3 `${KIPRJMOD}`, and 82 of them name a `.wrl`, while KiCad 10 ships `.step`;
-`-D KISYS3DMOD=…` does not fix it. `lvds_converter_dualclk` renders fully populated. `kicad-cli` says
-nothing either way, so the panel counts what is actually on disk and captions
-`3D models N/M`, adding `BARE BOARD` and the reason at zero — never an empty
-green rectangle that reads as a bug.
-
-Without `kicad-cli` you get the single-panel movie at full speed and a line
-saying so, naming `$KICAD_CLI`. That is a whole-movie decision taken **once**,
-before compositing, and it is made on a probe render rather than on the binary
-merely existing — because after the first composed frame the height is fixed and
-cannot change. A single failed render later keeps its box with the reason drawn
-inside it, for the same reason: mixed frame sizes make `_write_mp4` degrade the
-whole movie to GIF, silently.
-
-### The run clock
+## The run clock (#887)
 
 A run wrapped in `tests/stress/tee_cmd.py` leaves a `cmd_timing.jsonl`, and when
 the movie finds one beside the chain it draws a run-clock overlay bottom-left,
@@ -442,13 +380,9 @@ python3 -X utf8 py_router/cmd_timing.py WORKDIR --json
 
 ## The render design system (#946)
 
-![one board, every layout, one pixel budget](946-layouts.png)
-
 ![the same board in both measured themes](946-themes.png)
 
 ![every event and defect role, authored and deuteranope](946-palette.png)
-
-![the attempts band](946-attempts.png)
 
 
 Two films are rendered from one engine, and before #946 they did not agree with
@@ -467,11 +401,11 @@ Four modules now hold it, and every renderer imports them:
 | module | owns |
 |---|---|
 | `py_router/render_theme.py` | *what things look like* — semantic roles, two measured themes, the mark vocabulary. **Imports no PIL**, so `render_placement` can import it at module scope |
-| `py_router/frame_layout.py` | *where things are* — named layouts, aspect presets, every box in final pixels. Pure geometry, no PIL, no board reads |
+| `py_router/frame_layout.py` | *where things are* — the stage3d frame, aspect presets, every box in final pixels. Pure geometry, no PIL, no board reads |
 | `py_router/render_chrome.py` | the in-frame key, the rail and the totals |
-| `py_router/render_panels.py` | the lower box and its four contents |
+| `py_router/render_panels.py` | the layer column (the per-layer strip) and the board summary |
 
-plus `py_router/movie_attempts.py` (the attempts band) and
+plus `py_router/movie_attempts.py` (the search behind a film) and
 `py_router/copper_motion.py` (retract and grow).
 
 ### Themes
@@ -539,97 +473,53 @@ margin that silently collapsed from 12.0× to 4.6×, and a baseline alone cannot
 say whether the new number is acceptable, so regenerating it launders a
 regression.
 
-### Ratios and layouts
+### The frame and its aspect
 
-`--layout` and `--aspect` on `make_movie.py`, or `$KICAD_MOVIE_LAYOUT` /
-`$KICAD_MOVIE_ASPECT`.
+There is one film layout, `stage3d` (see *The stage3d film* below): the board,
+a layer column beside it, a rail along the top, a foot along the bottom, and one
+band above the foot -- for `make_movie`, `make_film`, the GUI recorder and
+`place_route_loop`'s film alike. The legacy board-aspect frame and the
+`stacked` / `sidebar` / `inset` / `split` / `auto` layouts are retired, and so
+are the layout flag and `$KICAD_MOVIE_LAYOUT`: a script still passing the flag
+is refused by argparse (exit 2), and the variable, if still set, is named once
+on stderr as retired (`frame_layout.warn_retired_knobs`).
 
-`stage3d` is the film's default since #1081, at the requester's call: the 3D
-board, the layer column and the benchmark band (see *The stage3d film* below)
--- for `make_movie`, `make_film`, the GUI recorder and `place_route_loop`'s
-film alike, through the one resolver `frame_layout.resolve_layout_aspect`.
-`legacy` still reproduces the old frame exactly (`--layout legacy` or
-`$KICAD_MOVIE_LAYOUT=legacy`), and `plan_frame(layout=None)` still means
-legacy for a caller that plans a frame directly.
+`--aspect` on `make_movie.py` or `make_film.py`, or `$KICAD_MOVIE_ASPECT`,
+declares the frame's ratio; without one it is 16:9. Both front ends resolve it
+through the one function `frame_layout.resolve_aspect`. A retired layout's name
+given as the aspect (`--aspect stacked`, `$KICAD_MOVIE_ASPECT=sidebar`, or
+`build_boards(aspect=...)`) declares nothing: it is named once on stderr as
+retired and the frame is the default 16:9. Any other value that is not a ratio
+is refused.
 
-**A declared size is kept.** With `--aspect` given, or a layout with an aspect
-of its own (`stacked`, `sidebar`, `split`), the frame is exactly that size.
-The attempts band is reserved inside it (`plan_frame(track_px=)`), out of the
-board's share. It used to be grown under every frame afterwards, so a 16:9 film
-with a band came out taller than 16:9. `tests/test_946_frame_layout.py` checks
-the whole layout × ratio cross product as plan data, and encodes 30 real films
-(5 layouts × 3 ratios × 2 themes) and reads their size back. Two things still
-grow the frame, and the status lines say so: the run clock (its height is
-measured from the finished text) and the iso view on `legacy`/`inset`, which
-have no panel to put it in.
+**A declared size is kept.** The frame is exactly the declared size. The band
+is reserved inside it (`plan_frame(track_px=)`), out of the board's share. It
+used to be grown under every frame afterwards, so a 16:9 film with a band came
+out taller than 16:9. `tests/test_946_frame_layout.py` checks the ratio cross
+product as plan data, and encodes real films in both themes and reads their
+size back. One thing still grows the frame, and the status line says so: the
+run clock (its height is measured from the finished text).
 
-**The 3D view goes into the layout's own panel** with `--panels xray+iso` on
-`make_movie.py` or `make_film.py`. On `stacked` and `split` the lower box is
-split left/right (the iso view gets 42% of the width). On `sidebar` the column
-is split top/bottom. The per-layer strip draws into the other half. The panel's
-gate is asked before the frame is planned (`movie_panels.preflight`), so a
-board that would be gated as mostly bare gets no empty box reserved for it.
-
-**Themes reach every region.** The cards and badges in `make_film`, the iso
-panel's ground, caption strip and error text, and the run clock's band draw in
+**Themes reach every region.** The cards and badges in `make_film`, the
+panels' ground and error text, and the run clock's band draw in
 the active theme. `--theme` takes `dark` or `light` in any case and refuses anything else.
 `--layer-alpha` defaults to the theme's own measured alpha (dark 150, light
 205). The CLIs used to pass 150 explicitly, so LIGHT's measured 205 was never
 used.
 
-| layout | arrangement | frame aspect | px/mm on copper | px per layer cell |
-|---|---|---|---|---|
-| `stacked` | board full width, panel below | 0.62:1 | 10.00 | 113 000 |
-| `sidebar` | board left, panel a right column | 1.78:1 | 12.38 | 100 050 |
-| `inset` | board fills frame, panel a corner inset | 1.85:1 | **15.76** | 28 490 |
-| `split` | board on top, lower box split | 1.60:1 | 11.06 | **128 800** |
-| `auto` | `sidebar` on a wide board, `stacked` otherwise, **`legacy` on an extreme one** | — | — | — |
-
-`inset` covers part of the board with its corner panel **by design**. It is the layout that trades the panel for copper pixels, and the pads under the inset are hidden for the whole film. Use `split` or `stacked` when every pad must stay visible.
-
-*(one pixel budget — 1.62 Mpx — on a 1.85:1 board, four cells across the
-panel.)* **Re-derive it rather than trusting it:**
-
-```bash
-python3 -X utf8 py_router/layout_budget.py --swing
-```
-
-Every figure above is that command's output, and
-`tests/test_946_layout_budget.py` compares the two on every run. It has to:
-`inset`'s px-per-layer-cell was quoted as "32k" in four places — including the
-comment on `CELL_MIN_W`, the constant that leans on it — and is **28 490**. A
-12% error that nothing could catch, because nothing computed it.
-
-**No layout wins both metrics, on any board shape.** `inset` wins px/mm
-everywhere and loses px-per-layer-cell everywhere (28 490 against `split`'s
-128 800, a **4.5× penalty**); `split` is the mirror image. `stacked` and
-`sidebar` genuinely swap, by **8.8–23.8%**, on board aspect — and the crossover
-falls exactly at `ADAPTIVE_ASPECT_CUT`, which is the number `auto` branches on. That asymmetry is the design rule:
-
-> **`stacked`-vs-`sidebar` is INFERRED; `inset`-vs-`split` is DECLARED.**
-> Picking between the first pair from `board_info.board_bounds` costs one
-> comparison and is right across the corpus. Choosing `inset` over `split` is a
-> decision about what the film is *for*, so it is a flag, never an inference.
-
-**`auto` gives up its chrome outside `EXTREME_ASPECT_LO`..`EXTREME_ASPECT_HI`.** Every chrome layout has a FIXED board-box aspect and only `legacy` inherits the board's, so a board far outside the corpus range fills very little of whichever box it is given — and the adaptive cut, tuned on 0.5–2.5, picked the *second worst* option for a 6.5:1 board. Measured at size 560 on such a board:
-
-| layout | board box aspect | the board fills |
-|---|---|---|
-| `legacy` | 6.51 | **100%** |
-| `split` | 2.95 | 45% |
-| `inset` | 14.74 | 44% |
-| `sidebar` | 1.53 | 24% |
-| `stacked` | 0.98 | 15% |
-
-In a real placement film that showed up as the board holding **4.6–4.9% of the frame** during the beats where parts were moving — the camera zoomed *in* and the subject got *smaller*. Chrome you cannot afford is not a feature, so outside the band `auto` returns `legacy` and says so.
+**A frame too far from square is board-only.** Outside
+`EXTREME_ASPECT_LO`..`EXTREME_ASPECT_HI` a 70 x 70 board box and a layer column
+cannot both fit. The frame stays a stage3d frame at the declared ratio, with
+its rail and foot, but the board box takes the whole width, there is no layer
+column, the band is drawn only if the board keeps its height floor, and
+`FrameGeometry.notes` says so.
 
 | constant | value |
 |---|---|
 | `EXTREME_ASPECT_LO` (`py_router/frame_layout.py`) | 0.50 |
 | `EXTREME_ASPECT_HI` (`py_router/frame_layout.py`) | 3.00 |
 
-`FrameGeometry.chosen_by` carries the sentence — `"adaptive: board aspect 1.41 >
-1.25"` — and `frame_layout.frame_status_line` prints it.
+`frame_layout.frame_status_line` prints the frame and every note.
 
 | constant | value |
 |---|---|
@@ -637,33 +527,30 @@ In a real placement film that showed up as the board holding **4.6–4.9% of the
 | `FOOT_FRAC` (`py_router/frame_layout.py`) | 0.045 |
 | `RAIL_MIN_PX` (`py_router/frame_layout.py`) | 22 |
 | `FOOT_MIN_PX` (`py_router/frame_layout.py`) | 26 |
-| `ADAPTIVE_ASPECT_CUT` (`py_router/frame_layout.py`) | 1.25 |
 
 **Both frame dimensions are forced even.** Only the height ever was, while
 `animate_route._write_mp4` crops `a.shape[0] & ~1` **and** `a.shape[1] & ~1` —
 so a taller-than-wide board silently lost a pixel column in every mp4 this repo
-had written. Planning `legacy` too means the frame is even *before* the encoder.
+had written. The planned frame is even *before* the encoder.
 
 `frame_layout.assert_frames_uniform` is wired into `animate_route.save_movie`,
 the choke point every front end passes through. **On failure it reports loudly
 and pads; it does not raise** — aborting a routing run for a cosmetic reason is
-something this repo refuses elsewhere (`movie_panels._finite`). The film is
+something this repo refuses elsewhere. The film is
 produced, the defect is audible, and the distortion is a letterbox rather than
 a squash.
 
-### The lower box
+### The layer column
 
-One fixed rect, four contents, switched by the phase the frame belongs to:
-
-| phase | content |
-|---|---|
-| bookend | a board summary — parts, nets, copper layers, segments, vias |
-| placement | the inventory: how much of the board is seated, by reference class |
-| routing | the per-layer strip |
-| seeding | the same inventory, emptying as the pile empties |
+One fixed rect beside the board (a row under it on a portrait frame), and ONE
+content on every frame: the per-layer strip, with the board's numbers -- parts,
+nets, copper layers, segments, vias -- under it when there is room. It sits
+beside a board that already shows the placement, so it does not switch by
+phase; the placement inventory, the seeding pile and the bookend summary it
+used to switch between were the retired layouts' lower box.
 
 It is **one box** because a panel that appears and disappears changes frame
-height, and Pillow does not raise on that — it writes a valid file in which
+height, and Pillow does not raise on that -- it writes a valid file in which
 every later frame has been silently resized to the first.
 
 The strip is the answer to the 19 two-layer crossings that landed within 34 of
@@ -689,24 +576,26 @@ draws fewer, wider cells and says `+N more`. And a count that would touch the
 layer name is **dropped, not overprinted** — measured overlap was +25 px at
 `CELL_MIN_W` exactly and +23 px at a 180 px box.
 
-### The attempts band
+### The search behind the film
 
 Routing and placement are not one shot. `place_route_loop` tries a round,
-routes it, keeps it or throws it away, and tries again — and the search is on
+routes it, keeps it or throws it away, and tries again -- and the search is on
 disk in full, because `write_round_sidecar` records every round including the
-rejected ones. Nothing drew it.
+rejected ones. The film draws the search as the stage3d frame's benchmark band
+(below), and reads it with `movie_benchmark.discover` beside the boards: the
+converge ledger (`ledger.jsonl`, else `converge.jsonl`) when one holds a lap,
+**else** the `loop_round*.json` sidecars -- one record or the other, never the
+two joined. A ledger named by `--attempts-ledger` or `--from-ledger` is read
+alone. `py_router/movie_attempts.py` still reads all three records -- the loop
+sidecars, a converge ledger, an `awx` evolve ledger -- into one `Track` of
+`Attempt`s, and shares its record rule with `awx`, but no film draws that
+`Track` any more. What its readers decide:
 
 ```bash
 python3 py_tools/make_film.py --from-loop-dir wk/ -o film.gif
 python3 py_tools/make_film.py --from-ledger converge/ledger.jsonl -o film.gif
 python3 py_router/make_movie.py RUNDIR --no-attempts     # the OFF arm
 ```
-
-Every round is a point; the record is a step-line. x is when an attempt was
-born, y its accept-rule score with **lower higher on screen**. A node is hollow
-while something is still blocking and filled once it is admissible; a kept
-attempt is ringed; the gold staircase labels each new record once; and the band
-grows with the film behind a visibility horizon.
 
 **The axis is the run's own accept rule, chosen once over the whole list and
 named in the label.**
@@ -732,7 +621,7 @@ film reads *"how much is still unrouted after moving the parts"*. That is the
 run's own accept rule; a placement score would not be.
 
 The sidecar also carries `ratsnest_crossings`, `ratsnest_hpwl` and
-`ratsnest_length`, and the band deliberately does **not** plot them.
+`ratsnest_length`, and the reader deliberately does **not** rank on them.
 `_ratsnest_screen` uses them to decide whether a candidate is worth paying a
 routing run for — it is a *screen*, not the judge. Plotting a screen where the
 verdict belongs is the same failure in its exact form, and there is a
@@ -740,7 +629,7 @@ measurement behind it: on one run crossings were **anti-correlated** with
 correctness.
 
 A placement tool that does not route — `place_optimize`, `place_seed`,
-`place_portfolio` — writes no `loop_round*.json` at all, so there is no band
+`place_portfolio` — writes no `loop_round*.json` at all, so there is no track
 and nothing is invented.
 
 `best_so_far` is one algorithm with two policy flags, shared with
@@ -753,55 +642,38 @@ staircase collapses to a single point.
 **An ungraded attempt is not a zero.** A screened round's sidecar carries
 `metrics: {}` on purpose, and a converge row's `blocking: null` means a
 component that was asked for could not answer. Neither is dropped and neither is
-plotted at the axis floor: they are a tick on the rail, counted in the caption.
+read as the axis floor: each is an UNGRADED attempt, counted in the track's note.
 A `blocking` that is not a count (a per-term dict, a boolean, a string, NaN, a
-negative) is drawn the same way and counted in the note: `converge.blocking_value`
+negative) is read the same way and counted in the note: `converge.blocking_value`
 is the rule, and `movie_attempts._blocking_value` mirrors it (#1077).
 
-**A place-and-route run is ONE graph.** A combined run leaves two records of
+**Two records, and the film draws one.** A combined run leaves two records of
 its search: the converge ledger (placement laps and routing laps, told apart by
 `kind`), and `loop_round*.json` sidecars when `place_route_loop` ran. When both
-sit next to the boards, `movie_attempts.discover` joins them
-(`join_tracks`). The x-axis counts laps across both halves: the half that
-started first keeps its indices and the other is shifted past it. The second
-half's root descends from the first half's last kept attempt. Both axes are a
-blocking term (`score.blocking`, `failures`), and the label names both. A loop
-ranked on an `--accept-cmd` scalar is not joined, and the note says it was left
-out.
+sit next to the boards the film's band is the LEDGER's (`movie_benchmark.
+discover` looks for it first); the sidecars are not drawn. `movie_attempts.
+discover` can join the two into one `Track` (`join_tracks`: the half that
+started first keeps its indices, the other is shifted past it, and its root
+descends from the first half's last kept attempt; a loop ranked on an
+`--accept-cmd` scalar is not joined), but no film path calls it.
 
 **x is run time when the ledger has a clock (#1042).** A converge ledger's
-rows carry `t`. When every attempt has one, x is run time over the ledger's
-whole span, placement laps included, and the caption adds `[x: run time]`. The
-placement panels draw the same domain. A joined converge + loop graph has no
-time on its loop half, so it keeps the lap index.
+rows carry `t`. When every lap has one, the band's x domain is run time over
+the ledger's whole span, placement laps included, and the placement panels
+read the same domain. Loop sidecars carry no clock, so a band read from them
+keeps the lap index.
 
 **Lineage follows `parent_sha`.** A ledger row with no `parent_sha`, or one
-naming a board no row produced, is drawn from the last accepted row before it,
-which is the loop's own rule. The caption counts those guesses, because under
+naming a board no row produced, descends from the last accepted row before it,
+which is the loop's own rule. The note counts those guesses, because under
 parallel lineages the guess can be wrong. They stay guesses until `record`
 takes a parent explicitly (#1034).
 
-**The axis breaks when a few attempts dwarf the rest.** Run 32's ledger
-opens at blocking 12 703 (the unplaced pile) and spends about 200 laps between
-19 and 43. On a linear axis those laps share one pixel row, and the record's
-drops 41 → 38 → 33 → 32 → 30 cannot be seen. So the working range (every
-graded attempt up to the 90th percentile, `WORK_PCTL`, padded) gets the main
-plot. The attempts above it are compressed on a log scale into a thin strip at
-the bottom (`STRIP_FRAC` 0.18) under a break mark, and the caption says
-`[axis broken above N]`. The break is offset-based: it happens only when the
-gap between the worst attempt and the working range's top is larger than
-`BREAK_RATIO − 1` (1×) times the working range's own span, so it behaves the
-same for negative scores. Otherwise, or when the broken axis cannot be drawn,
-the whole range is one linear scale. `tests/test_1036_attempts_axis.py` checks
-that the working laps span at least half the plot on the run-32 ledger and on
-a synthetic track, and that a linear axis and a log axis both fail that check.
+**Nothing is synthesised.** No sidecars and no ledger means no track, and no
+band from it.
 
-**Nothing is synthesised.** No sidecars and no ledger means no band, and the
-status line says so in words. One attempt is also an OFF arm — `attach` then
-returns the frame list completely untouched, the same list object holding the
-same images.
-
-**And it refuses a frame too short to carry it.** `BAND_MIN_PX` is a floor with no opinion about the frame it is floored in: on a long thin board rendered `legacy` at 560x86 the band took **74% of the picture**, and 52% at 124 px — a time series about the run dwarfing the film it annotates. Above `BAND_MAX_FRAC` there is no room for one, and `attach` declines and says so rather than shipping a band nobody can read.
+`movie_attempts.band_height` still sizes the stage3d frame's one band
+(`build_boards(attempts_band=True)`), under these:
 
 | constant | value |
 |---|---|
@@ -811,16 +683,14 @@ same images.
 
 ### The placement panels (#1042)
 
-The attempts band keeps the routed VERDICT on its axis. A converge ledger's
-placement lap scores the copper-free board, where `blocking` is every net
-unrouted: run 32's accepted placement rows read 267 → 251 → 239 on that axis
-while the laps moved floorplan errors 41 → 11. So when the ledger also holds
-graded routing laps, or loop rounds supply the routing half, placement laps are
-taken OFF the verdict axis and the caption counts them. A placement-only ledger
-has no routed verdict to protect: its laps are the whole search, so the band
-draws them, as `make_film --from-ledger` does for the placement skill's film.
-Placement gets three panels of its own beside the band
-(`py_router/movie_placement.py`):
+The routed VERDICT keeps placement off its axis. A converge ledger's placement
+lap scores the copper-free board, where `blocking` is every net unrouted: run
+32's accepted placement rows read 267 → 251 → 239 on that axis while the laps
+moved floorplan errors 41 → 11. So placement gets three panels of its own
+(`py_router/movie_placement.py`). On the stage3d frame they are the film's one
+band when no converge ledger or loop rounds sit behind the film -- a placement
+chain made from boards alone; with a ledger, the benchmark band folds the
+placement laps into its one curve instead.
 
 | panel | y | series | instrument |
 |---|---|---|---|
@@ -848,16 +718,16 @@ Placement gets three panels of its own beside the band
   parts, an unreadable file) is marked on the axis and listed on the status
   line, never plotted as zero. With no intent and no ledger, the INTENT plot
   reads "unmeasured".
-- **x is run time** when the ledger carries `t`, over the same domain the
-  verdict band draws (`movie_attempts.ledger_time_domain`, every row,
-  placement laps included). A re-entry sits where it happened. A board no
+- **x is run time** when the ledger carries `t`, over the ledger's whole
+  domain (`movie_attempts.ledger_time_domain`, every row, placement laps
+  included). A re-entry sits where it happened. A board no
   row names (the pile, the run's input) sits at the start. Boards closer
   than `MIN_BEAT_PX` (8) are spread to it so each keeps its own point.
   Without a clock, x is the board order. The header says which.
 - **One point per placement board.** Never per frame, because a glide's
   frames are pixel interpolation, not evaluated placements. Points appear
   board by board. A beat changes on the frame its glide LANDS
-  (`build_boards(lands_out=)`), the same frame the inventory changes. Before
+  (`build_boards(lands_out=)`). Before
   the first beat lands, no point and no flag is drawn. Once the film is
   routing, the header says "placement settled".
 - **The floor is in the legend.** When the last board's conflict pairs are
@@ -871,33 +741,22 @@ Placement gets three panels of its own beside the band
   text before its first ':', wrapped at words and never cut.
 - **Readable or not drawn.** Every plot is at least `PLOT_MIN_PX` (48) tall,
   and every title, footer line and legend word renders whole.
-  `movie_placement.plan_band` sizes the band for this frame: side by side
-  (placement in 46, 52 or 58 % of the width) when three panels fit there,
-  else stacked with placement on top. The verdict graph gives up height down
-  to its 64 px floor, and the band never takes more than `BAND_MAX_FRAC`
-  (0.48) of the frame. A LANDSCAPE frame (w >= 1.25 h) with a band keeps
-  the side-column arrangement: board on the left, iso, layer grid and stats
-  in a right-hand column (`ISO_SIDE_FRAC`, with or without iso), and the
-  band as the one bottom row, placement panels left and verdict right. The
-  band is capped there so the board box keeps `BOARD_MIN_SHARE` (0.55) of the
-  frame height after the rail and the foot. Side by side, placement takes
-  whichever of 46, 52 or 58 % of the width needs the least height. A
-  full-width lower box under the board as well as the band left a 16:9 split
-  frame a 1000x170 board box before this. Elsewhere `frame_layout` keeps the
-  board box at `BOARD_ALONE_MIN_SHARE` (0.30) of the frame, so a tall band
-  shrinks the lower panel, not the board. The verdict band's caption shortens
-  to whole clauses when it sits beside the panels, and is never dropped. A box too narrow for three panels keeps fewer,
-  INTENT then LEGALITY then ARRANGEMENT, and the header names what was
-  dropped. When nothing readable fits, the panels are declined and the
-  status line says why. Measured over 5 layouts × 5 ratios × {500, 1000,
-  1400} px: every frame at 1000 and 1400 draws. At 500 px, landscape frames
-  decline, and so does any frame that also carries the verdict graph. A
-  failed draw repaints the box and says so.
+  `movie_placement.plan_band` sizes the band for this frame: the panels' own
+  need, never more than `BAND_MAX_FRAC` (0.48) of the frame, and never more
+  than the stage3d board's height floor leaves after the rail and the foot.
+  A box too narrow for three panels keeps fewer, INTENT then LEGALITY then
+  ARRANGEMENT, and the header names what was dropped. When nothing readable
+  fits, the panels are DECLINED and the status line says why -- on a 16:9
+  frame, whose board keeps 70% of the height, that is most sizes (measured:
+  they draw at 1:1 from 1000 px and at 1400 px on 4:3, 16:10 and 9:16). They
+  used to be sized under a looser 55% share and then drawn into the box the
+  frame actually kept, which held no readable panel while the status line
+  said they were drawn. A failed draw repaints the box and says so.
 - **Flags.** `--attempts-ledger PATH`, `--benchmark-board PATH` (the human's
   board or a previous run, drawn dashed), `--floorplan-intent PATH` and
   `--no-placement-panel` exist on both `make_movie.py` and `make_film.py`.
-  `--attempts-ledger` feeds both the verdict band and the panels, so a film
-  rendered from copies away from the run directory still has both.
+  `--attempts-ledger` feeds the benchmark band and the panels' track, so a
+  film rendered from copies away from the run directory still reads it.
 
 On run 32's glasgow_revC chain (#1042) the panels read:
 
@@ -984,45 +843,42 @@ raise has to come past the measurement rather than around it.
 
 ### No GUI control
 
-None of `--theme`, `--layout`, `--aspect` or `--no-attempts` adds a dialog
+None of `--theme`, `--aspect`, `--board-3d` or `--no-attempts` adds a dialog
 control, which is the second arm of CLAUDE.md's CLI/GUI parity rule taken
 explicitly: the GUI's movie button passes no movie parameters at all
 (`movie_recorder.py:160` is `make_movie(boards, out=out, quiet=True)`), and the
 env knobs are how a feature with no dialog control of its own reaches every
-front end at once — the same rationale `KICAD_MOVIE_CAMERA` and
-`KICAD_MOVIE_PANELS` already carry.
+front end at once — the same rationale `KICAD_MOVIE_CAMERA` already
+carries. A RETIRED knob (`KICAD_MOVIE_LAYOUT`, which chose between the
+retired layouts, and `KICAD_MOVIE_PANELS`, the iso panel's) is not ignored in
+silence: `frame_layout.warn_retired_knobs` names every one still set, in one
+line, once, on stderr.
 
-**The env knob and the kwarg parse asymmetrically**, following
-`make_movie._panels_wanted`: an unknown value in the *knob* warns to stderr and
+**The env knob and the kwarg parse asymmetrically**: an unknown value in the *knob* warns to stderr and
 falls back (a typo in a shell must not abort a routing run that happened to ask
 for a movie), while an unknown value passed as a *kwarg* raises and names the
 accepted set (a typo in code is a bug).
 
 ## The stage3d film: a 3D board and one benchmark band (#1081)
 
-`--layout stage3d` on `make_movie.py` or `make_film.py` (or
-`$KICAD_MOVIE_LAYOUT=stage3d`). It has three regions:
+The film's only layout, on `make_movie.py`, `make_film.py`, the GUI recorder
+and `place_route_loop`'s film. It has three regions:
 
 - **the board**, top-left, at least 70 % of the frame's width and height, drawn
   in 3D;
-- **the layer column** on its right: the lower box's own contents by phase, with
-  the per-layer strip while routing;
+- **the layer column** on its right: the per-layer strip, with the board's
+  numbers under it, on every frame;
 - **one benchmark band** along the bottom, full width.
-
-`auto` never picks it, because like C and D it is a stance.
 
 ### Geometry
 
 The floor is a promise the frame keeps before anything else gets room. A band
 that would push the board below it is shrunk, then declined. A portrait frame
 turns the column into a row under the board, and drops the row when it would be
-too short to read. A declared aspect outside 0.50–3.00 falls back to `legacy` at
-the board's own aspect. A frame too small to keep the floor at all still
+too short to read. A declared aspect outside 0.50–3.00 is a board-only frame
+at that ratio: no layer column, the band only if it fits. A frame too small to keep the floor at all still
 renders. Each of these is written to `FrameGeometry.notes`, and
 `frame_status_line` prints them, so no give-up is silent.
-
-`layout_budget` does not measure stage3d on purpose. px/mm varies across a
-perspective view, so the figure would not compare with the flat layouts'.
 
 | constant | value |
 |---|---|
@@ -1149,13 +1005,15 @@ test self-skips there and names why.
 
 `make_movie` and `make_film.build_film` compose their bands and panels through
 `py_router/film_passes.py`: `plan()` decides, before the frame is planned, what
-it must reserve (the attempts or benchmark band, the placement panels, the iso
-box); `compose()` and `compose_iso()` draw them. What stays in each front end
+it must reserve (the attempts or benchmark band, the placement panels);
+`compose()` draws them. What stays in each front end
 is its own: make_movie's run clock, make_film's badges and cards.
 
 ### The benchmark band
 
-This band replaces the attempts band and the placement panels in this layout.
+This band folds the retired attempts band and the placement panels into one
+curve; a film with no ledger or loop rounds behind it draws the placement
+panels instead.
 Placement and routing laps become one curve on one run-time axis, split into two
 regimes by one line (`movie_benchmark`, `ledger_score`).
 

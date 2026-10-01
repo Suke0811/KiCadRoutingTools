@@ -77,7 +77,6 @@ TARGETS = {
     'panels': os.path.join(_ROOT, 'py_router', 'render_panels.py'),
     'attempts': os.path.join(_ROOT, 'py_router', 'movie_attempts.py'),
     'motion': os.path.join(_ROOT, 'py_router', 'copper_motion.py'),
-    'iso': os.path.join(_ROOT, 'py_router', 'movie_panels.py'),
 }
 
 
@@ -89,7 +88,6 @@ T_PAL = _t('test_946_palette_measures.py')
 T_THEME = _t('test_946_theme_completeness.py')
 T_KEY = _t('test_946_event_key.py')
 T_XING = _t('test_946_opaque_crossings.py')
-T_ISO = _t('test_946_iso_gate.py')
 T_PLAN = _t('test_946_plan_overlay.py')
 T_LAY = _t('test_946_frame_layout.py')
 T_CAP = _t('test_946_caption_split.py')
@@ -147,11 +145,8 @@ ROWS = [
      "        self.opaque_crossings = False",
      (T_XING,), 'KILLED'),
 
-    # --- P6: the iso gate ---------------------------------------------------
-    ('iso-panel-drawn-on-a-board-with-no-models', 'iso',
-     "        self.require_models = bool(require_models)",
-     "        self.require_models = False",
-     (T_ISO,), 'KILLED'),
+    # --- P6: the iso gate -- retired with the iso panel (stage3d is the
+    # only film layout); its row went with movie_panels.py.
 
     # --- P7: the declared plan ---------------------------------------------
     # The FULL diagonals, which is what the first version of this drew. The
@@ -188,10 +183,8 @@ ROWS = [
      "    H = even(H)",
      (T_LAY,), 'KILLED'),
 
-    ('auto-infers-a-stance-it-must-never-infer', 'layout',
-     "    if a > ADAPTIVE_ASPECT_CUT:\n        return 'sidebar', ('adaptive: board aspect %.2f > %.2f'\n                           % (a, ADAPTIVE_ASPECT_CUT))",
-     "    if a > ADAPTIVE_ASPECT_CUT:\n        return 'split', ('adaptive: board aspect %.2f > %.2f'\n                         % (a, ADAPTIVE_ASPECT_CUT))",
-     (T_LAY,), 'KILLED'),
+    # 'auto-infers-a-stance-it-must-never-infer' went with 'auto': stage3d
+    # is the only film layout.
 
     ('mixed-frame-sizes-are-squashed-silently', 'anim',
      "        frame_layout.assert_frames_uniform(sorted(sizes))",
@@ -230,10 +223,8 @@ ROWS = [
      "    if False:",
      (T_BOX,), 'KILLED'),
 
-    ('an-unplaced-board-pretends-it-was-repaired', 'panels',
-     "    if unplaced:\n        return 'seeding'",
-     "    pass",
-     (T_BOX,), 'KILLED'),
+    # 'an-unplaced-board-pretends-it-was-repaired' went with phase_for and the
+    # seeding inventory (the retired layouts' lower box).
 
     # --- P11: the attempts band --------------------------------------------
     ('the-axis-becomes-vias-instead-of-the-accept-rule', 'attempts',
@@ -290,10 +281,8 @@ ROWS = [
      "                and True",
      (T_ATT,), 'KILLED'),
 
-    ('the-off-arm-rebuilds-the-frame-list', 'attempts',
-     "        report['why'] = ('no loop_round*.json sidecars and no converge '\n                         'ledger: this chain is one attempt')\n        return frames, report",
-     "        report['why'] = ('no loop_round*.json sidecars and no converge '\n                         'ledger: this chain is one attempt')\n        return list(frames), report",
-     (T_ATT,), 'KILLED'),
+    # 'the-off-arm-rebuilds-the-frame-list' went with movie_attempts.attach:
+    # the attempts band is not drawn by any film layout left.
 
     ('attempts-are-synthesised-from-the-boards', 'attempts',
      "    loop = attempts_from_loop_dir(d)\n",

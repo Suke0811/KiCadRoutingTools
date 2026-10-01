@@ -521,6 +521,46 @@ ROWS = [
     },
 ]
 
+# --- #1099: the seeder's diagonal fallback, OFF vs ON -----------------------
+# NOT ADOPTED as a default: measured NEUTRAL on all five boards, the two arms
+# writing identical poses footprint for footprint -- none of the unseated
+# parts on tigard (2), orangecrab (4), ulx3s (2) or rp2350 (1) is one the
+# diagonals seat, and esp_prog seats everything. No evidence either way, so
+# the flag stays opt-in (`place_seed --diagonal-rotations`) and these rows
+# are a change detector. The 90-degree lattice is searched at every clearance
+# step first; only a part it seats NOWHERE gets a second pass at 45/135/225/
+# 315 (and a cap on a chip seated off the lattice tries the chip's angles
+# first). So a board whose parts all seat orthogonally writes the same poses
+# in both arms, and the signal is `unseated`: the parts left in the pile.
+# The four trial boards are the ones whose seed leaves parts unseated today
+# (decaps-auto / band-edge baselines); esp_prog is the neutral control.
+_DIAG_BOARDS = ('tigard.kicad_pcb', 'orangecrab_ext_pll.kicad_pcb',
+                'ulx3s.kicad_pcb', 'rp2350_fpga_eensy_prePlane.kicad_pcb',
+                'esp_prog.kicad_pcb')
+ROWS += [
+    {
+        'name': f'diag-seed-{b[:-len(".kicad_pcb")]}',
+        'board': b,
+        'corridors': [],
+        'engine': 'seed',
+        'seed_off': {'diagonal_rotations': False},
+        'seed_on': {'diagonal_rotations': True},
+        'ignore_nets': ['GND'],
+        'signal': 'unseated',
+        'guard': ('crossings', 'hpwl', 'inversions', 'body_blocking'),
+        'expect': 'neutral',
+        'rejected': True,
+        'why': ('MECHANISM: prefer, then fall back. A part the 90-degree '
+                'lattice seats nowhere at any clearance step is offered the '
+                'diagonals instead of staying in the pile; every part that '
+                'seats orthogonally is seated exactly as in the OFF arm. The '
+                'guards catch the cost: a diagonal part is judged on its '
+                'rotated box (conservative), and every part seated after it '
+                'sees it as an obstacle.'),
+    }
+    for b in _DIAG_BOARDS
+]
+
 # #959 (#1002): `check_floorplan --emit-intent`'s decap derivation, OFF vs
 # AUTO. The product path the default would change: a PLACED board is
 # emitted (auto derives `decaps.max_distance_mm` = ceil(max) of its own

@@ -72,7 +72,8 @@ FACE_ALIASES = {'n': 'north', 'north': 'north',
 LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
                  'pad_edge_conflicts', 'pad_edge_unmeasured',
                  'oob_keepout_copper_count',
-                 'oob_graphic_copper_count')
+                 'oob_graphic_copper_count',
+                 'mating_keepout_count')
 
 #: The MAGNITUDES, and they are not a nicety: a count arm alone accepts a
 #: request that keeps the tally and deepens the damage. Measured on the
@@ -83,16 +84,22 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
 #: the
 #: outline the top-priority placement defect, so its AMOUNT is an arm too.
 #: The graphic-copper overrun is one for the same reason (#962).
+#: #1100: conflicting PAIRS, compared as sets -- a new pair is refused even
+#: when the counts tie.
+PAIR_KEYS = ('pad_conflict_pairs', 'hole_conflict_pairs')
+
 MAGNITUDE_KEYS = ('pad_shortfall', 'oob_pad_amount', 'pad_edge_shortfall',
                   'oob_keepout_copper_amount',
-                  'oob_graphic_copper_amount')
+                  'oob_graphic_copper_amount',
+                  'mating_keepout_amount')
 
 #: What `legal` does and does NOT cover, published with every summary (#962
 #: follow-up item 4). A partial claim must read as partial.
 LEGAL_SCOPE = ('pad-pad clearance', 'hole-hole clearance', 'pad copper vs the '
                'outline', 'pad copper vs the edge-clearance floor',
                'footprint graphic copper vs the outline',
-               'pad copper vs a board rule-area keep-out band (#1031)')
+               'pad copper vs a board rule-area keep-out band (#1031)',
+               "part bodies vs a PCB-edge plug's mating region (#1098)")
 LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     '(disclosed as graphic_edge_shortfall_refs, not gated)',
                     'footprint copper the parser does not model: pad-less '
@@ -389,23 +396,30 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
 # ---------------------------------------------------------------------------
 
 def grade(pcb_data, board_path: str, clearance: float,
-          board_edge_clearance=None) -> Dict:
+          board_edge_clearance=None, declared_keepouts=()) -> Dict:
     """`grade_pad_legality` at this board's own poses -- never a re-derivation.
 
     `pcb_file` is passed so `PadClearanceModel` can read the netclasses, the
     `.kicad_dru` layer rules and any pad `local_clearance` override (#697):
     a board that declares none of the three grades exactly as a flat scalar
     would, and one that declares them is graded the way check_drc will.
+    `declared_keepouts` is the intent's keep-outs (#1098): a declared
+    `mating:<ref>` replaces the derived plug region, as in the seeder.
     """
     from placement.legality import grade_pad_legality
     return grade_pad_legality(pcb_data, clearance, pcb_file=board_path,
-                              edge_margin=board_edge_clearance)
+                              edge_margin=board_edge_clearance,
+                              declared_keepouts=declared_keepouts)
 
 
 def worsened(before: Dict, after: Dict) -> List[str]:
     """Which legality categories the request made worse. [] is the good case."""
     out = [k for k in LEGALITY_KEYS
            if (after.get(k) or 0) > (before.get(k) or 0)]
+    # #1098: an unmeasured plug mating region is not a clean one --
+    # check_assembly fails closed on it, and so does this verb.
+    if after.get('mating_keepout_error'):
+        out.append('mating_keepout_error')
     out += [k for k in MAGNITUDE_KEYS
             if (after.get(k) or 0.0) > ((before.get(k) or 0.0) + MAGNITUDE_EPS)]
     # #962: a SWAP can hold the graphic-copper count and summed amount level
@@ -424,12 +438,33 @@ def worsened(before: Dict, after: Dict) -> List[str]:
                     < (before.get('oob_graphic_copper_amount') or 0.0) - MAGNITUDE_EPS)
         if new and not improved:
             out.append('oob_graphic_copper_refs')
+    # #1100: the same question for pad and hole conflicts, with NO
+    # improvement exemption. Run 37 seated C18 so that it left a conflict it
+    # had in the off-board pile and made one on the board with D11: the
+    # count tied (2 -> 2) and the board was written with a short. A pair
+    # that did not exist before is new damage whatever else went away; a
+    # report without the pair list (an older one) leaves the arm off.
+    for pair_key in PAIR_KEYS:
+        if pair_key in before:
+            had = {tuple(p[:2]) for p in (before.get(pair_key) or ())}
+            fresh = [p for p in (after.get(pair_key) or ())
+                     if tuple(p[:2]) not in had]
+            if fresh:
+                out.append(pair_key)
     return out
+
+
+def new_pairs(before: Dict, after: Dict, pair_key: str) -> List[str]:
+    """`["A/B", ...]`: the pairs in `after[pair_key]` that `before` lacks."""
+    had = {tuple(p[:2]) for p in (before.get(pair_key) or ())}
+    return ['%s/%s' % (p[0], p[1]) for p in (after.get(pair_key) or ())
+            if tuple(p[:2]) not in had]
 
 
 def is_clean(report: Dict) -> bool:
     """Is this board legal in the ABSOLUTE sense, not merely no worse?"""
     return not (report.get('pad_edge', {}).get('complete') is False
+                or report.get('mating_keepout_error')
                 or any(report.get(k) for k in LEGALITY_KEYS)
                 or any((report.get(k) or 0.0) > MAGNITUDE_EPS
                        for k in MAGNITUDE_KEYS))
@@ -673,6 +708,9 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
     placements, notes = resolve_ops(pcb, ops, clearance=clearance,
                                     track_width=track_width)
     check_lock_refs(pcb, lock_refs, unlock_refs)
+    # #1098: the intent's keep-outs reach every grade below, so a declared
+    # `mating:<ref>` is the region this verb holds a move to.
+    declared_keepouts = tuple(getattr(intent, 'keepouts', None) or ())
 
     # A KiCad lock is a DECISION someone recorded in the file -- the seeder
     # stamps the intent's must_lock refs there, and run 25 stamped its rotation
@@ -684,6 +722,34 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
     # waiver flag that also silently lifts locks would make every lock in the
     # chain conditional on a flag nobody re-reads.
     if placements:
+        # #1098: a PCB-edge plug seated at its edge carries the keep-out that
+        # keeps parts off its tongue; moving it inland would take the region
+        # with it and read as an improvement. Treated as a lock: `unlock`
+        # the ref in the same call if the move is meant. The quench's own
+        # set (`seated_plugs`): a plug named by a declared `mating:` keep-out
+        # counts too, and a plug that is NOT seated (in the pile, hanging
+        # across an edge) is free to move.
+        from placement.floorplan import seated_plugs, with_derived_keepouts
+        try:
+            _plugs = seated_plugs(
+                with_derived_keepouts(declared_keepouts, pcb, board_path),
+                pcb, board_path)
+        except Exception as exc:                             # noqa: BLE001
+            raise PoseRefusal(
+                "cannot tell whether a moved part is a seated PCB-edge plug "
+                "(%s: %s); nothing was written" % (type(exc).__name__, exc))
+        _moved_plugs = sorted({p['reference'] for p in placements}
+                              & (_plugs - set(unlock_refs)))
+        if _moved_plugs:
+            raise PoseRefusal(
+                "%s %s a PCB-edge plug seated at its edge: its tongue's "
+                "keep-out (mating:%s) belongs to that pose, and moving it "
+                "would move the region too or leave it behind. Name it in "
+                "`unlock` in the same call if you mean it."
+                % (', '.join(_moved_plugs),
+                   'is' if len(_moved_plugs) == 1 else 'are',
+                   _moved_plugs[0]),
+                locked=_moved_plugs)
         from placement.parser import extract_locked_refs
         locked_now = extract_locked_refs(board_path)
         blocked = sorted({p['reference'] for p in placements}
@@ -723,7 +789,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
         'would_write': out_path,
     }
 
-    before = grade(pcb, board_path, clearance, board_edge_clearance)
+    before = grade(pcb, board_path, clearance, board_edge_clearance,
+                   declared_keepouts)
     stage = tempfile.TemporaryDirectory(prefix='place_pose_')
     try:
         cand = os.path.join(stage.name, 'candidate.kicad_pcb')
@@ -733,7 +800,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
             shutil.copyfile(board_path, cand)
         copy_siblings(board_path, cand)
         cand_pcb = parse_kicad_pcb(cand)
-        after = grade(cand_pcb, cand, clearance, board_edge_clearance)
+        after = grade(cand_pcb, cand, clearance, board_edge_clearance,
+                      declared_keepouts)
         bad = worsened(before, after)
 
         if snap and len(placements) != 1:
@@ -789,7 +857,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 write_placed_output(board_path, cand, trial)
                 copy_siblings(board_path, cand)
                 pcb_c = parse_kicad_pcb(cand)
-                g = grade(pcb_c, cand, clearance, board_edge_clearance)
+                g = grade(pcb_c, cand, clearance, board_edge_clearance,
+                          declared_keepouts)
                 return trial, pcb_c, g, worsened(before, g)
 
             # TWO PHASES, each with its OWN budget, and the reason is the
@@ -863,7 +932,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 write_placed_output(board_path, cand, placements)
                 copy_siblings(board_path, cand)
                 cand_pcb = parse_kicad_pcb(cand)
-                after = grade(cand_pcb, cand, clearance, board_edge_clearance)
+                after = grade(cand_pcb, cand, clearance, board_edge_clearance,
+                              declared_keepouts)
                 bad = worsened(before, after)
 
         # A `face` op's rotation is PREDICTED (FACE_CYCLE) and then MEASURED on
@@ -1257,8 +1327,13 @@ def _promote(staged: str, out_path: str, summary: Optional[Dict] = None, *,
 
 def _refusal_reason(bad, strict, before, after, summary) -> str:
     if bad:
-        parts = ', '.join('%s %s -> %s' % (k, before.get(k), after.get(k))
-                          for k in bad)
+        # A pair list is named by its NEW pairs, not dumped (a pile has
+        # dozens of inherited ones).
+        parts = ', '.join(
+            ('%s new: %s' % (k, ', '.join(new_pairs(before, after, k)))
+             if k in PAIR_KEYS else
+             '%s %s -> %s' % (k, before.get(k), after.get(k)))
+            for k in bad)
         # NO verdict verb in the sentence. It used to end "Refused rather
         # than written", and `--force` reprints this text on a run that WROTE
         # -- so the finding contradicted the outcome in its own last clause.

@@ -129,10 +129,11 @@ def rip_trace(board, path, n=240, rip=24):
     return path
 
 
-def film(boards, layout='sidebar', tween=4, size=320, stage_out=None,
-         traces=None):
+def film(boards, tween=4, size=320, stage_out=None,
+         traces=None, board3d='2d'):
     """`(frames, movie, stage, geom)` from the real build_boards + Stage.
-    `traces` maps a step index to a trace file for that step."""
+    `traces` maps a step index to a trace file for that step. The board is
+    the 2D X-ray unless `board3d` says otherwise, so no Node/Chromium."""
     import animate_route as A
     import movie_camera as MC
     st = MC.Stage(MC.synth_rounds(boards), '', tween=tween, quiet=True)
@@ -148,8 +149,8 @@ def film(boards, layout='sidebar', tween=4, size=320, stage_out=None,
         steps = [('step %d' % i, b, (traces or {}).get(i))
                  for i, b in enumerate(boards)]
         frames = A.build_boards(steps, boards[-1], size, 1, None, 2, 6,
-                                stage=st, layout=layout, geom_out=geom,
-                                stage_out=stage_out)
+                                stage=st, geom_out=geom,
+                                stage_out=stage_out, board3d=board3d)
     finally:
         MC.Stage.attach = orig
     return frames, held['movie'], st, (geom[0] if geom else None)

@@ -283,17 +283,18 @@ def refresh() -> None:
     # CLI/GUI parity story for a feature with no GUI control of its own.
     g['MOVIE_CAMERA'] = _s('KICAD_MOVIE_CAMERA', 'off')
 
-    # #887: the second movie panel. 'xray' (default) is the single full-frame
-    # board view every movie has always been; 'xray+iso' stacks a kicad-cli 3D
-    # render under it. Same shape and same reason as MOVIE_CAMERA above -- the
-    # GUI recorder passes no movie parameters at all (movie_recorder.py:160 is
-    # `make_movie(boards, out=out, quiet=True)`), so one variable is how a
-    # feature with no dialog control of its own reaches every front end at once.
-    g['MOVIE_PANELS'] = _s('KICAD_MOVIE_PANELS', 'xray')
+    # RETIRED movie knobs: `stage3d` is the only film layout, so these
+    # select nothing any more. Read ONLY so a value still set in someone's
+    # shell is SAID (once, by `frame_layout.warn_retired_knobs`) rather than
+    # ignored in silence. KICAD_MOVIE_PANELS was #887's iso panel;
+    # KICAD_MOVIE_LAYOUT chose between the retired layouts.
+    g['MOVIE_RETIRED'] = {k: os.environ[k]
+                          for k in ('KICAD_MOVIE_LAYOUT', 'KICAD_MOVIE_PANELS')
+                          if os.environ.get(k)}
 
     # #946/#1012: the render theme. 'light' (default since #1081, at the
     # requester's call: the stage3d film's mockup is light) for EVERY render;
-    # 'dark' -- KiCad's own canvas -- is one flag or variable away. Same shape and same reason as MOVIE_CAMERA and MOVIE_PANELS
+    # 'dark' -- KiCad's own canvas -- is one flag or variable away. Same shape and same reason as MOVIE_CAMERA
     # above: the GUI recorder passes no render parameters at all
     # (movie_recorder.py:160 is `make_movie(boards, out=out, quiet=True)`), so
     # one variable is how a feature with no dialog control of its own reaches
@@ -302,13 +303,9 @@ def refresh() -> None:
     # cannot be changed afterwards.
     g['RENDER_THEME'] = _s('KICAD_RENDER_THEME', 'light')
 
-    # #946/#1018: the named frame layout, and the target aspect. 'stage3d'
-    # (default since #1081, at the requester's call): the 3D board, the layer
-    # column and the benchmark band. 'legacy' is EXACTLY the frame every movie
-    # had before -- the frame IS the board's bounding box. 'auto' is the adaptive stacked-vs-sidebar rule, read from
-    # board_bounds. Same shape and same reason as MOVIE_CAMERA and
-    # MOVIE_PANELS: one variable reaches every front end at once.
-    g['MOVIE_LAYOUT'] = _s('KICAD_MOVIE_LAYOUT', 'stage3d')
+    # #946/#1018: the film's target aspect ('' = the stage3d frame's own
+    # 16:9). Same shape and same reason as MOVIE_CAMERA: one variable
+    # reaches every front end at once.
     g['MOVIE_ASPECT'] = _s('KICAD_MOVIE_ASPECT', '')
     # #1081: the stage3d board -- 'auto' (the 3D board when this machine can
     # render it, else the X-ray, said), '2d' (always the X-ray) or 'blender'

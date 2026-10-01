@@ -555,6 +555,22 @@ class Footprint:
     # check_drc.footprint_graphic_outline_census re-poses it from this
     # (a side flip is reported unmeasured). None = unknown, taken as unmoved.
     parsed_pose: Optional[Tuple[float, float, float, str]] = None
+    # #1098: the footprint's (attr ...) flags, as the sorted subset of
+    # FOOTPRINT_ATTR_TOKENS it carries, and whether it declares a 3D model.
+    # Together they say what the ASSEMBLY house places: a part flagged
+    # `board_only` or `exclude_from_pos_files` with no model is board copper
+    # (a PCB-trace USB plug, a card edge, a jumper), not a component. Both
+    # parse paths fill them; APPENDED like the fields above.
+    attrs: Tuple[str, ...] = ()
+    has_model: bool = False
+
+
+#: The (attr ...) flags `Footprint.attrs` keeps -- the ones the text form and
+#: pcbnew's GetAttributes() bitmask can both spell, so the two parse paths
+#: agree token for token (#1098).
+FOOTPRINT_ATTR_TOKENS = ('allow_missing_courtyard', 'allow_soldermask_bridges',
+                         'board_only', 'dnp', 'exclude_from_bom',
+                         'exclude_from_pos_files', 'smd', 'through_hole')
 
 
 @dataclass
@@ -3450,6 +3466,10 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
         # open circuit, so callers must not treat its pads as bridging two nets.
         attr_match = re.search(r'\(attr\b([^)]*)\)', fp_text)
         is_dnp = bool(attr_match and re.search(r'\bdnp\b', attr_match.group(1)))
+        fp_attrs = tuple(sorted(
+            t for t in (attr_match.group(1).split() if attr_match else ())
+            if t in FOOTPRINT_ATTR_TOKENS))
+        fp_has_model = bool(re.search(r'\(model\s', fp_text))
 
         # Footprint-level (locked yes): appears in the block header, before the
         # first nested element. Limit the search there so a locked PAD or
@@ -3529,6 +3549,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             paste_margin=fp_paste_margin,
             paste_margin_ratio=fp_paste_ratio,
             parsed_pose=(fp_x, fp_y, fp_rotation, fp_layer),
+            attrs=fp_attrs,
+            has_model=fp_has_model,
         )
 
         # Extract pads
@@ -6023,6 +6045,43 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         except Exception:
             fp_locked = False
 
+        # #1098: (attr ...) flags and the 3D-model declaration, parity with
+        # the text parser (FOOTPRINT_ATTR_TOKENS). pcbnew keeps the flags as
+        # a bitmask plus separate getters for the newer ones.
+        fp_attrs = []
+        try:
+            _bits = int(fp.GetAttributes())
+            for _tok, _const in (('smd', 'FP_SMD'),
+                                 ('through_hole', 'FP_THROUGH_HOLE'),
+                                 ('board_only', 'FP_BOARD_ONLY'),
+                                 ('exclude_from_pos_files',
+                                  'FP_EXCLUDE_FROM_POS_FILES'),
+                                 ('exclude_from_bom', 'FP_EXCLUDE_FROM_BOM'),
+                                 ('dnp', 'FP_DNP')):
+                _v = getattr(pcbnew, _const, None)
+                if _v is not None and _bits & int(_v):
+                    fp_attrs.append(_tok)
+        except Exception:
+            pass
+        # Not in the bitmask on KiCad 10 (no FP_ALLOW_* constant exists):
+        # they have getters of their own.
+        for _tok, _getter in (('allow_missing_courtyard',
+                               'AllowMissingCourtyard'),
+                              ('allow_soldermask_bridges',
+                               'AllowSolderMaskBridges')):
+            try:
+                if getattr(fp, _getter)():
+                    fp_attrs.append(_tok)
+            except Exception:
+                pass
+        if fp_dnp and 'dnp' not in fp_attrs:
+            fp_attrs.append('dnp')
+        fp_attrs = tuple(sorted(set(fp_attrs)))
+        try:
+            fp_has_model = len(fp.Models()) > 0
+        except Exception:
+            fp_has_model = False
+
         # Footprint-level clearance override — parity with the text parser
         # (issue #326). GetLocalClearance() returns IU or an optional/None on
         # KiCad 8+; falsy = no override. Negative (shrinking) overrides clamp
@@ -6155,6 +6214,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             paste_margin=fp_paste_margin,
             paste_margin_ratio=fp_paste_ratio,
             parsed_pose=(fp_x, fp_y, fp_rotation, fp_layer),
+            attrs=fp_attrs,
+            has_model=fp_has_model,
         )
 
         # Extract pads
