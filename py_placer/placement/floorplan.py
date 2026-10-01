@@ -6436,6 +6436,9 @@ class _PosedState:
         self._exclude = frozenset(exclude)
         self._poses = dict(poses or {})
         self.edge_gate = state.edge_gate
+        # #1104: `legality_metrics` reads it; without it a posed view of a
+        # courtyard-waived board priced courtyard overlap again.
+        self.courtyards_ignored = getattr(state, 'courtyards_ignored', False)
 
     def pose(self, ref):
         if ref in self._poses:
@@ -7881,15 +7884,12 @@ def emit_intent(pcb_data, pcb_file: str, *,
     # NOT any `partially_unplaced`: two stacked parts on a placed board set
     # it, and that board's other claims are real; a heap is at least half
     # stacked (run 29's pile: 83%).
-    _sig = _pile_st.signals or {}
     # The heap test counts `stacked_suspect_refs`, which already excuses the
     # far-side and marker co-locations a placed board has on purpose; the
     # raw `duplicate_fraction` does not (verifier: a placed orangecrab with
-    # 60 parts under front-side parts read as a pile).
-    _n_fp = max(1, _pile_st.n_footprints or 0)
-    _pile = bool(_pile_st.unplaced or _sig.get('s3_outside')
-                 or (_pile_st.partially_unplaced
-                     and len(_pile_st.stacked_suspect_refs) / _n_fp >= 0.5))
+    # 60 parts under front-side parts read as a pile). One predicate, shared
+    # with board_brief (#1109).
+    _pile = _pile_st.pile
     _pile_locked = set(extract_locked_refs_safe(pcb_file)) if _pile else set()
     _pose_withheld: List[str] = []
 

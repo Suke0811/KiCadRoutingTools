@@ -13,8 +13,9 @@ prescribe the process.
 Invocation: `/pcb-free-agent <mode> <board.kicad_pcb> [intent.json]`, where
 mode is `full`, `place` or `route`. With no mode, use `full` for an unplaced
 board and `route` for a placed one. `board_brief.py <board> --json`
-(`unplaced`, `has_copper`) is the positive test for which one; exit codes are
-not.
+(`pile`, `has_copper`) is the positive test for which one; exit codes are
+not. Read `pile`, not `unplaced`: a staging ring of parts around the outline
+is a pile but reads `unplaced: false` (#1109).
 
 **Measured basis.** Two runs used this contract before it became a skill:
 - **An 18-part 2-layer board, from a pile:** DONE in 12 min, 6 vias. The
@@ -236,7 +237,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
    python3 -X utf8 py_tools/make_film.py --from-ledger wk/<run>/ledger.jsonl \
        --theme light --aspect 4:3 -o wk/<run>/<run>_film.mp4
    ```
-   Look at a few frames before you call it done.
+   Look at a few frames before you call it done. Its last line says which
+   board box the film got: `make_film: WARNING board box: 2D X-ray` means
+   the 3D board did not render (in a fresh worktree, run `npm ci` in
+   `py_router/stage3d` and film again).
 3. **`wk/<run>/REPORT.md`**, containing:
    - **the result first:** a table of the mode's DONE conditions with measured
      values, the `blocking_by` breakdown, and vias / copper_mm / segments for

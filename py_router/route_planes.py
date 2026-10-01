@@ -4486,10 +4486,14 @@ Examples:
 
     # Validate net/plane-layer counts match
     if len(args.nets) != len(args.plane_layers):
-        print(f"Error: Number of net arguments ({len(args.nets)}) must match number of plane layers ({len(args.plane_layers)})")
-        print("Each net argument needs a corresponding plane layer")
-        print("Use | to separate multiple nets on the same layer (e.g., --nets GND 'VA19|VA11' --plane-layers In4.Cu In5.Cu)")
-        return
+        # #1108: an argument error exits 2 (it used to print and exit 0, so a
+        # chain carried on with no board).
+        parser.error(
+            f"number of net arguments ({len(args.nets)}) must match number of "
+            f"plane layers ({len(args.plane_layers)}); each net argument needs "
+            f"a corresponding plane layer. Use | to separate multiple nets on "
+            f"the same layer (e.g., --nets GND 'VA19|VA11' --plane-layers "
+            f"In4.Cu In5.Cu)")
 
     # Parse --nets arguments: detect | separator for multi-net layers
     # Build data structures:
@@ -4820,6 +4824,13 @@ Examples:
     # (the CLI has no cancel source). `complete`/`status` are kept because
     # consumers read them -- see route_summary's sticky-incompleteness merge.
     import json as _json
+    # #1108: the engine refuses (unknown net, not a copper layer, zone
+    # conflict, no outline) by printing an error and writing nothing; that is
+    # a failure for a chained caller, not a success.
+    _no_output = not args.dry_run and not _wrote_output
+    if _no_output:
+        _summary['complete'] = False
+        _summary['status'] = 'no_output'
     _summary.setdefault('complete', True)
     _summary.setdefault('status', 'ok')
     try:                       # #653: env knobs into the machine-readable
@@ -4829,7 +4840,7 @@ Examples:
         pass
     print('JSON_SUMMARY: ' + _json.dumps(_summary, sort_keys=True, default=str),
           flush=True)
-    return 0
+    return 1 if _no_output else 0
 
 
 if __name__ == "__main__":
@@ -4839,7 +4850,4 @@ if __name__ == "__main__":
     # CLI-`__main__`-only: the GUI imports create_plane.
     import cli_banner
     cli_banner.install()
-    # `or 0`: main() has one early `return` (the net/plane-layer count
-    # mismatch) that returns None, and returning None from sys.exit is 0 --
-    # which is what this block did before, so that path is unchanged.
     sys.exit(main() or 0)

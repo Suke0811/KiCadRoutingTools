@@ -29,6 +29,10 @@ MODELS_ENV = 'KICAD_STAGE3D_MODELS'
 #: -- in a long-lived process (KiCad, for the GUI recorder) it would be the
 #: only removal, and every film left hundreds of PNGs behind.
 _LIVE = []
+#: The last `apply` report in this process (#1109): a caller that does not
+#: hold the return value (make_film goes through animate_route) can still say
+#: which board box the film got. Empty until `apply` runs.
+LAST_REPORT = {}
 
 
 def cleanup():
@@ -45,6 +49,18 @@ def _say(msg, notes):
 
 def apply(frames, stage_out, final, geom, theme, *, stage_present,
           mode='auto', notes=None, models=None, fps=6.0):
+    """`_apply`, with its report kept in `LAST_REPORT` (#1109)."""
+    LAST_REPORT.clear()
+    frames, report = _apply(frames, stage_out, final, geom, theme,
+                            stage_present=stage_present, mode=mode,
+                            notes=notes, models=models, fps=fps)
+    LAST_REPORT.clear()
+    LAST_REPORT.update(report, asked=mode)
+    return frames, report
+
+
+def _apply(frames, stage_out, final, geom, theme, *, stage_present,
+           mode='auto', notes=None, models=None, fps=6.0):
     """Map `frames` (board-box images, a list or a FrameSpool) onto the 3D
     board. Returns `(frames, report)`; on ANY failure the frames are the
     X-ray's, untouched, and `report['why']` says why. `mode` 'off' asks for

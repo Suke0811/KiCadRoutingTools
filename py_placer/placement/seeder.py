@@ -840,7 +840,10 @@ def _seated_violations(state, seated: Set[str]) -> Tuple[int, float]:
             if a in containers or b in containers:
                 continue
             pb = state.parts[b]
-            gap = pa.gap_to(pb, ra)
+            # #1104: on a courtyard-waived project a courtyard intersection is
+            # not a violation; the pad/hole arm below still is.
+            gap = (None if getattr(state, 'courtyards_ignored', False)
+                   else pa.gap_to(pb, ra))
             bad = gap is not None and gap < -1e-9
             if bad and pa.side == pb.side:
                 r1, r2 = ra[0], pb.rect()
@@ -1951,6 +1954,8 @@ def _overlap_at(state, part, x: float, y: float, others) -> Dict[str, float]:
     (`legality.pair_overlap_area`). PER PAIR: a sum lets an overlap one
     neighbour already has hide a new one with another."""
     from .legality import pair_overlap_area
+    if getattr(state, 'courtyards_ignored', False):
+        return {}      # #1104: the project waives courtyard overlap
     px, py = round(x, 3), round(y, 3)
     rect, tht = part.rect(px, py, part.rot), part.tht_rect(px, py, part.rot)
     out: Dict[str, float] = {}

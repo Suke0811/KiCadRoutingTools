@@ -1787,6 +1787,11 @@ class QuenchState:
             others = ((o, self.parts[o]) for o in self._neighbors[ref])
         else:
             others = self.parts.items()
+        if getattr(self, 'courtyards_ignored', False):
+            # #1104: the courtyard is waived, so the overlap term is the pad
+            # and hole one the waived seat asks (#1101), absolutely.
+            return board, self._waived_overlap(ref, x, y, rot, others,
+                                               exclude, limit, board)
         clr = self.clearance
         rect = rects[0]
         tht = part.has_tht
@@ -1856,6 +1861,46 @@ class QuenchState:
             return True
         return all(v <= t.threshold
                    for v, t in zip(self.intent_terms(ref, rects), spec))
+
+    def _waived_overlap(self, ref, x, y, rot, others, exclude, limit, board):
+        """`violation_parts`' overlap term on a courtyard-waived project
+        (#1104): per neighbour on a shared face, the absolute pad + hole
+        shortfall (`pair_shortfall`), a pad short or stack counted as the
+        clearance, and a stacked drill hole likewise -- the questions the
+        #1101 waived seat asks, as a distance rather than a verdict."""
+        from .seeder import _drill_conflict
+        part = self.parts[ref]
+        x = part.x if x is None else x
+        y = part.y if y is None else y
+        rot = part.rot if rot is None else rot
+        ctx = self.legality_ctx
+        drilled = self._drilled_refs()
+        clr = self.clearance
+        overlap = 0.0
+        for other_ref, other in others:
+            if other_ref == ref or (exclude and other_ref in exclude):
+                continue
+            if not (part.sides & other.sides):
+                continue
+            if (ref in drilled and other_ref in drilled and _drill_conflict(
+                    self, ref, (x, y, rot), other_ref,
+                    (other.x, other.y, other.rot))):
+                overlap += clr
+            if ctx is not None:
+                sf = ctx.pair_shortfall(ref, other_ref, pose_a=(x, y, rot))
+                overlap += max(0.0, sf.pad) + max(0.0, sf.hole)
+                if sf.pad_overlap or sf.stack:
+                    overlap += clr
+            else:
+                # The waived seat's own fallback: pad boxes at the clearance.
+                mine, ob = part.padbox(x, y, rot), other.padbox()
+                if mine is not None and ob is not None:
+                    gap = rect_gap(mine, ob)
+                    if gap < clr:
+                        overlap += clr - gap
+            if limit is not None and board + overlap > limit:
+                break
+        return overlap
 
     def _drilled_refs(self):
         """Refs with any drilled pad (plated or not), cached -- the parts a
@@ -2214,6 +2259,14 @@ class QuenchState:
             # Same marker/container exemption as the prevention gate, or a
             # displaced fiducial could never come home under a connector.
             legal = not self._body_contained_at(ref, x, y, rot, exclude)
+            # #1106: the checker grades a body-less part's pads under a
+            # drawn body at EVERY severity, so the seat refuses it here, on
+            # both the waived and the courtyard path --
+            # a body drawn larger than its courtyard leaves room the
+            # courtyard test above does not see (review: J9 under a
+            # +-3.5 mm body behind a +-1 mm courtyard, at `error`).
+            if legal and self._pads_under_body_at(ref, x, y, rot, exclude):
+                legal = False
         if legal and self.legality_ctx is not None:
             # Pad+drill layer: courtyard-clear does not imply pad-clear (pads
             # overhanging courtyards, exchanged nets, NPTH holes). Baseline-
@@ -2251,6 +2304,11 @@ class QuenchState:
         # branch seated it on top of eleven parts -- and, before #1101, inside
         # Y1's body. The branch never asked about bodies.
         if self._body_contained_at(ref, x, y, rot, exclude):
+            return False
+        # #1106: and the body-less half of it. Measured on run 38's pile:
+        # the waived seat refused J9 under U1's LQFP body, then this branch
+        # accepted the same pose for a part "coming home" from the pile.
+        if self._pads_under_body_at(ref, x, y, rot, exclude):
             return False
         # The unfreeze branch gets the SAME pad/hole conjunct: a part may move
         # back toward the board only without worsening any pad pair.
@@ -2835,6 +2893,108 @@ class QuenchState:
                 return True
         return False
 
+    def _bodyless_refs(self):
+        """Pad-bearing parts that draw NO body (#1106), cached -- the
+        checker's own set: `grade_body_overlap` judges a part by its drawn
+        body (.Fab, else a usable silk outline, `body.board_bodies`) and
+        asks the pads-under-body question only of a part with neither. A
+        part with a silk body but no .Fab is NOT body-less here: reading
+        .Fab alone put esp_prog's silk-only U2 in this set and refused quench
+        moves the checker allows (8 esp_prog poses moved, review)."""
+        got = getattr(self, '_bodyless_cache', None)
+        if got is None:
+            fps = getattr(self.pcb_data, 'footprints', {}) or {}
+            try:
+                from placement.body import board_bodies
+                bodies = board_bodies(self.pcb_data, self.pcb_file)
+            except Exception:                                # noqa: BLE001
+                bodies = None
+            out = set()
+            for r in self.parts:
+                fp = fps.get(r)
+                if fp is None or not any(
+                        getattr(p, 'pad_type', '') != 'np_thru_hole'
+                        for p in fp.pads or ()):
+                    continue
+                if bodies is None:
+                    drawn = self.fab_rect(r)
+                else:
+                    g = bodies.get(r)
+                    drawn = g.drawn_local if g is not None else None
+                if drawn is None:
+                    out.add(r)
+            got = frozenset(out)
+            self._bodyless_cache = got
+        return got
+
+    def _pads_under_body_at(self, ref, x, y, rot, exclude=None):
+        """Would `ref` at this pose put a BODY-LESS part's pad copper under a
+        same-face drawn body (#1106)? Either direction of the move: `ref`
+        body-less landing under a neighbour's body, or `ref`'s body landing
+        over a body-less neighbour. `legality.pads_under_body_frac` at
+        `CONTAINMENT_FRAC`, the checker's predicate; marker and container
+        parts are exempt, as in the checker's gate. The body-less set is the
+        checker's own (`_bodyless_refs`); the covering body is read from .Fab
+        only, which is still the checker's gate, since a pair whose body
+        came from silk never gates. Rect broad phase first, so a board with
+        no body-less part pays a set lookup."""
+        bodyless = self._bodyless_refs()
+        if not bodyless:
+            return False
+        exempt = self.body_exempt_refs()
+        if ref in exempt:
+            return False
+        fps = getattr(self.pcb_data, 'footprints', {}) or {}
+        part = self.parts[ref]
+        if ref in bodyless:
+            box = part.padbox(x, y, rot)
+            if box is None:
+                return False
+            mine_pads = None
+            for other_ref, other in self.parts.items():
+                if (other_ref == ref or other_ref in bodyless
+                        or (exclude and other_ref in exclude)
+                        or other_ref in exempt
+                        or not (part.sides & other.sides)):
+                    continue
+                orect = self.fab_rect(other_ref)
+                if orect is None or rect_gap(box, orect) > 0.0:
+                    continue
+                theirs = self.fab_shape(other_ref)
+                if theirs is None:
+                    continue
+                if mine_pads is None:
+                    mine_pads = legality.bodyless_pad_shape(fps[ref], x, y,
+                                                            rot)
+                if (legality.pads_under_body_frac(mine_pads, theirs)
+                        >= legality.CONTAINMENT_FRAC):
+                    return True
+            return False
+        mrect = self.fab_rect(ref, x, y, rot)
+        if mrect is None:
+            return False
+        mine_body = None
+        for other_ref in bodyless:
+            if (other_ref == ref or (exclude and other_ref in exclude)
+                    or other_ref in exempt):
+                continue
+            other = self.parts[other_ref]
+            if not (part.sides & other.sides):
+                continue
+            ob = other.padbox()
+            if ob is None or rect_gap(mrect, ob) > 0.0:
+                continue
+            if mine_body is None:
+                mine_body = self.fab_shape(ref, x, y, rot)
+                if mine_body is None:
+                    return False
+            theirs_pads = legality.bodyless_pad_shape(
+                fps[other_ref], other.x, other.y, other.rot)
+            if (legality.pads_under_body_frac(theirs_pads, mine_body)
+                    >= legality.CONTAINMENT_FRAC):
+                return True
+        return False
+
     def body_exempt_refs(self):
         """Refs whose body may legitimately swallow or be swallowed.
 
@@ -3015,9 +3175,18 @@ class QuenchState:
                 oob_count += 1
                 oob_amount += amt
                 oob_area += self.edge_gate.out_of_board_area(p.rect)
-        out = {'overlap_area': legality.placement_overlap_area(parts),
+        overlap = legality.placement_overlap_area(parts)
+        out = {'overlap_area': overlap,
                'oob_count': oob_count, 'oob_amount': oob_amount,
                'oob_area': oob_area, 'hpwl': self.hpwl()}
+        if getattr(self, 'courtyards_ignored', False):
+            # #1104: the project waives courtyard overlap (#1101's
+            # predicate), so it is not a legality cost here -- the decap
+            # rung, the reseat/evict gates and the portfolio all compare this
+            # key, and each refused the moves the waiver exists for. The
+            # measurement is kept, under its own name, for disclosure.
+            out['overlap_area'] = 0.0
+            out['overlap_area_waived'] = overlap
         out.update(self.pad_legality_metrics())
         return out
 
