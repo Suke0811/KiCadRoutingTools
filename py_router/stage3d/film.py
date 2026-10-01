@@ -50,6 +50,7 @@ def _say(msg, notes):
 def apply(frames, stage_out, final, geom, theme, *, stage_present,
           mode='auto', notes=None, models=None, fps=6.0):
     """`_apply`, with its report kept in `LAST_REPORT` (#1109)."""
+    LAST_REPORT.clear()
     frames, report = _apply(frames, stage_out, final, geom, theme,
                             stage_present=stage_present, mode=mode,
                             notes=notes, models=models, fps=fps)

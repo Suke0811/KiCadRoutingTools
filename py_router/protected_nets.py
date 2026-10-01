@@ -336,8 +336,10 @@ def protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[str, str]
         # Once connected it is protected again; cparti's by-design deferred
         # leg is connected by the very next single-ended step.
         m.pop(name, None)
-        if name not in _LIFTED_SAID:
-            _LIFTED_SAID.add(name)
+        _key = (getattr(pcb_data, 'source_path', '') or input_file or '',
+                name)
+        if _key not in _LIFTED_SAID:
+            _LIFTED_SAID.add(_key)
             print(f"Protection lifted: {name} (diff-pair) has disconnected "
                   f"member pads, so it may be ripped and finished (#1107)")
     m.update({n: 'locked' for n in locked_net_names(pcb_data)})
@@ -345,7 +347,7 @@ def protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[str, str]
 
 
 #: Names already reported as lifted in this process (one line per net).
-_LIFTED_SAID: Set[str] = set()
+_LIFTED_SAID: Set[tuple] = set()
 
 
 def disconnected_pair_members(pcb_data, protected: Dict[str, str]) -> List[str]:
@@ -361,6 +363,19 @@ def disconnected_pair_members(pcb_data, protected: Dict[str, str]) -> List[str]:
         return []
     by_name = {net.name: nid for nid, net in (pcb_data.nets or {}).items()
                if getattr(net, 'name', None)}
+    want = {by_name[n] for n in names if n in by_name}
+    segs: Dict[int, list] = {}
+    vias: Dict[int, list] = {}
+    zones: Dict[int, list] = {}
+    for s in pcb_data.segments:
+        if s.net_id in want:
+            segs.setdefault(s.net_id, []).append(s)
+    for v in pcb_data.vias:
+        if v.net_id in want:
+            vias.setdefault(v.net_id, []).append(v)
+    for z in getattr(pcb_data, 'zones', None) or []:
+        if z.net_id in want:
+            zones.setdefault(z.net_id, []).append(z)
     out = []
     for name in sorted(names):
         nid = by_name.get(name)
@@ -371,10 +386,8 @@ def disconnected_pair_members(pcb_data, protected: Dict[str, str]) -> List[str]:
             continue
         try:
             r = check_net_connectivity(
-                nid, [s for s in pcb_data.segments if s.net_id == nid],
-                [v for v in pcb_data.vias if v.net_id == nid], pads,
-                [z for z in (getattr(pcb_data, 'zones', None) or [])
-                 if z.net_id == nid])
+                nid, segs.get(nid, []), vias.get(nid, []), pads,
+                zones.get(nid, []))
         except Exception:                                  # noqa: BLE001
             continue          # unmeasurable: keep the protection
         if not r.get('connected'):

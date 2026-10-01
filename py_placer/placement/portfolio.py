@@ -432,12 +432,22 @@ def perturb_swaps(state, blocks: Dict[str, Sequence[str]], rng: random.Random,
         # candidate_valid excluded the partner, so the two NEW poses were
         # never tested against each other; do it exactly.
         if getattr(state, 'courtyards_ignored', False):
-            # #1104: courtyards waived; the swapped pads may not come closer
-            # than the clearance (pad boxes, conservatively).
-            ba, bb = pa.padbox(bx, by, pa.rot), pb.padbox(ax, ay, pb.rot)
-            from .quench import rect_gap
-            gap = (rect_gap(ba, bb) if ba is not None and bb is not None
-                   and (pa.sides & pb.sides) else None)
+            # #1104: courtyards waived, so the two NEW poses are tested
+            # against each other the way the waived seat tests a pair: pads
+            # and holes at their own requirement, drills, bodies.
+            if pa.sides & pb.sides:
+                from .seeder import _drill_conflict
+                ctx = state.legality_ctx
+                if ctx is not None:
+                    sf = ctx.pair_shortfall(a, b, pose_a=(bx, by, pa.rot),
+                                            pose_b=(ax, ay, pb.rot))
+                    if (sf.pad > 1e-9 or sf.pad_overlap or sf.stack
+                            or sf.hole > 1e-9):
+                        continue
+                if _drill_conflict(state, a, (bx, by, pa.rot), b,
+                                   (ax, ay, pb.rot)):
+                    continue
+            gap = None
         else:
             gap = pa.gap_to(pb, pa.rects(bx, by, pa.rot),
                             pb.rects(ax, ay, pb.rot))

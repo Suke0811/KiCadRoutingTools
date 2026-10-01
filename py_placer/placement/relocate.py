@@ -942,6 +942,8 @@ def exact_refusal(state, units: Units, moves, tol: float = 1e-6) -> str:
             else:
                 gap = pa.gap_to(pb, ra,
                                 pb.rects(moved[b][0], moved[b][1], pb.rot))
+                if gap is None:
+                    continue     # no shared face: as before #1104
             was = pa.gap_to(pb) if gap is not None else None
             if gap is not None and gap < min(
                     state.clearance, was if was is not None else 0.0) - tol:

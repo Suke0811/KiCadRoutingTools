@@ -108,16 +108,28 @@ ROWS = [
      "                if False:",
      (T1106,), 'KILLED'),
     ('waived-seat-ignores-pads-under-body', 'quench',
-     "            if legal and self._pads_under_body_at(ref, x, y, rot, exclude):",
-     "            if False:",
+     "            if legal and self._pads_under_body_at(ref, x, y, rot, exclude):\n"
+     "                # #1106: courtyards are waived",
+     "            if False:\n"
+     "                # #1106: courtyards are waived",
+     (T1106,), 'KILLED'),
+    ('plain-seat-ignores-pads-under-body', 'quench',
+     "            if legal and self._pads_under_body_at(ref, x, y, rot, exclude):\n"
+     "                legal = False\n"
+     "        if legal and self.legality_ctx is not None:",
+     "            if False:\n"
+     "                legal = False\n"
+     "        if legal and self.legality_ctx is not None:",
      (T1106,), 'KILLED'),
     ('escape-ignores-pads-under-body', 'quench',
-     "                and self._pads_under_body_at(ref, x, y, rot, exclude)):",
-     "                and False):",
+     "        if self._pads_under_body_at(ref, x, y, rot, exclude):\n"
+     "            return False",
+     "        if False:\n"
+     "            return False",
      (T1106,), 'KILLED'),
     ('body-over-bodyless-neighbour', 'quench',
-     "            elif self.fab_shape(other_ref) is None:",
-     "            elif False:",
+     "        for other_ref in bodyless:",
+     "        for other_ref in ():",
      (T1106,), 'KILLED'),
     # --- #1107: a broken pair member is rippable ----------------------------
     ('broken-pair-stays-protected', 'pn',

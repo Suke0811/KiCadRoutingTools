@@ -115,6 +115,28 @@ class TestGenerator(unittest.TestCase):
         self.assertFalse(under)
         self.assertTrue(beside)
 
+    def test_at_error_severity_the_seat_still_refuses(self):
+        # Review of #1106: the checker grades at every severity, and a body
+        # drawn LARGER than its courtyard leaves room the courtyard test does
+        # not see. U1's courtyard cut to +-4.5 x +-1, its body still +-3.5:
+        # J9 at (8, 12.5) is clear of the courtyard and under the body.
+        import pose_score
+        from kicad_parser import parse_kicad_pcb
+        with tempfile.TemporaryDirectory() as td:
+            p = make(td, 20, 10, severity='error')
+            txt = open(p, encoding='utf-8').read().replace(
+                '(fp_rect (start -4.5 -4.5) (end 4.5 4.5)',
+                '(fp_rect (start -4.5 -1) (end 4.5 1)')
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write(txt)
+            st = pose_score.make_state(parse_kicad_pcb(p), p, clearance=0.15,
+                                       board_edge_clearance=0.1)
+            self.assertFalse(st.courtyards_ignored)
+            under = st.candidate_valid('J9', 8.0, 12.5, 0.0, exclude=set())
+            beside = st.candidate_valid('J9', 20.0, 10.0, 0.0, exclude=set())
+        self.assertFalse(under)
+        self.assertTrue(beside)
+
     def test_moving_the_body_over_the_pad_is_refused_too(self):
         with tempfile.TemporaryDirectory() as td:
             st = self._state(td, 22, 10)
