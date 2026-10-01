@@ -360,6 +360,7 @@ def main():
             if not e:
                 part['e'].hide_render = True
                 continue
+            part['e'].hide_render = False       # present again after a gap
             m = st['moving'].get(ref)
             x, y, rot = (m[0], m[1], m[2]) if m else (e[0], e[1], e[2])
             back = str(e[3]).startswith('B')
@@ -375,6 +376,7 @@ def main():
                 o.matrix_basis = F(x, y, rot, back,
                                    0.0 if back else d) @ rest
         pivot.rotation_euler = (0, st['angle'], 0)
+        fit_camera(sc, cam, pivot, el)
         sc.render.filepath = os.path.join(job['outDir'], 's%06d.png' % si)
         bpy.ops.render.render(write_still=True)
         if si % 10 == 9:
@@ -383,6 +385,47 @@ def main():
     out({'type': 'done', 'states': len(tl['states']),
          'ms_per_state': 1000.0 * (time.time() - t0)
          / max(1, len(tl['states']))})
+
+
+def fit_camera(sc, cam, pivot, el):
+    """Fit the camera to what THIS state renders, as the three.js page does
+    (`fitCamera`): the film-wide fit had to cover the pile beside the board
+    and a mid-flip board, and drew esp_prog at about a third of its box
+    (run 35). Pure in the state, so a render stays deterministic."""
+    from bpy_extras.object_utils import world_to_camera_view
+    bpy.context.view_layer.update()
+
+    def shown(o):
+        while o is not None:
+            if o.hide_render:
+                return False
+            if o is pivot:
+                return True
+            o = o.parent
+        return False
+    # a pour is built from the zone OUTLINE, which may run far past the board
+    # (KiCad clips the fill), so it never sets the fit
+    pts = [o.matrix_world @ Vector(c) for o in bpy.data.objects
+           if o.type == 'MESH' and 'net' not in o and shown(o)
+           for c in o.bound_box]
+    if not pts:
+        return
+    lo = Vector([min(p[i] for p in pts) for i in range(3)])
+    hi = Vector([max(p[i] for p in pts) for i in range(3)])
+    tgt = (lo + hi) / 2
+    corners = [Vector((x, y, z)) for x in (lo.x, hi.x) for y in (lo.y, hi.y)
+               for z in (lo.z, hi.z)]
+    dist = (hi - lo).length / math.tan(math.radians(15))
+    for _k in range(5):
+        cam.location = tgt + Vector((0, -dist * math.cos(el),
+                                     dist * math.sin(el)))
+        bpy.context.view_layer.update()
+        ext = max(max(abs(v.x - 0.5), abs(v.y - 0.5)) * 2
+                  for v in (world_to_camera_view(sc, cam, c)
+                            for c in corners))
+        dist *= ext / 0.92                  # 8 % margin
+    cam.location = tgt + Vector((0, -dist * math.cos(el),
+                                 dist * math.sin(el)))
 
 
 try:

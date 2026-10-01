@@ -226,9 +226,52 @@ def test_pours_pads_and_drills_are_on_the_3d_board():
            'U8\'s drill sits at its own centre, not the copper\'s')
 
 
+def _span(png):
+    """The drawn extent's larger fraction of the frame (width or height):
+    pixels that differ from the corner's ground."""
+    from PIL import Image
+    with Image.open(png) as im:
+        im = im.convert('RGB')
+        w, h = im.size
+        g = im.getpixel((1, 1))
+        hit = [(x, y) for x in range(0, w, 2) for y in range(0, h, 2)
+               if sum(abs(a - b) for a, b in zip(im.getpixel((x, y)), g)) > 45]
+    if not hit:
+        return 0.0
+    xs, ys = [q[0] for q in hit], [q[1] for q in hit]
+    return max((max(xs) - min(xs)) / float(w), (max(ys) - min(ys)) / float(h))
+
+
+def test_a_pour_outline_off_the_board_does_not_move_the_camera():
+    """The camera is fitted per state, and a pour is built from the zone
+    OUTLINE, which may run past the board (KiCad clips the fill). lvds has a
+    net-0 B.Cu zone at (0,0), 80 mm from the board: counted in the fit, its
+    reveal shrank the board to a quarter of the box (the review of the
+    per-state fit)."""
+    board = os.path.join(ROOT, 'kicad_files',
+                         'lvds_converter_dualclk_gnd.kicad_pcb')
+    pcb = parse_kicad_pcb(board)
+    sc = SC.build_scene(pcb)
+    tl = _one_state_timeline(pcb)
+    st = dict(tl['states'][0], zones=sorted({z['net'] for z in sc['pours']}))
+    tl['states'].append(st)
+    tl['frames'] = [0, 1]
+    tmp = tempfile.mkdtemp(prefix='t1081f_')
+    try:
+        pngs, _info, why = R3.render(sc, tl, width=320, height=200,
+                                     out_dir=tmp)
+        a, b = (_span(pngs[0]), _span(pngs[1])) if pngs else (0, 0)
+        _check(pngs and a > 0.7 and b > 0.9 * a,
+               'the board spans %.0f %% of the frame, and %.0f %% with every '
+               'pour revealed (%s)' % (100 * a, 100 * b, why))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 TESTS = (test_the_board_renders_deterministically,
          test_bodies_sit_on_their_own_face,
-         test_pours_pads_and_drills_are_on_the_3d_board)
+         test_pours_pads_and_drills_are_on_the_3d_board,
+         test_a_pour_outline_off_the_board_does_not_move_the_camera)
 
 
 def main():

@@ -255,11 +255,69 @@ def test_the_revealed_pours_ride_the_timeline():
                                     for i in (0, 1)])
 
 
+def test_a_flat_model_path_is_found_by_its_name():
+    """esp_prog references `${KISYS3DMOD}/R_0402_1005Metric.wrl` FLAT, while
+    KiCad 10 keeps `Resistor_SMD.3dshapes/R_0402_1005Metric.step`: its 16
+    references found 0 models, so every part was a box (run 35). A model the
+    path cannot find is looked up by name in the LIBRARY dirs -- never in
+    the board's own folder -- and one found nowhere is left as written."""
+    import shutil
+    import tempfile
+    from stage3d import scene as SC
+    tmp = tempfile.mkdtemp(prefix='t1081m_')
+    try:
+        lib = os.path.join(tmp, 'lib')
+        prj = os.path.join(tmp, 'prj')
+        os.makedirs(os.path.join(lib, 'Resistor_SMD.3dshapes'))
+        os.makedirs(prj)
+        want = os.path.join(lib, 'Resistor_SMD.3dshapes',
+                            'R_0402_1005Metric.step')
+        open(want, 'w').close()
+        open(os.path.join(prj, 'QSG5032.step'), 'w').close()
+        text = ('(model "${KISYS3DMOD}/R_0402_1005Metric.wrl")\n'
+                '(model "${KISYS3DMOD}/QSG5032.step")\n')
+        out, twins, named = SC.stage_models(
+            text, {'KISYS3DMOD': lib, 'KIPRJMOD': prj}, prj)
+        _check(named == 1 and want.replace('\\', '/') in out,
+               'the flat .wrl reference is found as its library .step (%d, '
+               '%r)' % (named, out.splitlines()[0]))
+        _check('"${KISYS3DMOD}/QSG5032.step"' in out,
+               "a model only the board's own folder has is not found by "
+               'name there, and stays as written')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_part_nothing_is_placed_on_has_no_body():
+    """A part with no 3D model that KiCad excludes from pick-and-place (or
+    marks board-only) is copper, not a component: a USB-A plug made of board
+    traces, a PCB antenna, a Tag-Connect footprint. A box drawn on it read as
+    a part that is not there (StickHub's J1, run 36). An assembled part with
+    no model still gets its box."""
+    from kicad_parser import parse_kicad_pcb
+    from stage3d import scene as SC
+    sc = SC.build_scene(parse_kicad_pcb(os.path.join(
+        FC.ROOT, 'kicad_files', 'ulx3s.kicad_pcb')))
+    _check(sc['parts']['AE1']['body'] is None,
+           "ulx3s AE1 (a PCB antenna, not placed) has no body")
+    sc = SC.build_scene(parse_kicad_pcb(os.path.join(
+        FC.ROOT, 'kicad_files', 'rp2350_fpga_eensy_prePlane.kicad_pcb')))
+    _check(sc['parts']['J2']['body'] is None
+           and sc['parts']['U1']['body'] is not None,
+           'rp2350 J2 (a Tag-Connect footprint) has no body; U1 keeps one')
+    sc = SC.build_scene(parse_kicad_pcb(os.path.join(
+        FC.ROOT, 'kicad_files', 'esp_prog.kicad_pcb')))
+    _check(sc['parts']['Ref*']['body'] is not None,
+           'esp_prog\'s fiducial (no model, but assembled) keeps its box')
+
+
 TESTS = (
+    test_a_part_nothing_is_placed_on_has_no_body,
     test_every_frame_is_rebuilt_from_the_record_alone,
     test_the_board_faces_the_work_and_turns_back,
     test_the_side_rule_waits_out_a_stray_event,
     test_the_revealed_pours_ride_the_timeline,
+    test_a_flat_model_path_is_found_by_its_name,
 )
 
 

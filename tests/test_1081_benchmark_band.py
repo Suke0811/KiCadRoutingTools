@@ -422,6 +422,39 @@ def test_labels_never_overprint_and_outliers_do_not_flatten_the_axis():
         x0, y0, x1, y1 = dbg['plot']
         _check(all(r[2] <= x1 + 3 for r in rects),
                '%s: no text past the plot\'s right edge' % theme)
+    # esp_prog, run 35: placement laps whose labels carry their terms, at
+    # the band's left end. The caption and the axis words were drawn AFTER
+    # the labels and were not obstacles, so a label printed under the
+    # caption, and one ran off the band's left edge.
+    # The lap times are the run's own: the two placement laps 2.6 s apart
+    # both sit on the axis, and the second's label tried a left offset.
+    rows = [_row(0, 288, kind='placement', t=T0,
+                 score={'blocking': 288, 'quality': {},
+                        'blocking_by': {'assembly': 76, 'drc': 195,
+                                        'unrouted': 17}}),
+            _row(1, 25, kind='placement', t=T0 + 2.6,
+                 score={'blocking': 25, 'quality': {},
+                        'blocking_by': {'drc': 2, 'unrouted': 17,
+                                        'floorplan': 6}}),
+            _row(2, 17, kind='placement', t=T0 + 67.7),
+            _row(3, 1, 37, 399.0, 314, t=T0 + 205.2),
+            _row(4, 0, 37, 399.9, 314, t=T0 + 366.0),
+            _row(5, 0, 36, 339.4, 250, t=T0 + 733.0)]
+    tr = MB.from_converge_ledger(_ledger(rows))
+    for size in ((900, 126), (1400, 126), (560, 90)):
+        img = Image.new('RGB', size)
+        dbg = {}
+        MB.draw_band(ImageDraw.Draw(img), FL.Box(0, 0, size[0], size[1]), tr,
+                     theme='light', debug=dbg)
+        rects = dbg['text_rects']
+        cap = [r for r in rects if r[1] <= 3]
+        bad = [(a, b) for k, a in enumerate(rects) for b in rects[k + 1:]
+               if MB._overlaps(a, b)]
+        _check(cap and not bad, '%dx%d: the caption is an obstacle and no '
+               'text overlaps (%s)' % (size[0], size[1], bad[:2]))
+        _check(all(r[0] >= -2 for r in rects),
+               '%dx%d: no text starts left of the band (%s)'
+               % (size[0], size[1], min(r[0] for r in rects)))
 
 
 TESTS = (

@@ -1038,6 +1038,10 @@ The board is drawn by a pinned three.js (r186, vendored unmodified under
 from Node by `playwright-core`, which is pinned by `py_router/stage3d/package.json`
 and its lockfile.
 
+The board is white soldermask in the light theme and green in the dark one.
+Its outline is drawn on both faces in the theme's `board_edge`, because a
+white board's top face alone is close to the light ground.
+
 Three tools are optional:
 
 - **Node**: `$KICAD_STAGE3D_NODE`, else `node` on PATH.
@@ -1101,6 +1105,16 @@ does not turn it:
 A routing film lands copper chunk after chunk on alternating layers; on one
 853-frame film of a routed board (a review run, not a committed fixture) a 1 s
 dwell turned the board 27 times, and these values turn it 6 times. The timeline's `side_rule` names the rule and the count.
+
+**The camera is fitted per state**, on both backends: a fixed 3/4 view,
+moved in or out to what that frame shows (the board, the parts where they
+are now, the copper, the board mid-turn). A film-wide fit had to cover the
+pile beside the board and a board standing on its edge mid-flip, so every
+ordinary frame drew the board at about a third of its box. The fit is a
+pure function of the state, so renders stay byte-identical;
+`tests/test_1081_e2e.py` holds the last frame's board to at least 60 % of
+its box on the binding axis. Pours (built from the zone OUTLINE, which may
+run past the board) and a glide's halo and ghost never set the fit.
 
 **Parts** are always a body box plus their pads, read from the board itself, in
 each part's own frame, so a part that turns while it glides (#1086) turns in 3D

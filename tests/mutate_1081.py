@@ -53,6 +53,7 @@ TARGETS = {
     'render': os.path.join(_ROOT, 'py_router', 'route_render.py'),
     'r3d': os.path.join(_S3D, 'render3d.py'),
     'fp': os.path.join(_ROOT, 'py_router', 'film_passes.py'),
+    'scene': os.path.join(_S3D, 'scene.py'),
 }
 
 
@@ -213,6 +214,31 @@ ROWS = [
      "        _say('stage3d: 2D X-ray in the board box -- %s' % why, notes)",
      "        pass",
      (T_E2E,), 'KILLED'),
+    # --- found by the esp_prog film (run 35) -------------------------------
+    ('the-camera-fitted-once-for-the-film', 'page',
+     "  fitCamera();",
+     "  // fitCamera();",
+     (T_E2E,), 'KILLED'),
+    ('the-caption-no-obstacle', 'bench',
+     "        occupied.append((bb[0] - 2, bb[1] - 1, bb[2] + 2, bb[3] + 1))",
+     "        pass",
+     (T_BAND,), 'KILLED'),
+    ('a-pour-outline-sets-the-fit', 'page',
+     "    if (!o.isMesh || o.isInstancedMesh || !o.geometry || o.userData.noFit) return;",
+     "    if (!o.isMesh || o.isInstancedMesh || !o.geometry) return;",
+     (T_R3D,), 'KILLED'),
+    ('a-label-off-the-bands-left-edge', 'bench',
+     "            if bb[0] < x0:",
+     "            if False:",
+     (T_BAND,), 'KILLED'),
+    ('a-flat-model-path-not-looked-up', 'scene',
+     "        found = _by_name(path, dirs)",
+     "        found = None",
+     (T_TL,), 'KILLED'),
+    ('a-copper-only-part-gets-a-box', 'scene',
+     "            if words & {'board_only', 'exclude_from_pos_files'}:",
+     "            if False:",
+     (T_TL,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)
