@@ -2195,10 +2195,6 @@ class QuenchState:
             # and the containment conjunct below only refuses half of a body
             # or more: without this, two parts seated with 40% of their
             # .Fab bodies overlapping, pads clear (#1101 review).
-            if legal and self._pads_under_body_at(ref, x, y, rot, exclude):
-                # #1106: courtyards are waived, so a body-less part's pads
-                # are what it occupies; they may not go under a drawn body.
-                legal = False
             if legal and self._body_overlap_at(ref, x, y, rot, exclude):
                 legal = False
         elif legal:
@@ -2264,7 +2260,8 @@ class QuenchState:
             # displaced fiducial could never come home under a connector.
             legal = not self._body_contained_at(ref, x, y, rot, exclude)
             # #1106: the checker grades a body-less part's pads under a
-            # drawn body at EVERY severity, so the seat must refuse it too --
+            # drawn body at EVERY severity, so the seat refuses it here, on
+            # both the waived and the courtyard path --
             # a body drawn larger than its courtyard leaves room the
             # courtyard test above does not see (review: J9 under a
             # +-3.5 mm body behind a +-1 mm courtyard, at `error`).

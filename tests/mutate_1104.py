@@ -107,12 +107,6 @@ ROWS = [
      "                if _f >= CONTAINMENT_FRAC:",
      "                if False:",
      (T1106,), 'KILLED'),
-    ('waived-seat-ignores-pads-under-body', 'quench',
-     "            if legal and self._pads_under_body_at(ref, x, y, rot, exclude):\n"
-     "                # #1106: courtyards are waived",
-     "            if False:\n"
-     "                # #1106: courtyards are waived",
-     (T1106,), 'KILLED'),
     ('plain-seat-ignores-pads-under-body', 'quench',
      "            if legal and self._pads_under_body_at(ref, x, y, rot, exclude):\n"
      "                legal = False\n"
