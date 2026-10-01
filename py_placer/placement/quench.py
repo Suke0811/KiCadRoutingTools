@@ -2897,16 +2897,36 @@ class QuenchState:
         return False
 
     def _bodyless_refs(self):
-        """Pad-bearing parts that draw no .Fab body (#1106), cached: the
-        parts whose copper the pads-under-body question is about."""
+        """Pad-bearing parts that draw NO body (#1106), cached -- the
+        checker's own set: `grade_body_overlap` judges a part by its drawn
+        body (.Fab, else a usable silk outline, `body.board_bodies`) and
+        asks the pads-under-body question only of a part with neither. A
+        part with a silk body but no .Fab is NOT body-less here: reading
+        .Fab alone put esp_prog's silk-only U2 in this set and refused quench
+        moves the checker allows (8 esp_prog poses moved, review)."""
         got = getattr(self, '_bodyless_cache', None)
         if got is None:
             fps = getattr(self.pcb_data, 'footprints', {}) or {}
-            got = frozenset(
-                r for r in self.parts
-                if self.fab_rect(r) is None and r in fps
-                and any(getattr(p, 'pad_type', '') != 'np_thru_hole'
-                        for p in fps[r].pads or ()))
+            try:
+                from placement.body import board_bodies
+                bodies = board_bodies(self.pcb_data, self.pcb_file)
+            except Exception:                                # noqa: BLE001
+                bodies = None
+            out = set()
+            for r in self.parts:
+                fp = fps.get(r)
+                if fp is None or not any(
+                        getattr(p, 'pad_type', '') != 'np_thru_hole'
+                        for p in fp.pads or ()):
+                    continue
+                if bodies is None:
+                    drawn = self.fab_rect(r)
+                else:
+                    g = bodies.get(r)
+                    drawn = g.drawn_local if g is not None else None
+                if drawn is None:
+                    out.add(r)
+            got = frozenset(out)
             self._bodyless_cache = got
         return got
 
