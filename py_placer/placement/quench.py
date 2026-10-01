@@ -2294,6 +2294,12 @@ class QuenchState:
         # Y1's body. The branch never asked about bodies.
         if self._body_contained_at(ref, x, y, rot, exclude):
             return False
+        # #1106: and the body-less half of it. Measured on run 38's pile:
+        # the waived seat refused J9 under U1's LQFP body, then this branch
+        # accepted the same pose for a part "coming home" from the pile.
+        if (getattr(self, 'courtyards_ignored', False)
+                and self._pads_under_body_at(ref, x, y, rot, exclude)):
+            return False
         # The unfreeze branch gets the SAME pad/hole conjunct: a part may move
         # back toward the board only without worsening any pad pair.
         if self.legality_ctx is not None and not self.legality_ctx.pads_ok(

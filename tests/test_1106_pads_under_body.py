@@ -103,6 +103,18 @@ class TestGenerator(unittest.TestCase):
         self.assertFalse(under)
         self.assertTrue(beside)
 
+    def test_coming_home_from_the_pile_is_refused_too(self):
+        # J9 starts OFF the board (a pile), so a rejected candidate reaches
+        # candidate_valid's escape branch, which licenses moves toward the
+        # board -- measured on run 38's pile, it accepted J9 under U1's body
+        # after the waived seat had refused it.
+        with tempfile.TemporaryDirectory() as td:
+            st = self._state(td, 40, 10)
+            under = st.candidate_valid('J9', 8.0, 10.0, 0.0, exclude=set())
+            beside = st.candidate_valid('J9', 20.0, 10.0, 0.0, exclude=set())
+        self.assertFalse(under)
+        self.assertTrue(beside)
+
     def test_moving_the_body_over_the_pad_is_refused_too(self):
         with tempfile.TemporaryDirectory() as td:
             st = self._state(td, 22, 10)
