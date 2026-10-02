@@ -296,6 +296,14 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:     invisible. The header's "this row is the study's headline in miniature"
 #:     commentary is left standing above, with this as its second correction.
 #:
+#: RE-RECORDED 2026-10-02 (#1065). `esp_prog:authored` `pad_clearance_pairs`
+#: 1 -> 0, and it CORRECTS the #726 note above: that pair (CON1 against the
+#: second `Ref*` block) was a bounding-box pair, not copper. render's
+#: checklist -- which this predictor reads -- now confirms each pair with the
+#: grader's own exact census (`legality.pad_pair_conflict`), and
+#: grade_pad_legality had always called this board clean. Nothing else on
+#: any of the four rows moves; `truth` is untouched, the route identical.
+#:
 EXPECTED = {
     'esp_prog:authored': dict(
         poses_sha256='67a9712d200814442b4a25cf1fa8ccd075c1968d5b08c0ad58c4662f0a479da7',
@@ -311,7 +319,8 @@ EXPECTED = {
         predictors={
             'crossings': 53, 'hpwl': 253.98092000000003,
             'halo': 127.48707486477095, 'overlap_area': 1.1400451712000104,
-            'pad_copper': 0, 'pad_clearance_pairs': 1,
+            # 2026-10-02 (#1065): 1 -> 0, the grader's census, not the box's
+            'pad_copper': 0, 'pad_clearance_pairs': 0,
             'edge': 16.612682999999876, 'total': 916.1746544447492,
             'oob_count': 0,
         }),

@@ -3465,6 +3465,12 @@ class LegalityContext:
         self._degenerate_refs = frozenset(
             r for refs in _buckets.values() if len(refs) >= 3 for r in refs)
 
+    @property
+    def pad_clearance_model(self):
+        """The active `PadClearanceModel`, or None for the flat scalar --
+        what `pad_pair_conflict` takes as `model` (#1065)."""
+        return self._floors
+
     # -- pair measurement ------------------------------------------------------
     def pair_shortfall(self, a: str, b: str, pose_a=None,
                        pose_b=None) -> PairShortfall:
@@ -4291,6 +4297,75 @@ def grade_pad_edge_clearance(pcb_data, required: float, pcb_file=None) -> Dict:
     return EdgeCopperContext(pcb_data, required, pcb_file).grade()
 
 
+def pad_pair_conflict(pp_a, rects_a, pads_a, pp_b, rects_b, pads_b,
+                      clearance, model, check_exact, routing_layers):
+    """How far two parts' pads fall short of their clearance: the census
+    `grade_pad_legality` takes per part pair, as a function (#1065).
+
+    `pp_*` are the parts' `PartPads`; `rects_*` their `pad_rects` at the pose
+    being graded, and `pads_*` their footprint's `Pad` objects AT THAT SAME
+    POSE (`_pad_with_copper` indexes them the way `rects_*` count). `model` is
+    the active `PadClearanceModel` or None (a flat `clearance`), and
+    `check_exact` is check_drc's `check_pad_pad_overlap` or None (the rect
+    gap alone).
+
+    Returns `(pair_mm, pair_hit, pair_required, pair_source)`: the summed
+    shortfall over the conflicting pad pairs, each at its own requirement --
+    the mm `grade_pad_legality` reports in `worst` -- whether any pad pair
+    conflicts, and the largest requirement charged with where it came from.
+
+    Lifted out VERBATIM so `render_placement`'s pad-clearance checklist can
+    CALL the grader instead of mirroring it with bounding-box gaps
+    (`LegalityContext.pair_shortfall` is the seeder and quench gate, and
+    stays as it is). Same-net pads never conflict here; a net-0 pad conflicts
+    with everything.
+    """
+    floors_a = pp_a.pad_floors if model is not None else None
+    floors_b = pp_b.pad_floors if model is not None else None
+    pair_reach = (clearance if model is None else
+                  max(clearance, model.base, pp_a.max_floor,
+                      pp_b.max_floor))
+    pair_mm = 0.0
+    pair_hit = False
+    pair_required = 0.0
+    pair_source = ''
+    for ai, (a0, a1, a2, a3, na, sa) in enumerate(rects_a):
+        fa = floors_a[ai] if floors_a else None
+        for bi, (b0, b1, b2, b3, nb, sb) in enumerate(rects_b):
+            if na == nb and na > 0:
+                continue
+            if not _sides_interact(sa, sb):
+                continue
+            g = rect_gap((a0, a1, a2, a3), (b0, b1, b2, b3))
+            if g >= pair_reach - EPS:
+                continue
+            if fa is None:
+                eff, src = clearance, ''
+            else:
+                eff, src = model.pair_with_source(fa, floors_b[bi])
+            if g >= eff - EPS:
+                continue
+            if check_exact is not None:
+                pa = _pad_with_copper(pads_a, ai, clearance)
+                pb = _pad_with_copper(pads_b, bi, clearance)
+                if pa is not None and pb is not None:
+                    hit, over, _pt = check_exact(pa, pb, eff,
+                                                 routing_layers,
+                                                 clearance_margin=0.0)
+                    if not hit:
+                        continue
+                    pair_mm += over
+                    pair_hit = True
+                    if eff > pair_required:
+                        pair_required, pair_source = eff, src
+                    continue
+            pair_mm += eff - g
+            pair_hit = True
+            if eff > pair_required:
+                pair_required, pair_source = eff, src
+    return pair_mm, pair_hit, pair_required, pair_source
+
+
 def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                        edge_margin: Optional[float] = None,
                        worst_n: int = 10,
@@ -4424,49 +4499,10 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                 continue
             seen_pairs.add(key)
             rects_b, holes_b = entries[other]
-            floors_a = parts[ref].pad_floors if model is not None else None
-            floors_b = parts[other].pad_floors if model is not None else None
-            pair_reach = (clearance if model is None else
-                          max(clearance, model.base, parts[ref].max_floor,
-                              parts[other].max_floor))
-            pair_mm = 0.0
-            pair_hit = False
-            pair_required = 0.0
-            pair_source = ''
-            for ai, (a0, a1, a2, a3, na, sa) in enumerate(rects_a):
-                fa = floors_a[ai] if floors_a else None
-                for bi, (b0, b1, b2, b3, nb, sb) in enumerate(rects_b):
-                    if na == nb and na > 0:
-                        continue
-                    if not _sides_interact(sa, sb):
-                        continue
-                    g = rect_gap((a0, a1, a2, a3), (b0, b1, b2, b3))
-                    if g >= pair_reach - EPS:
-                        continue
-                    if fa is None:
-                        eff, src = clearance, ''
-                    else:
-                        eff, src = model.pair_with_source(fa, floors_b[bi])
-                    if g >= eff - EPS:
-                        continue
-                    if check_exact is not None:
-                        pa = _pad_with_copper(pads_by_ref[ref], ai, clearance)
-                        pb = _pad_with_copper(pads_by_ref[other], bi, clearance)
-                        if pa is not None and pb is not None:
-                            hit, over, _pt = check_exact(pa, pb, eff,
-                                                         routing_layers,
-                                                         clearance_margin=0.0)
-                            if not hit:
-                                continue
-                            pair_mm += over
-                            pair_hit = True
-                            if eff > pair_required:
-                                pair_required, pair_source = eff, src
-                            continue
-                    pair_mm += eff - g
-                    pair_hit = True
-                    if eff > pair_required:
-                        pair_required, pair_source = eff, src
+            pair_mm, pair_hit, pair_required, pair_source = pad_pair_conflict(
+                parts[ref], rects_a, pads_by_ref[ref],
+                parts[other], rects_b, pads_by_ref[other],
+                clearance, model, check_exact, routing_layers)
             if pair_hit:
                 pad_conflicts += 1
                 pad_shortfall += pair_mm

@@ -142,9 +142,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 - **`place_pose` "legal" is not "buildable".** It does not see a same-net pad
   stacked on another part's pad (#1064). After every pose change, run
   `check_assembly` and read `buildable`, not `blocking`.
-- **`render_placement`'s pad-clearance list uses bounding boxes.** It can flag
-  an oval pad that `check_drc` passes (#1065). `check_drc` and `place_pose`
-  are the truth.
+- **`render_placement`'s pad-clearance list is the grader's** (#1065): each
+  pair is confirmed with `check_drc`'s exact pad check at the pose it
+  draws, so it agrees with `grade_pad_legality`. Its pad-stack list
+  (`b_body_overlap_pairs`) still compares pad rectangles; read stacks from
+  `check_assembly`.
 - **Keep-out bands.** A pad in a `(keepout (tracks not_allowed))` band cannot
   be routed even on an empty board (#1031). Treat
   `checklist.a_off_outline.keepout_copper` like off-outline pad copper.
