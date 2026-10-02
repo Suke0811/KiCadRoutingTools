@@ -228,8 +228,9 @@ step, confirm the geometry actually has that problem:
    handles it.
 3. **Interior pads at fine pitch (<=0.6mm), or a perimeter at <=0.65mm with
    many pads?** → Yes, fanout genuinely helps (this is the boxed-in case).
-   For a PERIMETER part that makes fanout a candidate to probe, not a
-   verdict: see "Route signals at the FAB floor", step 2.
+   A PERIMETER part (QFN/QFP) is a candidate to probe, not a verdict:
+   measure its fanout chain against the one-pass shape in "Route signals
+   at the FAB floor", step 2.
    **"Fine-pitch" is not one number in this file, and no sentence should be read
    as if it were.** It is the FANOUT trigger at <=0.6 mm interior / <=0.65 mm
    perimeter — the predicate in the code block above, the only executable one —
@@ -2727,17 +2728,28 @@ hunt for.
    obstacles"). If still congested, step the width down further toward the fab
    physical minimum and re-route.
 
-   **Probe this one-pass shape against the staged chain on a freshly placed
-   board, and keep the better `board_score` `blocking` (then vias).** Run it
-   from the PLACED board, with no fanout and no `route_diff.py` step, beside
-   the usual fanout -> `route_diff.py` -> `route.py` chain. Measured on a
-   90-part 2-layer board with an LQFP-48 hub (one Default class at 0.1 mm):
-   the staged chain reached blocking 16 (161 vias), the same chain at
-   0.1/0.1/0.3/0.15 reached 18 (201 vias), and one pass at those sizes over
-   every signal net reached 5 (176 vias), then 1 after a `--grid-step 0.05`
-   retry and a plane repair at the same sizes. On an earlier placement of
-   the same board the two shapes tied at 23 (140 vias staged, 188 one-pass),
-   so neither shape is the default; measure both.
+   **When a board's only fanout candidates are QFN/QFP perimeter parts,
+   probe a one-pass shape against the staged chain and keep the better
+   FINISHED board by `board_score` `blocking` (then vias).** Run it from the
+   poured board (Routing Order #1: planes first), with no fanout and no
+   `route_diff.py` step, beside the usual fanout -> `route_diff.py` ->
+   `route.py` chain:
+   `python3 -X utf8 py_router/route.py <poured> <out> --nets '*' --track-width 0.1 --clearance-ceiling 0.1 --via-size 0.3 --via-drill 0.15`
+   A fanout raises `blocking` mid-chain by construction, so compare the
+   finished boards. The one pass routes pairs single-ended and rails at the
+   floor width, so keep `route_diff.py` and `--power-nets` (step 3) for the
+   nets that declare them. A BGA needs its fanout: route.py keeps its
+   exclusion zones by default. Measured on a 2-layer board with 90 placed
+   parts and an LQFP-48 hub, which declares no impedance or net width: the
+   staged chain reached blocking 16 (161 vias); the same chain with its
+   `route.py` step at 0.1/0.1/0.3/0.15 (and `--max-ripup 12`), 18 (201
+   vias); one pass at those sizes over the 44 non-ground nets, 5 (176
+   vias), below the board's authored 0.15 mm track and 0.5 mm via, as step 1
+   intends. Both arms poured and repaired ground AFTER routing, so the
+   pour-first order is not what was measured. On an earlier placement of
+   the same board, fanout at the net-class sizes and no fanout at the fine
+   sizes (both with `route_diff.py`) tied at 23 (140 vias against 188), so
+   neither shape is the default; measure both.
 3. **Keep only the nets that NEED width wide — by rule, not by sweep.**
    Power/high-current nets stay wide via `--power-nets`/`--power-nets-widths`, and
    impedance-controlled nets keep their calculated width (`--impedance`, or

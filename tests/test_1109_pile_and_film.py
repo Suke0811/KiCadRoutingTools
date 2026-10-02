@@ -112,6 +112,52 @@ class TestPilePredicate(unittest.TestCase):
                       ['has_copper'], True)
         self.assertIn('copper yes (1 segs', r.stdout)
 
+    def test_a_heap_prints_pile_too(self):
+        """#1115: the other pile `unplaced` misses -- 15 of 20 parts stacked
+        on one spot, inside the outline. The text line printed `partially
+        unplaced` while the JSON said `pile: true`."""
+        import re
+        heap = RING[:4] + [
+            re.sub(r'\(at -?\d+ -?\d+\)',
+                   '(at 20 20)' if i < 15 else f'(at {5 + 6 * (i - 15)} 5)',
+                   RING[4 + i], count=1)
+            for i in range(20)] + [')']
+        self.assertEqual(sum('(at 20 20)' in ln for ln in heap), 15)
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, 'heap.kicad_pcb')
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write('\n'.join(heap))
+            r = subprocess.run(
+                [sys.executable, '-X', 'utf8',
+                 os.path.join(ROOT, 'py_tools', 'board_brief.py'), p],
+                capture_output=True, text=True, cwd=ROOT, timeout=600)
+        line = [ln for ln in r.stdout.splitlines()
+                if ln.startswith('JSON_SUMMARY: ')]
+        self.assertTrue(line, r.stdout[-2000:] + r.stderr[-2000:])
+        summary = json.loads(line[-1][len('JSON_SUMMARY: '):])
+        self.assertIs(summary['pile'], True)
+        self.assertIs(summary['unplaced'], False)
+        self.assertIn('state: PILE;', r.stdout)
+
+    def test_the_skill_command_runs_on_a_fresh_checkout(self):
+        """#1115: the free-agent skill's first command writes
+        `--json wk/<run>/brief.json`, and wk/ does not exist on a fresh
+        checkout. It died with a traceback before JSON_SUMMARY."""
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, 'wk', 'r1', 'brief.json')
+            r = subprocess.run(
+                [sys.executable, '-X', 'utf8',
+                 os.path.join(ROOT, 'py_tools', 'board_brief.py'),
+                 os.path.join(ROOT, 'kicad_files', 'esp_prog.kicad_pcb'),
+                 '--json', out],
+                capture_output=True, text=True, cwd=ROOT, timeout=600)
+            self.assertEqual(r.returncode, 0, r.stdout[-1500:] + r.stderr[-1500:])
+            self.assertTrue(os.path.isfile(out))
+            with open(out, encoding='utf-8') as fh:
+                self.assertIn('has_copper', json.load(fh)['state'])
+        self.assertTrue(any(ln.startswith('JSON_SUMMARY: ')
+                            for ln in r.stdout.splitlines()))
+
 
 class TestFilmBoardBoxLine(unittest.TestCase):
     def _line(self, report):

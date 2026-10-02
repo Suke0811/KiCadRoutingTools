@@ -211,20 +211,30 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   size flags; the finalize runs even when that step has nothing else to
   route. Do not end on `repair_planes.py`: it cannot know the sizes you
   routed at, so it falls back to the board's net-class via and track.
-- **Probe both chain shapes on a placed board, then keep the better one.**
-  Route the staged chain (fanout, then `route_diff.py`, then `route.py` at
-  the net-class sizes) and ONE fine-geometry pass from the same placed
+- **When a board's only fanout candidates are QFN/QFP perimeter parts, probe
+  both chain shapes and keep the better FINISHED board.** Pour first, then
+  route the staged chain (fanout, then `route_diff.py`, then `route.py` at
+  the net-class sizes) and ONE fine-geometry pass from the same poured
   board, each to a fresh output path and each ending on `route.py` as
   above:
-  `python3 -X utf8 py_router/route.py <placed> <out> --nets '*' --track-width 0.1 --clearance-ceiling 0.1 --via-size 0.3 --via-drill 0.15`
-  Keep the lower `board_score` `blocking`, then the fewer vias, under the
-  comparison rule in §5 (a fanout raises `blocking` by construction). On a
-  90-part 2-layer board with an LQFP-48 hub, the staged chain reached
-  blocking 16, the same chain at the fine sizes 18, and the one fine pass 5,
-  then 1 after a `--grid-step 0.05` retry and a plane repair at the same
-  sizes (ground poured after the pass, which the plane rule above now
-  replaces). On an earlier placement of that board the two shapes tied at
-  23, with 140 vias against 188, so measure both.
+  `python3 -X utf8 py_router/route.py <poured> <out> --nets '*' --track-width 0.1 --clearance-ceiling 0.1 --via-size 0.3 --via-drill 0.15`
+  - Compare finished boards only: a fanout raises `blocking` mid-chain by
+    construction (§5), so do not judge the staged arm on its post-fanout
+    score. Keep the lower `board_score` `blocking`, then the fewer vias.
+  - The one pass routes every pair single-ended and every rail at 0.1 mm.
+    Keep `route_diff.py` for a pair the board declares an impedance for,
+    and `--power-nets` for a rail that needs width.
+  - Its sizes can sit below the board's authored floors: disclose that (§6).
+    A BGA needs its fanout; this probe is not for one.
+  - Measured on a 2-layer board with 90 placed parts and an LQFP-48 hub,
+    which declares no impedance or net width: the staged chain reached
+    blocking 16 (161 vias); the same chain with its `route.py` step at the
+    fine sizes, 18 (201); one fine pass over the 44 non-ground nets, 5
+    (176), below the board's authored 0.15 mm track and 0.5 mm via. Both
+    arms poured and repaired ground AFTER routing, so the pour-first order
+    above is not what was measured. On an earlier placement of that board,
+    fanout at the net-class sizes and no fanout at the fine sizes (both
+    with `route_diff.py`) tied at 23, with 140 vias against 188.
 - **Widths are requests.** After each route, read
   `power_widths.<net>.under_mm`: one run asked for 0.3 mm on +3V3 and shipped
   34 % of it at 0.127 mm. Grade power widths with `board_score --net-min-widths`.
