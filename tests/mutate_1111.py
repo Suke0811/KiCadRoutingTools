@@ -64,7 +64,8 @@ UNTOUCHED = _t(T, 'no_custom_pad_is_untouched')
 CLI = _t(T, 'cli_says_so')
 BOWTIE = _t(T, 'self_crossing')
 CIRCLE = _t(T, 'circle_pad_is_seen')
-LOGICAL = _t(T, 'one_logical_pad')
+LOGICAL = _t(T, 'unconnected_pin_drawn_twice')
+TIE = _t(T, 'net_tie_is_not')
 FANDB = _t(T, 'f_and_b')
 T1094 = _t('test_1094_rotated_courtyards.py')
 
@@ -95,21 +96,29 @@ ROWS = [
      "            if L < 1e-12:\n                continue",
      "            if False:\n                continue",
      (CIRCLE,), 'KILLED'),
-    ('one-logical-pad-is-two', 'pads',
-     "            if (a.pad_number and a.pad_number == b.pad_number",
-     "            if (False and a.pad_number == b.pad_number",
+    ('unconnected-copies-are-a-short', 'pads',
+     "                if (a.pad_number and a.pad_number == b.pad_number",
+     "                if (False and a.pad_number == b.pad_number",
      (LOGICAL,), 'KILLED'),
+    ('any-copies-are-one-pad', 'pads',
+     "                        and _unconnected(a) and _unconnected(b)):",
+     "                        ):",
+     (LOGICAL,), 'KILLED'),
+    ('net-tie-is-a-short', 'pads',
+     "                if any(a.pad_number in g and b.pad_number in g",
+     "                if False and any(a.pad_number in g and b.pad_number in g",
+     (TIE,), 'KILLED'),
     ('f-and-b-is-its-own-layer', 'pads',
      '        if lyr == "F&B.Cu":',
      '        if False:',
      (FANDB,), 'KILLED'),
     ('cross-footprint-unmeasured', 'pads',
-     "        return _overlaps_in(pads, tolerance)",
-     "        return _overlaps_in(pads, tolerance, exact=False)",
+     "        return _overlaps_in(pads, tolerance, ties=ties)",
+     "        return _overlaps_in(pads, tolerance, exact=False, ties=ties)",
      (CROSS,), 'KILLED'),
     ('per-footprint-unmeasured', 'pads',
-     "        hits.extend(_overlaps_in(fp.pads, tolerance))",
-     "        hits.extend(_overlaps_in(fp.pads, tolerance, exact=False))",
+     "        hits.extend(_overlaps_in(fp.pads, tolerance, ties=ties))",
+     "        hits.extend(_overlaps_in(fp.pads, tolerance, exact=False, ties=ties))",
      (JUMPER, CLI), 'KILLED'),
     ('slivers-dropped-as-arealess', 'geom',
      "        return [geom] if geom.area > AREA_EPS_MM2 else []",

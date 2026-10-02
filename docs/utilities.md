@@ -644,9 +644,10 @@ so a pair involving one that overlaps on outlines is re-measured on the real cop
 the shared copper. A solder jumper's interleaved teeth (KiCad's StickHub demo, JP1:
 0.150 mm apart, 0.150 mm overlap on the boxes) no longer reads as a short, and the
 re-measure can only remove a pair the outlines found. A custom pad the parser could
-not draw (a `gr_curve` primitive) stays measured on its box. Pads that share a
-number in one footprint are one logical pad and are never compared, as in KiCad;
-an `F&B.Cu` pad is on both outer layers.
+not draw (a `gr_curve` primitive) stays measured on its box. As in KiCad, two
+copies of one UNCONNECTED pin (KiCad gives each its own `unconnected-(...)` net)
+and a footprint's `net_tie_pad_groups` are not shorts; two copies of one number
+on real nets are. An `F&B.Cu` pad is on both outer layers.
 
 ### Examples
 

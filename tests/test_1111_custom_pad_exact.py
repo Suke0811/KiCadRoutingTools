@@ -89,6 +89,8 @@ def _board(path, *footprints):
             '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) '
             '(44 "Edge.Cuts" user))\n'
             '  (net 0 "") (net 1 "N1") (net 2 "N2")\n'
+            '  (net 3 "unconnected-(U1-X-Pad5)") '
+            '(net 4 "unconnected-(U1-X-Pad5)_1")\n'
             '  (gr_rect (start 0 0) (end 30 30) (stroke (width 0.1) '
             '(type default)) (layer "Edge.Cuts"))\n'
             + ''.join(footprints) + ')\n')
@@ -290,19 +292,40 @@ def test_a_circle_pad_is_seen():
     print("  circles: 0.3 mm deep and concentric both reported")
 
 
-def test_one_logical_pad_is_not_a_short():
-    """Pads sharing a NUMBER in one footprint are one logical pad (KiCad's
-    SameLogicalPadAs): an exposed pad's thermal vias, a doubled pin. KiCad
-    gives each copy of an unconnected pin its own net, so the net test does
-    not see them as one. Control: the same pads numbered apart are a short."""
-    def pads(n2):
+def test_an_unconnected_pin_drawn_twice_is_not_a_short():
+    """KiCad gives each copy of an UNCONNECTED pin its own
+    `unconnected-(...)_N` net, so two pads of one number -- an exposed pad's
+    thermal vias, a doubled pin -- differ by net, and its DRC reports no short
+    between them (kicad-cli 10, measured by #1111's second verifier). Two
+    copies of one number on REAL nets are a short to KiCad, and here; so is
+    one unconnected copy against a real net."""
+    def pads(n1, n2, num2='5'):
         return (f'    (pad "5" smd circle (at 0 0) (size 1 1) (layers "F.Cu") '
-                f'(net 1 "N1"))\n'
-                f'    (pad "{n2}" smd rect (at 0.6 0) (size 1 1) (layers "F.Cu") '
-                f'(net 2 "N2"))\n')
-    assert _depths(_pcb(_fp('U1', 10, 10, pads('5')))) == []
-    assert len(_depths(_pcb(_fp('U1', 10, 10, pads('6'))))) == 1
-    print("  pad 5 twice: one logical pad; 5 and 6: a short")
+                f'(net {n1[0]} "{n1[1]}"))\n'
+                f'    (pad "{num2}" smd rect (at 0.6 0) (size 1 1) '
+                f'(layers "F.Cu") (net {n2[0]} "{n2[1]}"))\n')
+    u3, u4 = (3, 'unconnected-(U1-X-Pad5)'), (4, 'unconnected-(U1-X-Pad5)_1')
+    n1, n2 = (1, 'N1'), (2, 'N2')
+    assert _depths(_pcb(_fp('U1', 10, 10, pads(u3, u4)))) == []
+    for a, b in ((n1, n2), (u3, n2)):
+        assert len(_depths(_pcb(_fp('U1', 10, 10, pads(a, b))))) == 1, (a, b)
+    print("  pad 5 twice, both unconnected: clean; on real nets, or one real: "
+          "a short")
+
+
+def test_a_net_tie_is_not_a_short():
+    """A footprint's `net_tie_pad_groups` are pads it shorts on purpose (a
+    Kelvin shunt); KiCad exempts them. Control: the same pads, no group."""
+    pads = ('    (pad "1" smd circle (at 0 0) (size 1 1) (layers "F.Cu") '
+            '(net 1 "N1"))\n'
+            '    (pad "2" smd circle (at 0.6 0) (size 1 1) (layers "F.Cu") '
+            '(net 2 "N2"))\n')
+    tie = '    (net_tie_pad_groups "1, 2")\n'
+    pcb = _pcb(_fp('R1', 10, 10, tie + pads))
+    assert pcb.footprints['R1'].net_tie_groups, 'the fixture declares no tie'
+    assert _depths(pcb) == [] and _depths(pcb, cross_footprint=True) == []
+    assert len(_depths(_pcb(_fp('R1', 10, 10, pads)))) == 1
+    print("  net tie: clean; the same pads untied: a short")
 
 
 def test_an_f_and_b_pad_is_on_both_sides():
@@ -405,7 +428,8 @@ TESTS = [
     test_a_thin_crossing_is_still_a_short,
     test_a_self_crossing_outline_keeps_both_lobes,
     test_a_circle_pad_is_seen,
-    test_one_logical_pad_is_not_a_short,
+    test_an_unconnected_pin_drawn_twice_is_not_a_short,
+    test_a_net_tie_is_not_a_short,
     test_an_f_and_b_pad_is_on_both_sides,
     test_the_moved_constant_is_the_one_it_copied,
     test_rp2350_u5_has_no_false_pairs,

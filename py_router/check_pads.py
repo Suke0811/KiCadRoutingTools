@@ -158,7 +158,13 @@ def _custom_pair_depth(a, b):
         _copper_geometry(a).intersection(_copper_geometry(b)))
 
 
-def _overlaps_in(pads, tolerance, exact=True):
+def _unconnected(pad) -> bool:
+    """A pad KiCad gave a per-pad `unconnected-(...)` net: a pin nothing is
+    wired to."""
+    return (pad.net_name or '').startswith('unconnected-(')
+
+
+def _overlaps_in(pads, tolerance, exact=True, ties=None):
     """Different-net copper overlaps among a flat pad list (deeper than tolerance).
     Only pads sharing a copper layer can short (edge-connector fingers on opposite
     sides, for example, never conflict).
@@ -177,26 +183,35 @@ def _overlaps_in(pads, tolerance, exact=True):
     custom pad the parser could not draw (`polygons` None, e.g. a `gr_curve`
     primitive) stays measured on its box. `exact=False` is the box model
     alone, which is what this was before #1111.
+
+    `ties` = {footprint ref: [set of pad numbers, ...]}, the footprints'
+    `net_tie_pad_groups`: pads a footprint deliberately shorts (a Kelvin
+    shunt, a net tie) are not a short, as KiCad's DRC exempts them.
     """
     pads = [p for p in pads if p.size_x > 0 and p.size_y > 0 and p.net_id != 0]
     polys = [_pad_outline_polygon(p) for p in pads]
     reach = [math.hypot(p.size_x, p.size_y) / 2.0 for p in pads]
+    ties = ties or {}
     hits = []
     for i, a in enumerate(pads):
         for j in range(i + 1, len(pads)):
             b = pads[j]
             if a.net_id == b.net_id:
                 continue
-            # One LOGICAL pad drawn as several (KiCad's SameLogicalPadAs: same
-            # footprint, same number) -- an exposed pad's thermal vias, a
-            # doubled pin. KiCad gives each copy of an UNCONNECTED pin its own
-            # `unconnected-(...)_N` net, so the net test above does not see
-            # them as one, and KiCad's DRC never checks them against each
-            # other. Measured once circles became visible (#1111): jetson U30's
-            # 0.45 mm vias on pad 57 and rp2350 U8's two VBAT pads 15.
-            if (a.pad_number and a.pad_number == b.pad_number
-                    and a.component_ref == b.component_ref):
-                continue
+            if a.component_ref == b.component_ref:
+                # One UNCONNECTED pin drawn as several pads (an exposed pad's
+                # thermal vias, a doubled pin): KiCad gives each copy its own
+                # `unconnected-(...)_N` net, and its DRC reports no short
+                # between two such copies of one number -- measured with
+                # kicad-cli 10; two copies on REAL nets are a short, and
+                # still one here. Seen once circles became visible (#1111):
+                # jetson U30's 0.45 mm vias on pad 57, rp2350 U8's pads 15.
+                if (a.pad_number and a.pad_number == b.pad_number
+                        and _unconnected(a) and _unconnected(b)):
+                    continue
+                if any(a.pad_number in g and b.pad_number in g
+                       for g in ties.get(a.component_ref, ())):
+                    continue
             near = reach[i] + reach[j] + tolerance
             if abs(a.global_x - b.global_x) > near or abs(a.global_y - b.global_y) > near:
                 continue
@@ -222,14 +237,21 @@ def find_pad_overlaps(pcb, tolerance: float = 0.05, component: str = None,
     noisier on tightly-placed passives). Custom pads are measured on their real
     copper (`_overlaps_in`, #1111).
     """
+    # The footprints' deliberate shorts, keyed the way a pad names its part.
+    ties = {}
+    for fp in pcb.footprints.values():
+        groups = getattr(fp, 'net_tie_groups', None) or ()
+        if groups and fp.pads:
+            ties.setdefault(fp.pads[0].component_ref, []).extend(
+                set(g) for g in groups)
     if cross_footprint:
         pads = [pd for fp in pcb.footprints.values() for pd in fp.pads]
-        return _overlaps_in(pads, tolerance)
+        return _overlaps_in(pads, tolerance, ties=ties)
     hits = []
     for ref, fp in pcb.footprints.items():
         if component and ref != component:
             continue
-        hits.extend(_overlaps_in(fp.pads, tolerance))
+        hits.extend(_overlaps_in(fp.pads, tolerance, ties=ties))
     return hits
 
 
