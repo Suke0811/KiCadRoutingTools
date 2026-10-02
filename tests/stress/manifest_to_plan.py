@@ -653,6 +653,10 @@ CAP_FLAG_PARAMS = {
     # and the tolerance that draws a connector segment back to a stub, so a
     # replay that dropped it produced different COPPER.
     '--default-via-size': 'cap_default_via_size',
+    # #1067: the floorplan intent whose decap limits the cap pass holds. A
+    # path, carried as written; the GUI resolves a relative one against the
+    # board's folder.
+    '--intent': 'cap_intent_path',
 }
 # Deliberately NOT mapped, and why:
 #   --lock              nargs='+' extra locked refs; the GUI has no control.

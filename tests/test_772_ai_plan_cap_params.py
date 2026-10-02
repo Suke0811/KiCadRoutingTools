@@ -51,7 +51,7 @@ CAP_KNOBS = (
     'cap_max_displacement', 'cap_max_displacement_cap',
     'cap_displacement_growth', 'cap_board_edge_clearance',
     'cap_max_passes', 'cap_prefix', 'cap_default_via_size',
-    'cap_allow_rotation',
+    'cap_intent_path', 'cap_allow_rotation',
 )
 
 
@@ -125,6 +125,12 @@ class TestTheEdgeClearanceIsRehomed(unittest.TestCase):
     def test_the_grid_step_row_exists(self):
         self.assertEqual(_literal(M2P, 'CAP_FLAG_PARAMS')['--grid-step'],
                          'grid_step')
+
+    def test_the_intent_row_exists(self):
+        """#1067: a recorded `--intent` replays as the panel's
+        cap_intent_path, the control the engine's `intent` is loaded from."""
+        self.assertEqual(_literal(M2P, 'CAP_FLAG_PARAMS')['--intent'],
+                         'cap_intent_path')
 
     def test_the_generic_loop_skips_the_legacy_spelling_on_a_cap_step(self):
         src = _src(AI_PLAN)

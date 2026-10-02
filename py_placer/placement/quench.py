@@ -3500,6 +3500,58 @@ class QuenchState:
             self._neighbors[ref] = lst
 
 
+class TetherGateView:
+    """QuenchState's #1043 tether gate on parts that are not a QuenchState
+    (#1067: `place_fanout_clearance`'s near-BGA caps).
+
+    The methods ARE QuenchState's -- bound here as class attributes, not
+    copied -- so a candidate is judged by the same measurement and the same
+    per-claim rule the quench applies: past its limit AND worse than the live
+    board refuses (`tether_failures` / `tether_ok`). `parts` maps each MOVABLE
+    ref to an object with `x`, `y`, `rot` and `locked`; every other part is
+    read at its file pose, which is right for an engine that moves only those
+    parts. `note_move()` must follow every applied move: it clears the two
+    caches QuenchState's `apply_move` clears.
+    """
+
+    _exact_tethers = False
+    _build_tethers = QuenchState._build_tethers
+    tether_terms_for = QuenchState.tether_terms_for
+    _pose_of = QuenchState._pose_of
+    _posed_fp = QuenchState._posed_fp
+    _chip_bounds = QuenchState._chip_bounds
+    _tether_value = QuenchState._tether_value
+    tether_graded_value = QuenchState.tether_graded_value
+    _tether_measure = QuenchState._tether_measure
+    _incumbent_tether = QuenchState._incumbent_tether
+    tether_failures = QuenchState.tether_failures
+    _iter_tether_failures = QuenchState._iter_tether_failures
+    tether_ok = QuenchState.tether_ok
+
+    def __init__(self, pcb_data, pcb_file, parts, tethers):
+        self.pcb_data = pcb_data
+        self.pcb_file = pcb_file
+        self.parts = parts
+        self._tether_terms = []
+        self._tethers_of = {}
+        self._inc_tval = {}
+        self._tgap = {}
+        self._posed = {}
+        self._bounds = {}
+        self._tether_override = None
+        self._tether_bodies = None
+        self.tethers = dict(tethers or {})
+        if self.tethers:
+            self._build_tethers()
+        self._tether_active = bool(self._tether_terms)
+
+    def note_move(self):
+        """A part in `parts` moved: the incumbent values and the static
+        partial minima are stale (QuenchState.apply_move's two clears)."""
+        self._inc_tval.clear()
+        self._tgap.clear()
+
+
 def merge_groups(groups: Dict[str, List[str]], rigid: Dict[str, List[str]],
                  clusters: Dict[str, List[str]], movable_set: Set[str],
                  parts: Dict[str, '_Part']):

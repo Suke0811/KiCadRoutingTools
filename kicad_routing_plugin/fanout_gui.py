@@ -157,6 +157,17 @@ def cap_optimization_summary(result):
     if regrazed:
         summary += (f"; {len(regrazed)} re-grazed by this pass's own "
                     f"connector copper: {', '.join(sorted(regrazed))}")
+    # #1067: only when the step carried an intent (the key is absent else).
+    decap = result.get('decap') or {}
+    decap_held = sorted(decap.get('held') or {})
+    if decap_held:
+        summary += (f"; {len(decap_held)} held by the decap gate (a clear "
+                    f"pose breaks a decap limit): {', '.join(decap_held)}")
+    decap_added = (decap.get('grade') or {}).get('added') or []
+    if decap_added:
+        summary += (f"; {len(decap_added)} NEW decap error(s) (intent): "
+                    + ', '.join(f"{a.get('rule')} {a.get('ref')}"
+                                for a in decap_added))
     return summary
 
 
@@ -879,6 +890,10 @@ class BGAOptionsPanel(wx.ScrolledWindow):
         # place_fanout_clearance.py --default-via-size defaults to. NOT the
         # Basic tab's via_size (0.5 out of the box) -- see the control.
         ('cap_default_via_size', CAP_DEFAULT_VIA_SIZE),
+        # #1067: '' == no intent, which is what an omitted --intent means;
+        # the engine signature default is None, and get_config maps one to
+        # the other.
+        ('cap_intent_path', ''),
         ('cap_allow_rotation', True),
     )
 
@@ -1143,6 +1158,29 @@ class BGAOptionsPanel(wx.ScrolledWindow):
                                    "by the 2-copper-pad test)")
         cap_grid.Add(self.cap_prefix, 0, wx.EXPAND)
 
+        # #1067: place_fanout_clearance.py --intent. Named after the plan
+        # param so ai_plan reaches it, and a TextCtrl because the plan
+        # executor sets a value with SetValue(str).
+        cap_grid.Add(wx.StaticText(self, label="Floorplan intent:"), 0,
+                     wx.ALIGN_CENTER_VERTICAL)
+        intent_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.cap_intent_path = wx.TextCtrl(self, value="")
+        self.cap_intent_path.SetMinSize((60, -1))
+        self.cap_intent_path.SetToolTip(
+            "Optional floorplan intent JSON (--intent). Its decap limits "
+            "(decaps.max_distance_mm, decaps.max_pin_distance_mm, graded at "
+            "error) are HELD while caps move: a cap whose only clear pose "
+            "breaks one stays grazing and is named. A relative path is read "
+            "from the board's folder. Empty = no intent, and a cap can be "
+            "moved past a decap limit silently.")
+        intent_sizer.Add(self.cap_intent_path, 1, wx.EXPAND | wx.RIGHT, 4)
+        self.cap_intent_browse = wx.Button(self, label="…",
+                                           style=wx.BU_EXACTFIT)
+        self.cap_intent_browse.SetToolTip("Browse for a floorplan intent JSON")
+        self.cap_intent_browse.Bind(wx.EVT_BUTTON, self._on_browse_cap_intent)
+        intent_sizer.Add(self.cap_intent_browse, 0)
+        cap_grid.Add(intent_sizer, 0, wx.EXPAND)
+
         cap_sizer.Add(cap_grid, 0, wx.EXPAND | wx.ALL, 5)
 
         self.cap_allow_rotation = wx.CheckBox(self, label="Allow cap rotation")
@@ -1153,6 +1191,15 @@ class BGAOptionsPanel(wx.ScrolledWindow):
         main_sizer.Add(cap_sizer, 0, wx.EXPAND | wx.TOP, 5)
 
         self.SetSizer(main_sizer)
+
+    def _on_browse_cap_intent(self, event):
+        """Pick the floorplan intent the cap pass holds its decaps to."""
+        with wx.FileDialog(self, "Choose a floorplan intent",
+                           wildcard="Intent JSON (*.json)|*.json|"
+                                    "All files (*.*)|*.*",
+                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dlg:
+            if dlg.ShowModal() == wx.ID_OK:
+                self.cap_intent_path.SetValue(dlg.GetPath())
 
     def get_escape_method(self) -> str:
         """The engine escape_method value for the current dropdown selection."""
@@ -1216,6 +1263,8 @@ class BGAOptionsPanel(wx.ScrolledWindow):
             'cap_max_passes': self.cap_max_passes.GetValue(),
             'cap_default_via_size': self.cap_default_via_size.GetValue(),
             'cap_prefix': self.cap_prefix.GetValue().strip() or 'C,R,FB',
+            # #1067: '' = no intent (the engine's None).
+            'cap_intent_path': self.cap_intent_path.GetValue().strip(),
             'cap_allow_rotation': self.cap_allow_rotation.GetValue(),
         }
 
@@ -2195,6 +2244,21 @@ class FanoutTab(wx.Panel):
             # Checked overrides keep the existing fab-floored value.
             placement_override = fanout_config.get(
                 'placement_clearance_ceiling', fanout_config.get('clearance_ceiling'))
+            # #1067: the CLI's --intent. A path that does not load stops the
+            # cap pass before the engine runs, as the CLI exits 2 -- never a
+            # silent run without the gate the step asked for.
+            _cap_intent = None
+            _ip = (fanout_config.get('cap_intent_path') or '').strip()
+            if _ip:
+                if not os.path.isabs(_ip) and self.board_filename:
+                    _ip = os.path.join(os.path.dirname(self.board_filename),
+                                       _ip)
+                from placement import floorplan as _fp1067
+                try:
+                    _cap_intent = _fp1067.load_intent(_ip)
+                except (OSError, ValueError) as exc:
+                    return (f"Cap optimization NOT run: cannot load intent "
+                            f"{_ip}: {exc}")
             result = repair_fanout_clearance(
                 pcb_data,
                 pcb_file=self.board_filename,
@@ -2264,6 +2328,7 @@ class FanoutTab(wx.Panel):
                 # would have silently stopped moving ferrite beads.
                 cap_prefix=fanout_config.get('cap_prefix', 'C,R,FB'),
                 allow_rotations=fanout_config.get('cap_allow_rotation', True),
+                intent=_cap_intent,
                 # Runs ON the UI thread; _fanout_status forces the repaint so
                 # the label moves per cap visit instead of freezing (#130).
                 # x/N lines only (see the fanout call sites).

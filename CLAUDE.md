@@ -184,7 +184,11 @@ Validate routed boards against the *real* spec, with the right checker — most
     one, so a run that legitimately moves nothing still ships the spec it was
     graded against. `grade_pad_legality` and `quench` keep the uncapped
     `max(base, netclass)` semantics: they write no project, so the class they
-    price at is one KiCad will still enforce.
+    price at is one KiCad will still enforce. With `--intent` (#1067) it also
+    holds the intent's decap limits through the quench's own tether gate
+    (`quench.TetherGateView`, QuenchState's methods bound, not copied), and
+    discloses the decap grade from the ENGINE so the GUI's `cap_intent_path`
+    gets it too.
   - `--hole-to-hole-clearance` / `--board-edge-clearance` work the same way: omitted →
     the board's own `min_hole_to_hole` / `min_copper_edge_clearance` constraint (via
     `list_nets.board_constraint`), else the fixed default.

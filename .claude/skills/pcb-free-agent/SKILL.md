@@ -153,8 +153,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     finding is gone; read `unresolved_refs` / `unresolved_by_rule` in its
     `JSON_SUMMARY` for the rest (#1066). Add `--repair-decaps` to seat
     charged caps at their IC's pin (opt-in; `decap_rung` says what it did);
-  - `place_fanout_clearance` can move a cap past `decap_pin_distance`
-    silently (#1067);
+  - `place_fanout_clearance` holds both decap limits when you pass it
+    `--intent` (#1067): no cap move takes a decap claim past its limit and
+    further than before, it prints `Decap ...` lines, and a cap whose only
+    clear pose breaks a limit stays grazing and is named. Without
+    `--intent` it can still move a cap past `decap_pin_distance` silently;
   - `place_seed --reseat`'s intent basis counts only the rules it prints
     (`intent[...]`, `accept_basis.intent_rules`) -- decap and proximity
     included since #1068.

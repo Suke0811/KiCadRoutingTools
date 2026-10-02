@@ -269,12 +269,19 @@ def main():
     p.add_argument("--cap-prefix", default="C,R,FB")
     p.add_argument("--lock", nargs="+", default=None, metavar="REF")
     p.add_argument("--max-passes", type=int, default=30)
+    from placement.cli_gates import add_intent_arg, load_intent_or_exit
+    add_intent_arg(p, summary=(
+        "Its decap limits are held while caps move, exactly as "
+        "place_fanout_clearance.py --intent holds them (#1067)."))
     # animation controls
     p.add_argument("--size", type=int, default=900, help="GIF size in px")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--sub-frames", type=int, default=14,
                    help="Interpolated frames per cap move (smoothness)")
     args = p.parse_args()
+    intent, _rc = load_intent_or_exit(args)
+    if _rc:
+        return _rc
 
     if args.output_file is None:
         base, _ = os.path.splitext(args.input_file)
@@ -296,7 +303,7 @@ def main():
         displacement_growth=args.displacement_growth,
         allow_rotations=not args.no_rotate, cap_prefix=args.cap_prefix,
         lock_refs=args.lock, max_passes=args.max_passes,
-        on_move=rec,
+        on_move=rec, intent=intent,
     )
 
     if not rec.frames or len(rec.frames) < 2:

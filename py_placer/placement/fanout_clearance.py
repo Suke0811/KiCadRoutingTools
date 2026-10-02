@@ -593,6 +593,10 @@ class _Cap:
     for decoupling caps).
     """
 
+    #: Read by quench's `tether_terms_for` through `TetherGateView` (#1067).
+    #: A `_Cap` is movable by construction -- `is_cap` admits no locked ref.
+    locked = False
+
     def __init__(self, fp, courtyard_local, model=None, board_copper=None):
         self.ref = fp.reference
         self.side = footprint_side(fp)
@@ -815,6 +819,12 @@ class _Repair:
         if bounds is None:
             raise ValueError("No board boundary (Edge.Cuts) found")
         self.board = bounds
+        # #1067: the decap tether gate, armed by the engine when an intent
+        # declares a limit (`quench.TetherGateView`); None = no gate.
+        self._tethers = None
+        self.tether_refused: Dict[str, int] = {}
+        self.tether_held: Dict[str, List] = {}
+        self._last_tether_fails = None
         # Copper-to-EDGE, not a different-net pair requirement, so #725 leaves
         # it alone: it is KiCad's `min_copper_edge_clearance`, a separate rule
         # a netclass cannot express. #733 closed the three gaps this comment
@@ -2915,6 +2925,27 @@ class _Repair:
                 return True
         return False
 
+    def _tether_refuses(self, ref, x, y, rot) -> bool:
+        """#1067: True when the pose breaks a declared decap claim -- past its
+        limit AND worse than the live board (quench's own per-claim rule,
+        through `TetherGateView`). Records the failures for the caller."""
+        tg = self._tethers
+        if tg is None or ref not in tg._tethers_of:
+            return False
+        fails = tg.tether_failures({ref: (x, y, rot)})
+        if not fails:
+            return False
+        self.tether_refused[ref] = self.tether_refused.get(ref, 0) + 1
+        self._last_tether_fails = fails
+        return True
+
+    def apply_pose(self, ref, x, y, rot):
+        """Move cap `ref`, and tell the tether gate its incumbents moved."""
+        cap = self.caps[ref]
+        cap.x, cap.y, cap.rot = x, y, rot
+        if self._tethers is not None:
+            self._tethers.note_move()
+
     def hard_blocked(self, ref, cap, x, y, rot):
         """True if a placement leaves the board or introduces/worsens a
         same-side courtyard overlap (with a locked part OR another movable
@@ -2938,7 +2969,7 @@ class _Repair:
         if self._worsens_any_net(self._via_shortfalls(ref, cap, x, y, rot),
                                  self.base_via.get(ref, {})):
             return True
-        return False
+        return self._tether_refuses(ref, x, y, rot)    # #1067
 
     def graze_penalty(self, ref, cap, x, y, rot):
         """Total foreign-copper clearance shortfall for a placement: via
@@ -2950,6 +2981,8 @@ class _Repair:
                 + self.pad_penalty(ref, cap, x, y, rot))
 
     def cost(self, ref, cap, x, y, rot):
+        if self._tethers is not None:
+            self._last_tether_fails = None
         if self._blocked_geom(ref, cap, x, y, rot):
             return float('inf')
         seg_by_net = self._seg_shortfalls(ref, cap, x, y, rot)
@@ -2962,6 +2995,10 @@ class _Repair:
                 or self._worsens_any_net(pad_by_net, self.base_pad.get(ref, {}))
                 or self._worsens_any_net(via_by_net, self.base_via.get(ref, {}))):
             return float('inf')
+        # #1067: the declared decap limits, no worse per claim. One choke
+        # point: the descent and the via-clear fallback both price here.
+        if self._tether_refuses(ref, x, y, rot):
+            return float('inf')
         seg_pen = sum(seg_by_net.values())
         pad_pen = sum(pad_by_net.values())
         disp = math.hypot(x - cap.seed_x, y - cap.seed_y)
@@ -2969,6 +3006,28 @@ class _Repair:
         return (VIA_WEIGHT * graze
                 + ATTRACT_WEIGHT * self.attraction(cap, x, y, rot)
                 + DISPLACEMENT_WEIGHT * disp)
+
+
+#: #1067: the declared tether rules `--intent` holds no worse per claim.
+#: Proximity is the quench's too, but no issue has asked this engine for it.
+FANOUT_TETHER_RULES = ('decap_distance', 'decap_pin_distance')
+
+
+def _decap_violations(intent, pcb_data, pcb_file, poses=None):
+    """The intent's `decap_*` violations on the board, `poses` ({ref: (x, y,
+    rot)}) overriding the file poses (#1067). The same posed-copy view
+    `floorplan._PosedState.board` hands the grader."""
+    from copy import copy as _copy
+    from . import floorplan
+    from .legality import footprint_at_pose
+    view = pcb_data
+    if poses:
+        view = _copy(pcb_data)
+        view.footprints = {
+            ref: (footprint_at_pose(fp, poses[ref]) if ref in poses else fp)
+            for ref, fp in pcb_data.footprints.items()}
+    g = floorplan.grade(intent, view, pcb_file)
+    return [v for v in g.violations if v.rule.startswith('decap_')]
 
 
 def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
@@ -2994,7 +3053,11 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                             # candidate-position sweep per cap x up to 30
                             # passes is the slow part, so each cap visit
                             # reports (GUI status line). None = silent.
-                            progress_callback=None) -> Dict:
+                            progress_callback=None,
+                            # #1067: a `floorplan.Intent`; its decap limits
+                            # (decap_distance, decap_pin_distance at ERROR)
+                            # are held no worse per claim. None = no gate.
+                            intent=None) -> Dict:
     """Nudge near-BGA decoupling caps off foreign-net fanout copper (vias
     #130, escape tracks #278, component pads #275) and toward same-net balls.
     Run AFTER bga_fanout.py.
@@ -3130,6 +3193,12 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                 'bga_refs': st.bga_refs, 'required': [],
                 'clearance_notes': list(st.clearance_notes)}
 
+    # #1067: with an intent, the declared decap limits are held per claim,
+    # no worse than the board as it stands, through the quench's own gate.
+    decap_report = None
+    if intent is not None:
+        decap_report = _arm_decap_gate(st, intent, pcb_data, pcb_file)
+
     # Initial violators: any foreign-copper clearance shortfall (via #130,
     # track #278, pad #275) is a shipped DRC violation to fix.
     violators0 = [r for r, c in st.caps.items()
@@ -3242,7 +3311,7 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                         if c < best[0] - EPS:
                             best = (c, cx, cy, rot)
                 if best[0] < current - EPS:
-                    cap.x, cap.y, cap.rot = best[1], best[2], best[3]
+                    st.apply_pose(ref, best[1], best[2], best[3])
                     moves += 1
                     if on_move is not None:
                         on_move(st)
@@ -3305,6 +3374,7 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                 cap = st.caps[ref]
                 rots = rots_all if rots_all is not None else [cap.rot]
                 best = None  # (cost, x, y, rot)
+                held_by = None   # #1067: a clear pose the decap gate refused
                 for cx, cy in _candidate_positions(cap, max_displacement_cap,
                                                    step, grid_step):
                     for rot in rots:
@@ -3312,11 +3382,15 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                             continue
                         c = st.cost(ref, cap, cx, cy, rot)  # inf if blocked
                         if c == float('inf'):
+                            if held_by is None and st._last_tether_fails:
+                                held_by = st._last_tether_fails
                             continue
                         if best is None or c < best[0] - EPS:
                             best = (c, cx, cy, rot)
+                if best is None and held_by is not None:
+                    st.tether_held[ref] = held_by
                 if best is not None:
-                    cap.x, cap.y, cap.rot = best[1], best[2], best[3]
+                    st.apply_pose(ref, best[1], best[2], best[3])
                     disp = math.hypot(cap.x - cap.seed_x, cap.y - cap.seed_y)
                     if verbose:
                         print(f"  fallback: {ref} relocated to clear foreign "
@@ -3480,11 +3554,96 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
     for _note in st.clearance_notes:
         print(f"  pad clearance: {_note}")
 
-    return {'placements': placements, 'resolved': resolved,
-            'unresolved': unresolved, 'bga_refs': st.bga_refs,
-            'via_moves': via_moves, 'new_segments': new_segs,
-            'via_resolved': via_resolved, 'regrazed': regrazed,
-            'required': required, 'clearance_notes': list(st.clearance_notes)}
+    out = {'placements': placements, 'resolved': resolved,
+           'unresolved': unresolved, 'bga_refs': st.bga_refs,
+           'via_moves': via_moves, 'new_segments': new_segs,
+           'via_resolved': via_resolved, 'regrazed': regrazed,
+           'required': required, 'clearance_notes': list(st.clearance_notes)}
+    if decap_report is not None:
+        _finish_decap_report(decap_report, st, intent, pcb_data, pcb_file,
+                             placements, unresolved)
+        out['decap'] = decap_report
+    return out
+
+
+def _arm_decap_gate(st, intent, pcb_data, pcb_file) -> Dict:
+    """#1067: arm `st`'s decap tether gate from `intent` and take the
+    grade it is held against. Returns the report the run fills in."""
+    from . import floorplan
+    from .quench import TetherGateView
+    spec = {k: v for k, v in floorplan.tether_gate_spec(intent).items()
+            if k in FANOUT_TETHER_RULES}
+    view = TetherGateView(pcb_data, pcb_file, st.caps, spec)
+    if view._tether_active:
+        st._tethers = view
+    claims = len(view._tether_terms)
+    caps = sorted(r for r in st.caps if r in view._tethers_of)
+    rep = {'source': getattr(intent, 'source_path', None) or None,
+           'rules': sorted(spec),
+           'limits': {k: spec[k]['limit'] for k in sorted(spec)},
+           'claims': claims, 'caps': caps, 'refused': {}, 'held': {},
+           'grade': None}
+    try:
+        rep['_before'] = _decap_violations(intent, pcb_data, pcb_file)
+    except Exception as exc:     # noqa: BLE001 -- disclosed, never fatal
+        rep['grade'] = {'unavailable': f"{type(exc).__name__}: {exc}"}
+    if not spec:
+        print("Decap tethers (intent): the intent declares no decap limit at "
+              "error severity -- nothing held.")
+    else:
+        lim = ', '.join(f"{k} <= {spec[k]['limit']:g} mm"
+                        for k in sorted(spec))
+        print(f"Decap tethers (intent): {claims} claim(s) on {len(caps)} "
+              f"movable cap(s) [{lim}] held no worse than the board as it "
+              f"stands.")
+    return rep
+
+
+def _finish_decap_report(rep, st, intent, pcb_data, pcb_file, placements,
+                         unresolved) -> None:
+    """#1067: what the gate refused and held, and the decap grade delta.
+    Printed AFTER the byte-pinned `Moved N cap(s)` line, only with an intent."""
+    from . import floorplan
+    rep['refused'] = dict(sorted(st.tether_refused.items()))
+    # A cap the via-nudge freed is not held by anything any more.
+    rep['held'] = {r: [{'rule': f[0], 'name': f[1], 'measured': f[2],
+                        'incumbent': f[3]} for f in fails]
+                   for r, fails in sorted(st.tether_held.items())
+                   if r in unresolved}
+    before = rep.pop('_before', None)
+    if before is not None:
+        try:
+            poses = {p['reference']: (p['new_x'], p['new_y'],
+                                      p['new_rotation']) for p in placements}
+            after = _decap_violations(intent, pcb_data, pcb_file, poses)
+            errs = lambda vs: [v for v in vs if v.severity == floorplan.ERROR]  # noqa: E731
+            added = floorplan.grade_delta(before, after)
+            # `added` is grade_delta's: the CLAIMS (rule, ref, block) the
+            # moves added. An existing claim whose number moved is not one.
+            rep['grade'] = {
+                'errors_before': len(errs(before)),
+                'errors_after': len(errs(after)),
+                'added': [dict(a) for a in added]}
+        except Exception as exc:     # noqa: BLE001 -- disclosed, never fatal
+            rep['grade'] = {'unavailable': f"{type(exc).__name__}: {exc}"}
+    if rep['refused']:
+        print(f"  Decap gate refused {sum(rep['refused'].values())} candidate "
+              f"pose(s) for {len(rep['refused'])} cap(s).")
+    if rep['held']:
+        print("  Held by the decap gate (a clear pose exists, every one "
+              "breaks a declared decap limit): "
+              + '; '.join(f"{r} (" + ', '.join(
+                  f"{x['rule']} {x['name']} {x['measured']:.2f}mm, now "
+                  f"{x['incumbent']:.2f}mm" for x in f[:3]) + ")"
+                  for r, f in rep['held'].items()))
+    g = rep['grade'] or {}
+    if 'unavailable' in g:
+        print(f"Decap grade (intent): not graded -- {g['unavailable']}")
+    elif g:
+        print(f"Decap grade (intent): errors {g['errors_before']} -> "
+              f"{g['errors_after']}; added: "
+              + (', '.join(f"{a.get('rule')} {a.get('ref') or a.get('budget')}"
+                           for a in g['added']) or 'none'))
 
 
 def _point_in_poly(px, py, poly) -> bool:
