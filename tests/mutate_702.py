@@ -282,7 +282,8 @@ ROWS = [
      "                'refs_bound': len(set(state._intent_spec)\n"
      "                                  | set(state.keepouts_for)\n"
      "                                  | set(state._tethers_of)\n"
-     "                                  | set(state.declared_rotations)),\n",
+     "                                  | (set(state.declared_rotations)\n"
+     "                                     & set(state.parts))),\n",
      "                'refs_bound': len(state._intent_spec),\n",
      (T702,), 'KILLED'),
 

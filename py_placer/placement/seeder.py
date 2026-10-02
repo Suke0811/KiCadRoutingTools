@@ -1262,7 +1262,8 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
     that advice froze the part's POSITION as well, which is exactly what the
     declaration exists to avoid. The caller can see a
     fallback fired by comparing the part's rot before and after. Every
-    production caller passes `rotations=floorplan.declared_ladder(...)`, so
+    production caller passes a ladder -- `floorplan.declared_ladder(...)`,
+    or stage 2.5's chip lattice for an undeclared cap (#1099) -- so
     None reaches here only for an undeclared part; a call with no
     `rotations=` at all is what #1117 was, and test_893 refuses one anywhere
     in the source trees.

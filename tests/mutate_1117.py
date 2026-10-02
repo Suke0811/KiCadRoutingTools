@@ -13,7 +13,8 @@ restore the defect #1117 measured, or the reason it went unseen:
   * `swap-trades-declared-angles` -- the polish's swap phase exchanged full
     poses, so C2 declared 90 was written at 0 with exit 0 (Phase-1 verifier);
   * `ranker-ranks-a-declined-arm` -- rank_rotations ranked an arm whose
-    re-seat declined the part on the crossings that walk-out bought.
+    re-seat declined the part on the crossings that walk-out bought (now a
+    tier: after every angle whose seeds held the part, never eliminated).
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty
@@ -31,7 +32,7 @@ test files run only the cases whose names contain one of the substrings.
 
 Not covered by a row, and why:
   * `declared_ladder`'s `if claim is None: return None` -- a two-line anchor,
-    and its mutant (an IndexError on unpacking None) dies in every witness
+    and its mutant (a TypeError unpacking None) dies in every witness
     that seeds anything, so a row would add cost and no information;
   * the record's `zone` / `rotation` entries: one dict entry each, asserted
     by `not_traded` and `one_ladder`; their mutant is the same assertion
@@ -78,6 +79,7 @@ SWAP = _t(T, 'swap_does_not')
 OPTIMIZE = _t(T, 'optimizer_refuses_only')
 RANK = _t(T, 'rank_rotations_fails')
 CLASSIFY = _t('test_1113_rank_rotations.py', 'classify_row')
+RANK_KEY = _t('test_1113_rank_rotations.py', 'rotation_key')
 GATE = _t('test_893_declared_rotation.py', 'try_place_site')
 GATE_CTL = _t('test_893_declared_rotation.py', 'ladder_gate')
 SEEDED = _t('test_893_declared_rotation.py', 'is_the_angle_that_is_placed',
@@ -182,7 +184,8 @@ ROWS = [
      "                self._t1117_unused = (",
      (OPTIMIZE,), 'KILLED'),
     ('disclosure-omits-rotation-refs', 'q',
-     "                                  | set(state.declared_rotations)),",
+     "                                  | (set(state.declared_rotations)\n"
+     "                                     & set(state.parts))),",
      "                                  ),",
      (OPTIMIZE,), 'KILLED'),
     ('disclosure-omits-rotation-rule', 'q',
@@ -195,9 +198,17 @@ ROWS = [
      (SWAP,), 'KILLED'),
     # -- rank_rotations: a declined arm is a hard failure ---------------------
     ('ranker-ranks-a-declined-arm', 'rr',
-     "    elif ref in (row.get('reseat_declined') or {}):",
-     "    elif False:",
+     "            agg.get('declined_seeds', 0),",
+     "            0,",
+     (RANK_KEY, RANK), 'KILLED'),
+    ('ranker-never-marks-the-decline', 'rr',
+     "    row['reseat_declined_ref'] = ref in (row.get('reseat_declined') or {})",
+     "    row['reseat_declined_ref'] = False",
      (CLASSIFY, RANK), 'KILLED'),
+    ('reseat-ignores-the-polished-angle', 'ps',
+     "                    if _ladder and len(_ladder) > 1:",
+     "                    if False:",
+     (CANDIDATES,), 'KILLED'),
     ('ranker-drops-the-record', 'rr',
      "                   'reseat_declined': s.get('reseat_declined') or {},",
      "                   'reseat_declined': {},",

@@ -78,6 +78,11 @@ def test_rotation_key_orders_as_documented():
         == [90, 0]
     # a full tie keeps the input angle (ladder index 0)
     assert _rank([_agg(90, 1, 100), _agg(0, 0, 100)]) == [0, 90]
+    # #1117: a declined re-seat ranks after a held one, whatever its
+    # crossings, and before a hard fail
+    a0 = dict(_agg(0, 0, 10), declined_seeds=1)
+    assert _rank([a0, _agg(90, 1, 500)]) == [90, 0]
+    assert _rank([a0, _agg(90, 1, 1, hard='ref_unseated')]) == [0, 90]
     # missing metrics rank after measured ones
     assert _rank([_agg(0, 0, None), _agg(90, 1, 500)]) == [90, 0]
     print("  PASS: hard fail < unseated < probe < crossings < hpwl < errors "
@@ -94,13 +99,15 @@ def test_classify_row():
     assert rr.classify_row(r, 'U1', 270.0)['hard_fail'] == 'ref_unseated'
     r = dict(base, rotation_unseated={'U1': 'no pose'})
     assert rr.classify_row(r, 'U1', 270.0)['hard_fail'] == 'ref_unseated'
-    # #1117: the angle held but the re-seat could not put the part back into
-    # its zone at it -- a hard failure, not an arm ranked on its crossings.
-    # Another part's decline is not this arm's.
-    r = dict(base, reseat_declined={'U1': {'rotation': 270.0}})
-    assert rr.classify_row(r, 'U1', 270.0)['hard_fail'] == 'reseat_declined'
-    r = dict(base, reseat_declined={'C3': {'rotation': None}})
-    assert rr.classify_row(r, 'U1', 270.0)['hard_fail'] is None
+    # #1117: the angle held but the re-seat could not put the part back -- a
+    # TIER (rotation_key), not a hard fail. Another part's decline is not
+    # this arm's.
+    r = rr.classify_row(dict(base, reseat_declined={'U1': {'rotation': 270.0}}),
+                        'U1', 270.0)
+    assert r['hard_fail'] is None and r['reseat_declined_ref'] is True, r
+    r = rr.classify_row(dict(base, reseat_declined={'C3': {'rotation': None}}),
+                        'U1', 270.0)
+    assert r['reseat_declined_ref'] is False, r
     assert rr.classify_row(dict(base, place_seed_rc=1), 'U1', 270.0)[
         'hard_fail'] == 'place_seed_failed'
     assert rr.classify_row(dict(base, crossings=None), 'U1', 270.0)[

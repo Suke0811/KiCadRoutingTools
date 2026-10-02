@@ -4011,8 +4011,9 @@ def _declared_admits(declared, rot, current=None) -> bool:
     None for no claim) admits the angle `rot` -- the swap phase's half of the
     pin `_candidate_rotations` puts on the nudge (#1117). A part handed its
     `current` angle is never refused: a swap that changes no angle cannot
-    make a declaration worse, and refusing it (under `--no-rotate`, where no
-    move can turn anything) cost a 16 mm wirelength win (#1117's verifier)."""
+    make a declaration worse. An earlier version of this gate refused it --
+    even under `--no-rotate`, where no move can turn anything -- and lost a
+    16 mm wirelength win (#1117's second verifier)."""
     if declared is None:
         return True
     if current is not None and _same_angle(rot, current):
@@ -4675,13 +4676,17 @@ def quench(pcb_data: PCBData, pcb_file: str,
                 # #1043: the tether terms' refs and rules count too -- a
                 # decaps-only intent must not report `rules_enforced: []`
                 # while refusing poses on `decap_distance`.
-                # #1117: and the declared rotations, which the swap refuses
-                # on as rule `rotation`: a rotation-only intent reported
-                # "enforced over 0 bound part(s)" while refusing swaps.
+                # #1117: and the declared rotations (of parts this state
+                # holds), which the swap refuses on as rule `rotation` -- a
+                # GATE rule, not a grade rule: floorplan has no
+                # rule_rotation. Without them an earlier version of this
+                # gate reported "enforced over 0 bound part(s)" on a
+                # rotation-only intent while refusing swaps.
                 'refs_bound': len(set(state._intent_spec)
                                   | set(state.keepouts_for)
                                   | set(state._tethers_of)
-                                  | set(state.declared_rotations)),
+                                  | (set(state.declared_rotations)
+                                     & set(state.parts))),
                 'rules_enforced': sorted(
                     {t.rule for ref in (set(state._intent_spec)
                                         | set(state.keepouts_for))

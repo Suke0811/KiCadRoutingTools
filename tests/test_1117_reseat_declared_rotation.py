@@ -240,8 +240,9 @@ def test_a_declared_rotation_is_not_traded_for_a_seat():
 def test_a_candidate_set_bounds_the_reseat():
     """B1: `[0, 180]` has no angle that fits the strip, so the re-seat
     declines rather than leaving the set. B2: `[0, 90]` does, and the
-    re-seat takes 90. B3: the author's ORDER -- with the zone empty, `[180,
-    0]` re-seats at 180, which a sorted ladder would turn to 0."""
+    re-seat takes 90. B3: the seeder seats a set in the author's ORDER --
+    `[180, 0]` seats at 180, which a sorted ladder would turn to 0. B4: the
+    re-seat tries the angle the polish chose first when it is in the set."""
     s, pose, out = _seed('B1', {'rotation_candidates': [0, 180]}, STRIP,
                          refuse=GATE)
     assert pose[2] in (0.0, 180.0) and not _in_zone(pose), f"B1 at {pose}"
@@ -252,13 +253,22 @@ def test_a_candidate_set_bounds_the_reseat():
     _s, pose, _o = _seed('B2', {'rotation_candidates': [0, 90]}, STRIP)
     assert pose[2] == 90.0 and _in_zone(pose), f"B2 at {pose}"
     print(f"  [0, 90]: re-seated at {pose}")
-    away = [{'reference': 'U1', 'new_x': 30.0, 'new_y': 12.0,
-             'new_rotation': 180.0},
-            {'reference': 'R1', 'new_x': 22.0, 'new_y': 12.0,
-             'new_rotation': 0.0}]
-    _s, pose, _o = _seed('B3', {'rotation_candidates': [180, 0]}, away)
+    # B3: the seeder seats a candidate set in the AUTHOR's order (the first
+    # that fits); the polish here moves only R1, so U1 stays where it seated.
+    r1_away = [{'reference': 'R1', 'new_x': 22.0, 'new_y': 12.0,
+                'new_rotation': 0.0}]
+    _s, pose, _o = _seed('B3', {'rotation_candidates': [180, 0]}, r1_away)
     assert pose[2] == 180.0 and _in_zone(pose), f"B3 at {pose}"
-    print(f"  [180, 0]: re-seated at {pose} (author order)")
+    print(f"  [180, 0]: seated at {pose} (author order)")
+    # B4: the re-seat tries the angle the polish chose FIRST when it is in
+    # the set -- [0, 90], polished out of the zone at 90, comes back at 90,
+    # not at the author's first 0 (the nudge picked 90 as an improvement).
+    turned = [{'reference': 'U1', 'new_x': 30.0, 'new_y': 12.0,
+               'new_rotation': 90.0}] + r1_away
+    _s, pose, out = _seed('B4', {'rotation_candidates': [0, 90]}, turned)
+    assert pose[2] == 90.0 and _in_zone(pose), f"B4 at {pose}"
+    assert 'polish walked U1' in out, out[-1500:]
+    print(f"  [0, 90], polished to 90: re-seated at {pose} (its own angle)")
 
 
 def test_a_polish_turn_is_turned_back():
@@ -502,10 +512,12 @@ def test_the_optimizer_refuses_only_a_swap_that_turns_a_declared_part():
     """I: place_optimize on a placed board, parts crossed so a swap pays.
     (i) A ROTATION-ONLY intent -- no zone, so nothing else arms the swap
     gate -- with C1 at 0 and C2 at 90 declared: the swap is refused and
-    disclosed under rule `rotation`, with the refs it binds (it used to
-    report `refs_bound: 0, rules_enforced: []` while refusing). (ii) Both
-    parts at 0 and C1 declared 90: the swap changes NO angle, and it is
-    taken, with and without --no-rotate (it was refused, costing 16 mm)."""
+    disclosed under rule `rotation`, with the refs it binds (an earlier
+    version of this fix reported `refs_bound: 0, rules_enforced: []` while
+    refusing). On 457959b7 the swap was simply taken and C2 written at 0.
+    (ii) Both parts at 0 and C1 declared 90: the swap changes NO angle, and
+    it is taken, with and without --no-rotate (that earlier version refused
+    it, losing 16 mm)."""
     held, s1, out1 = _optimize('Ii', [
         {'name': 'c1', 'refs': ['C1'], 'rotation': 0},
         {'name': 'c2', 'refs': ['C2'], 'rotation': 90}], c2_rot=90)
@@ -527,9 +539,10 @@ def test_the_optimizer_refuses_only_a_swap_that_turns_a_declared_part():
 def test_rank_rotations_fails_a_declined_arm():
     """H: rank_rotations ranks an arm by what its seed produced. An arm whose
     seed's re-seat DECLINED the ranked part -- the angle held, the zone did
-    not -- was ranked on the crossings the polish bought by walking the part
-    out of its zone. It is a hard failure, named, and the ranker's row
-    carries the record it decided on."""
+    not -- would rank on the crossings the polish bought by walking the part
+    out of its zone. It ranks AFTER every angle whose seeds held the part,
+    and still ranks (a zone too full for any angle is not about rotation):
+    the ranker's row carries the record it decided on."""
     wd = tempfile.mkdtemp(prefix='t1117_H_')
     bpath = _board(os.path.join(wd, 'in.kicad_pcb'))
     ipath = os.path.join(wd, 'fp.json')
@@ -547,9 +560,11 @@ def test_rank_rotations_fails_a_declined_arm():
         doc = json.load(f)
     rows = {r['rotation']: r for r in doc['rows']}
     assert 'U1' in rows[0.0]['reseat_declined'], rows[0.0]
-    assert rows[0.0]['hard_fail'] == 'reseat_declined', rows[0.0]
+    assert rows[0.0]['reseat_declined_ref'] is True, rows[0.0]
+    assert rows[0.0]['hard_fail'] is None, rows[0.0]
     assert rows[90.0]['hard_fail'] is None, rows[90.0]
-    print("  arm 0: hard_fail reseat_declined; arm 90: clean")
+    assert doc['ranking'] == [90.0, 0.0], doc['ranking']
+    print("  arm 0 declined, ranked after arm 90: %s" % doc['ranking'])
 
 
 TESTS = [

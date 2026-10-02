@@ -65,7 +65,8 @@ An edge seat prefers a pose that clears the floor and otherwise keeps the seat
 it always chose, since an unseated connector is an unrouted one. Like
 `connector_requirements`, it never changes an exit code.
 
-And `reseat_declined` (#1117) on every summary that reaches the intent grade:
+And `reseat_declined` (#1117) on every summary of a seed (not of --repair /
+--reseat, which run no post-polish re-seat):
 the parts the post-polish re-seat could not put back into their zone, out of
 a keep-out or out of another block's exclusive zone, by ref, with the rules
 they broke and the rotation claim the search was held to. The re-seat
@@ -1312,6 +1313,16 @@ Examples:
                         continue
                     _claim = _declared.get(ref)
                     _ladder = floorplan.declared_ladder(_claim)
+                    # A candidate SET: the angle the polish chose goes first
+                    # when it is one of them. Both are inside the
+                    # declaration, and the nudge picked it as a strict
+                    # improvement; the author's order would discard that for
+                    # no reason (#1117's code review: [0, 90] re-seated a part
+                    # the polish had turned to 90 back to 0).
+                    if _ladder and len(_ladder) > 1:
+                        _cur = st.parts[ref].rot % 360.0
+                        _ladder = sorted(_ladder, key=lambda c: abs(
+                            (c - _cur + 180.0) % 360.0 - 180.0) >= 1e-6)
                     clr = seeder._try_place(
                         st, ref, sp['new_x'], sp['new_y'], set(),
                         constraint=z.rect if z is not None else None,
