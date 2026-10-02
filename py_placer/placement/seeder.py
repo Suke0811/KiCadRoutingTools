@@ -47,9 +47,9 @@ rotation is a DECISION (pin order, the U3 rot-180 case) should use.
 reported UNSEATED in `rotation_unseated`, never quietly turned -- and
 `blocks[].rotation_candidates` narrows the ladder to the author's set, in the
 author's order, because this search keeps the FIRST pose that fits. Every
-seat search builds that ladder with `floorplan.declared_ladder` -- including
-`place_seed`'s post-polish re-seat, which until #1117 searched the fallback
-lattice and could turn a declared part.
+`_try_place` seat builds that ladder with `floorplan.declared_ladder` --
+including `place_seed`'s post-polish re-seat, which until #1117 searched the
+fallback lattice and could turn a declared part.
 
 Note what a declared rotation deliberately does NOT do: it does not lock the
 part. The advice this paragraph used to give -- lock it -- costs the part its

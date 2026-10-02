@@ -314,6 +314,13 @@ def classify_row(row, ref, written_rot):
         row['hard_fail'] = 'ref_unseated'
     elif not row['rotation_applied']:
         row['hard_fail'] = 'rotation_not_applied'
+    elif ref in (row.get('reseat_declined') or {}):
+        # #1117: the angle held, but the seed's post-polish re-seat could not
+        # put the part back into its zone at it. The polish walked it out
+        # BECAUSE that lowered its cost, so ranked on crossings and hpwl this
+        # arm would beat an angle whose seed satisfies its intent, and
+        # --write-intent would hand the next seed an angle that cannot.
+        row['hard_fail'] = 'reseat_declined'
     elif row.get('crossings') is None:
         row['hard_fail'] = 'no_metrics'
     else:
@@ -564,9 +571,9 @@ def main():
                    'unseated': s.get('unseated'),
                    'unseated_refs': s.get('unseated_refs') or [],
                    'rotation_unseated': s.get('rotation_unseated') or {},
-                   # #1117: a part the seed's post-polish re-seat could not
-                   # put back at its declared angle. Disclosure only: the arm
-                   # is still graded (rc 4) and ranked as before.
+                   # #1117: the parts the seed's post-polish re-seat could not
+                   # put back at their declared angle; `classify_row` makes the
+                   # ranked ref being one of them a hard failure.
                    'reseat_declined': s.get('reseat_declined') or {},
                    'pad_conflicts_seeded': s.get('pad_conflicts_seeded'),
                    'decap_claimed': (s.get('decap_stage') or {}).get(

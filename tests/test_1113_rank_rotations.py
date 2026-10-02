@@ -94,6 +94,13 @@ def test_classify_row():
     assert rr.classify_row(r, 'U1', 270.0)['hard_fail'] == 'ref_unseated'
     r = dict(base, rotation_unseated={'U1': 'no pose'})
     assert rr.classify_row(r, 'U1', 270.0)['hard_fail'] == 'ref_unseated'
+    # #1117: the angle held but the re-seat could not put the part back into
+    # its zone at it -- a hard failure, not an arm ranked on its crossings.
+    # Another part's decline is not this arm's.
+    r = dict(base, reseat_declined={'U1': {'rotation': 270.0}})
+    assert rr.classify_row(r, 'U1', 270.0)['hard_fail'] == 'reseat_declined'
+    r = dict(base, reseat_declined={'C3': {'rotation': None}})
+    assert rr.classify_row(r, 'U1', 270.0)['hard_fail'] is None
     assert rr.classify_row(dict(base, place_seed_rc=1), 'U1', 270.0)[
         'hard_fail'] == 'place_seed_failed'
     assert rr.classify_row(dict(base, crossings=None), 'U1', 270.0)[

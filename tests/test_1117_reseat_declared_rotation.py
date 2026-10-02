@@ -21,11 +21,16 @@ both directions. The geometry makes the turn the ONLY way back in:
     there at 90 or 270, never at 0 or 180.
 
 `test_the_fixture_admits_only_a_turned_pose` proves that geometry in-process
-before any arm relies on it. Every arm asserts on the RE-PARSED WRITTEN
-BOARD; the JSON is checked too, for what it claims. Every declared arm has an
-undeclared control on the same board showing the re-seat does turn a part
-that declares nothing, so "not turned" is not satisfied by a re-seat that
-never ran.
+before any arm relies on it. Every CLI arm asserts on the RE-PARSED WRITTEN
+BOARD; the JSON is checked too, for what it claims. The declared arms A and C
+each have an undeclared control on the same board showing the re-seat does
+turn a part that declares nothing, so "not turned" is not satisfied by a
+re-seat that never ran; B's three arms are each other's controls.
+
+The quench's SWAP phase had the same hole one step earlier (#1117's
+verifier): it exchanges full poses, angles included, so two parts of one
+footprint declared at different angles traded them, and nothing graded it.
+`test_a_swap_does_not_trade_declared_angles` pins that.
 
 Run: python3 -X utf8 tests/test_1117_reseat_declared_rotation.py [case ...]
 """
@@ -333,21 +338,136 @@ def test_one_ladder_and_its_decline_line():
         lad = floorplan.declared_ladder(claim)
         q = _candidate_rotations(None, True, claim)
         assert lad == q, f"{claim}: seat ladder {lad} vs quench {q}"
+    # The record: only THIS part's errors, only the rules the re-seat
+    # repairs, and the claim it was held to.
+    from types import SimpleNamespace as NS
+    errs = [NS(ref='U1', rule='zone_containment'), NS(ref='U1', rule='keepout'),
+            NS(ref='U1', rule='decap_pin_distance'),
+            NS(ref='R1', rule='zone_exclusive')]
+    rec = place_seed.reseat_decline_record(
+        'U1', errs, ('zone_containment', 'keepout', 'zone_exclusive'),
+        NS(name='b'), (None, (0.0, 180.0)))
+    assert rec == {'rules': ['keepout', 'zone_containment'], 'zone': 'b',
+                   'rotation': None, 'rotation_candidates': [0.0, 180.0]}, rec
+    line = place_seed.reseat_decline_line
     rec = {'rules': ['zone_containment'], 'zone': 'b'}
-    one = place_seed.reseat_decline_line('U1', dict(rec, rotation=0.0,
-                                                    rotation_candidates=None))
-    many = place_seed.reseat_decline_line(
-        'U1', dict(rec, rotation=None, rotation_candidates=[0.0, 180.0]))
-    none = place_seed.reseat_decline_line(
-        'U1', dict(rec, rotation=None, rotation_candidates=None))
-    ko = place_seed.reseat_decline_line(
-        'U2', {'rules': ['keepout'], 'zone': None, 'rotation': 90.0,
-               'rotation_candidates': None})
+    one = line('U1', dict(rec, rotation=0.0, rotation_candidates=None))
+    many = line('U1', dict(rec, rotation=None,
+                           rotation_candidates=[0.0, 180.0]))
+    none = line('U1', dict(rec, rotation=None, rotation_candidates=None))
+    ko = line('U2', {'rules': ['keepout'], 'zone': None, 'rotation': 90.0,
+                     'rotation_candidates': None})
+    both = line('U3', {'rules': ['keepout', 'zone_containment',
+                                 'zone_exclusive'], 'zone': 'b',
+                       'rotation': None, 'rotation_candidates': None})
+    bare = line('U4', {'rules': [], 'zone': None, 'rotation': None,
+                       'rotation_candidates': None})
     assert "in zone 'b' at its declared rotation 0 " in one, one
     assert 'rotation_candidates [0, 180]' in many, many
     assert 'any quarter turn' in none and 'declared' not in none, none
-    assert 'clear of the declared keepout' in ko and 'rotation 90 ' in ko, ko
-    print('  declared_ladder == quench for 4 claims; 4 decline phrasings')
+    assert ('no legal pose clear of the declared keep-out at its declared '
+            'rotation 90 ') in ko, ko
+    assert ("in zone 'b' clear of the declared keep-out and another "
+            "block's exclusive zone") in both, both
+    assert 'no legal pose anywhere on the board' in bare, bare
+    print('  declared_ladder == quench for 4 claims; the record keeps only '
+          "this part's repairable rules; 6 decline phrasings")
+
+
+#: Two parts of one footprint between two connectors, C1 at 0 and C2 at 90,
+#: sharing one zone (found by #1117's verifier: on 457959b7 the polish's swap
+#: phase left C2 written at 0 with `rotation: 90` declared, exit 0).
+def _swap_board(path):
+    def part(ref, fpname, x, rot, nets):
+        pads = ''.join(
+            f'\t\t(pad "{i + 1}" smd rect (at {dx} 0) (size 0.6 0.6) '
+            f'(layers "F.Cu") (net {n} "N{n}") (uuid "p{i}-{ref}"))\n'
+            for i, (dx, n) in enumerate(zip((-1.0, 1.0), nets)))
+        return (f'\t(footprint "{fpname}" (layer "F.Cu") (uuid "fp-{ref}") '
+                f'(at {x} 3.0 {rot:g})\n'
+                f'\t\t(property "Reference" "{ref}" (at 0 0))\n'
+                f'\t\t(fp_rect (start -1.5 -1.0) (end 1.5 1.0) '
+                f'(layer "F.CrtYd") (uuid "cy-{ref}"))\n{pads}\t)\n')
+    nets = ''.join(f'\t(net {i} "N{i}")\n' for i in range(1, 5))
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('(kicad_pcb\n\t(version 20241229)\n\t(net 0 "")\n' + nets
+                + '\t(gr_rect (start 0 0) (end 40.0 6.0) (layer "Edge.Cuts") '
+                '(uuid "e1"))\n'
+                + part('J1', 'test:J', 4.0, 0, (1, 2))
+                + part('J2', 'test:J', 36.0, 0, (3, 4))
+                + part('C1', 'test:CAP', 18.0, 0, (1, 2))
+                + part('C2', 'test:CAP', 22.0, 90, (3, 4)) + ')\n')
+    return path
+
+
+def _swap_seed(tag, blocks):
+    wd = tempfile.mkdtemp(prefix=f't1117_{tag}_')
+    bpath = _swap_board(os.path.join(wd, 'in.kicad_pcb'))
+    ipath = os.path.join(wd, 'fp.json')
+    with open(ipath, 'w', encoding='utf-8') as f:
+        json.dump({'schema': 1, 'kind': 'floorplan-intent', 'units': 'mm',
+                   'min_reader': 5,
+                   'envelope': {'rect': [0, 0, 40, 6], 'tolerance_mm': 0.5},
+                   'must_lock': ['J*'], 'blocks': blocks}, f)
+    out = os.path.join(wd, 'out.kicad_pcb')
+    r = run_utils.check(
+        [sys.executable, '-X', 'utf8',
+         os.path.join(ROOT, 'py_placer', 'place_seed.py'), bpath, out,
+         '--intent', ipath, '--seed', '0', '--force', '--clearance', '0.2',
+         '--board-edge-clearance', '0.3', '--max-displacement', '5'],
+        accept=True)
+    from kicad_parser import parse_kicad_pcb
+    fps = parse_kicad_pcb(run_utils.evidence(out, 'written seed')).footprints
+    return {ref: round((fps[ref].rotation or 0.0) % 360, 1)
+            for ref in ('C1', 'C2')}, r.stdout
+
+
+def test_a_swap_does_not_trade_declared_angles():
+    """G: C1 declared 0 and C2 declared 90, one footprint, one zone. The
+    polish's swap traded their poses -- angles included -- and wrote C2 at 0
+    with exit 0 and no grade error (measured on 457959b7). Now the swap is
+    refused, and counted as the intent refusing it (`swap-intent=` on the
+    pass line).
+
+    No undeclared control: with nothing declared the nudge turns the parts
+    freely, so their written angles cannot say whether a swap ran. What
+    proves the arm is not vacuous is that it FAILS with the swap gate
+    removed -- `mutate_1117`'s `swap-trades-declared-angles` row."""
+    zone = [14.0, 0.5, 26.0, 5.5]
+    got, out = _swap_seed('G', [
+        {'name': 'c1', 'refs': ['C1'], 'zone': zone, 'rotation': 0},
+        {'name': 'c2', 'refs': ['C2'], 'zone': zone, 'rotation': 90}])
+    assert got == {'C1': 0.0, 'C2': 90.0}, f"declared angles traded: {got}"
+    assert 'swap-intent=' in out, out[-1500:]
+    print(f"  declared: {got}, the swap refused by the intent")
+
+
+def test_rank_rotations_fails_a_declined_arm():
+    """H: rank_rotations ranks an arm by what its seed produced. An arm whose
+    seed's re-seat DECLINED the ranked part -- the angle held, the zone did
+    not -- was ranked on the crossings the polish bought by walking the part
+    out of its zone. It is a hard failure, named, and the ranker's row
+    carries the record it decided on."""
+    wd = tempfile.mkdtemp(prefix='t1117_H_')
+    bpath = _board(os.path.join(wd, 'in.kicad_pcb'))
+    ipath = os.path.join(wd, 'fp.json')
+    with open(ipath, 'w', encoding='utf-8') as f:
+        json.dump(_intent_doc(None), f)
+    rj = os.path.join(wd, 'rot.json')
+    run_utils.check(
+        [sys.executable, '-X', 'utf8',
+         os.path.join(ROOT, 'py_placer', 'rank_rotations.py'), bpath,
+         '--intent', ipath, '--ref', 'U1', '--rotations', '0', '90',
+         '--out-dir', os.path.join(wd, 'rot'), '--json-out', rj,
+         '--seed-args=--force --clearance 0.2 --board-edge-clearance 0.5'],
+        accept=True, env=_env(wd, STRIP))
+    with open(run_utils.evidence(rj, 'ranking'), encoding='utf-8') as f:
+        doc = json.load(f)
+    rows = {r['rotation']: r for r in doc['rows']}
+    assert 'U1' in rows[0.0]['reseat_declined'], rows[0.0]
+    assert rows[0.0]['hard_fail'] == 'reseat_declined', rows[0.0]
+    assert rows[90.0]['hard_fail'] is None, rows[90.0]
+    print("  arm 0: hard_fail reseat_declined; arm 90: clean")
 
 
 TESTS = [
@@ -358,6 +478,8 @@ TESTS = [
     test_an_undeclared_decline_is_named_too,
     test_repair_placement_holds_the_declaration,
     test_one_ladder_and_its_decline_line,
+    test_a_swap_does_not_trade_declared_angles,
+    test_rank_rotations_fails_a_declined_arm,
 ]
 
 

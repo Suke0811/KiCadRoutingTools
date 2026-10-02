@@ -3986,6 +3986,16 @@ def _candidate_rotations(part: _Part, allow_rotations: bool,
     return [(b + r) % 360 for b in bases for r in ROTATIONS]
 
 
+def _declared_admits(declared, rot) -> bool:
+    """Whether a declared rotation claim (#893; `(rotation, candidates)`, or
+    None for no claim) admits the angle `rot` -- the swap phase's half of the
+    pin `_candidate_rotations` puts on the nudge (#1117)."""
+    if declared is None:
+        return True
+    return any(abs((rot - a + 180.0) % 360.0 - 180.0) < 1e-6
+               for a in _candidate_rotations(None, True, declared))
+
+
 def quench(pcb_data: PCBData, pcb_file: str,
            max_displacement: float = 10.0,
            swap_max_displacement: Optional[float] = None,
@@ -4439,6 +4449,21 @@ def quench(pcb_data: PCBData, pcb_file: str,
                         # swaps skip candidate_valid. Checked before the cap so
                         # swaps_skipped keeps counting cap rejections only.
                         if not allow_rotations and abs(pa.rot - pb.rot) > 1e-9:
+                            continue
+                        # #1117: ...and so a swap hands each part the OTHER's
+                        # angle, while the declared-rotation pin (#893) lives
+                        # only in the nudge's candidate list. Two parts of one
+                        # footprint declared at different angles TRADED them
+                        # here and the seed graded clean (there is no
+                        # rule_rotation to catch it). A swap that would put a
+                        # declared part at an angle outside its declaration is
+                        # the intent refusing it, and is counted as such.
+                        if state.declared_rotations and not (
+                                _declared_admits(
+                                    state.declared_rotations.get(ra), pb.rot)
+                                and _declared_admits(
+                                    state.declared_rotations.get(rb), pa.rot)):
+                            swaps_skipped_intent += 1
                             continue
                         # Swapping must keep each part within swap_cap of
                         # its OWN seed position

@@ -65,13 +65,16 @@ An edge seat prefers a pose that clears the floor and otherwise keeps the seat
 it always chose, since an unseated connector is an unrouted one. Like
 `connector_requirements`, it never changes an exit code.
 
-And `reseat_declined` (#1117): the parts the post-polish re-seat could not put
-back into their zone or out of a keep-out, by ref, with the rules they broke
-and the rotation claim the search was held to. The re-seat searches a declared
-part's `rotation` / `rotation_candidates` ladder ONLY, never the fallback
-lattice, so a declared angle survives the polish; a part it declines stays
-where the polish left it, named on a `NOT repaired` line, and its grade error
-stands (exit 4, as it always was).
+And `reseat_declined` (#1117) on every summary that reaches the intent grade:
+the parts the post-polish re-seat could not put back into their zone, out of
+a keep-out or out of another block's exclusive zone, by ref, with the rules
+they broke and the rotation claim the search was held to. The re-seat
+searches a declared part's `rotation` / `rotation_candidates` ladder ONLY,
+never the fallback lattice, and the polish's swaps refuse to trade a declared
+angle away, so a declared angle survives the polish. A part the re-seat
+declines stays where the polish left it, named on a `NOT repaired` line, and
+its grade error stands, so the seed exits 4. Before #1117 a declared part was
+instead turned to fit and the seed exited 0.
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -306,6 +309,22 @@ def fixed_pose_reason(summary):
             f"JSON_SUMMARY. It was still written, for inspection.")
 
 
+#: How a decline line names what a re-seat had to stay clear of (#1117).
+_CLEAR_OF = {'keepout': 'keep-out', 'zone_exclusive': "another block's exclusive zone"}
+
+
+def reseat_decline_record(ref, errors, repairable, zone, claim):
+    """The `reseat_declined` entry for `ref` (#1117): the repairable rules IT
+    broke (not another part's, not a rule the re-seat does not repair), its
+    zone's name, and the rotation claim the search was held to."""
+    rot, cands = claim or (None, None)
+    return {'rules': sorted({v.rule for v in errors
+                             if v.ref == ref and v.rule in repairable}),
+            'zone': zone.name if zone is not None else None,
+            'rotation': rot,
+            'rotation_candidates': list(cands) if cands else None}
+
+
 def reseat_decline_line(ref, rec):
     """The console line for a part the post-polish re-seat could not put back
     (#1117). `rec` is its `reseat_declined` entry.
@@ -316,11 +335,10 @@ def reseat_decline_line(ref, rec):
     angle and each quarter turn, and says so.
     """
     zone = rec.get('zone')
-    rules = rec.get('rules') or []
-    where = (f"in zone {zone!r}" if zone else
-             "clear of the declared "
-             + (' / '.join(r for r in rules if r != 'zone_containment')
-                or 'keepout'))
+    clear = [_CLEAR_OF[r] for r in (rec.get('rules') or ()) if r in _CLEAR_OF]
+    where = ' '.join(([f"in zone {zone!r}"] if zone else [])
+                     + ([f"clear of the declared {' and '.join(clear)}"]
+                        if clear else [])) or 'anywhere on the board'
     rot, cands = rec.get('rotation'), rec.get('rotation_candidates')
     if rot is not None:
         how = (f"at its declared rotation {rot:g} -- the angle is the claim, "
@@ -1197,8 +1215,8 @@ Examples:
                                board_edge_clearance=args.board_edge_clearance)
 
     # #1117: parts the post-polish re-seat below could NOT put back, by ref.
-    # Bound before the `try` so the key is present (empty) on every path,
-    # including --no-polish, where the re-seat never runs.
+    # Bound before the `try` so the key is present (empty) on every summary
+    # from here on, including --no-polish, where the re-seat never runs.
     reseat_declined = {}
     try:
         graded = _grade()
@@ -1307,17 +1325,12 @@ Examples:
                         # #1117: the part stays where the polish left it --
                         # reverting it would recreate the overlap the comment
                         # above measured -- and its grade error stands, so
-                        # the seed exits 4 as before. What changes is that
-                        # the decline is NAMED: it used to print nothing.
-                        _rot, _cands = _claim or (None, None)
-                        reseat_declined[ref] = {
-                            'rules': sorted({v.rule for v in graded.errors
-                                             if v.ref == ref
-                                             and v.rule in _repairable}),
-                            'zone': z.name if z is not None else None,
-                            'rotation': _rot,
-                            'rotation_candidates': (list(_cands)
-                                                    if _cands else None)}
+                        # the seed exits 4. What changes is that the decline
+                        # is NAMED (it used to print nothing), and that a
+                        # declared part is no longer turned to fit, which
+                        # used to be an exit 0 on a turned part.
+                        reseat_declined[ref] = reseat_decline_record(
+                            ref, graded.errors, _repairable, z, _claim)
                 if pinned:
                     # Named, never silent: a reader who sees the grade error
                     # and no repair line would otherwise conclude the repair

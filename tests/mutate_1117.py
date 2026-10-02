@@ -9,7 +9,11 @@ restore the defect #1117 measured, or the reason it went unseen:
   * `gate-blind-to-attribute-calls` / `gate-reads-seeder-only` -- test_893's
     standing gate read only seeder.py and only bare-name calls, which is why
     the one site that omitted the ladder (`seeder._try_place` in place_seed)
-    was never reported.
+    was never reported;
+  * `swap-trades-declared-angles` -- the polish's swap phase exchanged full
+    poses, so C2 declared 90 was written at 0 with exit 0 (Phase-1 verifier);
+  * `ranker-ranks-a-declined-arm` -- rank_rotations ranked an arm whose
+    re-seat declined the part on the crossings that walk-out bought.
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty
@@ -29,9 +33,9 @@ Not covered by a row, and why:
   * `declared_ladder`'s `if claim is None: return None` -- a two-line anchor,
     and its mutant (an IndexError on unpacking None) dies in every witness
     that seeds anything, so a row would add cost and no information;
-  * the `zone` / `rules` fields of a `reseat_declined` record: asserted by
-    `not_traded`, but each is one dict entry whose mutant is the same
-    assertion failing, already exercised by `declined-reseat-unrecorded`.
+  * the record's `zone` / `rotation` entries: one dict entry each, asserted
+    by `not_traded` and `one_ladder`; their mutant is the same assertion
+    failing, already exercised by `declined-reseat-unrecorded`.
 """
 from __future__ import annotations
 
@@ -50,6 +54,8 @@ TARGETS = {
     'fp': os.path.join(_PL, 'floorplan.py'),
     'sd': os.path.join(_PL, 'seeder.py'),
     't893': os.path.join(_TESTS, 'test_893_declared_rotation.py'),
+    'q': os.path.join(_PL, 'quench.py'),
+    'rr': os.path.join(_ROOT, 'py_placer', 'rank_rotations.py'),
 }
 
 
@@ -64,6 +70,9 @@ TURNED_BACK = _t(T, 'turned_back')
 UNDECLARED = _t(T, 'undeclared_decline')
 REPAIR = _t(T, 'repair_placement')
 LADDER = _t(T, 'one_ladder')
+SWAP = _t(T, 'swap_does_not')
+RANK = _t(T, 'rank_rotations_fails')
+CLASSIFY = _t('test_1113_rank_rotations.py', 'classify_row')
 GATE = _t('test_893_declared_rotation.py', 'try_place_site')
 GATE_CTL = _t('test_893_declared_rotation.py', 'ladder_gate')
 SEEDED = _t('test_893_declared_rotation.py', 'is_the_angle_that_is_placed',
@@ -93,9 +102,21 @@ ROWS = [
      "                _declared = {}",
      (NOT_TRADED,), 'KILLED'),
     ('declined-reseat-unrecorded', 'ps',
-     "                        reseat_declined[ref] = {",
-     "                        _dropped = {",
+     "                        reseat_declined[ref] = reseat_decline_record(",
+     "                        _dropped = reseat_decline_record(",
      (NOT_TRADED, UNDECLARED), 'KILLED'),
+    ('record-takes-every-parts-rules', 'ps',
+     "                             if v.ref == ref and v.rule in repairable}),",
+     "                             if v.rule in repairable}),",
+     (LADDER,), 'KILLED'),
+    ('record-takes-unrepairable-rules', 'ps',
+     "                             if v.ref == ref and v.rule in repairable}),",
+     "                             if v.ref == ref}),",
+     (LADDER,), 'KILLED'),
+    ('decline-line-drops-what-it-cleared', 'ps',
+     "    clear = [_CLEAR_OF[r] for r in (rec.get('rules') or ()) if r in _CLEAR_OF]",
+     "    clear = []",
+     (LADDER,), 'KILLED'),
     ('decline-line-drops-the-claim', 'ps',
      '        how = (f"at its declared rotation {rot:g} -- the angle is the claim, "',
      '        how = (f"at any rotation -- the angle is the claim, "',
@@ -128,6 +149,24 @@ ROWS = [
      "        return floorplan.declared_ladder(_declared_rot.get(ref))",
      "        return None",
      (REPAIR,), 'KILLED'),
+    # -- quench: the swap phase hands each part the other's angle ------------
+    ('swap-trades-declared-angles', 'q',
+     "                        if state.declared_rotations and not (",
+     "                        if False and not (",
+     (SWAP,), 'KILLED'),
+    ('swap-admits-any-angle', 'q',
+     "               for a in _candidate_rotations(None, True, declared))",
+     "               for a in [rot])",
+     (SWAP,), 'KILLED'),
+    # -- rank_rotations: a declined arm is a hard failure ---------------------
+    ('ranker-ranks-a-declined-arm', 'rr',
+     "    elif ref in (row.get('reseat_declined') or {}):",
+     "    elif False:",
+     (CLASSIFY, RANK), 'KILLED'),
+    ('ranker-drops-the-record', 'rr',
+     "                   'reseat_declined': s.get('reseat_declined') or {},",
+     "                   'reseat_declined': {},",
+     (RANK,), 'KILLED'),
     # -- test_893: the standing gate that missed it --------------------------
     ('gate-blind-to-attribute-calls', 't893',
      "                else fn.attr if isinstance(fn, ast.Attribute) else None)",
