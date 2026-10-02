@@ -541,6 +541,32 @@ def _segments_from_cells(occ, cells):
     return out
 
 
+def _pt_seg_dist(px, py, x1, y1, x2, y2):
+    """the distance from (px, py) to the segment (x1, y1)-(x2, y2)"""
+    dx, dy = x2 - x1, y2 - y1
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 <= 0 else max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / L2))
+    return math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+
+
+def stub_track_conflict(net_id, a, b, segs, layer_idx, half_width, clearance):
+    """Whether the stub a->b (a track of `half_width`, on layer index
+    `layer_idx`) comes within `clearance` of another net's TRACK on its OWN
+    layer: `segs` [(x1, y1, x2, y2, half_w, net, layer index)]. A track on
+    another layer is no conflict -- the stub is single-layer copper; its via,
+    which spans the layers, is checked against the vias apart. Conservative:
+    each end of either segment against the other."""
+    (gx, gy), (vx, vy) = a, b
+    for (x1, y1, x2, y2, half_w, snid, sli) in segs:
+        if snid == net_id or sli != layer_idx:
+            continue
+        lim = half_width + half_w + clearance - 1e-6
+        if (_pt_seg_dist(x1, y1, gx, gy, vx, vy) < lim or _pt_seg_dist(x2, y2, gx, gy, vx, vy) < lim
+                or _pt_seg_dist(gx, gy, x1, y1, x2, y2) < lim or _pt_seg_dist(vx, vy, x1, y1, x2, y2) < lim):
+            return True
+    return False
+
+
 def generate_underpad_escape(footprint: Footprint,
                              pcb_data: PCBData,
                              grid: BGAGrid,
@@ -2200,21 +2226,16 @@ def generate_underpad_escape(footprint: Footprint,
     def _seg_conflict(net_id, gx, gy, vx, vy, ctx):
         """Exact-geometry check of one stub segment on the BGA's own layer
         (the occupancy exemption around the pad/site would hide foreign copper
-        there, #393 -- so the stub proves itself against the registries). The
-        joint escape reads only that layer's tracks: a stub on F is no
-        conflict with a track on B (zynq U2: three planned drop stubs refused
-        for a B.Cu DDR3_CKE lane under them, each clear of every F.Cu track by
-        0.2 mm or more)."""
+        there, #393 -- so the stub proves itself against the registries). It
+        reads only that layer's tracks: a stub on F is no conflict with a
+        track on B (zynq U2: three planned drop stubs refused for a B.Cu
+        DDR3_CKE lane under them, each clear of every F.Cu track by 0.2 mm or
+        more; the bus's teeth on H3's U1 refused under the other layer's
+        stubs). The stub's VIA, which spans the layers, is checked against
+        every via below."""
         hw = track_width / 2.0
-        for (x1, y1, x2, y2, half_w, snid, sli) in ctx['segs']:
-            if snid == net_id or (joint and sli != top_idx):
-                continue
-            # conservative: stub endpoint-to-seg / seg-to-stub sampling
-            if (_pt_seg_d(x1, y1, gx, gy, vx, vy) < hw + half_w + clearance - 1e-6
-                    or _pt_seg_d(x2, y2, gx, gy, vx, vy) < hw + half_w + clearance - 1e-6
-                    or _pt_seg_d(gx, gy, x1, y1, x2, y2) < hw + half_w + clearance - 1e-6
-                    or _pt_seg_d(vx, vy, x1, y1, x2, y2) < hw + half_w + clearance - 1e-6):
-                return True
+        if stub_track_conflict(net_id, (gx, gy), (vx, vy), ctx['segs'], top_idx, hw, clearance):
+            return True
         for (ox, oy, orr, odr, onid) in ctx['vias'] + ctx['resv']:
             if onid == net_id:
                 continue
