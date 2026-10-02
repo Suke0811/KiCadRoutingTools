@@ -2737,10 +2737,12 @@ hunt for.
    `route.py` chain:
    `python3 -X utf8 py_router/route.py <poured> <out> --nets '*' --track-width 0.1 --clearance-ceiling 0.1 --via-size 0.3 --via-drill 0.15`
    A fanout raises `blocking` mid-chain by construction, so compare the
-   finished boards. The one pass routes pairs single-ended and rails at the
-   floor width, so keep `route_diff.py` for the pairs Routing Order step 2
-   routes as pairs (with their `--impedance`), and `--power-nets` (step 3)
-   for the rails. A BGA needs its fanout: route.py keeps its
+   finished boards. The one pass routes every pair single-ended and every
+   rail at the floor width: where a pair carries an impedance target (from
+   the board or `/find-high-speed-nets`), run its `route_diff.py` step first
+   and say so, and keep `--power-nets` (step 3) for the rails. The measured
+   one pass below had neither: its USB pairs carried no target and were
+   routed single-ended. A BGA needs its fanout: route.py keeps its
    exclusion zones by default. Measured on a 2-layer board with 90 placed
    parts and an LQFP-48 hub, which declares no impedance or net width: the
    staged chain reached blocking 16 (161 vias); the same chain with its

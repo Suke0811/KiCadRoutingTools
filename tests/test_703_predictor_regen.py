@@ -298,7 +298,8 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:
 #: RE-RECORDED 2026-10-02 (#1065). `esp_prog:authored` `pad_clearance_pairs`
 #: 1 -> 0, and it CORRECTS the #726 note above: that pair (CON1 against the
-#: second `Ref*` block) was a bounding-box pair, not copper. render's
+#: FIRST `Ref*` block in file order, the fiducial at (141.2, 95.9)) was a
+#: bounding-box pair, not copper. render's
 #: checklist -- which this predictor reads -- now confirms each pair with the
 #: grader's own exact census (`legality.pad_pair_conflict`), and
 #: grade_pad_legality had always called this board clean. Nothing else on

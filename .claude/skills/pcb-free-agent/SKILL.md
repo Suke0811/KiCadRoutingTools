@@ -144,9 +144,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   `check_assembly` and read `buildable`, not `blocking`.
 - **`render_placement`'s pad-clearance list is the grader's** (#1065): each
   pair is confirmed with `check_drc`'s exact pad check at the pose it
-  draws, so it agrees with `grade_pad_legality`. Its pad-stack list
-  (`b_body_overlap_pairs`) still compares pad rectangles; read stacks from
-  `check_assembly`.
+  draws, so it agrees with `grade_pad_legality`, and so does the caption's
+  `pad-conflicts`. Two render numbers are still bounding-box counts: the
+  pad-stack list (`b_body_overlap_pairs`; read stacks from
+  `check_assembly`) and the JSON `metrics`, the optimizer's own currency.
 - **Keep-out bands.** A pad in a `(keepout (tracks not_allowed))` band cannot
   be routed even on an empty board (#1031). Treat
   `checklist.a_off_outline.keepout_copper` like off-outline pad copper.

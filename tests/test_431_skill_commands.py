@@ -55,8 +55,8 @@ skill ran it bare in a backtick span. Closed by
     names a flag without running anything and is deliberately not read, so a
     pointer that drops a value is invisible; and a tool cited ONLY as
     pointers is never enrolled at all, so not even its flag names are
-    checked (board_context, check_channels, check_reachability and five
-    others, measured when this was written -- their flags all existed);
+    checked (board_context, check_channels, check_reachability and others
+    -- their flags all existed when this was written);
   * a value of the WRONG kind (a path where a number belongs) reads as given;
   * short options (`-c`, `-o`) are not read, and shell shapes the token
     split does not model -- an operator glued to its neighbour (`--json;`,
@@ -477,6 +477,8 @@ def _subcommand_names(text):
 #: A usage-synopsis group, `[--near X Y]` / `[--relative]`: a flag and the
 #: metavars it takes. place_pose's verbs are parsed by hand and documented
 #: ONLY in such an epilog, so the option lines alone never saw `--rot`.
+#: Flat groups only: a nested repetition (`[--x A [A ...]]`) is not read,
+#: and such a flag would count as a switch. No verb flag has that shape.
 _USAGE_GROUP = re.compile(r'\[(--[a-z][a-z0-9-]+)((?:\s+[A-Z][A-Z0-9_]*)*)\]')
 
 

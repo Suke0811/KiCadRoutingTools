@@ -1734,7 +1734,17 @@ def caption(spec: PanelSpec, extra: Optional[Dict] = None) -> str:
         # checklist and the stack read as noise)
         bits.append(f"BODY-STACKS {m['pad_intersection_pairs']:.0f}")
     if m.get('pad_conflict_pairs') is not None:
-        bits.append(f"pad-conflicts {m['pad_conflict_pairs']:.0f}")
+        # #1065: the GRADER's pair count -- the list the checklist, the
+        # overlay and --gate carry. `metrics.pad_conflict_pairs` is the
+        # optimizer's bounding-box currency (place_optimize labels it so in
+        # `pad_conflict_pairs_currency`),
+        # so the caption printed "pad-conflicts 10" on a glasgow panel whose
+        # checklist named one pair. The metric itself stays in the JSON: the
+        # quench moves on it, and the film plots it against its own floor.
+        _ctx = getattr(getattr(spec.model, 'state', None), 'legality_ctx', None)
+        _n = (len(legality_findings(spec.model)['pad_conflict_pairs_refs'])
+              if _ctx is not None else m['pad_conflict_pairs'])
+        bits.append(f"pad-conflicts {_n:.0f}")
     if m.get('hole_shortfall'):
         bits.append(f"hole-conflict {m['hole_shortfall']:.2f}mm")
     bits.append("oob n/a (no Edge.Cuts)" if spec.model.no_outline
