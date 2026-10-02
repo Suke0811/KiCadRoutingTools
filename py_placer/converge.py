@@ -794,23 +794,51 @@ def cmd_poses(a):
                                            else 'unrankable')},
                          indent=1))
         return 4
+    # #1113: WHICH check vetoed the dropped candidates, and against whom.
+    _phrase = pose_score.veto_phrase(diag.get('dropped_by') or {})
+    _veto = {'dropped_by': diag.get('dropped_by') or {},
+             'dropped_in_place_by': diag.get('dropped_in_place_by') or [],
+             'evaluated_total': diag.get('evaluated_total', 0),
+             'all_moves_vetoed': bool(diag.get('all_moves_vetoed'))}
     if not poses:
         # The dropped-pose census is the difference between "this part has
         # nowhere to go" and "your knobs veto even staying put" (run-7 S4:
         # flip-in-place WAS enumerated, then silently dropped).
         _cut = bool(diag.get('stopped_early'))
-        print(json.dumps({'ref': a.ref, 'poses': [], 'knobs': knobs,
-                          'dropped_total': diag.get('dropped_total', 0),
-                          'dropped_in_place': diag.get('dropped_in_place', []),
-                          'stopped_early': _cut,
-                          # "no legal pose" is a VERDICT about the part. A cut
-                          # sweep has not earned it -- it diagnoses a part whose
-                          # poses were never enumerated.
-                          'note': ('the sweep stopped early -- this is NOT a '
-                                   'verdict about the part' if _cut else
-                                   'no legal pose, including staying put')},
-                         indent=1))
+        _note = ('the sweep stopped early -- this is NOT a verdict about '
+                 'the part' if _cut else
+                 'no legal pose, including staying put -- vetoed by '
+                 + _phrase)
+        if not _cut:
+            print(f"converge poses {a.ref}: {_note}", file=sys.stderr)
+        print(json.dumps(dict({'ref': a.ref, 'poses': [], 'knobs': knobs,
+                               'dropped_total': diag.get('dropped_total', 0),
+                               'dropped_in_place':
+                                   diag.get('dropped_in_place', []),
+                               'stopped_early': _cut,
+                               # "no legal pose" is a VERDICT about the part.
+                               # A cut sweep has not earned it -- it diagnoses
+                               # a part whose poses were never enumerated.
+                               'note': _note}, **_veto), indent=1))
         return 2 if _cut else 1
+    _all_note = None
+    if diag.get('all_moves_vetoed') and diag.get('dropped_total'):
+        # #1113: only staying put survived. For a part whose neighbours were
+        # packed around its current pose -- an IC with its decaps at its
+        # supply pins -- a one-part move cannot judge another rotation.
+        _all_note = (f"every candidate except staying put was vetoed "
+                     f"({diag['dropped_total']} of "
+                     f"{diag.get('evaluated_total', 0)}) -- {_phrase}.")
+        if diag.get('dropped_in_place'):
+            _all_note += (
+                " Its other in-place rotations ("
+                + ', '.join(f"{r:g}" for r in diag['dropped_in_place'])
+                + ") were vetoed too: a one-part move holds every neighbour "
+                f"where it is, so it cannot judge a rotation its neighbours "
+                f"were packed around. Rank {a.ref}'s rotations at seed "
+                f"level: py_placer/rank_rotations.py on the pile this board "
+                f"was seeded from.")
+        print(f"converge poses {a.ref}: {_all_note}", file=sys.stderr)
 
     if a.route:
         if not a.affected:
@@ -859,6 +887,8 @@ def cmd_poses(a):
                       'knobs': knobs,
                       'dropped_total': diag.get('dropped_total', 0),
                       'dropped_in_place': diag.get('dropped_in_place', []),
+                      **_veto,
+                      **({'note': _all_note} if _all_note else {}),
                       'poses': poses}, indent=1))
     return 0
 

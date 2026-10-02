@@ -65,6 +65,13 @@ ROTATIONS = [0.0, 90.0, 180.0, 270.0]
 #: behaviour exactly. Not a supported flag; a debugging lever.
 _CONTAINMENT_GATE = os.environ.get('KRT_NO_CONTAINMENT_GATE', '') != '1'
 EPS_IMPROVE = 1e-6
+
+#: #1113: every label `QuenchState.candidate_veto` can return, in the order
+#: candidate_valid asks (intent first, the tether last); 'unattributed' is a
+#: refusal no label covered and is a bug for `tests/test_1113_pose_veto.py`.
+VETO_CHECKS = ('intent', 'board_bbox', 'outline', 'waived_drill',
+               'waived_pads', 'body_overlap', 'courtyard', 'body_contained',
+               'pads_under_body', 'keepout_band', 'pads', 'tether')
 #: mm2 of .Fab body overlap `_body_overlap_at` counts: bodies that abut
 #: (a shared edge, area 0) are not overlapping.
 _BODY_OVERLAP_EPS = 1e-6
@@ -2064,8 +2071,12 @@ class QuenchState:
         """
         self.intent_rejected_by_site[site] = (
             self.intent_rejected_by_site.get(site, 0) + 1)
+        _first = None
         for rule, _name, _c, _u in self.intent_blockers(ref, x, y, rot, rects):
             self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
+            _first = _first or f"{rule}:{_name}"
+        if self._why is not None and site == 'candidate_valid':
+            self._veto('intent', _first)    # #1113
 
     def _note_swap_refusal(self, ra, rb) -> None:
         """Attribute a refused swap to whichever HALF of it was refused.
@@ -2088,6 +2099,34 @@ class QuenchState:
             for rule, _n, _c, _u in self.tether_failures(
                     {ra: (pb.x, pb.y, pb.rot), rb: (pa.x, pa.y, pa.rot)}):
                 self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
+
+    #: #1113: the check that refused the candidate `candidate_veto` is
+    #: asking about, filled by `_veto` on candidate_valid's rejection paths.
+    #: None outside a `candidate_veto` call, so the labels cost one attribute
+    #: test on a rejection and nothing on an admission.
+    _why = None
+
+    def _veto(self, check, blocker=None, **detail):
+        """Record `check` as the reason the current candidate is refused,
+        unless an earlier conjunct already gave one (#1113)."""
+        if self._why is not None and 'check' not in self._why:
+            self._why.update(detail, check=check, blocker=blocker)
+
+    def candidate_veto(self, ref, x, y, rot,
+                       exclude: Optional[Set[str]] = None):
+        """`None` when `candidate_valid` admits the pose, else `(check,
+        blocker)`: the conjunct that refused it (`VETO_CHECKS`) and the part
+        it was refused against, when there is one (#1113). It CALLS
+        candidate_valid, so the two can never disagree; the labels are
+        written on candidate_valid's own rejection paths."""
+        self._why = {}
+        try:
+            if self.candidate_valid(ref, x, y, rot, exclude):
+                return None
+            why = self._why
+        finally:
+            self._why = None
+        return (why.get('check', 'unattributed'), why.get('blocker'))
 
     def candidate_valid(self, ref, x, y, rot, exclude: Optional[Set[str]] = None):
         """True when the pose is legal, or -- when the part sits OFF THE BOARD --
@@ -2134,6 +2173,8 @@ class QuenchState:
             return False
         legal = not (rect[0] < self.usable[0] or rect[1] < self.usable[1]
                      or rect[2] > self.usable[2] or rect[3] > self.usable[3])
+        if not legal and self._why is not None:
+            self._veto('board_bbox')
         # Real outline / cutout gate, three-level short-circuit: board-level
         # opt-out, cached per-part reachable-edge list, then the exact test
         # against only those edges.
@@ -2142,6 +2183,8 @@ class QuenchState:
             if near and self.edge_gate.rect_blocked(
                     rect, edges=near, skip_rings=self._owned_rings(ref)):
                 legal = False
+                if self._why is not None:
+                    self._veto('outline')
         if legal and getattr(self, 'courtyards_ignored', False):
             # #1101: courtyards waived by the project, so the neighbour test
             # asks the PAD question instead, ABSOLUTELY and at each pair's own
@@ -2173,6 +2216,8 @@ class QuenchState:
                                 self, ref, (x, y, rot), other_ref,
                                 (other.x, other.y, other.rot))):
                         legal = False
+                        if self._why is not None:
+                            self._veto('waived_drill', other_ref)
                         break
                     if ctx is not None:
                         # No padbox prefilter: a padbox is built from pad
@@ -2184,11 +2229,15 @@ class QuenchState:
                         if (sf.pad > EPS_IMPROVE or sf.pad_overlap
                                 or sf.stack or sf.hole > EPS_IMPROVE):
                             legal = False
+                            if self._why is not None:
+                                self._veto('waived_pads', other_ref)
                             break
                     else:
                         ob = other.padbox()
                         if ob is not None and rect_gap(mine, ob) < clr:
                             legal = False
+                            if self._why is not None:
+                                self._veto('waived_pads', other_ref)
                             break
             # The courtyard is body + margin, and the project waived the
             # MARGIN. Two bodies in one place are still two parts colliding,
@@ -2216,6 +2265,8 @@ class QuenchState:
                     gap = part.gap_to(other, rects)
                     if gap is not None and gap < clr:
                         legal = False
+                        if self._why is not None:
+                            self._veto('courtyard', other_ref, path='tht')
                         break
                     continue
                 # Fast path: two plain SMD parts, same side. The per-axis test is
@@ -2237,6 +2288,8 @@ class QuenchState:
                     continue                    # provably clear
                 if rect_gap(rect, r) < clr:
                     legal = False
+                    if self._why is not None:
+                        self._veto('courtyard', other_ref, path='smd')
                     break
         if legal:
             # BODY layer. A pose that buries this part inside another part's
@@ -2273,7 +2326,8 @@ class QuenchState:
             # relative: the pose may not worsen any pair vs the SEED, and a
             # NEW different-net pad intersection is never admitted.
             legal = self.legality_ctx.pads_ok(
-                ref, x, y, rot, self._pad_neighbors(ref), exclude=exclude)
+                ref, x, y, rot, self._pad_neighbors(ref), exclude=exclude,
+                why=self._why)
         if legal:
             # #1043: the tether conjunct LAST, at every `return True`, not
             # beside the #702 check above. It is the one conjunct that poses
@@ -2629,6 +2683,8 @@ class QuenchState:
         fails = self.tether_failures({ref: (x, y, rot)})
         if not fails:
             return True
+        if self._why is not None:
+            self._veto('tether', f"{fails[0][0]}:{fails[0][1]}")
         tally = self.intent_rejected_by_site
         tally[site] = tally.get(site, 0) + 1
         for rule, _n, _c, _u in fails:
@@ -2888,8 +2944,12 @@ class QuenchState:
                 mine = self.fab_shape(ref, x, y, rot)
             theirs = self.fab_shape(other_ref)
             if mine is None or theirs is None:
+                if self._why is not None:
+                    self._veto('body_overlap', other_ref)
                 return True            # unmeasurable: the rects overlap
             if mine.intersection(theirs).area > _BODY_OVERLAP_EPS:
+                if self._why is not None:
+                    self._veto('body_overlap', other_ref)
                 return True
         return False
 
@@ -2968,6 +3028,8 @@ class QuenchState:
                                                             rot)
                 if (legality.pads_under_body_frac(mine_pads, theirs)
                         >= legality.CONTAINMENT_FRAC):
+                    if self._why is not None:
+                        self._veto('pads_under_body', other_ref)
                     return True
             return False
         mrect = self.fab_rect(ref, x, y, rot)
@@ -2992,6 +3054,8 @@ class QuenchState:
                 fps[other_ref], other.x, other.y, other.rot)
             if (legality.pads_under_body_frac(theirs_pads, mine_body)
                     >= legality.CONTAINMENT_FRAC):
+                if self._why is not None:
+                    self._veto('pads_under_body', other_ref)
                 return True
         return False
 
@@ -3056,6 +3120,8 @@ class QuenchState:
                 continue
             frac = containment_frac(area, ra, rb)
             if frac is not None and frac >= CONTAINMENT_FRAC:
+                if self._why is not None:
+                    self._veto('body_contained', other_ref)
                 return True
         return False
 

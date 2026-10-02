@@ -729,9 +729,7 @@ Examples:
                 #: fnmatch, so a literal reference carrying glob
                 #: metacharacters -- `D[1]` -- would resolve to `D1` and then
                 #: report "matches no reference on this board". Escape them.
-                def _literal(ref):
-                    return ''.join('[%s]' % c if c in '*?[]' else c
-                                   for c in ref)
+                from placement.utility import literal_ref_glob as _literal
                 for _r in args.reseat_region:
                     _in = refs_in_rect(cur_pcb, tuple(_r))
                     print("  region [%g,%g]-[%g,%g]: %d part(s)%s"

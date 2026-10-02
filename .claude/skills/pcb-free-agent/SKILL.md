@@ -114,6 +114,17 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   (`place_pose set … --rot`, then `lock`, or the plan's `fixed_poses`). Then
   zone the rest and seed. The seeder puts undeclared parts at their
   connectivity centroid in the first rotation that fits.
+- **On a pile, rank the biggest IC's rotation before you keep a seed.** A
+  pile part keeps its input rotation, which is a generator default, and
+  `converge.py poses` cannot rank an IC's rotation once its decaps are packed
+  against its pins (its `dropped_by` says what vetoed each move). Rank it at
+  seed level, passing the same `--seed-args` you will seed with:
+  `python3 -X utf8 py_placer/rank_rotations.py <pile> --intent <intent.json> --out-dir wk/<run>/rot --probe --write-intent wk/<run>/intent_rot.json`
+  then seed from the written intent. Without `--ref` it ranks the unlocked,
+  undeclared part with the most connected pads. It costs one `place_seed`
+  per angle plus one full-board probe per `--probe-top` angle (default 2).
+  Run 39 found StickHub's U1 at 270 instead of the pile's 0 by hand: seed
+  crossings 222 to 182, first-route blocking 31-37 to 16-19.
 - **Rotation and pin order.** A `CROSSED` pin-order pair in `board_context`
   costs a via per net at every rotation. After rotating an IC, re-seat its
   caps: one rotation left a decap at 9.57 mm while crossings and hpwl both

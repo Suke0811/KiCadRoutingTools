@@ -4199,6 +4199,15 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      'pads-facing-the-outline (placement.edge_facing) '
                      'before the first fit is kept')
 
+    def _rot_why(ref):
+        """Why a seat turned `ref` (#1113: a declared rotation used to be
+        reported as a containment failure)."""
+        claim = declared_rot.get(ref)
+        if claim is None:
+            return "(no contained pose at the input rotation)"
+        return ("(its declared rotation)" if claim[0] is not None else
+                "(the first of its declared rotation_candidates that fits)")
+
     def _rot_ladder(ref):
         """The declared ladder for `ref`, or None for the fallback one."""
         claim = declared_rot.get(ref)
@@ -4856,8 +4865,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                                  f"courtyard -- seated by anchor point")
                 if state.parts[ref].rot != rot_before:
                     notes.append(f"{ref}: rotated {rot_before:g} -> "
-                                 f"{state.parts[ref].rot:g} (no contained "
-                                 f"pose at the input rotation)")
+                                 f"{state.parts[ref].rot:g} "
+                                 + _rot_why(ref))
                 if clr < state.clearance:
                     notes.append(f"{ref}: placed at reduced courtyard "
                                  f"clearance {clr:g} (none at "
@@ -4885,8 +4894,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             unplaced.discard(ref)
             if state.parts[ref].rot != rot_before:
                 notes.append(f"{ref}: rotated {rot_before:g} -> "
-                             f"{state.parts[ref].rot:g} (no contained pose "
-                             f"at the input rotation)")
+                             f"{state.parts[ref].rot:g} " + _rot_why(ref))
             if clr < state.clearance:
                 notes.append(f"{ref}: placed at reduced courtyard clearance "
                              f"{clr:g} (none at {state.clearance:g})")

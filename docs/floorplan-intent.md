@@ -155,6 +155,11 @@ source, suspect, suspect_reason
 | `dispositions` | `rules`, `withheld`, `refs`, `contradictions` -- each `{key: why}`, a non-empty written reason (#959; see "The rule roster" below) |
 | `must_lock` | a list of reference globs (no nested keys) |
 
+A measured `blocks[].rotation` for a large IC on a pile is what
+`py_placer/rank_rotations.py --write-intent` writes (#1113): it seeds the board
+once per candidate angle and declares the one the seed and its polish score
+best.
+
 `severity` keys are checked too. The settable names are the fifteen rules —
 `envelope`, `zone_containment`, `zone_side`, `assembly_side`, `zone_exclusive`, `keepout`,
 `edge_connector`, `decap_distance`, `decap_ungraded`, `decap_pin_distance`,

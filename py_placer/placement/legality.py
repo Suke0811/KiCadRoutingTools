@@ -3685,17 +3685,22 @@ class LegalityContext:
 
     # -- the gate --------------------------------------------------------------
     def pads_ok(self, ref: str, x: float, y: float, rot: float,
-                neighbors: Iterable[str], exclude=None) -> bool:
+                neighbors: Iterable[str], exclude=None, why=None) -> bool:
         """May `ref` take this pose? Per neighbor: no worse than the SEED
         baseline, and a NEW different-net pad intersection is never admitted.
 
         #1031: and no deeper into a rule-area keep-out band than the seed
         (`keepout_ok`). Folded in HERE, the one choke point, so every search
         move is covered -- candidate_valid (both branches), the swap phase
-        (`swap_pads_ok`) and relocate's block shift all call this."""
+        (`swap_pads_ok`) and relocate's block shift all call this.
+
+        `why` (#1113, `QuenchState.candidate_veto`): a dict that receives the
+        refusing check and neighbour, first refusal only; None costs nothing."""
         if ref not in self.parts:
             return True
         if not self.keepout_ok(ref, x, y, rot):
+            if why is not None and 'check' not in why:
+                why.update(check='keepout_band', blocker=None)
             return False
         pose = (x, y, rot)
         for nb in neighbors:
@@ -3705,16 +3710,16 @@ class LegalityContext:
             if cur is ZERO_SHORTFALL:
                 continue
             base = self.seed_baseline(ref, nb)
-            if cur.pad > base.pad + EPS:
-                return False
-            if cur.pad_overlap and not base.pad_overlap:
-                return False
-            # run-6: a NEW any-net pad stack (two footprints' copper in the
-            # same space) is never admitted -- the same-net C14-on-R14 class
-            # the short conjunct above cannot see
-            if cur.stack and not base.stack:
-                return False
-            if cur.hole > base.hole + EPS:
+            kind = ('pad' if cur.pad > base.pad + EPS else
+                    'pad_overlap' if cur.pad_overlap and not base.pad_overlap
+                    # run-6: a NEW any-net pad stack (two footprints' copper
+                    # in the same space) is never admitted -- the same-net
+                    # C14-on-R14 class the short conjunct above cannot see
+                    else 'stack' if cur.stack and not base.stack
+                    else 'hole' if cur.hole > base.hole + EPS else None)
+            if kind is not None:
+                if why is not None and 'check' not in why:
+                    why.update(check='pads', blocker=nb, kind=kind)
                 return False
         return True
 
