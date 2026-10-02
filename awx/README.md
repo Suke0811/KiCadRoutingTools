@@ -950,6 +950,7 @@ With nothing supplied, as on the benches:
 | `whole_ladder.py` | the ladders on this machine: rungs side by side, each stopped at a cap with every stage it started, one grade line each |
 | `resolve_round.py`, `fanout_logdiff.py` | a round's first solve again on its own board; the first decision two fanout logs made differently -- where two runs part |
 | `whole_compare.py`, `whole_movie.py` | a rung beside the human's board, the run's nets alone (the renders above); a film of one run, the fanout to the copper |
+| `baseline_bench.py`, `baseline_freerouting.py`, `baseline_render.py` | a rung by two other routers on the same bench, nets, rules and grade -- the toolkit's production chain without the bus step, and Freerouting through KiCad's Specctra DSN (`FREEROUTING_JAR`, `FREEROUTING_JAVA`) -- and the boards drawn alike, every other net's copper grey |
 | `stage_cache.py`, `awx_settings.py`, `detmath.py` | the stage cache; the settings every module reads by name; one answer per LP |
 
 **Shared by both routers:**
@@ -1080,7 +1081,13 @@ channels first, and the other escapes leave round it.
 
 - **Length and time matching inside the step:** group spreads and pair skews
   in the judge, room for meanders in the geometry, the production matching
-  on the step's own copper.
+  on the step's own copper. The room as the geometry's own: each lane's
+  meander area a variable of the LP, with the groups' length targets among
+  its constraints, and a target it cannot meet sent to the solve as a cut,
+  as the rules it must pay for are. This is the two-stage matching of
+  Fang et al. (DAC 2024) and Lin, Guo and Fang (TODAES 2026) -- a region of
+  its own for each trace by LP, then meanders within it -- with the regions
+  planned with the lanes rather than cut from a finished route.
 - **Routing on inner layers:** the page pair chosen among the signal layers.
 - **Fly-by and multi-drop nets,** as legs in daisy order.
 - **A row part at one end** (TSOP-II SDRAM, SODIMM, edge connectors).
@@ -1151,6 +1158,38 @@ channels first, and the other escapes leave round it.
   CP-SAT model choosing every lane's tooth and berth with it as its
   objective -- the fanout's conflicts as forbidden pairs, the congestion's
   square piecewise linear -- could prove the best ends under it.
+- **The exact route's vias for a fixed crossing order, by matching.** With
+  the order of the crossings fixed and the ends' layers given, the fewest
+  changes is a minimum T-join on the planar dual of the wiring diagram. T is
+  the faces with an odd number of flips round them: each crossing on a
+  face's boundary is one, its two lanes being on opposite layers there; a
+  face at the ends adds the end layers; every triangle is odd. Each change is
+  a dual edge, across a lane between two of its crossings. The vias are then
+  domain walls pairing the frustrated faces -- the problem of decoding a
+  surface code -- and a minimum-weight matching (PyMatching, Blossom) solves
+  it exactly, in integers, in milliseconds, the same on every machine.
+  `exact_route` instead asks CP-SAT the whole question within a deterministic
+  work limit, the limit H3 K51 hits on Linux. To try: a local search over the
+  crossing order by braid moves (a triangle's three crossings taken in the
+  other order), each order scored by the matching, its best given to CP-SAT
+  as a hint, or standing in where the work limit is hit; and the matching's
+  count as a check on a solve's plan. The matching does not see the price on
+  a net's vias past two (`W_OVER`), which couples one lane's changes, nor via
+  room, which couples neighbours; a pair is one lane whose changes count two.
+- **DDR bit swaps as variables.** A DDR controller usually lets the DQ bits
+  within a byte lane be swapped, and often whole byte lanes, each byte's
+  strobe pair and mask going with it. The rules are the controller's own
+  (some keep a bit for write leveling), so they are declared, never guessed:
+  a board file cannot say them. The crossings come from the ends'
+  permutation, so a move in the ends search that gives a net another ball of
+  its byte lane at one end (the net there taking its ball) can remove most of
+  a byte lane's crossings, and their vias; a byte lane moved whole, the
+  crossings between lanes. The estimate prices such a move as it prices any
+  other. It needs: the swap groups from the user; the swapped nets written to
+  the board's pads and named in the JSON summary, for the schematic to be
+  updated to match; and a census apart from the human's, whose board was
+  likely swapped by its designer already and whose netlist is no longer the
+  same.
 - **Round 1 passing: the side of a small part.** The geometry chooses each
   island's side from a room estimate the LP then cannot always hold; a side
   the first geometry pays for could be flipped within the round, or the room
