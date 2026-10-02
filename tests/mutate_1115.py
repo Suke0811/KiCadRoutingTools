@@ -34,7 +34,14 @@ Not covered by a row, and why:
     equivalent mutant here; it differs only on Python <= 3.12;
   * `_arity`'s per-subcommand `min()`: no discovered tool defines one flag
     with two different arities across subcommands today, so no witness can
-    see it.
+    see it;
+  * `_min_values`' loop that strips NESTED optional groups: on Python 3.13
+    no option head nests one optional group inside another before the
+    count, so stripping only the outer level gives the same count -- an
+    equivalent mutant here;
+  * `_subcommand_names` reading only the positional section's brace group:
+    reading an option's choices too re-prints the top-level help, so the
+    mutant changes the runtime (138 of 182 `--help` calls), never an answer.
 """
 from __future__ import annotations
 
@@ -117,8 +124,42 @@ ROWS = [
      "        return m.group(0) if '.py' in m.group(2) else ' '",
      (VALUE_SCAN,), 'KILLED'),
     ('quotes-pair-across-spans', 't431',
-     "    spans = re.findall(r'`([^`]+)`', block)\n    outside = re.sub(r'`[^`]+`', ' ', block)\n    if '.py' in outside:\n        spans.append(outside)\n    if not spans:\n        spans = [block]\n\n    def quoted",
-     "    block = re.sub(r\"\"\"(['\"])(.*?)\\1\"\"\", ' QUOTED ', block, flags=re.S)\n    spans = re.findall(r'`([^`]+)`', block)\n    outside = re.sub(r'`[^`]+`', ' ', block)\n    if '.py' in outside:\n        spans.append(outside)\n    if not spans:\n        spans = [block]\n\n    def quoted",
+     "    block = _ROUTE_ARGS_RE.sub(' --route-args %s ' % _QUOTED, block)\n"
+     "    spans = re.findall(r'`([^`]+)`', block)",
+     "    block = _ROUTE_ARGS_RE.sub(' --route-args %s ' % _QUOTED, block)\n"
+     "    block = re.sub(r\"\"\"(['\"])(.*?)\\1\"\"\", ' QUOTED ', block, flags=re.S)\n"
+     "    spans = re.findall(r'`([^`]+)`', block)",
+     (VALUE_SCAN,), 'KILLED'),
+    # -- the verifier's unwitnessed lines (#1115 phase 3) ---------------------
+    ('comment-is-a-value', 't431',
+     "    if not tok or tok in _SHELL_STOP or tok.startswith('#'):",
+     "    if not tok or tok in _SHELL_STOP:",
+     (VALUE_SCAN,), 'KILLED'),
+    ('python-prefix-ignored', 't431',
+     "                    ran = any(re.match(r'python[0-9.]*(\\.exe)?$', t)",
+     "                    ran = False and any(re.match(r'python[0-9.]*(\\.exe)?$', t)",
+     (VALUE_SCAN,), 'KILLED'),
+    ('outside-backticks-unread', 't431',
+     "    if '.py' in outside:\n        spans.append(outside)\n\n    def quoted",
+     "    if False:\n        spans.append(outside)\n\n    def quoted",
+     (VALUE_SCAN,), 'KILLED'),
+    ('one-value-is-enough', 't431',
+     "            need = arity.get(m.group(1), 0)",
+     "            need = min(1, arity.get(m.group(1), 0))",
+     (VALUE_SCAN,), 'KILLED'),
+    ('subcommand-help-unread', 't431',
+     "    texts.extend(_sub_help_text(tool, s) for s in _subcommand_names(text))",
+     "    pass",
+     (VALUE_SCAN,), 'KILLED'),
+    ('usage-synopses-unread', 't431',
+     "            if m.group(1) not in out:",
+     "            if False:",
+     (VALUE_SCAN,), 'KILLED'),
+    ('unreadable-help-is-empty', 't431',
+     "    if '--help' not in text:\n"
+     "        raise RuntimeError(f'{tool} --help produced no option list '",
+     "    if False:\n"
+     "        raise RuntimeError(f'{tool} --help produced no option list '",
      (VALUE_SCAN,), 'KILLED'),
     ('unbalanced-span-not-joined', 't431',
      "                   or '\\n'.join(cur).count('`') % 2)",

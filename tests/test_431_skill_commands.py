@@ -50,10 +50,17 @@ takes a PATH, so the command exited 2 as written. And the tool was never
 enrolled at all, because discovery read only `python3 ... x.py` lines and the
 skill ran it bare in a backtick span. Closed by
 `test_every_value_flag_is_given_a_value` (arity read from `--help`) and
-`_BARE_SPAN_RE`. What is still open: a POINTER -- `` `route.py --nets` `` in a
-sentence, a tool-index row -- names a flag without running anything and is
-deliberately not read, so a pointer that drops a value is invisible; and a
-value of the WRONG kind (a path where a number belongs) reads as given.
+`_BARE_SPAN_RE`. What is still open:
+  * a POINTER -- `` `route.py --nets` `` in a sentence, a tool-index row --
+    names a flag without running anything and is deliberately not read, so a
+    pointer that drops a value is invisible; and a tool cited ONLY as
+    pointers is never enrolled at all, so not even its flag names are
+    checked (board_context, check_channels, check_reachability and five
+    others, measured when this was written -- their flags all existed);
+  * a value of the WRONG kind (a path where a number belongs) reads as given;
+  * short options (`-c`, `-o`) are not read, and shell shapes the token
+    split does not model -- an operator glued to its neighbour (`--json;`,
+    `|tee`, `2>/dev/null`) -- read as values. None occurs in a source today.
 """
 
 import functools
@@ -69,10 +76,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: Declared rather than left to the 600 s global: ~20 tools are asked for
 #: their parser, and a gate killed by the runner's default budget reports the
-#: same "no result" as a broken one. 1200 since #1115's arity scan, which asks
-#: every discovered tool (and subcommand) for `--help`: ~2 min of the total
-#: under load, measured with two other suites running.
-RUN_ALL_TIMEOUT = 1200
+#: same "no result" as a broken one. #1115's arity scan asks every discovered
+#: tool (and subcommand) for `--help`; reading an option's CHOICES as
+#: subcommands had made that ~150 s, and since `_subcommand_names` the whole
+#: file runs in about 30 s.
+RUN_ALL_TIMEOUT = 900
 
 
 #: CACHED because the scans below ask for every source once per TOOL. Sound
@@ -218,12 +226,13 @@ def _flags_from_help(tool):
     # A SUBCOMMAND tool keeps its real flags on the subparsers, and top-level
     # --help never lists them. Reading only the top level reports every
     # subcommand flag as nonexistent, which is a wall of false failures that
-    # buries the true ones. argparse prints the choices as {a,b,c}.
-    for m in re.finditer(r'\{([a-z0-9_][a-z0-9_,-]*)\}', text):
-        for sub in m.group(1).split(','):
-            sub_text, _ = ask(sub)
-            if '--help' in sub_text:
-                flags |= set(re.findall(r'(--[a-z][a-z0-9-]+)', sub_text))
+    # buries the true ones. argparse prints the choices as {a,b,c} -- for
+    # an option's choices too, so only the positional section's group is a
+    # subcommand list (`_subcommand_names`, #1115).
+    for sub in _subcommand_names(text):
+        sub_text, _ = ask(sub)
+        if '--help' in sub_text:
+            flags |= set(re.findall(r'(--[a-z][a-z0-9-]+)', sub_text))
     return flags
 
 
@@ -453,15 +462,40 @@ def _sub_help_text(tool, sub):
     return (p.stdout or '') + (p.stderr or '')
 
 
+def _subcommand_names(text):
+    """The subcommands a `--help` lists: the brace group that STARTS a line of
+    the positional section (`  {record,verdict,...}`). A brace group anywhere
+    else is an option's CHOICES (`--escalation {fab,board,off}`); asking
+    `tool <choice> --help` re-prints the top-level help, and reading every
+    such group was 138 of 182 subprocesses for no information (#1115's
+    verifier)."""
+    return [s for m in re.finditer(r'^\s+\{([a-z0-9_][a-z0-9_,-]*)\}', text,
+                                   re.M)
+            for s in m.group(1).split(',')]
+
+
+#: A usage-synopsis group, `[--near X Y]` / `[--relative]`: a flag and the
+#: metavars it takes. place_pose's verbs are parsed by hand and documented
+#: ONLY in such an epilog, so the option lines alone never saw `--rot`.
+_USAGE_GROUP = re.compile(r'\[(--[a-z][a-z0-9-]+)((?:\s+[A-Z][A-Z0-9_]*)*)\]')
+
+
 @functools.lru_cache(maxsize=None)
 def _arity(tool):
     """{--flag: fewest values it takes} over `tool --help` and each
     subcommand's help. A flag two subcommands define differently keeps the
-    SMALLER count: this gate reports only what is short under every reading."""
-    text, _rc = _help_text(tool)
+    SMALLER count: this gate reports only what is short under every reading.
+
+    Option lines are the authority; a flag they do not list is read off the
+    usage synopses (`_USAGE_GROUP`), which is where a hand-parsed verb's
+    options live. A `--help` that prints no option list REFUSES: an empty
+    table would read every flag of the tool as a switch, silently."""
+    text, rc = _help_text(tool)
+    if '--help' not in text:
+        raise RuntimeError(f'{tool} --help produced no option list '
+                           f'(exit {rc}); its arity cannot be read')
     texts = [text]
-    for m in re.finditer(r'\{([a-z0-9_][a-z0-9_,-]*)\}', text):
-        texts.extend(_sub_help_text(tool, s) for s in m.group(1).split(','))
+    texts.extend(_sub_help_text(tool, s) for s in _subcommand_names(text))
     out = {}
     for t in texts:
         for line in t.splitlines():
@@ -471,6 +505,10 @@ def _arity(tool):
             n = _min_values(head)
             for flag in re.findall(r'(--[a-z][a-z0-9-]+)', head):
                 out[flag] = min(n, out.get(flag, n))
+    for t in texts:
+        for m in _USAGE_GROUP.finditer(t):
+            if m.group(1) not in out:
+                out[m.group(1)] = len(m.group(2).split())
     return out
 
 
@@ -529,11 +567,11 @@ def _missing_values(block, tool, arity):
     """
     block = _ROUTE_ARGS_RE.sub(' --route-args %s ' % _QUOTED, block)
     spans = re.findall(r'`([^`]+)`', block)
+    # A block always names the tool, so when no span does, the text outside
+    # the spans carries the `.py` and is appended here: no third case.
     outside = re.sub(r'`[^`]+`', ' ', block)
     if '.py' in outside:
         spans.append(outside)
-    if not spans:
-        spans = [block]
 
     def quoted(m):
         return m.group(0) if '.py' in m.group(2) else ' %s ' % _QUOTED
@@ -1167,6 +1205,12 @@ def test_the_value_scan_catches_a_missing_value():
         "the skill's `board_brief.py <board> --json` isn't runnable",
         # a span that wraps: the flag is at the end of the SPAN, not the line
         "run `board_brief.py <board>\n--json` here",
+        # a comment ends the command
+        "```bash\npython3 py_tools/board_brief.py b.kicad_pcb --json  # brief\n```",
+        # a `python3` prefix makes it an invocation even with no positional
+        "`python3 py_tools/board_brief.py --json`",
+        # an UNQUOTED command beside a span on the same line
+        "read `pile`, then python3 py_tools/board_brief.py b.kicad_pcb --json",
     ]
     must_pass = [
         "`python3 -X utf8 py_tools/board_brief.py <board> --json brief.json`",
@@ -1182,15 +1226,33 @@ def test_the_value_scan_catches_a_missing_value():
         assert scan(text), f"MISSED: {text!r}"
     for text in must_pass:
         assert not scan(text), f"FALSE HIT {scan(text)}: {text!r}"
-    # A subcommand tool: positionals after the verb, then a negative value.
+    # place_pose's verbs are parsed by hand and documented only in its usage
+    # synopses: their options must be READ, and a negative value is a value.
     pose = 'py_placer/place_pose.py'
     assert pose in TOOLS, f'{pose} is no longer discovered; pick another tool'
     a = _arity(pose)
-    b = [blk for _l, blk in _value_blocks(
-        "`python3 py_placer/place_pose.py in.kicad_pcb out.kicad_pcb set "
-        "U2 1 2 --rot -90`", pose)]
-    assert b and not _missing_values(b[0], pose, a)[0], (
-        'a negative number read as an option')
+    assert (a.get('--rot'), a.get('--near'), a.get('--relative')) == (1, 2, 0), (
+        'place_pose verb arity', a.get('--rot'), a.get('--near'))
+
+    def pose_scan(cmd):
+        return [m for _l, blk in _value_blocks(cmd, pose)
+                for m in _missing_values(blk, pose, a)[0]]
+    head = "`python3 py_placer/place_pose.py in.kicad_pcb out.kicad_pcb set U2 "
+    assert not pose_scan(head + "1 2 --rot -90`"), 'a negative number read as an option'
+    assert pose_scan(head + "--rot`"), 'a verb option given no value was missed'
+    assert pose_scan(head + "--near 130`"), 'a 2-value option given 1 was missed'
+    # A subcommand's own options come from its own --help.
+    conv = 'py_placer/converge.py'
+    assert conv in TOOLS and _arity(conv).get('--flat') == 1, (
+        'converge verdict --flat is read only from the subcommand help')
+    # A --help that prints no option list refuses rather than reading as
+    # "every flag is a switch".
+    try:
+        _arity('tests/no_such_tool_1115.py')
+    except RuntimeError as exc:
+        assert 'no option list' in str(exc), exc
+    else:
+        raise AssertionError('an unreadable --help read as an empty arity table')
     # Discovery: the bare span enrols the tool, a module named in prose
     # does not.
     assert 'py_tools/board_brief.py' in _tools_in("`board_brief.py <board>`")
