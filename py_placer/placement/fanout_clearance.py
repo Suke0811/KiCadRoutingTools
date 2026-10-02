@@ -3050,6 +3050,147 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                             via_clear_fallback: bool = True,
                             verbose: bool = False,
                             on_move=None,
+                            progress_callback=None,
+                            intent=None) -> Dict:
+    """Nudge near-BGA decoupling caps off foreign-net fanout copper (vias
+    #130, escape tracks #278, component pads #275) and toward same-net balls.
+    Run AFTER bga_fanout.py. `_repair_one_arm` runs the pass and documents
+    every parameter and result key; this is its public door.
+
+    #1067: with an `intent` the pass holds its decap claims (a ladder: a cap
+    whose every clear pose breaks one clears the copper anyway, and says so).
+    A hold made early can cost a claim later -- on run 34's real board the
+    holds took the spot C63 cleared into without the gate, and C63 broke two
+    claims where the ungated pass broke one -- so when the gated pass had to
+    break a claim, the same pass is also run WITHOUT the gate, on a pristine
+    copy of the board, and the result kept is the one with fewer unresolved
+    grazes, then fewer decap claims made worse (new, or an error grown), the
+    gated one on a tie. `decap.compared` says which, and the caller's
+    `pcb_data` is left in the state of the run kept.
+    """
+    kw = dict(locals())
+    kw.pop('pcb_data')
+    if intent is None:
+        return _repair_one_arm(pcb_data, **kw)
+    import copy
+    pristine = copy.deepcopy(pcb_data)
+    gated = _repair_one_arm(pcb_data, **kw)
+    return _keep_the_better_arm(gated, pristine, pcb_data, kw)
+
+
+def _decap_claims_worse(before, after) -> Dict:
+    """{claim: [gap before (None if new), gap after]} for the ERROR decap
+    claims `after` has that `before` did not, or has with a larger gap
+    (#1067: the gate's own currency, a claim made worse)."""
+    from . import floorplan
+
+    def key(v):
+        m = v.measured or {}
+        return (v.rule, v.ref or '', str(m.get('pad') if v.rule ==
+                                        'decap_pin_distance' else m.get('ic')))
+
+    def gap(v):
+        m = v.measured or {}
+        return m.get('gap_mm', m.get('distance_mm'))
+    was = {key(v): gap(v) for v in before if v.severity == floorplan.ERROR}
+    out = {}
+    for v in after:
+        if v.severity != floorplan.ERROR:
+            continue
+        k, g = key(v), gap(v)
+        if k not in was or (g is not None and was[k] is not None
+                            and g > was[k] + 1e-6):
+            out[k] = [was.get(k), g]
+    return out
+
+
+def _keep_the_better_arm(gated, pristine, pcb_data, kw) -> Dict:
+    """#1067: `gated`, unless the same pass without the gate ends better."""
+    import contextlib
+    import io
+    from . import floorplan
+    rep = gated.get('decap') or {}
+    if not rep.get('broken') or 'errors_after' not in (rep.get('grade') or {}):
+        return gated
+    intent, pcb_file = kw['intent'], kw['pcb_file']
+
+    def _after(res):
+        poses = {p['reference']: (p['new_x'], p['new_y'], p['new_rotation'])
+                 for p in res['placements']}
+        return _decap_violations(intent, pristine, pcb_file, poses)
+    try:
+        before = _decap_violations(intent, pristine, pcb_file)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            free = _repair_one_arm(pristine, **dict(
+                kw, intent=None, on_move=None, progress_callback=None))
+        after_g, after_f = _after(gated), _after(free)
+    except Exception as exc:     # noqa: BLE001 -- disclosed, never fatal
+        rep['compared'] = {'unavailable': f"{type(exc).__name__}: {exc}"}
+        print(f"Decap: not compared with the pass without the gate -- "
+              f"{rep['compared']['unavailable']}")
+        return gated
+    worse_g = _decap_claims_worse(before, after_g)
+    worse_f = _decap_claims_worse(before, after_f)
+    kg = (len(gated['unresolved']), len(worse_g))
+    kf = (len(free['unresolved']), len(worse_f))
+    kept = 'ungated' if kf < kg else 'gated'
+
+    def _side(k, worse):
+        return {'unresolved': k[0], 'claims_worse': k[1],
+                'worse': [' '.join(c) for c in sorted(worse)]}
+    compared = {'gated': _side(kg, worse_g), 'ungated': _side(kf, worse_f),
+                'kept': kept}
+    if kept == 'gated':
+        rep['compared'] = compared
+        print(f"Decap: compared with the same pass without the gate "
+              f"({kf[0]} unresolved, {kf[1]} decap claim(s) made worse): "
+              f"the gated run is kept ({kg[0]}, {kg[1]}).")
+        return gated
+    # The run without the gate ends better: keep it, and leave the caller's
+    # board in ITS state (the writer reads pcb_data next).
+    vars(pcb_data).clear()
+    vars(pcb_data).update(vars(pristine))
+    errs = [v for v in after_f if v.severity == floorplan.ERROR]
+    errs_b = [v for v in before if v.severity == floorplan.ERROR]
+    free['decap'] = dict(
+        {k: rep[k] for k in ('source', 'rules', 'limits', 'claims', 'caps')
+         if k in rep},
+        refused={}, broken={}, compared=compared,
+        grade={'errors_before': len(errs_b), 'errors_after': len(errs),
+               'added': [dict(a) for a in
+                         floorplan.grade_delta(before, after_f)]})
+    moved = next((ln for ln in buf.getvalue().splitlines()
+                  if ln.startswith('Moved ')), '')
+    print(f"Decap: the same pass WITHOUT the gate ends better ({kf[0]} "
+          f"unresolved, {kf[1]} decap claim(s) made worse, against {kg[0]} "
+          f"and {kg[1]} gated), so it is the result kept: {moved}")
+    g = free['decap']['grade']
+    print(f"Decap grade (intent, the result kept): errors "
+          f"{g['errors_before']} -> {g['errors_after']}; worse: "
+          + (', '.join(compared['ungated']['worse']) or 'none'))
+    return free
+
+
+def _repair_one_arm(pcb_data: PCBData, pcb_file: str,
+                            clearance: Optional[float] = None,
+                            netclass_ceiling: Optional[float] = None,
+                            grid_step: float = 0.1,
+                            board_edge_clearance: Optional[float] = None,
+                            near_margin: float = 1.0,
+                            capture_radius: float = 2.0,
+                            default_via_size: float = 0.3,
+                            step: float = 0.2,
+                            max_displacement: float = 2.0,
+                            max_displacement_cap: float = 3.0,
+                            displacement_growth: float = 1.5,
+                            allow_rotations: bool = True,
+                            cap_prefix: str = "C,R,FB",
+                            lock_refs: Optional[List[str]] = None,
+                            max_passes: int = 30,
+                            via_clear_fallback: bool = True,
+                            verbose: bool = False,
+                            on_move=None,
                             # progress_callback(current, total, label): the
                             # candidate-position sweep per cap x up to 30
                             # passes is the slow part, so each cap visit
@@ -3375,10 +3516,13 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                 cap = st.caps[ref]
                 rots = rots_all if rots_all is not None else [cap.rot]
 
-                def _best_clear():
+                def _best_clear(breaks=None):
                     """(best (cost, x, y, rot) or None, whether the decap
-                    gate refused a clear pose)."""
-                    found, gated = None, False
+                    gate refused a clear pose). With `breaks` (the gate,
+                    switched off for this search) a clear pose is ranked
+                    first by the claims it would break -- fewest, then by
+                    the least excess -- and only then by cost."""
+                    found, gated, fkey = None, False, None
                     for cx, cy in _candidate_positions(
                             cap, max_displacement_cap, step, grid_step):
                         for rot in rots:
@@ -3388,8 +3532,16 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                             if c == float('inf'):
                                 gated = gated or bool(st._last_tether_fails)
                                 continue
-                            if found is None or c < found[0] - EPS:
-                                found = (c, cx, cy, rot)
+                            key = (0, 0.0, c)
+                            if breaks is not None:
+                                fl = breaks.tether_failures(
+                                    {ref: (cx, cy, rot)})
+                                key = (len(fl), round(sum(
+                                    f[2] - f[3] for f in fl), 4), c)
+                            if fkey is None or (key[:2] < fkey[:2]) or (
+                                    key[:2] == fkey[:2]
+                                    and key[2] < fkey[2] - EPS):
+                                found, fkey = (c, cx, cy, rot), key
                     return found, gated
 
                 best, gate_refused = _best_clear()
@@ -3402,7 +3554,10 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                     # broke, in `decap.broken` and the grade delta.
                     _tg, st._tethers = st._tethers, None
                     try:
-                        best, _g = _best_clear()
+                        # ...breaking as LITTLE as it can: run 34's real
+                        # board measured 2 claims broken by the cheapest
+                        # clear pose where the run without --intent broke 1.
+                        best, _g = _best_clear(breaks=_tg)
                     finally:
                         st._tethers = _tg
                     if best is not None:

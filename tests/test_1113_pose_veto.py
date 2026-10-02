@@ -110,6 +110,8 @@ def test_a_label_names_the_check_that_refused():
             hits.append((b, v))
     assert hits, a
     assert any(v[1] == b for b, v in hits), hits
+    # a plain SMD neighbour on the same side is refused by its COURTYARD
+    assert any(v == ('courtyard', b) for b, v in hits), hits
     b, v = next((b, v) for b, v in hits if v[1] == b)
     print(f"  PASS: off the board -> board_bbox; on {b} -> {v[0]} against {b}"
           f" ({len(hits)} interior neighbour(s) tried)")
@@ -278,9 +280,16 @@ TESTS = [
 
 if __name__ == '__main__':
     only = sys.argv[1:]
+    ran = 0
     for t in TESTS:
         if only and not any(o in t.__name__ for o in only):
             continue
         print(f"--- {t.__name__}")
         t()
+        ran += 1
+    if only and not ran:
+        # A filter that names no case passes nothing: a mutation battery
+        # witness spelled wrong would otherwise read every row as SURVIVED.
+        print(f"NO TEST matches {only}")
+        sys.exit(2)
     print('ALL PASS')

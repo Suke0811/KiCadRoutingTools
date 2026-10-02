@@ -276,6 +276,24 @@ def test_a_non_u_owner_is_still_not_claimed():
         ds = res['decap_stage']
         assert ds['claimed'] == 0 and ds['late']['claimed'] == 0, ds
         assert 'U-prefixed' in (ds['late']['reason'] or ''), ds['late']
+    # ...and where the rule is observable: IC1 seated BEFORE stage 2.5 (a
+    # fixed pose). Its pins are on the board, and still no stage claims C3.
+    with tempfile.TemporaryDirectory() as wd:
+        path = t792._board(os.path.join(wd, 'b.kicad_pcb'))
+        pcb = parse_kicad_pcb(path)
+        doc = t792._intent({'max_distance_mm': 3.0,
+                            'exempt': ['C1', 'C2', 'C5']})
+        ic1 = pcb.footprints['IC1']
+        doc['fixed_poses'] = [{'ref': 'IC1', 'x': ic1.x, 'y': ic1.y,
+                               'rot': ic1.rotation or 0, 'basis': 'declared',
+                               'why': 'IC1 placed before the pin stage'}]
+        doc['min_reader'] = 7
+        res2 = seeder.seed_from_intent(
+            pcb, path, fp.intent_from_dict(doc, path), random.Random(11),
+            decap_claim_after_ics=True)
+        ds2 = res2['decap_stage']
+        assert 'IC1' in res2['fixed_seated'], res2['fixed_seated']
+        assert ds2['claimed'] == 0 and ds2['late']['claimed'] == 0, ds2
     with tempfile.TemporaryDirectory() as wd:
         ctl, _poses_, _pcb = t792._seed(
             wd, {'max_distance_mm': 3.0, 'exempt': ['C1', 'C2', 'C5']},
@@ -497,9 +515,16 @@ if __name__ == '__main__':
         _record()
         sys.exit(0)
     only = sys.argv[1:]
+    ran = 0
     for t in TESTS:
         if only and not any(o in t.__name__ for o in only):
             continue
         print(f"--- {t.__name__}")
         t()
+        ran += 1
+    if only and not ran:
+        # A filter that names no case passes nothing: a mutation battery
+        # witness spelled wrong would otherwise read every row as SURVIVED.
+        print(f"NO TEST matches {only}")
+        sys.exit(2)
     print('ALL PASS')

@@ -160,8 +160,13 @@ def test_on_holds_every_claim_it_can_and_names_the_one_it_breaks():
     assert s, stdout[-800:]
     broken, added = _check_ladder(before, after, s)
     # the fixture exercises the ladder: every clear pose of C63 breaks a
-    # claim, and it clears the foreign copper anyway
+    # claim, and it clears the foreign copper anyway -- and the gated run is
+    # the one kept: the same pass without the gate worsens more claims
     assert 'C63' in s['decap']['broken'], s['decap']
+    cmp_ = s['decap']['compared']
+    assert cmp_['kept'] == 'gated', cmp_
+    assert cmp_['gated']['claims_worse'] < cmp_['ungated']['claims_worse'], \
+        cmp_
     assert 'C63' not in s['unresolved'], s['unresolved']
     assert 'C63 (decap_pin_distance U30.' in stdout, stdout[-800:]
     assert [{k: d[k] for k in ('rule', 'ref')} for d in
@@ -194,6 +199,57 @@ def test_on_without_rotation_holds_too():
 def _spec(intent):
     return {k: v for k, v in fp.tether_gate_spec(intent).items()
             if k in ('decap_distance', 'decap_pin_distance')}
+
+
+def test_the_better_arm_is_kept():
+    """`_keep_the_better_arm`'s choice, on stubbed arms: fewer unresolved
+    first, then fewer claims made worse, the gated run on a tie; and when
+    the ungated run is kept, the caller's board takes its state (run 34's
+    real board: gated broke 2 claims, ungated 1)."""
+    from placement import fanout_clearance as fc
+
+    def V(ref, pad, gap):
+        return fp.Violation(rule='decap_pin_distance', severity=fp.ERROR,
+                            message=f"{ref} pin {pad} {gap}", ref=ref,
+                            measured={'pad': pad, 'gap_mm': gap})
+    before = [V('U10', '1', 6.6)]
+    after = {'g': [V('U10', '1', 6.6), V('U30', 'D6', 3.2),
+                   V('U30', 'H6', 4.2)],
+             'f': [V('U10', '1', 6.6), V('U30', 'C10', 2.9)]}
+
+    class _Board:
+        def __init__(self, tag):
+            self.tag = tag
+    real_arm, real_viol = fc._repair_one_arm, fc._decap_violations
+    try:
+        for g_unres, f_unres, want in ((0, 0, 'ungated'), (0, 1, 'gated'),
+                                       (1, 0, 'ungated')):
+            gated = {'placements': [{'reference': 'G', 'new_x': 0,
+                                     'new_y': 0, 'new_rotation': 0}],
+                     'unresolved': ['X'] * g_unres,
+                     'decap': {'broken': {'C63': []},
+                               'grade': {'errors_after': 2}}}
+            free = {'placements': [{'reference': 'F', 'new_x': 0,
+                                    'new_y': 0, 'new_rotation': 0}],
+                    'unresolved': ['X'] * f_unres}
+            fc._repair_one_arm = lambda data, **kw: free
+            fc._decap_violations = (
+                lambda intent, data, f, poses=None: before if poses is None
+                else after['g' if 'G' in poses else 'f'])
+            board, pristine = _Board('caller'), _Board('pristine')
+            got = fc._keep_the_better_arm(
+                gated, pristine, board, {'intent': object(), 'pcb_file': 'x'})
+            kept = got['decap']['compared']['kept']
+            assert kept == want, (g_unres, f_unres, kept)
+            assert (got is free) == (want == 'ungated')
+            assert board.tag == ('pristine' if want == 'ungated'
+                                 else 'caller'), board.tag
+    finally:
+        fc._repair_one_arm, fc._decap_violations = real_arm, real_viol
+    worse = fc._decap_claims_worse(before, after['f'])
+    assert list(worse) == [('decap_pin_distance', 'U30', 'C10')], worse
+    print("  PASS: fewer claims worse wins at equal unresolved, fewer "
+          "unresolved wins outright, the kept arm's board is the caller's")
 
 
 def test_the_gate_is_the_quench_gate():
@@ -331,6 +387,7 @@ TESTS = [
     test_off_still_breaks_the_decap_limit,
     test_on_holds_every_claim_it_can_and_names_the_one_it_breaks,
     test_on_without_rotation_holds_too,
+    test_the_better_arm_is_kept,
     test_the_gate_is_the_quench_gate,
     test_a_move_invalidates_the_gate_caches,
     test_an_unreadable_intent_is_refused,
@@ -340,9 +397,16 @@ TESTS = [
 
 if __name__ == '__main__':
     only = sys.argv[1:]
+    ran = 0
     for t in TESTS:
         if only and not any(o in t.__name__ for o in only):
             continue
         print(f"--- {t.__name__}")
         t()
+        ran += 1
+    if only and not ran:
+        # A filter that names no case passes nothing: a mutation battery
+        # witness spelled wrong would otherwise read every row as SURVIVED.
+        print(f"NO TEST matches {only}")
+        sys.exit(2)
     print('ALL PASS')

@@ -229,9 +229,16 @@ TESTS = [
 
 if __name__ == '__main__':
     only = sys.argv[1:]
+    ran = 0
     for t in TESTS:
         if only and not any(o in t.__name__ for o in only):
             continue
         print(f"--- {t.__name__}")
         t()
+        ran += 1
+    if only and not ran:
+        # A filter that names no case passes nothing: a mutation battery
+        # witness spelled wrong would otherwise read every row as SURVIVED.
+        print(f"NO TEST matches {only}")
+        sys.exit(2)
     print('ALL PASS')

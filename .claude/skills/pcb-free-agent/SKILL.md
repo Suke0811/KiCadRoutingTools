@@ -158,7 +158,9 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     `--intent` (#1067): no cap move takes a decap claim past its limit and
     further than before, unless no clear pose keeps it -- then the cap
     clears the foreign copper anyway and the claim it broke is named under
-    `Decap limit broken`. It prints the decap grade before and after.
+    `Decap limit broken`. Then it also runs the pass without the gate and
+    keeps whichever made fewer decap claims worse (`Decap: ...` says which).
+    It prints the decap grade before and after.
     Without `--intent` it can move a cap past `decap_pin_distance`
     silently;
   - `place_seed --reseat`'s intent basis counts only the rules it prints

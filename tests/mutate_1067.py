@@ -56,7 +56,8 @@ def _t(name, *cases):
 
 
 T = 'test_1067_fanout_clearance_decap.py'
-ON = _t(T, 'on_adds_no_decap')
+ON = _t(T, 'on_holds_every_claim')
+ARMS = _t(T, 'better_arm_is_kept')
 OFF = _t(T, 'off_still_breaks')
 QGATE = _t(T, 'gate_is_the_quench')
 CACHE = _t(T, 'invalidates_the_gate')
@@ -92,6 +93,14 @@ ROWS = [
      "    if decap_report is not None:",
      "    if True:",
      (NONE, OFF), 'KILLED'),
+    ('ungated-arm-never-kept', 'fc',
+     "    kept = 'ungated' if kf < kg else 'gated'",
+     "    kept = 'gated'",
+     (ARMS,), 'KILLED'),
+    ('arms-compared-by-count-only', 'fc',
+     "    kg = (len(gated['unresolved']), len(worse_g))",
+     "    kg = (len(gated['unresolved']), 0)",
+     (ARMS,), 'KILLED'),
     ('view-not-bound', 'quench',
      "    _tether_measure = QuenchState._tether_measure",
      "    _tether_measure = staticmethod(lambda *a, **k: 0.0)",
