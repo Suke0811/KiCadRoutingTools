@@ -310,7 +310,7 @@ def fixed_pose_reason(summary):
 
 
 #: How a decline line names what a re-seat had to stay clear of (#1117).
-_CLEAR_OF = {'keepout': 'keep-out', 'zone_exclusive': "another block's exclusive zone"}
+_CLEAR_OF = {'keepout': 'keep-out', 'zone_exclusive': 'exclusive zone of another block'}
 
 
 def reseat_decline_record(ref, errors, repairable, zone, claim):
@@ -1461,9 +1461,9 @@ Examples:
                'rotation_unseated': result.get('rotation_unseated') or {},
                # #1117: parts the post-polish re-seat could not put back, by
                # ref, with the rules they broke and the claim it held them
-               # to. NOT `rotation_unseated`: these parts ARE seated (where
-               # the polish left them), and rank_rotations reads that key as
-               # a hard failure of the arm.
+               # to. NOT `rotation_unseated`, which names parts the seed did
+               # not put on the board: these ARE on it, where the polish left
+               # them.
                'reseat_declined': reseat_declined,
                # #975: declared edge connectors seated with pad copper inside
                # the board-edge floor because no pose the seat ladder tried

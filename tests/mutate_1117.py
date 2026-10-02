@@ -35,7 +35,14 @@ Not covered by a row, and why:
     that seeds anything, so a row would add cost and no information;
   * the record's `zone` / `rotation` entries: one dict entry each, asserted
     by `not_traded` and `one_ladder`; their mutant is the same assertion
-    failing, already exercised by `declined-reseat-unrecorded`.
+    failing, already exercised by `declined-reseat-unrecorded`;
+  * the swap phase's `or state.declared_rotations`, which calls the gate when
+    the intent declares rotations and nothing else: on every fixture where a
+    swap trades angles a zone is declared too, so the intent gate already
+    runs, and a rotation-only intent of the same board seeds the parts
+    where no swap pays (measured: no trade even on 457959b7);
+  * `_note_swap_refusal`'s `rotation` attribution: it feeds only the
+    `by_rule` disclosure, which no fixture here reads.
 """
 from __future__ import annotations
 
@@ -151,8 +158,16 @@ ROWS = [
      (REPAIR,), 'KILLED'),
     # -- quench: the swap phase hands each part the other's angle ------------
     ('swap-trades-declared-angles', 'q',
-     "                        if state.declared_rotations and not (",
-     "                        if False and not (",
+     "        if self.declared_rotations and not (",
+     "        if False and not (",
+     (SWAP,), 'KILLED'),
+    ('swap-ignores-the-first-parts-claim', 'q',
+     "                _declared_admits(self.declared_rotations.get(ra), pb.rot)",
+     "                True",
+     (SWAP,), 'KILLED'),
+    ('swap-ignores-the-second-parts-claim', 'q',
+     "                and _declared_admits(self.declared_rotations.get(rb), pa.rot)):",
+     "                and True):",
      (SWAP,), 'KILLED'),
     ('swap-admits-any-angle', 'q',
      "               for a in _candidate_rotations(None, True, declared))",

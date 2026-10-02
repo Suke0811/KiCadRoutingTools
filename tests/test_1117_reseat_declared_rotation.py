@@ -362,22 +362,29 @@ def test_one_ladder_and_its_decline_line():
                        'rotation': None, 'rotation_candidates': None})
     bare = line('U4', {'rules': [], 'zone': None, 'rotation': None,
                        'rotation_candidates': None})
+    excl = line('U5', {'rules': ['zone_exclusive'], 'zone': None,
+                       'rotation': None, 'rotation_candidates': None})
     assert "in zone 'b' at its declared rotation 0 " in one, one
     assert 'rotation_candidates [0, 180]' in many, many
     assert 'any quarter turn' in none and 'declared' not in none, none
     assert ('no legal pose clear of the declared keep-out at its declared '
             'rotation 90 ') in ko, ko
-    assert ("in zone 'b' clear of the declared keep-out and another "
-            "block's exclusive zone") in both, both
+    assert ("in zone 'b' clear of the declared keep-out and exclusive zone "
+            "of another block") in both, both
     assert 'no legal pose anywhere on the board' in bare, bare
+    assert ('no legal pose clear of the declared exclusive zone of another '
+            'block at its current angle') in excl, excl
     print('  declared_ladder == quench for 4 claims; the record keeps only '
-          "this part's repairable rules; 6 decline phrasings")
+          "this part's repairable rules; 7 decline phrasings")
 
 
 #: Two parts of one footprint between two connectors, C1 at 0 and C2 at 90,
 #: sharing one zone (found by #1117's verifier: on 457959b7 the polish's swap
 #: phase left C2 written at 0 with `rotation: 90` declared, exit 0).
-def _swap_board(path):
+def _swap_board(path, names=('C1', 'C2')):
+    """`names` = the refs of the part at 0 and the part at 90. Flipping them
+    flips which of the pair sorts FIRST, i.e. which half of the swap gate
+    (`ra` or `rb`) a one-sided declaration exercises."""
     def part(ref, fpname, x, rot, nets):
         pads = ''.join(
             f'\t\t(pad "{i + 1}" smd rect (at {dx} 0) (size 0.6 0.6) '
@@ -395,14 +402,14 @@ def _swap_board(path):
                 '(uuid "e1"))\n'
                 + part('J1', 'test:J', 4.0, 0, (1, 2))
                 + part('J2', 'test:J', 36.0, 0, (3, 4))
-                + part('C1', 'test:CAP', 18.0, 0, (1, 2))
-                + part('C2', 'test:CAP', 22.0, 90, (3, 4)) + ')\n')
+                + part(names[0], 'test:CAP', 18.0, 0, (1, 2))
+                + part(names[1], 'test:CAP', 22.0, 90, (3, 4)) + ')\n')
     return path
 
 
-def _swap_seed(tag, blocks):
+def _swap_seed(tag, blocks, names=('C1', 'C2')):
     wd = tempfile.mkdtemp(prefix=f't1117_{tag}_')
-    bpath = _swap_board(os.path.join(wd, 'in.kicad_pcb'))
+    bpath = _swap_board(os.path.join(wd, 'in.kicad_pcb'), names)
     ipath = os.path.join(wd, 'fp.json')
     with open(ipath, 'w', encoding='utf-8') as f:
         json.dump({'schema': 1, 'kind': 'floorplan-intent', 'units': 'mm',
@@ -429,17 +436,30 @@ def test_a_swap_does_not_trade_declared_angles():
     refused, and counted as the intent refusing it (`swap-intent=` on the
     pass line).
 
+    ONE side declaring is enough, and each side is its own half of the gate:
+    the part at 90 declared alone, named so it sorts second (`rb`) and then
+    first (`ra`), is held at 90 both times. Measured on 457959b7: written at
+    0 in every one of these.
+
     No undeclared control: with nothing declared the nudge turns the parts
     freely, so their written angles cannot say whether a swap ran. What
     proves the arm is not vacuous is that it FAILS with the swap gate
-    removed -- `mutate_1117`'s `swap-trades-declared-angles` row."""
+    removed -- `mutate_1117`'s `swap-*` rows."""
     zone = [14.0, 0.5, 26.0, 5.5]
     got, out = _swap_seed('G', [
         {'name': 'c1', 'refs': ['C1'], 'zone': zone, 'rotation': 0},
         {'name': 'c2', 'refs': ['C2'], 'zone': zone, 'rotation': 90}])
     assert got == {'C1': 0.0, 'C2': 90.0}, f"declared angles traded: {got}"
     assert 'swap-intent=' in out, out[-1500:]
-    print(f"  declared: {got}, the swap refused by the intent")
+    for names, ninety in ((('C1', 'C2'), 'C2'), (('C2', 'C1'), 'C1')):
+        other = 'C1' if ninety == 'C2' else 'C2'
+        one, _o = _swap_seed('G1' + ninety, [
+            {'name': 'a', 'refs': [other], 'zone': zone},
+            {'name': 'b', 'refs': [ninety], 'zone': zone, 'rotation': 90}],
+            names=names)
+        assert one[ninety] == 90.0, (
+            f"{ninety} declared 90 alone, written at {one[ninety]}")
+    print(f"  declared both: {got}; declared one, either half: held at 90")
 
 
 def test_rank_rotations_fails_a_declined_arm():

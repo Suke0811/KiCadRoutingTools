@@ -16,11 +16,14 @@ too with --diagonal-rotations): the input intent plus one block declaring the
 part's `rotation`, then place_seed for every --seeds value, exactly as
 compare_seeds runs it (same subprocess, same polish), and the written board
 read back to confirm the part really sits at that angle. A rotation where the
-part went unseated, or was written at another angle, is a hard fail and ranks
-last. The rest rank by (unseated, probe failures when probed, crossings, hpwl,
+part went unseated, was written at another angle, or was left where the
+polish walked it because the seed's re-seat could not put it back at that
+angle (`reseat_declined`, #1117), is a hard fail and ranks last. The rest
+rank by (unseated, probe failures when probed, crossings, hpwl,
 grade errors) over the seeds' medians; a tie goes to the earlier angle in the
-ladder, the input angle when it is ranked. A seed that fails its intent gate
-is NOT a tier (on a pile most do, for repairable reasons), but every angle
+ladder, the input angle when it is ranked. Any other seed that fails its
+intent gate is NOT a tier (on a pile most do, for repairable reasons), but
+every angle
 reports how many of its seeds did, and the winner line says so. --probe
 routes the top --probe-top rotations full-board (converge.probe_route), and a
 probe verdict outranks crossings, which is only a proxy (run 7).
@@ -316,7 +319,8 @@ def classify_row(row, ref, written_rot):
         row['hard_fail'] = 'rotation_not_applied'
     elif ref in (row.get('reseat_declined') or {}):
         # #1117: the angle held, but the seed's post-polish re-seat could not
-        # put the part back into its zone at it. The polish walked it out
+        # put the part back (into its zone, out of a keep-out or another
+        # block's exclusive zone) at it. The polish walked it out
         # BECAUSE that lowered its cost, so ranked on crossings and hpwl this
         # arm would beat an angle whose seed satisfies its intent, and
         # --write-intent would hand the next seed an angle that cannot.

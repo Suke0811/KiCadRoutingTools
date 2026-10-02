@@ -119,8 +119,11 @@ ROWS = [
      "",
      (T702,), 'KILLED'),
 
+    # Re-anchored for #1117 (`or state.declared_rotations` joined the
+    # condition); the mutation still deletes the whole conjunct.
     ('delete-the-conjunct-from-the-SWAP-phase', 'q',
-     "                        if ((state._intent_active or state._tether_active)\n"
+     "                        if ((state._intent_active or state._tether_active\n"
+     "                             or state.declared_rotations)\n"
      "                                and not state.swap_intent_ok(ra, rb)):\n",
      "                        if False:\n",
      (T702,), 'KILLED'),

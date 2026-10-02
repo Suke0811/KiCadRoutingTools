@@ -2094,6 +2094,10 @@ class QuenchState:
                                  (rb, (pa.x, pa.y, pa.rot))):
             for rule, _n, _c, _u in self.intent_blockers(who, x, y, rot):
                 self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
+            # #1117: the declared-rotation half has no intent_blockers rule.
+            if not _declared_admits(self.declared_rotations.get(who), rot):
+                self.intent_rejected['rotation'] = (
+                    self.intent_rejected.get('rotation', 0) + 1)
         if self._tether_active:
             # #1043: both halves at once, since a tether between the two (two
             # caps on one pin's rail) reads both poses.
@@ -2400,6 +2404,15 @@ class QuenchState:
         there is no ordering hazard between them.
         """
         pa, pb = self.parts[ra], self.parts[rb]
+        # #1117: a declared ROTATION binds a ref the same way. The swap hands
+        # each part the other's angle, and the #893 pin lived only in the
+        # nudge's candidate list, so two parts of one footprint declared at
+        # different angles traded them and the seed graded clean (there is
+        # no rule_rotation to catch it).
+        if self.declared_rotations and not (
+                _declared_admits(self.declared_rotations.get(ra), pb.rot)
+                and _declared_admits(self.declared_rotations.get(rb), pa.rot)):
+            return False
         return (self.intent_ok(ra, pb.x, pb.y, pb.rot)
                 and self.intent_ok(rb, pa.x, pa.y, pa.rot)
                 and (not self._tether_active
@@ -4450,21 +4463,6 @@ def quench(pcb_data: PCBData, pcb_file: str,
                         # swaps_skipped keeps counting cap rejections only.
                         if not allow_rotations and abs(pa.rot - pb.rot) > 1e-9:
                             continue
-                        # #1117: ...and so a swap hands each part the OTHER's
-                        # angle, while the declared-rotation pin (#893) lives
-                        # only in the nudge's candidate list. Two parts of one
-                        # footprint declared at different angles TRADED them
-                        # here and the seed graded clean (there is no
-                        # rule_rotation to catch it). A swap that would put a
-                        # declared part at an angle outside its declaration is
-                        # the intent refusing it, and is counted as such.
-                        if state.declared_rotations and not (
-                                _declared_admits(
-                                    state.declared_rotations.get(ra), pb.rot)
-                                and _declared_admits(
-                                    state.declared_rotations.get(rb), pa.rot)):
-                            swaps_skipped_intent += 1
-                            continue
                         # Swapping must keep each part within swap_cap of
                         # its OWN seed position
                         if (math.hypot(pb.x - pa.seed_x, pb.y - pa.seed_y) > swap_cap + 1e-9
@@ -4553,7 +4551,8 @@ def quench(pcb_data: PCBData, pcb_file: str,
                         # silent swap rejection -- "two instances of one
                         # footprint that never swap look exactly like a pair
                         # with nothing to gain".
-                        if ((state._intent_active or state._tether_active)
+                        if ((state._intent_active or state._tether_active
+                             or state.declared_rotations)
                                 and not state.swap_intent_ok(ra, rb)):
                             state._note_swap_refusal(ra, rb)
                             swaps_skipped_intent += 1

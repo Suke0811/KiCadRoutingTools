@@ -283,12 +283,15 @@ Per candidate angle (the input angle and its quarter turns; the 45-degree set
 too with `--diagonal-rotations`; or `--rotations`), the intent plus one block
 declaring the part's `rotation`, then `place_seed` for every `--seeds` value,
 exactly as `compare_seeds.py` runs it. The written board is read back: a part
-left unseated, or written at another angle, is a hard fail and ranks last. The
+left unseated, written at another angle, or left where the polish walked it
+because the seed's re-seat could not put it back at that angle
+(`reseat_declined`, #1117) is a hard fail and ranks last. The
 rest rank by unseated parts, then a probe verdict when `--probe` routed it
 (the top `--probe-top` angles, full-board, no timeout), then median crossings,
 hpwl and grade errors; a tie goes to the earlier angle in the ladder (the
-input angle when it is ranked). A seed that fails its intent gate is not a
-tier -- on a pile most do, for repairable reasons -- but each angle reports
+input angle when it is ranked). Any other seed that fails its intent gate is
+not a tier -- on a pile most do, for repairable reasons -- but each angle
+reports
 how many of its seeds did, and the winner line says so. A CONTROL arm seeds
 the same seeds with the intent as given (no rotation declared): it is the
 baseline the winner line compares with, because the seeder may turn the part

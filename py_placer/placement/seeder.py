@@ -4404,7 +4404,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # first, so `_edge_pose` and `_edge_correct` compute the overhang
             # and the correction for the geometry that will actually be
             # written. A candidate SET is not applied here (the edge ladder has
-            # no cost to choose by); the later stages resolve those.
+            # no cost to choose by) -- and NO later stage re-seats an edge
+            # connector, so one whose input angle is outside its set is
+            # written at that input angle, ungraded (#1117's verifier).
             _edge_decl = declared_rot.get(ref)
             if _edge_decl is not None and _edge_decl[0] is not None:
                 _want = _edge_decl[0] % 360.0

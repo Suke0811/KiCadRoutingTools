@@ -142,7 +142,10 @@ EDGE_BAND_SANITY_MM = 5.0
 #: ladder, and the swap refuses an angle the declaration does not admit.
 #: Still NOT held, and so still ungraded: `place_portfolio --strategy
 #: poses` and `place_fanout_clearance`'s cap turns, neither of which reads
-#: a rotation declaration. An earlier draft
+#: a rotation declaration; stage 1's edge seat, which applies a declared
+#: `rotation` but not a `rotation_candidates` set, so an edge connector
+#: whose input angle is outside its set keeps it; and `place_pose`'s
+#: set/rotate/face, which take the caller's angle. An earlier draft
 #: of this comment claimed such a rule existed; it never did, and a
 #: justification naming a grader nobody wrote is worse than a shorter one. Contrast `blocks[].side`, which is declarable and
 #: whose rule docs/floorplan-intent.md calls "vacuous, not conservative"
