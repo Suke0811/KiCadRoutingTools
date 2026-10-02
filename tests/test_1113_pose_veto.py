@@ -110,8 +110,20 @@ def test_a_label_names_the_check_that_refused():
             hits.append((b, v))
     assert hits, a
     assert any(v[1] == b for b, v in hits), hits
-    # a plain SMD neighbour on the same side is refused by its COURTYARD
-    assert any(v == ('courtyard', b) for b, v in hits), hits
+    # two plain SMD parts on one side: the SMD courtyard path refuses, and
+    # names the neighbour (a through-hole pair takes the other path)
+    smd = [r for r in refs if not st.parts[r].has_tht
+           and st.parts[r].side == pa.side]
+    smd_hits = []
+    for x in smd[:6]:
+        for y in smd:
+            if x == y:
+                continue
+            px, py_ = st.parts[x], st.parts[y]
+            w = st.candidate_veto(x, py_.x, py_.y, px.rot)
+            if w == ('courtyard', y):
+                smd_hits.append((x, y))
+    assert smd_hits, smd[:6]
     b, v = next((b, v) for b, v in hits if v[1] == b)
     print(f"  PASS: off the board -> board_bbox; on {b} -> {v[0]} against {b}"
           f" ({len(hits)} interior neighbour(s) tried)")
