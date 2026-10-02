@@ -231,7 +231,8 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   - Measured on a 2-layer board with 90 placed parts and an LQFP-48 hub,
     which declares no impedance or net width: the staged chain reached
     blocking 16 (161 vias); the same chain with its `route.py` step at the
-    fine sizes, 18 (201); one fine pass over the 44 non-ground nets, 5
+    fine sizes (and `--max-ripup 12`), 18 (201); one fine pass over the 44
+    non-ground nets, 5
     (176), below the board's authored 0.15 mm track and 0.5 mm via. Both
     arms poured and repaired ground AFTER routing, so the pour-first order
     above is not what was measured. On an earlier placement of that board,

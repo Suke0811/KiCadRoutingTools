@@ -228,9 +228,9 @@ step, confirm the geometry actually has that problem:
    handles it.
 3. **Interior pads at fine pitch (<=0.6mm), or a perimeter at <=0.65mm with
    many pads?** → Yes, fanout genuinely helps (this is the boxed-in case).
-   A PERIMETER part (QFN/QFP) is a candidate to probe, not a verdict:
-   measure its fanout chain against the one-pass shape in "Route signals
-   at the FAB floor", step 2.
+   On a board whose only fanout candidates are QFN/QFP PERIMETER parts,
+   this is a candidate to probe, not a verdict: measure the fanout chain
+   against the one-pass shape in "Route signals at the FAB floor", step 2.
    **"Fine-pitch" is not one number in this file, and no sentence should be read
    as if it were.** It is the FANOUT trigger at <=0.6 mm interior / <=0.65 mm
    perimeter — the predicate in the code block above, the only executable one —
@@ -1093,8 +1093,9 @@ Based on the analysis, generate a step-by-step plan. The general order is:
    +3V3 pour ONE intact island, GND weld copper cut to a third, connectivity
    net-better, DRC clean. With planes poured signals-first style instead, the
    pour under a BGA arrives pre-shredded and every drop via needs repair welds.
-1b. **Fanout** (if needed; for a perimeter part, probe the one-pass shape
-   in "Route signals at the FAB floor" step 2 against it) - Escape routing
+1b. **Fanout** (if needed; when the only candidates are QFN/QFP perimeter
+   parts, probe the one-pass shape in "Route signals at the FAB floor"
+   step 2 against it) - Escape routing
    on the poured board. Exclude the
    plane nets (`"*" "!GND" "!VCC"`) — that exclusion marks them for automatic
    **plane-drop vias** (#424), and because the pour already exists the drop
@@ -2737,15 +2738,16 @@ hunt for.
    `python3 -X utf8 py_router/route.py <poured> <out> --nets '*' --track-width 0.1 --clearance-ceiling 0.1 --via-size 0.3 --via-drill 0.15`
    A fanout raises `blocking` mid-chain by construction, so compare the
    finished boards. The one pass routes pairs single-ended and rails at the
-   floor width, so keep `route_diff.py` and `--power-nets` (step 3) for the
-   nets that declare them. A BGA needs its fanout: route.py keeps its
+   floor width, so keep `route_diff.py` for the pairs Routing Order step 2
+   routes as pairs (with their `--impedance`), and `--power-nets` (step 3)
+   for the rails. A BGA needs its fanout: route.py keeps its
    exclusion zones by default. Measured on a 2-layer board with 90 placed
    parts and an LQFP-48 hub, which declares no impedance or net width: the
    staged chain reached blocking 16 (161 vias); the same chain with its
    `route.py` step at 0.1/0.1/0.3/0.15 (and `--max-ripup 12`), 18 (201
    vias); one pass at those sizes over the 44 non-ground nets, 5 (176
-   vias), below the board's authored 0.15 mm track and 0.5 mm via, as step 1
-   intends. Both arms poured and repaired ground AFTER routing, so the
+   vias), below the board's authored 0.15 mm track (as step 1 intends) and
+   0.5 mm via. Both arms poured and repaired ground AFTER routing, so the
    pour-first order is not what was measured. On an earlier placement of
    the same board, fanout at the net-class sizes and no fanout at the fine
    sizes (both with `route_diff.py`) tied at 23 (140 vias against 188), so
