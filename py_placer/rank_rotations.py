@@ -564,6 +564,10 @@ def main():
                    'unseated': s.get('unseated'),
                    'unseated_refs': s.get('unseated_refs') or [],
                    'rotation_unseated': s.get('rotation_unseated') or {},
+                   # #1117: a part the seed's post-polish re-seat could not
+                   # put back at its declared angle. Disclosure only: the arm
+                   # is still graded (rc 4) and ranked as before.
+                   'reseat_declined': s.get('reseat_declined') or {},
                    'pad_conflicts_seeded': s.get('pad_conflicts_seeded'),
                    'decap_claimed': (s.get('decap_stage') or {}).get(
                        'claimed'),

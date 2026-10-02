@@ -64,6 +64,14 @@ ladder tried clears it, by ref, with the pads and why the seat could not move.
 An edge seat prefers a pose that clears the floor and otherwise keeps the seat
 it always chose, since an unseated connector is an unrouted one. Like
 `connector_requirements`, it never changes an exit code.
+
+And `reseat_declined` (#1117): the parts the post-polish re-seat could not put
+back into their zone or out of a keep-out, by ref, with the rules they broke
+and the rotation claim the search was held to. The re-seat searches a declared
+part's `rotation` / `rotation_candidates` ladder ONLY, never the fallback
+lattice, so a declared angle survives the polish; a part it declines stays
+where the polish left it, named on a `NOT repaired` line, and its grade error
+stands (exit 4, as it always was).
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -296,6 +304,35 @@ def fixed_pose_reason(summary):
     return (f"place_seed: {len(bad)} declared fixed pose(s) NOT honoured "
             f"({', '.join(bad)}) -- see fixed_refused / fixed_seated in the "
             f"JSON_SUMMARY. It was still written, for inspection.")
+
+
+def reseat_decline_line(ref, rec):
+    """The console line for a part the post-polish re-seat could not put back
+    (#1117). `rec` is its `reseat_declined` entry.
+
+    A declared angle is named as the claim it is: the re-seat searched only
+    that ladder, and a reader who sees the grade error must not conclude the
+    part could have been turned. An undeclared part searched its current
+    angle and each quarter turn, and says so.
+    """
+    zone = rec.get('zone')
+    rules = rec.get('rules') or []
+    where = (f"in zone {zone!r}" if zone else
+             "clear of the declared "
+             + (' / '.join(r for r in rules if r != 'zone_containment')
+                or 'keepout'))
+    rot, cands = rec.get('rotation'), rec.get('rotation_candidates')
+    if rot is not None:
+        how = (f"at its declared rotation {rot:g} -- the angle is the claim, "
+               f"not a fallback")
+    elif cands:
+        how = (f"at any of its declared rotation_candidates "
+               f"[{', '.join(f'{c:g}' for c in cands)}] -- the angles are the "
+               f"claim, not a fallback")
+    else:
+        how = "at its current angle or any quarter turn of it"
+    return (f"  NOT repaired, {ref}: no legal pose {where} {how}. It stays "
+            f"where the polish left it, and its grade error stands")
 
 
 def gate_reason(unseated, own, my_pads, hole_delta, band=()):
@@ -1159,6 +1196,10 @@ Examples:
                                clearance=args.clearance,
                                board_edge_clearance=args.board_edge_clearance)
 
+    # #1117: parts the post-polish re-seat below could NOT put back, by ref.
+    # Bound before the `try` so the key is present (empty) on every path,
+    # including --no-polish, where the re-seat never runs.
+    reseat_declined = {}
     try:
         graded = _grade()
         # The quench has no zone term, so a polish nudge can walk a declared
@@ -1192,6 +1233,13 @@ Examples:
                 pcb_cur = parse_kicad_pcb(args.output_file)
                 blocks2, _p = floorplan.resolve_blocks(intent, pcb_cur,
                                                        sources)
+                # #1117: the declared angles, from the same blocks the zones
+                # and the grade use. Without them `_try_place` searched its
+                # fallback lattice (the polished angle, then each quarter
+                # turn), so this re-seat could turn a part whose rotation the
+                # intent declares -- e.g. the `rotation:<ref>` block
+                # rank_rotations --write-intent hands to the next seed.
+                _declared = floorplan.rotations_for_ref(intent, blocks2)
                 st = pose_score.make_state(
                     pcb_cur, args.output_file, clearance=args.clearance,
                     board_edge_clearance=args.board_edge_clearance,
@@ -1244,14 +1292,32 @@ Examples:
                     if getattr(st.parts[ref], 'locked', False):
                         pinned.append(ref)
                         continue
+                    _claim = _declared.get(ref)
+                    _ladder = floorplan.declared_ladder(_claim)
                     clr = seeder._try_place(
                         st, ref, sp['new_x'], sp['new_y'], set(),
                         constraint=z.rect if z is not None else None,
-                        tol=intent.zone_tolerance(z) if z is not None else 0.5)
+                        tol=intent.zone_tolerance(z) if z is not None else 0.5,
+                        rotations=_ladder)
                     if clr is not None:
                         p2 = st.parts[ref]
                         fixes.append({'reference': ref, 'new_x': p2.x,
                                       'new_y': p2.y, 'new_rotation': p2.rot})
+                    else:
+                        # #1117: the part stays where the polish left it --
+                        # reverting it would recreate the overlap the comment
+                        # above measured -- and its grade error stands, so
+                        # the seed exits 4 as before. What changes is that
+                        # the decline is NAMED: it used to print nothing.
+                        _rot, _cands = _claim or (None, None)
+                        reseat_declined[ref] = {
+                            'rules': sorted({v.rule for v in graded.errors
+                                             if v.ref == ref
+                                             and v.rule in _repairable}),
+                            'zone': z.name if z is not None else None,
+                            'rotation': _rot,
+                            'rotation_candidates': (list(_cands)
+                                                    if _cands else None)}
                 if pinned:
                     # Named, never silent: a reader who sees the grade error
                     # and no repair line would otherwise conclude the repair
@@ -1263,6 +1329,8 @@ Examples:
                           f"between the board and the intent, and only its "
                           f"author can say which is wrong. Unlock it, or move "
                           f"the claim off it")
+                for ref in sorted(reseat_declined):
+                    print(reseat_decline_line(ref, reseat_declined[ref]))
                 if fixes:
                     print(f"  polish walked "
                           f"{', '.join(f['reference'] for f in fixes)} out of "
@@ -1378,6 +1446,12 @@ Examples:
                # sees only `unseated_refs` cannot tell a declaration it must
                # revisit from a board that is simply full.
                'rotation_unseated': result.get('rotation_unseated') or {},
+               # #1117: parts the post-polish re-seat could not put back, by
+               # ref, with the rules they broke and the claim it held them
+               # to. NOT `rotation_unseated`: these parts ARE seated (where
+               # the polish left them), and rank_rotations reads that key as
+               # a hard failure of the arm.
+               'reseat_declined': reseat_declined,
                # #975: declared edge connectors seated with pad copper inside
                # the board-edge floor because no pose the seat ladder tried
                # clears it -- the alternative was not seating them.

@@ -46,7 +46,10 @@ rotation is a DECISION (pin order, the U3 rot-180 case) should use.
 `blocks[].rotation` is honoured exactly -- a part that does not fit at it is
 reported UNSEATED in `rotation_unseated`, never quietly turned -- and
 `blocks[].rotation_candidates` narrows the ladder to the author's set, in the
-author's order, because this search keeps the FIRST pose that fits.
+author's order, because this search keeps the FIRST pose that fits. Every
+seat search builds that ladder with `floorplan.declared_ladder` -- including
+`place_seed`'s post-polish re-seat, which until #1117 searched the fallback
+lattice and could turn a declared part.
 
 Note what a declared rotation deliberately does NOT do: it does not lock the
 part. The advice this paragraph used to give -- lock it -- costs the part its
@@ -1258,7 +1261,11 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
     paragraph used to end "a part whose rotation IS a decision must be locked";
     that advice froze the part's POSITION as well, which is exactly what the
     declaration exists to avoid. The caller can see a
-    fallback fired by comparing the part's rot before and after.
+    fallback fired by comparing the part's rot before and after. Every
+    production caller passes `rotations=floorplan.declared_ladder(...)`, so
+    None reaches here only for an undeclared part; a call with no
+    `rotations=` at all is what #1117 was, and test_893 refuses one anywhere
+    in the source trees.
 
     Returns the courtyard clearance the pose was found at, or None. The full
     clearance is demanded first; when the whole board offers nothing, the
@@ -4218,12 +4225,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 "(the first of its declared rotation_candidates that fits)")
 
     def _rot_ladder(ref):
-        """The declared ladder for `ref`, or None for the fallback one."""
-        claim = declared_rot.get(ref)
-        if claim is None:
-            return None
-        rot, cands = claim
-        return [rot] if rot is not None else list(cands)
+        """The declared ladder for `ref`, or None for the fallback one
+        (`floorplan.declared_ladder`, shared with every seat search, #1117)."""
+        return floorplan.declared_ladder(declared_rot.get(ref))
 
     placed: Set[str] = set()
     unplaced: Set[str] = {r for r, p in state.parts.items()}
@@ -6212,11 +6216,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     _declared_rot = floorplan.rotations_for_ref(intent, blocks) if intent else {}
 
     def _rot_ladder(ref):
-        claim = _declared_rot.get(ref)
-        if claim is None:
-            return None
-        rot, cands = claim
-        return [rot] if rot is not None else list(cands)
+        return floorplan.declared_ladder(_declared_rot.get(ref))
     state = pose_score.make_state(
         pcb_data, pcb_file, clearance=clearance,
         board_edge_clearance=board_edge_clearance, grid_step=grid_step,

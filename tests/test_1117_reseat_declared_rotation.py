@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+"""#1117: `place_seed`'s post-polish re-seat holds a DECLARED rotation.
+
+The re-seat (#701/#797) puts a part the polish walked out of its zone or into
+a keep-out back, with the seeder's own `_try_place`. It passed no
+`rotations=`, so `_try_place` searched its fallback lattice -- the polished
+angle, then each quarter turn -- and could turn a part whose angle the intent
+declares (`blocks[].rotation`, `rotation_candidates`, or the `rotation:<ref>`
+block `rank_rotations --write-intent` hands to the next seed). It was the one
+production `_try_place` call that did, and a failed re-seat printed nothing.
+
+The rig is test_701's: a sitecustomize patches `placement.quench.quench` to
+return a forced move list, because the quench on a fixture this small leaves
+everything alone and the re-seat would never run -- a test that passes in
+both directions. The geometry makes the turn the ONLY way back in:
+
+    zone `b` = U1 only, [4, 4, 14, 14], tolerance 0.5
+    U1: courtyard 6 x 2              R1: courtyard 7 x 11 (the strip blocker)
+    the polish moves U1 to (30, 12) and R1 to (7.5, 9), which covers the
+    zone's whole height from x 4 to 11 and leaves a 3.3 mm strip: U1 fits
+    there at 90 or 270, never at 0 or 180.
+
+`test_the_fixture_admits_only_a_turned_pose` proves that geometry in-process
+before any arm relies on it. Every arm asserts on the RE-PARSED WRITTEN
+BOARD; the JSON is checked too, for what it claims. Every declared arm has an
+undeclared control on the same board showing the re-seat does turn a part
+that declares nothing, so "not turned" is not satisfied by a re-seat that
+never ran.
+
+Run: python3 -X utf8 tests/test_1117_reseat_declared_rotation.py [case ...]
+"""
+import json
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import run_utils  # noqa: E402
+
+ROOT = run_utils.ROOT_DIR
+for _sub in ('py_placer', 'py_router', 'py_tools'):
+    _p = os.path.join(ROOT, _sub)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+RUN_ALL_TIMEOUT = 900
+
+SIZE = (40.0, 24.0)
+ZONE = (4.0, 4.0, 14.0, 14.0)
+TOL = 0.5
+CLEARANCE = 0.2
+EDGE = 0.5
+#: The refusal `place_seed` prints when its own grade fails (gate_reason).
+GATE = 'does NOT satisfy its intent'
+
+#: The polish the sitecustomize forces, read from this variable as JSON.
+_INJECT = '''
+import json
+import os
+
+import placement.quench as _q
+_real = _q.quench
+
+
+def _forced(*a, **kw):
+    _real(*a, **kw)
+    return json.loads(os.environ['T1117_POLISH'])
+
+
+_q.quench = _forced
+'''
+
+#: U1 out of its zone at 0, R1 into the zone as the strip blocker.
+STRIP = [{'reference': 'U1', 'new_x': 30.0, 'new_y': 12.0, 'new_rotation': 0.0},
+         {'reference': 'R1', 'new_x': 7.5, 'new_y': 9.0, 'new_rotation': 0.0}]
+
+
+def _part(ref, x, y, half_w, half_h, rot=0.0):
+    """A footprint with a (2*half_w x 2*half_h) courtyard and two SMD pads
+    on its long axis. NOT square: a square part reads the same at every
+    angle, and this test is about which angle was written."""
+    pads = ''.join(
+        f'\t\t(pad "{i + 1}" smd rect\n'
+        f'\t\t\t(at {dx} 0)\n'
+        f'\t\t\t(size 0.6 0.6)\n\t\t\t(layers "F.Cu")\n'
+        f'\t\t\t(net {i + 1} "N{i + 1}")\n'
+        f'\t\t\t(uuid "p{i}-{ref}")\n\t\t)\n'
+        for i, dx in enumerate((-1.5, 1.5)))
+    return f'''\t(footprint "test:P{ref}"
+\t\t(layer "F.Cu")
+\t\t(uuid "fp-{ref}")
+\t\t(at {x} {y} {rot:g})
+\t\t(property "Reference" "{ref}"
+\t\t\t(at 0 0)
+\t\t)
+\t\t(fp_rect
+\t\t\t(start {-half_w} {-half_h})
+\t\t\t(end {half_w} {half_h})
+\t\t\t(layer "F.CrtYd")
+\t\t\t(uuid "cy-{ref}")
+\t\t)
+{pads}\t)
+'''
+
+
+def _board(path, u1=(30.0, 18.0, 0.0), r1=(34.0, 8.0, 0.0), r1_half=(3.5, 5.5)):
+    body = ('(kicad_pcb\n\t(version 20241229)\n'
+            '\t(net 0 "")\n\t(net 1 "N1")\n\t(net 2 "N2")\n'
+            '\t(gr_rect\n\t\t(start 0 0)\n\t\t(end {} {})\n'
+            '\t\t(layer "Edge.Cuts")\n\t\t(uuid "e1")\n\t)\n'.format(*SIZE)
+            + _part('U1', u1[0], u1[1], 3.0, 1.0, u1[2])
+            + _part('R1', r1[0], r1[1], r1_half[0], r1_half[1], r1[2])
+            + ')\n')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(body)
+    return path
+
+
+def _intent_doc(claim=None):
+    """Block `b` = U1 alone with the zone, so the seat target is the zone
+    centre exactly; `claim` is merged into the block (a `rotation` or a
+    `rotation_candidates`)."""
+    block = {'name': 'b', 'refs': ['U1'], 'zone': list(ZONE),
+             'tolerance_mm': TOL}
+    block.update(claim or {})
+    return {'schema': 1, 'kind': 'floorplan-intent', 'units': 'mm',
+            'min_reader': 5,
+            'envelope': {'rect': [0.0, 0.0, SIZE[0], SIZE[1]],
+                         'tolerance_mm': 0.5},
+            'blocks': [block]}
+
+
+def _env(wd, polish):
+    inj = os.path.join(wd, 'inj')
+    os.makedirs(inj, exist_ok=True)
+    with open(os.path.join(inj, 'sitecustomize.py'), 'w',
+              encoding='utf-8') as f:
+        f.write(_INJECT)
+    return dict(os.environ, PYTHONHASHSEED='0', PYTHONIOENCODING='utf-8',
+                T1117_POLISH=json.dumps(polish),
+                PYTHONPATH=inj + os.pathsep + os.pathsep.join(
+                    os.path.join(ROOT, d)
+                    for d in ('py_placer', 'py_router', 'py_tools')))
+
+
+def _seed(tag, claim, polish, *, refuse=None, r1_half=(3.5, 5.5)):
+    """Seed the fixture under a forced polish; returns (summary, U1 pose,
+    stdout). `refuse` None = assert exit 0; otherwise assert exit 4 for
+    the gate's own reason."""
+    wd = tempfile.mkdtemp(prefix=f't1117_{tag}_')
+    bpath = _board(os.path.join(wd, 'in.kicad_pcb'), r1_half=r1_half)
+    ipath = os.path.join(wd, 'fp.json')
+    with open(ipath, 'w', encoding='utf-8') as f:
+        json.dump(_intent_doc(claim), f)
+    out = os.path.join(wd, 'out.kicad_pcb')
+    argv = [sys.executable, '-X', 'utf8',
+            os.path.join(ROOT, 'py_placer', 'place_seed.py'), bpath, out,
+            '--intent', ipath, '--clearance', str(CLEARANCE),
+            '--board-edge-clearance', str(EDGE), '--force']
+    env = _env(wd, polish)
+    if refuse is None:
+        r = run_utils.check(argv, accept=True, env=env)
+    else:
+        r = run_utils.check(argv, refuse=refuse, code=4, env=env)
+    summary = None
+    for line in r.stdout.splitlines():
+        if line.startswith('JSON_SUMMARY:'):
+            summary = json.loads(line.split(':', 1)[1])
+    assert summary is not None, f"no JSON_SUMMARY line\n{r.stdout[-1500:]}"
+    from kicad_parser import parse_kicad_pcb
+    fp = parse_kicad_pcb(run_utils.evidence(out, 'written seed')
+                         ).footprints['U1']
+    return summary, (round(fp.x, 3), round(fp.y, 3),
+                     round((fp.rotation or 0.0) % 360, 1)), r.stdout
+
+
+def _in_zone(pose):
+    """U1's courtyard (6 x 2, turned by its rotation) inside the zone plus
+    its tolerance."""
+    x, y, rot = pose
+    hw, hh = (1.0, 3.0) if rot in (90.0, 270.0) else (3.0, 1.0)
+    return (x - hw >= ZONE[0] - TOL - 1e-6 and x + hw <= ZONE[2] + TOL + 1e-6
+            and y - hh >= ZONE[1] - TOL - 1e-6
+            and y + hh <= ZONE[3] + TOL + 1e-6)
+
+
+def test_the_fixture_admits_only_a_turned_pose():
+    """The arms below rest on this: on the post-polish board U1 has NO pose in
+    its zone at 0 or 180 and one at 90. Proven with the seat search itself,
+    at the same clearances the CLI uses, so a fixture edit that quietly
+    widens the strip refuses here instead of turning every arm vacuous."""
+    import pose_score
+    from kicad_parser import parse_kicad_pcb
+    from placement import seeder
+    wd = tempfile.mkdtemp(prefix='t1117_fx_')
+    path = _board(os.path.join(wd, 'post.kicad_pcb'), u1=(30.0, 12.0, 0.0),
+                  r1=(7.5, 9.0, 0.0))
+    got = {}
+    for lad in ([0.0], [180.0], [90.0]):
+        st = pose_score.make_state(parse_kicad_pcb(path), path,
+                                   clearance=CLEARANCE,
+                                   board_edge_clearance=EDGE)
+        cx, cy = (ZONE[0] + ZONE[2]) / 2, (ZONE[1] + ZONE[3]) / 2
+        clr = seeder._try_place(st, 'U1', cx, cy, set(), constraint=ZONE,
+                                tol=TOL, rotations=lad)
+        got[lad[0]] = None if clr is None else (st.parts['U1'].x,
+                                                st.parts['U1'].y)
+    assert got[0.0] is None and got[180.0] is None and got[90.0] is not None, (
+        f"the fixture no longer forces a turn: {got}")
+    print(f"  only 90 fits on the post-polish board: {got}")
+
+
+def test_a_declared_rotation_is_not_traded_for_a_seat():
+    """A: `rotation: 0`. Before #1117 the re-seat wrote U1 at 90 inside the
+    zone and the seed exited 0 -- a declared angle silently replaced. Now it
+    keeps 0, stays where the polish left it, names the decline and exits 4.
+    A': the same board with nothing declared is re-seated at 90 and exits 0,
+    so the declared arm is not passing on a re-seat that never ran."""
+    s, pose, out = _seed('A', {'rotation': 0}, STRIP, refuse=GATE)
+    assert pose == (30.0, 12.0, 0.0), f"U1 written at {pose}"
+    assert 'NOT repaired, U1:' in out and 'declared rotation 0' in out, (
+        out[-1500:])
+    rec = (s.get('reseat_declined') or {}).get('U1')
+    assert rec and rec['rotation'] == 0.0 and rec['zone'] == 'b' and (
+        'zone_containment' in rec['rules']), f"reseat_declined={rec}"
+    print(f"  declared 0: written {pose}, decline named, exit 4")
+    s2, pose2, out2 = _seed('A2', None, STRIP)
+    assert pose2[2] in (90.0, 270.0) and _in_zone(pose2), (
+        f"control: undeclared U1 written at {pose2}")
+    assert 'polish walked U1' in out2 and s2.get('reseat_declined') == {}, (
+        f"control: reseat_declined={s2.get('reseat_declined')}")
+    print(f"  undeclared control: re-seated at {pose2}, exit 0")
+
+
+def test_a_candidate_set_bounds_the_reseat():
+    """B1: `[0, 180]` has no angle that fits the strip, so the re-seat
+    declines rather than leaving the set. B2: `[0, 90]` does, and the
+    re-seat takes 90. B3: the author's ORDER -- with the zone empty, `[180,
+    0]` re-seats at 180, which a sorted ladder would turn to 0."""
+    s, pose, out = _seed('B1', {'rotation_candidates': [0, 180]}, STRIP,
+                         refuse=GATE)
+    assert pose[2] in (0.0, 180.0) and not _in_zone(pose), f"B1 at {pose}"
+    rec = (s.get('reseat_declined') or {}).get('U1') or {}
+    assert rec.get('rotation_candidates') == [0.0, 180.0], f"B1 {rec}"
+    assert 'rotation_candidates [0, 180]' in out, out[-1500:]
+    print(f"  [0, 180]: declined, written {pose}")
+    _s, pose, _o = _seed('B2', {'rotation_candidates': [0, 90]}, STRIP)
+    assert pose[2] == 90.0 and _in_zone(pose), f"B2 at {pose}"
+    print(f"  [0, 90]: re-seated at {pose}")
+    away = [{'reference': 'U1', 'new_x': 30.0, 'new_y': 12.0,
+             'new_rotation': 180.0},
+            {'reference': 'R1', 'new_x': 22.0, 'new_y': 12.0,
+             'new_rotation': 0.0}]
+    _s, pose, _o = _seed('B3', {'rotation_candidates': [180, 0]}, away)
+    assert pose[2] == 180.0 and _in_zone(pose), f"B3 at {pose}"
+    print(f"  [180, 0]: re-seated at {pose} (author order)")
+
+
+def test_a_polish_turn_is_turned_back():
+    """C: the polish moves U1 out of its zone AND turns it to 90, with the
+    zone empty. The fallback lattice starts at the polished angle, so the
+    old re-seat wrote 90; the declared ladder writes 0. C': undeclared, the
+    re-seat keeps the polished 90 -- the same board, the other answer."""
+    turned = [{'reference': 'U1', 'new_x': 30.0, 'new_y': 12.0,
+               'new_rotation': 90.0},
+              {'reference': 'R1', 'new_x': 22.0, 'new_y': 12.0,
+               'new_rotation': 0.0}]
+    _s, pose, _o = _seed('C', {'rotation': 0}, turned)
+    assert pose[2] == 0.0 and _in_zone(pose), f"C at {pose}"
+    print(f"  declared 0, polished to 90: re-seated at {pose}")
+    _s, pose, _o = _seed('C2', None, turned)
+    assert pose[2] == 90.0 and _in_zone(pose), f"C' at {pose}"
+    print(f"  undeclared control: re-seated at {pose}")
+
+
+def test_an_undeclared_decline_is_named_too():
+    """D: nothing declared, and an 11 x 11 R1 fills the zone, so no angle
+    fits. The re-seat used to fail silently -- the grade error appeared with
+    no repair line. Now the decline is named, quarter turns and all."""
+    full = [dict(STRIP[0]),
+            {'reference': 'R1', 'new_x': 9.0, 'new_y': 9.0,
+             'new_rotation': 0.0}]
+    s, pose, out = _seed('D', None, full, refuse=GATE, r1_half=(5.5, 5.5))
+    assert not _in_zone(pose), f"D at {pose}"
+    assert 'NOT repaired, U1:' in out and 'any quarter turn' in out, (
+        out[-1500:])
+    rec = (s.get('reseat_declined') or {}).get('U1') or {}
+    assert rec.get('rotation') is None and rec.get(
+        'rotation_candidates') is None, f"D {rec}"
+    print(f"  undeclared, zone full: decline named, written {pose}")
+
+
+def test_repair_placement_holds_the_declaration():
+    """E: `seeder.repair_placement` (place_seed --repair) seats a zone
+    violator with the same ladder -- its closure now delegates to
+    `floorplan.declared_ladder`. U1 sits just past the zone's east edge with
+    R1 as the strip blocker: declared 0 it is NOT turned; undeclared it is
+    re-seated at a quarter turn inside the zone."""
+    from kicad_parser import parse_kicad_pcb
+    from placement import floorplan, seeder
+    wd = tempfile.mkdtemp(prefix='t1117_E_')
+    path = _board(os.path.join(wd, 'E.kicad_pcb'), u1=(17.0, 9.0, 0.0),
+                  r1=(7.5, 9.0, 0.0))
+    res = {}
+    for tag, claim in (('declared', {'rotation': 0}), ('undeclared', None)):
+        intent = floorplan.intent_from_dict(_intent_doc(claim))
+        out = seeder.repair_placement(parse_kicad_pcb(path), path, intent,
+                                      clearance=CLEARANCE,
+                                      board_edge_clearance=EDGE)
+        mv = {m['reference']: m for m in out.get('moves') or ()}
+        res[tag] = mv.get('U1')
+    assert res['declared'] is None or (
+        res['declared']['new_rotation'] % 360 == 0.0), (
+        f"declared U1 turned by repair: {res['declared']}")
+    u = res['undeclared']
+    assert u is not None and u['new_rotation'] % 360 in (90.0, 270.0) and (
+        _in_zone((u['new_x'], u['new_y'], u['new_rotation'] % 360))), (
+        f"control: undeclared repair move {u}")
+    print(f"  repair: declared {res['declared']}, undeclared {u}")
+
+
+def test_one_ladder_and_its_decline_line():
+    """F: `floorplan.declared_ladder` is the mapping every seat search uses;
+    it agrees with the quench's own declared branch (which normalises with
+    `% 360` and stays separate on its hot path), and the decline line names
+    each kind of claim."""
+    from placement import floorplan
+    from placement.quench import _candidate_rotations
+    import place_seed
+    assert floorplan.declared_ladder(None) is None
+    for claim in ((0.0, None), (270.0, None), (None, (90.0, 0.0)),
+                  (None, (180.0, 0.0, 90.0))):
+        lad = floorplan.declared_ladder(claim)
+        q = _candidate_rotations(None, True, claim)
+        assert lad == q, f"{claim}: seat ladder {lad} vs quench {q}"
+    rec = {'rules': ['zone_containment'], 'zone': 'b'}
+    one = place_seed.reseat_decline_line('U1', dict(rec, rotation=0.0,
+                                                    rotation_candidates=None))
+    many = place_seed.reseat_decline_line(
+        'U1', dict(rec, rotation=None, rotation_candidates=[0.0, 180.0]))
+    none = place_seed.reseat_decline_line(
+        'U1', dict(rec, rotation=None, rotation_candidates=None))
+    ko = place_seed.reseat_decline_line(
+        'U2', {'rules': ['keepout'], 'zone': None, 'rotation': 90.0,
+               'rotation_candidates': None})
+    assert "in zone 'b' at its declared rotation 0 " in one, one
+    assert 'rotation_candidates [0, 180]' in many, many
+    assert 'any quarter turn' in none and 'declared' not in none, none
+    assert 'clear of the declared keepout' in ko and 'rotation 90 ' in ko, ko
+    print('  declared_ladder == quench for 4 claims; 4 decline phrasings')
+
+
+TESTS = [
+    test_the_fixture_admits_only_a_turned_pose,
+    test_a_declared_rotation_is_not_traded_for_a_seat,
+    test_a_candidate_set_bounds_the_reseat,
+    test_a_polish_turn_is_turned_back,
+    test_an_undeclared_decline_is_named_too,
+    test_repair_placement_holds_the_declaration,
+    test_one_ladder_and_its_decline_line,
+]
+
+
+if __name__ == '__main__':
+    only = sys.argv[1:]
+    ran = 0
+    for t in TESTS:
+        if only and not any(o in t.__name__ for o in only):
+            continue
+        print(f"--- {t.__name__}")
+        t()
+        ran += 1
+    if only and not ran:
+        # A filter that names no case passes nothing: a mutation battery
+        # witness spelled wrong would otherwise read every row as SURVIVED.
+        print(f"NO TEST matches {only}")
+        sys.exit(2)
+    print('ALL PASS')

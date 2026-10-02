@@ -134,7 +134,10 @@ EDGE_BAND_SANITY_MM = 5.0
 #: offering the lattice -- so the rule above mandates the bump.
 #: There is deliberately NO `rule_rotation` in `RULES`: a declared rotation is
 #: ENFORCED (the seat search is given a one-angle ladder), so a grade rule
-#: would be checking an invariant the search cannot violate. An earlier draft
+#: would be checking an invariant the search cannot violate. That holds only
+#: while EVERY seat search is given the ladder: `place_seed`'s post-polish
+#: re-seat was not (#1117), so test_893 now reads every source tree for a
+#: `_try_place` call without one. An earlier draft
 #: of this comment claimed such a rule existed; it never did, and a
 #: justification naming a grader nobody wrote is worse than a shorter one. Contrast `blocks[].side`, which is declarable and
 #: whose rule docs/floorplan-intent.md calls "vacuous, not conservative"
@@ -2643,6 +2646,25 @@ def rotations_for_ref(intent: Intent, blocks: Dict[str, List[str]]
             out[ref] = claim
             owner[ref] = z.name
     return out
+
+
+def declared_ladder(claim) -> Optional[List[float]]:
+    """The seat ladder one `rotations_for_ref` claim gives, or None (#1117).
+
+    `[rot]` for a declared `rotation`, the author's `rotation_candidates` in
+    the author's order (the seat search keeps the FIRST angle that fits), and
+    None for no claim -- which tells `seeder._try_place` to use its fallback
+    lattice. The angles were normalised at load.
+
+    This is the ONE mapping every seat search uses. It was a closure copied
+    into `seed_from_intent` and `repair_placement`, and `place_seed`'s
+    post-polish re-seat had no copy at all, so it searched the fallback
+    lattice and could turn a part whose angle the intent declared (#1117).
+    """
+    if claim is None:
+        return None
+    rot, cands = claim
+    return [rot] if rot is not None else list(cands)
 
 
 def zone_entries(intent: Intent, blocks: Dict[str, List[str]]) -> Tuple[Dict, ...]:

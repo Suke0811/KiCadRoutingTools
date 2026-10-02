@@ -125,7 +125,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   against its pins (its `dropped_by` says what vetoed each move). Rank it at
   seed level, passing the same `--seed-args` you will seed with:
   `python3 -X utf8 py_placer/rank_rotations.py <pile> --intent <intent.json> --out-dir wk/<run>/rot --probe --write-intent wk/<run>/intent_rot.json`
-  then seed from the written intent. Without `--ref` it ranks the unlocked,
+  then seed from the written intent. The seed holds that angle through its
+  polish and re-seat: a part the re-seat cannot put back at it is named on a
+  `NOT repaired` line (`reseat_declined`) and the seed exits 4. Without
+  `--ref` it ranks the unlocked,
   undeclared part with the most connected pads. It costs one `place_seed`
   per angle plus one full-board probe per `--probe-top` angle (default 2).
   Run 39 found StickHub's U1 at 270 instead of the pile's 0 by hand: seed
