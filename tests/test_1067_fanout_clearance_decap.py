@@ -196,6 +196,39 @@ def test_on_without_rotation_holds_too():
           f"{sorted(s['decap']['broken'])}, added {added}")
 
 
+def test_a_cap_left_grazing_is_compared():
+    """Held caps can box a cap in by geometry alone: with a 0.6 mm budget
+    capped at 2.0 mm, the gated run never refuses C63's last clear pose --
+    there is none within reach -- so nothing "breaks", and yet it leaves C63
+    grazing where the ungated run clears it. The comparison must run on that
+    too (code review of the first version, which compared only on a broken
+    claim and kept the grazing run), and only the kept run's lines print."""
+    a = _arms()
+    td = tempfile.mkdtemp(prefix='t1067g_')
+    doc = fp.emit_intent(parse_kicad_pcb(FIX), FIX)
+    doc['blocks'] = []
+    doc['decaps'] = {'max_distance_mm': 2.0, 'max_pin_distance_mm': 2.0}
+    ip = os.path.join(td, 'tight.intent.json')
+    with open(ip, 'w', encoding='utf-8') as fh:
+        json.dump(doc, fh, indent=1)
+    budget = ['--max-displacement-cap', '2.0', '--max-displacement', '0.6']
+    _out, stdout = _run(td, 'tight', budget + ['--intent', ip])
+    s = _summary(stdout)
+    cmp_ = s['decap']['compared']
+    assert not s['decap']['broken'], s['decap']['broken']
+    assert cmp_['gated']['unresolved'] > 0, cmp_
+    assert cmp_['kept'] == 'ungated', cmp_
+    assert cmp_['ungated']['unresolved'] < cmp_['gated']['unresolved'], cmp_
+    assert s['unresolved'] == [], s['unresolved']
+    moved = MOVED.findall(stdout)
+    assert len(moved) == 1 and moved[0].endswith(' 0 unresolved.'), moved
+    assert 'Decap tethers' not in stdout, stdout[-1500:]
+    del a
+    print(f"  PASS: gated {cmp_['gated']['unresolved']} unresolved, ungated "
+          f"{cmp_['ungated']['unresolved']}: the ungated run is kept and only "
+          f"its lines print")
+
+
 def _spec(intent):
     return {k: v for k, v in fp.tether_gate_spec(intent).items()
             if k in ('decap_distance', 'decap_pin_distance')}
@@ -388,6 +421,7 @@ TESTS = [
     test_on_holds_every_claim_it_can_and_names_the_one_it_breaks,
     test_on_without_rotation_holds_too,
     test_the_better_arm_is_kept,
+    test_a_cap_left_grazing_is_compared,
     test_the_gate_is_the_quench_gate,
     test_a_move_invalidates_the_gate_caches,
     test_an_unreadable_intent_is_refused,

@@ -298,9 +298,10 @@ def _forecast_clause(cen):
     if late and not armed:
         out += (f"; {len(late)} are NOT claimed: their owner IC(s) "
                 f"({_refs(f.get('late_owners') or ())}) are seated only by "
-                f"the centroid stage, after the pin stage (pass place_seed "
-                f"--decap-claim-after-ics, or declare them as fixed_poses or "
-                f"in a zoned block)")
+                f"the centroid stage, after the pin stage (declare them as "
+                f"fixed_poses or in a zoned block to seat them first; "
+                f"place_seed --decap-claim-after-ics claims after them, "
+                f"opt-in -- the corpus A/B rejected it as a default)")
     if f.get('ownerless'):
         out += (f"; {len(f['ownerless'])} can never be claimed -- no "
                 f"{f.get('owner_rule', 'U-prefixed')} part carries their "

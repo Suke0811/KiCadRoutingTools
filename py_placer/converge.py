@@ -767,6 +767,13 @@ def _pose_knobs(board, clearance, board_edge_clearance):
     return board_floor_knobs(board, clearance, board_edge_clearance)
 
 
+#: #1113: veto labels that name a NEIGHBOUR (quench.VETO_CHECKS minus the
+#: board, outline, intent and keep-out-band terms).
+_NEIGHBOUR_CHECKS = ('courtyard', 'pads', 'waived_pads', 'waived_drill',
+                     'body_overlap', 'body_contained', 'pads_under_body',
+                     'tether', 'escape_overlap')
+
+
 def _in_place_clause(ref, diag) -> str:
     """#1113: what vetoed the part's OWN spot, and -- when its in-place
     rotations are vetoed -- why this sweep cannot rank them."""
@@ -778,9 +785,12 @@ def _in_place_clause(ref, diag) -> str:
     if not diag.get('in_place_evaluated', True):
         out += (f" Its own angle {diag.get('input_rotation', 0):g} is not on "
                 f"the swept lattice, so staying put was not evaluated.")
-    turned = [d for d in by
-              if abs(((d['rot'] - diag.get('input_rotation', 0)) + 180.0)
-                     % 360.0 - 180.0) > 1e-6]
+    # Only a NEIGHBOUR veto says the neighbours were packed around the
+    # part; a board-term or knob veto (board_bbox at a 50 mm clearance) is
+    # not a reason to rank rotations at seed level.
+    turned = [d for d in by if d['check'] in _NEIGHBOUR_CHECKS
+              and abs(((d['rot'] - diag.get('input_rotation', 0)) + 180.0)
+                      % 360.0 - 180.0) > 1e-6]
     if turned:
         out += (" A one-part move holds every neighbour where it is, so it "
                 "cannot judge a rotation the neighbours were packed around: "

@@ -272,7 +272,10 @@ def main():
     from placement.cli_gates import add_intent_arg, load_intent_or_exit
     add_intent_arg(p, summary=(
         "Its decap limits are held while caps move, exactly as "
-        "place_fanout_clearance.py --intent holds them (#1067)."))
+        "place_fanout_clearance.py --intent holds them (#1067). The GIF "
+        "records the gated pass; when the run keeps the pass without the "
+        "gate instead (its `Decap:` line says so), the GIF is not of the "
+        "result kept."))
     # animation controls
     p.add_argument("--size", type=int, default=900, help="GIF size in px")
     p.add_argument("--fps", type=int, default=30)

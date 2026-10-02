@@ -71,6 +71,10 @@ REFUSE = _t(R, 'refusals')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
+    ('ranker-pointer-on-any-veto', 'cv',
+     "    turned = [d for d in by if d['check'] in _NEIGHBOUR_CHECKS",
+     "    turned = [d for d in by if True",
+     (_t(V, 'staying_put', 'neighbour_veto'),), 'KILLED'),
     ('veto-reports-nothing', 'quench',
      "        return (why.get('check', 'unattributed'), why.get('blocker'))",
      "        return None",

@@ -58,6 +58,7 @@ def _t(name, *cases):
 T = 'test_1067_fanout_clearance_decap.py'
 ON = _t(T, 'on_holds_every_claim')
 ARMS = _t(T, 'better_arm_is_kept')
+GRAZE = _t(T, 'cap_left_grazing')
 OFF = _t(T, 'off_still_breaks')
 QGATE = _t(T, 'gate_is_the_quench')
 CACHE = _t(T, 'invalidates_the_gate')
@@ -149,6 +150,18 @@ ROWS = [
      "        'fanout_bga_cap_intent_path': dialog.fanout_tab.bga_options.cap_intent_path.GetValue(),  # #1067",
      "",
      (GUI,), 'KILLED'),
+    ('compared-only-on-a-broken-claim', 'fc',
+     "    if ((not rep.get('broken') and not gated.get('unresolved'))",
+     "    if ((not rep.get('broken'))",
+     (GRAZE,), 'KILLED'),
+    ('discarded-run-printed-too', 'fc',
+     "    print(buf.getvalue(), end='')",
+     "    print(gated_out + buf.getvalue(), end='')",
+     (GRAZE,), 'KILLED'),
+    ('manifest-intent-not-absolute', 'man',
+     "            if (CAP_FLAG_PARAMS[a] == 'cap_intent_path' and cwd",
+     "            if (False and cwd",
+     (AIPLAN,), 'KILLED'),
     ('manifest-drops-intent', 'man',
      "    '--intent': 'cap_intent_path',",
      "",

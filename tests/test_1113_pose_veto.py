@@ -166,7 +166,9 @@ def _asymmetric_part(st):
 def test_only_staying_put_survives_and_the_note_says_why():
     """The board inset shrunk to one part's own courtyard: every move and
     every other rotation is vetoed by `board_bbox`, staying put is not. The
-    note must say so and point at the seed-level ranker."""
+    note must say so -- and must NOT send the reader to the seed-level
+    ranker: a board-term veto says nothing about neighbours packed around
+    the part (`test_the_ranker_pointer_needs_a_neighbour_veto`)."""
     import converge
     _pcb, st0 = _state(ESP)
     ref = _asymmetric_part(st0)
@@ -200,9 +202,40 @@ def test_only_staying_put_survives_and_the_note_says_why():
     note = d.get('note') or ''
     assert note.startswith('every candidate except staying put was vetoed'), \
         note
-    assert 'rank_rotations.py' in note and 'board_bbox' in note, note
+    assert 'board_bbox' in note and 'rank_rotations.py' not in note, note
     assert note in err.getvalue(), err.getvalue()[-600:]
     print(f"  PASS: {ref}: '{note[:90]}...'")
+
+
+def test_the_ranker_pointer_needs_a_neighbour_veto():
+    """`_in_place_clause` sends the reader to rank_rotations only when a
+    TURNED in-place pose was refused by a neighbour (courtyard, pads, a
+    body); a board term (board_bbox, outline, intent) or the part's own
+    angle never does."""
+    import converge
+
+    def diag(*rows, rot=0.0):
+        return {'dropped_in_place_by': [
+                    {'rot': r, 'check': c, 'blockers': {}} for r, c in rows],
+                'in_place_evaluated': True, 'input_rotation': rot}
+    say = converge._in_place_clause
+    for check in converge._NEIGHBOUR_CHECKS:
+        assert 'rank_rotations.py' in say('U1', diag((90.0, check))), check
+    for check in ('board_bbox', 'outline', 'intent', 'keepout_band'):
+        assert check not in converge._NEIGHBOUR_CHECKS, check
+        txt = say('U1', diag((90.0, check)))
+        assert 'rank_rotations.py' not in txt and 'In place: ' in txt, txt
+    # a neighbour veto at the part's OWN angle is not a rotation question
+    assert 'rank_rotations.py' not in say('U1', diag((270.0, 'courtyard'),
+                                                     rot=270.0))
+    # mixed: one turned neighbour veto is enough
+    assert 'rank_rotations.py' in say('U1', diag((0.0, 'board_bbox'),
+                                                 (180.0, 'pads')))
+    from placement import quench
+    assert set(converge._NEIGHBOUR_CHECKS) <= set(quench.VETO_CHECKS), \
+        set(converge._NEIGHBOUR_CHECKS) - set(quench.VETO_CHECKS)
+    print(f"  PASS: the pointer follows {len(converge._NEIGHBOUR_CHECKS)} "
+          f"neighbour checks and no board term")
 
 
 def test_an_empty_ranking_names_the_check():
@@ -285,6 +318,7 @@ TESTS = [
     test_a_label_names_the_check_that_refused,
     test_dropped_by_partitions_dropped_total,
     test_only_staying_put_survives_and_the_note_says_why,
+    test_the_ranker_pointer_needs_a_neighbour_veto,
     test_an_empty_ranking_names_the_check,
     test_snap_census_carries_dropped_by,
 ]

@@ -132,6 +132,29 @@ class TestTheEdgeClearanceIsRehomed(unittest.TestCase):
         self.assertEqual(_literal(M2P, 'CAP_FLAG_PARAMS')['--intent'],
                          'cap_intent_path')
 
+    def test_a_relative_intent_replays_against_the_recorded_cwd(self):
+        """#1067: the CLI read a relative `--intent` from the directory it
+        was recorded in; the GUI would resolve it against the board's
+        folder. The converter makes it absolute from the recorded cwd, and
+        leaves an absolute path, or a step with no cwd, as recorded."""
+        sys.path.insert(0, os.path.dirname(M2P))
+        import manifest_to_plan as m2p
+        argv = ['python3', 'py_placer/place_fanout_clearance.py',
+                'in.kicad_pcb', 'out.kicad_pcb', '--intent',
+                'wk/run/intent.json']
+        cwd = os.path.join(_ROOT, 'some', 'run')
+        got = m2p.cap_optimization_step(argv, cwd=cwd)['params']
+        self.assertEqual(got['cap_intent_path'], os.path.normpath(
+            os.path.join(cwd, 'wk/run/intent.json')))
+        absolute = os.path.join(_ROOT, 'x.intent.json')
+        got = m2p.cap_optimization_step(argv[:-1] + [absolute],
+                                        cwd=cwd)['params']
+        self.assertEqual(got['cap_intent_path'], absolute)
+        got = m2p.cap_optimization_step(argv)['params']
+        self.assertEqual(got['cap_intent_path'], 'wk/run/intent.json')
+        self.assertIn('step = cap_optimization_step(argv, cwd=_cwd)',
+                      _src(M2P), 'main() must hand the recorded cwd over')
+
     def test_the_generic_loop_skips_the_legacy_spelling_on_a_cap_step(self):
         src = _src(AI_PLAN)
         self.assertIn('"optimize_caps": {"board_edge_clearance", "via_size"},',

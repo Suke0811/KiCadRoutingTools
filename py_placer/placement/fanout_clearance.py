@@ -3072,10 +3072,16 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
     kw.pop('pcb_data')
     if intent is None:
         return _repair_one_arm(pcb_data, **kw)
+    import contextlib
     import copy
+    import io
     pristine = copy.deepcopy(pcb_data)
-    gated = _repair_one_arm(pcb_data, **kw)
-    return _keep_the_better_arm(gated, pristine, pcb_data, kw)
+    # The gated run's lines are HELD until the run kept is known, so the
+    # console never leads with the numbers of a run that was discarded.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        gated = _repair_one_arm(pcb_data, **kw)
+    return _keep_the_better_arm(gated, pristine, pcb_data, kw, buf.getvalue())
 
 
 def _decap_claims_worse(before, after) -> Dict:
@@ -3104,13 +3110,24 @@ def _decap_claims_worse(before, after) -> Dict:
     return out
 
 
-def _keep_the_better_arm(gated, pristine, pcb_data, kw) -> Dict:
-    """#1067: `gated`, unless the same pass without the gate ends better."""
+def _keep_the_better_arm(gated, pristine, pcb_data, kw,
+                         gated_out='') -> Dict:
+    """#1067: `gated`, unless the same pass without the gate ends better.
+
+    Compared whenever the gated run COULD be worse than the ungated one: it
+    broke a claim, or it left a cap grazing -- held caps can box a cap in by
+    geometry alone, so the gate never refused its last clear pose and nothing
+    "broke", yet the ungated pass clears it (code review: the U30 crop with
+    --max-displacement 0.6 / --max-displacement-cap 2.0 left C63 unresolved
+    with --intent and resolved without). With neither, the gated run holds
+    every claim and clears every cap, which nothing can beat."""
     import contextlib
     import io
     from . import floorplan
     rep = gated.get('decap') or {}
-    if not rep.get('broken') or 'errors_after' not in (rep.get('grade') or {}):
+    if ((not rep.get('broken') and not gated.get('unresolved'))
+            or 'errors_after' not in (rep.get('grade') or {})):
+        print(gated_out, end='')
         return gated
     intent, pcb_file = kw['intent'], kw['pcb_file']
 
@@ -3122,11 +3139,13 @@ def _keep_the_better_arm(gated, pristine, pcb_data, kw) -> Dict:
         before = _decap_violations(intent, pristine, pcb_file)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            free = _repair_one_arm(pristine, **dict(
-                kw, intent=None, on_move=None, progress_callback=None))
+                # the animator's recorder watches the gated pass only
+            free = _repair_one_arm(pristine, **dict(kw, intent=None,
+                                                    on_move=None))
         after_g, after_f = _after(gated), _after(free)
     except Exception as exc:     # noqa: BLE001 -- disclosed, never fatal
         rep['compared'] = {'unavailable': f"{type(exc).__name__}: {exc}"}
+        print(gated_out, end='')
         print(f"Decap: not compared with the pass without the gate -- "
               f"{rep['compared']['unavailable']}")
         return gated
@@ -3143,6 +3162,7 @@ def _keep_the_better_arm(gated, pristine, pcb_data, kw) -> Dict:
                 'kept': kept}
     if kept == 'gated':
         rep['compared'] = compared
+        print(gated_out, end='')
         print(f"Decap: compared with the same pass without the gate "
               f"({kf[0]} unresolved, {kf[1]} decap claim(s) made worse): "
               f"the gated run is kept ({kg[0]}, {kg[1]}).")
@@ -3160,11 +3180,11 @@ def _keep_the_better_arm(gated, pristine, pcb_data, kw) -> Dict:
         grade={'errors_before': len(errs_b), 'errors_after': len(errs),
                'added': [dict(a) for a in
                          floorplan.grade_delta(before, after_f)]})
-    moved = next((ln for ln in buf.getvalue().splitlines()
-                  if ln.startswith('Moved ')), '')
+    # The kept run's own lines, then why it was kept.
+    print(buf.getvalue(), end='')
     print(f"Decap: the same pass WITHOUT the gate ends better ({kf[0]} "
           f"unresolved, {kf[1]} decap claim(s) made worse, against {kg[0]} "
-          f"and {kg[1]} gated), so it is the result kept: {moved}")
+          f"and {kg[1]} with the gate), so it is the result kept (above).")
     g = free['decap']['grade']
     print(f"Decap grade (intent, the result kept): errors "
           f"{g['errors_before']} -> {g['errors_after']}; worse: "

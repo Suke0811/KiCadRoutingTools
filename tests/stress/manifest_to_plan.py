@@ -664,7 +664,7 @@ CAP_FLAG_PARAMS = {
 CAP_BOOL_FLAGS = {'--no-rotate': ('cap_allow_rotation', False)}  # inverted sense
 
 
-def cap_optimization_step(argv):
+def cap_optimization_step(argv, cwd=None):
     """A place_fanout_clearance.py invocation -> a standalone `optimize_caps` plan
     step (matching ai_plan.py's live format), carrying the non-default cap_*
     knobs so a loaded plan optimizes caps the way the recorded run did."""
@@ -674,6 +674,12 @@ def cap_optimization_step(argv):
         a = argv[i]
         if a in CAP_FLAG_PARAMS and i + 1 < len(argv):
             params[CAP_FLAG_PARAMS[a]] = _num(argv[i + 1]); i += 2
+            # #1067: the CLI read a relative intent from ITS cwd; the GUI
+            # would read it from the board's folder. Make it absolute here.
+            if (CAP_FLAG_PARAMS[a] == 'cap_intent_path' and cwd
+                    and not os.path.isabs(argv[i - 1])):
+                params['cap_intent_path'] = os.path.normpath(
+                    os.path.join(cwd, argv[i - 1]))
         elif a in CAP_BOOL_FLAGS:
             key, val = CAP_BOOL_FLAGS[a]; params[key] = val; i += 1
         else:
@@ -721,7 +727,7 @@ def plan_steps_from_manifest(manifest, keep_files=False):
             continue  # pruned out, or a check/grade command (no GUI step)
         if any(os.path.basename(a) == 'place_fanout_clearance.py' for a in argv):
             # standalone optimize_caps step, matching the live GUI plan (see above)
-            step = cap_optimization_step(argv)
+            step = cap_optimization_step(argv, cwd=_cwd)
             step['_files'] = [a for a in argv if a.endswith('.kicad_pcb')]
             steps.append(step)
             continue

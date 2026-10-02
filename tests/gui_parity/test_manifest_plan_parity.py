@@ -167,7 +167,7 @@ def _plan_pairs(manifest):
         if i not in keep or is_check_cmd(argv):
             continue
         if any(os.path.basename(a) == 'place_fanout_clearance.py' for a in argv):
-            steps.append(m2p.cap_optimization_step(argv))
+            steps.append(m2p.cap_optimization_step(argv, cwd=_cwd))
             # A cap step is still appended (route_planes inheritance below
             # needs the sequence) but never enters `pairs`, because check_pair
             # validates against the ROUTE-step tables, where `--clearance` and

@@ -4992,7 +4992,6 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
 
     def _decap_pin_claim(owner_pool, claimed, tag='', decline_beyond=None,
                          declined=None):
-        _last = {'declined': False}   # did the latest `_seat` decline?
         """Seat one scoped cap per supply pin of the owner ICs in
         `owner_pool`, appending each to `claimed`; returns `(avail, pins,
         rails, the owners whose pins it found)`. Stage 2.5 runs it over the
@@ -5001,6 +5000,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         `decline_beyond` (stage 3.5 under `DECAP_LATE_WITHIN_LIMIT`) undoes a
         seat that lands farther than that from its pin target, adding the cap
         to `declined`: it keeps its own centroid turn instead."""
+        _last = {'declined': False}   # did the latest `_seat` decline?
         avail = [r for r in _order(sorted(unplaced)) if r in decap_scope]
         rail_of: Dict[str, int] = {}
         for ref in avail:

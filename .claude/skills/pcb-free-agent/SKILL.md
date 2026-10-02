@@ -62,13 +62,17 @@ is a pile but reads `unplaced: false` (#1109).
 - **On a pile, read the emitter's decap line before you seed.** It says how
   many caps the per-supply-pin stage can claim, and which only once their
   owner ICs are seated. When `place_seed` then reports the decap stage
-  claimed 0 because no owner IC was seated before it, re-seed with
-  `--decap-claim-after-ics` and compare both seeds: it claims the decaps
-  once the centroid stage has seated their ICs, and the seed places every
-  IC exactly as without it -- only the polish that follows can move one
-  (#1105). The line's stage-2.5 count assumes those early seats succeed. It is opt-in because the corpus A/B rejected it as
-  a default; on run 38's StickHub pile (seed 0, run 38's own arguments) it
-  claimed 16 caps and cut the seed's grade errors 16 to 7.
+  claimed 0 because no owner IC was seated before it, the first remedy is
+  to seat the owners first (a `fixed_poses` entry or a zoned block). The
+  other is an EXPERIMENT, not a fix: re-seed with
+  `--decap-claim-after-ics` and keep it only if it grades better on
+  routed outcome. It claims the decaps once the centroid stage has seated
+  their ICs, and the seed places every IC exactly as without it -- only
+  the polish that follows can move one (#1105). The line's stage-2.5
+  count assumes those early seats succeed. The corpus A/B rejected it as
+  a default: it marked `regress` on all 7 of its boards. On run 38's
+  StickHub pile (seed 0, run 38's own arguments) it claimed 16 caps and
+  cut the seed's grade errors 16 to 7.
 - **Give `--intent` to every placement tool.** It is a per-move gate only in
   tools that receive it. It stops a part LEAVING its zone; it never moves one
   back in.
@@ -158,8 +162,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     `--intent` (#1067): no cap move takes a decap claim past its limit and
     further than before, unless no clear pose keeps it -- then the cap
     clears the foreign copper anyway and the claim it broke is named under
-    `Decap limit broken`. Then it also runs the pass without the gate and
-    keeps whichever made fewer decap claims worse (`Decap: ...` says which).
+    `Decap limit broken`. When it broke a claim or left a cap grazing, it
+    also runs the pass without the gate and keeps whichever ends with fewer
+    unresolved grazes, then fewer decap claims made worse (`Decap: ...`
+    says which).
     It prints the decap grade before and after.
     Without `--intent` it can move a cap past `decap_pin_distance`
     silently;

@@ -169,6 +169,13 @@ def cap_optimization_summary(result):
         summary += (f"; {len(decap_broken)} broke a decap limit to clear "
                     f"foreign copper (no clear pose kept it): "
                     f"{', '.join(decap_broken)}")
+    _cmp = decap.get('compared') or {}
+    if _cmp.get('kept') == 'ungated':
+        _w = (_cmp.get('ungated') or {}).get('worse') or []
+        summary += (f"; the pass WITHOUT the decap gate was kept (it made "
+                    f"{len(_w)} decap claim(s) worse, against "
+                    f"{(_cmp.get('gated') or {}).get('claims_worse')} with "
+                    f"the gate)" + (f": {', '.join(_w)}" if _w else ''))
     decap_added = (decap.get('grade') or {}).get('added') or []
     if decap_added:
         summary += (f"; {len(decap_added)} NEW decap error(s) (intent): "

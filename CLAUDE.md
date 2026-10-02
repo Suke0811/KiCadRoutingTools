@@ -188,9 +188,10 @@ Validate routed boards against the *real* spec, with the right checker — most
     holds the intent's decap limits through the quench's own tether gate
     (`quench.TetherGateView`, QuenchState's methods bound, not copied) -- a
     ladder: a cap whose every clear pose breaks a claim clears the copper
-    anyway and the claim is named (`decap.broken`), and such a run is then
-    compared with the same pass without the gate and the better kept
-    (`decap.compared`, so `--intent` never ends worse than no intent) -- and
+    anyway and the claim is named (`decap.broken`); a gated run that broke
+    a claim or left a cap grazing is compared with the same pass without the
+    gate and the better kept by (unresolved grazes, decap claims made worse)
+    (`decap.compared`, so on that key `--intent` never ends worse) -- and
     discloses the decap grade from the ENGINE so the GUI's `cap_intent_path`
     gets it too.
   - `--hole-to-hole-clearance` / `--board-edge-clearance` work the same way: omitted →
