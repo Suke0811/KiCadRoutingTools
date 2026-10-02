@@ -475,8 +475,13 @@ python py_router/route_planes.py kicad_files/input.kicad_pcb --nets GND --plane-
 > finishes with an in-run *plane finalize* that applies this same engine
 > (pad taps + region joins), the plane-copper cleanup, and a KiCad-oracle
 > completion check — so a pours-first chain repairs its planes automatically.
-> `KICAD_PLANE_FINALIZE=0` is the kill switch. Use the standalone script
-> below for a board routed OUTSIDE that chain (e.g. hand-edited copper).
+> `KICAD_PLANE_FINALIZE=0` is the kill switch. The finalize runs even when
+> the route step finds nothing else to route (#1112), so a chain should end
+> on `route.py`, never on this script. Use the standalone script below for a
+> board routed OUTSIDE that chain (e.g. hand-edited copper); its track and
+> via default to the board's Default net class, not to the sizes a chain
+> routed at, so pass `--track-width` / `--via-size` / `--via-drill` if they
+> differ.
 
 After creating power planes, regions may become split by vias and traces from other nets. Use `repair_planes.py` to reconnect them:
 

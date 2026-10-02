@@ -188,19 +188,23 @@ def _unescape_net_name(s: str) -> str:
 
 
 # WHAT `poured_nets` MEANS, carried in the payload beside the value itself.
-# It is "this net has at least one zone on the board", which is exactly the
-# fact that picks the REPAIR HANDLER for a broken net -- and it is NOT a list
-# of plane nets. Measured on neo6502: the 61 zone-backed nets covered 332 of
-# 545 pads (72%), including all of /A0../A15, because that board pours many
-# signal nets; a consumer that read it as "the planes, safe to ignore" removed
-# most of the board from its own analysis. Emitting the sentence next to the
-# list is the point -- a comment in this file is not visible to the consumer
-# reading the JSON, and that is who got this wrong.
+# It is "this net has at least one zone on the board", which decides HOW a
+# broken net gets fixed (route.py's in-run plane finalize, which only runs on
+# nets inside that step's --nets) -- and it is NOT a list of plane nets.
+# Measured on neo6502: the 61 zone-backed nets covered 332 of 545 pads (72%),
+# including all of /A0../A15, because that board pours many signal nets; a
+# consumer that read it as "the planes, safe to ignore" removed most of the
+# board from its own analysis. Emitting the sentence next to the list is the
+# point -- a comment in this file is not visible to the consumer reading the
+# JSON, and that is who got this wrong.
 POURED_NETS_MEANING = (
-    'nets with at least one zone on the board, i.e. a broken one of these is '
-    "repair_planes.py's job rather than route.py's. This is NOT a list "
-    'of plane/power nets and is NOT a safe --ignore-nets population: a board '
-    'that pours signal nets puts them in here too (measured: 332 of 545 pads).')
+    'nets with at least one zone on the board. A broken one of these is fixed '
+    "by route.py with the net inside its --nets: the step's in-run plane "
+    "finalize (#562) taps and joins it at that step's own track and via "
+    "sizes, checked against KiCad's exact fill, and runs even when the step "
+    'has nothing else to route (#1112). This is NOT a list of plane/power '
+    'nets and is NOT a safe --ignore-nets population: a board that pours '
+    'signal nets puts them in here too (measured: 332 of 545 pads).')
 
 
 def score_connectivity(root: str, board: str) -> dict:
@@ -245,9 +249,8 @@ def score_connectivity(root: str, board: str) -> dict:
     # across two iterations because it had nothing equivalent to work from.
     #
     # The pad REF matters as much as the count. A break whose stranded pad sits on
-    # a do-not-fit part is not a functional defect and must not be chased forever;
-    # a break on a plane net wants repair_planes.py, not route.py. The
-    # ref is what lets the caller tell those apart.
+    # a do-not-fit part is not a functional defect and must not be chased forever,
+    # and the ref is what lets the caller tell it apart.
     detail, cur = {}, None
     for line in out.splitlines():
         if (mm := re.match(r'^\s{2}(\S+) \(net \d+\):\s*$', line)):
@@ -263,17 +266,20 @@ def score_connectivity(root: str, board: str) -> dict:
                 {'x': float(mp.group(1)), 'y': float(mp.group(2)),
                  'layer': mp.group(3), 'ref': mp.group(4)})
 
-    # NAME THE TOOL, not just the defect. Which step fixes a break is decided by
-    # ONE fact the board already carries: is the net POURED? A stranded pad on a
-    # plane net cannot be reached by route.py at all -- it needs a tap via, which
-    # is repair_planes.py's job -- and a run that reaches for route.py on
-    # everything watches the count sit still. Measured: `broken` held at 14 across
-    # two iterations of route.py calls, then fell to 11 in ONE
-    # repair_planes.py call once the plane nets were separated out.
-    #
-    # Poured-ness is read off the board's own zones, so this is a fact and not a
-    # guess. Everything else is `route`; the DNF case stays a human call, which is
-    # what the stranded pad's `ref` is in the list for.
+    # NAME THE TOOL, not just the defect. Every break is route.py's (#1112). A
+    # stranded pad on a POURED net is reached by route.py's in-run plane finalize
+    # (#562: the repair engine's taps and joins plus the KiCad exact-fill
+    # reconnect, at the route step's own track/via sizes), provided the net is
+    # inside that step's --nets. This used to say `repair_planes`, on a
+    # measurement taken three days BEFORE the finalize landed (`broken` held at
+    # 14 under route.py, fell to 11 in one repair call), and a run that obeyed it
+    # ended its chain on a standalone repair at the board's 0.5 mm class via
+    # around copper routed with 0.3 mm vias: the repair cannot know the chain's
+    # sizes, because the .kicad_pro writeback never lowers the class's via/track
+    # draw defaults (#842). The finalize also runs when route.py finds nothing
+    # else to route (#1112), so a break only KiCad's exact fill sees is reached
+    # too. The DNF case stays a human call, which is what the stranded pad's
+    # `ref` is in the list for.
     poured = set()
     try:
         with open(board, encoding='utf-8', errors='replace') as f:
@@ -309,8 +315,7 @@ def score_connectivity(root: str, board: str) -> dict:
     except OSError:
         pass
     for name, v in detail.items():
-        v['handler'] = ('repair_planes' if name in poured
-                        else 'route')
+        v['handler'] = 'route'
 
     return {'ran': True, 'count': int(m.group(1)), 'unrouted': unrouted,
             'broken': broken, 'broken_nets': broken_nets,

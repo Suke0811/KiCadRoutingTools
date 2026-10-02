@@ -67,9 +67,12 @@ T_CC = 'tests/test_run9_check_complete.py'
 #: (name, target, old, new, tests that must notice, expectation)
 ROWS = [
     # ---- C1: the handler names a tool that exists ---------------------------
+    # #1112 made every break route.py's; the mutation restores a poured-net
+    # branch naming the dead tool.
     ('handler-returns', 'bs',
-     "        v['handler'] = ('repair_planes' if name in poured",
-     "        v['handler'] = ('route_disconnected_planes' if name in poured",
+     "        v['handler'] = 'route'",
+     "        v['handler'] = ('route_disconnected_planes' if name in poured "
+     "else 'route')",
      (T_WORKLIST,), KILLED),
 
     # ---- C2, C3, C4: RETIRED -------------------------------------------------

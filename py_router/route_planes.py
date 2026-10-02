@@ -4709,13 +4709,13 @@ Examples:
             print(f"  (skipped castellated-landing retract: {e})")
 
     # NO KiCad-oracle recheck here (#217): the plane this step just poured has NOT
-    # yet been stitched -- tying pads/islands into the pour is route_disconnected_
-    # planes' job, the very next step. At the route_planes stage KiCad reports every
-    # not-yet-stitched pad as a missing link (hackrf: 26 plane links / 42 total),
-    # so an oracle pass here thrashes routing links that don't exist as failures
-    # (18 routed, 77 failed, 3 kicad-cli rounds) -- a 2-8x route_planes regression
-    # for work repair_planes does properly. The oracle runs ONCE, as an
-    # end-of-pipeline fallback at the end of repair_planes, on the
+    # yet been stitched -- tying pads/islands into the pour is the route step's
+    # job (#562: its pour-launch welds and in-run plane finalize). At the
+    # route_planes stage KiCad reports every not-yet-stitched pad as a missing
+    # link (hackrf: 26 plane links / 42 total), so an oracle pass here thrashes
+    # routing links that don't exist as failures (18 routed, 77 failed, 3
+    # kicad-cli rounds) -- a 2-8x route_planes regression for work the route
+    # step does properly. The oracle runs in that step's finalize, on the
     # already-repaired board -- do not re-add it here.
 
     # Make the output project's KiCad DRC constraints consistent with the routed

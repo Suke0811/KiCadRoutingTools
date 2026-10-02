@@ -91,7 +91,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 | placement vs routing, in a loop | `py_placer/place_route_loop.py` (when routing failed on congestion) |
 | check a placement | `py_tools/check_assembly.py` (read `buildable`), `py_tools/check_floorplan.py --intent` (`--plan-only` before seeding; `--health` for escape lanes), `py_tools/render_placement.py --json-out` (then LOOK at the PNG; `--before <prev> --pair` diffs findings by name), `py_router/check_drc.py --clearance-margin 0` on a copper-free board |
 | will it fit, can it escape | `py_tools/check_pockets.py`, `py_tools/check_channels.py --baseline <input> --gate`, `py_tools/check_capacity.py`, `py_tools/check_reachability.py --pad REF.PAD` |
-| route | `py_router/route_planes.py`, `py_router/bga_fanout.py`, `py_router/qfn_fanout.py`, `py_router/route.py`, `py_router/route_diff.py`, `py_router/repair_planes.py`; `py_router/check_pads.py` before fanout |
+| route | `py_router/route_planes.py` (pour first), `py_router/bga_fanout.py`, `py_router/qfn_fanout.py`, `py_router/route.py`, `py_router/route_diff.py`; `py_router/check_pads.py` before fanout. Not `py_router/repair_planes.py` (§4) |
 | check a routed board | `py_router/check_connected.py`, `py_router/check_drc.py --baseline <input>`, `py_router/check_weird.py`, `py_tools/kicad_unconnected.py --items` (zone-aware oracle) |
 | other skills | `plan-pcb-routing` (the routing recipe; its "Retrying a failed net" section), `diagnose-routing-failures`, `review-routed-board` (diff pairs, length, return vias) |
 
@@ -162,9 +162,16 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   and `--json-out`), so reconciliation laps no longer hide broken nets. It
   does not grade the rest of the board, and it uses the router's fill model
   rather than KiCad's refill. Count the board's open nets with
-  `check_connected` or `board_score`. A broken POURED net is
-  `repair_planes.py`'s job (`components.broken.nets[].handler`), not
-  `route.py`'s.
+  `check_connected` or `board_score`.
+- **`route.py` finishes the planes; a repair step does not (#562, #1112).**
+  Pour first (`route_planes.py`), then route with the plane nets inside
+  `--nets` (`'*'` covers them). Pour-launch welds their pads, and the in-run
+  plane finalize taps and joins what the fill cannot reach, at that step's
+  own track and via sizes. A pour alone connects nothing, so if you pour
+  after routing, end the chain on another `route.py --nets '*'` with the same
+  size flags; the finalize runs even when that step has nothing else to
+  route. Do not end on `repair_planes.py`: it cannot know the sizes you
+  routed at, so it falls back to the board's net-class via and track.
 - **Widths are requests.** After each route, read
   `power_widths.<net>.under_mm`: one run asked for 0.3 mm on +3V3 and shipped
   34 % of it at 0.127 mm. Grade power widths with `board_score --net-min-widths`.

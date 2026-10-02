@@ -281,7 +281,9 @@ UNGRADED (not scored, not passed): impedance, length
 
 ### Next actions
 1. Run /diagnose-routing-failures with the routing logs for the 2 disconnected nets
-2. Re-run route_planes.py --add-gnd-vias for the 3 uncovered signal vias
+2. Re-run route_planes.py --add-gnd-vias for the 3 uncovered signal vias, then
+   a closing route.py whose --nets covers the poured nets (the re-pour leaves
+   its welds unverified until route.py's plane finalize runs)
 ```
 
 When connectivity or routing failures are found, recommend `/diagnose-routing-failures` as the follow-up rather than diagnosing inline here. If they trace to part positions (pad copper off the outline, unreachable pads, `check_assembly` not buildable), recommend `/pcb-free-agent full` instead of a router retry.

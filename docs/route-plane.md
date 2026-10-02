@@ -347,7 +347,8 @@ the pad using A* pathfinding. The pour itself never draws these traces
 The pour no longer places taps, so it never needs to rip a blocker.
 The rip-up algorithm still exists in the repair engine
 (`repair_planes.py`, documented below), which the route
-step's in-run plane finalize calls -- with ripping OFF by default.
+step's in-run plane finalize calls -- with rip authority ON by default
+(`KICAD_FINALIZE_RIP=0` turns it off).
 
 ### Multi-Net Layer Zone Generation
 
@@ -557,7 +558,13 @@ After power planes are created, regions may become effectively split due to vias
 plane finalize calls this same engine, then the plane-copper cleanup and the
 KiCad-oracle completion check, at the route step's own parameters — so the
 standalone invocation below is for boards routed outside that chain.
-`KICAD_PLANE_FINALIZE=0` disables the in-run pass.
+`KICAD_PLANE_FINALIZE=0` disables the in-run pass. The finalize runs even
+when the route step finds nothing else to route (#1112), so a chain never
+needs this script: end it on `route.py` instead. Run standalone, it cannot
+know the sizes a chain routed at -- its track and via default to the board's
+Default net class (a route step never writes those back, #842) -- so pass
+`--track-width` / `--via-size` / `--via-drill` explicitly if you use it on a
+board this toolchain routed.
 
 Key features:
 - **Per-net processing** - Zones with the same net on multiple layers (e.g., GND on B.Cu and In1.Cu) are processed together, avoiding redundant routes since vias connect all layers
@@ -595,14 +602,14 @@ python py_router/repair_planes.py input.kicad_pcb --max-iterations 500000
 | `--layers`, `-l` | all Cu | Layer(s) available for routing |
 | `--max-track-width` | 2.0 | Maximum track width for connections (mm) |
 | `--min-track-width` | 0.2 | Minimum track width for connections (mm) |
-| `--track-width` | 0.3 | Default track width for routing config (mm) |
-| `--clearance` | 0.25 | Trace-to-trace clearance (mm) |
+| `--track-width` | board Default class, else 0.3 | Default track width for routing config (mm) |
+| `--clearance` | board Default class, else 0.25 | Trace-to-trace clearance of the Default net class this run (mm); other classes are honoured. `--clearance-ceiling` caps every class |
 | `--zone-clearance` | 0.2 | Zone fill clearance around obstacles (mm) |
 | `--track-via-clearance` | 0.8 | Clearance from tracks to other nets' vias (mm) |
-| `--hole-to-hole-clearance` | 0.2 | Minimum clearance between drill holes (mm, fab floor) |
-| `--board-edge-clearance` | 0.5 | Clearance from board edge (mm) |
-| `--via-size` | 0.5 | Via outer diameter (mm) |
-| `--via-drill` | 0.3 | Via drill diameter (mm) |
+| `--hole-to-hole-clearance` | board `min_hole_to_hole`, else 0.2 | Minimum clearance between drill holes (mm, fab floor) |
+| `--board-edge-clearance` | board `min_copper_edge_clearance`, else 0.5 | Clearance from board edge (mm) |
+| `--via-size` | board Default class, else 0.5 | Via outer diameter (mm) |
+| `--via-drill` | board Default class, else 0.3 | Via drill diameter (mm) |
 | `--grid-step` | 0.1 | Routing grid step (mm) |
 | `--analysis-grid-step` | 0.5 | Grid step for connectivity analysis (coarser = faster) |
 | `--max-iterations` | 200000 | Maximum A* iterations per route attempt |
@@ -610,7 +617,7 @@ python py_router/repair_planes.py input.kicad_pcb --max-iterations 500000
 | `--max-search-radius` | 10.0 | Max radius to search for a via position during pad repair (mm) |
 | `--rip-blocker-nets` | off | Connect a pad that can't reach its plane by tracing to a nearby same-net pad, ripping the signal net(s) blocking that trace (see below) |
 | `--max-rip-nets` | 3 | Maximum blocker nets to rip per pad |
-| `--reroute-ripped-nets` | off | **Deprecated no-op** (issue #141 reverted): ripped nets are always left unrouted for a later `route.py` pass, which does rip-up/restore safely. The old in-step reroute restored a failed net's original copper on top of copper meanwhile routed through its corridor, creating shorts the obstacle map never saw — which is why it was removed rather than fixed |
+| `--reroute-ripped-nets` | off | **Deprecated no-op** (issue #141 reverted): ripped blocker nets are now reconnected in-run (restore-first, an end-of-run reconnect pass, and custody restore on failure), so no separate `route.py` pass is needed. Accepted for compatibility |
 | `--power-nets` | — | Power net names needing wider tracks when re-routing ripped nets |
 | `--power-nets-widths` | — | Track width (mm) per `--power-nets` entry, for re-routing ripped nets |
 | `--no-bga-zone` | off | Disable BGA auto-exclusion zones when re-routing ripped nets (match the signal run) |
@@ -623,13 +630,14 @@ python py_router/repair_planes.py input.kicad_pcb --max-iterations 500000
 
 ### Pad-Level Repair (`--repair-pads`, default on)
 
-`route_planes.py` can leave a tail of pads it could not via down to the plane
-(congested SMD neighborhoods). Before the region repair, the tool finds pads
+Plane-net pads can be left with no connection to the plane (the pour places
+no taps at all since #562, and congested SMD neighborhoods resist the route
+step's welds). Before the region repair, the engine finds pads
 of each plane net with no geometric connection to the plane — no same-net
 via or segment touching the pad's copper (including vias landed inside the
 pad), and the pad not sitting directly on a zone layer — and retries each
-with a stitching via + short trace. The retry uses the same parameter
-escalation as `route_planes.py`: the run parameters first, then scoped fine
+with a stitching via + short trace. The retry escalates its parameters:
+the run parameters first, then scoped fine
 parameters when the pad is fine-pitch (a same-component neighbor pad within
 0.65mm, or pad min dimension below 0.35mm). The fine retry uses a finer grid
 (0.05mm) and steps the clearance DOWN from the run value toward the
@@ -642,7 +650,7 @@ grades the board at it. Obstacle maps for each retry are built on a small window
 around the pad, so fine grids stay cheap on large boards. Per-pad outcomes are printed, and pads that still fail are listed in
 the summary. Use `--no-repair-pads` to only reconnect zone islands.
 
-**At defaults `route_planes.py` taps nothing** (#562, see the note at the top),
+**`route_planes.py` taps nothing** (#562, see the note at the top),
 so it is the ROUTE step's in-run plane finalize that runs this repair —
 including the fine-parameter retry (#104) — at the route step's own
 parameters. The text above describes that engine; it applies wherever it
@@ -659,18 +667,16 @@ pad). With `--rip-blocker-nets`, the repair does the same: when no via fits and
 no same-net via is within the close-reuse radius, it routes a trace to the
 nearest same-net pad/via reachable on the pad's layer. If a signal net crosses
 that corridor, it is **ripped** (up to `--max-rip-nets`), the pad connected, and
-the ripped net left **unrouted** for a subsequent `route.py` pass to reconnect
-(in-step rerouting was removed — issue #141 reverted — because restoring a
-failed net's original copper on top of copper meanwhile routed through its
-corridor created shorts the obstacle map never saw; `route.py` does
-rip-up/restore safely). Pass `--power-nets`/`--power-nets-widths` so that
-follow-up pass routes power nets at their proper width. Example:
+the ripped net reconnected in the same run: restore-first, then an end-of-run
+reconnect pass, with custody restore of its original copper if that fails
+(#517). Pass `--power-nets`/`--power-nets-widths` so the reconnect routes
+power nets at their proper width, and `--no-bga-zone` if the signal run used
+it. Example:
 
 ```bash
 python py_router/repair_planes.py step_planes.kicad_pcb out.kicad_pcb \
     --clearance 0.15 --via-size 0.5 --via-drill 0.3 --track-width 0.127 --grid-step 0.05 \
     --rip-blocker-nets
-python py_router/route.py out.kicad_pcb out_reconnected.kicad_pcb --nets '*'   # reconnects the ripped nets
 ```
 
 In the plugin, plane repair is no longer a tab of its own: it runs inside

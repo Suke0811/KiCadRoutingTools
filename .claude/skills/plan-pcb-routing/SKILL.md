@@ -38,7 +38,7 @@ The tools are of two kinds, and the difference decides how you use one:
 | | **ACTOR** | **INSTRUMENT** |
 |---|---|---|
 | what it does | changes the board | says what is wrong with it |
-| here | `route.py`, `route_diff.py`, `route_planes.py`, `repair_planes.py`, `bga_fanout.py`, `qfn_fanout.py` | `check_connected.py`, `check_drc.py`, `check_complete.py`, `board_score.py`, `check_weird.py`, `check_cycles.py`, `tests/stress/kicad_drc_compare.py` |
+| here | `route.py`, `route_diff.py`, `route_planes.py`, `bga_fanout.py`, `qfn_fanout.py` (and `repair_planes.py`, for a board routed outside the chain only) | `check_connected.py`, `check_drc.py`, `check_complete.py`, `board_score.py`, `check_weird.py`, `check_cycles.py`, `tests/stress/kicad_drc_compare.py` |
 | how you use it | name it in the plan and let it run | run it -- never optional |
 
 `tests/stress/kicad_drc_compare.py` grades the board with KiCad's own DRC beside
@@ -1754,7 +1754,11 @@ routes on both sides afterwards; a plane-first chain on the same board left 25
 nets open. On a dense 2-layer board: route signals on BOTH layers at cost 1.0
 (long-haul nets cross on the back), then pour GND last (`route_planes.py`
 after the signal steps — the pour flows around existing copper; 80% of human
-2-layer boards pour BOTH sides this way). Power rails as pours are a minority
+2-layer boards pour BOTH sides this way), and close the chain with one more
+`route.py --nets "*"` at the signal steps' parameters: a late pour connects
+nothing until that step's in-run finalize welds it (see "End every chain on
+route.py"; never `repair_planes.py`, which repairs at the board's class via
+and track, not the chain's sizes). Power rails as pours are a minority
 practice on 2-layer (≈38% of human boards) — pour them too when there's room,
 but GND-both-sides is the priority. Only plane-first on 2-layer boards with
 light signal content.
@@ -2291,7 +2295,9 @@ to get wrong:
   duration for the run.
 - **`status` appears only on a run that legitimately did nothing**, and takes
   exactly two values, `no_valid_nets` and `already_connected`. It says why the
-  tally is empty; it is not a verdict about the board.
+  tally is empty; it is not a verdict about the board. A step whose `--nets`
+  holds a poured net never reports `already_connected`: it carries on to the
+  plane finalize instead (#1112).
 - **`complete` means "a sub-run did not finish", never "a budget expired".**
   Since #713 `place_portfolio` writes `complete: false` when it REFUSES to rank
   (a per-candidate plane-score failure), and `check_floorplan` carries the same
@@ -2502,7 +2508,11 @@ ERROR, not a tuning choice (set5-0805 evidence: dilemma and ghoul ended on a
 bare re-pour and both shipped disconnected; core1106 simply stopped after a
 failed retry). If you re-pour or re-run diffs late, ALWAYS follow with a
 `route.py` step whose `--nets` covers the plane nets (even `--nets GND`
-suffices — its in-run finalize welds and verifies against KiCad's fill).
+suffices — its in-run finalize welds and verifies against KiCad's fill, and
+since #1112 it does so even when every net already reads connected and the
+step has nothing else to route). That closing `route.py` is the repair step;
+a standalone `repair_planes.py` is not, because it cannot read the sizes the
+chain routed at.
 
 ### Retrying a failed net
 
@@ -2514,7 +2524,9 @@ says, and that cost a lap each:
 
 **A scoped `--nets` retry on a net that is ALREADY CONNECTED is a no-op.** The
 router has nothing to improve there: the escalation ladder never fires and the
-copper comes back byte-identical. To change the geometry of copper the router is
+copper comes back byte-identical. (When the scope holds a poured net, the step
+still runs the plane finalize and the end-of-run cleanup, #1112, so copper can
+be tidied, but no connected net is re-routed.) To change the geometry of copper the router is
 happy with you must **rip** it (`--rip-existing-nets <exact names>`) or route the
 whole board. Run 20 spent a lap discovering this — a targeted via fix produced
 vias at identical coordinates in both boards.
