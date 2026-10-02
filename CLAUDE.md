@@ -186,9 +186,10 @@ Validate routed boards against the *real* spec, with the right checker — most
     `max(base, netclass)` semantics: they write no project, so the class they
     price at is one KiCad will still enforce. With `--intent` (#1067) it also
     holds the intent's decap limits through the quench's own tether gate
-    (`quench.TetherGateView`, QuenchState's methods bound, not copied), and
-    discloses the decap grade from the ENGINE so the GUI's `cap_intent_path`
-    gets it too.
+    (`quench.TetherGateView`, QuenchState's methods bound, not copied) -- a
+    ladder: a cap whose every clear pose breaks a claim clears the copper
+    anyway and the claim is named (`decap.broken`) -- and discloses the decap
+    grade from the ENGINE so the GUI's `cap_intent_path` gets it too.
   - `--hole-to-hole-clearance` / `--board-edge-clearance` work the same way: omitted →
     the board's own `min_hole_to_hole` / `min_copper_edge_clearance` constraint (via
     `list_nets.board_constraint`), else the fixed default.

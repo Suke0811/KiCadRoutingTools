@@ -113,6 +113,11 @@ def _get_net_classes_from_board():
         return {}, ['Default']
 
 
+#: #1067: how `_optimize_decoupling_caps` says it refused to run, which
+#: `run_cap_optimization` reads to skip the post-pass a run would owe.
+CAP_NOT_RUN = "Cap optimization NOT run"
+
+
 def cap_optimization_summary(result):
     """The one-line summary for a repair_fanout_clearance result (#130/#746).
 
@@ -159,10 +164,11 @@ def cap_optimization_summary(result):
                     f"connector copper: {', '.join(sorted(regrazed))}")
     # #1067: only when the step carried an intent (the key is absent else).
     decap = result.get('decap') or {}
-    decap_held = sorted(decap.get('held') or {})
-    if decap_held:
-        summary += (f"; {len(decap_held)} held by the decap gate (a clear "
-                    f"pose breaks a decap limit): {', '.join(decap_held)}")
+    decap_broken = sorted(decap.get('broken') or {})
+    if decap_broken:
+        summary += (f"; {len(decap_broken)} broke a decap limit to clear "
+                    f"foreign copper (no clear pose kept it): "
+                    f"{', '.join(decap_broken)}")
     decap_added = (decap.get('grade') or {}).get('added') or []
     if decap_added:
         summary += (f"; {len(decap_added)} NEW decap error(s) (intent): "
@@ -1169,10 +1175,11 @@ class BGAOptionsPanel(wx.ScrolledWindow):
         self.cap_intent_path.SetToolTip(
             "Optional floorplan intent JSON (--intent). Its decap limits "
             "(decaps.max_distance_mm, decaps.max_pin_distance_mm, graded at "
-            "error) are HELD while caps move: a cap whose only clear pose "
-            "breaks one stays grazing and is named. A relative path is read "
-            "from the board's folder. Empty = no intent, and a cap can be "
-            "moved past a decap limit silently.")
+            "error) are held while caps move; a cap whose every clear pose "
+            "breaks one clears the foreign copper anyway and the summary "
+            "names it. A relative path is read from the board's folder. "
+            "Empty = no intent, and a cap can be moved past a decap limit "
+            "silently.")
         intent_sizer.Add(self.cap_intent_path, 1, wx.EXPAND | wx.RIGHT, 4)
         self.cap_intent_browse = wx.Button(self, label="…",
                                            style=wx.BU_EXACTFIT)
@@ -2256,8 +2263,9 @@ class FanoutTab(wx.Panel):
                 from placement import floorplan as _fp1067
                 try:
                     _cap_intent = _fp1067.load_intent(_ip)
-                except (OSError, ValueError) as exc:
-                    return (f"Cap optimization NOT run: cannot load intent "
+                    _fp1067.tether_gate_spec(_cap_intent)
+                except (OSError, ValueError, TypeError) as exc:
+                    return (f"{CAP_NOT_RUN}: cannot load intent "
                             f"{_ip}: {exc}")
             result = repair_fanout_clearance(
                 pcb_data,
@@ -2560,7 +2568,11 @@ class FanoutTab(wx.Panel):
             # what the button does and belongs to whoever wants it, not to #782.
             # The Default class is untouched here, so a ceiling BELOW it stays a
             # pricing decision rather than silently retightening the board.
-            if cfg.get('clearance_ceiling') is not None:
+            # #1067: a step that REFUSED to run (an intent that does not load)
+            # owes no writeback and no refill -- as the CLI's exit 2 writes
+            # nothing.
+            _refused = bool(summary) and summary.startswith(CAP_NOT_RUN)
+            if cfg.get('clearance_ceiling') is not None and not _refused:
                 try:
                     from fix_kicad_drc_settings import (
                         clamp_nondefault_netclasses_on_board)
@@ -2583,7 +2595,8 @@ class FanoutTab(wx.Panel):
                               + ", ".join(_nd))
                 except Exception as _nde:                      # noqa: BLE001
                     print(f"(non-Default net-class clamp skipped: {_nde})")
-            refill_all_zones(board)   # never bare BuildConnectivity: net flips
+            if not _refused:
+                refill_all_zones(board)   # never bare BuildConnectivity: net flips
         pcbnew.Refresh()
         if summary:
             self.status_text.SetLabel(summary)

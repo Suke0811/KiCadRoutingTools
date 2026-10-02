@@ -152,6 +152,18 @@ def main():
           'Cap optimization NOT run: cannot load intent' in log, log[-600:])
     check('...and moves nothing', live_poses() == before)
 
+    # == 1b. a refused step owes no writeback (phase-3 verifier: the
+    # net-class clamp still ran, Wide 0.4 -> 0.3, board modified) ===========
+    flat = os.path.join(REPO, 'kicad_files', 'flat_hierarchy.kicad_pcb')
+    live_flat = pcbnew.LoadBoard(flat)
+    pcbnew.GetBoard = lambda: live_flat
+    dlg.reset_params_to_defaults()
+    log = drive({'cap_intent_path': os.path.join(td, 'missing.json'),
+                 'clearance': 0.3})
+    check('a refused step on a board with a wider class leaves it '
+          'unmodified', not live_flat.IsModified(), log[-600:])
+    pcbnew.GetBoard = lambda: live
+
     # == 2. the real pass with the intent ===================================
     dlg.reset_params_to_defaults()
     log = drive({'cap_intent_path': intent_path, 'clearance': 0.1})
@@ -170,14 +182,15 @@ def main():
     check('...to the same poses', not off,
           '; '.join('%s gui %s cli %s' % (r, after[r], cli_moved[r])
                     for r in off[:4]))
-    held = sorted((cli_sum.get('decap') or {}).get('held') or {})
-    check('the CLI held a cap (the fixture exercises the gate)', bool(held),
-          str(cli_sum.get('decap'))[:300])
-    check('the GUI summary names the cap the gate held',
-          all(r in log for r in held) and 'held by the decap gate' in log,
+    broken = sorted((cli_sum.get('decap') or {}).get('broken') or {})
+    added = ((cli_sum.get('decap') or {}).get('grade') or {}).get('added')
+    check('the CLI broke a claim for a cap (the fixture exercises the '
+          'ladder)', bool(broken), str(cli_sum.get('decap'))[:300])
+    check('the GUI summary names the cap that broke a decap limit',
+          all(r in log for r in broken) and 'broke a decap limit' in log,
           log[-800:])
-    check('the GUI summary reports no NEW decap error',
-          'NEW decap error' not in log, log[-800:])
+    check('the GUI summary reports the NEW decap error(s) the CLI added',
+          ('NEW decap error' in log) == bool(added), log[-800:])
 
     # == 3. the control round-trips through settings ========================
     dlg.fanout_tab.bga_options.cap_intent_path.SetValue(intent_path)

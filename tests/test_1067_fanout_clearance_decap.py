@@ -8,10 +8,13 @@ U30 (tests/fixtures/1067/make_fixture.py says how). What each case pins:
 
 A. OFF (no intent) still breaks it -- the damaged control: the summary says
    0 unresolved while the decap grade gains U30's decap_pin_distance claim.
-B. ON (`--intent`): the decap grade gains NO claim, `check_floorplan`
-   agrees, JSON_SUMMARY says so, and the byte-pinned `Moved ...` line keeps
-   its format. The cap the gate holds is named and stays unresolved.
-C. ON with `--no-rotate`: the same holds without rotation.
+B. ON (`--intent`), a LADDER: every decap claim the run does not have to
+   break is held no worse than the board it read (OFF worsens one: U10's pin
+   1), and the one cap whose every clear pose breaks a claim (C63) clears the
+   foreign copper anyway -- a short is worse than a far decap -- and is
+   NAMED in `decap.broken`; every claim the grade adds is one of its. The
+   byte-pinned `Moved ...` line keeps its format.
+C. ON with `--no-rotate`: the same, without rotation.
 D. The gate IS the quench's: `TetherGateView` binds QuenchState's methods
    (identity), and on a lattice of C63 poses its verdict equals a QuenchState
    built with the same tethers.
@@ -78,6 +81,40 @@ def _decap_errors(board, intent):
             if v.rule.startswith('decap_') and v.severity == fp.ERROR]
 
 
+def _pin_gaps(errs):
+    """{(ic, pad): gap mm} of the decap_pin_distance errors."""
+    return {(v.ref, (v.measured or {}).get('pad')):
+            (v.measured or {}).get('gap_mm') for v in errs
+            if v.rule == 'decap_pin_distance'}
+
+
+def _broken_pins(summary):
+    """{(ic, pad)} of the claims the run says it broke."""
+    out = set()
+    for fails in ((summary or {}).get('decap') or {}).get('broken', {}).values():
+        for f in fails:
+            if f['rule'] == 'decap_pin_distance':
+                out.add(tuple(f['name'].split('.', 1)))
+    return out
+
+
+def _check_ladder(before, after, summary):
+    """Every added claim is a broken one; every other pin claim is no
+    worse than before (or within the limit)."""
+    broken = _broken_pins(summary)
+    added = fp.grade_delta(before, after)
+    for a in added:
+        assert a['rule'] == 'decap_pin_distance', added
+        assert any(ic == a['ref'] for ic, _p in broken), (a, broken)
+    b, w = _pin_gaps(before), _pin_gaps(after)
+    for key, gap in w.items():
+        if key in broken or gap is None:
+            continue
+        assert gap <= LIMIT + 1e-6 or gap <= (b.get(key) or 0) + 1e-6, \
+            (key, b.get(key), gap)
+    return broken, added
+
+
 def _summary(stdout):
     m = re.search(r'^JSON_SUMMARY: (.*)$', stdout, re.M)
     return json.loads(m.group(1)) if m else None
@@ -114,45 +151,44 @@ def test_off_still_breaks_the_decap_limit():
           f"{added}")
 
 
-def test_on_adds_no_decap_claim_and_names_the_held_cap():
+def test_on_holds_every_claim_it_can_and_names_the_one_it_breaks():
     a = _arms()
     out, stdout = a['on']
     before = _decap_errors(FIX, a['intent'])
     after = _decap_errors(out, a['intent'])
-    assert fp.grade_delta(before, after) == [], fp.grade_delta(before, after)
-    assert not any(v.ref == 'U30' for v in after), [v.message for v in after]
     s = _summary(stdout)
-    assert s and s['decap']['grade']['added'] == [], s
-    assert s['decap']['grade']['errors_before'] == len(before), s
+    assert s, stdout[-800:]
+    broken, added = _check_ladder(before, after, s)
+    # the fixture exercises the ladder: every clear pose of C63 breaks a
+    # claim, and it clears the foreign copper anyway
+    assert 'C63' in s['decap']['broken'], s['decap']
+    assert 'C63' not in s['unresolved'], s['unresolved']
+    assert 'C63 (decap_pin_distance U30.' in stdout, stdout[-800:]
+    assert [{k: d[k] for k in ('rule', 'ref')} for d in
+            s['decap']['grade']['added']] == \
+        [{k: d[k] for k in ('rule', 'ref')} for d in added], s['decap']
     assert MOVED.search(stdout), stdout[-1500:]
     assert 'Decap grade (intent): errors' in stdout, stdout[-800:]
-    held = s['decap']['held']
-    # the fixture exercises the gate: C63's only clear poses break a limit
-    assert 'C63' in held, held
-    assert set(held) <= set(s['unresolved']), (held, s['unresolved'])
-    for ref in held:
-        assert f"{ref} (decap_" in stdout, stdout[-800:]
-    # check_floorplan, the grader a user runs, agrees
-    r = subprocess.run([sys.executable, '-X', 'utf8',
-                        run_utils.tool('check_floorplan.py'), out, '--intent',
-                        a['ip'], '--allow-routed'],
-                       capture_output=True, text=True, encoding='utf-8',
-                       errors='replace', cwd=ROOT)
-    assert not re.search(r'ERROR\] decap_pin_distance: U30 ', r.stdout), \
-        r.stdout[-1500:]
-    print(f"  PASS: --intent adds no decap claim ({len(before)} -> "
-          f"{len(after)} errors); held: {sorted(held)}")
+    # the gate is not vacuous: OFF worsens a claim ON holds (U10's pin 1)
+    off_after = _decap_errors(a['off'][0], a['intent'])
+    bo, fo = _pin_gaps(before), _pin_gaps(off_after)
+    worse_off = [k for k, g in fo.items() if k not in broken
+                 and g is not None and bo.get(k) is not None
+                 and g > max(bo[k], LIMIT) + 0.01]
+    assert worse_off, (bo, fo)
+    print(f"  PASS: ON holds every claim but {sorted(broken)} (C63 broke "
+          f"it to clear copper, named); OFF also worsened {worse_off}")
 
 
 def test_on_without_rotation_holds_too():
     a = _arms()
     out, stdout = _run(a['td'], 'on_nr', ['--intent', a['ip'], '--no-rotate'])
     before = _decap_errors(FIX, a['intent'])
-    assert fp.grade_delta(before, _decap_errors(out, a['intent'])) == []
     s = _summary(stdout)
+    broken, added = _check_ladder(before, _decap_errors(out, a['intent']), s)
     assert s['decap']['refused'], s
-    print(f"  PASS: --no-rotate: no decap claim added; held "
-          f"{sorted(s['decap']['held'])}")
+    print(f"  PASS: --no-rotate: the ladder holds; broken "
+          f"{sorted(s['decap']['broken'])}, added {added}")
 
 
 def _spec(intent):
@@ -234,6 +270,20 @@ def test_a_move_invalidates_the_gate_caches():
 
 
 def test_an_unreadable_intent_is_refused():
+    # a limit that loads but does not read as a number is refused as well
+    with tempfile.TemporaryDirectory() as td:
+        doc = json.load(open(_intent_file(td), encoding='utf-8'))
+        doc['decaps'] = {'max_distance_mm': '2.5mm'}
+        bad2 = os.path.join(td, 'bad2.json')
+        with open(bad2, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh)
+        out = os.path.join(td, 'out2.kicad_pcb')
+        r = subprocess.run([sys.executable, '-X', 'utf8', TOOL, FIX, out,
+                            '--intent', bad2], capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', cwd=ROOT)
+        assert r.returncode == 2 and 'cannot load intent' in r.stderr, \
+            (r.returncode, r.stderr[-400:])
+        assert not os.path.exists(out)
     with tempfile.TemporaryDirectory() as td:
         bad = os.path.join(td, 'bad.json')
         with open(bad, 'w', encoding='utf-8') as fh:
@@ -279,7 +329,7 @@ def test_no_intent_changes_nothing():
 
 TESTS = [
     test_off_still_breaks_the_decap_limit,
-    test_on_adds_no_decap_claim_and_names_the_held_cap,
+    test_on_holds_every_claim_it_can_and_names_the_one_it_breaks,
     test_on_without_rotation_holds_too,
     test_the_gate_is_the_quench_gate,
     test_a_move_invalidates_the_gate_caches,

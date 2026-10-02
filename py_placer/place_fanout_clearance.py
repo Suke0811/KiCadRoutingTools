@@ -127,13 +127,14 @@ Examples:
     from placement.cli_gates import add_intent_arg, load_intent_or_exit
     add_intent_arg(parser, summary=(
         "Its decap limits -- decaps.max_distance_mm and "
-        "decaps.max_pin_distance_mm, each graded at error -- are HELD: no cap "
+        "decaps.max_pin_distance_mm, each graded at error -- are held: no cap "
         "move may take a claim past its limit and further than the board as "
-        "it stands, so a cap whose only clear pose breaks one stays grazing "
-        "and is named (#1067). Nothing else in the intent is read. The run "
-        "prints the decap grade before and after, and a JSON_SUMMARY line. "
-        "Omitted (the default), the run is identical to one without the "
-        "flag, and can move a cap past a decap limit silently."))
+        "it stands, unless no clear pose keeps it; then the cap clears the "
+        "foreign copper anyway and the claim it broke is NAMED (#1067). "
+        "Nothing else in the intent is read. The run prints the decap grade "
+        "before and after, and a JSON_SUMMARY line. Omitted (the default), "
+        "the run is identical to one without the flag, and can move a cap "
+        "past a decap limit silently."))
 
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
     # #768: `type=float` accepts nan and inf. `min(v, nan)` is `v`, so a nan
@@ -148,6 +149,16 @@ Examples:
     intent, _rc = load_intent_or_exit(args)
     if _rc:
         return _rc
+    if intent is not None:
+        # A file that loads can still declare a limit the gate cannot read
+        # ("2.5mm"): refuse it here, before anything is recorded or written.
+        from placement import floorplan as _fp1067
+        try:
+            _fp1067.tether_gate_spec(intent)
+        except (TypeError, ValueError) as exc:
+            print(f"cannot load intent {args.intent}: its decap limits do "
+                  f"not read as numbers: {exc}", file=sys.stderr)
+            return 2
     # This step mutates the board mid-pipeline (moves caps), so it must appear in
     # the stress-test redo manifest -- otherwise a pure redo_stress_test.py replay
     # breaks at the next step that reads the *_capopt board. No-op unless

@@ -156,9 +156,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     charged caps at their IC's pin (opt-in; `decap_rung` says what it did);
   - `place_fanout_clearance` holds both decap limits when you pass it
     `--intent` (#1067): no cap move takes a decap claim past its limit and
-    further than before, it prints `Decap ...` lines, and a cap whose only
-    clear pose breaks a limit stays grazing and is named. Without
-    `--intent` it can still move a cap past `decap_pin_distance` silently;
+    further than before, unless no clear pose keeps it -- then the cap
+    clears the foreign copper anyway and the claim it broke is named under
+    `Decap limit broken`. It prints the decap grade before and after.
+    Without `--intent` it can move a cap past `decap_pin_distance`
+    silently;
   - `place_seed --reseat`'s intent basis counts only the rules it prints
     (`intent[...]`, `accept_basis.intent_rules`) -- decap and proximity
     included since #1068.

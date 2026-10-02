@@ -1258,10 +1258,10 @@ python3 py_placer/place_fanout_clearance.py board_step1b.kicad_pcb board_step1c.
 When placement left a floorplan intent, add `--intent <intent.json>`: the pass
 then holds the intent's decap limits (`decaps.max_distance_mm`,
 `decaps.max_pin_distance_mm`) no worse per claim (#1067) and prints the decap
-grade before and after. The trade is explicit: a cap whose only clear pose
-breaks a limit is NOT moved there -- it stays grazing, is listed under
-`Held by the decap gate`, and needs a via re-drop or a manual move instead of
-a silent decap break.
+grade before and after. Clearing foreign copper still comes first: a cap
+whose every clear pose breaks a limit is moved anyway, and the claim it broke
+is listed under `Decap limit broken to clear foreign copper` -- a decap to
+fix by hand or with a via re-drop, never a silent one.
 
 It prints `Moved N cap(s); resolved R/V initial violations; K unresolved`, plus
 `(F freed by via-nudge)` when the #313 last resort moved a via to free a boxed

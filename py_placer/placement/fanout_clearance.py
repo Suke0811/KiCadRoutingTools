@@ -823,7 +823,8 @@ class _Repair:
         # declares a limit (`quench.TetherGateView`); None = no gate.
         self._tethers = None
         self.tether_refused: Dict[str, int] = {}
-        self.tether_held: Dict[str, List] = {}
+        # ref -> the claims a cap broke because no clear pose kept them
+        self.tether_broken: Dict[str, List] = {}
         self._last_tether_fails = None
         # Copper-to-EDGE, not a different-net pair requirement, so #725 leaves
         # it alone: it is KiCad's `min_copper_edge_clearance`, a separate rule
@@ -3373,22 +3374,40 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                         f"Cap optimize: via-clear fallback for {ref}")
                 cap = st.caps[ref]
                 rots = rots_all if rots_all is not None else [cap.rot]
-                best = None  # (cost, x, y, rot)
-                held_by = None   # #1067: a clear pose the decap gate refused
-                for cx, cy in _candidate_positions(cap, max_displacement_cap,
-                                                   step, grid_step):
-                    for rot in rots:
-                        if st.graze_penalty(ref, cap, cx, cy, rot) > EPS:
-                            continue
-                        c = st.cost(ref, cap, cx, cy, rot)  # inf if blocked
-                        if c == float('inf'):
-                            if held_by is None and st._last_tether_fails:
-                                held_by = st._last_tether_fails
-                            continue
-                        if best is None or c < best[0] - EPS:
-                            best = (c, cx, cy, rot)
-                if best is None and held_by is not None:
-                    st.tether_held[ref] = held_by
+
+                def _best_clear():
+                    """(best (cost, x, y, rot) or None, whether the decap
+                    gate refused a clear pose)."""
+                    found, gated = None, False
+                    for cx, cy in _candidate_positions(
+                            cap, max_displacement_cap, step, grid_step):
+                        for rot in rots:
+                            if st.graze_penalty(ref, cap, cx, cy, rot) > EPS:
+                                continue
+                            c = st.cost(ref, cap, cx, cy, rot)  # inf: blocked
+                            if c == float('inf'):
+                                gated = gated or bool(st._last_tether_fails)
+                                continue
+                            if found is None or c < found[0] - EPS:
+                                found = (c, cx, cy, rot)
+                    return found, gated
+
+                best, gate_refused = _best_clear()
+                if best is None and gate_refused:
+                    # #1067, a LADDER: every clear pose breaks a declared
+                    # decap claim. A short to foreign copper is worse than a
+                    # far decap (run 34: held where it was, C63 stayed in
+                    # contact with a DB0 via and track), so clear it anyway
+                    # -- gate off for this one search -- and SAY which claim
+                    # broke, in `decap.broken` and the grade delta.
+                    _tg, st._tethers = st._tethers, None
+                    try:
+                        best, _g = _best_clear()
+                    finally:
+                        st._tethers = _tg
+                    if best is not None:
+                        st.tether_broken[ref] = _tg.tether_failures(
+                            {ref: (best[1], best[2], best[3])})
                 if best is not None:
                     st.apply_pose(ref, best[1], best[2], best[3])
                     disp = math.hypot(cap.x - cap.seed_x, cap.y - cap.seed_y)
@@ -3581,7 +3600,7 @@ def _arm_decap_gate(st, intent, pcb_data, pcb_file) -> Dict:
     rep = {'source': getattr(intent, 'source_path', None) or None,
            'rules': sorted(spec),
            'limits': {k: spec[k]['limit'] for k in sorted(spec)},
-           'claims': claims, 'caps': caps, 'refused': {}, 'held': {},
+           'claims': claims, 'caps': caps, 'refused': {}, 'broken': {},
            'grade': None}
     try:
         rep['_before'] = _decap_violations(intent, pcb_data, pcb_file)
@@ -3601,15 +3620,13 @@ def _arm_decap_gate(st, intent, pcb_data, pcb_file) -> Dict:
 
 def _finish_decap_report(rep, st, intent, pcb_data, pcb_file, placements,
                          unresolved) -> None:
-    """#1067: what the gate refused and held, and the decap grade delta.
+    """#1067: what the gate refused and broke, and the decap grade delta.
     Printed AFTER the byte-pinned `Moved N cap(s)` line, only with an intent."""
     from . import floorplan
     rep['refused'] = dict(sorted(st.tether_refused.items()))
-    # A cap the via-nudge freed is not held by anything any more.
-    rep['held'] = {r: [{'rule': f[0], 'name': f[1], 'measured': f[2],
-                        'incumbent': f[3]} for f in fails]
-                   for r, fails in sorted(st.tether_held.items())
-                   if r in unresolved}
+    rep['broken'] = {r: [{'rule': f[0], 'name': f[1], 'measured': f[2],
+                          'incumbent': f[3]} for f in fails]
+                     for r, fails in sorted(st.tether_broken.items())}
     before = rep.pop('_before', None)
     if before is not None:
         try:
@@ -3629,13 +3646,13 @@ def _finish_decap_report(rep, st, intent, pcb_data, pcb_file, placements,
     if rep['refused']:
         print(f"  Decap gate refused {sum(rep['refused'].values())} candidate "
               f"pose(s) for {len(rep['refused'])} cap(s).")
-    if rep['held']:
-        print("  Held by the decap gate (a clear pose exists, every one "
-              "breaks a declared decap limit): "
+    if rep['broken']:
+        print("  Decap limit broken to clear foreign copper (no clear pose "
+              "kept it): "
               + '; '.join(f"{r} (" + ', '.join(
-                  f"{x['rule']} {x['name']} {x['measured']:.2f}mm, now "
+                  f"{x['rule']} {x['name']} {x['measured']:.2f}mm, was "
                   f"{x['incumbent']:.2f}mm" for x in f[:3]) + ")"
-                  for r, f in rep['held'].items()))
+                  for r, f in rep['broken'].items()))
     g = rep['grade'] or {}
     if 'unavailable' in g:
         print(f"Decap grade (intent): not graded -- {g['unavailable']}")
