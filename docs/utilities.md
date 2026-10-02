@@ -637,10 +637,13 @@ pairs (0 = clean), so it gates a pipeline.
 A pad is measured by its outline: rect corners turned by the pad's angle, and
 round, oval and roundrect corners as arcs. A CUSTOM pad's outline is only its box,
 so a pair involving one that overlaps on outlines is re-measured on the real copper
-(#1111): check_drc's exact pad-pad check decides whether the copper touches, and the
-depth is the thickness of the shared copper. A solder jumper's interleaved teeth
-(KiCad's StickHub demo, JP1: 0.150 mm apart, 0.150 mm overlap on the boxes) no
-longer reads as a short. The re-measure can only remove a pair the outlines found.
+(#1111): the union of the pad's parsed primitives, and the depth is the thickness of
+the shared copper. A solder jumper's interleaved teeth (KiCad's StickHub demo, JP1:
+0.150 mm apart, 0.150 mm overlap on the boxes) no longer reads as a short, and the
+re-measure can only remove a pair the outlines found. A custom pad the parser could
+not draw (a `gr_curve` primitive) stays measured on its box. Pads that share a
+number in one footprint are one logical pad and are never compared, as in KiCad;
+an `F&B.Cu` pad is on both outer layers.
 
 ### Examples
 

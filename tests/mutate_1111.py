@@ -22,18 +22,15 @@ Edits are `str.replace(old, new, 1)`; anchors are LF and translated to the
 target's own ending. A witness is `(test file, case-name substring...)`: the
 test files run only the cases whose names contain one of the substrings.
 
-ONE ROW IS EXPECTED TO SURVIVE, and why: `contact-probe-skipped` drops
-check_drc's contact question and keeps only the shapely depth. On every
-fixture the two agree -- disjoint copper has an empty intersection, so its
-thickness is 0 either way. They differ only where check_drc's perimeter
-sampling misses a thin crossing that shapely sees, and the probe is kept so
-check_pads can never report a pair check_drc calls clear. No fixture builds
-that crossing, so the row is a declared survivor rather than a gap.
+NO ROW IS EXPECTED TO SURVIVE. An earlier version asked check_drc's
+pad-pad check whether the copper touched and declared that row a survivor;
+#1111's verifier killed it with a thin crossing check_drc samples past, and
+the probe is gone -- `test_a_thin_crossing_is_still_a_short` keeps it gone.
 
 Not covered by a row, and why:
-  * `_copper_geometry`'s `buffer(0)`: it repairs the seamed ring the parser
-    draws an unfilled circle as; no fixture here has a ring pad, and the
-    repair is shapely's, measured in the PR (area 1.9977 vs 2.0106 analytic).
+  * the seamed-ring repair `make_valid` does for an unfilled circle: no
+    fixture here has a ring pad, and the repair is shapely's, measured in the
+    PR (area 1.9977 against 2.0106 analytic, the same as `buffer(0)`).
 """
 from __future__ import annotations
 
@@ -62,26 +59,25 @@ EMPTY = _t(T, 'empty_side')
 SLIVER = _t(T, 'sliver_overlap')
 TOL = _t(T, 'tolerance')
 CROSS = _t(T, 'cross_footprint')
-NO_LAYERS = _t(T, 'no_copper_layers')
 U5 = _t(T, 'rp2350_u5')
 UNTOUCHED = _t(T, 'no_custom_pad_is_untouched')
 CLI = _t(T, 'cli_says_so')
+BOWTIE = _t(T, 'self_crossing')
+CIRCLE = _t(T, 'circle_pad_is_seen')
+LOGICAL = _t(T, 'one_logical_pad')
+FANDB = _t(T, 'f_and_b')
 T1094 = _t('test_1094_rotated_courtyards.py')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
     ('custom-pads-on-their-box', 'pads',
-     "            if depth > tolerance and (a.polygons or b.polygons) and routing_layers:",
+     "            if exact and depth > tolerance and (a.polygons or b.polygons):",
      "            if False:",
      (JUMPER, EMPTY, U5), 'KILLED'),
-    ('every-pair-through-the-exact-path', 'pads',
-     "            if depth > tolerance and (a.polygons or b.polygons) and routing_layers:",
-     "            if depth > tolerance and routing_layers:",
+    ('every-pair-through-the-copper', 'pads',
+     "            if exact and depth > tolerance and (a.polygons or b.polygons):",
+     "            if exact and depth > tolerance:",
      (UNTOUCHED,), 'KILLED'),
-    ('no-layers-drops-the-pair', 'pads',
-     "            if depth > tolerance and (a.polygons or b.polygons) and routing_layers:",
-     "            if depth > tolerance and (a.polygons or b.polygons):",
-     (NO_LAYERS,), 'KILLED'),
     ('depth-is-the-box', 'pads',
      "        _copper_geometry(a).intersection(_copper_geometry(b)))",
      "        _copper_geometry(a).intersection(_copper_geometry(b))) * 0.0 + "
@@ -91,17 +87,29 @@ ROWS = [
      "                            if len(q) >= 3])",
      "                            if len(q) >= 3]).convex_hull",
      (SLIVER,), 'KILLED'),
-    ('contact-probe-skipped', 'pads',
-     "    if not (hit and over >= _CONTACT_PROBE_MM - 1e-9):",
-     "    if False:",
-     (JUMPER, EMPTY, SLIVER, CROSS, U5), 'SURVIVED'),
+    ('repair-drops-a-lobe', 'pads',
+     "        return unary_union([make_valid(Polygon(q)) for q in pad.polygons",
+     "        return unary_union([Polygon(q).buffer(0) for q in pad.polygons",
+     (BOWTIE,), 'KILLED'),
+    ('zero-edge-is-an-axis', 'pads',
+     "            if L < 1e-12:\n                continue",
+     "            if False:\n                continue",
+     (CIRCLE,), 'KILLED'),
+    ('one-logical-pad-is-two', 'pads',
+     "            if (a.pad_number and a.pad_number == b.pad_number",
+     "            if (False and a.pad_number == b.pad_number",
+     (LOGICAL,), 'KILLED'),
+    ('f-and-b-is-its-own-layer', 'pads',
+     '        if lyr == "F&B.Cu":',
+     '        if False:',
+     (FANDB,), 'KILLED'),
     ('cross-footprint-unmeasured', 'pads',
-     "        return _overlaps_in(pads, tolerance, routing_layers)",
      "        return _overlaps_in(pads, tolerance)",
+     "        return _overlaps_in(pads, tolerance, exact=False)",
      (CROSS,), 'KILLED'),
     ('per-footprint-unmeasured', 'pads',
-     "        hits.extend(_overlaps_in(fp.pads, tolerance, routing_layers))",
      "        hits.extend(_overlaps_in(fp.pads, tolerance))",
+     "        hits.extend(_overlaps_in(fp.pads, tolerance, exact=False))",
      (JUMPER, CLI), 'KILLED'),
     ('slivers-dropped-as-arealess', 'geom',
      "        return [geom] if geom.area > AREA_EPS_MM2 else []",

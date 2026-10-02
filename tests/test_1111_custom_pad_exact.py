@@ -128,12 +128,26 @@ def _exact_gap(a, b, layers):
     return 0.5 - over if hit else None
 
 
+def _box_pairs(pads, tol=0.05):
+    """What the pre-#1111 model reads for a pad list: the outline test alone,
+    computed here so it reads the same on any tree."""
+    pads = [p for p in pads if p.size_x > 0 and p.size_y > 0 and p.net_id]
+    out = []
+    for i, a in enumerate(pads):
+        for b in pads[i + 1:]:
+            if a.net_id == b.net_id or not check_pads._shares_layer(a, b):
+                continue
+            d = check_pads._overlap_depth(check_pads._pad_outline_polygon(a),
+                                          check_pads._pad_outline_polygon(b))
+            if d > tol:
+                out.append(round(d, 3))
+    return sorted(out)
+
+
 def _box_depth(pcb):
-    """What the pre-#1111 model reads: the outline test alone."""
     out = []
     for fp in pcb.footprints.values():
-        out.extend(round(d, 3) for _a, _b, d in
-                   check_pads._overlaps_in(fp.pads, 0.05))
+        out.extend(_box_pairs(fp.pads))
     return sorted(out)
 
 
@@ -192,8 +206,7 @@ def test_a_sliver_overlap_is_measured_on_the_copper():
 def test_the_tolerance_applies_to_the_copper_depth():
     pcb = _l_with(10.59, 10.5, w=0.58)
     assert check_pads.find_pad_overlaps(pcb, tolerance=0.1) == []
-    assert len(check_pads._overlaps_in(
-        pcb.footprints['U1'].pads, 0.1)) == 1     # the box still trips
+    assert len(_box_pairs(pcb.footprints['U1'].pads, 0.1)) == 1  # the box trips
     print("  tolerance 0.1: the 0.080 sliver is under it; the box was not")
 
 
@@ -208,8 +221,8 @@ def test_a_turned_footprint_reads_the_same():
 
 def test_a_deep_contact_reads_the_same_either_way():
     """CONTROL: a rect overlapping the L's bar 0.1 mm deep. Box and copper
-    agree, so this passes on both models -- it shows the exact path does not
-    drop a real short."""
+    agree, so this passes on both models -- it shows the copper measurement
+    keeps an ordinary short (the thin-crossing arm is the hard case)."""
     pcb = _l_with(11.1, 10.0)
     assert _box_depth(pcb) == [0.1], _box_depth(pcb)
     assert _depths(pcb) == [0.1], _depths(pcb)
@@ -221,26 +234,88 @@ def test_cross_footprint_mode_measures_the_copper_too():
                _fp('R1', 9.5, 10, _rect_pad('1', 2, 0, 0)))
     assert _depths(pcb) == []                       # different footprints
     pads = [p for fp in pcb.footprints.values() for p in fp.pads]
-    assert len(check_pads._overlaps_in(pads, 0.05)) == 1
+    assert len(_box_pairs(pads)) == 1
     assert _depths(pcb, cross_footprint=True) == [], _depths(
         pcb, cross_footprint=True)
     print("  cross-footprint: box 1 hit, copper clean")
 
 
-def test_no_copper_layers_keeps_the_box_verdict():
-    """check_drc reads a `*.Cu` pad as on NO layer when it is given none, so
-    a through-hole pair would silently read clear. Without the board's
-    copper layers the box verdict stands."""
-    pcb = _l_with(9.5, 10.0)
-    pads = pcb.footprints['U1'].pads
-    assert len(check_pads._overlaps_in(pads, 0.05, [])) == 1
-    th = _pcb(_fp('U1', 10, 10, _l_pad('1', 1)
-                  + _rect_pad('2', 2, -0.5, 0, thru=True)))
-    assert len(check_pads._overlaps_in(th.footprints['U1'].pads, 0.05,
-                                       [])) == 1
-    assert check_pads._overlaps_in(th.footprints['U1'].pads, 0.05,
-                                   th.board_info.copper_layers) == []
-    print("  no copper layers: box verdict kept; with them, clean")
+def test_a_thin_crossing_is_still_a_short():
+    """A bar 0.08 mm wide crossing a 0.08 mm strip: the copper really meets,
+    0.08 x 0.08 (KiCad 10: `shorting_items`). check_drc's pad-pad check
+    samples 8 points per edge and reads a 0.0225 mm GAP here, so a version
+    of this fix that asked it first dropped the short the box model had
+    caught (#1111's verifier). The copper itself is the authority."""
+    bar = ('(gr_poly (pts (xy 0 -0.04) (xy 2 -0.04) (xy 2 0.04) (xy 0 0.04)) '
+           '(width 0) (fill yes))')
+    pads = (f'    (pad "1" smd custom (at 0 0) (size 0.08 0.08) (layers "F.Cu")'
+            f' (net 1 "N1")\n      (options (clearance outline) (anchor rect))'
+            f'\n      (primitives {bar}))\n'
+            + _rect_pad('2', 2, 1.125, 0.0625, 0.08, 1.0))
+    pcb = _pcb(_fp('U1', 10, 10, pads))
+    a, b = pcb.footprints['U1'].pads
+    got = _depths(pcb)
+    assert len(got) == 1 and abs(got[0] - 0.08) < 0.002, got
+    gap = _exact_gap(a, b, pcb.board_info.copper_layers)
+    print(f"  thin crossing: copper {got[0]:.3f} (check_drc's sampled check "
+          f"reads a gap of {gap:.4f})")
+
+
+def test_a_self_crossing_outline_keeps_both_lobes():
+    """A bowtie primitive: `buffer(0)` keeps one lobe, so a pad touching the
+    other lobe read clear. `make_valid` keeps both."""
+    bow = ('(gr_poly (pts (xy 0 0) (xy 1 1) (xy 1 0) (xy 0 1)) (width 0) '
+           '(fill yes))')
+    for x in (0.15, 0.85):           # the left lobe and the right lobe
+        pads = (f'    (pad "1" smd custom (at 0 0) (size 0.05 0.05) '
+                f'(layers "F.Cu") (net 1 "N1")\n      (options (clearance '
+                f'outline) (anchor rect))\n      (primitives {bow}))\n'
+                + _rect_pad('2', 2, x, 0.5, 0.2, 0.2))
+        got = _depths(_pcb(_fp('U1', 10, 10, pads)))
+        assert len(got) == 1 and got[0] > 0.1, (x, got)
+    print("  bowtie: a pad in EITHER lobe is a short")
+
+
+def test_a_circle_pad_is_seen():
+    """Two 1 mm discs 0.3 mm deep (and a concentric pair) used to report
+    NOTHING: a circle's outline closes on its own first vertex, and the
+    zero-length edge became a (0, 0) axis on which every gap reads 0."""
+    for dx, want in ((0.7, 0.3), (0.0, 1.0)):
+        pads = (f'    (pad "1" smd circle (at 0 0) (size 1 1) (layers "F.Cu") '
+                f'(net 1 "N1"))\n'
+                f'    (pad "2" smd circle (at {dx} 0) (size 1 1) (layers "F.Cu") '
+                f'(net 2 "N2"))\n')
+        got = _depths(_pcb(_fp('U1', 10, 10, pads)))
+        assert len(got) == 1 and abs(got[0] - want) < 0.02, (dx, got)
+    print("  circles: 0.3 mm deep and concentric both reported")
+
+
+def test_one_logical_pad_is_not_a_short():
+    """Pads sharing a NUMBER in one footprint are one logical pad (KiCad's
+    SameLogicalPadAs): an exposed pad's thermal vias, a doubled pin. KiCad
+    gives each copy of an unconnected pin its own net, so the net test does
+    not see them as one. Control: the same pads numbered apart are a short."""
+    def pads(n2):
+        return (f'    (pad "5" smd circle (at 0 0) (size 1 1) (layers "F.Cu") '
+                f'(net 1 "N1"))\n'
+                f'    (pad "{n2}" smd rect (at 0.6 0) (size 1 1) (layers "F.Cu") '
+                f'(net 2 "N2"))\n')
+    assert _depths(_pcb(_fp('U1', 10, 10, pads('5')))) == []
+    assert len(_depths(_pcb(_fp('U1', 10, 10, pads('6'))))) == 1
+    print("  pad 5 twice: one logical pad; 5 and 6: a short")
+
+
+def test_an_f_and_b_pad_is_on_both_sides():
+    """`F&B.Cu` (the #722 spelling) was read as a layer of its own that
+    shares nothing, so it could never short a front pad."""
+    pads = ('    (pad "1" smd rect (at 0 0) (size 1 1) (layers "F&B.Cu") '
+            '(net 1 "N1"))\n'
+            + _rect_pad('2', 2, 0.6, 0, 1.0, 1.0))
+    pcb = _pcb(_fp('U1', 10, 10, pads))
+    assert 'F&B.Cu' in pcb.footprints['U1'].pads[0].layers, (
+        pcb.footprints['U1'].pads[0].layers)
+    assert len(_depths(pcb)) == 1, _depths(pcb)
+    print("  F&B.Cu: a short against a front pad")
 
 
 def test_rp2350_u5_has_no_false_pairs():
@@ -249,7 +324,7 @@ def test_rp2350_u5_has_no_false_pairs():
     pcb = parse_kicad_pcb(run_utils.evidence(os.path.join(
         ROOT, 'kicad_files', 'rp2350_fpga_eensy_prePlane.kicad_pcb')))
     u5 = pcb.footprints['U5']
-    assert len(check_pads._overlaps_in(u5.pads, 0.05)) == 4
+    assert len(_box_pairs(u5.pads)) == 4
     assert check_pads.find_pad_overlaps(pcb, component='U5') == []
     cross = [h for h in check_pads.find_pad_overlaps(pcb, cross_footprint=True)
              if 'U5' in (h[0].component_ref, h[1].component_ref)]
@@ -258,21 +333,23 @@ def test_rp2350_u5_has_no_false_pairs():
 
 
 def test_a_pair_with_no_custom_pad_is_untouched():
-    """Every pair with no custom pad keeps today's outline depth, unchanged,
-    on three corpus boards -- read at tolerance -0.3 so near misses (the
-    negative depths) are compared too, not only hits."""
-    for name, want in (('rp2350_fpga_eensy_prePlane', 74),
-                       ('glasgow_revC', 129), ('orangecrab_ext_pll', 16)):
+    """The copper measurement touches ONLY pairs with a custom pad: every
+    other pair reads the outline depth with it on and off, on three corpus
+    boards -- at tolerance -0.3, so near misses (negative depths) are
+    compared too, not only hits. The counts are pinned so the comparison
+    cannot pass over an empty census."""
+    for name, want in (('rp2350_fpga_eensy_prePlane', PINNED_NEAR['rp2350']),
+                       ('glasgow_revC', PINNED_NEAR['glasgow']),
+                       ('orangecrab_ext_pll', PINNED_NEAR['orangecrab'])):
         pcb = parse_kicad_pcb(run_utils.evidence(os.path.join(
             ROOT, 'kicad_files', name + '.kicad_pcb')))
-        layers = pcb.board_info.copper_layers
         old, new = [], []
         for fp in pcb.footprints.values():
-            for out, rl in ((old, ()), (new, layers)):
+            for out, exact in ((old, False), (new, True)):
                 out.extend((a.component_ref, a.pad_number, b.pad_number,
                             round(d, 9))
                            for a, b, d in check_pads._overlaps_in(
-                               fp.pads, -0.3, rl)
+                               fp.pads, -0.3, exact=exact)
                            if not (a.polygons or b.polygons))
         assert old == new, f"{name}: a non-custom pair changed"
         assert len(old) == want, f"{name}: {len(old)} non-custom pairs, {want}"
@@ -298,6 +375,23 @@ def test_the_cli_says_so():
     print("  CLI: jumper OK (exit 0); sliver FAILED 0.080 (exit 1)")
 
 
+#: Near-miss pair counts (tolerance -0.3, non-custom pairs) per board.
+#: rp2350 read 74 before #1111's circle fix and same-logical-pad rule and
+#: reads 73 with them; the other two did not move.
+PINNED_NEAR = {'rp2350': 73, 'glasgow': 129, 'orangecrab': 16}
+
+
+def test_the_moved_constant_is_the_one_it_copied():
+    """`geometry_utils.AREA_EPS_MM2` is placement.legality's `EPS` by value
+    (the thickness code moved to the router so check_pads could call it).
+    Pinned equal, so the two cannot drift apart."""
+    import geometry_utils
+    from placement import legality
+    assert geometry_utils.AREA_EPS_MM2 == legality.EPS, (
+        geometry_utils.AREA_EPS_MM2, legality.EPS)
+    print(f"  AREA_EPS_MM2 == legality.EPS == {legality.EPS}")
+
+
 TESTS = [
     test_the_interleaved_jumper_is_clean,
     test_a_genuine_jumper_overlap_is_still_found,
@@ -308,7 +402,12 @@ TESTS = [
     test_a_turned_footprint_reads_the_same,
     test_a_deep_contact_reads_the_same_either_way,
     test_cross_footprint_mode_measures_the_copper_too,
-    test_no_copper_layers_keeps_the_box_verdict,
+    test_a_thin_crossing_is_still_a_short,
+    test_a_self_crossing_outline_keeps_both_lobes,
+    test_a_circle_pad_is_seen,
+    test_one_logical_pad_is_not_a_short,
+    test_an_f_and_b_pad_is_on_both_sides,
+    test_the_moved_constant_is_the_one_it_copied,
     test_rp2350_u5_has_no_false_pairs,
     test_a_pair_with_no_custom_pad_is_untouched,
     test_the_cli_says_so,
