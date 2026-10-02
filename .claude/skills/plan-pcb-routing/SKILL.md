@@ -2749,8 +2749,10 @@ hunt for.
    `route.py` step at 0.1/0.1/0.3/0.15 (and `--max-ripup 12`), 18 (201
    vias); one pass at those sizes over the 44 non-ground nets, 5 (176
    vias), below the board's authored 0.15 mm track (as step 1 intends) and
-   0.5 mm via. Both arms poured and repaired ground AFTER routing, so the
-   pour-first order is not what was measured. On an earlier placement of
+   0.5 mm via; it ran `--clearance 0.1` over those nets by name, equal to
+   the ceiling form on a board with one net class. Both arms poured and
+   repaired ground AFTER routing, so the pour-first order is not what was
+   measured. On an earlier placement of
    the same board, fanout at the net-class sizes and no fanout at the fine
    sizes (both with `route_diff.py`) tied at 23 (140 vias against 188), so
    neither shape is the default; measure both.

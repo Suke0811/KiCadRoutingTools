@@ -184,6 +184,21 @@ def test_the_corpus_agrees_with_the_grade():
         print(f"  {name}: {len(got)} pair(s), render == grade == pinned")
 
 
+def test_the_caption_counts_the_graders_pairs():
+    """The panel caption's `pad-conflicts` is the checklist's count, not
+    `metrics.pad_conflict_pairs` -- the optimizer's bounding-box currency,
+    which stays in the JSON. On the #1065 pose the metric reads 1 and the
+    caption 0 (the Phase-5 verifier's glasgow case: 10 against 1)."""
+    import render_placement as RP
+    path = _tmp_board()
+    _rows, model = _render(path)
+    assert model.metrics.get('pad_conflict_pairs') == 1, model.metrics.get(
+        'pad_conflict_pairs')
+    cap = RP.caption(RP.PanelSpec(model=model, label='after'))
+    assert 'pad-conflicts 0' in cap, cap
+    print(f"  caption {cap.split('|')[-2].strip()!r}; metric 1")
+
+
 def test_the_gate_reads_the_graders_pairs():
     """`--gate` passes the #1065 pose and fails the real shortfall, naming the
     key."""
@@ -211,6 +226,7 @@ TESTS = [
     test_same_net_pads_never_conflict,
     test_the_copper_is_read_at_the_models_pose,
     test_the_corpus_agrees_with_the_grade,
+    test_the_caption_counts_the_graders_pairs,
     test_the_gate_reads_the_graders_pairs,
 ]
 

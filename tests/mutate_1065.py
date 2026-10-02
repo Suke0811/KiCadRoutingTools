@@ -60,6 +60,7 @@ SAME_NET = _t(T, 'same_net')
 POSE = _t(T, 'models_pose')
 CORPUS = _t(T, 'corpus_agrees')
 GATE = _t(T, 'gate_reads')
+CAPTION = _t(T, 'caption_counts')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -80,6 +81,10 @@ ROWS = [
      "                    footprint_at_pose(state.pcb_data.footprints[r],",
      "                    (lambda _f, _p: _f)(state.pcb_data.footprints[r],",
      (POSE,), 'KILLED'),
+    ('caption-reads-the-box-metric', 'rp',
+     "        _n = (len(legality_findings(spec.model)['pad_conflict_pairs_refs'])",
+     "        _n = (m['pad_conflict_pairs'] if True else len(legality_findings(spec.model)['pad_conflict_pairs_refs'])",
+     (CAPTION,), 'KILLED'),
     ('no-exact-check', 'rp',
      "            from check_drc import check_pad_pad_overlap as _exact",
      "            _exact = None",

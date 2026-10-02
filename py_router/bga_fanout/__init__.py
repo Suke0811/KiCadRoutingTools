@@ -3344,7 +3344,15 @@ def _generate_bga_fanout_core(footprint: Footprint,
     # Sanity-check pad geometry before escaping (see qfn_fanout): overlapping
     # same-footprint pads mean the pad rotation/size is modelled wrong.
     from check_pads import find_pad_overlaps
-    _ov = find_pad_overlaps(pcb_data, component=footprint.reference)
+    try:
+        _ov = find_pad_overlaps(pcb_data, component=footprint.reference)
+    except Exception as _exc:                                # noqa: BLE001
+        # #1111: the check measures a custom pad's copper with shapely now;
+        # a geometry failure on one odd pad must not abort a fanout over
+        # what is only a warning.
+        print(f"  WARNING: the pad-geometry check for {footprint.reference} "
+              f"could not run ({type(_exc).__name__}: {_exc})")
+        _ov = []
     if _ov:
         print(f"  WARNING: {footprint.reference} has {len(_ov)} overlapping "
               f"different-net pad pair(s) - pad geometry looks wrong, fanout "

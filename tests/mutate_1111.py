@@ -94,7 +94,7 @@ ROWS = [
      (BOWTIE,), 'KILLED'),
     ('zero-edge-is-an-axis', 'pads',
      "            if L < 1e-12:\n                continue",
-     "            if False:\n                continue",
+     "            if L < 1e-12:\n                L = 1.0",
      (CIRCLE,), 'KILLED'),
     ('unconnected-copies-are-a-short', 'pads',
      "                if (a.pad_number and a.pad_number == b.pad_number",

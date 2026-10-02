@@ -41,7 +41,7 @@ Not covered by a row, and why:
     equivalent mutant here;
   * `_subcommand_names` reading only the positional section's brace group:
     reading an option's choices too re-prints the top-level help, so the
-    mutant changes the runtime (138 of 182 `--help` calls), never an answer.
+    mutant changes the runtime (130 of 182 `--help` calls), never an answer.
 """
 from __future__ import annotations
 

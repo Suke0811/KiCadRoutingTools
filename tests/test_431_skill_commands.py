@@ -467,7 +467,7 @@ def _subcommand_names(text):
     the positional section (`  {record,verdict,...}`). A brace group anywhere
     else is an option's CHOICES (`--escalation {fab,board,off}`); asking
     `tool <choice> --help` re-prints the top-level help, and reading every
-    such group was 138 of 182 subprocesses for no information (#1115's
+    such group was 130 of 182 subprocesses for no information (#1115's
     verifier)."""
     return [s for m in re.finditer(r'^\s+\{([a-z0-9_][a-z0-9_,-]*)\}', text,
                                    re.M)
@@ -1289,7 +1289,7 @@ def test_every_value_flag_is_given_a_value():
             f"  {s}:{ln}  {os.path.basename(t)} {f} takes {n}, given {g}"
             for s, ln, t, f, n, g in problems))
     # A scan that stopped matching would pass for the wrong reason. Measured
-    # at introduction (#1115): 268. The floor sits close under it, so losing
+    # at introduction (#1115): 274. The floor sits close under it, so losing
     # one whole source's commands still trips it.
     assert checked >= 240, f"only {checked} value flags checked -- scanner broken?"
     print(f"  PASS: {checked} value-taking flag citations, every one given "

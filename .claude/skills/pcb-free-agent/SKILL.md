@@ -234,9 +234,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     blocking 16 (161 vias); the same chain with its `route.py` step at the
     fine sizes (and `--max-ripup 12`), 18 (201); one fine pass over the 44
     non-ground nets, 5
-    (176), below the board's authored 0.15 mm track and 0.5 mm via. Both
-    arms poured and repaired ground AFTER routing, so the pour-first order
-    above is not what was measured. On an earlier placement of that board,
+    (176), below the board's authored 0.15 mm track and 0.5 mm via. That
+    pass ran `--clearance 0.1` over the 44 nets by name (equal to the
+    ceiling form here: the board has one net class). Both arms poured and
+    repaired ground AFTER routing, so the pour-first order above is not
+    what was measured. On an earlier placement of that board,
     fanout at the net-class sizes and no fanout at the fine sizes (both
     with `route_diff.py`) tied at 23, with 140 vias against 188.
 - **Widths are requests.** After each route, read

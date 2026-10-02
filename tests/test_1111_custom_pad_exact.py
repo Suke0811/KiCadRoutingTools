@@ -8,10 +8,14 @@ interleaved toothed pads whose real copper is 0.150 mm apart -- read as a
 board could reach DONE (run 39 was blocked on exactly that). The tracked
 corpus has a second victim: rp2350_fpga_eensy_prePlane's U5, 4 false pairs.
 
-The fix keeps today's outline test FIRST and confirms a pair that involves a
-custom pad with check_drc's own exact pad-pad check, then measures the depth
-on the shared copper with the placement graders' `overlap_thickness`. So the
-exact measurement can only remove a hit. Every discriminating arm here fails
+The fix keeps today's outline test FIRST; a pair that involves a custom pad
+is then measured on the union of its parsed primitives (`make_valid`), with
+the placement graders' `overlap_thickness` of the shared copper. So the
+copper measurement can only remove a hit. It does NOT ask check_drc's
+pad-pad check, which samples 8 points per edge and called a real 0.08 mm
+crossing a gap (`test_a_thin_crossing_is_still_a_short`). The other arms
+cover what the copper measurement surfaced: circle pads, one unconnected
+pin drawn twice, net ties and `F&B.Cu`. Every discriminating arm here fails
 on the box model and passes on the copper, and the fixture is ASYMMETRIC (an
 L-shaped pad off its anchor) because a centred shape makes the box and the
 copper agree.
