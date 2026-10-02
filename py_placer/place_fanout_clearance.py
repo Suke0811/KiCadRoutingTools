@@ -53,13 +53,6 @@ from placement.writer import write_placed_output
 def main():
     import argparse
 
-    # This step mutates the board mid-pipeline (moves caps), so it must appear in
-    # the stress-test redo manifest -- otherwise a pure redo_stress_test.py replay
-    # breaks at the next step that reads the *_capopt board. No-op unless
-    # REDO_MANIFEST is set (#132).
-    from redo_record import record_invocation
-    record_invocation()
-
     parser = argparse.ArgumentParser(
         description="Tidy near-BGA decoupling caps around fanout vias (#130).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -68,6 +61,8 @@ Examples:
   python place_fanout_clearance.py fanned.kicad_pcb
   python place_fanout_clearance.py fanned.kicad_pcb cleared.kicad_pcb \\
       --clearance 0.1 --max-displacement 2
+  python place_fanout_clearance.py fanned.kicad_pcb cleared.kicad_pcb \\
+      --clearance 0.1 --intent floorplan.json
 """
     )
     parser.add_argument("input_file", help="Input KiCad PCB file (post-fanout)")
@@ -129,6 +124,17 @@ Examples:
                         help="Max repair passes (default: 30)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Print each accepted move")
+    from placement.cli_gates import add_intent_arg, load_intent_or_exit
+    add_intent_arg(parser, summary=(
+        "Its decap limits -- decaps.max_distance_mm and "
+        "decaps.max_pin_distance_mm, each graded at error -- are held: no cap "
+        "move may take a claim past its limit and further than the board as "
+        "it stands, unless no clear pose keeps it; then the cap clears the "
+        "foreign copper anyway and the claim it broke is NAMED (#1067). "
+        "Nothing else in the intent is read. The run prints the decap grade "
+        "before and after, and a JSON_SUMMARY line. Omitted (the default), "
+        "the run is identical to one without the flag, and can move a cap "
+        "past a decap limit silently."))
 
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
     # #768: `type=float` accepts nan and inf. `min(v, nan)` is `v`, so a nan
@@ -138,6 +144,27 @@ Examples:
     if args.clearance is not None and not math.isfinite(args.clearance):
         parser.error("--clearance must be a finite number, got %r"
                      % (args.clearance,))
+    # #1067: an unreadable intent exits 2 BEFORE the run is recorded, and
+    # writes nothing (cli_gates' contract).
+    intent, _rc = load_intent_or_exit(args)
+    if _rc:
+        return _rc
+    if intent is not None:
+        # A file that loads can still declare a limit the gate cannot read
+        # ("2.5mm"): refuse it here, before anything is recorded or written.
+        from placement import floorplan as _fp1067
+        try:
+            _fp1067.tether_gate_spec(intent)
+        except (TypeError, ValueError) as exc:
+            print(f"cannot load intent {args.intent}: its decap limits do "
+                  f"not read as numbers: {exc}", file=sys.stderr)
+            return 2
+    # This step mutates the board mid-pipeline (moves caps), so it must appear in
+    # the stress-test redo manifest -- otherwise a pure redo_stress_test.py replay
+    # breaks at the next step that reads the *_capopt board. No-op unless
+    # REDO_MANIFEST is set (#132).
+    from redo_record import record_invocation
+    record_invocation()
     from fix_kicad_drc_settings import warn_if_missing_project_floor
     warn_if_missing_project_floor(args.input_file)  # #441: a dropped sibling .kicad_pro strands the DRC floor
 
@@ -176,7 +203,19 @@ Examples:
         lock_refs=args.lock,
         max_passes=args.max_passes,
         verbose=args.verbose,
+        intent=intent,
     )
+    if intent is not None:
+        # #1067: machine-readable only with an intent, so a run without one
+        # prints exactly what it printed before.
+        import json
+        print("JSON_SUMMARY: " + json.dumps({
+            'moved': len(result.get('placements') or ()),
+            'resolved': list(result.get('resolved') or ()),
+            'unresolved': list(result.get('unresolved') or ()),
+            'via_resolved': list(result.get('via_resolved') or ()),
+            'regrazed': list(result.get('regrazed') or ()),
+            'decap': result.get('decap')}, sort_keys=True, default=str))
 
     def _write_drc_floors():
         """Write back WHAT THIS PASS PRICED AT -- per key (#768/#769).
@@ -321,4 +360,4 @@ if __name__ == "__main__":
     with declare_lever('place_fanout_clearance.py', sys.argv):
         from console_encoding import enable_utf8_console
         enable_utf8_console()  # cp1252-safe non-ASCII prints (issue #152)
-        main()
+        sys.exit(main())

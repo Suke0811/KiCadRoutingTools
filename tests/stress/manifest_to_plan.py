@@ -64,6 +64,11 @@ REFUSED_TOOLS = {
         'generates a SLATE of placements to choose between; the plan format has '
         'no placement step, and picking one is a decision, not a replayable '
         'step. Run it on the CLI and start the plan from the adopted board'),
+    'rank_rotations.py': (
+        'seeds the board once per candidate angle of one part and writes the '
+        'ranking (#1113); the plan format has no placement step, and choosing '
+        'an angle is a decision. Run it on the CLI and start the plan from '
+        'the board seeded at the chosen angle'),
     'place_pose.py': (
         'applies a pose the MODEL chose (#892); the plan format has no '
         'placement step, and a pose is a decision rather than a replayable '
@@ -648,6 +653,10 @@ CAP_FLAG_PARAMS = {
     # and the tolerance that draws a connector segment back to a stub, so a
     # replay that dropped it produced different COPPER.
     '--default-via-size': 'cap_default_via_size',
+    # #1067: the floorplan intent whose decap limits the cap pass holds. A
+    # path, carried as written; the GUI resolves a relative one against the
+    # board's folder.
+    '--intent': 'cap_intent_path',
 }
 # Deliberately NOT mapped, and why:
 #   --lock              nargs='+' extra locked refs; the GUI has no control.
@@ -655,7 +664,7 @@ CAP_FLAG_PARAMS = {
 CAP_BOOL_FLAGS = {'--no-rotate': ('cap_allow_rotation', False)}  # inverted sense
 
 
-def cap_optimization_step(argv):
+def cap_optimization_step(argv, cwd=None):
     """A place_fanout_clearance.py invocation -> a standalone `optimize_caps` plan
     step (matching ai_plan.py's live format), carrying the non-default cap_*
     knobs so a loaded plan optimizes caps the way the recorded run did."""
@@ -665,6 +674,12 @@ def cap_optimization_step(argv):
         a = argv[i]
         if a in CAP_FLAG_PARAMS and i + 1 < len(argv):
             params[CAP_FLAG_PARAMS[a]] = _num(argv[i + 1]); i += 2
+            # #1067: the CLI read a relative intent from ITS cwd; the GUI
+            # would read it from the board's folder. Make it absolute here.
+            if (CAP_FLAG_PARAMS[a] == 'cap_intent_path' and cwd
+                    and not os.path.isabs(argv[i - 1])):
+                params['cap_intent_path'] = os.path.normpath(
+                    os.path.join(cwd, argv[i - 1]))
         elif a in CAP_BOOL_FLAGS:
             key, val = CAP_BOOL_FLAGS[a]; params[key] = val; i += 1
         else:
@@ -712,7 +727,7 @@ def plan_steps_from_manifest(manifest, keep_files=False):
             continue  # pruned out, or a check/grade command (no GUI step)
         if any(os.path.basename(a) == 'place_fanout_clearance.py' for a in argv):
             # standalone optimize_caps step, matching the live GUI plan (see above)
-            step = cap_optimization_step(argv)
+            step = cap_optimization_step(argv, cwd=_cwd)
             step['_files'] = [a for a in argv if a.endswith('.kicad_pcb')]
             steps.append(step)
             continue

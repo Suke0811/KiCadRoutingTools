@@ -266,6 +266,44 @@ is bounded by SCOPE -- the net patterns above. Each probe row carries a
 `status` (`ok` / `crashed` / `no_summary` / `screened`) so an absent verdict
 names its cause instead of being an undifferentiated `failures: null`.
 
+## Rotation Ranker (`rank_rotations.py`)
+
+Ranks ONE part's rotations by what `place_seed` and its polish produce at each
+(#1113). A pile part keeps its input rotation -- a generator default -- and a
+one-part move cannot rank a large IC's rotation once the seed has packed its
+decaps against its pins (`converge.py poses` then vetoes every other angle and
+says so in `dropped_by`). So the rotation is judged at SEED level.
+
+```bash
+python py_placer/rank_rotations.py pile.kicad_pcb --intent floorplan.json \
+    --out-dir rot --probe --write-intent floorplan_rot.json
+```
+
+Per candidate angle (the input angle and its quarter turns; the 45-degree set
+too with `--diagonal-rotations`; or `--rotations`), the intent plus one block
+declaring the part's `rotation`, then `place_seed` for every `--seeds` value,
+exactly as `compare_seeds.py` runs it. The written board is read back: a part
+left unseated, or written at another angle, is a hard fail and ranks last. The
+rest rank by unseated parts, then a probe verdict when `--probe` routed it
+(the top `--probe-top` angles, full-board, no timeout), then median crossings,
+hpwl and grade errors; a tie goes to the earlier angle in the ladder (the
+input angle when it is ranked). A seed that fails its intent gate is not a
+tier -- on a pile most do, for repairable reasons -- but each angle reports
+how many of its seeds did, and the winner line says so. A CONTROL arm seeds
+the same seeds with the intent as given (no rotation declared): it is the
+baseline the winner line compares with, because the seeder may turn the part
+itself, and it is reported, never ranked. Without `--ref` it ranks the
+unlocked, undeclared, non-connector part with the most connected pads (at least
+`--min-pads`). Writes `rotations.json` (every row, every angle's spread, the
+ranking, `separated` when the winner's worst seed beats the runner-up's best)
+and a `JSON_SUMMARY`; `--write-best` copies the winning board with its
+siblings and `--write-intent` writes the intent with the winning rotation
+declared. Exit 0 with a winner; 2 for usage errors; 3 when place_seed will
+not seed the board (it looks placed -- pass `--seed-args='--force'`); 4 when
+nothing is rankable: the part is locked, already has a declared rotation or a
+fixed pose, no part is eligible, the zone plan is refused, or every angle
+hard-failed.
+
 ## Plane-Fragility Placement Score (`plane_score.py`)
 
 Pours the named plane nets on a scratch copy of a board (full-outline

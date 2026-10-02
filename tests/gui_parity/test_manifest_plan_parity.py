@@ -167,7 +167,7 @@ def _plan_pairs(manifest):
         if i not in keep or is_check_cmd(argv):
             continue
         if any(os.path.basename(a) == 'place_fanout_clearance.py' for a in argv):
-            steps.append(m2p.cap_optimization_step(argv))
+            steps.append(m2p.cap_optimization_step(argv, cwd=_cwd))
             # A cap step is still appended (route_planes inheritance below
             # needs the sequence) but never enters `pairs`, because check_pair
             # validates against the ROUTE-step tables, where `--clearance` and
@@ -536,6 +536,9 @@ _MUST_RESOLVE_ON = {
         # #742: the CLI's --default-via-size on its OWN control. It must NOT
         # resolve as via_size -- see the change detector in check_cap_flags.
         'cap_default_via_size',
+        # #1067: the CLI's --intent, the path the cap pass loads its decap
+        # limits from.
+        'cap_intent_path',
         # the Basic-tab knobs a cap step legitimately drives: `clearance` is
         # the GUI's spelling of "--clearance was GIVEN" (#768), and grid_step
         # is the position snap the pass reads through get_shared_params.
@@ -1366,7 +1369,8 @@ def check_cap_flags():
             '--max-displacement-cap', '6', '--displacement-growth', '2',
             '--max-passes', '7', '--cap-prefix', 'C',
             '--grid-step', '0.05', '--clearance', '0.1',
-            '--default-via-size', '0.42', '--no-rotate']
+            '--default-via-size', '0.42', '--no-rotate',
+            '--intent', 'x.intent.json']
     step = m2p.cap_optimization_step(argv)
     if step.get('action') != 'optimize_caps':
         return [('(step)', f"action is {step.get('action')!r}")]
@@ -1387,6 +1391,7 @@ def check_cap_flags():
             ('--grid-step', 'grid_step', 0.05),
             ('--clearance', 'clearance', 0.1),
             ('--default-via-size', 'cap_default_via_size', 0.42),
+            ('--intent', 'cap_intent_path', 'x.intent.json'),
             ('--no-rotate', 'cap_allow_rotation', False)):
         if params.get(key) != want:
             bad.append((flag, f"-> {key}={params.get(key)!r}, expected {want!r}"))
@@ -1417,7 +1422,7 @@ def check_cap_flags():
     bare = m2p.cap_optimization_step(
         ['python3', 'py_placer/place_fanout_clearance.py', 'in.kicad_pcb'])
     for _k in ('cap_board_edge_clearance', 'board_edge_clearance',
-               'cap_default_via_size', 'via_size'):
+               'cap_default_via_size', 'via_size', 'cap_intent_path'):
         if _k in (bare.get('params') or {}):
             bad.append(('(omitted)',
                         f'an unset flag was materialised into the plan as {_k}'))

@@ -52,6 +52,15 @@ def compute_footprint_bbox_local(footprint: Footprint) -> Tuple[float, float, fl
     return (min_x, min_y, max_x, max_y)
 
 
+def literal_ref_glob(ref: str) -> str:
+    """`ref` as an fnmatch pattern matching exactly itself: glob
+    metacharacters (`D[1]`, `Ref*`) are bracket-escaped. For a ref the caller
+    selected by name or geometry, handed to code that globs every ref (an
+    intent `refs` list, `reseat_scope`). Shared by place_seed's region reseat
+    and rank_rotations.py (#1113)."""
+    return ''.join('[%s]' % c if c in '*?[]' else c for c in ref)
+
+
 def snap_to_grid(value: float, grid_step: float) -> float:
     """Snap a value to the nearest grid point."""
     return round(value / grid_step) * grid_step

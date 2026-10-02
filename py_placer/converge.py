@@ -767,6 +767,39 @@ def _pose_knobs(board, clearance, board_edge_clearance):
     return board_floor_knobs(board, clearance, board_edge_clearance)
 
 
+#: #1113: veto labels that name a NEIGHBOUR (quench.VETO_CHECKS minus the
+#: board, outline, intent and keep-out-band terms).
+_NEIGHBOUR_CHECKS = ('courtyard', 'pads', 'waived_pads', 'waived_drill',
+                     'body_overlap', 'body_contained', 'pads_under_body',
+                     'tether', 'escape_overlap')
+
+
+def _in_place_clause(ref, diag) -> str:
+    """#1113: what vetoed the part's OWN spot, and -- when its in-place
+    rotations are vetoed -- why this sweep cannot rank them."""
+    import pose_score
+    out = ''
+    by = diag.get('dropped_in_place_by') or []
+    if by:
+        out += (" In place: " + pose_score.in_place_phrase(by) + ".")
+    if not diag.get('in_place_evaluated', True):
+        out += (f" Its own angle {diag.get('input_rotation', 0):g} is not on "
+                f"the swept lattice, so staying put was not evaluated.")
+    # Only a NEIGHBOUR veto says the neighbours were packed around the
+    # part; a board-term or knob veto (board_bbox at a 50 mm clearance) is
+    # not a reason to rank rotations at seed level.
+    turned = [d for d in by if d['check'] in _NEIGHBOUR_CHECKS
+              and abs(((d['rot'] - diag.get('input_rotation', 0)) + 180.0)
+                      % 360.0 - 180.0) > 1e-6]
+    if turned:
+        out += (" A one-part move holds every neighbour where it is, so it "
+                "cannot judge a rotation the neighbours were packed around: "
+                f"rank {ref}'s rotations at seed level with "
+                "py_placer/rank_rotations.py on the pile this board was "
+                "seeded from.")
+    return out
+
+
 def cmd_poses(a):
     from kicad_parser import parse_kicad_pcb
     import pose_score
@@ -794,23 +827,46 @@ def cmd_poses(a):
                                            else 'unrankable')},
                          indent=1))
         return 4
+    # #1113: WHICH check vetoed the dropped candidates, and against whom.
+    _phrase = pose_score.veto_phrase(diag.get('dropped_by') or {})
+    _veto = {'dropped_by': diag.get('dropped_by') or {},
+             'dropped_in_place_by': diag.get('dropped_in_place_by') or [],
+             'evaluated_total': diag.get('evaluated_total', 0),
+             'all_moves_vetoed': bool(diag.get('all_moves_vetoed'))}
     if not poses:
         # The dropped-pose census is the difference between "this part has
         # nowhere to go" and "your knobs veto even staying put" (run-7 S4:
         # flip-in-place WAS enumerated, then silently dropped).
         _cut = bool(diag.get('stopped_early'))
-        print(json.dumps({'ref': a.ref, 'poses': [], 'knobs': knobs,
-                          'dropped_total': diag.get('dropped_total', 0),
-                          'dropped_in_place': diag.get('dropped_in_place', []),
-                          'stopped_early': _cut,
-                          # "no legal pose" is a VERDICT about the part. A cut
-                          # sweep has not earned it -- it diagnoses a part whose
-                          # poses were never enumerated.
-                          'note': ('the sweep stopped early -- this is NOT a '
-                                   'verdict about the part' if _cut else
-                                   'no legal pose, including staying put')},
-                         indent=1))
+        _note = ('the sweep stopped early -- this is NOT a verdict about '
+                 'the part' if _cut else
+                 'no legal pose, including staying put -- vetoed by '
+                 + _phrase)
+        _clause = '' if _cut else _in_place_clause(a.ref, diag)
+        if _clause:
+            _note += '.' + _clause
+        if not _cut:
+            print(f"converge poses {a.ref}: {_note}", file=sys.stderr)
+        print(json.dumps(dict({'ref': a.ref, 'poses': [], 'knobs': knobs,
+                               'dropped_total': diag.get('dropped_total', 0),
+                               'dropped_in_place':
+                                   diag.get('dropped_in_place', []),
+                               'stopped_early': _cut,
+                               # "no legal pose" is a VERDICT about the part.
+                               # A cut sweep has not earned it -- it diagnoses
+                               # a part whose poses were never enumerated.
+                               'note': _note}, **_veto), indent=1))
         return 2 if _cut else 1
+    _all_note = None
+    if diag.get('all_moves_vetoed') and diag.get('dropped_total'):
+        # #1113: only staying put survived. For a part whose neighbours were
+        # packed around its current pose -- an IC with its decaps at its
+        # supply pins -- a one-part move cannot judge another rotation.
+        _all_note = (f"every candidate except staying put was vetoed "
+                     f"({diag['dropped_total']} of "
+                     f"{diag.get('evaluated_total', 0)}) -- {_phrase}."
+                     + _in_place_clause(a.ref, diag))
+        print(f"converge poses {a.ref}: {_all_note}", file=sys.stderr)
 
     if a.route:
         if not a.affected:
@@ -859,6 +915,8 @@ def cmd_poses(a):
                       'knobs': knobs,
                       'dropped_total': diag.get('dropped_total', 0),
                       'dropped_in_place': diag.get('dropped_in_place', []),
+                      **_veto,
+                      **({'note': _all_note} if _all_note else {}),
                       'poses': poses}, indent=1))
     return 0
 

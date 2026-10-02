@@ -59,6 +59,20 @@ is a pile but reads `unplaced: false` (#1109).
   that you did. A pile has no decap distances to read, so without it the
   rule stays unarmed: run 36 left StickHub's hub decaps 2.1-9.8 mm from
   their pins, where the human board keeps them within 2.2 mm.
+- **On a pile, read the emitter's decap line before you seed.** It says how
+  many caps the per-supply-pin stage can claim, and which only once their
+  owner ICs are seated. When `place_seed` then reports the decap stage
+  claimed 0 because no owner IC was seated before it, the first remedy is
+  to seat the owners first (a `fixed_poses` entry or a zoned block). The
+  other is an EXPERIMENT, not a fix: re-seed with
+  `--decap-claim-after-ics` and keep it only if it grades better on
+  routed outcome. It claims the decaps once the centroid stage has seated
+  their ICs, and the seed places every IC exactly as without it -- only
+  the polish that follows can move one (#1105). The line's stage-2.5
+  count assumes those early seats succeed. The corpus A/B rejected it as
+  a default: it marked `regress` on all 7 of its boards. On run 38's
+  StickHub pile (seed 0, run 38's own arguments) it claimed 16 caps and
+  cut the seed's grade errors 16 to 7.
 - **Give `--intent` to every placement tool.** It is a per-move gate only in
   tools that receive it. It stops a part LEAVING its zone; it never moves one
   back in.
@@ -105,6 +119,17 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   (`place_pose set … --rot`, then `lock`, or the plan's `fixed_poses`). Then
   zone the rest and seed. The seeder puts undeclared parts at their
   connectivity centroid in the first rotation that fits.
+- **On a pile, rank the biggest IC's rotation before you keep a seed.** A
+  pile part keeps its input rotation, which is a generator default, and
+  `converge.py poses` cannot rank an IC's rotation once its decaps are packed
+  against its pins (its `dropped_by` says what vetoed each move). Rank it at
+  seed level, passing the same `--seed-args` you will seed with:
+  `python3 -X utf8 py_placer/rank_rotations.py <pile> --intent <intent.json> --out-dir wk/<run>/rot --probe --write-intent wk/<run>/intent_rot.json`
+  then seed from the written intent. Without `--ref` it ranks the unlocked,
+  undeclared part with the most connected pads. It costs one `place_seed`
+  per angle plus one full-board probe per `--probe-top` angle (default 2).
+  Run 39 found StickHub's U1 at 270 instead of the pile's 0 by hand: seed
+  crossings 222 to 182, first-route blocking 31-37 to 16-19.
 - **Rotation and pin order.** A `CROSSED` pin-order pair in `board_context`
   costs a via per net at every rotation. After rotating an IC, re-seat its
   caps: one rotation left a decap at 9.57 mm while crossings and hpwl both
@@ -133,8 +158,17 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     finding is gone; read `unresolved_refs` / `unresolved_by_rule` in its
     `JSON_SUMMARY` for the rest (#1066). Add `--repair-decaps` to seat
     charged caps at their IC's pin (opt-in; `decap_rung` says what it did);
-  - `place_fanout_clearance` can move a cap past `decap_pin_distance`
-    silently (#1067);
+  - `place_fanout_clearance` holds both decap limits when you pass it
+    `--intent` (#1067): no cap move takes a decap claim past its limit and
+    further than before, unless no clear pose keeps it -- then the cap
+    clears the foreign copper anyway and the claim it broke is named under
+    `Decap limit broken`. When it broke a claim or left a cap grazing, it
+    also runs the pass without the gate and keeps whichever ends with fewer
+    unresolved grazes, then fewer decap claims made worse (`Decap: ...`
+    says which).
+    It prints the decap grade before and after.
+    Without `--intent` it can move a cap past `decap_pin_distance`
+    silently;
   - `place_seed --reseat`'s intent basis counts only the rules it prints
     (`intent[...]`, `accept_basis.intent_rules`) -- decap and proximity
     included since #1068.

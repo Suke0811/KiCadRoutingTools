@@ -605,6 +605,8 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
               'rotations': [rot],
               'dropped_total': diag.get('dropped_total', 0),
               'dropped_in_place': diag.get('dropped_in_place', []),
+              # #1113: which check vetoed them, and against whom.
+              'dropped_by': diag.get('dropped_by', {}),
               'stopped_early': bool(diag.get('stopped_early'))}
     return ordered, census
 
@@ -1071,6 +1073,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                         'ranked': len(poses),
                         'dropped_total': _d.get('dropped_total', 0),
                         'dropped_in_place': _d.get('dropped_in_place', []),
+                        'dropped_by': _d.get('dropped_by', {}),   # #1113
                         'stopped_early': bool(_d.get('stopped_early')),
                         # The SWEEP's radius, and it is a Chebyshev box half
                         # width, not the Euclidean bound `--radius` applies to
@@ -1362,8 +1365,12 @@ def _refusal_reason(bad, strict, before, after, summary) -> str:
                    "re-grades before writing."
                    % (nl['x'], nl['y'], nl['rot'], nl.get('dist_mm') or 0.0))
     elif summary.get('snap_census', {}).get('dropped_in_place'):
+        import pose_score
         reason += (" No legal pose was found nearby, and the census shows the "
                    "knobs veto the part's own spot too -- check the resolved "
                    "clearance against the board's floor before reading this "
-                   "as 'the part is stuck'.")
+                   "as 'the part is stuck'. Vetoed by "
+                   + pose_score.veto_phrase(
+                       summary['snap_census'].get('dropped_by') or {})
+                   + ".")
     return reason

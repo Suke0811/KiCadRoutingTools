@@ -613,6 +613,74 @@ ROWS += [
               'orangecrab_ext_pll.kicad_pcb', 'glasgow_revC.kicad_pcb')
 ]
 
+# #1105: seeder stage 3.5, the per-supply-pin decap claim run again once the
+# centroid stage has seated the owner ICs that stage 2.5 found unplaced --
+# every IC on a flat board or a pile. Same intents, signal and guards as the
+# `decap-owners-*` rows PR #1110 measured for its stage 2.5a (which seated
+# the owner ICs EARLY and regressed on all four flat boards; the rows and
+# their baseline were removed with it in a14f68f3, and are in f61f9118), so
+# the two read column for column. Two variants, both arms explicit so the rows measure the same thing
+# whichever way the defaults point: `decap-after-ics-*` keeps every seat the
+# claim finds; `decap-within-limit-*` undoes one that lands past the decap
+# limit (`seeder.DECAP_LATE_WITHIN_LIMIT`); `decap-after-queue-*` also holds
+# the caps back until the rest of the queue is seated
+# (`seeder.DECAP_LATE_AT`).
+#
+# REJECTED, all three (#1105): no family improves on N-1 boards without a
+# regression -- the IC poses are unchanged, so what costs the guards is the
+# claim itself (a cap at a supply pin instead of its own net centroid, and
+# the 2-pin parts seated after it). `seeder.DECAP_CLAIM_AFTER_ICS_DEFAULT`
+# stays False and `place_seed --decap-claim-after-ics` opts in to the first
+# family, the one that claims the most caps on a pile. Kept as change
+# detectors with their measured marks; the numbers are in the baseline.
+_AFTER_ICS_BOARDS = ('esp_prog', 'splitflap_driver', 'tigard', 'watchy',
+                     'glasgow_revC', 'ulx3s', 'orangecrab_ext_pll')
+#: (family, board) -> the measured mark of a rejected row.
+_AFTER_ICS_MARKS = {
+    ('decap-within-limit', 'esp_prog'): 'neutral',
+    ('decap-within-limit', 'splitflap_driver'): 'neutral',
+    ('decap-after-queue', 'splitflap_driver'): 'neutral',
+    ('decap-after-queue', 'tigard'): 'improve',
+    ('decap-after-queue', 'glasgow_revC'): 'improve',
+    ('decap-after-queue', 'ulx3s'): 'improve',
+}
+ROWS += [
+    {
+        'name': f'{name}-{b}',
+        'board': f'{b}.kicad_pcb',
+        'corridors': [],
+        'engine': 'seed',
+        'seed_intents': {'off': 'auto', 'on': 'auto', 'grade': 'auto'},
+        'seed_off': {'decap_claim_after_ics': False},
+        'seed_on': {'decap_claim_after_ics': True},
+        'seeder_flags': {'off': {}, 'on': flags},
+        'ignore_nets': ['GND'],
+        'signal': 'intent_errors',
+        'guard': ('crossings', 'hpwl', 'unseated', 'body_blocking'),
+        'rejected': True,
+        'expect': _AFTER_ICS_MARKS.get((name, b), 'regress'),
+        'why': ('MECHANISM: stage 3 seats by pin count, so every owner IC is '
+                'seated before any 2-pin cap, and the ON arm runs the pin '
+                'claim at the first scoped cap after the last owner IC. The '
+                'claim draws no RNG, so every IC pose is the OFF arm\'s; only '
+                'the caps (at a supply pin instead of their own net '
+                'centroid) and the parts seated after them move'
+                + (', and a seat landing past the decap limit is undone so '
+                   'that cap keeps its centroid turn' if flags.get(
+                       'DECAP_LATE_WITHIN_LIMIT') else '')
+                + ('; the caps wait until every other part is seated.'
+                   if flags.get('DECAP_LATE_AT') == 'after_queue' else '.')),
+    }
+    for name, flags in (
+        ('decap-after-ics', {'DECAP_LATE_WITHIN_LIMIT': False,
+                             'DECAP_LATE_AT': 'after_last_owner'}),
+        ('decap-within-limit', {'DECAP_LATE_WITHIN_LIMIT': True,
+                                'DECAP_LATE_AT': 'after_last_owner'}),
+        ('decap-after-queue', {'DECAP_LATE_WITHIN_LIMIT': True,
+                               'DECAP_LATE_AT': 'after_queue'}))
+    for b in _AFTER_ICS_BOARDS
+]
+
 # --- #1051 / #1053 / #1043 / #1052: declared structure, OFF vs ON ----------
 #
 # Every row below varies ONE emitter parameter between its arms
