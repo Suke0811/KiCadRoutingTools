@@ -97,6 +97,16 @@ def test_each_arm_is_a_hand_run_seed_and_the_ranking_is_stable():
             assert row['pose_digest'] == file_pose_digest(hb), ang
             assert row['rotation_applied'] and row['hard_fail'] is None, row
 
+        # the CONTROL is the undeclared seed: a plain place_seed run
+        ctl = res['control']
+        hc = os.path.join(td, 'plain_0.kicad_pcb')
+        h = _run([PLACE_SEED, PILE, hc, '--intent', ipath, '--seed', '0',
+                  '--group-by', 'auto'])
+        assert h.returncode in (0, 4), h.stdout[-800:]
+        assert ctl['rows'][0]['pose_digest'] == file_pose_digest(hc), ctl
+        assert ctl['crossings'] == _summary(h.stdout)['crossings'], ctl
+        assert res['separated'] is None          # one seed: no spread
+
         # the same arms in another order: the same rows
         out2 = os.path.join(td, 'r2')
         r2 = _run([TOOL, PILE, '--intent', ipath, '--ref', 'U1', '--seeds',
@@ -108,6 +118,9 @@ def test_each_arm_is_a_hand_run_seed_and_the_ranking_is_stable():
             a = row['rotation']
             assert {k: row[k] for k in KEYS + ('pose_digest',)} == \
                 {k: rows[a][k] for k in KEYS + ('pose_digest',)}, a
+        # the input angle (0) was not ranked there: no input baseline
+        assert _summary(r2.stdout)['input_crossings'] is None, \
+            r2.stdout[-400:]
 
         # the written outputs
         win = res['best_rotation']

@@ -69,6 +69,11 @@ def test_rotation_key_orders_as_documented():
                   _agg(90, 1, 99, probed=True, failures=5)]) == [90, 0]
     assert _rank([_agg(0, 0, 100, hpwl=9), _agg(90, 1, 100, hpwl=8)]) \
         == [90, 0]
+    # crossings outrank hpwl when they disagree, hpwl outranks grade errors
+    assert _rank([_agg(0, 0, 100, hpwl=1), _agg(90, 1, 99, hpwl=500)]) \
+        == [90, 0]
+    assert _rank([_agg(0, 0, 100, hpwl=8, errors=0),
+                  _agg(90, 1, 100, hpwl=7, errors=5)]) == [90, 0]
     assert _rank([_agg(0, 0, 100, errors=2), _agg(90, 1, 100, errors=1)]) \
         == [90, 0]
     # a full tie keeps the input angle (ladder index 0)
@@ -177,6 +182,19 @@ def test_refusals_say_why():
                         refuse='U9 names nothing on this board')
         run_utils.check(base + ['--seed-args=--seed 3'], code=2,
                         refuse='--seed-args may not carry --seed')
+        # an abbreviation argparse would expand is the flag it expands to
+        run_utils.check(base + ['--seed-args=--se 3'], code=2,
+                        refuse='--se (= --seed)')
+        run_utils.check(base + ['--seed-args=--no-pol'], code=2,
+                        refuse='--no-pol (= --no-polish)')
+        run_utils.check(base + ['--seed-args=--re'], code=2,
+                        refuse='--re (= <ambiguous>)')
+        # output paths are refused before any seed runs
+        run_utils.check(base + ['--write-best', os.path.join(td, 'x.pcb')],
+                        code=2, refuse='--write-best must name a .kicad_pcb')
+        run_utils.check(base + ['--write-intent',
+                                os.path.join(td, 'nodir', 'i.json')],
+                        code=2, refuse='--write-intent: no such directory')
         run_utils.check(base + ['--rotations', '0', '360'], code=2,
                         refuse='--rotations has duplicates')
         _d2, ip2 = _pile_intent(td, lambda d: d.update(

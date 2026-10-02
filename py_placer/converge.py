@@ -767,6 +767,29 @@ def _pose_knobs(board, clearance, board_edge_clearance):
     return board_floor_knobs(board, clearance, board_edge_clearance)
 
 
+def _in_place_clause(ref, diag) -> str:
+    """#1113: what vetoed the part's OWN spot, and -- when its in-place
+    rotations are vetoed -- why this sweep cannot rank them."""
+    import pose_score
+    out = ''
+    by = diag.get('dropped_in_place_by') or []
+    if by:
+        out += (" In place: " + pose_score.in_place_phrase(by) + ".")
+    if not diag.get('in_place_evaluated', True):
+        out += (f" Its own angle {diag.get('input_rotation', 0):g} is not on "
+                f"the swept lattice, so staying put was not evaluated.")
+    turned = [d for d in by
+              if abs(((d['rot'] - diag.get('input_rotation', 0)) + 180.0)
+                     % 360.0 - 180.0) > 1e-6]
+    if turned:
+        out += (" A one-part move holds every neighbour where it is, so it "
+                "cannot judge a rotation the neighbours were packed around: "
+                f"rank {ref}'s rotations at seed level with "
+                "py_placer/rank_rotations.py on the pile this board was "
+                "seeded from.")
+    return out
+
+
 def cmd_poses(a):
     from kicad_parser import parse_kicad_pcb
     import pose_score
@@ -809,6 +832,9 @@ def cmd_poses(a):
                  'the part' if _cut else
                  'no legal pose, including staying put -- vetoed by '
                  + _phrase)
+        _clause = '' if _cut else _in_place_clause(a.ref, diag)
+        if _clause:
+            _note += '.' + _clause
         if not _cut:
             print(f"converge poses {a.ref}: {_note}", file=sys.stderr)
         print(json.dumps(dict({'ref': a.ref, 'poses': [], 'knobs': knobs,
@@ -828,16 +854,8 @@ def cmd_poses(a):
         # supply pins -- a one-part move cannot judge another rotation.
         _all_note = (f"every candidate except staying put was vetoed "
                      f"({diag['dropped_total']} of "
-                     f"{diag.get('evaluated_total', 0)}) -- {_phrase}.")
-        if diag.get('dropped_in_place'):
-            _all_note += (
-                " Its other in-place rotations ("
-                + ', '.join(f"{r:g}" for r in diag['dropped_in_place'])
-                + ") were vetoed too: a one-part move holds every neighbour "
-                f"where it is, so it cannot judge a rotation its neighbours "
-                f"were packed around. Rank {a.ref}'s rotations at seed "
-                f"level: py_placer/rank_rotations.py on the pile this board "
-                f"was seeded from.")
+                     f"{diag.get('evaluated_total', 0)}) -- {_phrase}."
+                     + _in_place_clause(a.ref, diag))
         print(f"converge poses {a.ref}: {_all_note}", file=sys.stderr)
 
     if a.route:

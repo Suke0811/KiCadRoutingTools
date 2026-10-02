@@ -71,7 +71,8 @@ EPS_IMPROVE = 1e-6
 #: refusal no label covered and is a bug for `tests/test_1113_pose_veto.py`.
 VETO_CHECKS = ('intent', 'board_bbox', 'outline', 'waived_drill',
                'waived_pads', 'body_overlap', 'courtyard', 'body_contained',
-               'pads_under_body', 'keepout_band', 'pads', 'tether')
+               'pads_under_body', 'keepout_band', 'pads', 'tether',
+               'escape_overlap')
 #: mm2 of .Fab body overlap `_body_overlap_at` counts: bodies that abut
 #: (a shared edge, area 0) are not overlapping.
 _BODY_OVERLAP_EPS = 1e-6
@@ -2350,7 +2351,18 @@ class QuenchState:
             ref, x, y, rot, exclude=exclude, limit=cur_board)
         if not (cand_overlap <= EPS_IMPROVE
                 and cand_board < cur_board - EPS_IMPROVE):
+            if (self._why is not None and cand_overlap > EPS_IMPROVE
+                    and self._why.get('check') in ('board_bbox', 'outline')):
+                # #1113: a part coming home from off the board, refused for
+                # OVERLAP -- the board term the ordinary path named is not
+                # what stopped it (a courtyard label keeps its blocker).
+                self._why.clear()
+                self._veto('escape_overlap')
             return False
+        # #1113: past here the ESCAPE rule's own conjuncts decide, so a
+        # refusal below is theirs, not the ordinary path's board term.
+        if self._why is not None:
+            self._why.clear()
         # #1101: ...and the same BODY conjunct the ordinary path has. Coming in
         # from the pile, a part whose courtyard is small and whose drawn body
         # is large (StickHub's lying-down electrolytic C38: a 6.3 x 11.5 mm
@@ -2367,7 +2379,8 @@ class QuenchState:
         # The unfreeze branch gets the SAME pad/hole conjunct: a part may move
         # back toward the board only without worsening any pad pair.
         if self.legality_ctx is not None and not self.legality_ctx.pads_ok(
-                ref, x, y, rot, self._pad_neighbors(ref), exclude=exclude):
+                ref, x, y, rot, self._pad_neighbors(ref), exclude=exclude,
+                why=self._why):
             return False
         return self._tether_gate(ref, x, y, rot)
 

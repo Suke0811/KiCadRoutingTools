@@ -149,6 +149,20 @@ def veto_phrase(dropped_by: Dict, top: int = 3) -> str:
     return '; '.join(out) or 'nothing'
 
 
+def in_place_phrase(dropped_in_place_by) -> str:
+    """The in-place vetoes grouped by (check, blocker): `pads_under_body (J9)
+    at 0, 90, 180, 270` (#1113). The top-N cut of `veto_phrase` can drop the
+    one check that refused the part's own spot."""
+    groups: Dict = {}
+    for d in dropped_in_place_by or ():
+        groups.setdefault((d['check'], d.get('blocker')), []).append(d['rot'])
+    return '; '.join(
+        f"{chk}" + (f" ({blk})" if blk else '') + ' at '
+        + ', '.join(f"{r:g}" for r in rots)
+        for (chk, blk), rots in sorted(groups.items(),
+                                       key=lambda kv: (-len(kv[1]), kv[0][0])))
+
+
 def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
                step: float = 0.5, rotations: Sequence[float] = ROTATIONS,
                limit: int = 12, allow_rotations: bool = True,
@@ -293,6 +307,7 @@ def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
             p['dist_mm'] == 0 and _same_rot(p['rot'], rot0) for p in scored)
         diagnostics['in_place_evaluated'] = any(
             _same_rot(r, rot0) for r in rots)
+        diagnostics['input_rotation'] = rot0
     # cost, then least disturbance, then a stable rotation order
     scored.sort(key=lambda p: (p['cost'], p['dist_mm'], p['rot']))
     return scored[:limit]

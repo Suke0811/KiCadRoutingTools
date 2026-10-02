@@ -5,8 +5,8 @@ On a pile a part keeps its input rotation -- a generator default, not a
 decision -- and nothing else ranks a large IC's rotation: `--rotate-by-facing`
 scores edge facing only, and `converge.py poses --ref` moves ONE part with its
 neighbours frozen, so once the seed has packed an IC's decaps against its
-supply pins every other rotation of it is vetoed (#1113: StickHub's U1, all
-323 candidates dropped). The rotation has to be judged at SEED level: seat the
+supply pins every other rotation of it is vetoed (#1113: StickHub's U1, every
+candidate dropped). The rotation has to be judged at SEED level: seat the
 whole board once per candidate angle and compare what comes out. Run 39 did
 that by hand -- U1 at 270 instead of the pile's 0 took seed crossings 222 to
 182 and the first full route's blocking 31-37 to 16-19.
@@ -18,9 +18,17 @@ compare_seeds runs it (same subprocess, same polish), and the written board
 read back to confirm the part really sits at that angle. A rotation where the
 part went unseated, or was written at another angle, is a hard fail and ranks
 last. The rest rank by (unseated, probe failures when probed, crossings, hpwl,
-grade errors) over the seeds' medians, ties to the input rotation. --probe
+grade errors) over the seeds' medians; a tie goes to the earlier angle in the
+ladder, the input angle when it is ranked. A seed that fails its intent gate
+is NOT a tier (on a pile most do, for repairable reasons), but every angle
+reports how many of its seeds did, and the winner line says so. --probe
 routes the top --probe-top rotations full-board (converge.probe_route), and a
 probe verdict outranks crossings, which is only a proxy (run 7).
+
+A CONTROL arm seeds the same seeds with the intent as given -- no rotation
+declared -- so the baseline the winner is compared with is the seed you would
+have got, not the input angle forced (the seeder may turn the part itself).
+It is reported, never ranked.
 
     python rank_rotations.py pile.kicad_pcb --intent fp.json --out-dir rot \\
         --probe --write-intent fp_rot.json
@@ -53,6 +61,35 @@ from compare_seeds import (_split_forwarded, probe_full, probe_nets,
 FORBIDDEN_SEED_ARGS = ('--seed', '--intent', '--no-polish', '--repair',
                        '--repair-decaps', '--reseat', '--reseat-region',
                        '--reseat-min-gain', '--dry-run', '--group-by')
+
+def place_seed_options():
+    """place_seed's own option strings, read off its `--help` (its parser
+    is built inside `main()`, so it cannot be imported)."""
+    import re
+    import subprocess
+    from compare_seeds import ROOT
+    r = subprocess.run([sys.executable, '-X', 'utf8',
+                        os.path.join(ROOT, 'py_placer', 'place_seed.py'),
+                        '--help'], capture_output=True, text=True,
+                       encoding='utf-8', errors='replace', cwd=ROOT)
+    return sorted(set(re.findall(r'(?<![\w-])(--[a-z][a-z0-9-]*)',
+                                 r.stdout)))
+
+
+def resolve_option(token, options):
+    """The option argparse would read `token` as: exact, else a unique
+    prefix (argparse's abbreviation rule). None when it names none;
+    `'<ambiguous>'` when it abbreviates several."""
+    tok = token.split('=', 1)[0]
+    if not tok.startswith('--'):
+        return None
+    if tok in options:
+        return tok
+    hits = [o for o in options if o.startswith(tok)]
+    if len(hits) == 1:
+        return hits[0]
+    return '<ambiguous>' if hits else None
+
 
 #: place_seed exit codes the ranker acts on.
 PLACE_SEED_OK = (0, 4)       # 4: written, but the seed fails its intent gate
@@ -236,6 +273,7 @@ def aggregate(rot, rows, ladder_index):
         return {'median': _median(got), 'min': min(got) if got else None,
                 'max': max(got) if got else None, 'by_seed': vals}
     return {'rotation': rot, 'ladder_index': ladder_index, 'hard_fail': hard,
+            'gated_seeds': sum(1 for r in rows if r.get('gated')),
             'unseated_max': max((r.get('unseated') or 0) for r in rows),
             'probed': probed,
             'probe_failures': _median(fails) if probed else None,
@@ -303,12 +341,18 @@ def main():
     args.out_dir = os.path.abspath(args.out_dir)
     args.seed_args = _split_forwarded(args.seed_args)
     args.route_args = _split_forwarded(args.route_args)
-    bad = [a for a in args.seed_args
-           if a.split('=', 1)[0] in FORBIDDEN_SEED_ARGS]
+    _opts = place_seed_options()
+    _resolved = {a: resolve_option(a, _opts) for a in args.seed_args
+                 if a.startswith('--')}
+    bad = [f"{a} (= {r})" if r != a else a for a, r in _resolved.items()
+           if r in FORBIDDEN_SEED_ARGS or r == '<ambiguous>']
     if bad:
         parser.error(f"--seed-args may not carry {', '.join(bad)}: the "
-                     f"ranker sets the seed, the intent, the polish and the "
-                     f"block sources itself")
+                     f"ranker sets --seed, --intent and --group-by itself, "
+                     f"and every arm is one polished seed (no --no-polish, "
+                     f"--repair*, --reseat* or --dry-run); an ambiguous "
+                     f"abbreviation is refused too")
+    args.seed_force = any(r == '--force' for r in _resolved.values())
     if len(set(args.seeds)) != len(args.seeds):
         parser.error("--seeds has duplicates")
     if args.rotations and len({_norm(r) for r in args.rotations}) != len(
@@ -316,6 +360,15 @@ def main():
         parser.error("--rotations has duplicates (modulo 360)")
     if args.probe_top < 1:
         parser.error("--probe-top must be at least 1")
+    # Output paths are checked BEFORE an hour of seeding, not after.
+    if args.write_best and not args.write_best.endswith('.kicad_pcb'):
+        parser.error("--write-best must name a .kicad_pcb file")
+    for _flag, _out in (('--write-best', args.write_best),
+                        ('--write-intent', args.write_intent),
+                        ('--json-out', args.json_out)):
+        _d = os.path.dirname(os.path.abspath(_out)) if _out else None
+        if _d and not os.path.isdir(_d):
+            parser.error(f"{_flag}: no such directory {_d}")
 
     from kicad_parser import parse_kicad_pcb
     from placement import floorplan
@@ -337,7 +390,8 @@ def main():
     blocks, _probs = floorplan.resolve_blocks(intent, pcb, sources)
     cands, excluded = eligible_refs(pcb, intent, blocks, args.input_file,
                                     min_pads=args.min_pads,
-                                    seed_args=args.seed_args)
+                                    seed_args=(['--force'] if args.seed_force
+                                               else []))
     os.makedirs(args.out_dir, exist_ok=True)
     try:
         from redo_record import record_invocation
@@ -356,6 +410,7 @@ def main():
            'probe': {'enabled': args.probe, 'top': args.probe_top,
                      'nets': probe_nets(args.ignore_nets)},
            'rows': [], 'rotations': [], 'ranking': [], 'best_rotation': None,
+           'control': None,
            'best': None, 'separated': None, 'probe_overrode_crossings': None,
            'written': {}, 'refused': None, 'exit_code': None}
 
@@ -368,7 +423,9 @@ def main():
             json.dump(doc, fh, indent=1, sort_keys=True)
         print(f"Wrote {path}")
         best = doc['best'] or {}
-        inp = next((a for a in doc['rotations'] if a['ladder_index'] == 0),
+        inp = next((a for a in doc['rotations']
+                    if doc.get('input_rotation') is not None
+                    and same_angle(a['rotation'], doc['input_rotation'])),
                    None)
         print("JSON_SUMMARY: " + json.dumps({
             'ref': doc['ref'], 'input_rotation': doc.get('input_rotation'),
@@ -376,6 +433,9 @@ def main():
             'ranking': doc['ranking'],
             'best_crossings': best.get('crossings'),
             'input_crossings': (inp or {}).get('crossings', {}).get('median'),
+            'control_crossings': (doc.get('control') or {}).get('crossings'),
+            'best_gated_seeds': best.get('gated_seeds'),
+            'best_grade_errors': best.get('grade_errors'),
             'separated': doc['separated'],
             'probed': sum(1 for r in doc['rows'] if r.get('probe')),
             'hard_failed': sorted({a['rotation'] for a in doc['rotations']
@@ -445,6 +505,47 @@ def main():
     seed_args = list(args.seed_args) + ['--group-by', args.group_by]
     if args.diagonal_rotations and '--diagonal-rotations' not in seed_args:
         seed_args.append('--diagonal-rotations')
+
+    # The CONTROL: the same seeds with the intent as given, no rotation
+    # declared -- the seed the caller would have got. Never ranked.
+    control_rows = []
+    for seed in args.seeds:
+        out = os.path.join(args.out_dir, f'control_seed_{seed}.kicad_pcb')
+        print(f"[{ref} undeclared (control), seed {seed}] place_seed -> "
+              f"{os.path.basename(out)}")
+        r, s = run_place_seed(args.input_file, args.intent, seed, out,
+                              ignore_nets=args.ignore_nets,
+                              seed_args=seed_args)
+        if r.returncode == PLACE_SEED_PLAN_REFUSED:
+            return _finish(4, 'plan_check',
+                           "the zone plan was refused before any seed was "
+                           "written (place_seed exit 5): "
+                           + (r.stderr or r.stdout)[-300:].strip())
+        if r.returncode == PLACE_SEED_PLACED:
+            return _finish(3, 'board_placed',
+                           "place_seed will not seed this board (exit 3: it "
+                           "looks placed) -- pass --seed-args='--force' to "
+                           "re-seed every unlocked part")
+        fp = (parse_kicad_pcb(out).footprints.get(ref)
+              if r.returncode in PLACE_SEED_OK and os.path.isfile(out)
+              else None)
+        control_rows.append({
+            'seed': seed, 'board': out, 'place_seed_rc': r.returncode,
+            'gated': r.returncode == 4, 'crossings': s.get('crossings'),
+            'hpwl': s.get('hpwl'), 'unseated': s.get('unseated'),
+            'grade_errors': s.get('grade_errors'),
+            'written_rotation': (_norm(fp.rotation or 0.0)
+                                 if fp is not None else None),
+            'pose_digest': file_pose_digest(out) if fp is not None else None})
+        print(f"    crossings {s.get('crossings')}  hpwl {s.get('hpwl')}  "
+              f"{ref} written at {control_rows[-1]['written_rotation']}")
+    doc['control'] = {
+        'rows': control_rows,
+        'crossings': _median([c['crossings'] for c in control_rows]),
+        'hpwl': _median([c['hpwl'] for c in control_rows]),
+        'rotations': sorted({c['written_rotation'] for c in control_rows
+                             if c['written_rotation'] is not None})}
+
     by_rot = {rot: [] for rot in rots}
     for rot in rots:
         for seed in args.seeds:
@@ -455,17 +556,6 @@ def main():
             r, s = run_place_seed(args.input_file, arm_intent[rot], seed,
                                   out, ignore_nets=args.ignore_nets,
                                   seed_args=seed_args)
-            if r.returncode == PLACE_SEED_PLAN_REFUSED:
-                return _finish(4, 'plan_check',
-                               "the zone plan was refused before any seed was "
-                               "written (place_seed exit 5): "
-                               + (r.stderr or r.stdout)[-300:].strip())
-            if r.returncode == PLACE_SEED_PLACED:
-                return _finish(3, 'board_placed',
-                               "place_seed will not seed this board (exit 3: "
-                               "it looks placed) -- pass "
-                               "--seed-args='--force' to re-seed every "
-                               "unlocked part")
             row = {'rotation': rot, 'delta': _norm(rot - input_rot),
                    'seed': seed, 'board': out, 'intent': arm_intent[rot],
                    'place_seed_rc': r.returncode,
@@ -537,10 +627,16 @@ def main():
                        + '; '.join(f"{a['rotation']:g}: {a['hard_fail']}"
                                    for a in ranked))
     ok = [a for a in ranked if a['hard_fail'] is None]
-    if len(ok) > 1:
+    if len(ok) > 1 and len(args.seeds) > 1:
         w, r2 = ok[0]['crossings'], ok[1]['crossings']
         doc['separated'] = (None if w['max'] is None or r2['min'] is None
                             else w['max'] < r2['min'])
+        by_x = min(ok, key=lambda a: (a['crossings']['median']
+                                      if a['crossings']['median'] is not None
+                                      else float('inf'), a['ladder_index']))
+        doc['probe_overrode_crossings'] = (winner['probed']
+                                           and by_x is not winner)
+    elif len(ok) > 1:
         by_x = min(ok, key=lambda a: (a['crossings']['median']
                                       if a['crossings']['median'] is not None
                                       else float('inf'), a['ladder_index']))
@@ -552,13 +648,21 @@ def main():
                    'board': best_row['board'],
                    'crossings': winner['crossings']['median'],
                    'hpwl': winner['hpwl']['median']}
-    inp = next(a for a in aggs if a['ladder_index'] == 0)
-    print(f"\nbest rotation for {ref}: {winner['rotation']:g} (input "
-          f"{input_rot:g}): crossings {inp['crossings']['median']} -> "
-          f"{winner['crossings']['median']}, hpwl {inp['hpwl']['median']} -> "
-          f"{winner['hpwl']['median']}"
+    doc['best']['gated_seeds'] = winner['gated_seeds']
+    doc['best']['grade_errors'] = winner['grade_errors']['median']
+    ctl = doc['control']
+    print(f"\nbest rotation for {ref}: {winner['rotation']:g} -- crossings "
+          f"{ctl['crossings']} -> {winner['crossings']['median']}, hpwl "
+          f"{ctl['hpwl']} -> {winner['hpwl']['median']} against the "
+          f"undeclared seed ({ref} written at "
+          + (', '.join(f"{r:g}" for r in ctl['rotations']) or '?') + ")"
           + (f", probe failures {winner['probe_failures']}"
              if winner['probed'] else ''))
+    if winner['gated_seeds']:
+        print(f"  its seed fails its intent gate on {winner['gated_seeds']} "
+              f"of {len(args.seeds)} seed(s) (grade errors "
+              f"{winner['grade_errors']['median']}): repair it "
+              f"(place_seed --repair) or weigh the next angle")
     if len(args.seeds) == 1:
         print("  one seed: the margin has no spread to compare against; add "
               "--seeds 0 1 2 to see one")

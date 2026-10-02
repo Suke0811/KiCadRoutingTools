@@ -202,6 +202,9 @@ def test_an_empty_ranking_names_the_check():
     assert d['poses'] == [] and d['dropped_in_place'], d
     assert d['note'].startswith('no legal pose, including staying put -- '
                                 'vetoed by '), d['note']
+    # the part's OWN spot is named, whatever the top-3 cut kept
+    assert 'In place: ' in d['note'], d['note']
+    assert d['dropped_in_place_by'][0]['check'] in d['note'], d['note']
     top = next(iter(d['dropped_by']))
     assert top in d['note'] and len(d['dropped_in_place_by']) == len(
         d['dropped_in_place']), d
@@ -223,8 +226,48 @@ def test_snap_census_carries_dropped_by():
           f"{sorted(census['dropped_by'])}")
 
 
+def test_a_part_coming_home_names_the_overlap():
+    """A part off the board may move back toward it (the escape rule) only
+    without overlapping anything. A candidate the escape rule refuses for
+    overlap must not read as `board_bbox` (phase-2 verifier: 229 such
+    candidates on esp_prog were labelled board_bbox)."""
+    pcb, st = _state(ESP)
+    seen = {}
+    n = 0
+    for ref in [r for r in sorted(st.parts) if not st.parts[r].locked][:10]:
+        p = st.parts[ref]
+        x0, y0, r0 = p.x, p.y, p.rot
+        r = p.rects(x0, y0, r0)[0]
+        # just past the usable inset on the right, then slide back home
+        st.apply_move(ref, x0 + (st.usable[2] - r[2]) + 0.6, y0, r0)
+        p = st.parts[ref]
+        try:
+            for dx in (-0.2, -0.4, -0.6, -0.8):
+                for dy in (-1.0, -0.5, 0.0, 0.5, 1.0):
+                    x, y = p.x + dx, p.y + dy
+                    v = st.candidate_veto(ref, x, y, r0)
+                    assert (v is None) == st.candidate_valid(ref, x, y, r0)
+                    if v is None:
+                        continue
+                    n += 1
+                    seen[v[0]] = seen.get(v[0], 0) + 1
+                    # only where the escape rule judged it: the incumbent
+                    # is off the board and overlaps nothing (otherwise the
+                    # ordinary path's first failing conjunct IS the reason)
+                    cb, co = st._incumbent_violation(ref)
+                    if (v[0] == 'board_bbox' and co <= quench.EPS_IMPROVE
+                            and cb > quench.EPS_IMPROVE):
+                        _b, ov = st.violation_parts(ref, x, y, r0)
+                        assert ov <= quench.EPS_IMPROVE, (ref, x, y, v, ov)
+        finally:
+            st.apply_move(ref, x0, y0, r0)
+    assert n and 'escape_overlap' in seen, seen
+    print(f"  PASS: {n} refused homecomings; labels {seen}")
+
+
 TESTS = [
     test_veto_agrees_with_valid_on_every_candidate,
+    test_a_part_coming_home_names_the_overlap,
     test_a_label_names_the_check_that_refused,
     test_dropped_by_partitions_dropped_total,
     test_only_staying_put_survives_and_the_note_says_why,
