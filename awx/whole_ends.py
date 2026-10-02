@@ -21,18 +21,20 @@ stacked over a B one) have no order there. The best few states the searches reac
 on their orders (exact_route: the whole solve's order model without its lengths, CP-SAT on one worker to a
 deterministic work limit), and a state's judged objective is that one.
 
-The objective is the whole solve's, in its order: first how far the nets go over two vias on the board (a net's stubs'
-own vias, a tie via at a ball with a pad of its own under it, and its lane's changes), then the vias -- the ends' own
-and the route's -- with each lane's ride (round the two arrays, and each leg's straight stubs from its balls to its
-exits) at select_moves.VIA_MM per via, then CONGESTION on the trunk (each lane's load there past what the solve takes
-freely, and each crossing there) and the whole route's FEEDBACK (ends its audits found crowded, whole_feedback), and
-the crossings' count as the tie-break.
+The objective is one sum in vias, as the whole solve prices them: the vias -- the ends' own (a tie via at a ball with
+a pad of its own under it among them) and the route's -- with W_OVER more for each via a net carries past two on the
+board (its stubs' own vias and its lane's changes; the tie via not counted toward the two), each lane's ride (round the
+two arrays, and each leg's straight stubs from its balls to its exits) at select_moves.VIA_MM per via, CONGESTION on
+the trunk (each lane's load there past what the solve takes freely, and each crossing there), STACKING (two lanes' ends
+at one point on different layers where either changes layer, a pair's twice), the whole route's FEEDBACK (ends it
+found crowded or named, whole_feedback), and the crossings' count as the tie-break.
 
 Searched locally -- one lane's tooth or berth at a time, one other lane
 ejected where it is in the way, each improving change taken as it is found, sweep after sweep until none is left,
-then iterated from random kicks until ILS_PATIENCE kicks
-in a row find nothing -- first with the teeth as laid, then with the teeth free from the berths just chosen; tooth
-moves are asked only when they save more than TOOTH_GAIN. Never taken: two moves the fanout cannot lay together
+then iterated from random kicks until ILS_PATIENCE kicks in a row find nothing, then from BAN kicks (the most crossed
+lanes' current ends banned) -- first with the teeth as laid, then with the teeth free from the berths just chosen; tooth
+moves are asked only when they save more than TOOTH_GAIN. A state whose exact route finds no plan ranks after every
+one whose does. Never taken: two moves the fanout cannot lay together
 (select_moves._conflict, an F exit stacked over a B one allowed; a tooth move through another run net's LAID tooth;
 two berths a destination pass laid in violation of each other); a pair's legs on different faces or layers, or exits
 not neighbours; copper of a net outside the run between a pair's tips; a tooth on the source's far face (the whole
@@ -65,9 +67,14 @@ DUP_TOL = _sm._STACK_PITCH / 2   # two exits this close are one (two distinct on
 ILS_ROUNDS = 12           # iterated local search: kicks from the best state (a count, never a clock)
 ILS_KICK = 3              # ... each moving this many lanes' ends to random options
 ILS_PATIENCE = 4          # ... stopping after this many kicks in a row that find nothing (K15: none of 12 did)
+BAN_KICKS = 8             # then BAN kicks (ban_kicks): the most crossed lanes' current ends banned, searched again ...
+BAN_LANES = 3             # ... this many lanes a kick
+BAN_PATIENCE = 4          # ... stopping after this many kicks in a row that find nothing
 ILS_SEED = 622
 VIA_PREF = 2              # no more than two vias on a net where that can be had (whole_solve's first objective)
-W_OVER = 100.0            # a via over two on a net: outweighs every via the ends could save
+W_OVER = 5.0              # each via a net carries past two costs this many MORE (nets of 0..4 vias: 0, 1, 2, 8, 14) --
+#                           a price, never a cap, the same as the whole solve's
+STACK_COST = 5.0          # two lanes' ends at one point on different layers where either changes layer (_stacks)
 VIA_MM = _sm.VIA_MM       # a via is worth this much ride (the one exchange rate)
 EXACT_TOP = 6             # the search's best distinct ends re-ranked on the exact route (best_exact) ...
 EXACT_MARGIN = 4.0        # ... those within this much of the best by the estimate
@@ -177,7 +184,8 @@ class Ends:
             # a pair's options without the joint moves the fanout would not lay (fanout_from_plan.ban_moves)
             if len(lg) < 2:
                 return opts
-            return [o for o in opts if ('pair', lg[0], lg[1], sr.move_sig(o[0][0]), sr.move_sig(o[0][1])) not in banned]
+            return [o for o in opts if ('pair', lg[0], lg[1], sr.move_sig(o[0][0]), sr.move_sig(o[0][1])) not in banned
+                    and ('pairclass', lg[0], lg[1], sr.move_class(o[0][0]), sr.move_class(o[0][1])) not in banned]
 
         def same_as_laid(m, c):
             # a menu move that IS the laid tooth: its kind, face and layer, its exit within DUP_TOL (the menu's exit
@@ -298,18 +306,14 @@ class Ends:
         self._ride = {}
         # ---- the whole route's FEEDBACK (whole_feedback: ends its audits found crowded, FEEDBACK= to the fanout): an
         # end to avoid costs FB_AVOID vias when chosen, a pair of ends FB_PAIR when both are -- the options matched
-        # by their lane, their layer and each leg's exit at the end's points as laid
+        # by their lane, their layer and ANY leg's exit at any of the end's points as laid, so a pair cannot leave the
+        # price by moving one leg and keeping the other where it was found crowded
         self.fb_avoid, self.fb_pairs = collections.defaultdict(set), []
 
         def matches(it):
-            lane, k = it['lane'], it['end']
-            if lane not in self.legs_of:
+            if it['lane'] not in self.legs_of:
                 return set()
-            opts = self.T[lane] if k == 0 else self.B[lane]
-            return {i for i, o in enumerate(opts)
-                    if o[2] == it['layer'] and len(o[0]) == len(it['points'])
-                    and all(math.hypot(m.exit_pt[0] - p_[0], m.exit_pt[1] - p_[1]) <= DUP_TOL
-                            for m, p_ in zip(o[0], it['points']))}
+            return fb_matches(self.T[it['lane']] if it['end'] == 0 else self.B[it['lane']], it)
         fb = st.get('feedback') or {}
         for it in fb.get('avoid', ()):
             ix = matches(it)
@@ -319,6 +323,11 @@ class Ends:
             ma, mb = matches(a_), matches(b_)
             if ma and mb and a_['end'] == b_['end']:
                 self.fb_pairs.append((a_['lane'], b_['lane'], a_['end'], ma, mb))
+        # ...and the lanes the whole solve could not keep to two vias on an earlier round's ends ('over': whole_route,
+        # an unproved plan's nets over two): each counted over by at least that much on every option, so the ends no
+        # longer pay vias for a promise the solve could not keep (K51: ends at 92 vias promising SCK at two, chosen over
+        # ends at 78 with SCK over; the solve held SCK over and 51 route vias, proved nothing, and laid nothing)
+        self.fb_over = {ln: int(k) for ln, k in (fb.get('over') or {}).items() if ln in self.legs_of and int(k) > 0}
         self._xroute = {}          # the exact route per state (exact_route)
         self.pool = {}             # every search's result: its state -> its objective by the estimate
         self._memo = {}            # every state scored: its (objective, parts) -- the search asks a third of them again
@@ -372,6 +381,7 @@ class Ends:
             for leg, m in zip(lg, bo[l_][0]):
                 chosen.add((leg, id(m)))
         nconf = sum(1 for c in chosen for o in self.conf.get(c, ()) if o in chosen) // 2
+        lane_of = {leg: l_ for l_, lg in self.lanes for leg in lg}
         nref = sum(1 for l_ in lanes if to[l_][4] or bo[l_][4])
         # the orders, as the whole frame reads them (whole_frame.build)
         SB = whole_frame.grown(self.sbox, [to[l_][1] for l_ in lanes])
@@ -383,6 +393,7 @@ class Ends:
             if k not in pc:
                 pc[k] = whole_frame.face(p, DB)
             return pc[k]
+        # (the far face's cut, from the model's own exits: it rides the plan sidecar to the solve's frame, dest_cut)
         cut = whole_frame.cut([bo[l_][1][1] for l_ in lanes if dface(bo[l_][1]) == 'E'], DB[1], DB[3])
 
         def psrc(p):
@@ -440,9 +451,9 @@ class Ends:
         same = [(a, b) for a, b in same if not xo[a] and not xo[b]]
         # a net's vias on the board: its stubs' own (a pair's leg the more) and its lane's changes -- one for ends on
         # two layers, two more for a lane leaving its layer to cross; how far that goes over two is priced first,
-        # as the whole solve does
-        sv = {l_: max(t_.vias + b_.vias + self.tie[g] for g, t_, b_ in zip(lg, to[l_][0], bo[l_][0]))
-              for l_, lg in self.lanes}
+        # as the whole solve does. A TIE via (a ball's via to a pad of its own under it) is not counted toward the
+        # two: it serves that pad, not the lane
+        sv = {l_: max(t_.vias + b_.vias for t_, b_ in zip(to[l_][0], bo[l_][0])) for l_, lg in self.lanes}
         base = {l_: sv[l_] + (0 if flat[l_] else 1) + xo[l_] for l_ in lanes}
         ov = lambda l_, k_: max(0, base[l_] + k_ - VIA_PREF)
         w = {l_: 2 * npair[l_] + W_OVER * (ov(l_, 2) - ov(l_, 0)) for l_ in lanes}
@@ -549,23 +560,41 @@ class Ends:
         # crossings it must place there, and ends with fewer of them are the easy ones (the human's K35 ends: 48 on
         # the trunk against our 94-173, for two vias more, by berths on the destination's far face)
         cong = X_TRUNK * sum(xT.values()) / 2
+        loads = {}
         for l_ in lanes:
             load = (xT[l_] * _LANE_PITCH + (chg[l_] if dcls[l_] == 'W' else 0) * _CHG_ROOM) / gT
+            loads[l_] = load
             over_ = max(0.0, load - LOAD_OK)
             cong += npair[l_] * W_CONG * over_ * over_
+        exact_failed = False
         if exact:
             # the route EXACT on the orders (Ends.exact_route): what the estimate above approximates
             xr = self.exact_route(state, lanes, kp, kd, tl, dl, sv, xo, npair)
             if xr is not None:
                 route, over, chg = xr
+            else:
+                exact_failed = True
+        if self.fb_over:
+            over = sum(max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)) for l_ in lanes)
         ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1]) for l_ in lanes)
+        stacks = _stacks(self.lanes, to, bo, chg)
         fbk = (FB_AVOID * sum(1 for (l_, k_), ix in self.fb_avoid.items() if state[l_][k_] in ix)
                + FB_PAIR * sum(1 for a_, b_, k_, ia, ib in self.fb_pairs if state[a_][k_] in ia and state[b_][k_] in ib))
-        obj = W_OVER * over + fan + route + ride / VIA_MM + cong + fbk + EPS_X * len(inv) + BIG * (nconf + nsplit + nref)
+        obj = (W_OVER * over + fan + route + ride / VIA_MM + cong + fbk + EPS_X * len(inv) + BIG * (nconf + nsplit + nref)
+               + STACK_COST * stacks)
+        # (each lane's share, for a round the whole route laid nothing on or left nets open -- whole_feedback --name
+        # names the lanes to free from these: its nets over two, its load on the trunk, its crossings -- and the lanes
+        # still in a conflict, which a destination re-plan frees with their neighbours)
+        xl = collections.Counter(l_ for e in inv for l_ in e)
+        lane_over = {l_: k_ for l_ in lanes if (k_ := max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)))}
         return obj, dict(fan=fan, parity=parity, crossover=cross, cover=cover, settle=settle, couple=couple,
                          route=route, route_est=route_est, over=over, cong=round(cong, 2), feedback=fbk,
                          ride=round(ride, 1), chg=chg,
-                         crossings=len(inv), same=len(same), conflicts=nconf, splits=nsplit, refused=nref)
+                         crossings=len(inv), same=len(same), conflicts=nconf, splits=nsplit, refused=nref,
+                         lane_over=lane_over, lane_load={l_: round(v_, 3) for l_, v_ in loads.items()},
+                         lane_x=dict(xl), stacks=stacks, exact_failed=exact_failed, cut=cut,
+                         conf_lanes=(sorted({lane_of[c[0]] for c in chosen for o in self.conf.get(c, ())
+                                             if o in chosen}) if nconf else []))
 
     def exact_route(self, state, lanes, kp, kd, tl, dl, sv, xo, npair):
         """(route vias, nets over two, changes per lane) of a state EXACT on its orders: the whole solve's order model
@@ -660,7 +689,10 @@ class Ends:
         best = None
         for s_ in cands:
             v_, p_ = self.score(s_, exact=True)
-            if best is None or v_ < best[1][0] - 1e-9:
+            # (a state the exact route found no plan for ranks after every one it did: its objective is the estimate's,
+            # the optimistic one, for the ends the solve will find hardest)
+            k_ = (bool(p_.get('exact_failed')), v_)
+            if best is None or k_ < (bool(best[1][1].get('exact_failed')), best[1][0] - 1e-9):
                 best = (s_, (v_, p_))
         if best[0] != dict(state):
             log(f'  whole ends: by the exact route, another of the search\'s best: {_fmt(best[1][1])}')
@@ -739,6 +771,7 @@ class Ends:
         if missing:
             raise SystemExit(f'whole_ends: no tooth or berth option for {missing}')
         best, parts = self.score(state)
+        tabu = getattr(self, 'tabu', None) or set()     # (lane, end, option) a ban kick forbids (ban_kicks)
         set_ = lambda s_, l_, e_, i_: {**s_, l_: ((s_[l_][0], i_) if e_ else (i_, s_[l_][1]))}
         for sw in range(sweeps):
             improved = False
@@ -746,7 +779,7 @@ class Ends:
                 for end in (1, 0):
                     opts = self.B[lane] if end else self.T[lane]
                     for i in range(len(opts)):
-                        if i == state[lane][end]:
+                        if i == state[lane][end] or (lane, end, i) in tabu:
                             continue
                         hits = self._hits(state, lane, end, i)
                         if len(hits) > 1:
@@ -756,7 +789,8 @@ class Ends:
                             # an EJECTION: the one lane in the way moves to its best option clear of the others
                             (o,) = hits
                             oo = self.B[o] if end else self.T[o]
-                            cands = [j for j in range(len(oo)) if self._clear(trial, o, end, j)]
+                            cands = [j for j in range(len(oo)) if self._clear(trial, o, end, j)
+                                     and (o, end, j) not in tabu]
                             if not cands:
                                 continue
                             trial = min((set_(trial, o, end, j) for j in cands), key=lambda s_: self.score(s_)[0])
@@ -778,7 +812,10 @@ class Ends:
         rounds = ILS_ROUNDS if rounds is None else rounds
         rng = random.Random(ILS_SEED)
         best, (bv, bp) = dict(state), self.score(state)
-        lanes = [l_ for l_, _lg in self.lanes]
+        # (only lanes that can move: an incremental round holds most berths at one option, and a kick there does nothing)
+        lanes = [l_ for l_, _lg in self.lanes if len(self.T[l_]) > 1 or len(self.B[l_]) > 1]
+        if not lanes:
+            return best
         idle = 0
         for r in range(rounds):
             if idle >= ILS_PATIENCE:
@@ -795,6 +832,51 @@ class Ends:
                 best, bv, bp = s_, v_, p_
                 idle = 0
                 log(f'  whole ends: kick {r}: objective {bv:.2f} {bp}')
+            else:
+                idle += 1
+        return best
+
+    def ban_kicks(self, state, log=print):
+        """STRUCTURED kicks, after the random ones: BAN_KICKS times, the best state's BAN_LANES most crossed lanes not
+        yet kicked (and able to move) have their current ends banned -- each moved to its cheapest other option clear
+        of the rest -- the search run with the bans, then again without them, and the better state kept; BAN_PATIENCE
+        kicks in a row finding nothing stop. A random kick moves lanes the search returns to; a banned end makes it
+        find the next basin (K41: a fanout refusing one berth moved the ends from 191.1 to 187.5)"""
+        best, (bv, bp) = dict(state), self.score(state)
+        kicked, idle = set(), 0
+        for k in range(BAN_KICKS):
+            if idle >= BAN_PATIENCE:
+                break
+            x = bp.get('lane_x') or {}
+            group = sorted((l_ for l_, _lg in self.lanes if l_ not in kicked
+                            and (len(self.T[l_]) > 1 or len(self.B[l_]) > 1)),
+                           key=lambda l_: (-x.get(l_, 0), l_))[:BAN_LANES]
+            if not group:
+                break
+            kicked |= set(group)
+            s_ = dict(best)
+            self.tabu = set()
+            for l_ in group:
+                for e_ in ((0, 1) if len(self.T[l_]) > 1 else (1,)):
+                    opts = self.T[l_] if e_ == 0 else self.B[l_]
+                    cur = s_[l_][e_]
+                    others = [i for i in range(len(opts)) if i != cur]
+                    if not others:
+                        continue
+                    self.tabu.add((l_, e_, cur))
+                    free = [i for i in others if self._clear(s_, l_, e_, i)] or others
+                    i = min(free, key=lambda i: opts[i][3])
+                    s_[l_] = (i, s_[l_][1]) if e_ == 0 else (s_[l_][0], i)
+            try:
+                s_ = self.search(s_, log=lambda *a: None)
+            finally:
+                self.tabu = set()
+            s_ = self.search(s_, log=lambda *a: None)
+            v_, p_ = self.score(s_)
+            better = v_ < bv - 1e-9
+            log(f'  whole ends: ban kick {k} ({", ".join(group)}): objective {v_:.2f}' + (' (best)' if better else ''))
+            if better:
+                best, bv, bp, idle = s_, v_, p_, 0
             else:
                 idle += 1
         return best
@@ -819,14 +901,14 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
     not to be laid together (Ends); `free_teeth` {lane}: with `src_free`, only these lanes' teeth move"""
     quiet = lambda *a: None
     E = Ends(st, src_free=False, fixed=fixed, learned=learned)
-    sL = E.iterate(E.search(E.start(seed), log=quiet), log=quiet)
+    sL = E.ban_kicks(E.iterate(E.search(E.start(seed), log=quiet), log=quiet), log=log)
     sL, (vL, pL) = E.best_exact(sL, log=log)
     out, vF, pF = E.choice(sL), None, None
     log(f'  whole ends: on the teeth as laid: {_fmt(pL)}')
     if src_free:
         E2 = Ends(st, src_free=True, fixed=fixed, learned=learned, free_teeth=free_teeth)
         # a local search from the berths just chosen on the teeth as laid, iterated
-        sF = E2.iterate(E2.search(E2.start(out[0]), log=quiet), log=quiet)
+        sF = E2.ban_kicks(E2.iterate(E2.search(E2.start(out[0]), log=quiet), log=quiet), log=log)
         sF, (vF, pF) = E2.best_exact(sF, log=log)
         if vF < vL - TOOTH_GAIN:
             out = E2.choice(sF)
@@ -835,8 +917,45 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
             log('  whole ends: no tooth move is better')
     # (`st`: the plan state it chose on, and whether it asked tooth moves -- asked none, its berths ARE the choice on
     # that board's teeth as laid, and fanout_from_plan need not ask again)
-    choose.last = dict(laid=vL, laid_parts=pL, free=vF, free_parts=pF, moved=bool(out[1]))
+    choose.last = dict(laid=vL, laid_parts=pL, free=vF, free_parts=pF, moved=bool(out[1]), st=id(st))
     return out
+
+
+def fb_matches(opts, item):
+    """the options (indices into `opts`, a lane's (moves per leg, point, layer, ...) at one end) a feedback ITEM
+    (whole_feedback: {'layer', 'points'}) names: on its layer, with ANY leg's exit at ANY of its points -- so a pair
+    cannot leave the price by moving one leg and keeping the other where it was found crowded"""
+    return {i for i, o in enumerate(opts)
+            if o[2] == item['layer'] and any(math.hypot(m.exit_pt[0] - p_[0], m.exit_pt[1] - p_[1]) <= DUP_TOL
+                                             for m in o[0] for p_ in item['points'])}
+
+
+def _stacks(lanes, to, bo, chg):
+    """the STACKED pairs of ends -- two lanes' legs at one point (within DUP_TOL) on different layers, at the teeth or
+    at the berths -- where either lane changes layer; one where either lane is a PAIR counts twice (a pair's dive is two
+    barrels side by side under the other lane's via: K51, SDQS1 under SDQ8)"""
+    npair = {l_: len(lg) for l_, lg in lanes}
+    n = 0
+    for opt in (to, bo):
+        cells = {}
+        for l_, _lg in lanes:
+            for m in opt[l_][0]:
+                cells.setdefault((int(math.floor(m.exit_pt[0] / 0.25)), int(math.floor(m.exit_pt[1] / 0.25))),
+                                 []).append((l_, m))
+        seen = set()
+        for (cx, cy), here in cells.items():
+            near = [e for dx in (-1, 0, 1) for dy in (-1, 0, 1) for e in cells.get((cx + dx, cy + dy), ())]
+            for la, ma in here:
+                for lb, mb in near:
+                    if la == lb or ma.layer == mb.layer or not (chg.get(la) or chg.get(lb)):
+                        continue
+                    if math.hypot(ma.exit_pt[0] - mb.exit_pt[0], ma.exit_pt[1] - mb.exit_pt[1]) > DUP_TOL:
+                        continue
+                    key = tuple(sorted([(la, id(ma)), (lb, id(mb))]))
+                    if key not in seen:
+                        seen.add(key)
+                        n += 2 if npair[la] > 1 or npair[lb] > 1 else 1
+    return n
 
 
 def judge(st, choice):
@@ -852,7 +971,7 @@ def _fmt(p):
             f'changes + {p["crossover"]} crossover + 2 x {p["cover"]} + {p["settle"]} settling + {p["couple"]} coupled), '
             f'{p["over"]} over two on a net, '
             f'ride {p["ride"]} mm, congestion {p.get("cong", 0)}, ' + (f'feedback {p["feedback"]}, ' if p.get('feedback') else '') +
-            f'{p["crossings"]} crossings ({p["same"]} on one layer)' + ''.join(f', {p[k]} {k}' for k in ('conflicts', 'splits', 'refused') if p[k])
+            f'{p["crossings"]} crossings ({p["same"]} on one layer)' + ''.join(f', {p[k]} {k}' for k in ('conflicts', 'splits', 'refused', 'stacks') if p.get(k))
             + (f' [the route exact on the orders: {p["route"]}, estimated {p["route_est"]}]'
                if p.get('route_est') is not None and p['route_est'] != p['route'] else ''))
 

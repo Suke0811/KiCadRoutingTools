@@ -2,17 +2,25 @@
 """Modal app: the WHOLE ROUTE's K ladder (whole_route.py), one container per rung.
 
     modal run awx/modal_whole.py::main --ks 15,28,35,41,51 --out DIR   (::main: the app has two entrypoints)
+    modal run awx/modal_whole.py::main --ks 18,26,32,38,42,44 --out DIR --env "BASE=tmp/zynq/zynqF.kicad_pcb;DEST=U2" \
+        --ins tmp/zynq/zynqF.kicad_pcb,tmp/zynq/zynqF.kicad_pro,tmp/zynq/zynqF.ladder.txt   (the zynq article)
 
 Each rung runs whole_route.py (the fanout on the whole route's ends, the solve, the loop, the route, the checks) in
 its own container and sends back its log and its routed board, written to DIR/kK.log and DIR/kK_seq.kicad_pcb, so a
 cloud ladder can be held against the laptop's copper for copper. The stack is the LAPTOP's: its Python (3.14) and
 the same pinned numpy / scipy / shapely / ortools (modal_k.py: a python or numpy change moves routed copper). The
 working tree is shipped as it stands, uncommitted edits and all.
+
+    MODAL_WHOLE_KICAD=1 modal run awx/modal_whole.py::stage --cmd 'zsh CHAIN.sh ...' --ins ... --outs ...
+
+runs a whole routing chain (the route step's KiCad legs and grades want pcbnew and kicad-cli) in an image built on
+KiCad's own, with the same pins on KiCad's system python.
 """
 from __future__ import annotations
 
 import io
 import os
+import signal
 import subprocess
 import tarfile
 import time
@@ -24,11 +32,29 @@ REPO = "/opt/krt"
 _src = Path(__file__).resolve().parents[1]
 PY_VERSION = os.environ.get("MODAL_WHOLE_PY", "3.14")
 PINS = ("numpy==2.3.3", "scipy==1.16.2", "shapely==2.1.2", "ortools==9.15.6755")
+# MODAL_WHOLE_KICAD=1 (read here, client side): KiCad in the image, for a whole chain whose route step and grades use
+# pcbnew and kicad-cli -- the stress app's recipe (tests/stress/modal_sweep/modal_app.py). It runs on the KiCad
+# image's own system python, the one that imports the distro's pcbnew, not on the laptop's 3.14.
+KICAD = os.environ.get("MODAL_WHOLE_KICAD", "") in ("1", "true", "on")
+KICAD_IMAGE = "kicad/kicad:10.0.0"
+
+
+def _base_image():
+    if not KICAD:
+        return (modal.Image.debian_slim(python_version=PY_VERSION)
+                .apt_install("curl", "procps", "build-essential", "zsh")
+                .pip_install(*PINS))
+    # USER root: the image runs as USER kicad; python-is-python3: Modal's builder runs `python -m pip`;
+    # --break-system-packages: PEP 668 guards the system python
+    return (modal.Image.from_registry(KICAD_IMAGE, setup_dockerfile_commands=["USER root"])
+            .apt_install("curl", "procps", "build-essential", "zsh", "python3-pip", "python-is-python3")
+            .pip_install(*PINS, extra_options="--break-system-packages")
+            .run_commands('python3 -c "import pcbnew, sys; print(\'pcbnew\', pcbnew.GetBuildVersion(), '
+                          '\'on python\', sys.version.split()[0])"', "kicad-cli version"))
+
 
 image = (
-    modal.Image.debian_slim(python_version=PY_VERSION)
-    .apt_install("curl", "procps", "build-essential", "zsh")
-    .pip_install(*PINS)
+    _base_image()
     .run_commands("curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal")
     .add_local_dir(str(_src), REPO, copy=True, ignore=[
         "**/.git/**", "**/__pycache__/**", "**/target/**",
@@ -49,17 +75,30 @@ image = (
 app = modal.App("bus622-whole-ladder", image=image)
 
 
-@app.function(cpu=(0.125, 4), memory=(256, 8192), timeout=14400, max_containers=20)
-def run_rung(K: int, rounds: int = 3) -> dict:
-    """One rung of the whole route, graded; its log and its routed board back."""
+@app.function(cpu=(0.125, 4), memory=(256, 8192), timeout=21600, max_containers=20)
+def run_rung(K: int, rounds: int = 3, env: dict | None = None, tgz: bytes = b"", cap: int = 10800) -> dict:
+    """One rung of the whole route, graded; its log and its routed board back. `env`: settings for the run (a bench
+    of its own: BASE, DEST); `tgz`: files under awx/ the image leaves out (its tmp/: a bench built on the laptop);
+    `cap`: seconds before the run and every stage under it are stopped -- its log and its best board still come back
+    (the function's own timeout, past it, would return nothing)"""
     wd = f"{REPO}/awx"
     out = f"/tmp/whole_k{K}"
+    if tgz:
+        with tarfile.open(fileobj=io.BytesIO(tgz), mode="r:gz") as t:
+            t.extractall(wd, filter="data")
     t0 = time.time()
-    p = subprocess.run(["python3", "whole_route.py", str(K), out, str(rounds)], cwd=wd,
-                       capture_output=True, text=True, errors="replace")
+    p = subprocess.Popen(["python3", "whole_route.py", str(K), out, str(rounds)], cwd=wd,
+                         env=dict(os.environ, **(env or {})), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, errors="replace", start_new_session=True)
+    try:
+        log, _ = p.communicate(timeout=cap)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)        # the driver and every stage it started: one session
+        log, _ = p.communicate()
+        log += f"\n(stopped at the {cap} s cap)\n"
     board = ""
-    for r in range(rounds, 0, -1):
-        f = Path(out) / f"r{r}" / "seq.kicad_pcb"
+    # the run's result: its best round's board (whole_route: OUTDIR/best.kicad_pcb), else the last round's
+    for f in [Path(out) / "best.kicad_pcb"] + [Path(out) / f"r{r}" / "seq.kicad_pcb" for r in range(rounds, 0, -1)]:
         if f.exists():
             board = f.read_text(errors="replace")
             break
@@ -68,16 +107,26 @@ def run_rung(K: int, rounds: int = 3) -> dict:
     with tarfile.open(fileobj=tb, mode="w:gz") as t:
         t.add(out, arcname=f"k{K}", filter=lambda ti: None if "_srcres" in ti.name else ti)
     cpu = subprocess.run(["sh", "-c", "grep -m1 'model name' /proc/cpuinfo"], capture_output=True, text=True).stdout
-    return {"K": K, "rc": p.returncode, "secs": round(time.time() - t0), "log": p.stdout + p.stderr,
+    return {"K": K, "rc": p.returncode, "secs": round(time.time() - t0), "log": log,
             "board": board, "cpu": cpu.strip(), "tgz": tb.getvalue()}
 
 
 @app.local_entrypoint()
-def main(ks: str = "15,28,35,41,51", out: str = "modal_whole_out", rounds: int = 3):
+def main(ks: str = "15,28,35,41,51", out: str = "modal_whole_out", rounds: int = 3, env: str = "", ins: str = "",
+         cap: int = 10800):
+    """`env` K=V;K=V for every rung (the zynq article: BASE=tmp/zynq/zynqF.kicad_pcb;DEST=U2); `ins` files under awx/,
+    comma separated, shipped to every rung at the same relative paths (the zynq bench: its board, project and ladder);
+    `cap` seconds a rung may run (3 h: the cloud's cores are slower than a laptop's)"""
     d = Path(out)
     d.mkdir(parents=True, exist_ok=True)
     Ks = [int(k) for k in ks.split(",") if k]
-    for res in run_rung.map(Ks, kwargs={"rounds": rounds}):
+    E = dict(kv.split("=", 1) for kv in env.split(";") if kv)
+    tb = io.BytesIO()
+    if ins:
+        with tarfile.open(fileobj=tb, mode="w:gz") as t:
+            for f in [x for x in ins.split(",") if x]:
+                t.add(str(_src / "awx" / f), arcname=f)
+    for res in run_rung.map(Ks, kwargs={"rounds": rounds, "env": E, "tgz": tb.getvalue(), "cap": cap}):
         K = res["K"]
         (d / f"k{K}.log").write_text(res["log"])
         if res["board"]:

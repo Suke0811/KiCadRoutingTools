@@ -916,6 +916,7 @@ def static_sides(sol):
     # the first-pass movement it asks for; a lane whose own fixed end lies in the span pins its side; each side must
     # hold its lanes at pitch in the room the frame measures (exact on a straight octilinear piece).
     SIDE, SPLIT = {}, set()
+    SPLITS = {}                                     # (frame, island, layer): its lanes, their costs, pins
     for f, bl in boxes.items():
         for ii, (sa, sb, oa, ob, Ls, lab, own) in enumerate(bl):
             if sb < 0:
@@ -994,8 +995,74 @@ def static_sides(sol):
                         best = (cst, j)
                 if best is None:
                     continue
+                SPLITS[(f, ii, Ly)] = (lanes, cost_below, cost_above, pin)
                 for i, n in enumerate(lanes):
                     SIDE[(f, n, ii)] = -1 if i < best[1] else 1
+    # ...and the GAP between two islands. Each split measures its room to the ends of the free interval its island
+    # stands in, which the board's edge and the arrays' boxes bound and no other island does: two islands one above the
+    # other were each told there was room on the side facing the other, and the lanes told to pass between them were as
+    # many as both rooms held, not as the gap holds (K41 with the stub check per layer: SA4, SA8 and SA11 sent between
+    # C4/C3 and R4+R5, 0.40 mm apart on the board -- one lane's room -- six static findings and, the cuts they made, no
+    # plan). Two islands side by side along the lanes (their spans overlap), one above the other with no island between,
+    # hold between them only the lanes that fit the gap at pitch. Past that, the gap's lowest lane is moved below the
+    # lower island or its highest above the upper one -- whichever moves its lane less from its first-pass offset, never
+    # against a lane's own fixed end nor to a side with no room -- and never back across an island it was moved across,
+    # so a lane pushed out of a gap goes on outward until a gap or a side holds it
+    def gap_used(ls):
+        used, prev_ = 0.0, None
+        for n in ls:
+            used += (LANE_ST + hw[n]) if prev_ is None else (P_MIN + hw[prev_] + hw[n])
+            prev_ = n
+        return used + (LANE_ST + hw[ls[-1]] if ls else 0.0)
+    for f, bl in boxes.items():
+        for Ly in (0, 1):
+            idx = [ii for ii in range(len(bl)) if (f, ii, Ly) in SPLITS]
+            gaps = []
+            for a in idx:
+                for b in idx:
+                    lo_s, hi_s = max(bl[a][0], bl[b][0]), min(bl[a][1], bl[b][1])
+                    gap = bl[b][2] - bl[a][3]
+                    if a == b or hi_s <= lo_s or gap < 0 or gap >= WIN:
+                        continue
+                    if any(c not in (a, b) and bl[c][0] < hi_s and bl[c][1] > lo_s and bl[c][2] >= bl[a][3] - 1e-9
+                           and bl[c][3] <= bl[b][2] + 1e-9 for c in idx):
+                        continue
+                    # two PARTS' gap, measured on the board between their pads: the frame's boxes are the pads' boxes
+                    # taken along its own slanted axes, larger than the copper (K41's C4 / R4+R5: 0.292 in the frame,
+                    # 0.400 on the board -- one lane's room, refused)
+                    pa_b = ISL.get((bl[a][5], frozenset(bl[a][4])))
+                    pb_b = ISL.get((bl[b][5], frozenset(bl[b][4])))
+                    if not pa_b or not pb_b:
+                        continue
+                    gap = min(math.hypot(max(0.0, q[0] - p[2], p[0] - q[2]), max(0.0, q[1] - p[3], p[1] - q[3]))
+                              for p in pa_b for q in pb_b)
+                    gaps.append((a, b, gap))
+            pushed = set()
+            for _it in range(50):                        # (each lane crosses each island once at most)
+                moved = False
+                for (a, b, gap) in gaps:
+                    la, cba, caa, pa_ = SPLITS[(f, a, Ly)]
+                    lb, cbb, cab, pb_ = SPLITS[(f, b, Ly)]
+                    ia, ib = {n: i for i, n in enumerate(la)}, {n: i for i, n in enumerate(lb)}
+                    mid = [n for n in la if n in ib and SIDE.get((f, n, a)) == 1 and SIDE.get((f, n, b)) == -1]
+                    if not mid or gap_used(mid) <= gap + 1e-9:
+                        continue
+                    opts = []
+                    lo_n, hi_n = mid[0], mid[-1]
+                    if pa_[ia[lo_n]] != 1 and ROOMLESS.get((f, a)) != 1 and (lo_n, a) not in pushed:
+                        opts.append((cba[ia[lo_n]] - caa[ia[lo_n]], a, lo_n, -1))
+                    if pb_[ib[hi_n]] != -1 and ROOMLESS.get((f, b)) != -1 and (hi_n, b) not in pushed:
+                        opts.append((cab[ib[hi_n]] - cbb[ib[hi_n]], b, hi_n, 1))
+                    if not opts:
+                        continue
+                    dc, isl, n_, sd = min(opts)
+                    SIDE[(f, n_, isl)] = sd
+                    pushed.add((n_, isl))
+                    log(f'  gap {bl[a][5]} / {bl[b][5]} ({gap:.3f} mm) holds fewer lanes than the {len(mid)} told to pass: '
+                        f'{n_} {"below" if sd < 0 else "above"} {bl[isl][5]} ({dc:+.3f} mm)')
+                    moved = True
+                if not moved:
+                    break
     for (f, n, k), o_ in sol['o'].items():
         v = PIECE[(f, n)]
         s_ = k * G

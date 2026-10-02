@@ -21,9 +21,19 @@ on the same solve, or with cuts and findings to the solve again; a smooth plan t
 stand at the ENDS (exit 4, the fanout's to change). Each stage goes through stage_cache.py, on by default here as in
 whole_loop.sh (STAGE_CACHE=0 runs every stage).
 
-Exits 0 with OUTDIR/rN/seq.kicad_pcb routed, connected and DRC-clean; the last line is the grade:
-  WHOLE K=.. round=.. lanes=../.. vias=.. copper=..mm connected=0|1 drc=0|1 secs=..
-1: no fanout board, or the route not connected or not DRC-clean; 2: no proved solve; 3: the rounds ran out.
+The chain never ends with nothing while a plan for some of the lanes can be laid: a round's solve keeps a plan it cannot
+prove (laid all the same; the nets it leaves over two vias go back to the ends, their own ends freed next round), a
+loop that does not pass is laid from the plan it held (held_plan; a lane it cannot lay stays open), a board the
+fanout's audit refuses is fed back (its split pairs, its teeth on the source's far face), and a round that lays
+NOTHING -- no plan from its solve, none its loop held -- or leaves nets OPEN, with nothing new from its audits, sends
+its open nets, else the lanes the ends model names, back to the fanout (whole_feedback --name), all for another round,
+incremental. The loop's last re-solve keeps a plan it cannot prove. When no round laid anything, the LAST RESORT is a
+partial plan on the last ends laid, the named lanes (then more) left out and open. The run's result is its best --
+the fewest open nets, then the fewest vias -- in OUTDIR/best.kicad_pcb (and its own rN/ or partialN/seq.kicad_pcb).
+The last line is that result's grade:
+  WHOLE K=.. round=.. lanes=../.. vias=.. copper=..mm connected=0|1 drc=0|1 secs=.. open=..
+Exits 0 when it is connected and DRC-clean, 1 when nets are left open or a violation stands, 2 when nothing could be
+laid at all (no fanout board, or no plan even for half the lanes).
 --loop exits 0 with OUTDIR/plan.json the snapped plan that passed, 1 when no round got there, 3 when it stopped not
 converging, 4 when it stopped at crowded ends.
 """
@@ -38,6 +48,7 @@ import json
 import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -263,6 +274,8 @@ def loop(solve, out, rounds, env, log):
         # (fresh: the round found side flips it has not tried -- not a stall, whatever its score)
         if st['best'] < 0 or score < st['best']:
             st['best'], st['best_i'], st['stall'] = score, i, 0
+            # (the round a loop that does not pass is laid from: the chain's held plan, held_plan)
+            json.dump({'i': i, 'score': score}, open(O('best.json'), 'w'))
         elif not fresh:
             st['stall'] += 1
         if st['stall'] >= PATIENCE:
@@ -296,9 +309,40 @@ def loop(solve, out, rounds, env, log):
             json.dump({'cuts': cuts, 'vcuts': vcuts}, open(cuts_out, 'w'))
         except Exception:
             traceback.print_exc(file=err)
+        soft = {'SOFT_CUTS': st['soft']} if st.get('soft') else {}
         if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log',
-                 HINT=st['solve'], CUTS=cuts_out, HIST=st['hist']) != 0:
-            return failed(s2[:-5] + '.log')
+                 HINT=st['solve'], CUTS=cuts_out, HIST=st['hist'], **soft) != 0:
+            # the CUTS left no plan: they are absolute, and together they can ask more than any plan gives -- a net
+            # over two vias proved necessary, no plan proved (K41 with the stub check per layer: each of round 1's
+            # island cuts and via cuts, alone, proved one; all six island cuts at places the polish had cleared).
+            # The solve again with them SOFT (whole_solve SOFT_CUTS: a price where they were a wall) and the history,
+            # which carries every place the audits found short -- for this solve and the rounds after (as hard cuts
+            # they would leave the same solve with no plan again)
+            none = O(f'cuts{i + 1}_none.json')
+            json.dump({'cuts': [], 'vcuts': []}, open(none, 'w'))
+            if not st['cuts'] or not os.path.isfile(cuts_out):
+                # no cuts to soften: the same solve, keeping a plan it cannot prove -- the loop goes on with it rather
+                # than ending on the plan it held (a plan for every lane before fewer vias)
+                log(f"  no proved plan ({', '.join(tail(s2[:-5] + '.log', 1))[:120]}) -- the solve again, keeping one "
+                    f"it cannot prove")
+                if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log',
+                         HINT=st['solve'], CUTS=cuts_out if os.path.isfile(cuts_out) else none, HIST=st['hist'],
+                         SOLVE_UNPROVED='1', **soft) != 0:
+                    return failed(s2[:-5] + '.log')
+                for ln in grep(s2[:-5] + '.log', r'whole_solve|vias|check|history'):
+                    log('  ' + ln)
+                st['solve'] = s2
+                return None
+            st['soft'] = (st['soft'] + ',' if st.get('soft') else '') + cuts_out
+            log(f"  the cuts left no plan ({', '.join(tail(s2[:-5] + '.log', 1))[:120]}) -- the solve again with "
+                f"them SOFT, and the history")
+            soft = {'SOFT_CUTS': st['soft']}
+            # (that re-solve keeps a plan it cannot prove: refused, K41's -- the cuts soft, best 52 vias against a
+            # bound of 45 -- ended the loop on its held plan, 5 nets open)
+            if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log',
+                     HINT=st['solve'], CUTS=none, HIST=st['hist'], SOLVE_UNPROVED='1', **soft) != 0:
+                return failed(s2[:-5] + '.log')
+            st['cuts'] = ''
         for ln in grep(s2[:-5] + '.log', r'whole_solve|vias|check|history'):
             log('  ' + ln)
         st['solve'] = s2
@@ -510,6 +554,99 @@ def grade_counts(board, nets):
                           if nm.get(s.net_id) in nets))))
 
 
+def count_open(conn_log):
+    """the nets check_connected's log finds open: those with no copper ('Unrouted nets (N)') and those in pieces
+    ('Connectivity issues (M)')"""
+    n = 0
+    for ln in lines_of(conn_log):
+        m = re.match(r'\s*(Unrouted nets|Connectivity issues) \((\d+)\)', ln)
+        if m:
+            n += int(m.group(2))
+    return n
+
+
+def open_nets(conn_log):
+    """the nets (short names) check_connected's log finds open: unrouted, or in pieces"""
+    out, mode = set(), None
+    for ln in lines_of(conn_log):
+        s = ln.strip()
+        if s.startswith('Unrouted nets'):
+            mode = 'u'
+        elif s.startswith('Connectivity issues'):
+            mode = 'c'
+        elif mode == 'u' and s.endswith('pads)'):
+            out.add(s.split(' (')[0].split('/')[-1])
+        elif mode == 'c' and '(net ' in s and s.endswith(':'):
+            out.add(s.split(' (net')[0].split('/')[-1])
+    return out
+
+
+def held_plan(loopd, env):
+    """the plan a round whose loop did not pass is laid from -- the chain never ends with nothing: the loop's snapped
+    plan when a round got that far (plan.json, short of the audit or the lint), else its best round's smooth plan
+    (best.json, else its last) laid as a passing one is -- the pairs snapped first, the singles polished round them,
+    then snapped -- with no gate; a lane the snap cannot lay is left out of it. None when the loop held none"""
+    O = lambda name: os.path.join(loopd, name)
+    if os.path.isfile(O('plan.json')):
+        return O('plan.json')
+    ps = sorted((f for f in glob.glob(O('p*.json')) if re.search(r'/p\d+\.json$', f)),
+                key=lambda f: int(re.search(r'/p(\d+)\.json$', f).group(1)))
+    if not ps:
+        return None
+    src = ps[-1]
+    try:
+        b = O(f"p{json.load(open(O('best.json')))['i']}.json")
+        if os.path.isfile(b):
+            src = b
+    except Exception:
+        pass
+    run(['whole_snap.py', src, O('held_pairs.json'), '--pairs'], env, log_path=O('held_pairs.log'))
+    if os.path.isfile(O('held_pairs.json')) and \
+            run(['whole_polish.py', O('held_pairs.json'), O('held_q.json')], env, log_path=O('held_q.log'))[0] == 0:
+        src = O('held_q.json')
+    run(['whole_snap.py', src, O('held_plan.json')], env, log_path=O('held_plan.log'))
+    return O('held_plan.json') if os.path.isfile(O('held_plan.json')) else None
+
+
+def partial_drops(named, xs, lanes):
+    """the last resort's sets of lanes to leave out, each larger than the one before: the lanes the rounds named
+    (else the three most crossed), then the most crossed besides to a quarter of the lanes, then to half -- never every
+    lane. `xs` {lane: its crossings} (the ends model's), `lanes` the run's"""
+    L = len(lanes)
+    by_x = [ln for ln in sorted(lanes, key=lambda ln: (-xs.get(ln, 0), ln)) if ln not in named]
+    drops = []
+    for size in (len(named) or 3, -(-L // 4), -(-L // 2)):
+        dr = list(named)[:L - 1] + by_x[:max(0, min(size, L - 1) - len(named))]
+        if dr and (not drops or len(dr) > len(drops[-1])):
+            drops.append(dr)
+    return drops
+
+
+def add_over(fb_path, over_nets):
+    """the lanes an UNPROVED plan leaves over two vias (whole_solve 'over_nets'), merged into the fanout's feedback
+    (FEEDBACK=, whole_ends 'over': each counted over by at least that much); the lanes it newly names"""
+    if not over_nets:
+        return []
+    fb = json.load(open(fb_path)) if os.path.isfile(fb_path) else {'pairs': [], 'avoid': []}
+    ov = fb.setdefault('over', {})
+    new = [n for n, k in sorted(over_nets.items()) if int(k) > int(ov.get(n, 0))]
+    for n in new:
+        ov[n] = int(over_nets[n])
+    json.dump(fb, open(fb_path, 'w'), indent=1)
+    return new
+
+
+def stage_env(env):
+    """the settings every stage of the chain runs under, set in `env` (and returned): one thread per numeric library,
+    the harness's caches, and the plan environment of the fanout on our own ends (resolve_round.py runs one stage
+    under the same)"""
+    env.update(OMP_NUM_THREADS='1', VECLIB_MAXIMUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
+               TAUT_MEMO=env.get('TAUT_MEMO') or '1', PROBE_MEMO=env.get('PROBE_MEMO') or '1')
+    env.update(PLAN_PAGES='1', PLAN_JUDGE='ends', BRAID_PAIRS='1', PLAN_PAIRS='1',
+               BRAID_EXACT_PAGES='0', PLAN_PAGES_SIDERS='2')
+    return env
+
+
 def chain(K, o, R=3, base=None, dest=None, settings=None):
     """whole_chain.sh K OUTDIR ROUNDS: the exit code, the grade the last line printed. The bench and its destination
     are `base` and `dest` when given (route_bus.py), else BASE and DEST from the environment; `settings` go over the
@@ -526,10 +663,7 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
         env['DEST'] = dest
     base = env.get('BASE') or 'fb_t2q_pairs.kicad_pcb'
     dest = env.get('DEST') or 'DU1'
-    env.update(OMP_NUM_THREADS='1', VECLIB_MAXIMUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
-               TAUT_MEMO=env.get('TAUT_MEMO') or '1', PROBE_MEMO=env.get('PROBE_MEMO') or '1')
-    env.update(PLAN_PAGES='1', PLAN_JUDGE='ends', BRAID_PAIRS='1', PLAN_PAIRS='1',
-               BRAID_EXACT_PAGES='0', PLAN_PAGES_SIDERS='2')
+    stage_env(env)
     nets_out = run(['coherent_nets.py', str(K), f'--board={base}'], env)[1]
     NETS = (nets_out.splitlines() or [''])[-1]
     FB = os.path.join(o, 'feedback.json')
@@ -538,6 +672,115 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
     prev = ''
     say = Log()
     r = 0
+    # the best result of the rounds so far, by its open nets, then its vias (and a result with a violation after every
+    # clean one): the chain never ends with nothing when a round had a plan to lay
+    best = None
+    nets_all = [n for n in NETS.split(',') if n]
+
+    def advance(d, base):
+        """the next round's base: this round's realized source board (its fo.log names it), else `base` as it was"""
+        sb = [m[len('source board: '):] for ln in lines_of(os.path.join(d, 'fo.log'))
+              for m in re.findall(r'source board: [^,]+', ln)]
+        if sb and sb[-1] and os.path.isfile(os.path.join(d, sb[-1])):
+            base = os.path.join(d, sb[-1])
+            if 'BASE' in env:
+                env['BASE'] = base
+        return base
+
+    def lay(r, d, plan, bench, nets=None):
+        """route_lanes all at once on PLAN, graded: the result (its key, open nets, violation, grade line, board), or
+        None when no board was written. `nets` the nets the plan lays (a partial plan's, the last resort), else the
+        run's; open nets are counted over the run's whatever it lays"""
+        rr = ['--plan', plan, '--board', bench, '--nets', ','.join(nets) if nets else NETS, '--dest', dest]
+        seq = os.path.join(d, 'seq.kicad_pcb')
+        run(['route_lanes.py', 'all'] + rr + ['--mode', 'seq', '--write', seq], {**env, 'BRAID_PAIR_SLACKS': '0'},
+            log_path=os.path.join(d, 'route_seq.log'))
+        sm = '\n'.join(grep(os.path.join(d, 'route_seq.log'), r'^SUMMARY'))
+        say(f"  all at once: {sm}")
+        if not os.path.isfile(seq):
+            return None
+        pats = [f'*{n}' for n in nets_all]
+        # (the checkers by the path the shell gives them, from awx/: their logs echo it; always in a process of
+        # their own: they are the harness's grade, not the route, and a checker run as a script installs its
+        # command-line banner -- the CMD / EXIT echo -- for its whole process)
+        checker = lambda name: os.path.join('..', 'py_router', name)
+        cc = run([checker('check_connected.py'), seq, '--nets'] + pats, env,
+                 log_path=os.path.join(d, 'conn.log'), own_process=True)[0]
+        dc = run([checker('check_drc.py'), seq, '--nets'] + pats + ['--clearance-margin', '0.1'], env,
+                 log_path=os.path.join(d, 'drc.log'), own_process=True)[0]
+        nopen = 0 if cc == 0 else max(1, count_open(os.path.join(d, 'conn.log')))
+        lanes = '\n'.join(m.split(' ')[0] for m in re.findall(r'[0-9]+/[0-9]+ in band', sm))
+        v, c = grade_counts(seq, set(nets_all))
+        g = (f"WHOLE K={K} round={r} lanes={lanes} vias={v} copper={c}mm connected={int(cc == 0)} "
+             f"drc={int(dc == 0)} secs={secs()} open={nopen}")
+        say(g)
+        return dict(key=(int(dc != 0), nopen, int(v), int(c)), open=nopen, drc=int(dc != 0), grade=g, board=seq,
+                    open_nets=sorted(open_nets(os.path.join(d, 'conn.log'))) if nopen else [])
+
+    def lane_legs():
+        """{lane: its nets} as the ends model makes lanes: a pair one lane named by its base (pairs.pair_names, under
+        PLAN_PAIRS), every other net its own"""
+        import pairs as _pairs
+        prs = (_pairs.pair_names(nets_all) if int(env.get('PLAN_PAIRS', env.get('BRAID_PAIRS', '0')) or 0) else {})
+        legs = {l_ for pr in prs.values() for l_ in pr}
+        return {**{n: (n,) for n in nets_all if n not in legs}, **{b: tuple(pr) for b, pr in prs.items()}}
+
+    def last_resort(r):
+        """THE LAST RESORT, when no round laid anything: a PARTIAL plan on the last ends a fanout laid -- the solve,
+        its loop and the route all at once on the lanes LESS those the rounds named (whole_feedback --name: open, else
+        the ends model's over two, loaded, most crossed), then less the most crossed besides to a quarter of the lanes, then to
+        half; the lanes left out stay open (route_bus hands them on as they came). The first that lays anything is the
+        result: a run's open nets are never all of them while a plan for some can be laid. A board the fanout's audit
+        refused will do, the lanes it named left out with them (its split pairs, its teeth on the far face). None when
+        none does (or no round laid a fanout board at all)"""
+        bench, refused_ = None, []
+        for k in range(r, 0, -1):
+            d_ = os.path.join(o, f'r{k}')
+            if not os.path.isfile(os.path.join(d_, 'fo.plan.json')):
+                continue
+            if os.path.isfile(os.path.join(d_, 'fo.kicad_pcb')):
+                bench = os.path.join(d_, 'fo.kicad_pcb')
+            elif os.path.isfile(os.path.join(d_, 'fo.refused.kicad_pcb')) and \
+                    os.path.isfile(os.path.join(d_, 'fo.refused.json')):
+                bench = os.path.join(d_, 'fo.refused.kicad_pcb')
+                rj = json.load(open(os.path.join(d_, 'fo.refused.json')))
+                refused_ = [x[0] for x in rj.get('splits', [])] + list(rj.get('far', []))
+            if bench:
+                d0 = d_
+                break
+        if not bench:
+            return None
+        legs = lane_legs()
+        xs = (json.load(open(os.path.join(d0, 'fo.plan.json'))).get('ends_model') or {}).get('x') or {}
+        named = [ln for ln in ((json.load(open(FB)).get('named') if os.path.isfile(FB) else None) or []) if ln in legs]
+        named = list(dict.fromkeys([ln for ln in refused_ if ln in legs] + named))
+        drops = partial_drops(named, xs, list(legs))
+        for j, dr in enumerate(drops, 1):
+            dj = os.path.join(o, f'partial{j}')
+            os.makedirs(dj, exist_ok=True)
+            keep = {n for ln, lg in legs.items() if ln not in dr for n in lg}
+            sub = [n for n in nets_all if n in keep]
+            say(f"=== the last resort {j}: a partial plan on {os.path.relpath(bench, o)}, {len(dr)} of {len(legs)} "
+                f"lanes left out: {', '.join(dr)}")
+            env_ = {**env, 'BENCH': bench, 'NETS': ','.join(sub), 'DEST': dest}
+            solve = os.path.join(dj, 'solve.json')
+            run(['whole_solve.py', solve], {**env_, 'SOLVE_UNPROVED': '1'}, log_path=os.path.join(dj, 'solve.log'))
+            for ln in grep(os.path.join(dj, 'solve.log'), r'whole_solve:|workers:'):
+                say(ln[:200])
+            if not os.path.isfile(solve):
+                say("  no plan from the solve")
+                continue
+            loopd = os.path.join(dj, 'loop')
+            with open(os.path.join(dj, 'loop.log'), 'w') as lf:
+                rc_ = loop(solve, loopd, 6, env_, Log(lf))
+            say(f"  loop exit {rc_} at {secs()} s")
+            plan = os.path.join(loopd, 'plan.json') if rc_ == 0 else held_plan(loopd, env_)
+            res = lay(f'partial{j}', dj, plan, bench, sub) if plan else None
+            if res is not None:
+                return res
+            say("  nothing laid")
+        return None
+
     for r in range(1, R + 1):
         d = os.path.join(o, f'r{r}')
         os.makedirs(d, exist_ok=True)
@@ -545,6 +788,9 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             f.write(NETS.replace(',', '\n') + '\n')
         say(f"=== fanout round {r}")
         fenv = dict(env)
+        # (the run's nets, every round: a fanout never re-picks them off a later round's board -- K51's second round,
+        # re-picked, dropped its three pairs while their teeth stood on the board, and the solve found them split)
+        fenv['FANOUT_NETS'] = NETS
         if os.path.isfile(FB):
             fenv['FEEDBACK'] = FB
         if prev:
@@ -555,7 +801,25 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
         for ln in grep(os.path.join(d, 'fo.log'), r'plan model'):
             say(ln[:220])
         if not os.path.isfile(os.path.join(d, 'fo.kicad_pcb')):
-            return 1, None
+            # a board the FANOUT AUDIT refused (fanout_from_plan: a pair split by other lanes' ends) is fed back -- the
+            # split pairs and the lanes between their tips, ends not to be chosen together again -- and another round,
+            # incremental, frees those ends; the rounds end only when the refusal names nothing new
+            refused = os.path.join(d, 'fo.refused.json')
+            if os.path.isfile(refused) and os.path.isfile(os.path.join(d, 'fo.plan.json')):
+                for ln in grep(os.path.join(d, 'fo.log'), r'^REFUSED'):
+                    say('  ' + ln[:220])
+                fbl = stripped(run(['whole_feedback.py', '--refused', os.path.join(d, 'fo.plan.json'), FB, refused],
+                                   env, err=sys.stderr)[1])
+                say(fbl)
+                if not re.search(r'whole_feedback: [1-9]', fbl):
+                    say("=== the fanout's refusal names nothing new -- the rounds end here")
+                    break
+                say("=== the fanout refused its board -- another round, incremental, frees the ends it named")
+                base = advance(d, base)
+                prev = d
+                continue
+            say("  no fanout board -- the rounds end here")
+            break
         # the same ends as the round before (feedback it priced but did not follow): the rest of the round would be
         # the same
         if prev:
@@ -571,67 +835,88 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
         bench = os.path.join(d, 'fo.kicad_pcb')
         env.update(BENCH=bench, NETS=NETS, DEST=dest)
         solve = os.path.join(d, 'solve.json')
-        run(['whole_solve.py', solve], env, log_path=os.path.join(d, 'solve.log'))
+        # (a round never ends with nothing: its solve keeps a plan it cannot prove -- whole_solve SOLVE_UNPROVED -- and
+        # the round lays it; the loop's own re-solves still take only a proved one)
+        run(['whole_solve.py', solve], {**env, 'SOLVE_UNPROVED': '1'}, log_path=os.path.join(d, 'solve.log'))
         for ln in grep(os.path.join(d, 'solve.log'), r'whole_solve:|workers:'):
             say(ln[:200])
+        J, proved, rc, res, loopd = {}, False, None, None, os.path.join(d, 'loop')
         if not os.path.isfile(solve):
-            say("  no proved plan -- stopping")
-            g = f"WHOLE K={K} round={r} lanes=0/0 vias=0 copper=0mm connected=0 drc=0 secs={secs()}"
-            say(g)
-            return 2, g
-        with open(os.path.join(d, 'loop.log'), 'w') as lf:
-            rc = loop(solve, os.path.join(d, 'loop'), 6, env, Log(lf))
-        for ln in grep(os.path.join(d, 'loop.log'), r'^=== round|smooth:|NOT CONVERGING|passes'):
-            say(ln[:170])
-        say(f"  loop exit {rc} at {secs()} s")
-        if rc == 0:
-            rr = ['--plan', os.path.join(d, 'loop', 'plan.json'), '--board', bench, '--nets', NETS, '--dest', dest]
-            del env['BENCH']
-            seq = os.path.join(d, 'seq.kicad_pcb')
-            run(['route_lanes.py', 'all'] + rr + ['--mode', 'seq', '--write', seq], {**env, 'BRAID_PAIR_SLACKS': '0'},
-                log_path=os.path.join(d, 'route_seq.log'))
-            sm = '\n'.join(grep(os.path.join(d, 'route_seq.log'), r'^SUMMARY'))
-            say(f"  all at once: {sm}")
-            nets = [n for n in lines_of(os.path.join(d, 'nets.lines')) for n in n.split()]
-            pats = [f'*{n}' for n in nets]
-            # (the checkers by the path the shell gives them, from awx/: their logs echo it; always in a process of
-            # their own: they are the harness's grade, not the route, and a checker run as a script installs its
-            # command-line banner -- the CMD / EXIT echo -- for its whole process)
-            checker = lambda name: os.path.join('..', 'py_router', name)
-            cc = run([checker('check_connected.py'), seq, '--nets'] + pats, env,
-                     log_path=os.path.join(d, 'conn.log'), own_process=True)[0]
-            dc = run([checker('check_drc.py'), seq, '--nets'] + pats + ['--clearance-margin', '0.1'], env,
-                     log_path=os.path.join(d, 'drc.log'), own_process=True)[0]
-            lanes = '\n'.join(m.split(' ')[0] for m in re.findall(r'[0-9]+/[0-9]+ in band', sm))
-            v, c = grade_counts(seq, set(nets))
-            g = (f"WHOLE K={K} round={r} lanes={lanes} vias={v} copper={c}mm connected={int(cc == 0)} "
-                 f"drc={int(dc == 0)} secs={secs()}")
-            say(g)
-            return int(cc != 0 or dc != 0), g
+            say("  no plan from the solve -- nothing for this round to lay")
+        else:
+            J = json.load(open(solve))
+            proved = J.get('proved', True)
+            if not proved:
+                u = J.get('unproved') or {}
+                say(f"  the solve's plan is UNPROVED ({u.get('over')} over two vias against a bound of "
+                    f"{u.get('bound_over')}): laid all the same; its nets over two to the ends: {J.get('over_nets')}")
+            with open(os.path.join(d, 'loop.log'), 'w') as lf:
+                rc = loop(solve, loopd, 6, env, Log(lf))
+            for ln in grep(os.path.join(d, 'loop.log'), r'^=== round|smooth:|NOT CONVERGING|passes'):
+                say(ln[:170])
+            say(f"  loop exit {rc} at {secs()} s")
+            # a loop that did not pass is laid all the same, from the plan it held (held_plan): a lane it cannot lay
+            # stays open, and the round's result stands against the others'
+            plan = os.path.join(loopd, 'plan.json') if rc == 0 else held_plan(loopd, env)
+            if rc != 0:
+                say(f"  the loop did not pass -- laid from the plan it held: "
+                    f"{os.path.relpath(plan, d) if plan else 'none'}")
+            res = lay(r, d, plan, bench) if plan else None
+            if plan and res is None:
+                say("  no board laid from the plan (route_seq.log)")
         del env['BENCH']
+        if res is not None and (best is None or res['key'] < best['key']):
+            best = res
+        # done: a plan that passed, PROVED, laid connected and clean -- no later round would better it
+        if rc == 0 and proved and res is not None and res['open'] == 0 and res['drc'] == 0:
+            break
+        # ---- the next round's feedback: the ends its audits found crowded (a loop that did not pass), and the lanes
+        # an unproved plan left over two vias, which the ends counted on keeping at two
         hots = []
-        loopd = os.path.join(d, 'loop')
-        for a in sorted(glob.glob(os.path.join(loopd, 'p*.audit'))) + sorted(glob.glob(os.path.join(loopd, 'q*.audit'))):
-            j, h = a[:-len('.audit')] + '.json', a[:-len('.audit')] + '.fbhot.json'
-            run(['whole_gate.py', j, a, '--hot', h], env)
-            hots.append(h)
-        hots += sorted(glob.glob(os.path.join(loopd, 'hs*.json')))     # the snapped plans' places
+        if rc is not None and rc != 0:
+            for a in sorted(glob.glob(os.path.join(loopd, 'p*.audit'))) + \
+                    sorted(glob.glob(os.path.join(loopd, 'q*.audit'))):
+                j, h = a[:-len('.audit')] + '.json', a[:-len('.audit')] + '.fbhot.json'
+                run(['whole_gate.py', j, a, '--hot', h], env)
+                hots.append(h)
+            hots += sorted(glob.glob(os.path.join(loopd, 'hs*.json')))     # the snapped plans' places
+        new_over = add_over(FB, J.get('over_nets') if J and not proved else None)
         fbl = stripped(run(['whole_feedback.py', os.path.join(d, 'fo.plan.json'), FB] + hots, env, err=sys.stderr)[1])
         say(fbl)
+        if new_over:
+            say(f"  the ends to count {', '.join(new_over)} over two vias: the solve could not keep them at two")
+        nothing = 'whole_feedback: 0 new' in fbl and not new_over
+        if (res is not None and res['open']) or (nothing and res is None):
+            # a round that leaves nets OPEN names them to the fanout, whatever its audits found -- and one that lays
+            # NOTHING (no plan from its solve, none its loop held, no board from its plan) with nothing new from its
+            # audits names the lanes the ends model names on these ends (its nets over two, else its lanes loaded on
+            # the trunk, else its most crossed): both their ends freed and to be avoided, so the next round,
+            # incremental, chooses them again. Neither ends the rounds (K41: 5 nets open, the audits silent, and the
+            # rounds ended there)
+            fbn = stripped(run(['whole_feedback.py', '--name', os.path.join(d, 'fo.plan.json'), FB]
+                               + (res['open_nets'] if res else []), env, err=sys.stderr)[1])
+            say(fbn)
+            nothing = nothing and not re.search(r'whole_feedback: [1-9]', fbn)
         # nothing new for the fanout: the next round would lay the same ends from the same feedback
-        if 'whole_feedback: 0 new' in fbl:
+        if nothing:
             say("=== the feedback adds nothing new: another fanout lays the same ends")
             break
-        sb = [m[len('source board: '):] for ln in lines_of(os.path.join(d, 'fo.log'))
-              for m in re.findall(r'source board: [^,]+', ln)]
+        base = advance(d, base)
         prev = d
-        if sb and sb[-1] and os.path.isfile(os.path.join(d, sb[-1])):
-            base = os.path.join(d, sb[-1])
-            if 'BASE' in env:
-                env['BASE'] = base
-    g = f"WHOLE K={K} round={r} lanes=0/0 vias=0 copper=0mm connected=0 drc=0 secs={secs()}"
-    say(g)
-    return 3, g
+    if best is None:
+        best = last_resort(r)
+    if best is None:
+        g = f"WHOLE K={K} round={r} lanes=0/0 vias=0 copper=0mm connected=0 drc=0 secs={secs()} open={len(nets_all)}"
+        say(g)
+        return 2, g
+    # the best round's board, where a caller finds it (route_bus, modal_whole): OUTDIR/best.kicad_pcb
+    for ext in ('.kicad_pcb', '.kicad_pro'):
+        src_ = best['board'][:-len('.kicad_pcb')] + ext
+        if os.path.isfile(src_):
+            shutil.copyfile(src_, os.path.join(o, 'best' + ext))
+    g = re.sub(r'secs=\d+', f'secs={secs()}', best['grade'])
+    say(('=== the best round: ' if best['open'] or best['drc'] else '') + g)
+    return (0 if best['open'] == 0 and best['drc'] == 0 else 1), g
 
 
 def main():

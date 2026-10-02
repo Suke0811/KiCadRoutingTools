@@ -25,7 +25,6 @@ import io
 import json
 import os
 import awx_settings
-import re
 import shutil
 import subprocess
 import sys
@@ -260,7 +259,8 @@ def plan_state(pcb, names, banned=frozenset()):
                                    street=DST_STREET, street_dirs=(toward,)))
         if PLAN_JUDGE == 'ends' and not far_half(pad):
             moves = [m for m in moves if m.direction != far]
-        dmenu[nm] = [m for m in moves if (nm, sr.move_sig(m)) not in banned]
+        dmenu[nm] = [m for m in moves if (nm, sr.move_sig(m)) not in banned
+                     and (nm, 'class', sr.move_class(m)) not in banned]
         # a pad of this net on the other layer UNDER the ball (a back-side
         # termination resistor under a DDR clock ball) is served by a TIE
         # VIA at the ball (tie_vias_under, after the berths are laid), so
@@ -345,6 +345,7 @@ def plan_state(pcb, names, banned=frozenset()):
         smenu[nm] = [m for m in dedupe_climbs(menu(p, sgrid, byname[nm][0], own_only=(PLAN_JUDGE != 'ends'),
                                                    climb=SRC_CLIMB))
                      if (nm, sr.move_sig(m)) not in banned and m.direction != far_dir
+                     and (nm, 'class', sr.move_class(m)) not in banned
                      and (far_dir is None or m.direction == near_dir or side_half(p, m.direction))]
         _plegs = getattr(plan_state, '_pair_legs', None) or {}
         if nm in _plegs and _plegs[nm] in byname:
@@ -408,8 +409,11 @@ def plan_state(pcb, names, banned=frozenset()):
         prev = json.load(open(awx_settings.req('INCREMENTAL')))
         fb = json.load(open(awx_settings.req('FEEDBACK')))
         items = [e for pr in fb.get('pairs', ()) for e in pr] + list(fb.get('avoid', ()))
-        free_t = {e['lane'] for e in items if e['end'] == 0}
-        free_b = {e['lane'] for e in items if e['end'] == 1}
+        # (a lane the whole solve could not keep to two vias -- 'over', whole_route.add_over -- has both its ends freed:
+        # its tooth and its berth are where the promise it could not keep was made)
+        over = set(fb.get('over') or {})
+        free_t = {e['lane'] for e in items if e['end'] == 0} | over
+        free_b = {e['lane'] for e in items if e['end'] == 1} | over
         pr_i = _pairs_i.pair_names(list(names))
         legs_b = {l_ for ln in free_b for l_ in (pr_i.get(ln) or (ln,)) if l_ in dmenu}
         pe_, pl_ = dict(prev['ends']), dict(prev['dest_layer'])
@@ -418,6 +422,14 @@ def plan_state(pcb, names, banned=frozenset()):
             if nm in legs_b or nm not in pe_ or nm not in dmenu:
                 continue
             bx_, by_ = pe_[nm][1]
+            # (held as LAID: the move the sidecar records it was laid by, exactly -- the nearest menu move on its layer
+            # can be another kind or direction to the same exit, whose lanes or site conflict with a neighbour the laid
+            # berth did not; that is the fallback for a sidecar that records none)
+            sig_ = (prev.get('berth_sig') or {}).get(nm)
+            m_ = next((m for m in dmenu[nm] if json.dumps(sr.move_sig(m)) == json.dumps(sig_)), None) if sig_ else None
+            if m_ is not None and math.hypot(m_.exit_pt[0] - bx_, m_.exit_pt[1] - by_) <= _we.DUP_TOL:
+                fixed_b[nm] = sr.move_sig(m_)
+                continue
             m_ = min((m for m in dmenu[nm] if m.layer == pl_.get(nm)), default=None,
                      key=lambda m: math.hypot(m.exit_pt[0] - bx_, m.exit_pt[1] - by_))
             if m_ is not None and math.hypot(m_.exit_pt[0] - bx_, m_.exit_pt[1] - by_) <= _we.DUP_TOL:
@@ -529,6 +541,7 @@ def braid_plan_of(st, choice, board, achieved=None):
                                  list(te._end_dir(pcb, nid, st['launch'][nm], net.pads)))
         plan['stub_dir'][nm] = list(DIRS[(got['direction'] if got and got.get('direction') in DIRS
                                           else m.direction)])
+        plan.setdefault('berth_sig', {})[nm] = sr.move_sig(m)     # the move it was laid by (an incremental round's hold)
     return plan
 
 
@@ -709,18 +722,25 @@ def ban_moves(banned, moves, nets, names):
     joint move: a leg whose partner's move is in `moves` too bans the pair's move as a unit -- ('pair', P, N, P's
     signature, N's signature), which whole_ends drops from the pair's options -- never a leg's move alone (with
     another partner move it is another joint move); a leg moved alone is banned alone. Only under PLAN_JUDGE=ends,
-    whose ends model reads a joint ban: every other judge filters its menus leg by leg (plan_state), and bans each."""
+    whose ends model reads a joint ban: every other judge filters its menus leg by leg (plan_state), and bans each.
+    Under PLAN_JUDGE=ends a ban also covers the move's CLASS (source_realize.move_class: every leg variant of the same
+    exit), which the engine refuses for the same reason -- banned one variant at a time, the re-plans asked them in turn"""
     import pairs as _pairs
     legs = {}
     if PLAN_JUDGE == 'ends' and int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0):
         for pn, nn in _pairs.pair_names(list(names)).values():
             legs[pn] = legs[nn] = (pn, nn)
+    by_class = PLAN_JUDGE == 'ends'
     for nm in nets:
         pr = legs.get(nm)
         if pr and pr[0] in moves and pr[1] in moves:
             banned.add(('pair', pr[0], pr[1], sr.move_sig(moves[pr[0]]), sr.move_sig(moves[pr[1]])))
+            if by_class:
+                banned.add(('pairclass', pr[0], pr[1], sr.move_class(moves[pr[0]]), sr.move_class(moves[pr[1]])))
         else:
             banned.add((nm, sr.move_sig(moves[nm])))
+            if by_class:
+                banned.add((nm, 'class', sr.move_class(moves[nm])))
 
 
 def split_pairs(st):
@@ -953,6 +973,12 @@ def plan(base, names, work):
                         + (f'; not laid as asked (banned): {misses}' if misses else '')
                         + (f'; REJECTED ({res_r["rejected"]})' if res_r['rejected'] else ''))
                 _trial.missed = misses if PLAN_JUDGE == 'ends' else []
+                if _trial.missed and res_r['rejected']:
+                    # (ends) the trial is returned unjudged below, so the moves its DRC names are banned here too: a
+                    # rejected trial's moves were never banned, and the next round asked them again
+                    hit = sorted({n for ln in res_r.get('pairs') or () for n in (drc_line_nets(ln) or ())} & set(moves))
+                    if hit:
+                        ban_moves(banned, moves, hit, names)
                 if _trial.missed:
                     # (ends) a board whose teeth are not the plan's is NOT kept: what the engine laid in place of an
                     # asked move is a tooth nobody chose (K35: SA12's dogbone to B laid as a surface tooth on F,
@@ -1161,6 +1187,16 @@ def explain_plan(choice, st, names, out_path=None, board=None, achieved=None):
         if PLAN_PAGES:
             plan['pages_first'] = True      # the braid stage pages this plan EXACTLY
         plan['nets'] = list(names)          # the run, in its order: an INCREMENTAL round routes the same nets
+        if PLAN_JUDGE == 'ends':
+            # the ends model's reading of each lane on these ends (whole_ends: its nets over two, its load on the
+            # trunk, its crossings) -- the lanes a round the whole route lays nothing on frees next (whole_feedback
+            # --name) -- and the far face's cut it read them with: the solve's frame takes that one (braid.setup ->
+            # whole_frame), where recomputed from the laid stubs, a hair off the menu's exits, two near-equal gaps could
+            # split the face the other way and hand the solve crossings the model never priced
+            pe_ = judge_by_braid.ends
+            plan['ends_model'] = {k: pe_.get('lane_' + k, {}) for k in ('over', 'load', 'x')}
+            if pe_.get('cut') is not None:
+                plan['dest_cut'] = float(pe_['cut'])
         with open(side, 'w', encoding='utf-8') as f:
             json.dump(plan, f, indent=1, sort_keys=True)
         print(f'  plan written to {os.path.basename(side)}')
@@ -1199,11 +1235,28 @@ def main():
               f'{os.path.basename(base)}, which can be other nets than the previous round\'s')
     if PLAN_JUDGE == 'ends' and bool(awx_settings.get('INCREMENTAL')) != bool(awx_settings.get('FEEDBACK')):
         print('WARNING: an incremental round needs both INCREMENTAL and FEEDBACK: this round chooses every end afresh')
-    names = prev_nets or coherent_nets(K, base)
+    # (FANOUT_NETS: the run's nets as the chain fixed them, whole_route -- never re-picked off a later round's board)
+    run_nets = [n for n in (awx_settings.get('FANOUT_NETS') or '').split(',') if n]
+    names = prev_nets or run_nets or coherent_nets(K, base)
     print('planning (source realized every round)...')
     work = out_path[:-len('.kicad_pcb')] if out_path.endswith('.kicad_pcb') else out_path
     choice, dst_pad, dref, byname, board, realized, banned = plan(base, names, work)
     rc = fanout_destination(out_path, names, choice, dst_pad, dref, byname, board, realized, banned)
+    # THE FANOUT AUDIT on the board handed back: a fanout NEVER hands back one the whole route would refuse -- a pair
+    # split the destination's re-plans could not clear (a tooth's, or a berth's with nothing left to ban), or anything
+    # else its frame stops on. Such a board is set aside, named, and no board goes to the stage after
+    sp, far, stops = fanout_audit(out_path, names, dref) if os.path.isfile(out_path) else ([], [], [])
+    if sp or far or stops:
+        held = out_path[:-len('.kicad_pcb')] + '.refused.kicad_pcb'
+        os.replace(out_path, held)
+        # (the findings, for the chain's feedback: the next round frees the ends named -- whole_feedback --refused)
+        with open(out_path[:-len('.kicad_pcb')] + '.refused.json', 'w', encoding='utf-8') as f_:
+            json.dump({'splits': [[pr_, end_, list(ls_)] for pr_, end_, ls_ in sp], 'far': list(far),
+                       'stops': stops}, f_, indent=1)
+        print(f'REFUSED by the fanout audit: {_audit_line(sp, far, stops)} -- the board set aside as '
+              f'{os.path.basename(held)}')
+        return 3
+    print('fanout audit: clean')
     joint_others(out_path)
     return rc
 
@@ -1426,6 +1479,41 @@ def tie_vias_under(pcb, nms, byname, dst_pad, vias_add, log=print):
     return out
 
 
+def _split_legs(names):
+    """{a pair's lane name: its legs} as the whole route names a pair (pairs.pair_names), for the run's nets"""
+    import pairs as _pairs_s
+    return {b: tuple(pr) for b, pr in _pairs_s.pair_names(list(names)).items()}
+
+
+def fanout_audit(board, names, dest):
+    """THE FANOUT AUDIT, run on every board a fanout hands back (and on each destination pass's): what the whole
+    route would refuse on it, by its own tests on the bench the board becomes -- whole_ctx's reading of it (its
+    frame, every run net's ends) and whole_frame.build, which stops on a pair SPLIT (another lane's end on the
+    pair's layer between its tips, at its tooth or its berth: K51's second round, SDQ3 between SDQS0's berths).
+    (splits, far, stops): splits [(pair, 'tooth' | 'berth', [the lanes between its tips])], far [the lanes whose
+    tooth stands on the source's far face], stops [why] for anything else the whole route would stop on there. All
+    empty: the board may be handed on."""
+    import whole_ctx
+    import whole_frame
+    with awx_settings.given({**awx_settings.environ(), 'BENCH': board, 'NETS': ','.join(names), 'DEST': dest}):
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                ctx, _cs = whole_ctx.plan()
+                whole_frame.build(ctx, dest)
+        except whole_frame.PairSplit as e:
+            return e.splits, [], []
+        except whole_frame.FarFace as e:
+            return [], e.lanes, []
+        except SystemExit as e:
+            return [], [], [str(e)]
+    return [], [], []
+
+
+def _audit_line(splits, far, stops):
+    return '; '.join([f'{pr_} split at its {end_} (round {", ".join(ls_)})' for pr_, end_, ls_ in splits]
+                     + ([f'{", ".join(far)} launch from the source\'s far face'] if far else []) + stops)
+
+
 def fanout_destination(out_path, names, choice, dst_pad, dref, byname, board,
                        realized, banned):
     """Fan out DU1 to the plan, audit, and FEED BACK: a berth the engine
@@ -1436,6 +1524,7 @@ def fanout_destination(out_path, names, choice, dst_pad, dref, byname, board,
     _pcb0 = parse_kicad_pcb(board)
     st = plan_state(_pcb0, names, banned)
     laid_pass = None       # the LAST pass fanned out: (choice, st, achieved, ok)
+    best_pass = None       # (ends) the best pass laid: (key, laid_pass, pass)
     learned = set()        # berth pairs the planner must avoid together: laid exactly, in violation of each other
     # PAIR BERTHS (pairs.harmonise, PLAN_PAIRS): a differential pair's two
     # berths are made one move -- same face, layer and kind, neighbouring
@@ -1467,6 +1556,23 @@ def fanout_destination(out_path, names, choice, dst_pad, dref, byname, board,
         misses = [nm for nm in choice if not audit_d.get(nm, {}).get('exact')]
         drc_nets = [nm for nm in sorted(getattr(fanout_once, 'drc_nets', ()))
                     if nm in choice and nm not in misses]
+        if PLAN_JUDGE == 'ends':
+            # every pass graded -- its berths not as asked or in a DRC violation, then the ends model's objective on
+            # what it asked -- and the best one's board kept beside: it ships, not merely the last (a pass's re-plan
+            # can ask worse ends than the pass before, and the passes can run out with a better one unlaid)
+            try:
+                _v = judge_by_braid(st, choice, board)[0]
+            except Exception:
+                _v = float('inf')
+            _k = (len(misses) + len(drc_nets), _v)
+            if best_pass is None or _k < best_pass[0]:
+                for ext_ in ('.kicad_pcb', '.kicad_pro'):
+                    src_ = out_path[:-len('.kicad_pcb')] + ext_
+                    if os.path.isfile(src_):
+                        shutil.copyfile(src_, out_path[:-len('.kicad_pcb')] + '.bestpass' + ext_)
+                best_pass = (_k, laid_pass, it)
+            print(f'  destination pass {it}: graded {_k[0]} not as asked, objective {_k[1]:.2f}'
+                  + (' (the best so far)' if best_pass[2] == it else ''))
         pair_only = []
         if drc_nets and (PLAN_PAGES or PLAN_JUDGE == 'ends'):
             # two berths laid as asked but in violation of EACH OTHER: the pair of moves is learned (the planner
@@ -1490,8 +1596,21 @@ def fanout_destination(out_path, names, choice, dst_pad, dref, byname, board,
                   f'DRC violation -> treated as refused: {drc_nets}')
             misses += drc_nets
         if not misses and not pair_only:
-            print(f'  destination pass {it}: every berth laid as planned')
-            break
+            # ...and no pair SPLIT on the board laid: a fanout never hands back a pair with another lane's end
+            # between its tips on its layer (the whole route stops there: K51's second round, SDQ3 between SDQS0's
+            # berths). The lanes between a pair's berths are re-planned as a berth not laid as asked is
+            sp, far, stops = fanout_audit(out_path, names, dref)
+            legs_ = _split_legs(names)
+            bad = sorted({l_ for _pr, end_, lanes_ in sp if end_ == 'berth' for ln in lanes_
+                          for l_ in legs_.get(ln, (ln,)) if l_ in choice})
+            if not sp and not far and not stops:
+                print(f'  destination pass {it}: every berth laid as planned')
+                break
+            print(f'  destination pass {it}: every berth laid as planned, but the fanout audit finds: '
+                  + _audit_line(sp, far, stops))
+            if not bad:
+                break
+            misses = bad
         if misses:
             ban_moves(banned, choice, misses, names)
             print(f'  destination pass {it}: {len(misses)} berth(s) not laid as asked '
@@ -1502,10 +1621,24 @@ def fanout_destination(out_path, names, choice, dst_pad, dref, byname, board,
                    if audit_d.get(nm, {}).get('exact') and nm not in pair_only}
         # pages-first: the berths laid exactly stay FIXED, only the missed
         # nets are re-planned -- a re-plan from scratch asked for 5-6 new
-        # berths every pass and never converged (K28, 8 passes, 27 bans)
+        # berths every pass and never converged (K28, 8 passes, 27 bans).
+        # (ends) The re-plan starts from this pass's choice, and a lane it
+        # still finds in a CONFLICT has its held neighbours freed with it,
+        # rather than a known conflict laid: a lane freed alone with no
+        # clean option kept its old berth beside a held one
         new_choice, un = dest_choice(st, board,
                                      fixed=laid_ok if PLAN_PAGES else None,
-                                     learned=learned)
+                                     learned=learned, seed=(dict(choice) if PLAN_JUDGE == 'ends' else None))
+        if PLAN_JUDGE == 'ends' and PLAN_PAGES:
+            import whole_ends as _we2
+            _cl = (_we2.choose.last.get('laid_parts') or {}).get('conf_lanes') or []
+            _legs2 = _split_legs(names)
+            _unfix = sorted({l_ for ln in _cl for l_ in _legs2.get(ln, (ln,)) if l_ in laid_ok})
+            if _unfix:
+                print(f'  destination re-plan: still a conflict ({", ".join(_cl)}) -- re-planned with {_unfix} freed')
+                for l_ in _unfix:
+                    laid_ok.pop(l_, None)
+                new_choice, un = dest_choice(st, board, fixed=laid_ok, learned=learned, seed=dict(choice))
         if not new_choice or new_choice == choice:
             print('  destination: the re-plan changed nothing -- stopping')
             break
@@ -1513,15 +1646,28 @@ def fanout_destination(out_path, names, choice, dst_pad, dref, byname, board,
         print(f'  destination re-plan: braid-judged {f:.2f}, {len(new_choice)} placed'
               + (f', {len(un)} unplaced' if un else ''))
         choice, dst_pad = new_choice, st['dst_pad']
-    # The LAST PASS SHIPS, and its sidecar is its own: the choice that was
-    # fanned out and audited, never the re-plan after it (which is a
-    # choice no board was laid to). Measured over every K41 pass board
-    # (2026-09-07, the braid on each): passes 0..7 graded 6/3/4/5/3/1/1/1
-    # open at 86/108/92/74/81/98/102/78 vias -- the last pass best, and
-    # neither the audit's exact count (pass 5: 38/40 vs 34/40, 1 open at
-    # 98) nor the judge's cost (pass 6 the lowest, 1 open at 102 with 6
-    # DRC) picks a better one. Judged on the WRITTEN fanout board: the
-    # same copper the braid will read, so its taut paths are the memo's.
+    # The LAST PASS SHIPS for the braid's judges, and its sidecar is its
+    # own: the choice that was fanned out and audited, never the re-plan
+    # after it (which is a choice no board was laid to). Measured over
+    # every K41 pass board (2026-09-07, the braid on each): passes 0..7
+    # graded 6/3/4/5/3/1/1/1 open at 86/108/92/74/81/98/102/78 vias -- the
+    # last pass best, and neither the audit's exact count (pass 5: 38/40 vs
+    # 34/40, 1 open at 98) nor the judge's cost (pass 6 the lowest, 1 open
+    # at 102 with 6 DRC) picks a better one. Judged on the WRITTEN fanout
+    # board: the same copper the braid will read, so its taut paths are
+    # the memo's. Under the ENDS judge the BEST pass ships, graded above.
+    if best_pass is not None and best_pass[1] is not laid_pass:
+        # the best pass's board back in place of the last's
+        for ext_ in ('.kicad_pcb', '.kicad_pro'):
+            src_ = out_path[:-len('.kicad_pcb')] + '.bestpass' + ext_
+            if os.path.isfile(src_):
+                shutil.copyfile(src_, out_path[:-len('.kicad_pcb')] + ext_)
+        print(f'  destination: pass {best_pass[2]} ships (the best laid, {best_pass[0][0]} not as asked, objective '
+              f'{best_pass[0][1]:.2f}), not the last')
+        laid_pass = best_pass[1]
+    for ext_ in ('.kicad_pcb', '.kicad_pro'):       # (the best pass's copy, kept beside while the passes ran)
+        if os.path.isfile(out_path[:-len('.kicad_pcb')] + '.bestpass' + ext_):
+            os.remove(out_path[:-len('.kicad_pcb')] + '.bestpass' + ext_)
     choice_l, st_l, achieved_l, ok_l = laid_pass
     explain_plan(choice_l, st_l, names, out_path, out_path, achieved=achieved_l)
     # TIE VIAS for the pads under balls, on the SHIPPED board and only

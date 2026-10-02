@@ -14,11 +14,14 @@ What this asserts:
    replaced asserted there).
 2. On a real array's menus (the H3 bench's DDR3 DU1, a slice of its nets, every move kind: surface,
    straight, dog-bones, vias-in-pad, climbs, streets): the groups expanded == pages_first._conflicts(strict, stack),
-   pair for pair -- nothing missing, nothing extra -- at each crossing rule, the rule PINNED on both sides
-   (importing pages_first raises select_moves.SEL_XING to 2 for the whole process).
+   pair for pair -- nothing missing, nothing extra -- at each crossing rule, the rule passed on both sides.
 3. Two plain escapes built to cross: no conflict at xing=1 (select_moves' own default, a crossing counted only
    where a move climbs), a conflict at xing=2 (every same-layer crossing, what a plan of a whole array needs) --
    the check is live, where a slice of a real array need not hold two plain escapes that cross.
+4. The rule is not the process's: importing pages_first leaves select_moves.SEL_XING as the environment set it (it
+   used to raise it to 2 for the whole process, so the fanout's first greedy choice ran at 1 and every later one, and
+   the whole route's ends model, at 2), and the ends model's test (pages_first._conflicts, no rule given) and the
+   greedy seed's (select_moves._conflict, no rule given) are one rule.
 """
 import contextlib
 import io
@@ -86,15 +89,8 @@ check(len(menu) >= 15 and any(c for _k, c, _s in kinds) and any(st for _k, _c, s
 
 
 def reference(xing):
-    # the rule PINNED: importing pages_first raises select_moves.SEL_XING to 2 for the whole process (its planner's
-    # exclusions count every crossing), so the process's default says nothing about the rule a caller meant
-    saved = sm.SEL_XING
-    try:
-        sm.SEL_XING = xing
-        with contextlib.redirect_stdout(io.StringIO()):
-            ref = pf._conflicts(menu, strict=True, stack=True)
-    finally:
-        sm.SEL_XING = saved
+    with contextlib.redirect_stdout(io.StringIO()):
+        ref = pf._conflicts(menu, strict=True, stack=True, xing=xing)
     out = set()
     for a, i, b, j in ref:
         x, y = (a, i), (b, j)
@@ -124,18 +120,23 @@ cross = {'A#1': [A], 'B#2': [B]}
 pair = (('A#1', 0), ('B#2', 0))
 d1 = cg.expand(*cg.conflict_groups(cross, stack=True, xing=1))
 d2 = cg.expand(*cg.conflict_groups(cross, stack=True, xing=2))
-saved = sm.SEL_XING
-try:
-    sm.SEL_XING = 1
-    r1 = sm._conflict(A, B, strict=True, stack=True)
-    sm.SEL_XING = 2
-    r2 = sm._conflict(A, B, strict=True, stack=True)
-finally:
-    sm.SEL_XING = saved
+r1 = sm._conflict(A, B, strict=True, stack=True, xing=1)
+r2 = sm._conflict(A, B, strict=True, stack=True, xing=2)
 check(pair not in d1 and not r1, f'two plain escapes crossing: not a conflict at xing=1 (groups {pair in d1}, '
       f'select_moves {r1})')
 check(pair in d2 and r2, f'two plain escapes crossing: a conflict with xing=2 (groups {pair in d2}, select_moves at 2 '
       f'{r2})')
+
+# 4. the rule is the caller's, never the import's: pages_first was imported above, and the module value is still the
+# environment's; with no rule given, the ends model's test (pages_first._conflicts) and the greedy seed's
+# (select_moves._conflict) agree on the crossing pair -- one rule for the seed and the judge
+want = int(os.environ.get('SEL_XING', '2' if os.environ.get('PLAN_JUDGE') == 'ends' else '1'))
+check(sm.SEL_XING == want, f'importing pages_first leaves select_moves.SEL_XING at {want} (it is {sm.SEL_XING})')
+judge = pair in {((a, i), (b, j)) if (a, i) < (b, j) else ((b, j), (a, i))
+                 for a, i, b, j in pf._conflicts(cross, strict=True, stack=True)}
+seed = sm._conflict(A, B, strict=True, stack=True)
+check(judge == seed == (want >= 2), f'with no rule given, the ends model\'s test ({judge}) and the greedy seed\'s '
+      f'({seed}) agree, at SEL_XING {want}')
 
 print(f'\n{len(FAIL)} failure(s)')
 sys.exit(1 if FAIL else 0)

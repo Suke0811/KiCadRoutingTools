@@ -16,14 +16,15 @@ at the chain's sizes (resolve_rules: the routing CLIs' flags, an omitted one res
 3. The board is turned into the flow frame (flow_frame.py): the quarter turn that points the pair's source-to-
    destination direction along +x, about a point on the 0.1 mm lattice, so the turn is exact both ways.
 4. The whole route (whole_route.chain) on the ladder's first K nets, the whole ladder by default.
-5. The routed board is turned back into the board's own frame. A bus net the run did not route leaves as it came:
-   none of the step's copper, its own put back.
-6. It is graded there: the run's nets connected (check_connected), no violation on a bus net and the whole board
-   no worse than it came (check_drc, each board at its own project's floor).
+5. The routed board -- the whole route's best round, which never ends with nothing while it had a plan to lay -- is
+   turned back into the board's own frame. A bus net the run did not route, or left open, leaves as it came: none
+   of the step's copper, its own put back.
+6. It is graded there: the nets handed on connected (check_connected), no violation on a bus net and the whole
+   board no worse than it came (check_drc, each board at its own project's floor).
 7. Handed on only clean: OUT is the routed board, its routed nets protected in its project (#521: route.py's rip
-   candidacy and the plane finalize leave them alone) -- else OUT is the board as it came, and the chain's A* routes
-   the bus. Either way the summary (--json-out, default <OUT>.bus/summary.json) names the nets routed and refused,
-   and why.
+   candidacy and the plane finalize leave them alone), the open ones left to the chain's A* -- else OUT is the board
+   as it came, and A* routes the whole bus. Either way the summary (--json-out, default <OUT>.bus/summary.json) names
+   the nets routed and refused, and why.
 
 A board with inner copper layers is taken as it is: the lanes run on F.Cu and B.Cu, and a via is a through via
 that passes the inner layers. The caches are off. Everything the step writes goes in OUT's work directory,
@@ -240,8 +241,8 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
             log(f'route_bus: {why} -- {os.path.basename(out)} is the board as it came')
         return code, g
 
-    if rc != 0 or seq is None:
-        return finish(1, f'the whole route did not route the bus (exit {rc})', grade)
+    if seq is None:
+        return finish(1, f'the whole route laid nothing (exit {rc})', grade)
 
     # 5. back into the board's own frame; a bus net the run did not route leaves as it came -- none of the step's
     # copper (a source stub beyond --k, a refused escape's), its own copper back if it had any
@@ -252,18 +253,25 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     side = routed_pcb[:-len('.kicad_pcb')] + '.ladder.txt'
     if os.path.exists(side):
         os.remove(side)
+    checker = lambda name: os.path.join(HERE, '..', 'py_router', name)
+    # ...and so does one the whole route left OPEN (its best round short of every lane, exit 1): the step hands on what
+    # it laid connected, never nothing for the sake of a few nets, and the rest of the chain routes those
+    if rc != 0:
+        wr.run([checker('check_connected.py'), routed_pcb, '--nets'] + [f'*{n}' for n in nets], dict(os.environ),
+               log_path=os.path.join(work, 'conn_open.log'), own_process=True)
+        opened = sorted(open_nets(os.path.join(work, 'conn_open.log')) & set(nets))
+        for n in opened:
+            refused.setdefault(n, 'left open by the whole route (its best round)')
+        nets = [n for n in nets if n not in opened]
+        if not nets:
+            return finish(1, f'the whole route connected none of the bus (exit {rc})', grade)
     back = [n for n in names if short(n) not in set(nets)]
     if back:
         put_back(routed_pcb, board, pcb, back)
         log(f'  put back as they came: {", ".join(sorted(short(n) for n in back))}')
 
-    # 6. the grade: every bus net connected, no violation on a bus net, and the whole board no worse than it came (a
-    # board the chain hands on carries its earlier steps' violations; each is graded at its own project's floor)
-    pats = [f'*{n}' for n in nets]
-    checker = lambda name: os.path.join(HERE, '..', 'py_router', name)
-    cc = wr.run([checker('check_connected.py'), routed_pcb, '--nets'] + pats, dict(os.environ),
-                log_path=os.path.join(work, 'conn.log'), own_process=True)[0]
-
+    # 6. the grade: every bus net handed on connected, no violation on a bus net, and the whole board no worse than it
+    # came (a board the chain hands on carries its earlier steps' violations; each is graded at its own project's floor)
     def drc(path, tag, *more):
         lp = os.path.join(work, f'drc_{tag}.log')
         wr.run([checker('check_drc.py'), path, '--clearance-margin', '0.1', '--max-print', '0', *more],
@@ -271,10 +279,31 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         txt = open(lp, encoding='utf-8', errors='replace').read()
         m = re.search(r'FOUND (\d+) DRC VIOLATIONS', txt)
         return 0 if 'NO DRC VIOLATIONS' in txt else (int(m.group(1)) if m else None)
-    d_bus, d_out, d_in = drc(routed_pcb, 'bus', '--nets', *pats), drc(routed_pcb, 'board'), drc(board, 'input')
-    # (joint: the step laid the arrays' whole fanout, whose own pad-to-via hits the cap nudge that follows resolves;
-    # the bus's nets are held clean, the board's count is reported)
-    ok_drc = d_bus == 0 and None not in (d_out, d_in) and (joint_fanout or d_out <= d_in)
+    d_in = drc(board, 'input')
+    # ...and NEVER ALL OR NOTHING: a bus net that fails it on the board -- open there, or named in a violation of the
+    # bus's (or of the board's, when the board came out worse) -- goes back as it came and the rest are graded again;
+    # the step refuses the whole bus only for a failure no bus net is named in
+    for _ in range(3):
+        pats = [f'*{n}' for n in nets]
+        cc = wr.run([checker('check_connected.py'), routed_pcb, '--nets'] + pats, dict(os.environ),
+                    log_path=os.path.join(work, 'conn.log'), own_process=True)[0]
+        d_bus, d_out = drc(routed_pcb, 'bus', '--nets', *pats), drc(routed_pcb, 'board')
+        # (joint: the step laid the arrays' whole fanout, whose own pad-to-via hits the cap nudge that follows
+        # resolves; the bus's nets are held clean, the board's count is reported)
+        ok_drc = d_bus == 0 and None not in (d_out, d_in) and (joint_fanout or d_out <= d_in)
+        if cc == 0 and ok_drc:
+            break
+        bad = set(nets) & (open_nets(os.path.join(work, 'conn.log'))
+                           | drc_nets(os.path.join(work, 'drc_bus.log'))
+                           | (drc_nets(os.path.join(work, 'drc_board.log'))
+                              if not joint_fanout and None not in (d_out, d_in) and d_out > d_in else set()))
+        if not bad or bad == set(nets):
+            break
+        for n in sorted(bad):
+            refused.setdefault(n, 'failed the grade on the board (open there, or in a violation)')
+        nets = [n for n in nets if n not in bad]
+        put_back(routed_pcb, board, pcb, [n for n in names if short(n) in bad])
+        log(f'  failed the grade, put back as they came: {", ".join(sorted(bad))} -- the rest graded again')
     v, c = wr.grade_counts(routed_pcb, set(nets))
     g = (f'BUS {src}->{dest} K={K} {grade.split(" ", 2)[2] if grade else ""} | on the board: vias={v} copper={c}mm '
          f'connected={int(cc == 0)} drc={int(ok_drc)} (bus {d_bus}, board {d_out} vs {d_in} in) '
@@ -379,8 +408,34 @@ def waypoint_pairs(pcb, names, src, dest):
     return out
 
 
+def open_nets(conn_log):
+    """the nets (short names) check_connected's log finds open: unrouted, or in pieces (whole_route.open_nets)"""
+    import whole_route as wr
+    return wr.open_nets(conn_log)
+
+
+def drc_nets(drc_log):
+    """the nets (short names) check_drc's log names in its violations: both sides of a line between two items, and
+    the net of a line naming one (the warnings after them are not read)"""
+    from fanout_from_plan import drc_side_net
+    out, found = set(), False
+    for ln in open(drc_log, encoding='utf-8', errors='replace') if os.path.isfile(drc_log) else ():
+        found = found or ln.startswith('FOUND ')
+        if ln.startswith('WARNINGS'):
+            break
+        if not found or not ln.startswith('  ') or ln.startswith('   '):
+            continue
+        for side in ln.rstrip('\n').split(' <-> '):
+            nm = drc_side_net(re.sub(r':\s*dist=.*$', '', side))
+            if nm:
+                out.add(nm)
+    return out
+
+
 def _routed(run_dir):
-    """the last round's routed board, if the chain wrote one"""
+    """the chain's best round's routed board (whole_route: OUTDIR/best.kicad_pcb), else the last round's"""
+    if os.path.isfile(os.path.join(run_dir, 'best.kicad_pcb')):
+        return os.path.join(run_dir, 'best.kicad_pcb')
     rs = sorted((d for d in os.listdir(run_dir) if d.startswith('r') and d[1:].isdigit()), key=lambda d: int(d[1:]))
     for d in reversed(rs):
         p = os.path.join(run_dir, d, 'seq.kicad_pcb')

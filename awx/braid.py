@@ -6702,6 +6702,11 @@ def setup(board, names, dest, log, plan=None, pairs=False):
             f'y = {CY:.3f} for the braid (copper mirrored back on write)')
     planned = {nm for nm in names if plan and nm in plan.get('ends', {})}
     ctx.pages_first = bool(plan and plan.get('pages_first'))
+    # the destination's far-face cut the ends model read its ends with (fanout_from_plan's sidecar, whole_ends), for
+    # the whole route's frame to take (whole_frame.build) -- mirrored with the board when it is turned over
+    ctx.dest_cut = None
+    if plan and plan.get('dest_cut') is not None:
+        ctx.dest_cut = (2.0 * CY - float(plan['dest_cut'])) if chi < 0 else float(plan['dest_cut'])
     if ctx.pages_first and EXACT_PAGES_ENV != '0':
         # a PAGES-FIRST plan (fanout_from_plan PLAN_PAGES): its two chains
         # were chosen to cover every lane, so the schedule pages it exactly

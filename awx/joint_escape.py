@@ -408,8 +408,8 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
     n_moves = sum(len(v) for v in menu.values())
     # the escapes' conflicts, the whole route's own relation as groups that all conflict pairwise (conflict_groups:
     # pages_first._conflicts pair by pair was 129 s and 3.1 million pairs for the bus alone with every move kind).
-    # Every crossing counts (xing 2, asked for here, not left to the process: select_moves' default counts one only
-    # where a move climbs, and only importing pages_first raises it) -- a plan of every ball has plain escapes out of
+    # Every crossing counts (xing 2, asked for here: select_moves' default counts one only where a move climbs) -- a
+    # plan of every ball has plain escapes out of
     # the interior, and two of those cross (zynq U1, the plan at the default rule: 85 of 86 clashing pairs in the laid
     # geometry were two plain surface escapes crossing on F.Cu).
     # One net's two ESCAPES conflict as two nets' do: the engine lays each ball's escape on its own, on a raster

@@ -116,13 +116,18 @@ def _seg_hits_box(a: Pt, b: Pt, box) -> bool:
 
 
 # SEL_XING (2026-09-10): a row-gap run and a column-gap run on one layer
-# that cross are a conflict (see _conflict). 1 (default) = for pairs with
-# a climbing move, whose long legs cross the plain stubs' gaps
-# (K28: 13 bans -> 0 with it); 2 = every pair, which reaches the plain
-# menu and changed the flag-off K28 chain for the worse (37 vias / 692 mm
-# on the frozen source against 36 / 670: the seed dodges the two bans the
-# passes used to repair, and picks worse); 0 = off.
-SEL_XING = int(awx_settings.get('SEL_XING', '1'))
+# that cross are a conflict (see _conflict). 1 = for pairs with a climbing
+# move, whose long legs cross the plain stubs' gaps (K28: 13 bans -> 0 with
+# it); 2 = every pair; 0 = off. The default is the JUDGE's: 2 under
+# PLAN_JUDGE=ends (the whole route: every crossing of two escapes on one
+# layer is a stub the engine lays over another), 1 under the braid's judges
+# (where 2 reached the plain menu and changed the K28 chain for the worse:
+# 37 vias / 692 mm on the frozen source against 36 / 670). The whole
+# route's ends model (whole_ends, through pages_first._conflicts) and the
+# greedy berths it starts from both read it -- ONE rule for the seed and
+# the judge. A caller meaning another rule passes `xing` (pages_first's own
+# planner: 2); nothing sets this module value at import.
+SEL_XING = int(awx_settings.get('SEL_XING', '2' if awx_settings.get('PLAN_JUDGE') == 'ends' else '1'))
 
 
 def around_box_path(a: Pt, b: Pt, box, pad: float = 0.3):
@@ -559,7 +564,8 @@ def score(choice: Dict[str, Move], groups, geo: 'Corridor',
 _TOUCH = 1e-6        # two spans that meet at a point DO conflict (see below)
 
 
-def _conflict(m: Move, om: Move, tol: float = 0.16, strict: bool = True, stack: bool = False) -> bool:
+def _conflict(m: Move, om: Move, tol: float = 0.16, strict: bool = True, stack: bool = False,
+              xing: Optional[int] = None) -> bool:
     """Two moves that cannot both be laid: a shared lane stretch or a
     shared site -- and, `strict`, a lane matched within `tol` (half a
     fine-pitch gap) or one's via site in the other's lane. The strict
@@ -576,7 +582,9 @@ def _conflict(m: Move, om: Move, tol: float = 0.16, strict: bool = True, stack: 
     had been run on fanout boards recorded before the change). `stack`
     (the whole route's ends): two exits at one point conflict only on one
     layer (an F lane stacks over a B one), and two on one layer closer
-    than _STACK_PITCH do."""
+    than _STACK_PITCH do. `xing`: the crossing rule (SEL_XING's values),
+    SEL_XING when not given -- a caller meaning another rule passes it"""
+    xing = SEL_XING if xing is None else xing
     spans, ospans = _lane_spans(m), _lane_spans(om)
     for key, a, b in spans:
         for ok, oa, ob in ospans:
@@ -598,7 +606,7 @@ def _conflict(m: Move, om: Move, tol: float = 0.16, strict: bool = True, stack: 
             # a row-gap run and a column-gap run on ONE layer that cross:
             # two stubs through one point
             if ok[0] != key[0] and ok[2] == key[2] and (
-                    SEL_XING >= 2 or (SEL_XING and (
+                    xing >= 2 or (xing and (
                         getattr(m, 'climb', 0) or getattr(om, 'climb', 0)
                         or getattr(m, 'street', 0) or getattr(om, 'street', 0)))):
                 (rk, ra, rb), (ck, ca, cb) = ((key, a, b), (ok, oa, ob)) if key[0] == 'row' \

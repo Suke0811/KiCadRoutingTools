@@ -21,7 +21,9 @@ the same answer on every run, later on a slower machine (WHOLE_SOLVE_BATCHES set
 the vias are proved (the plan's vias no more than the bound's whole vias) or, once it has a plan, when it STALLS
 (SOLVE_STALL of its own model reductions in a row with no better plan or bound: events of the search, never a clock)
 -- all but the fallback, the plan-finding workers' last try, which runs its whole budget. Only a plan PROVED optimal in its vias is written;
-one the search could not prove is no plan."""
+one the search could not prove is no plan -- except under SOLVE_UNPROVED=1 (a round's first solve in whole_route,
+which never ends with nothing): the best plan found is written marked 'proved': false, with the nets it leaves over
+two vias ('over_nets'), and never as a floor for a later solve."""
 import sys, os, re, itertools, collections, json, math, hashlib
 import awx_settings
 import whole_ctx
@@ -41,6 +43,7 @@ MARG = CLR                             # a crossing starts a clearance past both
 # across the spine, its slope up to K_SWEEP) PITCH / sqrt(1 + K^2) apart along s; the geometry keeps the real pitch
 K_SWEEP = 4.0
 W_V = 10 ** 6                          # per via: vias first (an integer: the objective stays CP-SAT's exact one)
+W_OVER_X = 5                           # each via a net carries past two costs this many vias MORE (whole_ends.W_OVER)
 SOLVE_BATCHES = int(awx_settings.get('WHOLE_SOLVE_BATCHES', '100'))  # CP-SAT interleaved batches: the work budget
 SOLVE_WORKERS = 4
 # ...running these: two LP workers (the default and the strongest relaxation), core-based search and the objective's
@@ -52,9 +55,11 @@ SUBSOLVERS = ['default_lp', 'max_lp', 'core', 'objective_lb_search']
 FALLBACK = ['quick_restart', 'no_lp', 'core']
 FACE_ROOM = 2 * VNEED                  # the band along the source's near face: a change's room along its lane
 SOLVE_STALL = 3                        # the search's model reductions in a row with no progress: stalled
+WARM_WORK = 30.0                       # deterministic work to lay a re-solve's warm start out whole (one worker)
+W_SOFT = 5 * W_V // 2                  # a broken SOFT cut: above a dive's two vias, below a net over two
 
 
-def solve(ctx, dest, cuts=(), hist=(), hint=None):
+def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     """the solve of the bench ctx (whole_ctx.plan()) round the destination part `dest`: the JSON
     whole_geo reads (crossings, changes, each lane's route coordinate), or None when CP-SAT finds no plan or none it
     proves optimal in its vias. `cuts`
@@ -372,6 +377,42 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
             m.AddBoolOr([lo_b, hi_b, a_.Not()])
     if VCUTS:
         print(f'   via cuts: {len(VCUTS)}')
+    # ---- SOFT cuts (SOFT_CUTS=GEO.json,..: the geometry's cuts, as CUTS reads them, that left no plan as hard ones --
+    # whole_route's fallback): each its own BROKEN flag, its constraints held while the flag is off, the flag priced
+    # W_SOFT vias -- above a dive's two, so the solve still buys the vias to keep a lane off an island or a change out of
+    # a window as a hard cut would, but takes the break where nothing else gives a plan; below a net over two (W_OVER)
+    SOFT = []
+    for fn_ in soft_cuts:
+        j_ = json.load(open(fn_))
+        SOFT += [('island', c_['lane'], round(c_['u_lo'], 3), round(c_['u_hi'], 3)) for c_ in j_.get('cuts', [])]
+        SOFT += [('via', c_['lane'], round(c_['u'], 3), round(c_['w'], 3)) for c_ in j_.get('vcuts', [])]
+    soft_broken = {}
+    for sc_ in sorted(set(SOFT)):
+        kind_, n_, p_, q_ = sc_
+        br_ = m.NewBoolVar('')
+        if kind_ == 'island':
+            hit_ = False
+            for key in t:
+                if n_ not in key:
+                    continue
+                a_ = m.NewBoolVar('')
+                m.Add(t[key] <= Q(p_)).OnlyEnforceIf([a_, br_.Not()])
+                m.Add(t[key] >= Q(q_) + 1).OnlyEnforceIf([a_.Not(), br_.Not()])
+                hit_ = True
+        else:
+            hit_ = n_ in chg
+            if hit_:
+                for x_, a_ in zip(*chg[n_]):
+                    lo_b, hi_b = m.NewBoolVar(''), m.NewBoolVar('')
+                    m.Add(x_ <= Q(p_ - q_)).OnlyEnforceIf(lo_b); m.Add(x_ >= Q(p_ + q_)).OnlyEnforceIf(hi_b)
+                    m.AddBoolOr([lo_b, hi_b, a_.Not(), br_])
+        if hit_:
+            soft_broken[sc_] = br_
+        else:
+            m.Add(br_ == 0)
+    if SOFT:
+        print(f'   soft cuts: {len(soft_broken)} ({sum(1 for s_ in soft_broken if s_[0] == "island")} island, '
+              f'{sum(1 for s_ in soft_broken if s_[0] == "via")} via), each {W_SOFT / W_V:g} vias when broken')
     # ---- HISTORY congestion (negotiated, as PathFinder prices a resource that was overused before): HIST=HOT.json,.. are
     # the audits' findings of earlier rounds (whole_gate --hot: where a plan was short -- a dive, a pitch, a static, a
     # shape), one file per audit. A finding marks the bins of route within a via's room of it, on the frame whose spine is
@@ -458,16 +499,28 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
                     m.AddHint(act_h[i_], 0)
         print(f'   warm start from {os.path.basename(hint)}: {nh} crossing hints')
     # ---- no more than TWO VIAS on a net where that can be had (Andy, 2026-09-25): a net's vias on the board are its stubs'
-    # own (the bench's copper) and its lane's changes -- a pair's leg a barrel at each dive. The objective is
-    # lexicographic: first how far the nets go over two, then the vias, then congestion -- a preference, never a cap, so a
-    # board that cannot keep it still plans
+    # own (the bench's copper) and its lane's changes -- a pair's leg a barrel at each dive. Each via past two costs
+    # W_OVER_X vias more, then the vias, then congestion -- a price, never a cap, so a board that cannot keep it still
+    # plans. A TIE via (a ball's via to a pad of its own under it, laid by the fanout) is not counted toward the two:
+    # it serves that pad, not the lane -- per leg, as the ends model counts it, and only where the board has one
     VIA_PREF = 2
-    SV = {n: max(sum(1 for v in ctx.base_vias if v.net_id == ctx.byname[leg][0]) for leg in (prs[n] if n in prs else (n,)))
-          for n in M}
+
+    def _leg_vias(leg):
+        nid = ctx.byname[leg][0]
+        vs = [v for v in ctx.base_vias if v.net_id == nid]
+        pads = ctx.pcb.nets[nid].pads
+        ties = [d_ for d_ in pads if d_.component_ref == dest and any(_pairs.under_pad(d_, q_, bd.VIA_SIZE) for q_ in pads)]
+        tie = any(abs(v.x - d_.global_x) <= d_.size_x / 2 and abs(v.y - d_.global_y) <= d_.size_y / 2
+                  for v in vs for d_ in ties)
+        return len(vs) - int(tie), tie
+    LV = {leg: _leg_vias(leg) for n in M for leg in (prs[n] if n in prs else (n,))}
+    SV = {n: max(LV[leg][0] for leg in (prs[n] if n in prs else (n,))) for n in M}
+    if any(t_ for _v, t_ in LV.values()):
+        print(f"   tie vias, not counted toward two: {sorted(leg for leg, (_v, t_) in LV.items() if t_)}")
     over = {n: m.NewIntVar(0, KMAX + SV[n], f'over_{n}') for n in M}
     for n in M:
         m.Add(over[n] >= SV[n] + tot[n] - VIA_PREF)
-    W_OVER = W_V * (KMAX * len(M) + 1)        # one via over two outweighs every via the plan could save
+    W_OVER = W_V * W_OVER_X
     # ---- the ROOT's proof, a floor for every re-solve of the bench: the first solve (no geometry cuts) proved the least
     # nets over two and vias there are; a re-solve only adds cuts to it (a flip drops only an island cut a re-solve
     # added) and history below a via, so it can do no better -- and a plan it finds AT the root's is proved at once. A
@@ -485,7 +538,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
             root = r_
             m.Add(W_OVER * sum(over.values()) + W_V * sum(tot.values()) >= W_OVER * r_['over'] + W_V * r_['vias'])
             print(f"   the root's proof as a floor: {r_['over']} via(s) over two, {r_['vias']} vias")
-    OBJ = W_OVER * sum(over.values()) + W_V * sum(tot.values()) + sum(cost)
+    OBJ = W_OVER * sum(over.values()) + W_V * sum(tot.values()) + W_SOFT * sum(soft_broken.values()) + sum(cost)
     m.Minimize(OBJ)
     # ...and STOPPED when it STALLS: once it has a plan, SOLVE_STALL of the search's own model reductions in a row with
     # no better plan and no better bound (its log's '#Model' against '#n' and '#Bound' lines, events of the
@@ -532,7 +585,26 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
         pr_ = st_ in (cp_model.OPTIMAL, cp_model.FEASIBLE) and \
             math.floor(s_.ObjectiveValue() / W_V) <= math.floor(s_.BestObjectiveBound() / W_V)
         return s_, st_, pr_
+    # ---- the WARM START, laid out whole: a re-solve starts from the round before's plan, and when that plan is one of
+    # this model (no cut the round added excludes it) at the root's floor, it is PROVED -- the floor is the root's own
+    # proof. The search is given it as a hint and may still lose it (K41 with the stub check per layer, a round whose
+    # solve heard of the geometry by its history alone: its warm start at the floor, the search's best eleven nets
+    # over two, no plan). Laid out here -- every hinted value held, the rest completed by one worker -- it is kept,
+    # and taken only when the search proves no plan of its own: where the search proves one, nothing changes
+    warm = None
+    if hint and root is not None:
+        sw = cp_model.CpSolver()
+        sw.parameters.num_workers = 1
+        sw.parameters.fix_variables_to_their_hinted_value = True
+        sw.parameters.max_deterministic_time = WARM_WORK
+        if sw.Solve(m) in (cp_model.OPTIMAL, cp_model.FEASIBLE) and \
+                math.floor(sw.ObjectiveValue() / W_V) <= (W_OVER * root['over'] + W_V * root['vias']) // W_V:
+            warm = sw
     sv, st, proved = run(SUBSOLVERS)
+    if not proved and warm is not None:
+        print(f'   bound-raising workers: [{sv.StatusName(st)}] {sv.WallTime():.0f}s, no proved plan -- the warm start, '
+              f'at the root\'s floor ({warm.ObjectiveValue():.0f})')
+        sv, st, proved = warm, cp_model.FEASIBLE, True
     if not proved:
         # the FALLBACK: the bound-raising workers could not prove it (the plan they found was not good enough to meet
         # their bound: K51 on the human's fanout, best 2 over two + 38 vias against 0 + 32, 124 s). The PLAN-FINDING
@@ -556,10 +628,18 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
     # terms below one are congestion's tie-break -- goes on to the geometry: one the search could not prove is a plan
     # whose ends it found hard, and the geometry would be laid on a guess (K35's round 2: best and bound a thousandth
     # of a via apart, refused for the tie-break alone)
-    if not proved:
+    # ...except where the caller takes an UNPROVED plan (SOLVE_UNPROVED=1: whole_route's first solve of a round, which
+    # never ends with nothing -- the round lays it, and the nets it leaves over two go back to the ends, which had
+    # counted on keeping them at two: K51's ends promised 0 over two, the search held 1 over and 51 vias against a
+    # bound of 0 and 45, and the round stopped with nothing). It is marked so, and no later solve takes it as a floor
+    keep = not proved and st == cp_model.FEASIBLE and awx_settings.get('SOLVE_UNPROVED') == '1'
+    if not proved and not keep:
         print(('(not proved optimal: best ' + f'{sv.ObjectiveValue():.0f}, bound {sv.BestObjectiveBound():.0f} -- no plan)')
               if st == cp_model.FEASIBLE else '')
         return None
+    if keep:
+        print(f'(not proved optimal: best {sv.ObjectiveValue():.0f}, bound {sv.BestObjectiveBound():.0f} -- kept UNPROVED) ',
+              end='')
     per = {n: int(sv.Value(tot[n])) for n in M}
     ov = [n for n in M if SV[n] + per[n] > VIA_PREF]
     print(f'vias {sum(per.values())}, nets over {VIA_PREF} vias on the board: {len(ov)} {ov}, changes per lane {dict(sorted(collections.Counter(per.values()).items()))}, obj {sv.ObjectiveValue():.0f} bound {sv.BestObjectiveBound():.0f}')
@@ -575,10 +655,21 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None):
     for n in M:
         cs_, act = chg[n]
         J['changes'][n] = [sv.Value(x) * G for x, a_ in zip(cs_, act) if sv.Value(a_)]
-    # (the root: this solve's own proof when it has no geometry cuts, else the one it was floored by)
+    # (the root: this solve's own proof when it has no geometry cuts, else the one it was floored by -- never an
+    # unproved plan's, which proves nothing)
     J['root'] = root if root is not None else \
         ({'over': int(sum(sv.Value(over[n]) for n in M)), 'vias': int(sum(per.values())), 'sig': sig}
-         if not CUTS and NVC0 == 0 else None)
+         if not CUTS and not SOFT and NVC0 == 0 and proved else None)
+    J['proved'] = bool(proved)
+    if soft_broken:
+        J['soft_broken'] = [list(s_) for s_, b_ in sorted(soft_broken.items()) if sv.Value(b_)]
+        print(f"   soft cuts broken: {len(J['soft_broken'])} of {len(soft_broken)}")
+    # each lane over two vias on the board, by how many: an unproved plan's go back to the ends (whole_route)
+    J['over_nets'] = {n: SV[n] + per[n] - VIA_PREF for n in ov}
+    if not proved:
+        J['unproved'] = {'best': sv.ObjectiveValue(), 'bound': sv.BestObjectiveBound(),
+                         'over': int(sum(sv.Value(over[n]) for n in M)),
+                         'bound_over': int(math.floor(sv.BestObjectiveBound() / W_OVER))}
     return J
 
 
@@ -586,7 +677,8 @@ def main():
     files = lambda var: [x for x in awx_settings.get(var, '').split(',') if x]
     out = sys.argv[1] if len(sys.argv) > 1 else '/dev/null'
     ctx, _cs = whole_ctx.plan()
-    J = solve(ctx, awx_settings.req('DEST'), files('CUTS'), files('HIST'), awx_settings.get('HINT') or None)
+    J = solve(ctx, awx_settings.req('DEST'), files('CUTS'), files('HIST'), awx_settings.get('HINT') or None,
+              soft_cuts=files('SOFT_CUTS'))
     if J is None:
         sys.exit(1)
     json.dump(J, open(out, 'w'), indent=0)

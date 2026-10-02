@@ -70,9 +70,9 @@ def conflict_groups(menu, stack=True, stack_pitch=None, via_r=None, reach_extra=
     At the whole route's own sizes by default; a caller at REAL sizes gives the stacking pitch (track + clearance +
     the hug allowance) and, per move, its via's radius (via_r(move)) plus what a run needs beside it (reach_extra:
     clearance + half a track), so a site reaches a lane as far as ITS via does. `xing` the crossing rule
-    (select_moves.SEL_XING by default -- 1, a crossing counts when one of the two climbs, which importing pages_first
-    raises to 2 for the whole process; 2, every crossing, what a plan that lays every ball of an array needs, where
-    two plain escapes out of the interior do cross). A caller that means a rule passes it."""
+    (select_moves.SEL_XING by default -- 1, a crossing counts when one of the two climbs; 2, every crossing, what a
+    plan that lays every ball of an array needs, where two plain escapes out of the interior do cross). A caller that
+    means a rule passes it."""
     xing = sm.SEL_XING if xing is None else xing
     moves = [(k, i, m) for k in sorted(menu) for i, m in enumerate(menu[k])]
     cliques, bicliques, pairs = set(), set(), set()

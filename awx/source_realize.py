@@ -63,6 +63,15 @@ def move_sig(m):
                    round(b[0], 2), round(b[1], 2), L) for a, b, L in (m.legs or ())))
 
 
+def move_class(m):
+    """A menu move's CLASS: its signature without the site and legs, so every
+    leg variant of one exit is one. A destination berth the fanout did not
+    lay as asked is banned by class (fanout_from_plan.ban_moves, under
+    PLAN_JUDGE=ends): its variants reach the same exit through the same
+    neighbourhood, and the engine refuses them for the same reason."""
+    return (m.kind, m.direction, m.layer, round(m.exit_pt[0], 2), round(m.exit_pt[1], 2))
+
+
 # The engine lays at these (realize's own generate_bga_fanout call); the
 # blocker census must use the SAME numbers or it names the wrong nets.
 # Defaults from rules.py, resolved per board by the stage that installs

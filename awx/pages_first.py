@@ -146,9 +146,12 @@ import braid as te
 # conflict whatever the moves' kinds -- select_moves tests it only for
 # climbed moves at its default SEL_XING=1 (K41 pages-first pass 0:
 # 17 same-layer crossings of plain via-in-pad runs, laid as asked, DRC).
-# The planner's exclusions use the full test; the standard planner's
-# default is unchanged (its own SEL_XING=2 is the opt-in to measure).
-sm.SEL_XING = max(sm.SEL_XING, 2)
+# This planner's exclusions use the full test, passed as `xing` to each
+# conflict test it makes; the standard planner's default is unchanged.
+# (It used to be set here, select_moves.SEL_XING raised to 2 for the whole
+# process at import, so a caller's rule depended on whether anything had
+# imported this module yet.)
+PAGES_XING = max(sm.SEL_XING, 2)
 # the two-page schedule assigned EXACTLY (BRAID_EXACT_PAGES): a plan two
 # chains cover must be paged as two chains, which the greedy pager (the LIS
 # of one page first) can miss. In-process for the judge; the plan sidecar
@@ -201,13 +204,16 @@ def current_tooth(st, nm) -> Optional[Move]:
                 site=(tuple(g['site']) if g.get('site') else None))
 
 
-def _conflicts(cands: Dict[str, List[Move]], strict: bool, stack: bool = False) -> List[Tuple[str, int, str, int]]:
+def _conflicts(cands: Dict[str, List[Move]], strict: bool, stack: bool = False,
+               xing: Optional[int] = None) -> List[Tuple[str, int, str, int]]:
     """Every (net a, index, net b, index) whose two moves cannot both be
     laid, tested only between moves sharing a lane, a site or an exit
     (bucketed: the all-pairs test is 10^6-10^7 calls at K41). `stack`:
     two exits at one point on different layers do not conflict, and two on
     one layer closer than select_moves._STACK_PITCH do (select_moves.
-    _conflict) -- so the exits are bucketed at that pitch."""
+    _conflict) -- so the exits are bucketed at that pitch. `xing`: the
+    crossing rule (select_moves.SEL_XING when not given -- the whole
+    route's ends model, whose greedy seed reads the same)."""
     buckets: Dict[tuple, List[Tuple[str, int]]] = {}
     reach = any(getattr(m, 'street', 0) for ms in cands.values() for m in ms)
     for nm, ms in cands.items():
@@ -274,7 +280,7 @@ def _conflicts(cands: Dict[str, List[Move]], strict: bool, stack: bool = False) 
                 if a == b or (a, i, b, j) in seen or (b, j, a, i) in seen:
                     continue
                 seen.add((a, i, b, j))
-                if sm._conflict(cands[a][i], cands[b][j], strict=strict, stack=stack):
+                if sm._conflict(cands[a][i], cands[b][j], strict=strict, stack=stack, xing=xing):
                     out.append((a, i, b, j))
     return out
 
@@ -891,10 +897,10 @@ def _solve(st, board, log, fixed, learned, src_free, seed, src_seed, hold_s=None
     excl_d = []
     Sreal = {n: [mv for mv in S[n] if mv.legs] for n in names}
     idx_real = {n: [i for i, mv in enumerate(S[n]) if mv.legs] for n in names}
-    excl_d = _conflicts(D, strict=bool(PAGES_STRICT))
+    excl_d = _conflicts(D, strict=bool(PAGES_STRICT), xing=PAGES_XING)
     for (a, i, b, j) in excl_d:
         m.AddBoolOr([xd[a][i].Not(), xd[b][j].Not()]); nconf += 1
-    for (a, i, b, j) in _conflicts(Sreal, strict=True):
+    for (a, i, b, j) in _conflicts(Sreal, strict=True, xing=PAGES_XING):
         m.AddBoolOr([xs[a][idx_real[a][i]].Not(), xs[b][idx_real[b][j]].Not()]); nconf += 1
     if learned:
         sig_d = {n: [sr.move_sig(mv) for mv in D[n]] for n in names}

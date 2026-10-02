@@ -31,6 +31,26 @@ import corridor as cr
 FACES = ('E', 'N', 'W', 'S')          # a tie between faces goes to the first
 
 
+class PairSplit(SystemExit):
+    """build's stop on a bench whose pair has another lane's end between its tips on its layer -- a SystemExit, as
+    every stage's stop is, carrying `splits` [(pair, 'tooth' | 'berth', [the lanes between its tips])] for a caller
+    that repairs rather than stops (fanout_from_plan: a fanout never hands back a split pair)"""
+
+    def __init__(self, splits, msg):
+        super().__init__(msg)
+        self.splits = splits
+
+
+class FarFace(SystemExit):
+    """build's stop on a bench with a lane's tooth on the source's far face (the whole frame has no way round the
+    source) -- carrying `lanes`, for a caller that repairs rather than stops (fanout_from_plan's audit: the next round
+    frees those teeth)"""
+
+    def __init__(self, lanes, msg):
+        super().__init__(msg)
+        self.lanes = lanes
+
+
 def box_of(pcb, ref):
     ps = pcb.footprints[ref].pads
     return (min(p.global_x for p in ps), min(p.global_y for p in ps),
@@ -148,7 +168,7 @@ def build(ctx, dest, _trunk=frozenset()):
     tf = {n: face(F.tooth[n], SB) for n in F.M}
     far = sorted(n for n in F.M if tf[n] == 'W')
     if far:
-        raise SystemExit(f'whole route: {", ".join(far)} launch from the source\'s far face -- the whole frame has no '
+        raise FarFace(far, f'whole route: {", ".join(far)} launch from the source\'s far face -- the whole frame has no '
                          f'way round the source')
     # ---- the trunk: straight, from the source's pad box through the destination's
     ca = np.array([(SB[0] + SB[2]) / 2, (SB[1] + SB[3]) / 2])
@@ -162,6 +182,11 @@ def build(ctx, dest, _trunk=frozenset()):
     x0, y0, x1, y1 = DB
     bf = {n: face(F.bend[n], DB) for n in F.M}
     ycut = cut([F.bend[n][1] for n in F.M if bf[n] == 'E'], y0, y1)
+    if getattr(ctx, 'dest_cut', None) is not None:
+        # the ends model's own cut (braid.setup, from the plan sidecar): recomputed here from the laid stubs, which
+        # stand a hair off the menu's exits, two near-equal gaps could split the far face the other way, and the solve
+        # would face crossings the model never priced (zynq K44: 176 crossings planned, 344 solved, no plan proved)
+        ycut = float(ctx.dest_cut)
     F.cls = {}
     for n in F.M:
         f_ = bf[n]
@@ -202,6 +227,7 @@ def build(ctx, dest, _trunk=frozenset()):
     # B.Cu at the midpoint of SCK's F.Cu berth tips, as a human stacks them)
     prs = getattr(ctx, 'pairs', None) or {}
     split = []
+    splits = []                                         # (pair, 'tooth' | 'berth', the lanes between its tips)
     for k_, perim, whole in ((0, perim_src, 2 * (sW + sH)), (1, perim_dst, 2 * (W_ + H_))):
         lay_ = ctx.tooth_layer if k_ == 0 else ctx.dest_layer
         at = []                                         # (position round the box, lane, its layer there)
@@ -215,8 +241,9 @@ def build(ctx, dest, _trunk=frozenset()):
             inside = sorted({o for v, o, L in at if o != n and L == lay_[n] and between(vs[0], vs[-1], v, whole)})
             if inside:
                 split.append(f'{n} at its {("tooth", "berth")[k_]} (round {", ".join(inside)})')
+                splits.append((n, ('tooth', 'berth')[k_], inside))
     if split:
-        raise SystemExit(f'whole route: pair(s) split by other lanes -- {"; ".join(split)} -- a pair is one lane')
+        raise PairSplit(splits, f'whole route: pair(s) split by other lanes -- {"; ".join(split)} -- a pair is one lane')
     F.P = {n: perim_dst(F.bend[n]) for n in F.M}
     # each lane's LANDING: where its lane meets its berth -- the berth itself, or for a pair on a ring's face (its stub
     # across the ring) the end of the straight run it takes out of its berth (pairs.end_run: its end connector onto
