@@ -3083,9 +3083,10 @@ def route_disconnected_regions(
             # unbridged (#508 finding 14) and the plane region split, which the
             # run reports -- strictly better than shipping copper shorted to a
             # signal net, which nothing downstream would have caught.
-            # Floored at `min_track_width`: the cap is about not drawing a
-            # disc where a joint belongs, not about going under the caller's
-            # declared minimum. Without the floor an advanced-tier via
+            # Floored at `min_track_width` (or at the strap's own width, when
+            # the #217 last resort drew it narrower): the cap is about not
+            # drawing a disc where a joint belongs, not about going under the
+            # caller's declared minimum. Without the floor an advanced-tier via
             # (--via-size below min_track_width) would silently emit a bridge
             # thinner than the run asked for -- a narrowing with no disclosure,
             # which is not how this repo reports them (design_rules.narrowed).
@@ -3186,7 +3187,12 @@ def via_bridge_width(leg, track_width, via_size, min_track_width,
     step's own INPUT -- overlapping by up to 160um. Nine segment-segment
     violations, and shorts rather than grazes. Capped at the via diameter, and
     FLOORED at `min_track_width` so an advanced-tier via cannot silently emit a
-    bridge thinner than the run asked for.
+    bridge thinner than the run asked for -- or at the strap's own width when
+    that is narrower. The #217 last resort draws a strap at the run's
+    --track-width when its corridor refuses `min_track_width`; holding that
+    strap's bridge to `min_track_width` asked the same corridor for the width
+    it had just refused, so the bridge was skipped and the plane left split
+    (#1112). The run's own track width is not thinner than the run asked for.
 
     CLEARANCE. The bridge is not a `route_points` leg, so `wide_route_clear` --
     which only ever sees same-layer legs of the routed path -- never saw it,
@@ -3199,8 +3205,10 @@ def via_bridge_width(leg, track_width, via_size, min_track_width,
     the region stays split, which the run reports -- strictly better than
     copper shorted to a signal net, which nothing downstream catches.
     """
-    cap = max(min_track_width, min(track_width, via_size))
-    for w in (cap, min_track_width):
+    floor = (min(min_track_width, track_width) if track_width > 0
+             else min_track_width)
+    cap = max(floor, min(track_width, via_size))
+    for w in (cap, floor):
         if w <= 0:
             continue
         if pcb_data is None or net_id is None or wide_route_clear(
