@@ -828,7 +828,12 @@ def format_text(b):
                      f"{bd['cutout_area_mm2']} mm2 of the outline is cut out")
     st = b.get('state') or {}
     if st:
+        # #1115: `pile` before the partial/placed arms. A staging ring has
+        # `unplaced` false (#1109) and printed `state: placed` here while the
+        # JSON said `pile: true`, so the line a reader sees first contradicted
+        # the key the skill tells them to read.
         what = ('UNPLACED' if st.get('unplaced') else
+                'PILE' if st.get('pile') else
                 'partially unplaced' if st.get('partially_unplaced')
                 else 'placed')
         copper = 'yes' if st.get('has_copper') else 'no'
@@ -1054,6 +1059,10 @@ def main(argv=None):
          'nets': brief['board'].get('nets'),
          'unplaced': (brief.get('state') or {}).get('unplaced'),
          'pile': (brief.get('state') or {}).get('pile'),
+         # #1115: the free-agent skill picks its mode from `pile` and
+         # `has_copper`; this line carried only the first, so the second was
+         # readable only from a --json file the skill's command never wrote.
+         'has_copper': (brief.get('state') or {}).get('has_copper'),
          'sections': sorted(k for k, v in brief.items()
                             if isinstance(v, (dict, list))
                             and k not in ('sources', 'skipped')),

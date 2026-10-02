@@ -71,6 +71,10 @@ class TestPilePredicate(unittest.TestCase):
         summary = json.loads(line[-1][len('JSON_SUMMARY: '):])
         self.assertIs(summary['unplaced'], False)   # the gap #1109 is about
         self.assertIs(summary['pile'], True)
+        # #1115: the second key the skill reads, on the line it reads, and a
+        # text state line that agrees with `pile` instead of saying `placed`.
+        self.assertIs(summary['has_copper'], False)
+        self.assertIn('state: PILE;', r.stdout)
 
     def test_a_placed_board_is_not_a_pile(self):
         r = subprocess.run(
@@ -81,8 +85,32 @@ class TestPilePredicate(unittest.TestCase):
         line = [ln for ln in r.stdout.splitlines()
                 if ln.startswith('JSON_SUMMARY: ')]
         self.assertTrue(line, r.stderr[-2000:])
-        self.assertIs(json.loads(line[-1][len('JSON_SUMMARY: '):])['pile'],
-                      False)
+        summary = json.loads(line[-1][len('JSON_SUMMARY: '):])
+        self.assertIs(summary['pile'], False)
+        self.assertIs(summary['has_copper'], False)
+        self.assertIn('state: placed;', r.stdout)
+
+    def test_board_brief_publishes_has_copper(self):
+        """#1115: `has_copper` on the JSON_SUMMARY line is the board's own
+        copper, not a constant -- the ring with one routed segment reads
+        True where the bare ring reads False."""
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, 'ring_cu.kicad_pcb')
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write('\n'.join(
+                    RING[:-1]
+                    + ['  (segment (start 1 1) (end 5 1) (width 0.2)'
+                       ' (layer "F.Cu") (net 1))', ')']))
+            r = subprocess.run(
+                [sys.executable, '-X', 'utf8',
+                 os.path.join(ROOT, 'py_tools', 'board_brief.py'), p],
+                capture_output=True, text=True, cwd=ROOT, timeout=600)
+        line = [ln for ln in r.stdout.splitlines()
+                if ln.startswith('JSON_SUMMARY: ')]
+        self.assertTrue(line, r.stdout[-2000:] + r.stderr[-2000:])
+        self.assertIs(json.loads(line[-1][len('JSON_SUMMARY: '):])
+                      ['has_copper'], True)
+        self.assertIn('copper yes (1 segs', r.stdout)
 
 
 class TestFilmBoardBoxLine(unittest.TestCase):

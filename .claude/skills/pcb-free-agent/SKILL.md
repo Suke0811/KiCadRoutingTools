@@ -12,10 +12,12 @@ prescribe the process.
 
 Invocation: `/pcb-free-agent <mode> <board.kicad_pcb> [intent.json]`, where
 mode is `full`, `place` or `route`. With no mode, use `full` for an unplaced
-board and `route` for a placed one. `board_brief.py <board> --json`
-(`pile`, `has_copper`) is the positive test for which one; exit codes are
-not. Read `pile`, not `unplaced`: a staging ring of parts around the outline
-is a pile but reads `unplaced: false` (#1109).
+board and `route` for a placed one. The positive test for which one is
+`python3 -X utf8 py_tools/board_brief.py <board> --json wk/<run>/brief.json`:
+read `pile` and `has_copper` on its `JSON_SUMMARY` line (the file carries
+them under `state`); exit codes are not the test. Read `pile`, not
+`unplaced`: a staging ring of parts around the outline is a pile but reads
+`unplaced: false` (#1109).
 
 **Measured basis.** Two runs used this contract before it became a skill:
 - **An 18-part 2-layer board, from a pile:** DONE in 12 min, 6 vias. The
@@ -99,7 +101,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 | job | tools |
 |---|---|
 | score (the authority on `blocking`) | `py_tools/board_score.py <board> --intent <i> --json <out>`; `check_complete.py <board> --intent <i>` (fails closed) |
-| read the board | `py_tools/board_brief.py --json`, `py_tools/board_context.py --md` (per-part sheet: pin order, `CROSSED` pairs) |
+| read the board | `py_tools/board_brief.py <board> --json <out>`, `py_tools/board_context.py --md` (per-part sheet: pin order, `CROSSED` pairs) |
 | place from scratch | lock the fixed parts with `py_placer/place_pose.py` first, then `py_placer/place_seed.py` (about 5–15 min on a 250-part board; rank seeds with `py_placer/compare_seeds.py`) |
 | improve a placement | `py_placer/place_optimize.py --max-displacement 3` (the quench, for ROUGH placements), `py_placer/place_reconstruct.py` (structural damage), `place_seed --repair` (local violations) / `--reseat` (parts far off), `py_placer/place_portfolio.py --intent --lock --full-probe` (on a SEEDED board), `py_placer/converge.py poses --ref X` (rank one part's poses), `py_placer/place_fanout_clearance.py` |
 | placement vs routing, in a loop | `py_placer/place_route_loop.py` (when routing failed on congestion) |
@@ -209,6 +211,20 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   size flags; the finalize runs even when that step has nothing else to
   route. Do not end on `repair_planes.py`: it cannot know the sizes you
   routed at, so it falls back to the board's net-class via and track.
+- **Probe both chain shapes on a placed board, then keep the better one.**
+  Route the staged chain (fanout, then `route_diff.py`, then `route.py` at
+  the net-class sizes) and ONE fine-geometry pass from the same placed
+  board, each to a fresh output path and each ending on `route.py` as
+  above:
+  `python3 -X utf8 py_router/route.py <placed> <out> --nets '*' --track-width 0.1 --clearance-ceiling 0.1 --via-size 0.3 --via-drill 0.15`
+  Keep the lower `board_score` `blocking`, then the fewer vias, under the
+  comparison rule in §5 (a fanout raises `blocking` by construction). On a
+  90-part 2-layer board with an LQFP-48 hub, the staged chain reached
+  blocking 16, the same chain at the fine sizes 18, and the one fine pass 5,
+  then 1 after a `--grid-step 0.05` retry and a plane repair at the same
+  sizes (ground poured after the pass, which the plane rule above now
+  replaces). On an earlier placement of that board the two shapes tied at
+  23, with 140 vias against 188, so measure both.
 - **Widths are requests.** After each route, read
   `power_widths.<net>.under_mm`: one run asked for 0.3 mm on +3V3 and shipped
   34 % of it at 0.127 mm. Grade power widths with `board_score --net-min-widths`.

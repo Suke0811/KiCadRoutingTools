@@ -228,6 +228,8 @@ step, confirm the geometry actually has that problem:
    handles it.
 3. **Interior pads at fine pitch (<=0.6mm), or a perimeter at <=0.65mm with
    many pads?** → Yes, fanout genuinely helps (this is the boxed-in case).
+   For a PERIMETER part that makes fanout a candidate to probe, not a
+   verdict: see "Route signals at the FAB floor", step 2.
    **"Fine-pitch" is not one number in this file, and no sentence should be read
    as if it were.** It is the FANOUT trigger at <=0.6 mm interior / <=0.65 mm
    perimeter — the predicate in the code block above, the only executable one —
@@ -1090,7 +1092,9 @@ Based on the analysis, generate a step-by-step plan. The general order is:
    +3V3 pour ONE intact island, GND weld copper cut to a third, connectivity
    net-better, DRC clean. With planes poured signals-first style instead, the
    pour under a BGA arrives pre-shredded and every drop via needs repair welds.
-1b. **Fanout** (if needed) - Escape routing on the poured board. Exclude the
+1b. **Fanout** (if needed; for a perimeter part, probe the one-pass shape
+   in "Route signals at the FAB floor" step 2 against it) - Escape routing
+   on the poured board. Exclude the
    plane nets (`"*" "!GND" "!VCC"`) — that exclusion marks them for automatic
    **plane-drop vias** (#424), and because the pour already exists the drop
    pass can skip a via entirely where the fill already covers the ball
@@ -2722,6 +2726,18 @@ hunt for.
    found; pair it with the thin width at fine-pitch escapes ("boxed in by static
    obstacles"). If still congested, step the width down further toward the fab
    physical minimum and re-route.
+
+   **Probe this one-pass shape against the staged chain on a freshly placed
+   board, and keep the better `board_score` `blocking` (then vias).** Run it
+   from the PLACED board, with no fanout and no `route_diff.py` step, beside
+   the usual fanout -> `route_diff.py` -> `route.py` chain. Measured on a
+   90-part 2-layer board with an LQFP-48 hub (one Default class at 0.1 mm):
+   the staged chain reached blocking 16 (161 vias), the same chain at
+   0.1/0.1/0.3/0.15 reached 18 (201 vias), and one pass at those sizes over
+   every signal net reached 5 (176 vias), then 1 after a `--grid-step 0.05`
+   retry and a plane repair at the same sizes. On an earlier placement of
+   the same board the two shapes tied at 23 (140 vias staged, 188 one-pass),
+   so neither shape is the default; measure both.
 3. **Keep only the nets that NEED width wide — by rule, not by sweep.**
    Power/high-current nets stay wide via `--power-nets`/`--power-nets-widths`, and
    impedance-controlled nets keep their calculated width (`--impedance`, or
