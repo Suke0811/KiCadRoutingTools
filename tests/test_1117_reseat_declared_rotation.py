@@ -381,10 +381,13 @@ def test_one_ladder_and_its_decline_line():
 #: Two parts of one footprint between two connectors, C1 at 0 and C2 at 90,
 #: sharing one zone (found by #1117's verifier: on 457959b7 the polish's swap
 #: phase left C2 written at 0 with `rotation: 90` declared, exit 0).
-def _swap_board(path, names=('C1', 'C2')):
-    """`names` = the refs of the part at 0 and the part at 90. Flipping them
-    flips which of the pair sorts FIRST, i.e. which half of the swap gate
-    (`ra` or `rb`) a one-sided declaration exercises."""
+def _swap_board(path, c2_first=False, crossed=False, c2_rot=90):
+    """C1 at 0 and C2 at `c2_rot`, one footprint, between J1 (N1/N2) and J2
+    (N3/N4). `c2_first` writes C2's block FIRST: the swap phase pairs parts
+    in FILE order, so this is what flips which half of the swap gate (`ra`
+    or `rb`) a one-sided declaration exercises -- renaming them does not
+    (#1117's second verifier). `crossed` puts each part next to the OTHER
+    part's connector, so on an already placed board a swap pays 16 mm."""
     def part(ref, fpname, x, rot, nets):
         pads = ''.join(
             f'\t\t(pad "{i + 1}" smd rect (at {dx} 0) (size 0.6 0.6) '
@@ -402,14 +405,20 @@ def _swap_board(path, names=('C1', 'C2')):
                 '(uuid "e1"))\n'
                 + part('J1', 'test:J', 4.0, 0, (1, 2))
                 + part('J2', 'test:J', 36.0, 0, (3, 4))
-                + part(names[0], 'test:CAP', 18.0, 0, (1, 2))
-                + part(names[1], 'test:CAP', 22.0, 90, (3, 4)) + ')\n')
+                + ''.join(sorted(
+                    (part('C1', 'test:CAP', 22.0 if crossed else 18.0, 0,
+                          (1, 2)),
+                     part('C2', 'test:CAP', 18.0 if crossed else 22.0, c2_rot,
+                          (3, 4))),
+                    key=lambda t: ('fp-C2' not in t) if c2_first else
+                    ('fp-C1' not in t)))
+                + ')\n')
     return path
 
 
-def _swap_seed(tag, blocks, names=('C1', 'C2')):
+def _swap_seed(tag, blocks, c2_first=False):
     wd = tempfile.mkdtemp(prefix=f't1117_{tag}_')
-    bpath = _swap_board(os.path.join(wd, 'in.kicad_pcb'), names)
+    bpath = _swap_board(os.path.join(wd, 'in.kicad_pcb'), c2_first)
     ipath = os.path.join(wd, 'fp.json')
     with open(ipath, 'w', encoding='utf-8') as f:
         json.dump({'schema': 1, 'kind': 'floorplan-intent', 'units': 'mm',
@@ -437,9 +446,9 @@ def test_a_swap_does_not_trade_declared_angles():
     pass line).
 
     ONE side declaring is enough, and each side is its own half of the gate:
-    the part at 90 declared alone, named so it sorts second (`rb`) and then
-    first (`ra`), is held at 90 both times. Measured on 457959b7: written at
-    0 in every one of these.
+    C2 declared 90 alone, written second in the file (`rb`) and then first
+    (`ra`), is held at 90 both times. Measured on 457959b7: written at 0 in
+    every one of these.
 
     No undeclared control: with nothing declared the nudge turns the parts
     freely, so their written angles cannot say whether a swap ran. What
@@ -451,15 +460,68 @@ def test_a_swap_does_not_trade_declared_angles():
         {'name': 'c2', 'refs': ['C2'], 'zone': zone, 'rotation': 90}])
     assert got == {'C1': 0.0, 'C2': 90.0}, f"declared angles traded: {got}"
     assert 'swap-intent=' in out, out[-1500:]
-    for names, ninety in ((('C1', 'C2'), 'C2'), (('C2', 'C1'), 'C1')):
-        other = 'C1' if ninety == 'C2' else 'C2'
-        one, _o = _swap_seed('G1' + ninety, [
-            {'name': 'a', 'refs': [other], 'zone': zone},
-            {'name': 'b', 'refs': [ninety], 'zone': zone, 'rotation': 90}],
-            names=names)
-        assert one[ninety] == 90.0, (
-            f"{ninety} declared 90 alone, written at {one[ninety]}")
+    for c2_first in (False, True):
+        one, _o = _swap_seed('G1%d' % c2_first, [
+            {'name': 'a', 'refs': ['C1'], 'zone': zone},
+            {'name': 'b', 'refs': ['C2'], 'zone': zone, 'rotation': 90}],
+            c2_first=c2_first)
+        assert one['C2'] == 90.0, (
+            f"C2 declared 90 alone (first in file: {c2_first}), written at "
+            f"{one['C2']}")
     print(f"  declared both: {got}; declared one, either half: held at 90")
+
+
+def _optimize(tag, blocks, c2_rot, *extra):
+    """place_optimize on the CROSSED board (a swap pays 16 mm): the
+    written angles and positions, the JSON_SUMMARY and stdout."""
+    wd = tempfile.mkdtemp(prefix=f't1117_{tag}_')
+    bpath = _swap_board(os.path.join(wd, 'in.kicad_pcb'), crossed=True,
+                        c2_rot=c2_rot)
+    ipath = os.path.join(wd, 'fp.json')
+    with open(ipath, 'w', encoding='utf-8') as f:
+        json.dump({'schema': 1, 'kind': 'floorplan-intent', 'units': 'mm',
+                   'min_reader': 5,
+                   'envelope': {'rect': [0, 0, 40, 6], 'tolerance_mm': 0.5},
+                   'must_lock': ['J*'], 'blocks': blocks}, f)
+    out = os.path.join(wd, 'out.kicad_pcb')
+    r = run_utils.check(
+        [sys.executable, '-X', 'utf8',
+         os.path.join(ROOT, 'py_placer', 'place_optimize.py'), bpath, out,
+         '--intent', ipath, '--clearance', '0.2', '--board-edge-clearance',
+         '0.3', '--max-displacement', '4'] + list(extra), accept=True)
+    summary = next(json.loads(ln.split(':', 1)[1])
+                   for ln in r.stdout.splitlines()
+                   if ln.startswith('JSON_SUMMARY:'))
+    from kicad_parser import parse_kicad_pcb
+    fps = parse_kicad_pcb(run_utils.evidence(out, 'optimized board')).footprints
+    return ({ref: (round(fps[ref].x, 2), round((fps[ref].rotation or 0) % 360, 1))
+             for ref in ('C1', 'C2')}, summary, r.stdout)
+
+
+def test_the_optimizer_refuses_only_a_swap_that_turns_a_declared_part():
+    """I: place_optimize on a placed board, parts crossed so a swap pays.
+    (i) A ROTATION-ONLY intent -- no zone, so nothing else arms the swap
+    gate -- with C1 at 0 and C2 at 90 declared: the swap is refused and
+    disclosed under rule `rotation`, with the refs it binds (it used to
+    report `refs_bound: 0, rules_enforced: []` while refusing). (ii) Both
+    parts at 0 and C1 declared 90: the swap changes NO angle, and it is
+    taken, with and without --no-rotate (it was refused, costing 16 mm)."""
+    held, s1, out1 = _optimize('Ii', [
+        {'name': 'c1', 'refs': ['C1'], 'rotation': 0},
+        {'name': 'c2', 'refs': ['C2'], 'rotation': 90}], c2_rot=90)
+    assert held == {'C1': (22.0, 0.0), 'C2': (18.0, 90.0)}, held
+    assert 'swap-intent=' in out1, out1[-1500:]
+    assert s1.get('intent_moves_refused_by_site', {}).get('swap'), s1
+    assert s1.get('intent_moves_refused_by_rule', {}).get('rotation'), s1
+    assert s1.get('intent_rules_enforced') == ['rotation'], s1
+    assert s1.get('intent_refs_bound') == 2, s1
+    for extra in ((), ('--no-rotate',)):
+        moved, s2, out2 = _optimize('Iii', [
+            {'name': 'c1', 'refs': ['C1'], 'rotation': 90}], 0, *extra)
+        assert moved['C1'][0] == 18.0 and moved['C2'][0] == 22.0, (extra,
+                                                                    moved)
+        assert 'swap-intent=' not in out2, (extra, out2[-1500:])
+    print(f"  turning swap refused {held}; angle-neutral swap taken {moved}")
 
 
 def test_rank_rotations_fails_a_declined_arm():
@@ -499,6 +561,7 @@ TESTS = [
     test_repair_placement_holds_the_declaration,
     test_one_ladder_and_its_decline_line,
     test_a_swap_does_not_trade_declared_angles,
+    test_the_optimizer_refuses_only_a_swap_that_turns_a_declared_part,
     test_rank_rotations_fails_a_declined_arm,
 ]
 

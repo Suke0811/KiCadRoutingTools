@@ -276,10 +276,13 @@ ROWS = [
      (T702,), 'KILLED'),
 
     # ---- the metrics, which a keep-out-only intent made self-contradictory --
+    # Re-anchored for #1117, which added the declared rotations to the set;
+    # the mutation still reads the zone terms alone.
     ('the-metrics-read-zone-terms-only', 'q',
      "                'refs_bound': len(set(state._intent_spec)\n"
      "                                  | set(state.keepouts_for)\n"
-     "                                  | set(state._tethers_of)),\n",
+     "                                  | set(state._tethers_of)\n"
+     "                                  | set(state.declared_rotations)),\n",
      "                'refs_bound': len(state._intent_spec),\n",
      (T702,), 'KILLED'),
 

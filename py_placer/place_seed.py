@@ -1462,7 +1462,7 @@ Examples:
                # #1117: parts the post-polish re-seat could not put back, by
                # ref, with the rules they broke and the claim it held them
                # to. NOT `rotation_unseated`, which names parts the seed did
-               # not put on the board: these ARE on it, where the polish left
+               # not SEAT: these were seated, and stay where the polish left
                # them.
                'reseat_declined': reseat_declined,
                # #975: declared edge connectors seated with pad copper inside

@@ -2090,12 +2090,13 @@ class QuenchState:
         pa, pb = self.parts[ra], self.parts[rb]
         self.intent_rejected_by_site['swap'] = (
             self.intent_rejected_by_site.get('swap', 0) + 1)
-        for who, (x, y, rot) in ((ra, (pb.x, pb.y, pb.rot)),
-                                 (rb, (pa.x, pa.y, pa.rot))):
+        for who, (x, y, rot), cur in ((ra, (pb.x, pb.y, pb.rot), pa.rot),
+                                      (rb, (pa.x, pa.y, pa.rot), pb.rot)):
             for rule, _n, _c, _u in self.intent_blockers(who, x, y, rot):
                 self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
             # #1117: the declared-rotation half has no intent_blockers rule.
-            if not _declared_admits(self.declared_rotations.get(who), rot):
+            if not _declared_admits(self.declared_rotations.get(who), rot,
+                                    cur):
                 self.intent_rejected['rotation'] = (
                     self.intent_rejected.get('rotation', 0) + 1)
         if self._tether_active:
@@ -2410,8 +2411,10 @@ class QuenchState:
         # different angles traded them and the seed graded clean (there is
         # no rule_rotation to catch it).
         if self.declared_rotations and not (
-                _declared_admits(self.declared_rotations.get(ra), pb.rot)
-                and _declared_admits(self.declared_rotations.get(rb), pa.rot)):
+                _declared_admits(self.declared_rotations.get(ra), pb.rot,
+                                 pa.rot)
+                and _declared_admits(self.declared_rotations.get(rb), pa.rot,
+                                     pb.rot)):
             return False
         return (self.intent_ok(ra, pb.x, pb.y, pb.rot)
                 and self.intent_ok(rb, pa.x, pa.y, pa.rot)
@@ -3999,13 +4002,22 @@ def _candidate_rotations(part: _Part, allow_rotations: bool,
     return [(b + r) % 360 for b in bases for r in ROTATIONS]
 
 
-def _declared_admits(declared, rot) -> bool:
+def _same_angle(a, b) -> bool:
+    return abs((a - b + 180.0) % 360.0 - 180.0) < 1e-6
+
+
+def _declared_admits(declared, rot, current=None) -> bool:
     """Whether a declared rotation claim (#893; `(rotation, candidates)`, or
     None for no claim) admits the angle `rot` -- the swap phase's half of the
-    pin `_candidate_rotations` puts on the nudge (#1117)."""
+    pin `_candidate_rotations` puts on the nudge (#1117). A part handed its
+    `current` angle is never refused: a swap that changes no angle cannot
+    make a declaration worse, and refusing it (under `--no-rotate`, where no
+    move can turn anything) cost a 16 mm wirelength win (#1117's verifier)."""
     if declared is None:
         return True
-    return any(abs((rot - a + 180.0) % 360.0 - 180.0) < 1e-6
+    if current is not None and _same_angle(rot, current):
+        return True
+    return any(_same_angle(rot, a)
                for a in _candidate_rotations(None, True, declared))
 
 
@@ -4663,14 +4675,19 @@ def quench(pcb_data: PCBData, pcb_file: str,
                 # #1043: the tether terms' refs and rules count too -- a
                 # decaps-only intent must not report `rules_enforced: []`
                 # while refusing poses on `decap_distance`.
+                # #1117: and the declared rotations, which the swap refuses
+                # on as rule `rotation`: a rotation-only intent reported
+                # "enforced over 0 bound part(s)" while refusing swaps.
                 'refs_bound': len(set(state._intent_spec)
                                   | set(state.keepouts_for)
-                                  | set(state._tethers_of)),
+                                  | set(state._tethers_of)
+                                  | set(state.declared_rotations)),
                 'rules_enforced': sorted(
                     {t.rule for ref in (set(state._intent_spec)
                                         | set(state.keepouts_for))
                      for t in state.intent_spec_for(ref)}
-                    | {t.rule for t in state._tether_terms}),
+                    | {t.rule for t in state._tether_terms}
+                    | ({'rotation'} if state.declared_rotations else set())),
             }
         if state._tether_active:
             by_rule: Dict[str, int] = {}

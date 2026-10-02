@@ -36,13 +36,10 @@ Not covered by a row, and why:
   * the record's `zone` / `rotation` entries: one dict entry each, asserted
     by `not_traded` and `one_ladder`; their mutant is the same assertion
     failing, already exercised by `declined-reseat-unrecorded`;
-  * the swap phase's `or state.declared_rotations`, which calls the gate when
-    the intent declares rotations and nothing else: on every fixture where a
-    swap trades angles a zone is declared too, so the intent gate already
-    runs, and a rotation-only intent of the same board seeds the parts
-    where no swap pays (measured: no trade even on 457959b7);
-  * `_note_swap_refusal`'s `rotation` attribution: it feeds only the
-    `by_rule` disclosure, which no fixture here reads.
+  (The swap phase's `or state.declared_rotations` and the `rotation`
+  attribution were listed here as unwitnessable; #1117's second verifier
+  found the witness -- place_optimize on a placed board whose parts are
+  crossed, arm I -- and each now has a row.)
 """
 from __future__ import annotations
 
@@ -78,6 +75,7 @@ UNDECLARED = _t(T, 'undeclared_decline')
 REPAIR = _t(T, 'repair_placement')
 LADDER = _t(T, 'one_ladder')
 SWAP = _t(T, 'swap_does_not')
+OPTIMIZE = _t(T, 'optimizer_refuses_only')
 RANK = _t(T, 'rank_rotations_fails')
 CLASSIFY = _t('test_1113_rank_rotations.py', 'classify_row')
 GATE = _t('test_893_declared_rotation.py', 'try_place_site')
@@ -162,13 +160,35 @@ ROWS = [
      "        if False and not (",
      (SWAP,), 'KILLED'),
     ('swap-ignores-the-first-parts-claim', 'q',
-     "                _declared_admits(self.declared_rotations.get(ra), pb.rot)",
+     "                _declared_admits(self.declared_rotations.get(ra), pb.rot,\n"
+     "                                 pa.rot)",
      "                True",
      (SWAP,), 'KILLED'),
     ('swap-ignores-the-second-parts-claim', 'q',
-     "                and _declared_admits(self.declared_rotations.get(rb), pa.rot)):",
+     "                and _declared_admits(self.declared_rotations.get(rb), pa.rot,\n"
+     "                                     pb.rot)):",
      "                and True):",
      (SWAP,), 'KILLED'),
+    ('swap-gate-armed-only-by-zones', 'q',
+     "                             or state.declared_rotations)",
+     "                             or False)",
+     (OPTIMIZE,), 'KILLED'),
+    ('angle-neutral-swap-refused', 'q',
+     "    if current is not None and _same_angle(rot, current):",
+     "    if False:",
+     (OPTIMIZE,), 'KILLED'),
+    ('refusal-not-attributed-to-rotation', 'q',
+     "                self.intent_rejected['rotation'] = (",
+     "                self._t1117_unused = (",
+     (OPTIMIZE,), 'KILLED'),
+    ('disclosure-omits-rotation-refs', 'q',
+     "                                  | set(state.declared_rotations)),",
+     "                                  ),",
+     (OPTIMIZE,), 'KILLED'),
+    ('disclosure-omits-rotation-rule', 'q',
+     "                    | ({'rotation'} if state.declared_rotations else set())),",
+     "                    ),",
+     (OPTIMIZE,), 'KILLED'),
     ('swap-admits-any-angle', 'q',
      "               for a in _candidate_rotations(None, True, declared))",
      "               for a in [rot])",
