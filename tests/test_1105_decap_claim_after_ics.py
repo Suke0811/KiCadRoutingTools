@@ -220,7 +220,7 @@ def test_a_seat_past_the_limit_is_undone():
         assert not set(late['declined']) & set(late['caps']), late
         for ref in late['declined']:
             note = [n for n in on['notes']
-                    if n.startswith(f"{ref}: declined by stage 3.5")]
+                    if n.startswith(f"{ref}: stage 3.5 declined its seat")]
             assert note and f"{lim:g}mm decap limit" in note[0], note
         for n in _late_notes(on):
             assert float(re.search(r'landed ([\d.]+)mm', n).group(1)) <= \
@@ -391,7 +391,8 @@ def test_the_forecast_agrees_with_the_seed():
         # seat that fails leaves its owner (and its caps) to stage 3.5, so
         # the seed's claims are bounded by early + late, never ownerless.
         late = res['decap_stage']['late']
-        owners = set(f['early_owners']) | set(f['late_owners'])
+        owners = (set(f['early_owners']) | set(f['late_owners'])
+                  | set(f['backup_owners']))
         assert set(late['owners']) <= owners, (late, f)
         assert set(late['caps']) <= set(f['early']) | set(f['late']), (late, f)
     print(f"  PASS: {len(f['ownerless'])} ownerless cap(s) on watchy, none "

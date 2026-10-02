@@ -3945,10 +3945,11 @@ DIAGONAL_ROTATIONS_DEFAULT = False
 #: before stage 2.5, so 2.5 claims nothing and every decap fell through to the
 #: generic centroid seat. Stage 3 seats by pin count, so every IC is seated
 #: before any 2-pin cap, and the claim draws no RNG: every part seated before
-#: it is bit-identical to the stage-off seed. Both earlier fixes seated the
-#: owner ICs EARLY instead (#1059's `seat_owners_first`, #1105's first
-#: `--decap-owners-first`), which moved the ICs and regressed on 4 of 4 A/B
-#: boards. Set by tests/test_placement_ab.py's `decap-after-ics-*` rows;
+#: it is bit-identical to the stage-off seed. Both earlier attempts seated
+#: the owner ICs EARLY instead -- #1059's `seat_owners_first` (removed in
+#: f77b0acd) and the `--decap-owners-first` stage 2.5a PR #1110 proposed
+#: (e4317972, held out of the merge by a14f68f3) -- which moved the ICs and
+#: regressed on 4 of 4 A/B boards. Set by tests/test_placement_ab.py's `decap-after-ics-*` rows;
 #: `place_seed --decap-claim-after-ics` / `--no-decap-claim-after-ics`
 #: override it.
 DECAP_CLAIM_AFTER_ICS_DEFAULT = False
@@ -3996,7 +3997,9 @@ def decap_pin_forecast(pcb_data, intent, blocks, *,
     pose, more caps than pin clusters). `early` caps have an owner that is
     seated before stage 2.5 -- one in `standing` (file-locked, or outside a
     partially-unplaced board's pile), a fixed pose, an edge claim, a
-    must_lock part, a zoned block member, or a declared row's `serves`;
+    must_lock part, a zoned block member, or a declared row's `serves`
+    (ASSUMING those seats succeed: an edge claim's walk can fail, and then
+    the cap falls to its `backup_owners`, the stage-3 owners of its rail);
     `late` caps have owners only the centroid stage seats, which stage 3.5
     serves when armed (`late_armed`); `ownerless` caps have a rail no
     U-prefixed part (the grouper's chips under `owner_chips`) carries, and
@@ -4011,6 +4014,7 @@ def decap_pin_forecast(pcb_data, intent, blocks, *,
         'owner_rule': 'chips' if owner_chips else 'U-prefixed',
         'scope': 0, 'exempt': [], 'array_members': [], 'ownerless': [],
         'early': [], 'early_owners': [], 'late': [], 'late_owners': [],
+        'backup_owners': [],
         'late_armed': (DECAP_CLAIM_AFTER_ICS_DEFAULT if claim_after_ics is None
                        else bool(claim_after_ics))}
     if not out['armed']:
@@ -4054,6 +4058,7 @@ def decap_pin_forecast(pcb_data, intent, blocks, *,
                     and not (set(a.get('present') or ()) & zoned)})
     early_owners: Set[str] = set()
     late_owners: Set[str] = set()
+    backup_owners: Set[str] = set()
     for cap in sorted(scope):
         rail = _decap_rail(nets_of.get(cap, ()), net_refs)
         owners = [r for r in net_refs.get(rail, ())
@@ -4063,11 +4068,15 @@ def decap_pin_forecast(pcb_data, intent, blocks, *,
         elif any(o in early_set for o in owners):
             out['early'].append(cap)
             early_owners.update(o for o in owners if o in early_set)
+            # An early seat can fail (an edge claim's walk, a refused fixed
+            # pose); the cap then falls to the stage-3 owners of its rail.
+            backup_owners.update(o for o in owners if o not in early_set)
         else:
             out['late'].append(cap)
             late_owners.update(owners)
     out['early_owners'] = sorted(early_owners)
     out['late_owners'] = sorted(late_owners)
+    out['backup_owners'] = sorted(backup_owners)
     return out
 
 
@@ -4983,6 +4992,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
 
     def _decap_pin_claim(owner_pool, claimed, tag='', decline_beyond=None,
                          declined=None):
+        _last = {'declined': False}   # did the latest `_seat` decline?
         """Seat one scoped cap per supply pin of the owner ICs in
         `owner_pool`, appending each to `claimed`; returns `(avail, pins,
         rails, the owners whose pins it found)`. Stage 2.5 runs it over the
@@ -5054,6 +5064,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             return chip + [r for r in own if r not in chip]
 
         def _seat(ref, tx, ty, owner, pn, constraint=None, tol=0.5):
+            _last['declined'] = False
             _ladder = _cap_ladder(ref, owner)
             _was = (state.parts[ref].x, state.parts[ref].y,
                     state.parts[ref].rot)
@@ -5070,17 +5081,20 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                                   state.parts[ref].y - ty)
                 if _off > decline_beyond:
                     state.apply_move(ref, *_was)
-                    declined.append(ref)
+                    _last['declined'] = True
+                    if ref not in declined:
+                        declined.append(ref)
                     notes.append(
-                        f"{ref}: declined by stage 3.5 -- its seat for {owner} "
-                        f"landed {_off:.2f}mm from the pin target, past the "
-                        f"{decline_beyond:g}mm decap limit; it keeps its "
-                        f"centroid-stage turn")
+                        f"{ref}: stage 3.5 declined its seat for {owner} -- "
+                        f"it landed {_off:.2f}mm from the pin target, past "
+                        f"the {decline_beyond:g}mm decap limit")
                     return False
             avail.remove(ref)
             placed.add(ref)
             unplaced.discard(ref)
             claimed.append(ref)
+            if declined and ref in declined:
+                declined.remove(ref)    # declined at one pin, claimed at another
             p2 = state.parts[ref]
             net = getattr(pcb_data.nets.get(pn), 'name', pn)
             notes.append(f"{ref}: decap for {owner} pad(s) near ({tx}, {ty})"
@@ -5144,7 +5158,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     # in `avail`, the pins went unserved, and NOTHING said so --
                     # while the comment below claimed the fall-through "reports
                     # honestly". It does now.
-                    if declined and ref in declined:
+                    if _last['declined']:
                         continue    # #1105: `_seat` said why
                     net = getattr(pcb_data.nets.get(rail), 'name', rail)
                     notes.append(
@@ -5349,6 +5363,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         elif not late['pins']:
             late['reason'] = ("the owner IC(s) the centroid stage seated carry "
                               "no remaining cap's rail (pins 0)")
+        elif not late_claimed and late['declined']:
+            late['reason'] = (f"every seat found at the {late['pins']} pin(s) "
+                              f"landed past the decap limit and was declined")
         elif not late_claimed:
             late['reason'] = (f"{late['pins']} pin(s) found, and no cap found "
                               f"a legal seat at any of them")

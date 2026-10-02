@@ -616,9 +616,10 @@ ROWS += [
 # #1105: seeder stage 3.5, the per-supply-pin decap claim run again once the
 # centroid stage has seated the owner ICs that stage 2.5 found unplaced --
 # every IC on a flat board or a pile. Same intents, signal and guards as the
-# rejected `decap-owners-*` rows (stage 2.5a, which seated the owner ICs
-# EARLY and regressed on all four flat boards), so the two read column for
-# column. Two variants, both arms explicit so the rows measure the same thing
+# `decap-owners-*` rows PR #1110 measured for its stage 2.5a (which seated
+# the owner ICs EARLY and regressed on all four flat boards; the rows and
+# their baseline were removed with it in a14f68f3, and are in f61f9118), so
+# the two read column for column. Two variants, both arms explicit so the rows measure the same thing
 # whichever way the defaults point: `decap-after-ics-*` keeps every seat the
 # claim finds; `decap-within-limit-*` undoes one that lands past the decap
 # limit (`seeder.DECAP_LATE_WITHIN_LIMIT`); `decap-after-queue-*` also holds

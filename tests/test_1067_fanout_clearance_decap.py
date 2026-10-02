@@ -127,6 +127,8 @@ def test_on_adds_no_decap_claim_and_names_the_held_cap():
     assert MOVED.search(stdout), stdout[-1500:]
     assert 'Decap grade (intent): errors' in stdout, stdout[-800:]
     held = s['decap']['held']
+    # the fixture exercises the gate: C63's only clear poses break a limit
+    assert 'C63' in held, held
     assert set(held) <= set(s['unresolved']), (held, s['unresolved'])
     for ref in held:
         assert f"{ref} (decap_" in stdout, stdout[-800:]

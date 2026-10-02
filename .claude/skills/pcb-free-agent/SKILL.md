@@ -64,8 +64,9 @@ is a pile but reads `unplaced: false` (#1109).
   owner ICs are seated. When `place_seed` then reports the decap stage
   claimed 0 because no owner IC was seated before it, re-seed with
   `--decap-claim-after-ics` and compare both seeds: it claims the decaps
-  once the centroid stage has seated their ICs, and seats every IC exactly
-  as without it (#1105). It is opt-in because the corpus A/B rejected it as
+  once the centroid stage has seated their ICs, and the seed places every
+  IC exactly as without it -- only the polish that follows can move one
+  (#1105). The line's stage-2.5 count assumes those early seats succeed. It is opt-in because the corpus A/B rejected it as
   a default; on run 38's StickHub pile (seed 0, run 38's own arguments) it
   claimed 16 caps and cut the seed's grade errors 16 to 7.
 - **Give `--intent` to every placement tool.** It is a per-move gate only in

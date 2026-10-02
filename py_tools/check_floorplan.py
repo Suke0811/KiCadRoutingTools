@@ -248,11 +248,15 @@ def _seeder_forecast(doc, pcb, board, sources):
         return {'unavailable': str(exc)}
     standing = set((doc.get('context') or {}).get('file_locked') or ())
     st = assess_placement(pcb, board)
-    if st.partially_unplaced and not st.unplaced:
+    partial = bool(st.partially_unplaced and not st.unplaced)
+    if partial:
         standing |= set(pcb.footprints) - set(st.stacked_suspect_refs)
     out = seeder.decap_pin_forecast(pcb, intent, blocks,
                                     standing=sorted(standing))
     out['standing'] = sorted(standing)
+    # `--force` re-seeds every unlocked part, so the parts a partial pile
+    # leaves standing are only standing without it (file locks survive it).
+    out['standing_needs_no_force'] = partial
     return out
 
 
@@ -280,7 +284,10 @@ def _forecast_clause(cen):
     parts = []
     if early:
         parts.append(f"{len(early)} at stage 2.5, at owner IC(s) seated "
-                     f"before it ({_refs(f.get('early_owners') or ())})")
+                     f"before it ({_refs(f.get('early_owners') or ())}) if "
+                     f"those seats succeed"
+                     + (" and place_seed runs without --force"
+                        if f.get('standing_needs_no_force') else ''))
     if late and armed:
         parts.append(f"{len(late)} at stage 3.5, once the centroid stage has "
                      f"seated their owner IC(s) "
