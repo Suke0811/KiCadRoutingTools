@@ -113,13 +113,68 @@ def _shares_layer(a, b) -> bool:
     return bool(la & lb)
 
 
-def _overlaps_in(pads, tolerance):
+#: "Does this copper touch at all", asked the way placement.legality asks it
+#: (grade_body_overlap): check_drc's perimeter distance clamps at 0 inside
+#: copper, so a clearance-0 query cannot see an intersection. Ask at this
+#: epsilon and require the FULL shortfall -- over >= eps <=> edge distance
+#: <= 0 <=> the copper really meets.
+_CONTACT_PROBE_MM = 1e-3
+
+
+def _copper_geometry(pad):
+    """A pad's copper as a shapely geometry: the union of its custom-pad
+    polygons (the anchor and every primitive, board frame, as the parser keeps
+    them in `pad.polygons`) -- `buffer(0)` repairs the seamed rings the
+    parser draws an unfilled circle as -- else its outline polygon."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    if pad.polygons:
+        return unary_union([Polygon(q).buffer(0) for q in pad.polygons
+                            if len(q) >= 3])
+    return Polygon(_pad_outline_polygon(pad))
+
+
+def _custom_pair_depth(a, b, routing_layers):
+    """How deep two pads' copper overlaps (mm) when at least one is a CUSTOM
+    pad, on the copper itself, or None when that copper does not touch (#1111).
+
+    The contact question is check_drc's (`check_pad_pad_overlap`, which
+    measures a custom pad by its real polygons), so this can never report a
+    pair check_drc calls clear. The depth is `overlap_thickness` of the shared
+    copper -- the ruler the placement graders use: twice the largest circle
+    inside it, the shorter side for a rectangle. Not check_drc's `over`, which
+    is the probe epsilon for ANY contact however deep.
+    """
+    from check_drc import check_pad_pad_overlap
+    from geometry_utils import overlap_thickness
+    hit, over, _pt = check_pad_pad_overlap(a, b, _CONTACT_PROBE_MM,
+                                           routing_layers,
+                                           clearance_margin=0.0)
+    if not (hit and over >= _CONTACT_PROBE_MM - 1e-9):
+        return None
+    return overlap_thickness(
+        _copper_geometry(a).intersection(_copper_geometry(b)))
+
+
+def _overlaps_in(pads, tolerance, routing_layers=()):
     """Different-net copper overlaps among a flat pad list (deeper than tolerance).
     Only pads sharing a copper layer can short (edge-connector fingers on opposite
-    sides, for example, never conflict). Overlap depth is measured with the pad's
-    TRUE copper shape (check_drc's exact circle/oval/roundrect/custom-polygon
-    model), not a bounding rectangle -- a round pad's bbox corner otherwise reads
-    as overlapping a neighbour it doesn't actually touch (#232/#260 phantom)."""
+    sides, for example, never conflict).
+
+    A pad is measured by its outline polygon: rect corners rotated by
+    `rect_rotation`, and circle/oval/roundrect corners as sampled ARCS, so a
+    round pad's bounding-box corner does not read as overlapping a neighbour
+    it does not touch (#232/#260 phantom).
+
+    A CUSTOM pad's outline is only its box (`size_x/size_y`, symmetric about
+    the anchor), so a pair involving one that overlaps on outlines is then
+    measured on its real copper by `_custom_pair_depth` (#1111): StickHub's
+    solder jumper JP1, two interleaved triangles 0.15 mm apart, read as a
+    0.150 mm overlap on its boxes. The outline test stays first, so the exact
+    measurement can only REMOVE a hit, never add one. It needs the board's
+    copper layers (`routing_layers`); without them the box verdict stands,
+    because check_drc reads a `*.Cu` pad as on no layer at all.
+    """
     pads = [p for p in pads if p.size_x > 0 and p.size_y > 0 and p.net_id != 0]
     polys = [_pad_outline_polygon(p) for p in pads]
     reach = [math.hypot(p.size_x, p.size_y) / 2.0 for p in pads]
@@ -135,6 +190,10 @@ def _overlaps_in(pads, tolerance):
             if not _shares_layer(a, b):
                 continue
             depth = _overlap_depth(polys[i], polys[j])
+            if depth > tolerance and (a.polygons or b.polygons) and routing_layers:
+                depth = _custom_pair_depth(a, b, routing_layers)
+                if depth is None:
+                    continue
             if depth > tolerance:
                 hits.append((a, b, depth))
     return hits
@@ -149,16 +208,19 @@ def find_pad_overlaps(pcb, tolerance: float = 0.05, component: str = None,
     connection) pads are skipped, so fiducials and mechanical pads don't trip it.
     `component` restricts the check to one footprint; `cross_footprint=True` also
     tests pads across different footprints (a broader board-level short check, but
-    noisier on tightly-placed passives).
+    noisier on tightly-placed passives). Custom pads are measured on their real
+    copper, which needs the board's copper layers (`_overlaps_in`, #1111).
     """
+    # ONE list for both branches: check_drc memoises its layer expansion on it.
+    routing_layers = list(getattr(pcb.board_info, 'copper_layers', None) or [])
     if cross_footprint:
         pads = [pd for fp in pcb.footprints.values() for pd in fp.pads]
-        return _overlaps_in(pads, tolerance)
+        return _overlaps_in(pads, tolerance, routing_layers)
     hits = []
     for ref, fp in pcb.footprints.items():
         if component and ref != component:
             continue
-        hits.extend(_overlaps_in(fp.pads, tolerance))
+        hits.extend(_overlaps_in(fp.pads, tolerance, routing_layers))
     return hits
 
 

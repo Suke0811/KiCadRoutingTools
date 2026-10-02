@@ -634,6 +634,14 @@ sides and a part's top/bottom ground pads never false-trip. Net-0 (no-connection
 fiducials, mechanical pads - are ignored. The exit code is the number of overlapping
 pairs (0 = clean), so it gates a pipeline.
 
+A pad is measured by its outline: rect corners turned by the pad's angle, and
+round, oval and roundrect corners as arcs. A CUSTOM pad's outline is only its box,
+so a pair involving one that overlaps on outlines is re-measured on the real copper
+(#1111): check_drc's exact pad-pad check decides whether the copper touches, and the
+depth is the thickness of the shared copper. A solder jumper's interleaved teeth
+(KiCad's StickHub demo, JP1: 0.150 mm apart, 0.150 mm overlap on the boxes) no
+longer reads as a short. The re-measure can only remove a pair the outlines found.
+
 ### Examples
 
 ```bash
