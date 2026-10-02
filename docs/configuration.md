@@ -18,7 +18,7 @@ python py_router/route_diff.py input.kicad_pcb --overwrite [OPTIONS]         # O
 
 Use `route.py` for single-ended nets and `route_diff.py` for differential pairs. By default, all nets are routed. Use `--nets` to filter specific patterns.
 
-`route.py` always writes the output file, even when nothing routes (no valid nets, or all already connected) — it writes an unchanged copy of the input in that case, so output→input pipelines don't break on a missing file.
+`route.py` always writes the output file, even when nothing routes (no valid nets, or all already connected) — it writes an unchanged copy of the input in that case, so output→input pipelines don't break on a missing file. The exception is a step whose `--nets` holds a poured (zone) net: there "all already connected" is only the router's fill model, so the run carries on to the in-run plane finalize, which checks the pours against KiCad's exact fill and repairs them, and the end-of-run cleanup runs with it (#1112).
 
 Pads with no pad number (paste/thermal-via artifacts KiCad doesn't netlist individually) are not used as routing targets; they remain copper obstacles.
 

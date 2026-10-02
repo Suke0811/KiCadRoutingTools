@@ -1825,7 +1825,36 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                   f"--rip-existing-nets only rips nets that block another "
                   f"route; pass --force-reroute to rip and re-route them "
                   f"from scratch (#515).")
-    if not net_ids:
+    # #1112: with pours in this step's scope, "nothing to route" is the FILL
+    # MODEL's verdict, and the plane finalize at the end of the run is the pass
+    # that checks it against KiCad's exact fill (its oracle leg is ungated on
+    # purpose: the model credits pad<->zone kisses the exact fill denies).
+    # Returning here skipped the finalize, so a poured net only the exact fill
+    # sees split shipped split, and the one tool left was a standalone
+    # repair_planes run at the board's net-class via and track instead of this
+    # step's. So when the finalize would run, carry on with an empty route set
+    # (as --skip-routing does) and let the end of the run do its work.
+    _finalize_zone_nets1112 = []
+    if (not net_ids and final_reconcile
+            and (not skip_routing
+                 or os.environ.get('KICAD_FINALIZE_ONLY', '0') == '1')
+            and (output_file or return_results)
+            and not _plane_finalize_active()
+            and os.environ.get('KICAD_PLANE_FINALIZE', '1') == '1'):
+        from net_queries import matches_net_filter as _mnf1112
+        _finalize_zone_nets1112 = sorted({
+            pcb_data.nets[_z.net_id].name for _z in pcb_data.zones
+            if _z.net_id in pcb_data.nets and _z.net_id != 0
+            and (_z.layer or '').endswith('.Cu')
+            and (not net_names
+                 or _mnf1112(pcb_data.nets[_z.net_id].name, net_names))})
+    if not net_ids and _finalize_zone_nets1112:
+        print(f"All nets are already connected by the router's fill model - "
+              f"nothing to route; continuing to the plane finalize for "
+              f"{len(_finalize_zone_nets1112)} zone net(s): "
+              f"{', '.join(_finalize_zone_nets1112[:6])}"
+              f"{', ...' if len(_finalize_zone_nets1112) > 6 else ''} (#1112)")
+    elif not net_ids:
         print("All nets are already fully connected - nothing to route!")
         if final_reconcile:
             _emit_summary_min(status='already_connected')
