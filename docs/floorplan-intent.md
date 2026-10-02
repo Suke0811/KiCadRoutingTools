@@ -1603,8 +1603,13 @@ its own flag rather than folded into `--declare-classes`. `place_seed` reads
 reads its pins off ICs already placed -- by a fixed pose, must_lock, a zoned
 block or a declared row's `serves` -- so on an unzoned seed with none of
 those it claims nothing, and says so in a `NOTE:` and in
-`decap_stage.reason` (#1053). At error severity the limit also arms the
-quench's per-move tether (#1043, above). Measured:
+`decap_stage.reason` (#1053). `place_seed --decap-claim-after-ics` (#1105)
+runs the same claim again inside the centroid stage, once that stage has
+seated the owner ICs (stage 3.5, `decap_stage.late`); every IC is seated
+exactly as without it. It is opt-in: `tests/test_placement_ab.py`'s
+`decap-*` rows rejected it, and two variants of it, as a default. At error
+severity the limit also arms the quench's per-move tether (#1043, above).
+Measured:
 
 | board | in scope | graded | beyond the radius | no rail-carrying chip | predicate |
 |---|---|---|---|---|---|
@@ -1648,6 +1653,17 @@ So the two predicates were never the story. One predicate was being asked two
 different questions — *is this cap graded against an IC?* and *is there a pin
 to seat it at?* — and those have different right answers for exactly this
 population.
+
+`seeder_pin_scope` is the size of the pin stage's SCOPE, not what a seed
+claims, and the emitter used to print it as a promise ("will seat 38 cap(s)
+per supply pin" on run 38's StickHub pile, where the seed then claimed 0).
+Since #1105 it prints `context.decap_census.seeder_forecast` instead
+(`seeder.decap_pin_forecast`, the pin stages' own scope, rail and owner
+rules): which caps stage 2.5 can claim at an owner seated before it, which
+only stage 3.5 can (and that 3.5 is off unless `--decap-claim-after-ics` is
+passed), and which no stage can, because no U-prefixed part carries their
+rail (watchy: 9 of 26). It forecasts PINS, not seats, and assumes every
+declared early seat succeeds.
 
 ## Grading the pin, not the package (#705)
 

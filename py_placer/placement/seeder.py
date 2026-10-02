@@ -3939,6 +3939,137 @@ def _ang_close(a: float, b: float, eps: float = 1e-6) -> bool:
 #: reference placement is diagonal; no skill passes it.
 DIAGONAL_ROTATIONS_DEFAULT = False
 
+#: #1105: stage 3.5 -- the per-supply-pin claim run AGAIN inside stage 3, at
+#: the first scoped cap after the queue's last owner IC, over the owner ICs
+#: stage 3 itself seated. On a pile or a flat board nothing seats an owner IC
+#: before stage 2.5, so 2.5 claims nothing and every decap fell through to the
+#: generic centroid seat. Stage 3 seats by pin count, so every IC is seated
+#: before any 2-pin cap, and the claim draws no RNG: every part seated before
+#: it is bit-identical to the stage-off seed. Both earlier fixes seated the
+#: owner ICs EARLY instead (#1059's `seat_owners_first`, #1105's first
+#: `--decap-owners-first`), which moved the ICs and regressed on 4 of 4 A/B
+#: boards. Set by tests/test_placement_ab.py's `decap-after-ics-*` rows;
+#: `place_seed --decap-claim-after-ics` / `--no-decap-claim-after-ics`
+#: override it.
+DECAP_CLAIM_AFTER_ICS_DEFAULT = False
+
+#: #1105: stage 3.5 undoes a seat that lands farther from its pin target than
+#: the declared `decaps.max_distance_mm`, and the cap keeps its own centroid
+#: turn. Two adjacent pins on different rails send their caps to one spot, and
+#: the second cap then lands mm away from the pin it claimed -- measured on
+#: the run-29 pile: C4 5.00mm from its target and graded 3.85mm from U1,
+#: where its own centroid turn seated it inside the limit.
+DECAP_LATE_WITHIN_LIMIT = False
+
+#: #1105: where stage 3.5 runs in stage 3's queue. 'after_last_owner' is the
+#: first scoped cap after the last owner IC; 'after_queue' holds every scoped
+#: cap back until the rest of the queue is seated, so a claimed cap never
+#: takes a pose a later resistor or LED would have had.
+DECAP_LATE_AT = 'after_last_owner'
+
+
+def _decap_owner_ok(ref: str, chips: Optional[Set[str]]) -> bool:
+    """Whether the pin stages may serve `ref`'s supply pins (#1105).
+
+    One spelling for stage 2.5, stage 3.5 and `decap_pin_forecast`: the
+    grouper's chips under `decap_owner_chips`, else a U-prefixed ref (a
+    castellated row carries the rail too and must not eat a claim)."""
+    return (ref in chips) if chips is not None else (ref[0:1] == 'U')
+
+
+def _decap_rail(nets, net_refs) -> Optional[int]:
+    """A decap's rail: of its nets with two or more owners, the one with the
+    FEWEST owners (GND has the most), ties by net id (#1105: shared by the
+    pin stages and `decap_pin_forecast`)."""
+    return min((nid for nid in nets if len(net_refs.get(nid, ())) >= 2),
+               key=lambda nid: (len(net_refs[nid]), nid), default=None)
+
+
+def decap_pin_forecast(pcb_data, intent, blocks, *,
+                       standing: Sequence[str] = (),
+                       owner_chips: bool = False,
+                       claim_after_ics: Optional[bool] = None) -> Dict:
+    """What the pin stages CAN claim when this intent seeds this board (#1105).
+
+    A forecast of PINS, not of seats: a cap counts as claimable when an
+    owner IC carries its rail, and the seed may still decline it (no legal
+    pose, more caps than pin clusters). `early` caps have an owner that is
+    seated before stage 2.5 -- one in `standing` (file-locked, or outside a
+    partially-unplaced board's pile), a fixed pose, an edge claim, a
+    must_lock part, a zoned block member, or a declared row's `serves`;
+    `late` caps have owners only the centroid stage seats, which stage 3.5
+    serves when armed (`late_armed`); `ownerless` caps have a rail no
+    U-prefixed part (the grouper's chips under `owner_chips`) carries, and
+    neither stage can claim them. Same scope, rail and owner rules as the
+    stages themselves (`_decap_rail`, `_decap_owner_ok`).
+    """
+    from placement import floorplan
+    from placement import groups as _g
+    spec = getattr(intent, 'decaps', None) or {}
+    out: Dict[str, Any] = {
+        'armed': spec.get('max_distance_mm') is not None,
+        'owner_rule': 'chips' if owner_chips else 'U-prefixed',
+        'scope': 0, 'exempt': [], 'array_members': [], 'ownerless': [],
+        'early': [], 'early_owners': [], 'late': [], 'late_owners': [],
+        'late_armed': (DECAP_CLAIM_AFTER_ICS_DEFAULT if claim_after_ics is None
+                       else bool(claim_after_ics))}
+    if not out['armed']:
+        return out
+    fps = pcb_data.footprints
+    near, beyond, _orphans = _g.decap_populations(pcb_data)
+    tethered = ({c for caps in near.values() for c, _d in caps}
+                | {c for c, _ic, _d in beyond})
+    exempt = tuple(spec.get('exempt') or ())
+    out['exempt'] = sorted(r for r in tethered
+                           if any(fnmatch.fnmatch(r, p) for p in exempt))
+    scope = {r for r in tethered if r in fps and r not in out['exempt']}
+    arrays = (floorplan.resolved_arrays(intent, pcb_data)
+              if getattr(intent, 'arrays', ()) else ())
+    members = {m for a in arrays for m in a.get('present') or ()}
+    out['array_members'] = sorted(scope & members)
+    scope -= members
+    out['scope'] = len(scope)
+
+    nets_of: Dict[str, List[int]] = {}
+    by_net: Dict[int, List[str]] = {}
+    for ref, fp in fps.items():
+        nets = sorted({p.net_id for p in fp.pads if p.net_id > 0})
+        nets_of[ref] = nets
+        for n in nets:
+            by_net.setdefault(n, []).append(ref)
+    net_refs = {n: sorted(r) for n, r in by_net.items()}
+    chips = _g.chip_refs(pcb_data) if owner_chips else None
+
+    refs_all = sorted(fps)
+    zoned = {m for z in intent.blocks if z.rect is not None
+             for m in blocks.get(z.name, ())}
+    early_set = (set(standing)
+                 | {str(f['ref']) for f in intent.fixed_poses}
+                 | {str(c['ref']) for c in intent.edge_claims()}
+                 | {r for p in intent.must_lock
+                    for r in fnmatch.filter(refs_all, p)}
+                 | zoned
+                 | {str(a['serves']) for a in arrays
+                    if a.get('serves') not in (None, 'unknown')
+                    and not (set(a.get('present') or ()) & zoned)})
+    early_owners: Set[str] = set()
+    late_owners: Set[str] = set()
+    for cap in sorted(scope):
+        rail = _decap_rail(nets_of.get(cap, ()), net_refs)
+        owners = [r for r in net_refs.get(rail, ())
+                  if r != cap and _decap_owner_ok(r, chips)] if rail else []
+        if not owners:
+            out['ownerless'].append(cap)
+        elif any(o in early_set for o in owners):
+            out['early'].append(cap)
+            early_owners.update(o for o in owners if o in early_set)
+        else:
+            out['late'].append(cap)
+            late_owners.update(owners)
+    out['early_owners'] = sorted(early_owners)
+    out['late_owners'] = sorted(late_owners)
+    return out
+
 
 def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      group_sources: Sequence[str] = (),
@@ -3954,7 +4085,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      body_model: bool = False,
                      rotate_by_facing: bool = False,
                      array_pose_cap: int = ARRAY_SEAT_POSE_CAP,
-                     diagonal_rotations: Optional[bool] = None) -> Dict:
+                     diagonal_rotations: Optional[bool] = None,
+                     decap_claim_after_ics: Optional[bool] = None) -> Dict:
     """Compute a full placement for an unplaced board from its intent.
 
     Returns {'placements': [...], 'lock_refs': [...], 'unseated': [...],
@@ -3984,6 +4116,11 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     laundered through `must_lock`, which also drives stage 1.5, the
     file-lock/zone contradiction note and the `lock_refs` this returns (which
     `place_seed` STAMPS into the board).
+
+    `decap_claim_after_ics` arms stage 3.5 (#1105): the per-supply-pin decap
+    claim, run again inside stage 3 once the centroid stage has seated the
+    owner ICs that stage 2.5 found unplaced. None takes
+    `DECAP_CLAIM_AFTER_ICS_DEFAULT`; what it did is `decap_stage['late']`.
     """
     if evict_depth not in (0, 1, 2):
         raise ValueError(
@@ -4051,6 +4188,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     state.diagonal_fallback = (DIAGONAL_ROTATIONS_DEFAULT
                                if diagonal_rotations is None
                                else bool(diagonal_rotations))
+    late_on = (DECAP_CLAIM_AFTER_ICS_DEFAULT if decap_claim_after_ics is None
+               else bool(decap_claim_after_ics))
     if rotate_by_facing:
         import functools
         state.rotation_prefer = functools.partial(
@@ -4820,14 +4959,34 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     decap_put_back: List[str] = []
     decap_pins = 0
     decap_rails = 0
-    if decap_scope:
+    # #1105: the owners stage 2.5 served, so stage 3.5 never serves a pin
+    # twice.
+    decap_owners_early: Set[str] = set()
+    from placement import groups as _g
+    # Built ONCE: `chip_refs` walks every footprint's pads, the owner loop
+    # runs per placed part, and stage 3.5 asks again.
+    chips = (_g.chip_refs(pcb_data) if decap_owner_chips and decap_scope
+             else None)
+    zone_of_cap = {}
+    for name in sorted(zones_by_name):
+        for r in blocks.get(name, ()):
+            if r in decap_scope and r not in zone_of_cap:
+                zone_of_cap[r] = zones_by_name[name]
+
+    def _decap_pin_claim(owner_pool, claimed, tag='', decline_beyond=None,
+                         declined=None):
+        """Seat one scoped cap per supply pin of the owner ICs in
+        `owner_pool`, appending each to `claimed`; returns `(avail, pins,
+        rails, the owners whose pins it found)`. Stage 2.5 runs it over the
+        parts placed before it, stage 3.5 (#1105) over the owner ICs the
+        centroid stage seated since. `tag` marks which stage wrote a note.
+        `decline_beyond` (stage 3.5 under `DECAP_LATE_WITHIN_LIMIT`) undoes a
+        seat that lands farther than that from its pin target, adding the cap
+        to `declined`: it keeps its own centroid turn instead."""
         avail = [r for r in _order(sorted(unplaced)) if r in decap_scope]
         rail_of: Dict[str, int] = {}
         for ref in avail:
-            rail = min((nid for nid in state.parts[ref].nets
-                        if len(state.net_refs.get(nid, ())) >= 2),
-                       key=lambda nid: (len(state.net_refs[nid]), nid),
-                       default=None)
+            rail = _decap_rail(state.parts[ref].nets, state.net_refs)
             if rail is not None:
                 rail_of[ref] = rail
         rails = set(rail_of.values())
@@ -4859,12 +5018,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         # Behind a flag until the A/B rows run, following `evict_depth`'s
         # precedent: it changes where parts go, and this file's own rule is
         # that such a change is opt-in until three boards say otherwise.
-        from placement import groups as _g
-        # Built ONCE: `chip_refs` walks every footprint's pads, and this loop
-        # runs per placed part.
-        chips = _g.chip_refs(pcb_data) if decap_owner_chips else None
-        for owner in sorted(placed):
-            if (owner not in chips) if chips is not None else (owner[0:1] != 'U'):
+        for owner in sorted(owner_pool):
+            if not _decap_owner_ok(owner, chips):
                 continue
             o = state.parts[owner]
             for gx, gy, pn in o.pad_globals():
@@ -4872,13 +5027,6 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     pins.append((-o.pin_count, owner, round(gx, 3),
                                  round(gy, 3), pn))
         pins.sort()
-        decap_pins = len(pins)
-        decap_rails = len(rails)
-        zone_of_cap = {}
-        for name in sorted(zones_by_name):
-            for r in blocks.get(name, ()):
-                if r in decap_scope and r not in zone_of_cap:
-                    zone_of_cap[r] = zones_by_name[name]
 
         def _cap_ladder(ref, owner):
             """#1099: a cap on a chip seated OFF the 90-degree lattice tries
@@ -4899,6 +5047,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
 
         def _seat(ref, tx, ty, owner, pn, constraint=None, tol=0.5):
             _ladder = _cap_ladder(ref, owner)
+            _was = (state.parts[ref].x, state.parts[ref].y,
+                    state.parts[ref].rot)
             clr = _try_place(state, ref, tx, ty, unplaced - {ref},
                              constraint=constraint, tol=tol,
                              rotations=_ladder)
@@ -4907,17 +5057,29 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                                  rotations=_ladder)
             if clr is None:
                 return False
+            if decline_beyond is not None:
+                _off = math.hypot(state.parts[ref].x - tx,
+                                  state.parts[ref].y - ty)
+                if _off > decline_beyond:
+                    state.apply_move(ref, *_was)
+                    declined.append(ref)
+                    notes.append(
+                        f"{ref}: declined by stage 3.5 -- its seat for {owner} "
+                        f"landed {_off:.2f}mm from the pin target, past the "
+                        f"{decline_beyond:g}mm decap limit; it keeps its "
+                        f"centroid-stage turn")
+                    return False
             avail.remove(ref)
             placed.add(ref)
             unplaced.discard(ref)
-            decap_claimed.append(ref)
+            claimed.append(ref)
             p2 = state.parts[ref]
             net = getattr(pcb_data.nets.get(pn), 'name', pn)
             notes.append(f"{ref}: decap for {owner} pad(s) near ({tx}, {ty})"
                          f" [{net}], landed "
                          f"{math.hypot(p2.x - tx, p2.y - ty):.2f}mm"
                          + (f" at reduced clearance {clr:g}"
-                            if clr < state.clearance else ""))
+                            if clr < state.clearance else "") + tag)
             return True
 
         # Pass 1: a cap declared in a zone serves a pin INSIDE that zone --
@@ -4974,11 +5136,13 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     # in `avail`, the pins went unserved, and NOTHING said so --
                     # while the comment below claimed the fall-through "reports
                     # honestly". It does now.
+                    if declined and ref in declined:
+                        continue    # #1105: `_seat` said why
                     net = getattr(pcb_data.nets.get(rail), 'name', rail)
                     notes.append(
                         f"{ref}: no legal pose at {cluster[0][1]}'s {net} pin "
                         f"cluster ({cx2}, {cy2}) -- falls through to the "
-                        f"zone/centroid stages")
+                        f"zone/centroid stages" + tag)
             # ...and the caps NO CLUSTER WANTED. `zip` truncates to the
             # shorter list, so a cap past the cluster count is never reached
             # by the loop above and was dropped without a word -- a SECOND
@@ -5001,9 +5165,15 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     notes.append(
                         f"{ref}: no {net} pin cluster left for it "
                         f"({len(clusters)} cluster(s), {len(caps_r)} cap(s)) "
-                        f"-- left to the zone/centroid stages")
+                        f"-- left to the zone/centroid stages" + tag)
             # pins beyond the cap supply, and caps no pin wanted, fall
             # through to the generic stage, which reports honestly
+        return avail, len(pins), len(rails), sorted({k[1] for k in pins})
+
+    if decap_scope:
+        decap_owners_early = set(placed)
+        avail, decap_pins, decap_rails, _owners25 = _decap_pin_claim(
+            decap_owners_early, decap_claimed)
 
         # ---- 2.6 put back what the pin stage DECLINED (#792) ---------------
         # Narrowing the scope is the predictive half and it is a theorem; this
@@ -5072,8 +5242,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                        'array_members_skipped': list(decap_array_skipped)}
         if decap_scope and not decap_claimed:
             notes.append(f"decap stage 2.5: {len(decap_scope)} cap(s) in "
-                         f"scope, 0 claimed at a supply pin -- {_why}. They "
-                         f"fall through to the centroid stage")
+                         f"scope, 0 claimed at a supply pin -- {_why}. "
+                         + ("Stage 3.5 retries the claim once the centroid "
+                            "stage has seated their owner ICs" if late_on
+                            else "They fall through to the centroid stage"))
 
     # ---- 3. the rest: connectivity centroid --------------------------------
     # --anchors-first (run-4 C): the default queue is pin-count descending,
@@ -5103,7 +5275,44 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      f"{thr:.2f}mm) seed before {len(unplaced) - len(anchors)}"
                      f" small(s): {', '.join(anchors)}")
         queue = anchors + [r for r in queue if r not in set(anchors)]
-    for ref in queue:
+    # ---- 3.5 (#1105): the pin claim again, once its owner ICs are seated ---
+    # On a pile or a flat board stage 2.5 finds no placed owner IC, so it
+    # claims nothing and every decap was left to the centroid seat below. The
+    # claim runs again HERE, at the first scoped cap after the last queue
+    # entry that can own one of their rails, over the owner ICs this stage
+    # seated (never one 2.5 served: the pools are disjoint, so no pin is
+    # served twice). It draws no RNG, so every part seated before it is
+    # bit-identical to the stage-off seed; a cap it declines keeps its own
+    # turn in the queue. Anchors-first can put a big cap ahead of the ICs,
+    # which is why the trigger is "after the last owner", not "the first cap".
+    late_claimed: List[str] = []
+    late: Dict[str, Any] = {'armed': late_on, 'at': None, 'owners': [],
+                            'pins': 0, 'caps': [], 'claimed': 0,
+                            'declined': [], 'reason': None}
+    late_left = len(unplaced & decap_scope)
+    late_from = None
+    if late_on and late_left and DECAP_LATE_AT == 'after_queue':
+        queue = ([r for r in queue if r not in decap_scope]
+                 + [r for r in queue if r in decap_scope])
+    if late_on and late_left:
+        _late_rails = {_decap_rail(state.parts[r].nets, state.net_refs)
+                       for r in queue if r in decap_scope} - {None}
+        _own = [i for i, r in enumerate(queue) if _decap_owner_ok(r, chips)
+                and any(n in _late_rails for n in state.parts[r].nets)]
+        late_from = (_own[-1] + 1) if _own else None
+    for i, ref in enumerate(queue):
+        if (late_from is not None and late['at'] is None and i >= late_from
+                and ref in decap_scope):
+            late['at'] = ref
+            late_left = len(unplaced & decap_scope)
+            _a, late['pins'], _r, late['owners'] = _decap_pin_claim(
+                set(placed) - decap_owners_early, late_claimed,
+                tag=' (stage 3.5)',
+                decline_beyond=(float(decap_spec['max_distance_mm'])
+                                if DECAP_LATE_WITHIN_LIMIT else None),
+                declined=late['declined'])
+        if ref not in unplaced:
+            continue    # #1105: claimed by stage 3.5 just above
         clr, target, jx, jy = _centroid_seat(ref)
         if clr is None:
             unseated.append(ref)
@@ -5114,6 +5323,37 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             unseated_ctx.setdefault(
                 ref, (target[0] + jx, target[1] + jy, None, 0.5))
             notes.append(f"{ref}: no legal pose anywhere on the board")
+    if decap_stage['armed']:
+        late['caps'] = list(late_claimed)
+        late['claimed'] = len(late_claimed)
+        if not late_on:
+            late['reason'] = 'off -- place_seed --decap-claim-after-ics arms it'
+        elif not late_left:
+            late['reason'] = ('every scoped cap was claimed or put back '
+                              'before the centroid stage')
+        elif late_from is None:
+            late['reason'] = ("no owner IC carrying a remaining cap's rail is "
+                              "in the centroid stage's queue (owners must be "
+                              "U-prefixed unless decap_owner_chips)")
+        elif late['at'] is None:
+            late['reason'] = ('no scoped cap reaches the centroid stage after '
+                              'its last owner IC')
+        elif not late['pins']:
+            late['reason'] = ("the owner IC(s) the centroid stage seated carry "
+                              "no remaining cap's rail (pins 0)")
+        elif not late_claimed:
+            late['reason'] = (f"{late['pins']} pin(s) found, and no cap found "
+                              f"a legal seat at any of them")
+        decap_stage['late'] = late
+        if late_on and late_left:
+            notes.append(
+                f"decap stage 3.5: {len(late_claimed)} of {late_left} cap(s) "
+                f"left in scope claimed at a supply pin of the owner IC(s) "
+                f"the centroid stage seated ("
+                + (', '.join(late['owners']) or 'none') + ")"
+                + (f", before {late['at']}'s turn" if late['at'] else "")
+                + (f" -- {late['reason']}" if late['reason'] else "")
+                + ". The rest keep their centroid-stage turn")
 
     # ---- 3c. eviction rung (#630): census the blockers, evict, retry --------
     # A part with no legal pose is not necessarily a part with no ROOM. Run 19
@@ -5465,7 +5705,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             'fixed_refused': fixed_refused,
             # #1053: {armed, scope, claimed, put_back, pins, reason,
             # served_first} -- the pin stage's own count and, whenever it
-            # claimed nothing with a non-empty scope, why.
+            # claimed nothing with a non-empty scope, why. #1105: `late`
+            # ({armed, at, owners, pins, caps, claimed, reason}) is stage
+            # 3.5's, present whenever the stage is armed by the intent.
             'decap_stage': decap_stage,
             # #1051: {name: {serves, members (in row order), rot, pitch_mm,
             # axis, anchor, target, zone, poses_tried, clearance, verdict,
@@ -7029,7 +7271,8 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
                  seed: int = 0,
                  evict_depth: int = 0,
                  min_gain: float = 0.0,
-                 edge_bands: Optional[Dict[str, float]] = None) -> Dict:
+                 edge_bands: Optional[Dict[str, float]] = None,
+                 decap_claim_after_ics: Optional[bool] = None) -> Dict:
     """LIFT a subset of parts and re-seat them FROM SCRATCH at their net
     centroids, holding every other part fixed as an obstacle.
 
@@ -7367,6 +7610,7 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
         group_sources=group_sources, clearance=clearance,
         board_edge_clearance=board_edge_clearance, grid_step=grid_step,
         seed_refs=set(scope), evict_depth=evict_depth,
+        decap_claim_after_ics=decap_claim_after_ics,
         # The seeder builds its OWN state, so `--lock` -- which this pass
         # resolved into ITS state as extra_locked_refs -- is invisible to the
         # eviction rung. Without this it would cheerfully trade out a ref the

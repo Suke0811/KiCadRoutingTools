@@ -59,6 +59,15 @@ is a pile but reads `unplaced: false` (#1109).
   that you did. A pile has no decap distances to read, so without it the
   rule stays unarmed: run 36 left StickHub's hub decaps 2.1-9.8 mm from
   their pins, where the human board keeps them within 2.2 mm.
+- **On a pile, read the emitter's decap line before you seed.** It says how
+  many caps the per-supply-pin stage can claim, and which only once their
+  owner ICs are seated. When `place_seed` then reports the decap stage
+  claimed 0 because no owner IC was seated before it, re-seed with
+  `--decap-claim-after-ics` and compare both seeds: it claims the decaps
+  once the centroid stage has seated their ICs, and seats every IC exactly
+  as without it (#1105). It is opt-in because the corpus A/B rejected it as
+  a default; on run 38's StickHub pile (seed 0, run 38's own arguments) it
+  claimed 16 caps and cut the seed's grade errors 16 to 7.
 - **Give `--intent` to every placement tool.** It is a per-move gate only in
   tools that receive it. It stops a part LEAVING its zone; it never moves one
   back in.

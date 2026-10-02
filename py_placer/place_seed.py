@@ -260,9 +260,19 @@ def seed_structure_summary(result, graded, written):
               f"refused" + (f" ({', '.join(sorted(refused))})"
                             if refused else ''))
     if decap and decap.get('armed'):
+        late = decap.get('late') or {}
+        if not late.get('armed'):
+            tail = ('; stage 3.5 is off (--decap-claim-after-ics arms it)'
+                    if late else '')
+        else:
+            tail = (f"; {late.get('claimed')} after the centroid stage seated "
+                    f"their owner IC(s) (3.5: "
+                    + (', '.join(late.get('owners') or ()) or 'none') + ")"
+                    + (f" -- {late['reason']}" if late.get('reason') else ''))
         print(f"  NOTE: decap stage: {decap.get('claimed')} of "
               f"{decap.get('scope')} cap(s) claimed at a supply pin"
-              + (f" -- {decap['reason']}" if decap.get('reason') else ''))
+              + (f" -- {decap['reason']}" if decap.get('reason') else '')
+              + tail)
     return {'arrays_formed': formed, 'array_unseated': unseated_rows,
             'fixed_seated': fixed, 'fixed_refused': refused,
             'decap_stage': decap}
@@ -413,6 +423,16 @@ Examples:
                         "tests/test_placement_ab.py measured it inert on all "
                         "five tracked boards it was tried on. Use it when "
                         "the design's reference placement is diagonal.")
+    p.add_argument("--decap-claim-after-ics",
+                   action=argparse.BooleanOptionalAction, default=None,
+                   help="Stage 3.5 (#1105): once the centroid stage has seated "
+                        "the owner ICs the per-supply-pin decap stage (2.5) "
+                        "found unplaced -- every IC on a pile or a flat board "
+                        "-- claim their decaps at their supply pins, before "
+                        "the caps' own centroid turn. ICs seat exactly as "
+                        "without it. Omitted, the seeder's measured default "
+                        "(DECAP_CLAIM_AFTER_ICS_DEFAULT) applies; "
+                        "JSON_SUMMARY.decap_stage.late says what it did.")
     p.add_argument("--evict-depth", type=int, default=0, choices=(0, 1, 2),
                    metavar="N",
                    help="Eviction rung (#630, #699). At every depth a part "
@@ -756,7 +776,8 @@ Examples:
                 # The same flag, not a second one: it was parsed and
                 # silently ignored on this path (#699).
                 evict_depth=args.evict_depth,
-                min_gain=args.reseat_min_gain)
+                min_gain=args.reseat_min_gain,
+                decap_claim_after_ics=args.decap_claim_after_ics)
             for note in reseat['notes']:
                 print(f"  NOTE: {note}")
             # Over the SCOPE only: the line prints it as "{n} re-seated
@@ -1060,7 +1081,8 @@ Examples:
         anchor_rounds=args.anchor_rounds,
         evict_depth=args.evict_depth,
         rotate_by_facing=args.rotate_by_facing,
-        diagonal_rotations=args.diagonal_rotations)
+        diagonal_rotations=args.diagonal_rotations,
+        decap_claim_after_ics=args.decap_claim_after_ics)
     for note in result['notes']:
         print(f"  NOTE: {note}")
     print(f"Seeded {len(result['placements'])} part(s); "

@@ -233,6 +233,79 @@ def build_parser():
     return p
 
 
+def _seeder_forecast(doc, pcb, board, sources):
+    """#1105: `seeder.decap_pin_forecast` on the emitted document, with the
+    parts place_seed leaves standing when it is run without `--force`:
+    file-locked parts, and on a partially-unplaced board everything outside
+    the pile it seeds (place_seed's own rule, `stacked_suspect_refs`)."""
+    from placement import seeder
+    from placement.floorplan import resolve_blocks
+    from placement.placement_state import assess_placement
+    try:
+        intent = intent_from_dict(doc, board)
+        blocks, _probs = resolve_blocks(intent, pcb, sources or ())
+    except IntentError as exc:
+        return {'unavailable': str(exc)}
+    standing = set((doc.get('context') or {}).get('file_locked') or ())
+    st = assess_placement(pcb, board)
+    if st.partially_unplaced and not st.unplaced:
+        standing |= set(pcb.footprints) - set(st.stacked_suspect_refs)
+    out = seeder.decap_pin_forecast(pcb, intent, blocks,
+                                    standing=sorted(standing))
+    out['standing'] = sorted(standing)
+    return out
+
+
+def _forecast_clause(cen):
+    """#1105: the tail of the emitter's decap line -- what place_seed's pin
+    stages can claim from this intent, by stage, and what they never can.
+    Falls back to the census's scope count when no forecast was taken."""
+    f = cen.get('seeder_forecast') or {}
+    if not f or 'unavailable' in f:
+        return (f" and will seat up to {cen.get('seeder_pin_scope')} cap(s) "
+                f"per supply pin instead of zone-packing them"
+                + (f" (seeder forecast unavailable: {f['unavailable']})"
+                   if f else ''))
+
+    def _refs(xs, n=8):
+        xs = list(xs)
+        return ', '.join(xs[:n]) + (f", +{len(xs) - n} more" if len(xs) > n
+                                    else '')
+
+    early, late = f.get('early') or [], f.get('late') or []
+    armed = bool(f.get('late_armed'))
+    head = (f" and can claim up to {len(early) + (len(late) if armed else 0)} "
+            f"of {f.get('scope')} cap(s) in scope at a supply pin instead of "
+            f"zone-packing them")
+    parts = []
+    if early:
+        parts.append(f"{len(early)} at stage 2.5, at owner IC(s) seated "
+                     f"before it ({_refs(f.get('early_owners') or ())})")
+    if late and armed:
+        parts.append(f"{len(late)} at stage 3.5, once the centroid stage has "
+                     f"seated their owner IC(s) "
+                     f"({_refs(f.get('late_owners') or ())})"
+                     + ('' if early else ' -- no owner IC is seated before '
+                        'stage 2.5 on this board'))
+    out = head + (': ' + ', '.join(parts) if parts else '')
+    if late and not armed:
+        out += (f"; {len(late)} are NOT claimed: their owner IC(s) "
+                f"({_refs(f.get('late_owners') or ())}) are seated only by "
+                f"the centroid stage, after the pin stage (pass place_seed "
+                f"--decap-claim-after-ics, or declare them as fixed_poses or "
+                f"in a zoned block)")
+    if f.get('ownerless'):
+        out += (f"; {len(f['ownerless'])} can never be claimed -- no "
+                f"{f.get('owner_rule', 'U-prefixed')} part carries their "
+                f"rail ({_refs(f['ownerless'])})")
+    if f.get('exempt'):
+        out += f"; {len(f['exempt'])} exempt"
+    if f.get('array_members'):
+        out += (f"; {len(f['array_members'])} are declared array members "
+                f"(the array wins)")
+    return out
+
+
 def _brief_absence_reason(args, brief):
     """Why `--require-brief` is unsatisfied. Three distinct cases.
 
@@ -618,6 +691,15 @@ def main(argv=None):
                   + ". The emitted intent describes the board as it is, "
                     "including its damage.", file=sys.stderr)
             _require_brief_failed = True
+        # #1105: what the seeder's pin stages CAN claim from THIS document
+        # (merged brief and compiled fixed_poses included), so the printed
+        # promise is the seed's and not the census's.
+        _dcen = (doc.get('context') or {}).get('decap_census')
+        if (isinstance(_dcen, dict)
+                and (doc.get('decaps') or {}).get('max_distance_mm')
+                is not None):
+            _dcen['seeder_forecast'] = _seeder_forecast(doc, pcb, args.board,
+                                                        sources)
         # The file is written BEFORE the --require-brief verdict: the flag
         # says "exit 4 when nothing was declared", not "produce nothing".
         # Returning early left `--emit-intent X --require-brief` with no X at
@@ -651,10 +733,8 @@ def main(argv=None):
                         if cen.get('reference_board')
                         else f"{cen.get('tethers')} tether(s)")
                 print(f"  decaps: max_distance_mm {lim} from "
-                      f"{_src} -- NOTE: place_seed "
-                      f"READS this key and will seat "
-                      f"{cen.get('seeder_pin_scope')} cap(s) per supply pin "
-                      f"instead of zone-packing them")
+                      f"{_src} -- NOTE: place_seed READS this key"
+                      + _forecast_clause(cen))
             elif held:
                 print(f"  decaps: max_distance_mm WITHHELD -- {held}")
             # #1102: the pin limit --decaps-from derives beside it.
