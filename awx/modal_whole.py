@@ -111,6 +111,24 @@ def run_rung(K: int, rounds: int = 3, env: dict | None = None, tgz: bytes = b"",
             "board": board, "cpu": cpu.strip(), "tgz": tb.getvalue()}
 
 
+@app.function(cpu=(0.125, 4), memory=(256, 8192), timeout=7200, max_containers=50)
+def run_synth(tag: str) -> dict:
+    """one synth_handoff.py case in its own container (synth_handoff.py --modal): its graded row and its files"""
+    import csv
+    out = "/tmp/synth"
+    t0 = time.time()
+    p = subprocess.run(["python3", "synth_handoff.py", "--only", tag, "--jobs", "1", "--outdir", out],
+                       cwd=f"{REPO}/awx", capture_output=True, text=True, errors="replace")
+    tsv = Path(out) / "handoff.tsv"
+    rows = list(csv.DictReader(tsv.open(), delimiter="\t")) if tsv.exists() else []
+    tb = io.BytesIO()
+    with tarfile.open(fileobj=tb, mode="w:gz") as t:
+        if (Path(out) / tag).is_dir():
+            t.add(str(Path(out) / tag), arcname=tag)
+    return {"tag": tag, "rc": p.returncode, "secs": round(time.time() - t0), "log": p.stdout + p.stderr,
+            "row": rows[0] if rows else None, "tgz": tb.getvalue()}
+
+
 @app.local_entrypoint()
 def main(ks: str = "15,28,35,41,51", out: str = "modal_whole_out", rounds: int = 3, env: str = "", ins: str = "",
          cap: int = 10800):

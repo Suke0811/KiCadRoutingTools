@@ -90,6 +90,7 @@ KRT_TOOL = {'scope': [], 'kind': 'actor'}   # #937: a research tool (awx), catal
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 
@@ -1380,12 +1381,26 @@ def cap_block(ref, cx, cy, side, key):
     return ''.join(out)
 
 
-def smd2_block(ref, cx, cy, side, key, orient, pw, ph, dx, name='C'):
+def rot_at(rot):
+    """the angle a footprint's or a pad's `(at x y A)` carries: none for 0 (a pad's angle in the file is its
+    ABSOLUTE one, the footprint's rotation included)"""
+    return f' {rot:g}' if rot % 360 else ''
+
+
+def rotated(x, y, ox, oy, rot):
+    """(x, y) + the local offset (ox, oy) turned by `rot` degrees as KiCad turns a footprint's pads
+    (kicad_parser.local_to_global)"""
+    c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+    return x + ox * c + oy * s, y - ox * s + oy * c
+
+
+def smd2_block(ref, cx, cy, side, key, orient, pw, ph, dx, name='C', rot=0.0):
     """A two-pad SMD passive: pads `pw` x `ph` (along x before turning) at
-    +-`dx`, side by side along x (`orient` 'h') or along y ('v')."""
+    +-`dx`, side by side along x (`orient` 'h') or along y ('v'); the whole
+    part turned by `rot` degrees."""
     lay = 'F' if side == 'F' else 'B'
     out = [f'\t(footprint "Synth:{name}"\n\t\t(layer "{lay}.Cu")\n'
-           f'\t\t(uuid "{uid(key)}")\n\t\t(at {cx:.4f} {cy:.4f})\n'
+           f'\t\t(uuid "{uid(key)}")\n\t\t(at {cx:.4f} {cy:.4f}{rot_at(rot)})\n'
            f'\t\t(attr smd)\n'
            f'\t\t(property "Reference" "{ref}"\n\t\t\t(at 0 -1 0)\n'
            f'\t\t\t(layer "{lay}.SilkS")\n\t\t\t(uuid "{uid(key, "ref")}")\n'
@@ -1393,7 +1408,7 @@ def smd2_block(ref, cx, cy, side, key, orient, pw, ph, dx, name='C'):
            f'\t\t\t\t\t(thickness 0.1)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n']
     for i, d in ((1, -dx), (2, dx)):
         at, size = (f'{d} 0', f'{pw} {ph}') if orient == 'h' else (f'0 {d}', f'{ph} {pw}')
-        out.append(f'\t\t(pad "{i}" smd roundrect\n\t\t\t(at {at})\n'
+        out.append(f'\t\t(pad "{i}" smd roundrect\n\t\t\t(at {at}{rot_at(rot)})\n'
                    f'\t\t\t(size {size})\n'
                    f'\t\t\t(layers "{lay}.Cu" "{lay}.Mask" "{lay}.Paste")\n'
                    f'\t\t\t(roundrect_rratio 0.25)\n'
@@ -1402,12 +1417,35 @@ def smd2_block(ref, cx, cy, side, key, orient, pw, ph, dx, name='C'):
     return ''.join(out)
 
 
-def pth_row_block(ref, cx, cy, n, orient, pitch, pad, drill, key):
+def sot23_block(ref, cx, cy, side, key, rot=0.0):
+    """A SOT-23 (KiCad's land pattern: two pads at x -1.1375, y +-0.95, one at
+    x +1.1375, each 1.325 x 0.6), turned by `rot` degrees: three pads, so one
+    island however its pads stand."""
+    lay = 'F' if side == 'F' else 'B'
+    out = [f'\t(footprint "Synth:SOT-23"\n\t\t(layer "{lay}.Cu")\n'
+           f'\t\t(uuid "{uid(key)}")\n\t\t(at {cx:.4f} {cy:.4f}{rot_at(rot)})\n'
+           f'\t\t(attr smd)\n'
+           f'\t\t(property "Reference" "{ref}"\n\t\t\t(at 0 -2 0)\n'
+           f'\t\t\t(layer "{lay}.SilkS")\n\t\t\t(uuid "{uid(key, "ref")}")\n'
+           f'\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 0.6 0.6)\n'
+           f'\t\t\t\t\t(thickness 0.1)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n']
+    for i, (px, py) in enumerate(((-1.1375, -0.95), (-1.1375, 0.95), (1.1375, 0.0)), 1):
+        out.append(f'\t\t(pad "{i}" smd roundrect\n\t\t\t(at {px} {py}{rot_at(rot)})\n'
+                   f'\t\t\t(size 1.325 0.6)\n'
+                   f'\t\t\t(layers "{lay}.Cu" "{lay}.Mask" "{lay}.Paste")\n'
+                   f'\t\t\t(roundrect_rratio 0.25)\n'
+                   f'\t\t\t(uuid "{uid(key, i)}")\n\t\t)\n')
+    out.append('\t)\n')
+    return ''.join(out)
+
+
+def pth_row_block(ref, cx, cy, n, orient, pitch, pad, drill, key, rot=0.0):
     """N plated through-hole pads in a row (a pin header, or a row of via-sized
     barrels) along x ('h') or y ('v'), centred on (cx, cy): net 0, copper on
-    every layer, so both of the bus's layers go round or between them."""
+    every layer, so both of the bus's layers go round or between them; the
+    row turned by `rot` degrees."""
     out = [f'\t(footprint "Synth:PTH_1x{n}_P{pitch}"\n\t\t(layer "F.Cu")\n'
-           f'\t\t(uuid "{uid(key)}")\n\t\t(at {cx:.4f} {cy:.4f})\n'
+           f'\t\t(uuid "{uid(key)}")\n\t\t(at {cx:.4f} {cy:.4f}{rot_at(rot)})\n'
            f'\t\t(attr through_hole)\n'
            f'\t\t(property "Reference" "{ref}"\n\t\t\t(at 0 -1.5 0)\n'
            f'\t\t\t(layer "F.SilkS")\n\t\t\t(uuid "{uid(key, "ref")}")\n'
@@ -1416,7 +1454,7 @@ def pth_row_block(ref, cx, cy, n, orient, pitch, pad, drill, key):
     for i in range(n):
         t = (i - (n - 1) / 2) * pitch
         at = f'{t:.4f} 0' if orient == 'h' else f'0 {t:.4f}'
-        out.append(f'\t\t(pad "{i + 1}" thru_hole circle\n\t\t\t(at {at})\n'
+        out.append(f'\t\t(pad "{i + 1}" thru_hole circle\n\t\t\t(at {at}{rot_at(rot)})\n'
                    f'\t\t\t(size {pad} {pad})\n\t\t\t(drill {drill})\n'
                    f'\t\t\t(layers "*.Cu" "*.Mask")\n'
                    f'\t\t\t(uuid "{uid(key, i)}")\n\t\t)\n')
@@ -1440,42 +1478,44 @@ def npth_block(ref, cx, cy, d, key):
             f'\t\t\t(uuid "{uid(key, "h")}")\n\t\t)\n\t)\n')
 
 
-# the kinds --part writes: (writer of (ref, x, y, layer, orient, n, pitch, d, key) -> text, default n, default pitch)
+# the kinds --part writes: (writer of (ref, x, y, layer, orient, n, pitch, d, key, rot) -> text); a row of 0402s
+# turned as one part would be, about its middle
 PART_KINDS = {
-    'c0402': lambda r, x, y, L, o, n, p_, d, k: smd2_block(r, x, y, L, k, o, 0.54, 0.64, 0.48, 'C_0402'),
-    'c0603': lambda r, x, y, L, o, n, p_, d, k: smd2_block(r, x, y, L, k, o, 0.9, 0.95, 0.775, 'C_0603'),
-    'row': lambda r, x, y, L, o, n, p_, d, k: ''.join(
-        smd2_block(f'{r}_{i + 1}', x + ((i - (n - 1) / 2) * p_ if o == 'h' else 0.0),
-                   y + ((i - (n - 1) / 2) * p_ if o == 'v' else 0.0), L, f'{k}_{i}', 'h' if o == 'v' else 'v',
-                   0.54, 0.64, 0.48, 'C_0402') for i in range(n)),
-    'pth': lambda r, x, y, L, o, n, p_, d, k: pth_row_block(r, x, y, n, o, p_, 1.7, 1.0, k),
-    'vias': lambda r, x, y, L, o, n, p_, d, k: pth_row_block(r, x, y, n, o, p_, 0.6, 0.3, k),
-    'npth': lambda r, x, y, L, o, n, p_, d, k: npth_block(r, x, y, d, k),
+    'c0402': lambda r, x, y, L, o, n, p_, d, k, a: smd2_block(r, x, y, L, k, o, 0.54, 0.64, 0.48, 'C_0402', a),
+    'c0603': lambda r, x, y, L, o, n, p_, d, k, a: smd2_block(r, x, y, L, k, o, 0.9, 0.95, 0.775, 'C_0603', a),
+    'row': lambda r, x, y, L, o, n, p_, d, k, a: ''.join(
+        smd2_block(f'{r}_{i + 1}', *rotated(x, y, (i - (n - 1) / 2) * p_ if o == 'h' else 0.0,
+                                            (i - (n - 1) / 2) * p_ if o == 'v' else 0.0, a),
+                   L, f'{k}_{i}', 'h' if o == 'v' else 'v', 0.54, 0.64, 0.48, 'C_0402', a) for i in range(n)),
+    'sot23': lambda r, x, y, L, o, n, p_, d, k, a: sot23_block(r, x, y, L, k, a + (90 if o == 'v' else 0)),
+    'pth': lambda r, x, y, L, o, n, p_, d, k, a: pth_row_block(r, x, y, n, o, p_, 1.7, 1.0, k, a),
+    'vias': lambda r, x, y, L, o, n, p_, d, k, a: pth_row_block(r, x, y, n, o, p_, 0.6, 0.3, k, a),
+    'npth': lambda r, x, y, L, o, n, p_, d, k, a: npth_block(r, x, y, d, k),
 }
 PART_DEFAULTS = {'row': (4, 1.0), 'pth': (4, 2.54), 'vias': (4, 1.0)}
 
 
 def parse_part(spec):
     """KIND@ANCHOR:U:V[:opt...] -> dict; opts: F|B (layer), h|v (orientation), nN (count), pP (pitch, mm),
-    dD (a hole's diameter, mm)"""
+    dD (a hole's diameter, mm), rR (the part turned R degrees, as KiCad turns a footprint)"""
     try:
         kind, rest = spec.split('@', 1)
         anchor, u_, v_, *opts = rest.split(':')
         u_, v_ = float(u_), float(v_)
     except ValueError:
-        raise SystemExit(f'--part {spec!r}: want KIND@ANCHOR:U:V[:F|B][:h|v][:nN][:pP][:dD]')
+        raise SystemExit(f'--part {spec!r}: want KIND@ANCHOR:U:V[:F|B][:h|v][:nN][:pP][:dD][:rR]')
     if kind not in PART_KINDS or anchor not in ('sw', 'nw', 'dw', 'ds', 'dn', 'sf', 'ch'):
         raise SystemExit(f'--part {spec!r}: KIND one of {sorted(PART_KINDS)}, ANCHOR sw|nw|dw|ds|dn|sf|ch')
     n_, p_ = PART_DEFAULTS.get(kind, (1, 0.0))
     out = {'kind': kind, 'anchor': anchor, 'u': u_, 'v': v_, 'layer': 'F', 'orient': 'h', 'n': n_, 'pitch': p_,
-           'd': 3.2}
+           'd': 3.2, 'rot': 0.0}
     for o in opts:
         if o in ('F', 'B'):
             out['layer'] = o
         elif o in ('h', 'v'):
             out['orient'] = o
-        elif o[:1] in 'npd' and o[1:]:
-            out[{'n': 'n', 'p': 'pitch', 'd': 'd'}[o[0]]] = int(o[1:]) if o[0] == 'n' else float(o[1:])
+        elif o[:1] in 'npdr' and o[1:]:
+            out[{'n': 'n', 'p': 'pitch', 'd': 'd', 'r': 'rot'}[o[0]]] = int(o[1:]) if o[0] == 'n' else float(o[1:])
         else:
             raise SystemExit(f'--part {spec!r}: unknown option {o!r}')
     return out
@@ -1666,7 +1706,7 @@ def build(a):
                     'ch': (xs + u_, sy + v_)}[q['anchor']]
         ref_ = {'npth': 'H', 'pth': 'J', 'vias': 'TP'}.get(q['kind'], 'CH') + str(j + 1)
         txt.append(PART_KINDS[q['kind']](ref_, cx_, cy_, q['layer'], q['orient'], q['n'], q['pitch'], q['d'],
-                                         f'part{j}'))
+                                         f'part{j}', q['rot']))
         hcaps.append(dict(q, ref=ref_, x=round(cx_, 4), y=round(cy_, 4)))
     # the part IN the corridor: the bus has to fan in around it
     obs = None
@@ -1788,11 +1828,11 @@ def main(argv=None):
                          'facing column, V mm past its corner ball along the face (negative: beside it), F|B, h|v. '
                          'Repeatable; the same as --part c0402@CORNER:U:V:LAYER:ORIENT')
     ap.add_argument('--part', action='append', default=[],
-                    help='KIND@ANCHOR:U:V[:F|B][:h|v][:nN][:pP][:dD] -- a foreign part: KIND c0402, c0603, row (N '
-                         '0402s, pitch P), pth (an N-pin header, 2.54), vias (N via-sized barrels, 1.0), npth (a '
-                         'hole of diameter D, 3.2); ANCHOR sw / nw (the destination\'s corner), dw (its facing '
-                         'column), ds / dn (its south / north face), sf (the source\'s facing column), ch (the '
-                         'channel) -- see build(). Repeatable')
+                    help='KIND@ANCHOR:U:V[:F|B][:h|v][:nN][:pP][:dD][:rR] -- a foreign part: KIND c0402, c0603, row '
+                         '(N 0402s, pitch P), sot23, pth (an N-pin header, 2.54), vias (N via-sized barrels, 1.0), '
+                         'npth (a hole of diameter D, 3.2); ANCHOR sw / nw (the destination\'s corner), dw (its '
+                         'facing column), ds / dn (its south / north face), sf (the source\'s facing column), ch (the '
+                         'channel) -- see build(); turned R degrees as KiCad turns a footprint. Repeatable')
     ap.add_argument('--pairs', type=int, default=0,
                     help='differential pairs among the bus: two neighbouring nets each, '
                          'named SYPj_P / SYPj_N')

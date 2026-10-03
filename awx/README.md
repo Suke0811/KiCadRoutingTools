@@ -83,12 +83,16 @@ Reading the tables:
 - **Time.** The Mac ran two rungs at a time: K51 took 30 min, zynq K42 19,
   K41 15, the rest under 10. On Linux (a container a rung, slower cores) the
   same rungs took one and a half to four times as long, K51 50 min.
-- **Generated cases.** `synth_handoff.py` routes 45 generated buses whole --
+- **Generated cases.** `synth_handoff.py` routes 108 generated buses whole --
   lanes handed to a ring on either side of the destination, parts at its
   corner and in the lanes' way (passives and rows of them, PTH headers,
   mounting holes, rows of via barrels), the bus arriving at an angle, lanes
-  crossing, pairs -- and grades each on the route and on the handoff. 41
-  pass; the 4 that do not are the
+  crossing, pairs; a part in front of a source tooth, a facing berth or a ring
+  berth at every distance from none to past the ends model's reach, between
+  and off the stub rows and the router's grid, turned, of every kind, on
+  either layer, at both ends of a lane; and walls of parts no lane threads,
+  in front of the teeth and the berths -- and grades each on the route and on
+  the handoff; the ones that do not pass are the
   [TODO](#next-the-whole-route-whole_py)'s generated cases.
 
 <img src="img/k51_own_ends.png" alt="K51 routed on our own ends, beside the human's" width="900">
@@ -149,6 +153,17 @@ tmp/zynq/zynqF.kicad_pcb,tmp/zynq/zynqF.kicad_pro,tmp/zynq/zynqF.ladder.txt
 default, the cloud's cores being slower), its log and best board still
 returned. `modal_whole.py::stage` replays one command in the cloud on the
 laptop's files at their own paths.
+
+The generated cases (`synth_handoff.py`, see [Results](#results)) on this
+machine, or on Linux one container per case from an app deployed off this
+tree -- stopped once every case is in (`--keep-app` keeps it; `--collect`
+gathers a run whose client went away):
+
+```bash
+python3 synth_handoff.py --jobs 4 [--only TAG,..]                     # in awx/
+modal deploy --name APP awx/modal_whole.py                            # from the repo root, then in awx/:
+python3 synth_handoff.py --modal APP --outdir DIR
+```
 
 When two runs part -- two machines, or a run before and after a change --
 two tools find where:
@@ -1025,7 +1040,7 @@ With nothing supplied, as on the benches:
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP (a part seen from several frames: `tests/test_622_part_frames.py`; islands made of pads: `tests/test_622_pad_islands.py`), the polish, the snap onto the router's grid |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a plan installed and audited, gated, linted, drawn; the bench they share |
 | `whole_ladder.py` | the ladders on this machine: rungs side by side, each stopped at a cap with every stage it started, one grade line each |
-| `synth_handoff.py` | the trunk-to-ring handoff on generated buses (`synth_bus.py --ring-n/--ring-s`, parts at the destination's corner with `--hcap`): ring faces, parts beside the facing column and in the ring's path on either layer, the bus arriving at an angle, crossings, pairs -- each routed whole and graded on the route and on the handoff (every join drawn, no lane stepping back, nothing paid holding a trunk end) |
+| `synth_handoff.py` | the whole route on generated buses (`synth_bus.py --ring-n/--ring-s`, parts anywhere round the bus with `--part KIND@ANCHOR:U:V`, turned with `:rDEG`): ring faces, parts beside the facing column and in the ring's path on either layer, parts in front of every kind of stub, walls, the bus arriving at an angle, crossings, pairs -- each routed whole and graded on the route and on the handoff (every join drawn, no lane stepping back, nothing paid holding a trunk end); `--modal APP` one container a case (`modal_whole.py run_synth`) |
 | `resolve_round.py`, `fanout_logdiff.py` | a round's first solve again on its own board; the first decision two fanout logs made differently -- where two runs part |
 | `whole_compare.py`, `whole_movie.py` | a rung beside the human's board, the run's nets alone (the renders above); a film of one run, the fanout to the copper |
 | `baseline_bench.py`, `baseline_freerouting.py`, `baseline_render.py` | a rung by two other routers on the same bench, nets, rules and grade -- the toolkit's production chain without the bus step, and Freerouting through KiCad's Specctra DSN (`FREEROUTING_JAR`, `FREEROUTING_JAVA`) -- and the boards drawn alike, every other net's copper grey |
