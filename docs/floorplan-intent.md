@@ -435,7 +435,8 @@ TP2, once TP2 is placed or declared) is still refused.
 **Courtyards are graded as drawn, at the project's own severity (#1094,
 #1095).** The courtyard and fab channels keep the part rects as their broad
 phase and measure an overlapping pair on the DRAWN outlines (courtyard united
-pad by pad with the copper), which is what KiCad measures: KiCad's StickHub
+pad by pad with the copper -- a custom pad's parsed primitives, not its box,
+since #1123), which is what KiCad measures: KiCad's StickHub
 demo, 39 parts at +-45/+-135 degrees, went from 74 phantom courtyard-blocking
 pairs and 6 phantom containments to 0. The fixed-pose seat above calls the
 same measure. A board whose own `.kicad_pro` sets `courtyards_overlap` to

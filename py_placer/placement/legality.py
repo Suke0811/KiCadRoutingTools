@@ -1481,7 +1481,10 @@ def occupancy_shape(fp, lb: 'LocalBounds', geom=None):
     already measures pad copper) rather than as their bbox: a stepped QFP
     courtyard hugs its pin rows, and the pad BBOX would put back the corners
     the drawing cut away (StickHub U1<->Y1, 2.01 mm2, which KiCad does not
-    report).
+    report). A CUSTOM pad is united as its parsed primitives
+    (`check_pads.custom_pad_copper`, #1123), not as its size box, which is
+    symmetric about the anchor and so covers whatever side the copper does
+    not reach; the box only where the parser could not draw the pad.
     """
     from shapely.geometry import Polygon, box
     from shapely.ops import unary_union
@@ -1489,17 +1492,19 @@ def occupancy_shape(fp, lb: 'LocalBounds', geom=None):
     if court is None or lb.synthetic:
         return place_local_shape(box(*lb.local), fp.x, fp.y, fp.rotation)
     shape = place_local_shape(court, fp.x, fp.y, fp.rotation)
-    from check_pads import pad_outline_polygon
+    from check_pads import custom_pad_copper, pad_outline_polygon
     extra = []
     for pad in (fp.pads or ()):
         if getattr(pad, 'pad_type', '') == 'np_thru_hole':
             continue
         try:
-            pts = pad_outline_polygon(pad)
+            pp = custom_pad_copper(pad)
+            if pp is None:
+                pts = pad_outline_polygon(pad)
+                pp = Polygon(pts) if len(pts) >= 3 else None
         except Exception:                                    # noqa: BLE001
             continue
-        if len(pts) >= 3:
-            pp = Polygon(pts)
+        if pp is not None:
             if pp.is_valid and not shape.contains(pp):
                 extra.append(pp)
     return unary_union([shape] + extra) if extra else shape
@@ -3935,6 +3940,29 @@ class _PosedPad:
                  'global_y', 'polygons', 'geometry_approximations')
 
 
+def _custom_box_at_pose(original, posed, delta):
+    """A CUSTOM pad's board-frame size box after a turn of `delta` (#1123).
+
+    The parser's box is symmetric about the anchor and encloses every
+    primitive, its stroke and the anchor (`kicad_parser.
+    _custom_pad_board_extent`). A QUARTER turn swaps its extents, exactly as
+    a re-parse gives; a half turn keeps them. Any other angle takes the
+    anchor-symmetric extent of the posed polygon vertices, which encloses the
+    copper exactly and differs from a re-parse by little and with a known
+    sign: smaller by at most a circle's sagitta (the parser boxes a circular
+    anchor's rect corners), larger by at most (sqrt 2 - 1) x the half stroke
+    of a diagonal primitive. A re-parse cannot be reproduced here: `Pad`
+    keeps the primitives' polygons, not their text.
+    """
+    if abs(math.remainder(delta, 90.0)) <= 1e-9:
+        if int(round(delta / 90.0)) % 2:
+            return original.size_y, original.size_x
+        return original.size_x, original.size_y
+    pts = [pt for poly in posed.polygons for pt in poly]
+    return (2.0 * max(abs(u - posed.global_x) for u, _v in pts),
+            2.0 * max(abs(v - posed.global_y) for _u, v in pts))
+
+
 def pads_at_pose(fp, pose) -> List[_PosedPad]:
     """`fp.pads` as they would sit with the footprint at `pose`.
 
@@ -3947,8 +3975,12 @@ def pads_at_pose(fp, pose) -> List[_PosedPad]:
     advances by the same delta, and the size and residual tilt are re-resolved
     through the parser's own `_resolve_pad_rect` after undoing its near-90
     size bake, so the tilt keeps the sign the DRC sampler applies. Custom pad
-    polygons are transformed point by point; their size box is not read by
-    the grader and is carried unchanged.
+    polygons are transformed point by point, and their size box is re-derived
+    for the new angle (`_custom_box_at_pose`, #1123): the box IS read -- by
+    `check_pads.pad_outline_polygon` where a pad has no copper geometry, by
+    `pad_half_extents`, and by every trial-pose consumer of
+    `footprint_at_pose` -- and carried unchanged it missed copper after any
+    turn other than a half one (tigard JP1/JP2, 0.402 mm2 outside it at +90).
 
     It agrees with writing the pose and re-parsing to within the parser's own
     nanometre snap for poses the writer stores EXACTLY -- coordinates of a few
@@ -3980,7 +4012,7 @@ def pads_at_pose(fp, pose) -> List[_PosedPad]:
         if polygons:
             pad.polygons = [[(x + c*(u-ox) + s*(v-oy), y - s*(u-ox) + c*(v-oy))
                              for u, v in poly] for poly in polygons]
-            pad.size_x, pad.size_y = original.size_x, original.size_y
+            pad.size_x, pad.size_y = _custom_box_at_pose(original, pad, delta)
             pad.rect_rotation = getattr(original, 'rect_rotation', 0.0)
         else:
             pad.polygons = polygons
@@ -4032,26 +4064,44 @@ def _on_board(gate, x, y) -> bool:
     return b is not None and b[0] <= x <= b[2] and b[1] <= y <= b[3]
 
 
+def _copper_vertices(geom) -> List[Tuple[float, float]]:
+    """The exterior vertices (closing point dropped) of every polygon part
+    of `geom` -- a custom pad's copper as the point list the outline gate
+    reads (#1123)."""
+    parts = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)
+    out: List[Tuple[float, float]] = []
+    for g in parts:
+        out.extend((float(x), float(y)) for x, y in list(g.exterior.coords)[:-1])
+    return out
+
+
 def pad_copper_overrun_mm(pads, gate) -> float:
     """How far `pads`' copper reaches past the outline, in mm: THE gating
     measure for pad copper off the board (#1096), shared by check_assembly
     (via `grade_pad_legality`) and render_placement's `--gate`.
 
     Each pad on its true outline (`check_pads.pad_outline_polygon`, arcs
-    sampled), so a round pad's bbox corner does not leave a curved board.
+    sampled), so a round pad's bbox corner does not leave a curved board; a
+    CUSTOM pad on the vertices of its parsed copper (#1123), not its size
+    box, whose empty corner can read as off the board when no copper is.
+    It stays a distance read at the vertices -- the farthest copper past a
+    convex outline is a vertex -- so check_assembly's "mm past the outline"
+    keeps its unit.
     A CASTELLATED pad is exempt only while it STRADDLES the outline -- some
     of its copper on the board, as a half-hole on a module edge is; one
     wholly off the board counts like any other (a module parked off the
     board is not on its edge). NPTH pads carry no copper. A pad whose
     outline cannot be computed falls back to its rect, never to "clean".
     """
-    from check_pads import pad_outline_polygon
+    from check_pads import custom_pad_copper, pad_outline_polygon
     over = 0.0
     for p in pads or ():
         if getattr(p, 'pad_type', '') == 'np_thru_hole':
             continue
         try:
-            pts = pad_outline_polygon(p)
+            copper = custom_pad_copper(p)
+            pts = (_copper_vertices(copper) if copper is not None
+                   else pad_outline_polygon(p))
         except Exception:                                    # noqa: BLE001
             pts = []
         if len(pts) < 3:
@@ -4741,7 +4791,8 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                                      'checklist.a_off_outline.pad_copper). '
                                      'What gates is oob_pad_copper_gating_'
                                      'refs: pad_copper_overrun_mm, on true '
-                                     'pad outlines with an edge-straddling '
+                                     'pad outlines (a custom pad on its '
+                                     'parsed copper) with an edge-straddling '
                                      'castellated pad exempt'),
             # WHICH QUANTITY THIS IS. Three tools print "pad copper
             # off-board" for three different measurements. This one is the
