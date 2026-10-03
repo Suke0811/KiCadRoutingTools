@@ -139,9 +139,13 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   costs a via per net at every rotation. After rotating an IC, re-seat its
   caps: one rotation left a decap at 9.57 mm while crossings and hpwl both
   improved.
-- **`place_pose` "legal" is not "buildable".** It does not see a same-net pad
-  stacked on another part's pad (#1064). After every pose change, run
-  `check_assembly` and read `buildable`, not `blocking`.
+- **`place_pose` refuses a pad stack, but "legal" is still not
+  "buildable".** Two parts' pad copper overlapping, any net, is
+  `check_assembly`'s `pad_intersection`; `place_pose` measures it with
+  the same function (#1064), so `legal` and `no_worse` see it and
+  `--near` snaps off it. Courtyards, bodies and coincident origins are
+  still `check_assembly`'s alone: after every pose change, run it and
+  read `buildable`, not `blocking`.
 - **`render_placement`'s pad-clearance list is the grader's** (#1065): each
   pair is confirmed with `check_drc`'s exact pad check at the pose it
   draws, so it agrees with `grade_pad_legality`, and so does the caption's

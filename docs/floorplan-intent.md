@@ -724,6 +724,19 @@ pattern matches *some* reference — deliberately not "the exemption changes an
 outcome", because a pattern naming a real part the keep-out would not have bound
 anyway (wrong side) is not a typo.
 
+### `pad stacks` (printed, not a rule)
+
+`check_floorplan` prints `pad stacks: N` -- two parts' pad copper overlapping
+on a shared side, ANY net, which check_assembly grades NOT BUILDABLE -- with
+up to five pairs, and carries the count as `pad_stack_count` in its
+`JSON_SUMMARY` (`--json` has the rows under `pad_stacks`). It is measured
+exactly, by check_assembly's own `legality.pad_intersection_pairs` (#1064),
+and it is never a violation: a floorplan PASS still says nothing about it, and
+the line is there so a reader of the grade cannot miss it. The
+`pad_intersection_pairs` key beside it is a different number -- the
+optimizer's bounding-box census, kept in that currency because
+`docs/placement-predictors.md`'s tables were measured in it.
+
 ### `rules_run` and `rules_skipped`
 
 Both are in the `JSON_SUMMARY`. **"0 violations" and "0 rules ran" must not look

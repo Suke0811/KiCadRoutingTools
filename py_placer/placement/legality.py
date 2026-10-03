@@ -1841,21 +1841,8 @@ def grade_body_overlap(pcb_data, clearance: float,
                         depth_mm=0.0))
 
     # -- pad_intersection channel (never waivable) ----------------------------
-    # AABB broad phase in the gate currency, then exact re-verification at
-    # clearance 0 (an intersection is a clearance-0 violation) so round or
-    # rotated pads produce no bbox phantoms in a BLOCKING claim.
-    parts = build_part_pads(fps, clearance)
-    pads_by_ref = {ref: [p for p in fp.pads] for ref, fp in fps.items()}
-    routing_layers = list(getattr(pcb_data.board_info, 'copper_layers', [])
-                          or [])
-    check_exact = None
-    try:
-        from check_drc import check_pad_pad_overlap
-        check_exact = check_pad_pad_overlap
-    except Exception:
-        check_exact = None
-    cell = 4.0
-    grid: Dict[Tuple[int, int], set] = {}
+    # #1064: lifted VERBATIM into `pad_intersection_pairs`, so place_pose
+    # and check_floorplan grade a pad stack with this channel's own code.
     # KiCad's own (locked yes) stamps, for the E6 channel below. Best-effort:
     # the file is optional here, and a missing or unreadable one simply means
     # no pair is marked locked.
@@ -1866,90 +1853,7 @@ def grade_body_overlap(pcb_data, clearance: float,
             locked_refs = set(extract_locked_refs(pcb_file) or ())
         except Exception:
             locked_refs = set()
-
-    def _pad_label(pads, idx):
-        try:
-            return pads[idx].pad_number or '?'
-        except Exception:
-            return '?'
-
-    entries = {}
-    for ref, pp in parts.items():
-        fp = fps[ref]
-        rects = pp.pad_rects(fp.x, fp.y, fp.rotation or 0.0)
-        entries[ref] = rects
-        ext = pp.extent(fp.x, fp.y, fp.rotation or 0.0)
-        if ext is None:
-            continue
-        for gx in range(int(ext[0] // cell), int(ext[2] // cell) + 1):
-            for gy in range(int(ext[1] // cell), int(ext[3] // cell) + 1):
-                grid.setdefault((gx, gy), set()).add(ref)
-    seen = set()
-    court_keys = {(p.a, p.b) for p in pairs}
-    for ref in sorted(parts):
-        fp = fps[ref]
-        pp = parts[ref]
-        ext = pp.extent(fp.x, fp.y, fp.rotation or 0.0)
-        if ext is None:
-            continue
-        near = set()
-        for gx in range(int(ext[0] // cell), int(ext[2] // cell) + 1):
-            for gy in range(int(ext[1] // cell), int(ext[3] // cell) + 1):
-                near |= grid.get((gx, gy), set())
-        near.discard(ref)
-        for other in near:
-            key = (ref, other) if ref <= other else (other, ref)
-            if key in seen:
-                continue
-            seen.add(key)
-            area = 0.0
-            side = ''
-            shorts = []
-            for ai, (a0, a1, a2, a3, na, sa) in enumerate(entries[ref]):
-                for bi, (b0, b1, b2, b3, nb, sb) in enumerate(entries[other]):
-                    if not _sides_interact(sa, sb):
-                        continue
-                    ov = rect_overlap_area((a0, a1, a2, a3),
-                                           (b0, b1, b2, b3))
-                    if ov <= EPS:
-                        continue
-                    if check_exact is not None:
-                        # check_pad_pad_overlap's perimeter distance clamps
-                        # at 0 for interior points, so clearance-0 can never
-                        # register an intersection. Ask at a tiny epsilon and
-                        # require the FULL-epsilon shortfall: over >= eps
-                        # <=> exact edge distance <= 0 <=> real intersection
-                        # (merely-near pads at 0 < gap < eps read over < eps
-                        # and are skipped).
-                        eps = 1e-3
-                        pa = _pad_with_copper(pads_by_ref[ref], ai, clearance)
-                        pb = _pad_with_copper(pads_by_ref[other], bi,
-                                              clearance)
-                        if pa is not None and pb is not None:
-                            hit, over, _pt = check_exact(
-                                pa, pb, eps, routing_layers,
-                                clearance_margin=0.0)
-                            if not (hit and over >= eps - 1e-9):
-                                continue
-                    if ov > area:
-                        area = ov
-                        side = sa if sa in ('F', 'B') else ''
-                    # Different-net copper touching is a SHORT on top of the
-                    # assembly defect. Record one example per pair so a reader
-                    # cannot mistake the pair for exempt same-net contact.
-                    if na and nb and na != nb and len(shorts) < 3:
-                        pa_num = _pad_label(pads_by_ref[ref], ai)
-                        pb_num = _pad_label(pads_by_ref[other], bi)
-                        shorts.append(f'{ref}.{pa_num}:{na} <-> '
-                                      f'{other}.{pb_num}:{nb}')
-            if area > EPS:
-                locked_ref = ' '.join(sorted(
-                    r for r in (key[0], key[1]) if r in locked_refs))
-                pairs.append(BodyOverlapPair(
-                    a=key[0], b=key[1], kind='pad_intersection',
-                    area_mm2=round(area, 4), side=side,
-                    waived=False, waiver='',
-                    shorts=tuple(shorts), locked_ref=locked_ref))
+    pairs.extend(pad_intersection_pairs(pcb_data, clearance, locked_refs))
 
     pairs.sort(key=lambda p: (p.waived, -p.area_mm2, p.a, p.b))
     blocking = [p for p in pairs if p.kind == 'pad_intersection']
@@ -2218,6 +2122,145 @@ def grade_body_overlap(pcb_data, clearance: float,
             'waivers_unused': sorted(
                 _waiver_row(p) for p in waiver_sets
                 if p not in _waivers_hit and all(r in fps for r in p))}
+
+
+def pad_intersection_pairs(pcb_data, clearance: float,
+                           locked_refs=frozenset()) -> List[BodyOverlapPair]:
+    """check_assembly's BLOCKING channel as a function (#1064): two parts'
+    pad copper intersecting on a shared side, ANY net -- a pad stack.
+
+    `grade_body_overlap` reports these as its `pad_intersection` pairs, and
+    `pad_stack_census` (place_pose, check_floorplan) calls the same code, so
+    the three cannot disagree. Never waivable. `locked_refs` only labels a
+    pair's `locked_ref`. Same-net copper is measured like any other: two
+    caps on one pad cannot both be soldered, whatever their nets (esp_prog
+    C4 on Y1 and run 38's C15 on C19 are same-net, and place_pose accepted
+    both before #1064).
+    """
+    fps = pcb_data.footprints or {}
+    out: List[BodyOverlapPair] = []
+    # AABB broad phase in the gate currency, then exact re-verification at
+    # clearance 0 (an intersection is a clearance-0 violation) so round or
+    # rotated pads produce no bbox phantoms in a BLOCKING claim.
+    parts = build_part_pads(fps, clearance)
+    pads_by_ref = {ref: [p for p in fp.pads] for ref, fp in fps.items()}
+    routing_layers = list(getattr(pcb_data.board_info, 'copper_layers', [])
+                          or [])
+    check_exact = None
+    try:
+        from check_drc import check_pad_pad_overlap
+        check_exact = check_pad_pad_overlap
+    except Exception:
+        check_exact = None
+    cell = 4.0
+    grid: Dict[Tuple[int, int], set] = {}
+
+    def _pad_label(pads, idx):
+        try:
+            return pads[idx].pad_number or '?'
+        except Exception:
+            return '?'
+
+    entries = {}
+    for ref, pp in parts.items():
+        fp = fps[ref]
+        rects = pp.pad_rects(fp.x, fp.y, fp.rotation or 0.0)
+        entries[ref] = rects
+        ext = pp.extent(fp.x, fp.y, fp.rotation or 0.0)
+        if ext is None:
+            continue
+        for gx in range(int(ext[0] // cell), int(ext[2] // cell) + 1):
+            for gy in range(int(ext[1] // cell), int(ext[3] // cell) + 1):
+                grid.setdefault((gx, gy), set()).add(ref)
+    seen = set()
+    for ref in sorted(parts):
+        fp = fps[ref]
+        pp = parts[ref]
+        ext = pp.extent(fp.x, fp.y, fp.rotation or 0.0)
+        if ext is None:
+            continue
+        near = set()
+        for gx in range(int(ext[0] // cell), int(ext[2] // cell) + 1):
+            for gy in range(int(ext[1] // cell), int(ext[3] // cell) + 1):
+                near |= grid.get((gx, gy), set())
+        near.discard(ref)
+        for other in near:
+            key = (ref, other) if ref <= other else (other, ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            area = 0.0
+            side = ''
+            shorts = []
+            for ai, (a0, a1, a2, a3, na, sa) in enumerate(entries[ref]):
+                for bi, (b0, b1, b2, b3, nb, sb) in enumerate(entries[other]):
+                    if not _sides_interact(sa, sb):
+                        continue
+                    ov = rect_overlap_area((a0, a1, a2, a3),
+                                           (b0, b1, b2, b3))
+                    if ov <= EPS:
+                        continue
+                    if check_exact is not None:
+                        # check_pad_pad_overlap's perimeter distance clamps
+                        # at 0 for interior points, so clearance-0 can never
+                        # register an intersection. Ask at a tiny epsilon and
+                        # require the FULL-epsilon shortfall: over >= eps
+                        # <=> exact edge distance <= 0 <=> real intersection
+                        # (merely-near pads at 0 < gap < eps read over < eps
+                        # and are skipped).
+                        eps = 1e-3
+                        pa = _pad_with_copper(pads_by_ref[ref], ai, clearance)
+                        pb = _pad_with_copper(pads_by_ref[other], bi,
+                                              clearance)
+                        if pa is not None and pb is not None:
+                            hit, over, _pt = check_exact(
+                                pa, pb, eps, routing_layers,
+                                clearance_margin=0.0)
+                            if not (hit and over >= eps - 1e-9):
+                                continue
+                    if ov > area:
+                        area = ov
+                        side = sa if sa in ('F', 'B') else ''
+                    # Different-net copper touching is a SHORT on top of the
+                    # assembly defect. Record one example per pair so a reader
+                    # cannot mistake the pair for exempt same-net contact.
+                    if na and nb and na != nb and len(shorts) < 3:
+                        pa_num = _pad_label(pads_by_ref[ref], ai)
+                        pb_num = _pad_label(pads_by_ref[other], bi)
+                        shorts.append(f'{ref}.{pa_num}:{na} <-> '
+                                      f'{other}.{pb_num}:{nb}')
+            if area > EPS:
+                locked_ref = ' '.join(sorted(
+                    r for r in (key[0], key[1]) if r in locked_refs))
+                out.append(BodyOverlapPair(
+                    a=key[0], b=key[1], kind='pad_intersection',
+                    area_mm2=round(area, 4), side=side,
+                    waived=False, waiver='',
+                    shorts=tuple(shorts), locked_ref=locked_ref))
+    return out
+
+
+#: What `pad_stack_census` measured, published beside its numbers (#1064).
+PAD_STACK_BASIS = ("check_assembly's pad_intersection channel "
+                   "(legality.pad_intersection_pairs): two parts' pad copper "
+                   "intersecting on a shared side, any net, confirmed exactly "
+                   "by check_drc; never waivable")
+
+
+def pad_stack_census(pcb_data, clearance: float,
+                     locked_refs=frozenset()) -> Dict[str, object]:
+    """`pad_intersection_pairs` as the keys place_pose and check_floorplan
+    publish (#1064): `pad_stack_count`, `pad_stack_area` (the pairs' areas
+    SUMMED, so a stack that deepens while another holds still reads worse),
+    `pad_stack_pairs` (`[a, b, area_mm2, side]`, a < b, sorted -- the
+    channel's own order follows the hash seed) and `pad_stack_basis`."""
+    rows = sorted([p.a, p.b, p.area_mm2, p.side]
+                  for p in pad_intersection_pairs(pcb_data, clearance,
+                                                  locked_refs))
+    return {'pad_stack_count': len(rows),
+            'pad_stack_area': round(sum(r[2] for r in rows), 4),
+            'pad_stack_pairs': rows,
+            'pad_stack_basis': PAD_STACK_BASIS}
 
 
 # --- pad + drill legality layer ----------------------------------------------

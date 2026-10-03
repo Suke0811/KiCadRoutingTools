@@ -527,7 +527,10 @@ added here because the repo had a stamper and no un-stamper.
 
 Legality is RELATIVE: `grade_pad_legality` on the candidate against the same
 grade on the input, refusing (exit 4, nothing written) only a request that
-makes a category worse. An absolute gate would refuse poses no worse than
+makes a category worse. A pad stack (two parts' pad copper overlapping, any
+net -- check_assembly's `pad_intersection`) is a category since #1064,
+measured by `legality.pad_intersection_pairs`, the function check_assembly's
+channel now is. An absolute gate would refuse poses no worse than
 where the part already sits — and would refuse to arrange the unplaced pile
 this tool exists for. `--strict-legal` is the absolute arm, `--force` the
 waiver, and a KiCad `(locked yes)` is refused unless the same call `unlock`s

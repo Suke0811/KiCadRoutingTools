@@ -189,7 +189,13 @@ The verdict is `placement.legality.grade_pad_legality` — the same numbers
 request is refused when it makes a category worse — the counts (pad conflicts,
 hole conflicts, pads off-board) **and their magnitudes** (`pad_shortfall`,
 `oob_pad_amount`; a count arm alone accepted a part moved from 2.0 mm off the
-board to 204.66 mm off it, measured on `flat_hierarchy`) — and **never for
+board to 204.66 mm off it, measured on `flat_hierarchy`) — plus **pad
+stacks** (#1064): two parts' pad copper overlapping on a shared side, ANY
+net, measured by check_assembly's own `legality.pad_intersection_pairs`
+(`pad_stack_count`, the summed `pad_stack_area`, and `pad_stack_pairs` as a
+set, so a new stack is refused when the totals tie). The pad-conflict grade
+skips same-net pads, so esp_prog's C4 put on Y1's same-net pad (0.0412 mm²)
+used to exit 0 here and read NOT BUILDABLE in check_assembly — and **never for
 damage the board already had**:
 an absolute gate is False for a large share of parts on a real board before
 anything moves, so it would refuse poses no worse than where the part already
