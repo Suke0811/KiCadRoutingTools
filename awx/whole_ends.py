@@ -27,7 +27,8 @@ board (its stubs' own vias and its lane's changes; the tie via not counted towar
 two arrays, and each leg's straight stubs from its balls to its exits) at select_moves.VIA_MM per via, CONGESTION on
 the trunk (each lane's load there past what the solve takes freely, and each crossing there), STACKING (two lanes' ends
 at one point on different layers where either changes layer, a pair's twice), the whole route's FEEDBACK (ends it
-found crowded or named, whole_feedback), and the crossings' count as the tie-break.
+found crowded or named, whole_feedback: priced by place, less on the other layer there and falling off with distance,
+and doubled each later round an end is named again), and the crossings' count as the tie-break.
 
 Searched locally -- one lane's tooth or berth at a time, one other lane
 ejected where it is in the way, each improving change taken as it is found, sweep after sweep until none is left,
@@ -79,13 +80,23 @@ VIA_MM = _sm.VIA_MM       # a via is worth this much ride (the one exchange rate
 EXACT_TOP = 6             # the search's best distinct ends re-ranked on the exact route (best_exact) ...
 EXACT_MARGIN = 4.0        # ... those within this much of the best by the estimate
 EXACT_KMAX = 3            # a lane's changes at most in the exact route (the whole solve's KMAX)
-EXACT_WORK = 20.0         # CP-SAT's deterministic work limit for one exact route
+EXACT_WORK = 60.0         # CP-SAT's deterministic work limit for one exact route (a machine's deterministic time is
+#                           its own: H3 K51's best ends proved at 17 on a Mac and stopped unproved at 20 on Linux)
 LOAD_OK = 0.5             # a lane's congestion on the trunk (score) the solve takes freely ...
 W_CONG = 20.0             # ... past it, vias per the square of the overload
 X_TRUNK = 0.2             # a crossing on the trunk, in vias
 FB_AVOID = 5.0            # an end the whole route's audits found crowded (whole_feedback), in vias ...
-FB_PAIR = 10.0            # ... two ends found crowded together
+FB_PAIR = 10.0            # ... two ends found crowded together -- each by place (fb_weights): in full at the place ...
+FB_OTHER_LAYER = 0.5      # ... this much on the other layer there (a layer change is some answer), and at most this
+#                           much off the place (moving away a better one) ...
+FB_RADIUS = 0.76          # ... falling to nothing this far beyond the place ...
+FB_ESCALATE = 2.0         # ... and this many times more each later round it is named again
 BIG = 100000.0            # a conflict, a split pair or a refused end: never taken
+FRONT_REACH = 1.2         # a single lane's exit: its straight run out, this far along its escape (as a pair's,
+#                           fanout_from_plan.PAIR_EXIT_REACH), against copper outside the run on its layer (exit_front) --
+FRONT_VIA = 1.0           # ... blocked, with room for a via before the block: the lane changes layer there ...
+FRONT_BLOCKED = 1000.0    # ... blocked with no room for one: past any via count, yet no refusal (a lane with no other end
+#                           keeps it)
 FAR = {'left': (-1, 0), 'right': (1, 0), 'up': (0, -1), 'down': (0, 1)}
 
 
@@ -240,6 +251,20 @@ class Ends:
             if len(lg) == 2:
                 self.T[lane] = [o[:4] + (o[4] or between_tips(o, lg),) for o in self.T[lane]]
                 self.B[lane] = [o[:4] + (o[4] or between_tips(o, lg),) for o in self.B[lane]]
+        # a SINGLE lane's end priced by what stands in front of its exit on its layer (exit_front): a pair leg's menu
+        # keeps only exits with room for the pair there (fanout_from_plan.pair_exit_clear), a single's was checked
+        # only to its tooth's tip -- and the loop's audits then found it against a passive the solve cannot move it
+        # off (zynq: C105 0.6 mm in front of the source teeth, C98 beside the berths -- most of the static findings)
+        self.front = {}
+        for lane, lg in self.lanes:
+            if len(lg) != 1:
+                continue
+            for end, opts in ((0, self.T[lane]), (1, self.B[lane])):
+                c_ = {i: (0.0, FRONT_VIA, FRONT_BLOCKED)[exit_front(st['pcb'], st['byname'][lg[0]][0], o[0][0],
+                                                                    run_ids)]
+                      for i, o in enumerate(opts)}
+                if any(c_.values()):
+                    self.front[(lane, end)] = c_
         self.cur = cur
         # a TIE VIA at the ball where a pad of the net's own lies under it on the other layer (fanout_from_plan.
         # tie_vias_under): one more via on that leg whatever its escapes
@@ -305,20 +330,21 @@ class Ends:
                     self.oconf[(lane, end, i)] = hit
         self._ride = {}
         # ---- the whole route's FEEDBACK (whole_feedback: ends its audits found crowded, FEEDBACK= to the fanout): an
-        # end to avoid costs FB_AVOID vias when chosen, a pair of ends FB_PAIR when both are -- the options matched
-        # by their lane, their layer and ANY leg's exit at any of the end's points as laid, so a pair cannot leave the
-        # price by moving one leg and keeping the other where it was found crowded
-        self.fb_avoid, self.fb_pairs = collections.defaultdict(set), []
+        # end to avoid costs FB_AVOID vias when chosen, a pair of ends FB_PAIR when both are -- each option weighed by
+        # its lane, its layer and ANY leg's exit's distance to the end's points as laid (fb_weights), so a pair cannot
+        # leave the price by moving one leg and keeping the other where it was found crowded; two items naming one
+        # option add
+        self.fb_avoid, self.fb_pairs = collections.defaultdict(dict), []
 
         def matches(it):
             if it['lane'] not in self.legs_of:
-                return set()
-            return fb_matches(self.T[it['lane']] if it['end'] == 0 else self.B[it['lane']], it)
+                return {}
+            return fb_weights(self.T[it['lane']] if it['end'] == 0 else self.B[it['lane']], it)
         fb = st.get('feedback') or {}
         for it in fb.get('avoid', ()):
-            ix = matches(it)
-            if ix:
-                self.fb_avoid[(it['lane'], it['end'])] |= ix
+            w_ = self.fb_avoid[(it['lane'], it['end'])]
+            for i, w in matches(it).items():
+                w_[i] = w_.get(i, 0.0) + w
         for a_, b_ in fb.get('pairs', ()):
             ma, mb = matches(a_), matches(b_)
             if ma and mb and a_['end'] == b_['end']:
@@ -578,10 +604,12 @@ class Ends:
             over = sum(max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)) for l_ in lanes)
         ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1]) for l_ in lanes)
         stacks = _stacks(self.lanes, to, bo, chg)
-        fbk = (FB_AVOID * sum(1 for (l_, k_), ix in self.fb_avoid.items() if state[l_][k_] in ix)
-               + FB_PAIR * sum(1 for a_, b_, k_, ia, ib in self.fb_pairs if state[a_][k_] in ia and state[b_][k_] in ib))
+        fbk = (FB_AVOID * sum(ix.get(state[l_][k_], 0.0) for (l_, k_), ix in self.fb_avoid.items())
+               + FB_PAIR * sum(ia.get(state[a_][k_], 0.0) * ib.get(state[b_][k_], 0.0)
+                               for a_, b_, k_, ia, ib in self.fb_pairs))
+        front = sum(c_.get(state[l_][k_], 0.0) for (l_, k_), c_ in self.front.items())
         obj = (W_OVER * over + fan + route + ride / VIA_MM + cong + fbk + EPS_X * len(inv) + BIG * (nconf + nsplit + nref)
-               + STACK_COST * stacks)
+               + STACK_COST * stacks + front)
         # (each lane's share, for a round the whole route laid nothing on or left nets open -- whole_feedback --name
         # names the lanes to free from these: its nets over two, its load on the trunk, its crossings -- and the lanes
         # still in a conflict, which a destination re-plan frees with their neighbours)
@@ -592,7 +620,7 @@ class Ends:
                          ride=round(ride, 1), chg=chg,
                          crossings=len(inv), same=len(same), conflicts=nconf, splits=nsplit, refused=nref,
                          lane_over=lane_over, lane_load={l_: round(v_, 3) for l_, v_ in loads.items()},
-                         lane_x=dict(xl), stacks=stacks, exact_failed=exact_failed, cut=cut,
+                         lane_x=dict(xl), stacks=stacks, exact_failed=exact_failed, cut=cut, front=front,
                          conf_lanes=(sorted({lane_of[c[0]] for c in chosen for o in self.conf.get(c, ())
                                              if o in chosen}) if nconf else []))
 
@@ -921,13 +949,55 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
     return out
 
 
-def fb_matches(opts, item):
-    """the options (indices into `opts`, a lane's (moves per leg, point, layer, ...) at one end) a feedback ITEM
-    (whole_feedback: {'layer', 'points'}) names: on its layer, with ANY leg's exit at ANY of its points -- so a pair
-    cannot leave the price by moving one leg and keeping the other where it was found crowded"""
-    return {i for i, o in enumerate(opts)
-            if o[2] == item['layer'] and any(math.hypot(m.exit_pt[0] - p_[0], m.exit_pt[1] - p_[1]) <= DUP_TOL
-                                             for m in o[0] for p_ in item['points'])}
+def exit_front(pcb, nid, m, kids):
+    """0 where the straight run out of a single lane's exit `m` -- FRONT_REACH along its escape direction, on its layer --
+    is clear of copper outside the run (braid.build_obstacles: every foreign pad, segment and via, inflated by clearance
+    and half a track; the segments of the run's nets `kids` left out, as they move with the search); 1 where it is
+    blocked but a via fits on the way before the block (clear of that copper on every layer, a barrel piercing them
+    all), so the lane can change layer there; 2 where none does. Kept on the board per exit."""
+    from escape_moves import DIRS
+    d = DIRS.get(getattr(m, 'direction', None))
+    if d is None or getattr(m, 'exit_pt', None) is None:
+        return 0
+    key = (nid, m.layer, m.direction, round(m.exit_pt[0], 4), round(m.exit_pt[1], 4))
+    memo = pcb.__dict__.setdefault('_exit_front', {})
+    if key in memo:
+        return memo[key]
+    kids = frozenset(kids) | {nid}
+    step, (x0, y0) = 0.05, m.exit_pt
+    track = _bd.build_obstacles(pcb, nid, kids, m.layer)
+    hit = next((k for k in range(1, int(FRONT_REACH / step + 1e-9) + 1)
+                if track.point_violation((x0 + d[0] * step * k, y0 + d[1] * step * k))), None)
+    if hit is None:
+        level = 0
+    else:
+        layers = list(getattr(pcb.board_info, 'copper_layers', None) or ('F.Cu', 'B.Cu'))
+        vias = [_bd.build_obstacles(pcb, nid, kids, L, margin=_bd.VIA_SIZE / 2 + _bd.CLEAR) for L in layers]
+        fits = any(not any(v.point_violation((x0 + d[0] * step * k, y0 + d[1] * step * k)) for v in vias)
+                   for k in range(hit))
+        level = 1 if fits else 2
+    memo[key] = level
+    return level
+
+
+def fb_weights(opts, item):
+    """{option: weight}: what a feedback ITEM (whole_feedback: {'layer', 'points', 'times'}) prices each of a lane's
+    options at one end (`opts`: (moves per leg, point, layer, ...)) at, by PLACE -- in full where ANY leg's exit stands
+    at ANY of its points (within DUP_TOL); off the place at most FB_OTHER_LAYER of that, falling linearly to nothing
+    FB_RADIUS beyond; and FB_OTHER_LAYER of either on the other layer. A layer change at the place is some answer and
+    moving away a better one, the nearest other exit included (zynq K44: with the fall alone, a tooth one exit over,
+    0.4 mm, paid more than the other layer at the place, and round 2 moved nothing); a pair cannot leave the price by
+    moving one leg and keeping the other where it was found crowded -- and by ESCALATION: FB_ESCALATE times more for
+    each later round it was named again"""
+    esc = FB_ESCALATE ** (int(item.get('times', 1)) - 1)
+    out = {}
+    for i, o in enumerate(opts):
+        d = min((math.hypot(m.exit_pt[0] - p_[0], m.exit_pt[1] - p_[1]) for m in o[0] for p_ in item['points']),
+                default=math.inf)
+        place = 1.0 if d <= DUP_TOL else FB_OTHER_LAYER * max(0.0, 1.0 - (d - DUP_TOL) / FB_RADIUS)
+        if place > 0.0:
+            out[i] = esc * place * (1.0 if o[2] == item['layer'] else FB_OTHER_LAYER)
+    return out
 
 
 def _stacks(lanes, to, bo, chg):
@@ -971,6 +1041,7 @@ def _fmt(p):
             f'changes + {p["crossover"]} crossover + 2 x {p["cover"]} + {p["settle"]} settling + {p["couple"]} coupled), '
             f'{p["over"]} over two on a net, '
             f'ride {p["ride"]} mm, congestion {p.get("cong", 0)}, ' + (f'feedback {p["feedback"]}, ' if p.get('feedback') else '') +
+            (f'blocked in front {p["front"]}, ' if p.get('front') else '') +
             f'{p["crossings"]} crossings ({p["same"]} on one layer)' + ''.join(f', {p[k]} {k}' for k in ('conflicts', 'splits', 'refused', 'stacks') if p.get(k))
             + (f' [the route exact on the orders: {p["route"]}, estimated {p["route_est"]}]'
                if p.get('route_est') is not None and p['route_est'] != p['route'] else ''))

@@ -12,8 +12,10 @@ route is only as good as those ends. This pins the rules it prices and bans by, 
 3. bans by class (fanout_from_plan.ban_moves): under the ends judge a refused berth bans its class as well as its
    signature, and a pair's two legs are banned jointly -- and under the braid's judges by signature alone;
 4. the crossing rule (select_moves.SEL_XING) is the judge's: 2 under PLAN_JUDGE=ends, 1 otherwise;
-5. feedback by any leg (whole_ends.fb_matches): a pair is named where EITHER leg's exit stands, on its layer, so it
-   cannot leave the price by moving one leg;
+5. feedback by place (whole_ends.fb_weights): a pair is priced in full where EITHER leg's exit stands on the item's
+   layer, so it cannot leave the price by moving one leg; FB_OTHER_LAYER of that on the other layer there; off the place
+   less than the other layer there, the nearest other exit included, falling to nothing FB_RADIUS beyond; FB_ESCALATE
+   times more for an end named again;
 6. the exact ranking (Ends.best_exact): a state whose exact route found no plan ranks after every state whose route
    did, even with the lower objective.
 """
@@ -110,14 +112,25 @@ def main():
         if got != want:
             fails.append(f'SEL_XING under PLAN_JUDGE={judge}: {got}, want {want}')
 
-    # 5. feedback by any leg
+    # 5. feedback by place
     pair = [opt(mv(10, 0, 'F.Cu'), mv(10.5, 0, 'F.Cu')), opt(mv(20, 0, 'F.Cu'), mv(20.5, 0, 'F.Cu'))]
-    if we.fb_matches(pair, {'layer': 'F.Cu', 'points': [(10.5, 0)]}) != {0}:
-        fails.append('fb_matches: a pair named by ONE leg\'s place does not match the option keeping that leg there')
-    if we.fb_matches(pair, {'layer': 'B.Cu', 'points': [(10.5, 0)]}):
-        fails.append('fb_matches: matched on the other layer')
-    if we.fb_matches(pair, {'layer': 'F.Cu', 'points': [(15, 0)]}):
-        fails.append('fb_matches: matched where no leg stands')
+    half = 10.5 + we.DUP_TOL + we.FB_RADIUS / 2           # half way down the fall
+    for what, item, want in (
+            ('a pair named by ONE leg\'s place, the option keeping that leg there', {'layer': 'F.Cu', 'points': [(10.5, 0)]},
+             {0: 1.0}),
+            ('the other layer at the place', {'layer': 'B.Cu', 'points': [(10.5, 0)]}, {0: we.FB_OTHER_LAYER}),
+            ('half way down the fall', {'layer': 'F.Cu', 'points': [(half, 0)]}, {0: we.FB_OTHER_LAYER / 2}),
+            ('where no leg stands near', {'layer': 'F.Cu', 'points': [(15, 0)]}, {}),
+            ('named again', {'layer': 'F.Cu', 'points': [(10.5, 0)], 'times': 2}, {0: we.FB_ESCALATE})):
+        got = we.fb_weights(pair, item)
+        if set(got) != set(want) or any(abs(got[i] - want[i]) > 1e-9 for i in want):
+            fails.append(f'fb_weights, {what}: {got}, want {want}')
+    # (moving away a better answer than a layer change: the nearest other exit, 0.4 mm on zynq's teeth, pays less)
+    near = we.fb_weights(pair, {'layer': 'F.Cu', 'points': [(10.9, 0)]}).get(0, 0.0)
+    other = we.fb_weights(pair, {'layer': 'B.Cu', 'points': [(10.5, 0)]}).get(0, 0.0)
+    if not 0.0 < near < other:
+        fails.append(f'fb_weights: one exit over (0.4 mm) pays {near:.3f}, the other layer at the place {other:.3f} -- '
+                     f'want less, and more than nothing')
 
     # 6. the exact ranking
     s_fail, s_ok = {'A': (0, 0)}, {'A': (1, 0)}
@@ -136,7 +149,7 @@ def main():
     if fails:
         return 1
     print('PASS: stacks counted where a lane changes layer (a pair twice), classes and bans by class under the ends '
-          'judge only, the crossing rule the judge\'s, feedback by any leg, an exact failure ranked last')
+          'judge only, the crossing rule the judge\'s, feedback by place and escalated, an exact failure ranked last')
     return 0
 
 

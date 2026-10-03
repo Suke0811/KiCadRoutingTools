@@ -8,11 +8,18 @@ refused (fanout_from_plan: a pair split by other lanes' ends between its tips): 
 lane's end there, a PAIR of ends not to be chosen together again; a tooth on the source's far face, an end to AVOID --
 the next round, incremental, frees them.
 whole_feedback.py --name SIDECAR.plan.json OUT.json [NET ...] -- a round the whole route left nets OPEN on, or laid
-NOTHING on (no plan from its solve, none its loop held), with nothing new from its audits: lanes to free, both their
-ends to AVOID -- the lanes of the NETs given (the round's open nets), else those the ends model names on those ends
-(the sidecar's 'ends_model', whole_ends): its nets over two vias, else its lanes loaded past LOAD_OK on the trunk,
-else its NAME_TOP most crossed -- the first of these naming a lane not named before. The lanes are kept in OUT's
-'named', in the order named: the lanes whole_route's last resort leaves out of a partial plan.
+NOTHING on (no plan from its solve, none its loop held), with nothing new from its audits: lanes to free, their ends
+to AVOID -- the lanes of the NETs given (the round's open nets), each at the end where its trouble is: where the
+round's audit findings name it (FB_HOTS, the round's hot files), else the array nearer a ball of it cut off from its
+copper (FB_CONN, the round's check_connected log), else both; with no NET, the lanes the ends model names on those
+ends (the sidecar's 'ends_model', whole_ends), both their ends: its nets over two vias, else its lanes loaded past
+LOAD_OK on the trunk, else its NAME_TOP most crossed -- the first of these naming a lane not named before. The lanes
+are kept in OUT's 'named', in the order named: the lanes whole_route's last resort leaves out of a partial plan.
+whole_feedback.py --raise SIDECAR.plan.json OUT.json [--widen] -- a round whose fanout laid the round before's ends
+again (priced its feedback and did not follow it): every end to avoid last named in that round (FB_ROUND) raised once
+more; with --widen, both ends of every lane named (--name) to avoid as well -- an open lane named where it fails, whose
+failing end has no other place to go (a via-in-pad berth), freed and priced at its other end too. whole_route then
+runs that round's fanout again, not its route.
 whole_feedback.py --now SIDECAR.plan.json HOT.json -- exit 0 (and name them) when a finding at the ends is one no solve
 moves: a pitch or a static clearance there comes of where the ends stand (a dive there is the solve's: its via cut
 moves it; a fold, the crossings the solve put round it) -- whole_loop stops at once, before paying a solve.
@@ -24,7 +31,9 @@ lane pitch. One out between the arrays is the solve's, not the fanout's (K35: a 
 1.9 mm out from the source's face was read as its tooth's, and the fanout moved a tooth that was not the trouble). Two lanes it names
 together are a PAIR of ends not to be chosen together again; one lane alone (a fold, a dive, a lane against static
 copper) an end to AVOID. Each end is named by its lane and its legs' points and layer as laid (the sidecar's), which
-whole_ends matches against its options. OUT.json is merged into when it exists: the feedback of every round stands.
+whole_ends prices against its options, by place (whole_ends.fb_weights). OUT.json is merged into when it exists: the
+feedback of every round stands, and an end to avoid named again in a LATER round (FB_ROUND, the whole route's round;
+without one, by an earlier call) is not added twice -- its 'times' rises, and whole_ends doubles its price each time.
 
 The findings are in the PLAN's frame -- a board of pair chirality -1 turned over (braid.setup) -- and the sidecar's
 ends in the board's: a finding is turned back before it is placed (y -> 2 CY - y about the board's mirror axis, read
@@ -45,7 +54,8 @@ REPEAT = sys.argv[1] == '--repeat'
 NOW = sys.argv[1] == '--now'
 REFUSED = sys.argv[1] == '--refused'
 NAME = sys.argv[1] == '--name'
-if REPEAT or NOW or REFUSED or NAME:
+RAISE = sys.argv[1] == '--raise'
+if REPEAT or NOW or REFUSED or NAME or RAISE:
     sys.argv.pop(1)
 NAME_TOP = 3                                         # --name's last tier: the lanes most crossed, this many a round
 if NOW:
@@ -140,6 +150,85 @@ if REPEAT:
     sys.exit(0 if both else 1)
 
 fb = json.load(open(out)) if os.path.exists(out) else {'pairs': [], 'avoid': []}
+ROUND = awx_settings.get('FB_ROUND')                 # the whole route's round naming ends now
+
+
+def _akey(it):
+    """an end to avoid by what it names (its lane, end, points and layer), not by how often or when"""
+    return json.dumps({k: v for k, v in it.items() if k not in ('times', 'round')}, sort_keys=True)
+
+
+_avoid = {_akey(x): x for x in fb['avoid']}
+_raised = set()
+
+
+def put_avoid(it):
+    """an end to AVOID: added; or, named in an EARLIER round (without ROUND, by an earlier call), its 'times' raised
+    once -- 1 when either, else 0"""
+    k = _akey(it)
+    x = _avoid.get(k)
+    if x is None:
+        x = _avoid[k] = dict(it, round=ROUND)
+        fb['avoid'].append(x)
+    elif k in _raised or (ROUND is not None and str(x.get('round')) == str(ROUND)):
+        return 0
+    else:
+        x['times'] = int(x.get('times', 1)) + 1
+        x['round'] = ROUND
+    _raised.add(k)
+    return 1
+
+
+def disconnected(conn_log):
+    """{lane: [(x, y)]}: the balls check_connected found cut off from their net's copper"""
+    import re
+    got, cur = {}, None
+    for ln in (open(conn_log, errors='replace') if conn_log and os.path.isfile(conn_log) else ()):
+        m = re.match(r'^\s*(.+?) \(net \d+\):\s*$', ln)
+        if m:
+            n = m.group(1).split('/')[-1]
+            cur = LANE.get(n, n)
+            continue
+        m = re.match(r'^\s*\(([-\d.]+), ([-\d.]+)\) on \S+ \[\S+\]', ln)
+        if m and cur:
+            got.setdefault(cur, []).append((float(m.group(1)), float(m.group(2))))
+    return got
+
+
+def failing_ends(ln):
+    """the ends of open lane `ln` where its trouble is: those the round's audit findings name it at (FB_HOTS), else
+    the array nearer a ball of it cut off from its copper (FB_CONN), else both"""
+    ks = set()
+    for fn in [f for f in (awx_settings.get('FB_HOTS') or '').split(',') if f and os.path.isfile(f)]:
+        for x, y, _kind, *rest in json.load(open(fn)).get('hot', []):
+            if ln in lanes_named(rest[0] if rest else []):
+                x, y = board_xy(x, y)
+                ks |= {k for k in (0, 1) if near(k, x, y)}
+    if not ks:
+        for x, y in disconnected(awx_settings.get('FB_CONN')).get(ln, ()):
+            ks.add(min((0, 1), key=lambda k: math.hypot(max(boxes[k][0] - x, 0.0, x - boxes[k][2]),
+                                                        max(boxes[k][1] - y, 0.0, y - boxes[k][3]))))
+    return sorted(ks) or [0, 1]
+
+
+if RAISE:
+    raised = added = 0
+    for x in fb['avoid']:
+        if ROUND is not None and str(x.get('round')) == str(ROUND):
+            x['times'] = int(x.get('times', 1)) + 1
+            raised += 1
+    if '--widen' in hots:
+        for ln in fb.get('named') or []:
+            for k in (0, 1):
+                e = end_of(ln, k)
+                if e and _akey(e) not in _avoid:
+                    _avoid[_akey(e)] = x = dict(e, round=ROUND)
+                    fb['avoid'].append(x)
+                    added += 1
+    json.dump(fb, open(out, 'w'), indent=1)
+    print(f'whole_feedback: {raised + added} raised: {raised} ends named in round {ROUND} once more, {added} other '
+          f'ends of the lanes named added, {len(fb["pairs"])} pairs and {len(fb["avoid"])} ends to avoid in {out}')
+    sys.exit(0)
 if REFUSED:
     seen = {json.dumps(x, sort_keys=True) for x in fb['pairs']}
     added = 0
@@ -155,13 +244,10 @@ if REFUSED:
                     seen.add(key)
                     fb['pairs'].append(it)
                     added += 1
-    seen_a = {json.dumps(x, sort_keys=True) for x in fb['avoid']}
     for ln in json.load(open(hots[0])).get('far', []):
         a = end_of(LANE.get(ln, ln), 0)
-        if a and json.dumps(a, sort_keys=True) not in seen_a:
-            seen_a.add(json.dumps(a, sort_keys=True))
-            fb['avoid'].append(a)
-            added += 1
+        if a:
+            added += put_avoid(a)
     json.dump(fb, open(out, 'w'), indent=1)
     print(f'whole_feedback: {added} new from the fanout audit (split pairs, far-face teeth), {len(fb["pairs"])} pairs '
           f'and {len(fb["avoid"])} ends to avoid in {out}')
@@ -170,33 +256,29 @@ if NAME:
     from whole_ends import LOAD_OK
     em = S.get('ends_model') or {}
     ov, ld, xs = em.get('over') or {}, em.get('load') or {}, em.get('x') or {}
-    seen_a = {json.dumps(x, sort_keys=True) for x in fb['avoid']}
-
     def fresh(ln):
         """the ends of lane `ln` not yet to avoid"""
-        return [e for e in (end_of(ln, 0), end_of(ln, 1)) if e and json.dumps(e, sort_keys=True) not in seen_a]
-    tiers = [('open', lanes_named(hots)),
-             ('over two vias', sorted((ln for ln in ov if ov[ln] > 0), key=lambda ln: (-ov[ln], -ld.get(ln, 0), ln))),
-             ('loaded on the trunk', sorted((ln for ln in ld if ld[ln] > LOAD_OK), key=lambda ln: (-ld[ln], ln))),
-             ('most crossed', [ln for ln in sorted(xs, key=lambda ln: (-xs[ln], ln)) if fresh(ln)][:NAME_TOP])]
-    named, why = [], ''
-    for why, lanes in tiers:
-        named = [ln for ln in lanes if fresh(ln)]
-        if named:
-            break
-    added = 0
-    for ln in named:
-        for e in fresh(ln):
-            seen_a.add(json.dumps(e, sort_keys=True))
-            fb['avoid'].append(e)
-            added += 1
+        return [e for e in (end_of(ln, 0), end_of(ln, 1)) if e and _akey(e) not in _avoid]
+    named, why = lanes_named(hots), 'open'
+    if named:
+        # the open lanes, each at the end where its trouble is -- an end named in an earlier round raised
+        added = sum(put_avoid(e) for ln in named for e in (end_of(ln, k) for k in failing_ends(ln)) if e)
+    else:
+        tiers = [('over two vias', sorted((ln for ln in ov if ov[ln] > 0), key=lambda ln: (-ov[ln], -ld.get(ln, 0), ln))),
+                 ('loaded on the trunk', sorted((ln for ln in ld if ld[ln] > LOAD_OK), key=lambda ln: (-ld[ln], ln))),
+                 ('most crossed', [ln for ln in sorted(xs, key=lambda ln: (-xs[ln], ln)) if fresh(ln)][:NAME_TOP])]
+        for why, lanes in tiers:
+            named = [ln for ln in lanes if fresh(ln)]
+            if named:
+                break
+        added = sum(put_avoid(e) for ln in named for e in fresh(ln))
     fb['named'] = list(dict.fromkeys(list(fb.get('named') or []) + named))
     json.dump(fb, open(out, 'w'), indent=1)
     print(f'whole_feedback: {added} new, the lanes named: ' +
           (f'{", ".join(named)} ({why})' if named else 'no lane left to name') +
           f', {len(fb["pairs"])} pairs and {len(fb["avoid"])} ends to avoid in {out}')
     sys.exit(0)
-seen = {json.dumps(x, sort_keys=True) for x in fb['pairs'] + fb['avoid']}
+seen = {json.dumps(x, sort_keys=True) for x in fb['pairs']}
 added = 0
 for fn in hots:
     for x, y, kind, *rest in json.load(open(fn)).get('hot', []):
@@ -209,6 +291,9 @@ for fn in hots:
             items = ([('pairs', sorted([a, b], key=lambda e: e['lane'])) for a, b in itertools.combinations(es, 2)]
                      if len(es) >= 2 else [('avoid', es[0])] if es else [])
             for kind_, it in items:
+                if kind_ == 'avoid':
+                    added += put_avoid(it)
+                    continue
                 key = json.dumps(it, sort_keys=True)
                 if key not in seen:
                     seen.add(key)

@@ -79,6 +79,7 @@ class Log:
             self.f.flush()
 
 
+FANOUT_RAISES = 3   # a fanout laying the round before's ends again: its feedback raised, the fanout again
 INPROC = False      # --inproc: every stage in this process, as a routing call inside KiCad's own process will run them
 
 
@@ -809,7 +810,7 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
                 for ln in grep(os.path.join(d, 'fo.log'), r'^REFUSED'):
                     say('  ' + ln[:220])
                 fbl = stripped(run(['whole_feedback.py', '--refused', os.path.join(d, 'fo.plan.json'), FB, refused],
-                                   env, err=sys.stderr)[1])
+                                   {**env, 'FB_ROUND': str(r)}, err=sys.stderr)[1])
                 say(fbl)
                 if not re.search(r'whole_feedback: [1-9]', fbl):
                     say("=== the fanout's refusal names nothing new -- the rounds end here")
@@ -821,15 +822,39 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             say("  no fanout board -- the rounds end here")
             break
         # the same ends as the round before (feedback it priced but did not follow): the rest of the round would be
-        # the same
-        if prev:
+        # the same -- so the feedback named in that round is raised (whole_feedback --raise: its ends' prices doubled;
+        # the second time, the other ends of the lanes named too) and the fanout ALONE runs again, up to FANOUT_RAISES
+        # times; the rounds end only when it still lays the same ends (zynq K42 and K44 on Linux: round 3 laid round
+        # 2's ends again at the price escalated once, and the rounds ended with a net open)
+        def same_ends():
             try:
-                same = json.load(open(os.path.join(d, 'fo.plan.json'))) == \
+                return json.load(open(os.path.join(d, 'fo.plan.json'))) == \
                     json.load(open(os.path.join(prev, 'fo.plan.json')))
             except Exception:
-                same = False
-            if same:
-                say(f"=== fanout round {r} laid round {r - 1}'s ends again")
+                return False
+        if prev and same_ends():
+            say(f"=== fanout round {r} laid round {r - 1}'s ends again")
+            for k_ in range(1, FANOUT_RAISES + 1):
+                fbr = stripped(run(['whole_feedback.py', '--raise', os.path.join(prev, 'fo.plan.json'), FB]
+                                   + (['--widen'] if k_ == 2 else []), {**env, 'FB_ROUND': str(r - 1)},
+                                   err=sys.stderr)[1])
+                say('  ' + fbr)
+                if not re.search(r'whole_feedback: [1-9]', fbr):
+                    break
+                os.replace(os.path.join(d, 'fo.log'), os.path.join(d, f'fo.same{k_}.log'))
+                rc = run(['fanout_from_plan.py', os.path.join(d, 'fo.kicad_pcb'), str(K), f'--board={base}'], fenv,
+                         log_path=os.path.join(d, 'fo.log'))[0]
+                say(f"  fanout again, the feedback raised: exit {rc} at {secs()} s")
+                for ln in grep(os.path.join(d, 'fo.log'), r'plan model'):
+                    say(ln[:220])
+                if not os.path.isfile(os.path.join(d, 'fo.kicad_pcb')) or not same_ends():
+                    break
+            if not os.path.isfile(os.path.join(d, 'fo.kicad_pcb')):
+                say("  no fanout board -- the rounds end here")
+                r -= 1
+                break
+            if same_ends():
+                say(f"=== fanout round {r} laid round {r - 1}'s ends again, the feedback raised")
                 r -= 1
                 break
         bench = os.path.join(d, 'fo.kicad_pcb')
@@ -881,7 +906,9 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
                 hots.append(h)
             hots += sorted(glob.glob(os.path.join(loopd, 'hs*.json')))     # the snapped plans' places
         new_over = add_over(FB, J.get('over_nets') if J and not proved else None)
-        fbl = stripped(run(['whole_feedback.py', os.path.join(d, 'fo.plan.json'), FB] + hots, env, err=sys.stderr)[1])
+        # (the round, so an end named again in a later one is raised, not added: whole_feedback)
+        fbl = stripped(run(['whole_feedback.py', os.path.join(d, 'fo.plan.json'), FB] + hots,
+                           {**env, 'FB_ROUND': str(r)}, err=sys.stderr)[1])
         say(fbl)
         if new_over:
             say(f"  the ends to count {', '.join(new_over)} over two vias: the solve could not keep them at two")
@@ -890,11 +917,13 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             # a round that leaves nets OPEN names them to the fanout, whatever its audits found -- and one that lays
             # NOTHING (no plan from its solve, none its loop held, no board from its plan) with nothing new from its
             # audits names the lanes the ends model names on these ends (its nets over two, else its lanes loaded on
-            # the trunk, else its most crossed): both their ends freed and to be avoided, so the next round,
-            # incremental, chooses them again. Neither ends the rounds (K41: 5 nets open, the audits silent, and the
-            # rounds ended there)
+            # the trunk, else its most crossed): their ends freed and to be avoided -- an open net's at the end where
+            # its trouble is, by the round's findings and its connectivity -- so the next round, incremental, chooses
+            # them again. Neither ends the rounds (K41: 5 nets open, the audits silent, and the rounds ended there)
             fbn = stripped(run(['whole_feedback.py', '--name', os.path.join(d, 'fo.plan.json'), FB]
-                               + (res['open_nets'] if res else []), env, err=sys.stderr)[1])
+                               + (res['open_nets'] if res else []),
+                               {**env, 'FB_ROUND': str(r), 'FB_HOTS': ','.join(hots),
+                                'FB_CONN': os.path.join(d, 'conn.log')}, err=sys.stderr)[1])
             say(fbn)
             nothing = nothing and not re.search(r'whole_feedback: [1-9]', fbn)
         # nothing new for the fanout: the next round would lay the same ends from the same feedback
