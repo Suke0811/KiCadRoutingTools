@@ -45,6 +45,7 @@ import contextlib
 import glob
 import io
 import json
+import math
 import os
 import re
 import runpy
@@ -223,6 +224,49 @@ class NotConverging(Exception):
     pass
 
 
+# a lane the snap could not lay is held under an island on one layer when its search stuck within this much of it, mm
+SNAP_ISLAND_REACH = 2.0
+
+
+def layer_cut(lane, island, box, layer):
+    """the loop's LAYER cut: `lane` held on the other layer than `layer` across `island` (its box, whole_geo's
+    island_boxes) -- none where the island stands on both layers, which no change answers"""
+    if not box or list(box[4]) != [layer]:
+        return None
+    return {'lane': lane, 'island': island, 'layer': 1 - layer, 'box': list(box[:4])}
+
+
+def audit_layer_cuts(audit, geo):
+    """the LAYER cuts an audit's STATIC findings give: a lane found against a pad of an island (a geometry's 'islands',
+    'REF.PAD' -> island) on one layer, the layer it was found on"""
+    out, isl, bxs = [], geo.get('islands') or {}, geo.get('island_boxes') or {}
+    for ln in lines_of(audit):
+        m = re.match(r'STATIC (\S+)\s+([FB]) \S+ (?:pad|hole) (\S+) ', ln)
+        if m and m.group(3) in isl:
+            c = layer_cut(m.group(1), isl[m.group(3)], bxs.get(isl[m.group(3)]), 'FB'.index(m.group(2)))
+            if c and c not in out:
+                out.append(c)
+    return out
+
+
+def snap_layer_cuts(snap_log, geo):
+    """the LAYER cuts a snap's failures give: a lane it could not lay, its search stuck within SNAP_ISLAND_REACH of an
+    island on one layer, the layer it was on there -- the nearest such island"""
+    out, bxs = [], geo.get('island_boxes') or {}
+    for ln in lines_of(snap_log):
+        m = re.match(r'\s*(\S+)\s+FAILED:.* at \(([-\d.]+), ([-\d.]+)\) on ([FB])\.Cu', ln)
+        if not m:
+            continue
+        x, y, L = float(m.group(2)), float(m.group(3)), 'FB'.index(m.group(4))
+        d = lambda b: math.hypot(max(b[0] - x, 0.0, x - b[2]), max(b[1] - y, 0.0, y - b[3]))
+        near = sorted((d(b), k) for k, b in bxs.items() if list(b[4]) == [L] and d(b) <= SNAP_ISLAND_REACH)
+        if near:
+            c = layer_cut(m.group(1), near[0][1], bxs[near[0][1]], L)
+            if c and c not in out:
+                out.append(c)
+    return out
+
+
 def loop(solve, out, rounds, env, log):
     """whole_loop.sh SOLVE OUTDIR ROUNDS, its lines to LOG: 0 with OUTDIR/plan.json the snapped plan that passed, 1 when
     no round got there, 3 when it stopped not converging, 4 when it stopped at crowded ends"""
@@ -293,7 +337,7 @@ def loop(solve, out, rounds, env, log):
             fl = lambda fs: {tuple(x[:2]) for f in fs if f and os.path.isfile(f)
                              for x in json.load(open(f)).get('flips', [])}
             flipped = fl(st['flips'].split(','))
-            cuts, vcuts = [], []
+            cuts, vcuts, lcuts = [], [], []
             for f in [f for f in st['cuts'].split(',') if f]:
                 c = json.load(open(f))
                 # a cut from the geometry of round k whose flip that geometry had ALREADY been given (a polish of an
@@ -307,7 +351,8 @@ def loop(solve, out, rounds, env, log):
                 cuts += [x for x in c.get('cuts', []) if (x['lane'], x['island']) not in flipped
                          or (x['lane'], x['island']) in given]
                 vcuts += c.get('vcuts', [])
-            json.dump({'cuts': cuts, 'vcuts': vcuts}, open(cuts_out, 'w'))
+                lcuts += [x for x in c.get('lcuts', []) if x not in lcuts]
+            json.dump({'cuts': cuts, 'vcuts': vcuts, 'lcuts': lcuts}, open(cuts_out, 'w'))
         except Exception:
             traceback.print_exc(file=err)
         soft = {'SOFT_CUTS': st['soft']} if st.get('soft') else {}
@@ -375,8 +420,12 @@ def loop(solve, out, rounds, env, log):
             new = {tuple(x) for x in pj.get('flips', [])} - old
             cuts = [c for c in gj.get('cuts', []) if (c['lane'], c['island']) not in new]
             vcuts = gj.get('vcuts', []) + pj.get('vcuts', [])
-            json.dump({'cuts': cuts, 'vcuts': vcuts}, open(O(f'c{i}.json'), 'w'))
-            n = len(cuts) + len(vcuts)
+            # ...and the LAYER cuts the audit's findings give: a lane found against an island on one layer
+            lcuts = [c for c in audit_layer_cuts(O(f'p{i}.audit'), gj) if (c['lane'], c['island']) not in new]
+            if lcuts:
+                log(f"  layer cuts: {', '.join(c_['lane'] + ' under ' + c_['island'] for c_ in lcuts)}")
+            json.dump({'cuts': cuts, 'vcuts': vcuts, 'lcuts': lcuts}, open(O(f'c{i}.json'), 'w'))
+            n = len(cuts) + len(vcuts) + len(lcuts)
             passes = gate(p, O(f'p{i}.audit'))[0] == 0
             if not passes and addhot(p, O(f'p{i}.audit'), O(f'hp{i}.json')):
                 n += 1
@@ -530,6 +579,12 @@ def loop(solve, out, rounds, env, log):
         if not addhot(plan, O('plan.found'), O(f'hs{i}.json')):
             log(f"=== round {i}: the snapped plan does not pass")
             return 1
+        # ...and a lane the snap could not lay beside an island on one layer: held under it (a LAYER cut)
+        lc = snap_layer_cuts(sl, json.load(open(O(f'g{i}.json'))))
+        if lc:
+            json.dump({'lcuts': lc}, open(O(f'lc{i}.json'), 'w'))
+            st['cuts'] = (st['cuts'] + ',' if st['cuts'] else '') + O(f'lc{i}.json')
+            log(f"  layer cuts: {', '.join(c_['lane'] + ' under ' + c_['island'] for c_ in lc)}")
         log(f"=== round {i}: the snapped plan does not pass -> the solve again, its places priced")
         rc = resolve(i)
         return 'continue' if rc is None else rc

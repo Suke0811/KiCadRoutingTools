@@ -200,6 +200,23 @@ WALLS = (
 )
 CASES += WALLS
 
+# WALLS IN THE CHANNEL, past the ends model's reach (the channel runs x 1.2 .. 13.2, the board y -11.2 .. 11.2, the arrays
+# y -5.2 .. 5.2): the same row 2.5 mm past the teeth, mid-channel, nearly the board's height (no way round its ends), on
+# B, one on F and one on B further on (two changes a lane), 2.5 mm short of the berths, off the bus's middle, a
+# stitching row of vias (no layer answers it: round its ends), turned 45 degrees
+CHANNEL = (
+    [('chan_g250', 12, SW + ['--part', 'row@sf:3.675:0.0:F:v:n8:p0.8']),
+     ('chan_mid', 12, SW + ['--part', 'row@ch:6:0.0:F:v:n8:p0.8']),
+     ('chan_full', 12, SW + ['--part', 'row@ch:6:0.0:F:v:n24:p0.8']),
+     ('chan_B', 12, SW + ['--part', 'row@ch:6:0.0:B:v:n8:p0.8']),
+     ('chan_two', 12, SW + ['--part', 'row@ch:4:0.0:F:v:n8:p0.8', '--part', 'row@ch:8:0.0:B:v:n8:p0.8']),
+     ('chan_dst_g250', 12, SW + ['--part', 'row@dw:3.675:1.6:F:v:n8:p0.8']),
+     ('chan_off', 12, SW + ['--part', 'row@ch:6:2.0:F:v:n6:p0.8']),
+     ('chan_vias', 12, SW + ['--part', 'vias@ch:6:0.0:v:n8:p0.8']),
+     ('chan_r45', 12, SW + ['--part', 'row@ch:6:0.0:F:v:n8:p0.8:r45'])]
+)
+CASES += CHANNEL
+
 
 def run(argv, log, env=None, timeout=None):
     with open(log, 'w') as fh:

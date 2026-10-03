@@ -56,7 +56,9 @@ FALLBACK = ['quick_restart', 'no_lp', 'core']
 FACE_ROOM = 2 * VNEED                  # the band along the source's near face: a change's room along its lane
 SOLVE_STALL = 3                        # the search's model reductions in a row with no progress: stalled
 WARM_WORK = 30.0                       # deterministic work to lay a re-solve's warm start out whole (one worker)
-W_SOFT = 5 * W_V // 2                  # a broken SOFT cut: above a dive's two vias, below a net over two
+W_SOFT = 3 * W_V                       # a broken SOFT cut: above a dive's two vias, below a net over two -- whole vias,
+#                                        as the search's proof reads them (at two and a half, a plan holding a cut two
+#                                        vias dearer than one breaking it floored to the same whole number, proved)
 
 
 def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
@@ -144,6 +146,35 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
                 LAYER_CUTS.append((n, k_, 1 - tl[n], entry[n] + d0_, entry[n] + d1_, entry[n] + v1_ + G / 2,
                                    entry[n] + d1_ + vm_, entry[n] + v0_, entry[n] + v1_))
                 VIN0[n] = min(VIN0[n], v0_)
+    # ...and a single lane the loop found blocked by an island on one layer -- its audit against it, or its snap stuck
+    # beside it (whole_route's LAYER cuts, `lcuts` in the cut files: a wall the lanes cannot go round): on the other layer
+    # across the island's box on the trunk, a track's clearance either side, its changes a via's clearance off it
+    CHAN_CUTS, CHAN_T0 = set(), set()
+    for fn_ in list(cuts) + list(soft_cuts):
+        for c_ in json.load(open(fn_)).get('lcuts', []):
+            n_ = c_['lane']
+            if n_ not in M or n_ in prs:
+                continue
+            x0_, y0_, x1_, y1_ = c_['box']
+            ss_ = [float(spine.project_pt(q_)[0]) for q_ in ((x0_, y0_), (x0_, y1_), (x1_, y0_), (x1_, y1_))]
+            s0_, s1_ = min(ss_), max(ss_)
+            if s1_ < entry[n_] or s0_ > tend[n_]:
+                continue                              # (off the lane's trunk)
+            t_, v_, L_ = TRK / 2 + CLR, VIA / 2 + CLR, int(c_['layer'])
+            lo_c, hi_c, w0_, w1_ = s0_ - v_, s1_ + v_, None, None
+            # (an island so near the lane's tooth -- or a trunk lane's berth -- that its end room leaves no change
+            # before it -- after it: the change from the stub's end to the island, its end room and the face band
+            # waived and no stagger there, its neighbours still a ball pitch apart, as at a blocked front)
+            if tl[n_] != L_ and lo_c < entry[n_] + VIN0[n_] + G:
+                w0_, w1_ = entry[n_], lo_c
+                VIN0[n_] = 0.0
+                CHAN_T0.add(n_)
+            elif n_ not in bname and dl[n_] != L_ and hi_c > end[n_] - VIN1[n_] - G:
+                w0_, w1_ = hi_c, end[n_]
+                VIN1[n_] = 0.0
+            CHAN_CUTS.add((n_, 'chan ' + c_['island'], L_, round(s0_ - t_, 4), round(s1_ + t_, 4), round(lo_c, 4),
+                           round(hi_c, 4), w0_, w1_))
+    CHAN_CUTS = sorted(CHAN_CUTS)
     XO = {n for n in prs if n in M and _pairs.opposite_hands(ctx, n)}
     for n in XO:
         VIN0[n] = _pairs.crossover_room(ctx.cfg, ctx.pair_ends[n][0], _axis(ctx.tooth_dir.get(n)), 0)
@@ -321,7 +352,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     # ---- layer changes
     cost = []
     chg, tot = {}, {}
-    T0 = {c_[0] for c_ in LAYER_CUTS if c_[1] == 0}         # (a blocked tooth's change may stand in the face's band)
+    T0 = {c_[0] for c_ in LAYER_CUTS if c_[1] == 0} | CHAN_T0   # (a blocked tooth's change may stand in the face's band)
     for n in M:
         lo_n, hi_n = Q(max(entry[n] + VIN0[n], BAND if n not in T0 else entry[n] + VIN0[n])), Q(end[n] - VIN1[n])
         cs_ = [m.NewIntVar(lo_n, hi_n + 1, f'c_{n}_{k}') for k in range(KMAX)]
@@ -373,7 +404,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     # (a change in its blocked end's window, between the stub and the copper, is a dog-bone's via at the array's edge,
     # its neighbours' a ball pitch across: no stagger along)
     DOG = collections.defaultdict(list)
-    for (n_, k_, _L, lo_u, hi_u, lo_c, hi_c, w0, w1) in LAYER_CUTS:
+    for (n_, k_, _L, lo_u, hi_u, lo_c, hi_c, w0, w1) in LAYER_CUTS + [c_ for c_ in CHAN_CUTS if c_[7] is not None]:
         DOG[n_].append((Q(w0), Q(w1)))
     INWIN = {}                                          # (lane, change) -> it stands in its blocked end's window
     for n in M:
@@ -469,7 +500,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
               f'{sum(1 for s_ in soft_broken if s_[0] == "via")} via), each {W_SOFT / W_V:g} vias when broken')
     # ---- LAYER cuts (the blocked fronts, above): no change of the lane inside the span, and its layer there -- its end's
     # layer flipped by the changes before the span -- the other; soft as the geometry's cuts are, priced W_SOFT broken
-    for (n_, k_, L_, lo_u, hi_u, lo_c, hi_c, w0, w1) in LAYER_CUTS:
+    for (n_, k_, L_, lo_u, hi_u, lo_c, hi_c, w0, w1) in LAYER_CUTS + CHAN_CUTS:
         cs_l, act_l = chg[n_]
         br_ = m.NewBoolVar('')
         bef = []
@@ -487,6 +518,9 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
         print(f'   layer cuts (blocked fronts): {len(LAYER_CUTS)} -- ' + ', '.join(
             f'{c_[0]} {"tooth" if c_[1] == 0 else "berth"} on {"FB"[c_[2]]} over {c_[3]:.2f}..{c_[4]:.2f}'
             for c_ in LAYER_CUTS))
+    if CHAN_CUTS:
+        print(f'   layer cuts (islands in the way): {len(CHAN_CUTS)} -- ' + ', '.join(
+            f'{c_[0]} on {"FB"[c_[2]]} under {c_[1][5:]} over {c_[3]:.2f}..{c_[4]:.2f}' for c_ in CHAN_CUTS))
     # ---- HISTORY congestion (negotiated, as PathFinder prices a resource that was overused before): HIST=HOT.json,.. are
     # the audits' findings of earlier rounds (whole_gate --hot: where a plan was short -- a dive, a pitch, a static, a
     # shape), one file per audit. A finding marks the bins of route within a via's room of it, on the frame whose spine is

@@ -1393,6 +1393,15 @@ for q in sol['paid'].get('static', []):
     g = LANE_ST + hw[n] + P_MIN
     cuts.append({'lane': n, 'island': lab, 'u_lo': FR[f]['u'](sa - g), 'u_hi': FR[f]['u'](sb + g)})
 res['cuts'] = cuts
+# each island's box and layers (whole_route's LAYER cuts: a lane the audit or the snap found blocked by an island on one
+# layer, held on the other across it)
+_ib = {}
+for st_ in STATIC:
+    if st_[5] in set(ISLAND.values()):
+        x0_, y0_, x1_, y1_, L_ = _ib.get(st_[5], (math.inf, math.inf, -math.inf, -math.inf, set()))
+        _ib[st_[5]] = (min(x0_, st_[0]), min(y0_, st_[1]), max(x1_, st_[2]), max(y1_, st_[3]), L_ | set(st_[4]))
+res['island_boxes'] = {k_: [round(v_[0], 4), round(v_[1], 4), round(v_[2], 4), round(v_[3], 4), sorted(v_[4])]
+                       for k_, v_ in _ib.items()}
 # each pad's island, for the polish's flips to name the islands this geometry held lanes to (whole_polish.island_of)
 res['islands'] = {f'{r_}.{ctx.pcb.footprints[r_].pads[i_].pad_number}': lab_ for (r_, i_), lab_ in ISLAND.items()}
 for q in sol['paid'].get('via', []):

@@ -91,9 +91,9 @@ Reading the tables:
   berth at every distance from none to past the ends model's reach, between
   and off the stub rows and the router's grid, turned, of every kind, on
   either layer, at both ends of a lane; and walls of parts no lane threads,
-  in front of the teeth and the berths -- and grades each on the route and on
-  the handoff. 107 pass; the one that does not is the
-  [TODO](#next-the-whole-route-whole_py)'s wall in the channel.
+  in front of the teeth and the berths and across the channel, the lanes
+  going round their ends or, where there is no room, under them -- and grades
+  each on the route and on the handoff. All 117 pass.
 
 <img src="img/k51_own_ends.png" alt="K51 routed on our own ends, beside the human's" width="900">
 
@@ -561,6 +561,16 @@ once, proved optimal in its vias.
   end room waived down to that, and no stagger or pad cut there, the ends
   model having measured that via clear of every copper on every layer. Soft,
   priced as the geometry's cuts (`W_SOFT`).
+- A single the loop's layer cut holds on the other layer across an island
+  ([the loop](#the-loop-whole_routepy---loop), below): its changes a via's
+  clearance off the island's box on the trunk -- where its end room leaves
+  none before the island (or after it, at a trunk lane's berth), from its
+  stub's end, its end room, the face band and the stagger waived there as at
+  a planned end.
+- Soft cuts are priced `W_SOFT`, **three whole vias** -- above a dive's two,
+  below a net over two -- as the search's proof reads them: at two and a
+  half, a plan breaking a cut floored to the same whole number as one holding
+  it two vias dearer, and stood as proved.
 
 **Pairs and fixed obstacles.**
 
@@ -830,6 +840,13 @@ only the fanout can move.
   gives) are kept as soft costs for that solve and the rounds after, with the
   history (`whole_solve SOFT_CUTS`), and that re-solve keeps a plan it cannot
   prove.
+- **Layer cuts:** a single lane the audit finds against an island on one
+  layer, or the snap cannot lay with its search stuck within
+  `SNAP_ISLAND_REACH` (2 mm) of one, is held on the other layer across that
+  island from the next solve on (`lcuts` in the cut files: the island's box,
+  whole_geo's `island_boxes`) -- a wall the lanes cannot go round. Not at an
+  island on both layers, which no change answers, and not before a new side
+  flip at it has had its round.
 - **Not converging:** it stops after two rounds that do not beat the best
   score so far (how far the plan got, then its findings there). A round with
   new side flips to try is not counted.
@@ -1055,7 +1072,7 @@ With nothing supplied, as on the benches:
 |---|---|
 | `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`) |
 | `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape; the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`) |
-| `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the ladder in the cloud, one container per rung |
+| `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the loop's layer cuts from the audit and the snap (`tests/test_622_layer_cuts.py`); the ladder in the cloud, one container per rung |
 | `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`); the frame of a bench (a part on a ring's stack: `tests/test_622_ring_room.py`); what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP (a part seen from several frames: `tests/test_622_part_frames.py`; islands made of pads: `tests/test_622_pad_islands.py`), the polish, the snap onto the router's grid |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a plan installed and audited, gated, linted, drawn; the bench they share |
@@ -1219,20 +1236,15 @@ channels first, and the other escapes leave round it.
 ### Next, the whole route (`whole_*.py`)
 
 - **Parts in the solve.** The solve knows of a part in the lanes' way only
-  where an end's planned change answers it (a wall within the ends model's
-  reach of a crowded tooth or berth); the geometry fits the lanes round every
-  other part afterwards, deciding each part's side from where its first pass
-  laid them. A part as a fixed slot in the solve's lane order, on its layers,
+  where a lane was found blocked by it -- an end's planned change, the loop's
+  layer cut; the geometry fits the lanes round every other part afterwards,
+  deciding each part's side from where its first pass laid them. A part as a fixed slot in the solve's lane order, on its layers,
   would make the side a decision of the solve's own, priced with everything
   else, and passing under it on the other layer one more choice:
-  - **A wall in the channel**, past the ends' reach (`synth_handoff.py`
-    `wall_src_g100`), leaves a net open: the geometry's cut for a lane it
-    could not keep off an island reaches the solve only as "no crossings
-    there", never as "on the other layer there" for an island on one layer.
-  - **Round its end or under it:** an end named crowded gets its change
-    planned, and the lane crosses under the wall where going round its end
-    would cost fewer vias (`wall_dst_g60`: 12 vias under it, 4 round it).
-    The solve weighing the two, the length round against the vias under.
+  - **Round its end or under it:** a lane found blocked gets its change
+    planned, and crosses under the wall where going round its end would cost
+    fewer vias (`wall_dst_g60`: 10 vias under it, 4 round it). The solve
+    weighing the two, the length round against the vias under.
 - **A row of islands, one side.** The geometry decides a lane's side of
   each island apart, from where its first pass laid the lane; nothing keeps a
   lane on one side along a row of them, so a header's pins, or a two-pad
