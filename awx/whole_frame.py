@@ -305,7 +305,50 @@ def build(ctx, dest, _trunk=frozenset()):
             if _inside((p_.global_x, p_.global_y), base, bd.LPITCH + 2 * bd.LANE_MIN):
                 hx, hy = (p_.size_x or 0.0) / 2, (p_.size_y or 0.0) / 2
                 tails += [(p_.global_x + sx * hx, p_.global_y + sy * hy) for sx in (-1, 1) for sy in (-1, 1)]
+    # a part ON a ring's stack -- the handoff line from the ring's start to its outermost lane, its copper within a
+    # clearance -- though it lies past the hull's margin: stacked through it, a ring's first lane was planned on the
+    # part's pad. The ring passes INSIDE it when its lanes fit between it and the destination's copper, the stack
+    # packed into that gap; else the part is one more thing the ring goes round. Taken round always, a header lying
+    # along the face with the ring's berths between it and the face sent the ring outside it and its lanes back in
+    # (synth_handoff pth_corner); stacked through always, a cap at the corner had the ring's start on its pad
+    # (s4_pathF)
+    in_hull, packed = set(), {}
+    for _pass in range(2 * len(pcb.footprints) + 2):
+        hits, room = _stack_rings(F, ctx, pcb, src, dest, dpads, near, tails, north, width, cen, in_hull, packed)
+        acted = False
+        for k in sorted(hits):
+            ref_, inner = min(hits[k], key=lambda h: (h[1], h[0]))      # the nearest part on the stack
+            edge_in = room_inside(*room[k], inner, bd.TRACK, bd.CLEAR, bd.LANE_MIN)
+            if edge_in is not None and packed.get(k) != edge_in:
+                packed[k] = edge_in                     # inside: the lanes packed between the destination and it
+                acted = True
+            elif edge_in is None:
+                in_hull.add(ref_)                       # no room: round it
+                for p_ in pcb.footprints[ref_].pads:
+                    hx, hy = (p_.size_x or 0.0) / 2, (p_.size_y or 0.0) / 2
+                    tails += [(p_.global_x + sx * hx, p_.global_y + sy * hy) for sx in (-1, 1) for sy in (-1, 1)]
+                acted = True
+        if not acted:
+            break
+    short = set()
+    for k, ring in F.rings.items():
+        mem = [n for n in F.M if F.cls.get(n) == k]
+        entry = max(ring.project_pt(F.spine.xy(F.Hk[k], F.o_h[n]))[0] for n in mem) + 2 * bd.LANE_MIN
+        short |= {n for n in mem if ring.project_pt(F.land[n])[0] < entry}
+    if short:
+        return build(ctx, dest, _trunk | frozenset(short))
+    return F
+
+
+def _stack_rings(F, ctx, pcb, src, dest, dpads, near, tails, north, width, cen, in_hull, packed):
+    """each ring's lanes stacked on the handoff line outside the hull (F.o_h) -- or, a ring in `packed`, from that
+    edge, between the destination and a part on its stack -- its start and spine (F.Hk, F.rings). Returns (hits,
+    room): hits {ring: [(part, its copper's nearest offset toward the destination, along the ring's side)]} for the
+    parts (none in the hull) whose copper lies on a ring's stack -- within a clearance of its outermost lane's copper,
+    on the handoff line from the ring's start out; room {ring: (the destination's copper's farthest offset on that
+    side, the facing face's lanes' edge, the ring's lanes' width)}"""
     hull = dpads + [F.bend[n] for n in F.M] + tails
+    rpad = max((max(p.size_x or 0.0, p.size_y or 0.0) / 2 for p in pcb.footprints[dest].pads), default=0.0)
     # each ring lane's offset on the handoff line, from the ORDER (the berths', north to south), stacked innermost first
     # a lane apart OUTSIDE its ring's own edge: beyond the outermost near-face berth, and beyond the hull on that side
     # by the ring's margin -- so the ring starts outside the destination's corner and leaves the trunk along it, every
@@ -317,7 +360,7 @@ def build(ctx, dest, _trunk=frozenset()):
         # (the outermost near-face lane's own room outside its centre: a pair's is half its pitch more)
         near_edge = max((sg * F.se[n][1] + (width(n) - bd.LANE_MIN) / 2 for n in near), default=-bd.LANE_MIN / 2)
         hull_edge = max(sg * F.spine.project_pt(p_)[1] for p_ in hull) + 2 * bd.LPITCH - bd.LANE_MIN
-        edge[k] = max(near_edge, hull_edge)
+        edge[k] = max(near_edge, hull_edge) if k not in packed else min(max(near_edge, hull_edge), packed[k])
         mem = [n for n in F.final if F.cls.get(n) == k]
         at = edge[k]
         for n in (mem[::-1] if k == 'N' else mem):
@@ -341,14 +384,60 @@ def build(ctx, dest, _trunk=frozenset()):
         _core, F.rings[k] = bd.ring_spine(dpads, [F.spine.xy(s_start, F.o_h[n]) for n in mem], stubs,
                                           F.spine.xy(s_start, o_start), ccw, tuple(float(v) for v in F.spine.d[-1]),
                                           tails)
-    short = set()
-    for k, ring in F.rings.items():
+    hits, room = {}, {}
+    for k in F.rings:
         mem = [n for n in F.M if F.cls.get(n) == k]
-        entry = max(ring.project_pt(F.spine.xy(F.Hk[k], F.o_h[n]))[0] for n in mem) + 2 * bd.LANE_MIN
-        short |= {n for n in mem if ring.project_pt(F.land[n])[0] < entry}
-    if short:
-        return build(ctx, dest, _trunk | frozenset(short))
-    return F
+        sg = north if k == 'N' else -north
+        o_of = lambda p_: sg * F.spine.project_pt(p_)[1]
+        # the destination's copper's farthest offset on the ring's side: its pads (their reach) and the berths' ends
+        e_ = max([o_of(p_) + rpad for p_ in dpads] + [o_of(F.bend[n]) + bd.TRACK / 2 for n in F.M])
+        near_e = max((sg * F.se[n][1] + (width(n) - bd.LANE_MIN) / 2 for n in near), default=-bd.LANE_MIN / 2)
+        room[k] = (e_, near_e, sum(width(n) for n in mem))
+        out_ = max(mem, key=lambda n: sg * F.o_h[n])
+        a = F.spine.xy(F.Hk[k], sg * (min(sg * F.o_h[n] for n in mem) - bd.LPITCH))     # the ring's start
+        b = F.spine.xy(F.Hk[k], F.o_h[out_])                                             # its outermost lane
+        reach = (width(out_) - bd.LANE_MIN) / 2 + bd.TRACK / 2 + bd.CLEAR                 # its copper and a clearance
+        for ref_, fp_ in pcb.footprints.items():
+            if ref_ in (src, dest) or ref_ in in_hull:
+                continue
+            rects = [(p_.global_x - (p_.size_x or 0.0) / 2, p_.global_y - (p_.size_y or 0.0) / 2,
+                      p_.global_x + (p_.size_x or 0.0) / 2, p_.global_y + (p_.size_y or 0.0) / 2) for p_ in fp_.pads]
+            if any(_seg_rect(a, b, r_) < reach - 1e-9 for r_ in rects):
+                inner = min(o_of(c_) for r_ in rects for c_ in ((r_[0], r_[1]), (r_[0], r_[3]), (r_[2], r_[1]),
+                                                                  (r_[2], r_[3])))
+                hits.setdefault(k, []).append((ref_, inner))
+    return hits, room
+
+
+def room_inside(e_, near_e, sum_w, inner, track, clear, lane_min):
+    """the stack's edge (the `edge` a ring's lanes are stacked from: a lane's pitch inside its first lane) that packs a
+    ring's lanes between the destination's copper (its farthest offset on the ring's side, `e_`) and a part's nearest
+    copper (`inner`), never inside the facing face's lanes (`near_e`); None when they do not fit. `sum_w`: the ring's
+    lanes' widths (a lane's pitch each, a pair's more). Its first lane's copper a clearance off the destination's, its
+    last's a clearance off the part's"""
+    edge = max(near_e, e_ + clear + track / 2 - lane_min)
+    return edge if edge + sum_w + track / 2 + clear <= inner + 1e-9 else None
+
+
+def _seg_rect(a, b, r):
+    """the distance from segment a-b to the rectangle r (x0, y0, x1, y1): 0 where they meet"""
+    x0, y0, x1, y1 = r
+    inside = lambda p: x0 <= p[0] <= x1 and y0 <= p[1] <= y1
+
+    def pt_seg(p, q0, q1):
+        dx, dy = q1[0] - q0[0], q1[1] - q0[1]
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 < 1e-18 else max(0.0, min(1.0, ((p[0] - q0[0]) * dx + (p[1] - q0[1]) * dy) / L2))
+        return math.hypot(p[0] - q0[0] - t * dx, p[1] - q0[1] - t * dy)
+
+    def cross(p, q, u, v):
+        d = lambda o, e, f: (e[0] - o[0]) * (f[1] - o[1]) - (e[1] - o[1]) * (f[0] - o[0])
+        return d(p, q, u) * d(p, q, v) < 0 and d(u, v, p) * d(u, v, q) < 0
+    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    if inside(a) or inside(b) or any(cross(a, b, corners[i], corners[(i + 1) % 4]) for i in range(4)):
+        return 0.0
+    return min([pt_seg(c, a, b) for c in corners]
+               + [pt_seg(p, corners[i], corners[(i + 1) % 4]) for p in (a, b) for i in range(4)])
 
 
 def _inside(p, pts, margin):

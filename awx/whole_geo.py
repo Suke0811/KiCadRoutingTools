@@ -184,7 +184,11 @@ for ref, fp in ctx.pcb.footprints.items():
             hx, hy = p.size_x / 2, p.size_y / 2
             Ls = {0, 1} if drilled else {F(L) for L in ('F.Cu', 'B.Cu') if L in p.layers}
         if Ls and BX0 < p.global_x < BX1 and BY0 < p.global_y < BY1:
-            ISL.setdefault((ISLAND[ref], frozenset(Ls)), []).append((p.global_x - hx, p.global_y - hy, p.global_x + hx, p.global_y + hy))
+            # (a round pad or hole: the cross that covers it, not its box's square -- corridor.round_cover)
+            ISL.setdefault((ISLAND[ref], frozenset(Ls)), []).extend(
+                _cor.round_cover(p.global_x, p.global_y, hx, hy)
+                if (p.pad_type == 'np_thru_hole' or p.shape == 'circle') and abs(hx - hy) < 1e-9 else
+                [(p.global_x - hx, p.global_y - hy, p.global_x + hx, p.global_y + hy)])
 for (ref, Ls), bxs in ISL.items():
     STATIC.append((min(b[0] for b in bxs), min(b[1] for b in bxs), max(b[2] for b in bxs), max(b[3] for b in bxs),
                    set(Ls), ref))

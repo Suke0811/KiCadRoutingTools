@@ -557,6 +557,15 @@ def line_extent(sp: Spine, s: float, rects, g: float) -> Optional[Tuple[float, f
     return (lo, hi) if lo <= hi else None
 
 
+def round_cover(x: float, y: float, rx: float, ry: float):
+    """a ROUND pad or hole (centre x, y, half-sizes rx, ry) as rectangles for line_extent: the cross of two, each its
+    full size one way and cos 45 of it the other. It covers the circle and reaches 0.22 of its radius past it at its
+    corners, where the square of its box reached 0.41 -- a hole beside a ring's handoff held the ring's lanes in past
+    the ring's start by that much (synth_handoff npth_corner)"""
+    c = math.sqrt(0.5)
+    return [(x - rx, y - c * ry, x + rx, y + c * ry), (x - c * rx, y - ry, x + c * rx, y + ry)]
+
+
 def part_home(spines, spans, centre: Pt):
     """the frame that sees a part WHOLE -- its span (sa, sb), the s of its four corners there, not cut at the frame's
     ends -- nearest its spine; `spines` {frame: Spine}, `spans` {frame: (sa, sb)}"""

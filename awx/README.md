@@ -87,8 +87,8 @@ Reading the tables:
   lanes handed to a ring on either side of the destination, parts at its
   corner and in the lanes' way (passives and rows of them, PTH headers,
   mounting holes, rows of via barrels), the bus arriving at an angle, lanes
-  crossing, pairs -- and grades each on the route and on the handoff. 37
-  pass; the 8 that do not are the
+  crossing, pairs -- and grades each on the route and on the handoff. 41
+  pass; the 4 that do not are the
   [TODO](#next-the-whole-route-whole_py)'s generated cases.
 
 <img src="img/k51_own_ends.png" alt="K51 routed on our own ends, beside the human's" width="900">
@@ -488,7 +488,12 @@ corridor, branch or path:
   the widest gap). It goes round the destination's **hull** -- its pads, the
   berths, and other parts' pads within a lane pitch and two lanes' room of
   them -- its lanes stacked across the trunk's handoff line outside it, the
-  ring starting a lane pitch inside the first;
+  ring starting a lane pitch inside the first. A part on that **stack** is
+  passed **inside** when the ring's lanes fit between it and the
+  destination's copper -- the stack packed into the gap, never inside the
+  facing face's lanes -- and is one more thing the ring goes round when they
+  do not (`room_inside`): a cap at the corner is gone round, a header lying
+  along the face with the ring's berths behind it is passed inside;
 - the two **orders** the solve inverts: the teeth round the source, the
   berths round the destination;
 - each lane's taut **reference path**.
@@ -603,7 +608,9 @@ solve as **cuts**.
   the lanes' own ends. An island is a part, or parts no lane can surely pass
   between (`whole_ctx.part_islands`). The rows hold a lane over its whole
   piece but its own tooth and berth, and a pair's via off an island by its
-  barrels' reach.
+  barrels' reach. A round pad or hole is held off as the cross of two
+  rectangles that covers it (`corridor.round_cover`), reaching 0.22 of its
+  radius past it at the corners where its box's square reached 0.41.
 - **One side on the board:** which side of a part a lane passes is decided
   once, not per frame. A part's **home** is the frame that sees it whole,
   nearest its spine; a lane that meets the part in two frames -- the trunk and
@@ -1008,7 +1015,7 @@ With nothing supplied, as on the benches:
 | `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`) |
 | `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape; the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`) |
 | `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the ladder in the cloud, one container per rung |
-| `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`); the frame of a bench; what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
+| `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`); the frame of a bench (a part on a ring's stack: `tests/test_622_ring_room.py`); what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP (a part seen from several frames: `tests/test_622_part_frames.py`), the polish, the snap onto the router's grid |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a plan installed and audited, gated, linted, drawn; the bench they share |
 | `whole_ladder.py` | the ladders on this machine: rungs side by side, each stopped at a cap with every stage it started, one grade line each |
@@ -1187,16 +1194,6 @@ channels first, and the other escapes leave round it.
   parts is held to (0.387 on the synth bench). Islands made of pads, joined
   below that bar whatever part they belong to, would let the geometry send a
   lane through (`synth_handoff.py` `btw_0402`, `btw_0603`).
-- **A part at the destination's corner: round it, or inside it.** The frame
-  takes a part into the hull the ring goes round by a fixed margin from the
-  hull. Just past that margin, a cap at the corner can stand on the ring's
-  handoff stack -- the ring's first lane planned on its pad, its start inside
-  it (`s4_pathF`) -- while a header lying along the face with the ring's
-  berths between it and the face has to be passed inside, not round
-  (`pth_corner`). Those, a mounting hole at the corner (`npth_corner`) and a
-  row of via barrels under the south face (`vias_ds`) all route; the geometry
-  pays to hold a trunk end on its ring's side. The frame should decide it by whether the gap between the
-  part and the hull holds the ring's lanes.
 - **A tooth stub up an array gap.** On a crossing pattern the fanout can run a
   tooth's stub up a gap inside the source array, and two lanes then fold round
   each other in front of it, one through 155 degrees (`s4_bulgeW`).

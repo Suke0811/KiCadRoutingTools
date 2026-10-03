@@ -21,6 +21,8 @@ of its four corners projected -- far larger than its copper in a slanted or bent
 6. Spine.lane_line: at a corner a lane's two legs meet where its own two lines cross -- at the mitre for a fixed
    offset, before it for a lane moving into the corner -- with no column past the crossing drawn; outside a corner
    nothing is left out; a fixed point (a via's column) always drawn; a straight spine draws every column.
+7. corridor.round_cover: a round pad or hole covered by a cross of two rectangles, reaching at most 0.23 of its
+   radius past it (its box's square, 0.41).
 """
 import os
 import sys
@@ -144,13 +146,25 @@ def main():
     if [(round(q[0], 9), round(q[1], 9)) for q in st.lane_line(sloped)] != [(round(s_, 9), round(o_, 9)) for s_, o_ in sloped]:
         fails.append('lane_line: a straight spine did not draw every column where it is')
 
+    # 7. a round pad or hole as the cross of two rectangles: every point of its circle inside one of them, and no
+    # corner of them farther out than 0.23 of the radius (its box's square reached 0.41)
+    import math as _m
+    rc = cor.round_cover(3.0, -2.0, 1.1, 1.1)
+    outside = [a for a in range(720) if not any(
+        r_[0] - 1e-9 <= 3.0 + 1.1 * _m.cos(_m.radians(a / 2)) <= r_[2] + 1e-9
+        and r_[1] - 1e-9 <= -2.0 + 1.1 * _m.sin(_m.radians(a / 2)) <= r_[3] + 1e-9 for r_ in rc)]
+    reach = max(_m.hypot(cx - 3.0, cy + 2.0) for r_ in rc for cx in (r_[0], r_[2]) for cy in (r_[1], r_[3])) / 1.1 - 1.0
+    if outside or reach > 0.23:
+        fails.append(f'round_cover: {len(outside)} points of the circle uncovered, its corners {reach:.3f} r out (want '
+                     f'0 and at most 0.23)')
+
     for f in fails:
         print(f'  FAIL: {f}')
     if fails:
         return 1
     print('PASS: a column\'s extent exact and narrower than the projected box where the frame slants; the side carried '
           'by the travel; the home whole before near; one side per lane and part, from the home split first; a lane '
-          'at a corner drawn where its two lines cross, never past it')
+          'at a corner drawn where its two lines cross, never past it; a round pad covered by its cross')
     return 0
 
 
