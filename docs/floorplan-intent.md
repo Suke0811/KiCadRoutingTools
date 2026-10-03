@@ -516,7 +516,13 @@ refused. Either way the seat keeps its pose and the run's notes say it was
 "written outside its declared along-edge window". Stage 1 also reads the part's extents, the
 declared start and the window at the rotation it will WRITE. It used to read
 them at the input rotation and then apply a declared `rotation`, which put
-splitflap_driver's J5 10.00 mm off a centre claim at a declared 0°.
+splitflap_driver's J5 10.00 mm off a centre claim at a declared 0°. For a
+`rotation_candidates` set, the rotation it writes is the part's own angle
+when that is a member that fits the edge and its window, else the first
+member, in the author's order, that does (#1120); when none fits, stage 1
+leaves the part unturned, says so, and the later stages seat it at a member
+or report it in `rotation_unseated`. It used to apply no set at all, so J5
+declared `[0, 90]` was written at its input 180.
 
 **What a correction may not trade for its fix.** Both this step and the band
 settle below are compared with the pose they replace, and every count below

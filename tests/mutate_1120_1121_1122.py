@@ -11,7 +11,11 @@ restore the defect each issue measured, or the reason it went unseen:
     with;
   * `gate-blind-to-other-callees` -- test_893's standing gate read only
     `_try_place` calls, which is why `perturb_poses` was never asked for its
-    declaration.
+    declaration;
+  * `stage1-set-not-applied` / `stage1-unfit-set-measured-at-the-input`
+    (#1120) -- stage 1's edge seat applied a single declared rotation and
+    no set, and no later stage re-seats what it seats, so splitflap's J5
+    declared `[0, 90]` was written at its input 180, graded clean.
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty
@@ -50,6 +54,7 @@ _PL = os.path.join(_ROOT, 'py_placer', 'placement')
 TARGETS = {
     'pf': os.path.join(_PL, 'portfolio.py'),
     't893': os.path.join(_TESTS, 'test_893_declared_rotation.py'),
+    'sd': os.path.join(_PL, 'seeder.py'),
 }
 
 
@@ -67,6 +72,14 @@ OFF_LATTICE = _t(T1121, 'off_lattice_member')
 E2E = _t(T1121, 'place_portfolio_does_not')
 GATE = _t('test_893_declared_rotation.py', 'declaration_taking_call')
 GATE_CTL = _t('test_893_declared_rotation.py', 'ladder_gate')
+# test_983 is unittest: `-k` selects, and a pattern that matches nothing
+# exits 5 (Python 3.12+), so a misspelt witness refuses at the baseline.
+T983 = 'test_983_seat_grade_bounds.py'
+C5 = _t(T983, '-k', 'test_c5_')
+C7 = _t(T983, '-k', 'test_c7_')
+C8 = _t(T983, '-k', 'test_c8_')
+C9 = _t(T983, '-k', 'test_c9_')
+C10 = _t(T983, '-k', 'test_c10_')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -111,6 +124,55 @@ ROWS = [
      "        return '%s=None' % kw",
      "        return None",
      (GATE_CTL,), 'KILLED'),
+    # -- #1120: stage 1 applies a candidate set ------------------------------
+    ('stage1-set-not-applied', 'sd',
+     "    if claim is not None and claim[1]:",
+     "    if False:",
+     (C5, C7), 'KILLED'),
+    ('stage1-set-sorted', 'sd',
+     "        set1120 = [c % 360.0 for c in claim[1]]",
+     "        set1120 = sorted(c % 360.0 for c in claim[1])",
+     (C5,), 'KILLED'),
+    ('stage1-set-ignores-fit', 'sd',
+     "        fit1120 = [r for r in set1120 if fits is None or fits(r)]",
+     "        fit1120 = list(set1120)",
+     (C7,), 'KILLED'),
+    ('stage1-turns-a-part-inside-its-set', 'sd',
+     "        if any(abs((r - part.rot + 180.0) % 360.0 - 180.0) < 1e-9",
+     "        if False and any(abs((r - part.rot + 180.0) % 360.0 - 180.0) < 1e-9",
+     (C5,), 'KILLED'),
+    ('stage1-unfit-set-measured-at-the-input', 'sd',
+     "        return fit1120[0] if fit1120 else set1120[0]",
+     "        return fit1120[0] if fit1120 else part.rot",
+     (C8,), 'KILLED'),
+    ('stage1-production-passes-no-fit', 'sd',
+     "                fits=lambda r: _stage1_fits(state, part, c, bounds, edge, r))",
+     "                fits=None)",
+     (C7,), 'KILLED'),
+    ('stage1-fits-ignores-width', 'sd',
+     "    if lo1120 > hi1120:",
+     "    if False:",
+     (C7, C10), 'KILLED'),
+    ('stage1-fits-ignores-window', 'sd',
+     "    return max(lo1120, w_lo) <= min(hi1120, w_hi)",
+     "    return True",
+     (C9, C10), 'KILLED'),
+    ('stage1-apply-single-only', 'sd',
+     "            if _edge_decl is not None:",
+     "            if _edge_decl is not None and _edge_decl[0] is not None:",
+     (C5, C7), 'KILLED'),
+    ('stage1-apply-first-member', 'sd',
+     "                         else _geo_rot) % 360.0",
+     "                         else _edge_decl[1][0]) % 360.0",
+     (C7,), 'KILLED'),
+    ('stage1-set-turn-unnamed', 'sd',
+     "                        + (f\", the first of its rotation_candidates \"",
+     "                        + (f\", \"",
+     (C5,), 'KILLED'),
+    ('stage1-unfit-set-unnamed', 'sd',
+     "                    f\"edge connector {ref}: none of its declared \"",
+     "                    f\"edge connector {ref}: \"",
+     (C8,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

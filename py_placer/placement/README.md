@@ -295,7 +295,8 @@ rot-180 case) DECLARES it: a block's `rotation` / `rotation_candidates` (#893,
 honoured by the seat search -- `place_seed`'s post-polish re-seat included
 since #1117, which names a part it cannot put back at its angle in
 `reseat_declined` rather than turning it; stage 1's edge seat applies a
-declared `rotation` but not a `rotation_candidates` set -- and held by the
+declared `rotation`, and a `rotation_candidates` set at a member that fits
+the edge since #1120 -- and held by the
 quench, whose swaps no longer trade a declared angle away), an array's
 `rotation`
 (the row is seated at one angle and the quench only translates it), or a
