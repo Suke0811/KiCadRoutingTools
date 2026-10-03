@@ -140,12 +140,19 @@ EDGE_BAND_SANITY_MM = 5.0
 #: lattice, and the quench's swaps exchanged full poses, angles included.
 #: test_893 now reads every source tree for a `_try_place` call without a
 #: ladder, and the swap refuses an angle the declaration does not admit.
-#: Still NOT held, and so still ungraded: `place_portfolio --strategy
-#: poses` and `place_fanout_clearance`'s cap turns, neither of which reads
-#: a rotation declaration; stage 1's edge seat, which applies a declared
-#: `rotation` but not a `rotation_candidates` set, so an edge connector
-#: whose input angle is outside its set keeps it; and `place_pose`'s
-#: set/rotate/face, which take the caller's angle. An earlier draft
+#: Three more were held by #1120-#1122: stage 1's edge seat applies a
+#: `rotation_candidates` set (a member that fits the edge, or the part is
+#: left unturned and reported); `place_portfolio`'s `poses` strategy offers
+#: a declared part only angles its declaration admits; and
+#: `place_fanout_clearance --intent` turns a cap only within its claim, in
+#: the comparison run without the decap gate too. test_893's standing gate
+#: also reads `_seat_edge` and `perturb_poses` calls for their declaration.
+#: Still NOT held, and so still ungraded: `place_pose`'s set/rotate/face,
+#: which take the caller's angle; `arrays[].rotation`, which is not a block
+#: claim and so not in `rotations_for_ref`; and any actor run WITHOUT the
+#: intent (`place_optimize`, `place_portfolio`, `place_fanout_clearance` or
+#: the GUI cap pass with no intent path), which has no declaration to hold.
+#: An earlier draft
 #: of this comment claimed such a rule existed; it never did, and a
 #: justification naming a grader nobody wrote is worse than a shorter one. Contrast `blocks[].side`, which is declarable and
 #: whose rule docs/floorplan-intent.md calls "vacuous, not conservative"
@@ -2664,12 +2671,14 @@ def declared_ladder(claim) -> Optional[List[float]]:
     None for no claim -- which tells `seeder._try_place` to use its fallback
     lattice. The angles were normalised at load.
 
-    This is the ONE mapping every `_try_place` seat search uses (stage 1's
-    edge seat applies a declared single angle itself, before its slide). It
-    was a closure copied into `seed_from_intent` and `repair_placement`, and
-    `place_seed`'s post-polish re-seat had no copy at all, so it searched the
-    fallback lattice and could turn a part whose angle the intent declared
-    (#1117).
+    This is the ONE mapping every path that may turn a declared part reads:
+    every `_try_place` seat search, stage 1's edge seat (which applies the
+    member that fits itself, before its slide, #1120), the portfolio's
+    `poses` strategy (#1121) and `place_fanout_clearance`'s cap turns
+    (#1122). It was a closure copied into `seed_from_intent` and
+    `repair_placement`, and `place_seed`'s post-polish re-seat had no copy at
+    all, so it searched the fallback lattice and could turn a part whose
+    angle the intent declared (#1117).
     """
     if claim is None:
         return None

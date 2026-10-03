@@ -581,7 +581,8 @@ def main():
                    'rotation_unseated': s.get('rotation_unseated') or {},
                    # #1117: the parts the seed's post-polish re-seat could not
                    # put back at their declared angle; `classify_row` makes the
-                   # ranked ref being one of them a hard failure.
+                   # ranked ref being one of them a TIER -- ranked after every
+                   # angle whose seeds held the part, never eliminated.
                    'reseat_declined': s.get('reseat_declined') or {},
                    'pad_conflicts_seeded': s.get('pad_conflicts_seeded'),
                    'decap_claimed': (s.get('decap_stage') or {}).get(
