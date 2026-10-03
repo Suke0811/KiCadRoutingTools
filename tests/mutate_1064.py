@@ -36,7 +36,13 @@ Not covered by a row, and why:
     <= 0" whatever eps is, and the bounding-box prefilter already requires
     the pad rectangles to overlap, so a changed eps changes no verdict;
   * `to_json`'s `pad_stacks` block -- asserted by `floorplan_prints`, whose
-    other assertions die first under every mutant that reaches it.
+    other assertions die first under every mutant that reaches it;
+  * dropping the lifted channel's `_sides_interact` test -- EQUIVALENT while
+    check_drc imports: the exact `check_pad_pad_overlap` confirmation itself
+    requires a shared copper layer, so a front pad over a back pad is
+    refused there too (measured: the opposite-sides arm stays green under
+    it). It is the guard for a channel running without check_drc, which no
+    test environment here reproduces.
 """
 from __future__ import annotations
 
@@ -72,6 +78,7 @@ SUMMED = _t(T, 'summed_not_maxed')
 NEW_PAIR = _t(T, 'totals_tie')
 ARMS = _t(T, 'three_arms')
 CENSUS = _t(T, 'census_is_check')
+ROWS_UNIT = _t(T, 'census_rows')
 SCOPE = _t(T, 'scope_names_it')
 FLOORPLAN = _t(T, 'floorplan_prints')
 FLOORPLAN_EXACT = _t(T, 'floorplan_is_exact')
@@ -101,7 +108,15 @@ ROWS = [
     ('census-area-is-max', 'leg',
      "            'pad_stack_area': round(sum(r[2] for r in rows), 4),",
      "            'pad_stack_area': round(max([r[2] for r in rows] or [0.0]), 4),",
-     (SUMMED,), 'KILLED'),
+     (SUMMED, ROWS_UNIT), 'KILLED'),
+    ('census-rows-in-channel-order', 'leg',
+     "    rows = sorted([p.a, p.b, p.area_mm2, p.side]",
+     "    rows = list([p.a, p.b, p.area_mm2, p.side]",
+     (ROWS_UNIT,), 'KILLED'),
+    ('census-counts-first-refs', 'leg',
+     "    return {'pad_stack_count': len(rows),",
+     "    return {'pad_stack_count': len({r[0] for r in rows}),",
+     (ROWS_UNIT,), 'KILLED'),
     # -- pose_ops: the three arms and the grade that feeds them --------------
     ('pose-grade-skips-stacks', 'pose',
      "    g.update(pad_stack_census(pcb_data, clearance))",

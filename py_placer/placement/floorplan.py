@@ -7513,7 +7513,7 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
         import routing_defaults as _defaults1064
         pad_stacks = pad_stack_census(
             pcb_data, clearance if clearance is not None
-            else _defaults1064.CLEARANCE, ctx.locked)
+            else _defaults1064.CLEARANCE)
 
     st = placement_state.assess_placement(pcb_data, pcb_file)
     return GradeResult(

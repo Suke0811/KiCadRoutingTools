@@ -2252,16 +2252,16 @@ PAD_STACK_BASIS = ("check_assembly's pad_intersection channel "
                    "by check_drc; never waivable")
 
 
-def pad_stack_census(pcb_data, clearance: float,
-                     locked_refs=frozenset()) -> Dict[str, object]:
+def pad_stack_census(pcb_data, clearance: float) -> Dict[str, object]:
     """`pad_intersection_pairs` as the keys place_pose and check_floorplan
     publish (#1064): `pad_stack_count`, `pad_stack_area` (the pairs' areas
     SUMMED, so a stack that deepens while another holds still reads worse),
     `pad_stack_pairs` (`[a, b, area_mm2, side]`, a < b, sorted -- the
-    channel's own order follows the hash seed) and `pad_stack_basis`."""
+    channel's own order among pairs sharing a first ref follows the hash
+    seed) and `pad_stack_basis`. No `locked_ref`: a lock does not make a
+    stack buildable, and no consumer of these keys reads one."""
     rows = sorted([p.a, p.b, p.area_mm2, p.side]
-                  for p in pad_intersection_pairs(pcb_data, clearance,
-                                                  locked_refs))
+                  for p in pad_intersection_pairs(pcb_data, clearance))
     return {'pad_stack_count': len(rows),
             'pad_stack_area': round(sum(r[2] for r in rows), 4),
             'pad_stack_pairs': rows,

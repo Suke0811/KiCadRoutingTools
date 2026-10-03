@@ -382,6 +382,50 @@ def test_the_three_arms_and_their_defaults():
     print("  count, area and pair arms; missing keys read as zero")
 
 
+def test_the_census_rows():
+    """Two stacks that share a first ref are TWO stacks, summed, in a fixed
+    order -- the channel yields pairs sharing a first ref in hash-seed order,
+    and no board fixture here puts two such stacks side by side."""
+    from unittest.mock import patch
+    from placement import legality
+    rows = [legality.BodyOverlapPair(a='A', b=b, kind='pad_intersection',
+                                     area_mm2=area, side='F', waived=False,
+                                     waiver='')
+            for b, area in (('C', 0.2), ('B', 0.1))]
+    with patch.object(legality, 'pad_intersection_pairs',
+                      lambda pcb, clr: list(rows)):
+        c = legality.pad_stack_census(None, 0.2)
+    assert c['pad_stack_count'] == 2, c
+    assert c['pad_stack_area'] == 0.3, c
+    assert c['pad_stack_pairs'] == [['A', 'B', 0.1, 'F'],
+                                    ['A', 'C', 0.2, 'F']], c
+    print("  A/C and A/B: two stacks, 0.3 mm2, sorted")
+
+
+def test_opposite_sides_are_not_a_stack():
+    """A part on the back under one on the front shares no side: no stack,
+    as check_assembly says (`_sides_interact`)."""
+    with tempfile.TemporaryDirectory() as td:
+        b = _board(td, [('C19', C19[0], C19[1], 180, False),
+                        ('C21', 10, 25, 180, False)])
+        with open(b, encoding='utf-8') as fh:
+            text = fh.read()
+        # C21 on the back: its footprint and both pads on B.Cu.
+        head, tail = text.split('"C21"', 1)
+        head = head[:head.rfind('(footprint')] + head[head.rfind('(footprint'):] \
+            .replace('(layer "F.Cu")', '(layer "B.Cu")', 1)
+        tail = tail.replace('(layers "F.Cu")', '(layers "B.Cu")', 2)
+        with open(b, 'w', encoding='utf-8') as fh:
+            fh.write(head + '"C21"' + tail)
+        out = os.path.join(td, 'o.kicad_pcb')
+        x, y = _on(C19)
+        r = _pose(b, out, 'set', 'C21', x, y, '--rot', '180', accept=True)
+        s = _summary(r)
+        assert s['pad_stack_count_after'] == 0, s['pad_stack_pairs_after']
+        assert _assembly_stacks(out, td) == [], 'check_assembly disagrees'
+    print("  C21 on B.Cu under C19 on F.Cu: no stack")
+
+
 def test_the_census_is_check_assemblys():
     """Arm 15. `pad_intersection_pairs` IS grade_body_overlap's
     pad_intersection channel on every board, and the fixtures' counts are
@@ -496,6 +540,8 @@ TESTS = [
     test_a_new_stack_is_refused_when_the_totals_tie,
     test_leaving_a_stack_is_accepted,
     test_the_three_arms_and_their_defaults,
+    test_the_census_rows,
+    test_opposite_sides_are_not_a_stack,
     test_the_census_is_check_assemblys,
     test_scope_names_it_and_main_does_not_grade,
     test_check_floorplan_prints_the_exact_count,
