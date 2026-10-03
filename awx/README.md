@@ -606,7 +606,13 @@ solve as **cuts**.
   turning run. A lane is bounded by the free interval its reference lies in.
 - **Islands:** one split per island and layer, in the lane order, pinned by
   the lanes' own ends. An island is a part, or parts no lane can surely pass
-  between (`whole_ctx.part_islands`). The rows hold a lane over its whole
+  between (`whole_ctx.part_islands`). A two-pad part whose pads stand a lane
+  apart, one beside the other ACROSS the lanes of its home frame, is two
+  islands, and a lane may run between them (`corridor.pads_across`); a part
+  of more pads stays one -- decided pin by pin, a lane wove through a
+  header's row -- and so does one whose pads lie along the lanes, where
+  "between" crosses the part's axis (K51's C12). The geometry writes the
+  islands it held lanes to, and the polish names its flips by them. The rows hold a lane over its whole
   piece but its own tooth and berth, and a pair's via off an island by its
   barrels' reach. A round pad or hole is held off as the cross of two
   rectangles that covers it (`corridor.round_cover`), reaching 0.22 of its
@@ -1016,7 +1022,7 @@ With nothing supplied, as on the benches:
 | `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape; the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`) |
 | `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the ladder in the cloud, one container per rung |
 | `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`); the frame of a bench (a part on a ring's stack: `tests/test_622_ring_room.py`); what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
-| `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP (a part seen from several frames: `tests/test_622_part_frames.py`), the polish, the snap onto the router's grid |
+| `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP (a part seen from several frames: `tests/test_622_part_frames.py`; islands made of pads: `tests/test_622_pad_islands.py`), the polish, the snap onto the router's grid |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a plan installed and audited, gated, linted, drawn; the bench they share |
 | `whole_ladder.py` | the ladders on this machine: rungs side by side, each stopped at a cap with every stage it started, one grade line each |
 | `synth_handoff.py` | the trunk-to-ring handoff on generated buses (`synth_bus.py --ring-n/--ring-s`, parts at the destination's corner with `--hcap`): ring faces, parts beside the facing column and in the ring's path on either layer, the bus arriving at an angle, crossings, pairs -- each routed whole and graded on the route and on the handoff (every join drawn, no lane stepping back, nothing paid holding a trunk end) |
@@ -1188,12 +1194,11 @@ channels first, and the other escapes leave round it.
   column's berths (`btw_row`), or of the source's teeth (`front_src_row`),
   or the like among everything else at once (`mix`), leaves nets open -- the ends model prices each blocked front at the via
   that fits before the part, and nothing places that via.
-- **Between a part's pads.** A part is one island (`whole_ctx.part_islands`):
-  a lane passes it on one side, never between its own pads, though an 0402's
-  pads stand 0.42 mm apart and an 0603's 0.65, past the bar a lane between two
-  parts is held to (0.387 on the synth bench). Islands made of pads, joined
-  below that bar whatever part they belong to, would let the geometry send a
-  lane through (`synth_handoff.py` `btw_0402`, `btw_0603`).
+- **A row of islands, one side.** The geometry decides a lane's side of
+  each island apart, from where its first pass laid the lane; nothing keeps a
+  lane on one side along a row of them, so a header's pins, or a two-pad
+  part's pads lying along the lanes, stay one island and no lane runs between
+  them. A lane's sides along a row, changing at one gap at most, would let it.
 - **A tooth stub up an array gap.** On a crossing pattern the fanout can run a
   tooth's stub up a gap inside the source array, and two lanes then fold round
   each other in front of it, one through 155 degrees (`s4_bulgeW`).

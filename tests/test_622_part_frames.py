@@ -22,7 +22,9 @@ of its four corners projected -- far larger than its copper in a slanted or bent
    offset, before it for a lane moving into the corner -- with no column past the crossing drawn; outside a corner
    nothing is left out; a fixed point (a via's column) always drawn; a straight spine draws every column.
 7. corridor.round_cover: a round pad or hole covered by a cross of two rectangles, reaching at most 0.23 of its
-   radius past it (its box's square, 0.41).
+   radius past it (its box's square, 0.41);
+8. corridor.pads_across: a two-pad part's pads across the lanes of its home frame (one beside the other in offset) or
+   along them -- judged in the frame that sees it whole, nearest its spine.
 """
 import os
 import sys
@@ -158,13 +160,24 @@ def main():
         fails.append(f'round_cover: {len(outside)} points of the circle uncovered, its corners {reach:.3f} r out (want '
                      f'0 and at most 0.23)')
 
+    # 8. a trunk east along y = 0 and a ring north along x = 20: a part beside the trunk, its pads stacked in y, is across
+    # (the trunk its home); turned, along. Beside the ring (its home, nearer), pads stacked in y are ALONG the ring
+    tr8 = cor.Spine([(0.0, 0.0), (20.0, 0.0)])
+    rg8 = cor.Spine([(20.0, 0.0), (20.0, -20.0)])
+    sp8 = {'T': tr8, 'N': rg8}
+    got8 = (cor.pads_across(sp8, [(5.0, 1.0), (5.0, 2.0)]), cor.pads_across(sp8, [(5.0, 1.5), (6.0, 1.5)]),
+            cor.pads_across(sp8, [(21.0, -10.0), (21.0, -11.0)]), cor.pads_across(sp8, [(21.0, -10.0), (22.0, -10.0)]))
+    if got8 != (True, False, False, True):
+        fails.append(f'pads_across: {got8}, want (True, False, False, True) (across / along the trunk; along / across '
+                     f'the ring that is the part\'s home)')
+
     for f in fails:
         print(f'  FAIL: {f}')
     if fails:
         return 1
     print('PASS: a column\'s extent exact and narrower than the projected box where the frame slants; the side carried '
           'by the travel; the home whole before near; one side per lane and part, from the home split first; a lane '
-          'at a corner drawn where its two lines cross, never past it; a round pad covered by its cross')
+          'at a corner drawn where its two lines cross, never past it; a round pad covered by its cross; two pads across or along their home frame')
     return 0
 
 

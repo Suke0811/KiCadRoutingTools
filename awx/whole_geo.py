@@ -170,13 +170,18 @@ def intervals(ftag, sp, s, margin):
 
 
 STATIC = []
-ISL = {}             # an island's pads on one layer set: ONE box (a lane goes round a part, not between its pads, and
-                     # round parts no lane can pass between: whole_ctx.part_islands)
-ISLAND = whole_ctx.part_islands(ctx, skip=(SRC_REF, DST_REF))
+ISL = {}             # an island's pads on one layer set (a lane goes round an island, never between its pads: a part,
+                     # parts no lane can pass between, a two-pad part's pad -- whole_ctx.part_islands)
+# (a two-pad part split where a lane fits between its pads only where they stand across the lanes: corridor.pads_across)
+_SPINES = {'T': Fr.spine, **{k_: r_ for k_, r_ in Fr.rings.items()}}
+_CU = lambda p_: bool(p_.drill and p_.drill > 0) or any(L in p_.layers for L in ('F.Cu', 'B.Cu', '*.Cu'))
+ISLAND = whole_ctx.part_islands(ctx, skip=(SRC_REF, DST_REF), split=lambda ref: len(
+    [p_ for p_ in ctx.pcb.footprints[ref].pads if _CU(p_)]) == 2 and _cor.pads_across(
+    _SPINES, [(p_.global_x, p_.global_y) for p_ in ctx.pcb.footprints[ref].pads if _CU(p_)]))
 for ref, fp in ctx.pcb.footprints.items():
     if ref in (SRC_REF, DST_REF):
         continue
-    for p in fp.pads:
+    for i_, p in enumerate(fp.pads):
         drilled = bool(p.drill and p.drill > 0)
         if p.pad_type == 'np_thru_hole':
             hx = hy = (p.drill or 0) / 2; Ls = {0, 1}
@@ -185,7 +190,7 @@ for ref, fp in ctx.pcb.footprints.items():
             Ls = {0, 1} if drilled else {F(L) for L in ('F.Cu', 'B.Cu') if L in p.layers}
         if Ls and BX0 < p.global_x < BX1 and BY0 < p.global_y < BY1:
             # (a round pad or hole: the cross that covers it, not its box's square -- corridor.round_cover)
-            ISL.setdefault((ISLAND[ref], frozenset(Ls)), []).extend(
+            ISL.setdefault((ISLAND[(ref, i_)], frozenset(Ls)), []).extend(
                 _cor.round_cover(p.global_x, p.global_y, hx, hy)
                 if (p.pad_type == 'np_thru_hole' or p.shape == 'circle') and abs(hx - hy) < 1e-9 else
                 [(p.global_x - hx, p.global_y - hy, p.global_x + hx, p.global_y + hy)])
@@ -1366,6 +1371,8 @@ for q in sol['paid'].get('static', []):
     g = LANE_ST + hw[n] + P_MIN
     cuts.append({'lane': n, 'island': lab, 'u_lo': FR[f]['u'](sa - g), 'u_hi': FR[f]['u'](sb + g)})
 res['cuts'] = cuts
+# each pad's island, for the polish's flips to name the islands this geometry held lanes to (whole_polish.island_of)
+res['islands'] = {f'{r_}.{ctx.pcb.footprints[r_].pads[i_].pad_number}': lab_ for (r_, i_), lab_ in ISLAND.items()}
 for q in sol['paid'].get('via', []):
     _v, f, k, n, nb = q[:5]
     for (f2, n2, cu, kc) in sol['vias']:

@@ -566,6 +566,18 @@ def round_cover(x: float, y: float, rx: float, ry: float):
     return [(x - rx, y - c * ry, x + rx, y + c * ry), (x - c * rx, y - ry, x + c * rx, y + ry)]
 
 
+def pads_across(spines, pads) -> bool:
+    """whether a two-pad part's pads (centres) stand ACROSS the lanes -- one beside the other in its home frame's offset,
+    so a lane through the gap between them runs along the frame -- rather than one after the other along it, where a
+    lane "between" them would cross the part's axis through the gap (K51 C12 along DU1's south face: lanes told to
+    pass between its pads, 0.21 mm short, and the loop did not converge). `spines` {frame: Spine}"""
+    so = {f: [sp.project_pt(p) for p in pads] for f, sp in spines.items()}
+    c = ((pads[0][0] + pads[1][0]) / 2, (pads[0][1] + pads[1][1]) / 2)
+    h = part_home(spines, {f: (min(q[0] for q in v), max(q[0] for q in v)) for f, v in so.items()}, c)
+    (s1, o1), (s2, o2) = so[h]
+    return abs(o1 - o2) > abs(s1 - s2)
+
+
 def part_home(spines, spans, centre: Pt):
     """the frame that sees a part WHOLE -- its span (sa, sb), the s of its four corners there, not cut at the frame's
     ends -- nearest its spine; `spines` {frame: Spine}, `spans` {frame: (sa, sb)}"""

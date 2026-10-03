@@ -48,13 +48,18 @@ def bench():
     return awx_settings.req('BENCH'), pa.read_nets(awx_settings.req('NETS')), awx_settings.req('DEST')
 
 
-def part_islands(ctx, skip=()):
-    """{part: its ISLAND's label} for every part but `skip` (the arrays): a lane goes round an island, never through
-    it. A part is one (not between its own pads), and parts whose pads stand closer on a layer they share than a lane
-    can surely pass between are one: a track, its clearance either side, the router's corner buffer either side (a
-    gap between two pads runs past their corners: pairs.pad_corner_buffer) and a grid step, so that a grid column is
-    free -- K35's R4 and R5 stood 0.37 mm apart, a lane through the gap asked 0.362 and the router's grid had no
-    column there. The label names the parts, sorted and joined with '+'."""
+def part_islands(ctx, skip=(), split=None):
+    """{(part, pad index): its ISLAND's label} for every pad of every part but `skip` (the arrays): a lane goes round
+    an island, never through it. Pads -- one part's or several's -- whose copper stands closer on a layer they share
+    than a lane can surely pass between are one island: a track, its clearance either side, the router's corner buffer
+    either side (a gap between two pads runs past their corners: pairs.pad_corner_buffer) and a grid step, so that a
+    grid column is free -- K35's R4 and R5 stood 0.37 mm apart, a lane through the gap asked 0.362 and the router's
+    grid had no column there. The two pads of a TWO-pad part farther apart are two islands, and a lane may pass between
+    them: held to one island a part, an 0402 whose pads stand 0.42 mm apart (the bar 0.387) was gone round by the lane
+    its gap faced (synth_handoff btw_0402) -- where `split(ref)` allows it (the geometry: its pads ACROSS the lanes,
+    corridor.pads_across); none by default. A part of more pads is one island. The label names its members, sorted
+    and joined with '+': a part whole in it by its reference, a part split between islands by its reference and its
+    pads there ('C1:1', 'C1:2')."""
     import pairs as _pairs
     cfg = ctx.cfg
     g = cfg.grid_step
@@ -63,7 +68,7 @@ def part_islands(ctx, skip=()):
     for ref, fp in ctx.pcb.footprints.items():
         if ref in skip:
             continue
-        for p in fp.pads:
+        for i, p in enumerate(fp.pads):
             drilled = bool(p.drill and p.drill > 0)
             if p.pad_type == 'np_thru_hole':
                 hx = hy = (p.drill or 0) / 2
@@ -72,7 +77,7 @@ def part_islands(ctx, skip=()):
                 hx, hy = p.size_x / 2, p.size_y / 2
                 Ls = {'F.Cu', 'B.Cu'} if drilled else {L for L in ('F.Cu', 'B.Cu') if L in p.layers}
             if Ls:
-                boxes.append((ref, p.global_x - hx, p.global_y - hy, p.global_x + hx, p.global_y + hy, Ls))
+                boxes.append(((ref, i), p.global_x - hx, p.global_y - hy, p.global_x + hx, p.global_y + hy, Ls))
     up = {b[0]: b[0] for b in boxes}
 
     def root(r):
@@ -80,6 +85,17 @@ def part_islands(ctx, skip=()):
             up[r] = up[up[r]]
             r = up[r]
         return r
+    # a part is ONE island unless it has two pads and `split` lets them go: decided pad by pad, a lane passed a pin
+    # header's pins each on its own side and wove through the row -- down between two pins, round under one, up between
+    # the next (synth_handoff pth_corner, 39 -> 121 degrees). A two-pad part has one gap, and a lane through it goes
+    # through it once
+    npads = collections.Counter(b[0][0] for b in boxes)
+    for b in boxes:
+        if npads[b[0][0]] != 2 or split is None or not split(b[0][0]):
+            first = next(c[0] for c in boxes if c[0][0] == b[0][0])
+            ra, rb = root(b[0]), root(first)
+            if ra != rb:
+                up[ra] = rb
     boxes.sort(key=lambda b: b[1])
     for i, a in enumerate(boxes):
         for b in boxes[i + 1:]:
@@ -93,7 +109,15 @@ def part_islands(ctx, skip=()):
     members = collections.defaultdict(list)
     for r in up:
         members[root(r)].append(r)
-    return {r: '+'.join(sorted(members[root(r)])) for r in up}
+    count = collections.Counter(r[0] for r in up)
+    out = {}
+    for r in up:
+        mem = members[root(r)]
+        refs = sorted({m[0] for m in mem})
+        out[r] = '+'.join(ref if sum(1 for m in mem if m[0] == ref) == count[ref] else
+                          ref + ':' + '/'.join(sorted(str(ctx.pcb.footprints[ref].pads[m[1]].pad_number)
+                                                      for m in mem if m[0] == ref)) for ref in refs)
+    return out
 
 
 def foreign_teeth(ctx, M, boxes):

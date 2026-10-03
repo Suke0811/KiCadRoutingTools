@@ -1108,11 +1108,16 @@ ISLAND = whole_ctx.part_islands(ctx, skip=(_SRC, _DST))
 
 
 def island_of(lab):
-    """the island a static label names ('pad REF.N ...', 'hole REF.N': its part's, whole_ctx.part_islands), or None"""
+    """the island a static label names ('pad REF.N ...', 'hole REF.N': that pad's, whole_ctx.part_islands), or None"""
     for pre in ('pad ', 'hole '):
         if lab.startswith(pre):
-            ref = lab[len(pre):].split('.')[0]
-            return ISLAND.get(ref) if ref not in (_SRC, _DST) else None
+            ref, _, num = lab[len(pre):].split(' ')[0].rpartition('.')
+            if ref in (_SRC, _DST) or ref not in ctx.pcb.footprints:
+                return None
+            if geo.get('islands') is not None:        # the islands the geometry held lanes to
+                return geo['islands'].get(f'{ref}.{num}')
+            return next((ISLAND[(ref, i)] for i, p in enumerate(ctx.pcb.footprints[ref].pads)
+                         if str(p.pad_number) == num and (ref, i) in ISLAND), None)
     return None
 
 
