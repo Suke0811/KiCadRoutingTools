@@ -92,6 +92,7 @@ C7 = _t(T983, '-k', 'test_c7_')
 C8 = _t(T983, '-k', 'test_c8_')
 C9 = _t(T983, '-k', 'test_c9_')
 C10 = _t(T983, '-k', 'test_c10_')
+C13 = _t(T983, '-k', 'test_c13_')
 T1122 = 'test_1122_fanout_declared_rotation.py'
 ROT_LIST = _t(T1122, 'rotation_list')
 CONFINED = _t(T1122, 'confined_to_the_helper')
@@ -159,8 +160,8 @@ ROWS = [
      "        fit1120 = list(set1120)",
      (C7,), 'KILLED'),
     ('stage1-turns-a-part-inside-its-set', 'sd',
-     "        if any(abs((r - part.rot + 180.0) % 360.0 - 180.0) < 1e-9",
-     "        if False and any(abs((r - part.rot + 180.0) % 360.0 - 180.0) < 1e-9",
+     "        if any(abs((r - part.rot + 180.0) % 360.0 - 180.0) < 1e-6",
+     "        if False and any(abs((r - part.rot + 180.0) % 360.0 - 180.0) < 1e-6",
      (C5,), 'KILLED'),
     ('stage1-unfit-set-measured-at-the-input', 'sd',
      "        return fit1120[0] if fit1120 else set1120[0]",
@@ -174,6 +175,10 @@ ROWS = [
      "    if lo1120 > hi1120:",
      "    if False:",
      (C7, C10), 'KILLED'),
+    ('stage1-fits-judges-the-unturned-box', 'sd',
+     "        rot = _materialise_rotation(part, rot)",
+     "        pass",
+     (C13,), 'KILLED'),
     ('stage1-fits-ignores-window', 'sd',
      "    return max(lo1120, w_lo) <= min(hi1120, w_hi)",
      "    return True",
@@ -240,8 +245,8 @@ ROWS = [
      "        out['declared_rotations_unused'] = {",
      (HELD,), 'KILLED'),
     ('json-key-dropped', 'pfc',
-     "            'declared_rotations': result.get('declared_rotations'),",
-     "            'declared_rotations': None,",
+     "            **({'declared_rotations': result['declared_rotations']}",
+     "            **({'declared_rotations_dropped': result['declared_rotations']}",
      (HELD,), 'KILLED'),
     ('cli-refuses-late', 'pfc',
      "            declared_cap_rotations(intent, _pcb1122)",

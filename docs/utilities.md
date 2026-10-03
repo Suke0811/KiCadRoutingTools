@@ -192,7 +192,8 @@ hole conflicts, pads off-board) **and their magnitudes** (`pad_shortfall`,
 board to 204.66 mm off it, measured on `flat_hierarchy`) — plus **pad
 stacks** (#1064): two parts' pad copper overlapping on a shared side, ANY
 net, measured by check_assembly's own `legality.pad_intersection_pairs`
-(`pad_stack_count`, the summed `pad_stack_area`, and `pad_stack_pairs` as a
+(`pad_stack_count`, `pad_stack_area` summed over every stacked pad pair, and
+`pad_stack_pairs` as a
 set, so a new stack is refused when the totals tie). The pad-conflict grade
 skips same-net pads, so esp_prog's C4 put on Y1's same-net pad (0.0412 mm²)
 used to exit 0 here and read NOT BUILDABLE in check_assembly — and **never for

@@ -79,6 +79,7 @@ NEW_PAIR = _t(T, 'totals_tie')
 ARMS = _t(T, 'three_arms')
 CENSUS = _t(T, 'census_is_check')
 ROWS_UNIT = _t(T, 'census_rows')
+SPREAD = _t(T, 'spreads_to_more_pads')
 SCOPE = _t(T, 'scope_names_it')
 FLOORPLAN = _t(T, 'floorplan_prints')
 FLOORPLAN_EXACT = _t(T, 'floorplan_is_exact')
@@ -106,9 +107,17 @@ ROWS = [
      "    pairs.extend(pad_intersection_pairs(pcb_data, clearance, ()))",
      (CENSUS, LOCKED), 'KILLED'),
     ('census-area-is-max', 'leg',
-     "            'pad_stack_area': round(sum(r[2] for r in rows), 4),",
-     "            'pad_stack_area': round(max([r[2] for r in rows] or [0.0]), 4),",
+     "    area1064 = sum(totals.get((p.a, p.b), 0.0) for p in pairs)",
+     "    area1064 = max([totals.get((p.a, p.b), 0.0) for p in pairs] or [0.0])",
      (SUMMED, ROWS_UNIT), 'KILLED'),
+    ('census-area-is-the-deepest-pad', 'leg',
+     "    area1064 = sum(totals.get((p.a, p.b), 0.0) for p in pairs)",
+     "    area1064 = sum(p.area_mm2 for p in pairs)",
+     (SPREAD,), 'KILLED'),
+    ('channel-totals-unfilled', 'leg',
+     "                        totals[key] = totals.get(key, 0.0) + ov",
+     "                        pass",
+     (SPREAD, SUMMED), 'KILLED'),
     ('census-rows-in-channel-order', 'leg',
      "    rows = sorted([p.a, p.b, p.area_mm2, p.side]",
      "    rows = list([p.a, p.b, p.area_mm2, p.side]",

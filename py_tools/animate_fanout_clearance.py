@@ -294,7 +294,7 @@ def main():
     print(f"Loading {args.input_file}...")
     pcb_data = parse_kicad_pcb(args.input_file)
     if intent is not None:
-        # #1122: a cap two blocks declare at different angles is refused
+        # #1122: a part two blocks declare at different angles is refused
         # before anything moves, as place_fanout_clearance refuses it.
         from placement import floorplan as _fp1122
         from placement.fanout_clearance import declared_cap_rotations

@@ -134,8 +134,9 @@ Examples:
         "Its declared rotations are held as well: a cap a block declares at "
         "one angle is never turned away from it, one with "
         "rotation_candidates turns only within them, on its own "
-        "quarter-turn lattice; two blocks declaring one cap at different "
-        "angles exit 2 before anything is written or recorded (#1122). "
+        "quarter-turn lattice; two blocks declaring one part (any part, as "
+        "every intent gate refuses) at different angles exit 2 before "
+        "anything is written or recorded (#1122). "
         "Nothing else in the intent is read. The run prints the decap grade "
         "before and after, and a JSON_SUMMARY line. Omitted (the default), "
         "the run is identical to one without the flag, and can move a cap "
@@ -236,7 +237,10 @@ Examples:
             'unresolved': list(result.get('unresolved') or ()),
             'via_resolved': list(result.get('via_resolved') or ()),
             'regrazed': list(result.get('regrazed') or ()),
-            'declared_rotations': result.get('declared_rotations'),
+            # #1122: only when a cap's rotation is declared, so a run whose
+            # intent declares none prints what it printed before.
+            **({'declared_rotations': result['declared_rotations']}
+               if result.get('declared_rotations') else {}),
             'decap': result.get('decap')}, sort_keys=True, default=str))
 
     def _write_drc_floors():

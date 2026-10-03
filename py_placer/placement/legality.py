@@ -2130,7 +2130,8 @@ def grade_body_overlap(pcb_data, clearance: float,
 
 
 def pad_intersection_pairs(pcb_data, clearance: float,
-                           locked_refs=frozenset()) -> List[BodyOverlapPair]:
+                           locked_refs=frozenset(),
+                           totals=None) -> List[BodyOverlapPair]:
     """check_assembly's BLOCKING channel as a function (#1064): two parts'
     pad copper intersecting on a shared side, ANY net -- a pad stack.
 
@@ -2141,6 +2142,12 @@ def pad_intersection_pairs(pcb_data, clearance: float,
     caps on one pad cannot both be soldered, whatever their nets (esp_prog
     C4 on Y1 and run 38's C15 on C19 are same-net, and place_pose accepted
     both before #1064).
+
+    A pair's `area_mm2` is its DEEPEST pad-pair overlap, check_assembly's
+    number. `totals`, a dict the caller passes, receives each pair's
+    overlap summed over EVERY confirmed pad pair, keyed `(a, b)` -- so a
+    stack that spreads from one pad onto two reads worse even while its
+    deepest overlap shrinks.
     """
     fps = pcb_data.footprints or {}
     out: List[BodyOverlapPair] = []
@@ -2223,6 +2230,8 @@ def pad_intersection_pairs(pcb_data, clearance: float,
                                 clearance_margin=0.0)
                             if not (hit and over >= eps - 1e-9):
                                 continue
+                    if totals is not None:
+                        totals[key] = totals.get(key, 0.0) + ov
                     if ov > area:
                         area = ov
                         side = sa if sa in ('F', 'B') else ''
@@ -2254,16 +2263,21 @@ PAD_STACK_BASIS = ("check_assembly's pad_intersection channel "
 
 def pad_stack_census(pcb_data, clearance: float) -> Dict[str, object]:
     """`pad_intersection_pairs` as the keys place_pose and check_floorplan
-    publish (#1064): `pad_stack_count`, `pad_stack_area` (the pairs' areas
-    SUMMED, so a stack that deepens while another holds still reads worse),
-    `pad_stack_pairs` (`[a, b, area_mm2, side]`, a < b, sorted -- the
-    channel's own order among pairs sharing a first ref follows the hash
-    seed) and `pad_stack_basis`. No `locked_ref`: a lock does not make a
-    stack buildable, and no consumer of these keys reads one."""
-    rows = sorted([p.a, p.b, p.area_mm2, p.side]
-                  for p in pad_intersection_pairs(pcb_data, clearance))
+    publish (#1064): `pad_stack_count`, `pad_stack_area` (every stacked pad
+    pair's overlap, SUMMED over pads and parts -- so a stack that deepens
+    while another holds, or spreads onto another pad while its deepest
+    overlap shrinks, still reads worse), `pad_stack_pairs` (`[a, b,
+    area_mm2, side]` with check_assembly's per-pair `area_mm2`, a < b,
+    sorted -- the channel's own order among pairs sharing a first ref
+    follows the hash seed) and `pad_stack_basis`. No `locked_ref`: a lock
+    does not make a stack buildable, and no consumer of these keys reads
+    one."""
+    totals: Dict[Tuple[str, str], float] = {}
+    pairs = pad_intersection_pairs(pcb_data, clearance, totals=totals)
+    rows = sorted([p.a, p.b, p.area_mm2, p.side] for p in pairs)
+    area1064 = sum(totals.get((p.a, p.b), 0.0) for p in pairs)
     return {'pad_stack_count': len(rows),
-            'pad_stack_area': round(sum(r[2] for r in rows), 4),
+            'pad_stack_area': round(area1064, 4),
             'pad_stack_pairs': rows,
             'pad_stack_basis': PAD_STACK_BASIS}
 
@@ -3987,8 +4001,10 @@ def pads_at_pose(fp, pose) -> List[_PosedPad]:
     `footprint_at_pose` -- and carried unchanged it missed copper after any
     turn other than a half one (tigard JP1/JP2, 0.402 mm2 outside it at +90).
 
-    It agrees with writing the pose and re-parsing to within the parser's own
-    nanometre snap for poses the writer stores EXACTLY -- coordinates of a few
+    It agrees with writing the pose and re-parsing -- except a CUSTOM pad's
+    box at an oblique angle, which `_custom_box_at_pose` derives from the
+    copper and can differ from a re-parse either way -- to within the
+    parser's own nanometre snap for poses the writer stores EXACTLY -- coordinates of a few
     decimals (the seat ladder rounds to 3) and angles of at most six
     significant digits. The writer prints angles with `%g`, so a
     full-precision angle is written rounded (measured: 4.1e-5 mm at

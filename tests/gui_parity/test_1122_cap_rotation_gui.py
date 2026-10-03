@@ -195,4 +195,7 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    _rc = main()
+    for _d in glob.glob(os.path.join(tempfile.gettempdir(), 't1122gui_*')):
+        shutil.rmtree(_d, ignore_errors=True)
+    sys.exit(_rc)

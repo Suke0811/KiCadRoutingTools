@@ -2538,8 +2538,9 @@ def _stage1_geometry_rot(part, claim, fits=None):
     #1120: a candidate SET is applied too. It used not to be, and no later
     stage re-seats a connector stage 1 seats, so J5 declared `[0, 90]` was
     written at its input 180, ungraded. The part's own angle when it is a
-    member that `fits` (stage 1 does not turn a part already inside its
-    set), else the first member in the AUTHOR's order that fits -- `fits(rot)`
+    member that `fits` (stage 1 does not turn a part already at a member
+    that fits; one at a member that does not is turned to one that does),
+    else the first member in the AUTHOR's order that fits -- `fits(rot)`
     is stage 1's own two pre-turn refusals (`_stage1_fits`). With no member
     that fits, the first member: stage 1 then refuses the part at a declared
     angle and leaves it unturned, and the later stages seat it at a member or
@@ -2550,7 +2551,9 @@ def _stage1_geometry_rot(part, claim, fits=None):
     if claim is not None and claim[1]:
         set1120 = [c % 360.0 for c in claim[1]]
         fit1120 = [r for r in set1120 if fits is None or fits(r)]
-        if any(abs((r - part.rot + 180.0) % 360.0 - 180.0) < 1e-9
+        # quench._same_angle's tolerance, so a part `poses` reads as AT a
+        # member is not turned here (#1120 verifier: 1e-9 vs 1e-6).
+        if any(abs((r - part.rot + 180.0) % 360.0 - 180.0) < 1e-6
                for r in fit1120):
             return part.rot
         return fit1120[0] if fit1120 else set1120[0]

@@ -93,6 +93,8 @@ def test_the_fixture_turns_caps():
         s, turned, _o, _p = _run(td, [], 'none')
     assert turned.get('C24') == (270.0, 180.0), turned
     assert s['decap']['compared']['kept'] == 'ungated', s['decap']['compared']
+    # A run whose intent declares no rotation prints what it printed before.
+    assert 'declared_rotations' not in s, s.get('declared_rotations')
     print("  no block: turned %r, kept ungated" % (turned,))
 
 

@@ -73,8 +73,13 @@ def _fp(ref, x, y, pads, rot=0.0, court=None):
             + crt + pads + '  )\n')
 
 
+#: Every synthetic board lives under ONE temp root, removed when the run
+#: ends (the code review measured 89 leaked t1123* directories).
+_ROOT_TMP = tempfile.TemporaryDirectory(prefix='t1123_')
+
+
 def _board(*footprints):
-    wd = tempfile.mkdtemp(prefix='t1123_')
+    wd = tempfile.mkdtemp(dir=_ROOT_TMP.name)
     path = os.path.join(wd, 'b.kicad_pcb')
     with open(path, 'w', encoding='utf-8') as fh:
         fh.write('(kicad_pcb (version 20240108) (generator pcbnew)\n'
@@ -300,7 +305,8 @@ def test_kicad_demo_measurements():
         if not os.path.isfile(b):
             print("  SKIP: %s absent" % b)
             return
-    wd = tempfile.mkdtemp(prefix='t1123d_')
+    # Under the run's temp root: the jetson board alone is 88.7 MB.
+    wd = tempfile.mkdtemp(dir=_ROOT_TMP.name)
     staged = []
     for b in (pic, jet):
         for ext in ('.kicad_pcb', '.kicad_pro', '.kicad_dru'):

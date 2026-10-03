@@ -620,8 +620,11 @@ def generate(input_file: str, out_dir: str, *, seed: int = 0,
         board_edge_clearance=qkw.get('board_edge_clearance', 0.55),
         grid_step=qkw.get('grid_step', 0.1), ignore_ids=ids)
     origin = {ref: (p.x, p.y, p.rot) for ref, p in oracle.parts.items()}
-    # #1121: the SAME claims the quench is gated with (its intent_gate), so
-    # the `poses` variant cannot turn a part the quench would then hold.
+    # #1121: the SAME block claims the quench is gated with (its
+    # intent_gate), so the `poses` variant offers a block-declared part only
+    # an angle the quench would admit too. Not held here: an
+    # `arrays[].rotation` member, and a part the gate locks (`must_lock`,
+    # an edge claim) -- `free_refs` reads neither.
     _declared = dict((qkw.get('intent_gate') or {}).get('rotations') or {})
     _held = sorted(r for r in free if r in _declared)
     if _held and 'poses' in strategies:

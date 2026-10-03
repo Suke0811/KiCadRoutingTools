@@ -146,14 +146,29 @@ def test_author_order_and_no_turn_out():
 
 
 def test_an_off_lattice_member_is_judged_on_its_own_box():
+    """The box must exist WHEN 45 is judged, not merely afterwards (the code
+    reviewer: a cache filled after `candidate_valid` would pass a check of
+    the cache alone)."""
     from placement import portfolio
     st, free = _oracle()
     assert 45.0 not in st.parts['U1'].bounds_by_rot
-    portfolio.perturb_poses(st, free, 0, declared={'U1': (None, (270.0, 45.0))})
-    assert 45.0 in st.parts['U1'].bounds_by_rot, \
-        'a declared 45 was judged on the unrotated box'
+    judged = []
+    real = st.candidate_valid
+
+    def spy(ref, x, y, rot):
+        if ref == 'U1' and abs(rot - 45.0) < 1e-9:
+            judged.append(45.0 in st.parts['U1'].bounds_by_rot)
+        return real(ref, x, y, rot)
+    st.candidate_valid = spy
+    try:
+        portfolio.perturb_poses(st, free, 0,
+                                declared={'U1': (None, (270.0, 45.0))})
+    finally:
+        del st.candidate_valid
+    assert judged and all(judged), (
+        'a declared 45 was judged on the unrotated box: %r' % judged)
     _oracle()
-    print("  a declared 45 gets its own box before it is judged")
+    print("  a declared 45 is judged with its own box in place")
 
 
 def test_no_declaration_is_the_strategy_unchanged():

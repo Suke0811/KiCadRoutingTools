@@ -315,7 +315,9 @@ def test_a_deepening_stack_is_refused():
 
 def test_the_area_is_summed_not_maxed():
     """Arm 11. Two stacks; the SMALLER one deepens while the larger holds.
-    A max would read 0.3762 both times and accept."""
+    A max would read the larger both times and accept. Each stack covers
+    BOTH pad pairs, so the totals are twice the per-pair areas: C15/C19 2 x
+    0.3762, C16/C20 2 x 0.1284 -> 2 x 0.2568."""
     with tempfile.TemporaryDirectory() as td:
         c16_at = _on(C20, 0.9)
         b = _stacked(td, extra=[('C16', c16_at[0], c16_at[1], 180, False)])
@@ -324,8 +326,28 @@ def test_the_area_is_summed_not_maxed():
                   '--rot', '180', refuse='pad_stack_area', code=4)
         s = _summary(r)
         assert (s['pad_stack_area_before'],
-                s['pad_stack_area_after']) == (0.5046, 0.633), s
-    print("  summed 0.5046 -> 0.633 refused")
+                s['pad_stack_area_after']) == (1.0092, 1.266), s
+    print("  summed 1.0092 -> 1.266 refused")
+
+
+def test_a_stack_that_spreads_to_more_pads_is_refused():
+    """The code reviewer's repro: C15 turned 90 degrees stacks ONE pad on C19
+    (0.4225 mm2); moved to the run-38 offset it stacks BOTH (2 x 0.3762).
+    Its deepest overlap SHRINKS while more copper is stacked -- the area
+    arm sums every stacked pad pair, so it is refused."""
+    with tempfile.TemporaryDirectory() as td:
+        b = _board(td, [('C15', 19.25, 14.25, 90, False),
+                        ('C19', C19[0], C19[1], 0, False)])
+        x, y = _on(C19)
+        r = _pose(b, os.path.join(td, 'o.kicad_pcb'), 'set', 'C15', x, y,
+                  '--rot', '0', refuse='pad_stack_area', code=4)
+        s = _summary(r)
+        assert s['pad_stack_area_after'] > s['pad_stack_area_before'], s
+        assert 'pad_stack_pairs new' not in s['refused'], s['refused']
+        assert [p[2] for p in s['pad_stack_pairs_after']] == [0.3762], \
+            s['pad_stack_pairs_after']
+    print("  one pad 0.4225 -> both pads %.4f refused"
+          % s['pad_stack_area_after'])
 
 
 def test_a_new_stack_is_refused_when_the_totals_tie():
@@ -392,14 +414,17 @@ def test_the_census_rows():
                                      area_mm2=area, side='F', waived=False,
                                      waiver='')
             for b, area in (('C', 0.2), ('B', 0.1))]
-    with patch.object(legality, 'pad_intersection_pairs',
-                      lambda pcb, clr: list(rows)):
+    def channel(pcb, clr, totals=None):
+        # every stacked pad pair: A/C stacks two pads, A/B one
+        totals.update({('A', 'C'): 0.35, ('A', 'B'): 0.1})
+        return list(rows)
+    with patch.object(legality, 'pad_intersection_pairs', channel):
         c = legality.pad_stack_census(None, 0.2)
     assert c['pad_stack_count'] == 2, c
-    assert c['pad_stack_area'] == 0.3, c
+    assert c['pad_stack_area'] == 0.45, c
     assert c['pad_stack_pairs'] == [['A', 'B', 0.1, 'F'],
                                     ['A', 'C', 0.2, 'F']], c
-    print("  A/C and A/B: two stacks, 0.3 mm2, sorted")
+    print("  A/C and A/B: two stacks, 0.45 mm2 summed over pads, sorted")
 
 
 def test_opposite_sides_are_not_a_stack():
@@ -537,6 +562,7 @@ TESTS = [
     test_a_shrinking_stack_is_accepted,
     test_a_deepening_stack_is_refused,
     test_the_area_is_summed_not_maxed,
+    test_a_stack_that_spreads_to_more_pads_is_refused,
     test_a_new_stack_is_refused_when_the_totals_tie,
     test_leaving_a_stack_is_accepted,
     test_the_three_arms_and_their_defaults,

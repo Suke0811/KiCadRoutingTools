@@ -2671,11 +2671,11 @@ def declared_ladder(claim) -> Optional[List[float]]:
     None for no claim -- which tells `seeder._try_place` to use its fallback
     lattice. The angles were normalised at load.
 
-    This is the ONE mapping every path that may turn a declared part reads:
-    every `_try_place` seat search, stage 1's edge seat (which applies the
-    member that fits itself, before its slide, #1120), the portfolio's
+    This is the ONE mapping every `_try_place` seat search, the portfolio's
     `poses` strategy (#1121) and `place_fanout_clearance`'s cap turns
-    (#1122). It was a closure copied into `seed_from_intent` and
+    (#1122) read. Stage 1's edge seat does not call it: it walks the same
+    claim itself, its current angle first when that is a member that fits,
+    then the author's order (#1120). It was a closure copied into `seed_from_intent` and
     `repair_placement`, and `place_seed`'s post-polish re-seat had no copy at
     all, so it searched the fallback lattice and could turn a part whose
     angle the intent declared (#1117).

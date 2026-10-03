@@ -62,6 +62,7 @@ refusals) pin the function directly. A10 and B7 go through
           is written at a member, or reported unseated.
       C12 (#1120) place_seed, end to end: the unseated set is named and the
           run exits 4; a fitting member is written.
+      C13 (#1120) an off-lattice member is judged on its own box.
 """
 import os
 from pathlib import Path
@@ -333,7 +334,9 @@ class StageOneRotation(_Graded):
         self.assertEqual(self.pose(self.seat_j5_set([270, 90]), 'J5'),
                          self.seat_j5_single(270))   # the author's order, not sorted
         # A set that holds the input angle does not turn the part, whatever
-        # its order: stage 1 does not turn a part already inside its set.
+        # its order: stage 1 does not turn a part already at a member that
+        # fits (one at a member that does not fit is turned -- see the unit
+        # case below).
         undeclared = self.seat_j5_single()
         self.assertEqual(self.pose(self.seat_j5_set([180, 90]), 'J5'), undeclared)
         self.assertEqual(self.pose(self.seat_j5_set([90, 180]), 'J5'), undeclared)
@@ -445,7 +448,7 @@ class StageOneRotation(_Graded):
         refs = sorted(r for r in st.parts
                       if r.startswith('J') and not st.parts[r].locked)[:3]
         self.assertEqual(len(refs), 3, refs)
-        rows = 0
+        rows = seated = 0
         for ref in refs:
             r0 = st.parts[ref].rot % 360.0
             for edge in ('north', 'south', 'east', 'west'):
@@ -458,6 +461,7 @@ class StageOneRotation(_Graded):
                         res = self.stage1(SPLIT, doc, seed_refs={ref})
                         placed = [q for q in res['placements'] if q['reference'] == ref]
                         if placed:
+                            seated += 1
                             self.assertTrue(any(
                                 abs((placed[0]['new_rotation'] - c + 180) % 360 - 180) < 1e-6
                                 for c in cands), (placed[0]['new_rotation'], cands))
@@ -465,6 +469,18 @@ class StageOneRotation(_Graded):
                             self.assertIn(ref, res.get('rotation_unseated') or {})
                         rows += 1
         self.assertEqual(rows, 24)
+        # Not vacuous: a run that seated nothing would pass the loop above
+        # through its unseated branch alone (the code reviewer's finding).
+        self.assertGreater(seated, 0)
+
+    def test_c13_an_off_lattice_member_is_judged_on_its_own_box(self):
+        # WIDE's J1 is 12 mm on an 8 mm edge at 0, so 80 fits only on ITS
+        # OWN box. `_stage1_fits` must materialise it before measuring: on
+        # the 0-degree box 80 reads "wider than the edge" and the set falls
+        # through to 90 (measured: J1 seated at 90, y 6.05).
+        path, doc = self.wide_set(self.WIDE, [80, 90])
+        pose = self.pose(self.stage1(path, doc), 'J1')
+        self.assertAlmostEqual(pose[2] % 360.0, 80.0, delta=1e-9)
 
     def test_c12_place_seed_names_an_unseated_set_and_writes_a_member(self):
         import json

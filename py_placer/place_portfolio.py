@@ -80,9 +80,10 @@ Examples:
                    default=('jitter', 'poses', 'swap'), metavar="LIST",
                    help="Comma list of perturbation strategies, allocated "
                         "round-robin (default: jitter,poses,swap). poses "
-                        "never turns a part away from a rotation --intent "
-                        "declares; a candidate set varies only within "
-                        "itself (#1121)")
+                        "never turns a part away from a rotation an --intent "
+                        "BLOCK declares; a candidate set varies only within "
+                        "itself (#1121). An arrays[].rotation is not held "
+                        "here")
     p.add_argument("--radius", type=float, default=4.0,
                    help="Jitter amplitude in mm (default: 4.0). With the "
                         "quench's own --max-displacement this bounds total "

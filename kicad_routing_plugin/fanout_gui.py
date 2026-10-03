@@ -2273,7 +2273,7 @@ class FanoutTab(wx.Panel):
                 try:
                     _cap_intent = _fp1067.load_intent(_ip)
                     _fp1067.tether_gate_spec(_cap_intent)
-                    # #1122: two blocks declaring one cap at different
+                    # #1122: two blocks declaring one part at different
                     # angles is an IntentError (a ValueError): refused here,
                     # before anything moves, as the CLI exits 2.
                     from placement import fanout_clearance as _fc1122
