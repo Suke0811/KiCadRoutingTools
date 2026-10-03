@@ -290,7 +290,12 @@ part with no contained legal pose at it falls back to its 90° lattice (noted
 in the output — measured: an LDO with 0 legal poses at rot 0 and 3 at rot 90
 on a packed board). A part whose rotation is a *decision* (pin order, the U3
 rot-180 case) DECLARES it: a block's `rotation` / `rotation_candidates` (#893,
-honoured by the seat search and held by the quench), an array's `rotation`
+honoured by the seat search -- `place_seed`'s post-polish re-seat included
+since #1117, which names a part it cannot put back at its angle in
+`reseat_declined` rather than turning it; stage 1's edge seat applies a
+declared `rotation` but not a `rotation_candidates` set -- and held by the
+quench, whose swaps no longer trade a declared angle away), an array's
+`rotation`
 (the row is seated at one angle and the quench only translates it), or a
 `fixed_poses[]` entry's `rot` (seated exactly, then locked). Explore rotations
 deliberately with `place_portfolio.py --strategy poses`.

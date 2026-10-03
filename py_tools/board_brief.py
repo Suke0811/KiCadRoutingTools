@@ -828,7 +828,13 @@ def format_text(b):
                      f"{bd['cutout_area_mm2']} mm2 of the outline is cut out")
     st = b.get('state') or {}
     if st:
+        # #1115: `pile` before the partial/placed arms, so this line agrees
+        # with the `pile` key the skill tells a reader to use. Both kinds of
+        # pile `unplaced` misses (#1109) used to print something else here: a
+        # staging RING printed `state: placed`, and a HEAP (many parts
+        # stacked on one spot) printed `state: partially unplaced`.
         what = ('UNPLACED' if st.get('unplaced') else
+                'PILE' if st.get('pile') else
                 'partially unplaced' if st.get('partially_unplaced')
                 else 'placed')
         copper = 'yes' if st.get('has_copper') else 'no'
@@ -1046,6 +1052,11 @@ def main(argv=None):
                   f"{len(mech['poses'])} pose(s), {len(mech['edges'])} "
                   f"edge(s) -- recorded facts ({_prov[0]}: {_prov[1]})")
     if a.json:
+        # #1115: the free-agent skill's FIRST command writes to wk/<run>/,
+        # which does not exist yet on a fresh checkout (wk/ is gitignored).
+        # It died there with a traceback before printing JSON_SUMMARY.
+        _jdir = os.path.dirname(os.path.abspath(a.json))
+        os.makedirs(_jdir, exist_ok=True)
         with open(a.json, 'w', encoding='utf-8') as f:
             json.dump(brief, f, indent=1, sort_keys=True, default=str)
         print(f"Wrote {a.json}")
@@ -1054,6 +1065,10 @@ def main(argv=None):
          'nets': brief['board'].get('nets'),
          'unplaced': (brief.get('state') or {}).get('unplaced'),
          'pile': (brief.get('state') or {}).get('pile'),
+         # #1115: the free-agent skill picks its mode from `pile` and
+         # `has_copper`; this line carried only the first, so the second was
+         # readable only from a --json file the skill's command never wrote.
+         'has_copper': (brief.get('state') or {}).get('has_copper'),
          'sections': sorted(k for k, v in brief.items()
                             if isinstance(v, (dict, list))
                             and k not in ('sources', 'skipped')),

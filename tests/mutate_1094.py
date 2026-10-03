@@ -47,6 +47,8 @@ TARGETS = {
     'seed': os.path.join(_ROOT, 'py_placer', 'place_seed.py'),
     'pose': os.path.join(_PL, 'pose_ops.py'),
     'cfp': os.path.join(_ROOT, 'py_tools', 'check_floorplan.py'),
+    # #1111 moved overlap_thickness here, verbatim, for check_pads.
+    'geom': os.path.join(_ROOT, 'py_router', 'geometry_utils.py'),
 }
 
 
@@ -117,11 +119,11 @@ ROWS = [
      "        if all(sev.get(c) == 'ignore' for c in legacy):",
      (T1095,), 'KILLED'),
     # --- #1094 review: how deep, and what a courtyard encloses ---------------
-    ('depth-spans-the-rotated-rect', 'leg',
+    ('depth-spans-the-rotated-rect', 'geom',
      "            best = max(best, min(short, 2.0 * _inscribed_radius(p)))",
      "            best = max(best, short)",
      (T1094,), 'KILLED'),
-    ('thickness-fallback-unmeasured', 'leg',
+    ('thickness-fallback-unmeasured', 'geom',
      "        polylabel(poly, tolerance=THICKNESS_TOL_MM)))",
      "        polylabel(poly, tolerance=THICKNESS_TOL_MM))) * 0.0",
      (T1094,), 'KILLED'),

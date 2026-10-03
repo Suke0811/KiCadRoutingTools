@@ -17,11 +17,14 @@ part's `rotation`, then place_seed for every --seeds value, exactly as
 compare_seeds runs it (same subprocess, same polish), and the written board
 read back to confirm the part really sits at that angle. A rotation where the
 part went unseated, or was written at another angle, is a hard fail and ranks
-last. The rest rank by (unseated, probe failures when probed, crossings, hpwl,
+last. Next come the angles where a seed's re-seat could not put the part back
+(`reseat_declined`, #1117): the polish walked it out because that paid, so
+they rank after every angle whose seeds held it, but they still rank. The rest
+rank by (unseated, probe failures when probed, crossings, hpwl,
 grade errors) over the seeds' medians; a tie goes to the earlier angle in the
-ladder, the input angle when it is ranked. A seed that fails its intent gate
-is NOT a tier (on a pile most do, for repairable reasons), but every angle
-reports how many of its seeds did, and the winner line says so. --probe
+ladder, the input angle when it is ranked. Any other seed that fails its
+intent gate is NOT a tier (on a pile most do, for repairable reasons), but
+every angle reports how many of its seeds did, and the winner line says so. --probe
 routes the top --probe-top rotations full-board (converge.probe_route), and a
 probe verdict outranks crossings, which is only a proxy (run 7).
 
@@ -274,6 +277,8 @@ def aggregate(rot, rows, ladder_index):
                 'max': max(got) if got else None, 'by_seed': vals}
     return {'rotation': rot, 'ladder_index': ladder_index, 'hard_fail': hard,
             'gated_seeds': sum(1 for r in rows if r.get('gated')),
+            'declined_seeds': sum(1 for r in rows
+                                  if r.get('reseat_declined_ref')),
             'unseated_max': max((r.get('unseated') or 0) for r in rows),
             'probed': probed,
             'probe_failures': _median(fails) if probed else None,
@@ -282,7 +287,8 @@ def aggregate(rot, rows, ladder_index):
 
 
 def rotation_key(agg):
-    """Lower is better: hard fails last, then fewer unseated parts, then a
+    """Lower is better: hard fails last, then fewer seeds whose re-seat
+    declined the part at this angle (#1117), then fewer unseated parts, then a
     probe verdict (a probed rotation before an unprobed one, fewer failures
     first), then crossings, hpwl and grade errors (medians over the seeds),
     then the ladder order, which puts the input rotation first on a tie."""
@@ -292,6 +298,7 @@ def rotation_key(agg):
         v = agg[key]['median'] if isinstance(agg[key], dict) else agg[key]
         return big if v is None else v
     return (agg['hard_fail'] is not None,
+            agg.get('declined_seeds', 0),
             agg['unseated_max'],
             0 if agg['probed'] else 1,
             agg['probe_failures'] if agg['probed'] else 0,
@@ -308,6 +315,14 @@ def classify_row(row, ref, written_rot):
     row['written_rotation'] = written_rot
     row['rotation_applied'] = (written_rot is not None
                                and same_angle(written_rot, row['rotation']))
+    # #1117: the angle held, but the seed's post-polish re-seat could not put
+    # the part back (into its zone, out of a keep-out or another block's
+    # exclusive zone) at it. The polish walked it out BECAUSE that lowered its
+    # cost, so ranked on crossings and hpwl alone this arm would beat an
+    # angle whose seed satisfies its intent. A TIER, not a hard fail: a zone
+    # too full to take the part at ANY angle says nothing about the rotation,
+    # and as a hard fail it refused to rank anything at all.
+    row['reseat_declined_ref'] = ref in (row.get('reseat_declined') or {})
     if row['place_seed_rc'] not in PLACE_SEED_OK:
         row['hard_fail'] = 'place_seed_failed'
     elif not row['ref_seated']:
@@ -564,6 +579,10 @@ def main():
                    'unseated': s.get('unseated'),
                    'unseated_refs': s.get('unseated_refs') or [],
                    'rotation_unseated': s.get('rotation_unseated') or {},
+                   # #1117: the parts the seed's post-polish re-seat could not
+                   # put back at their declared angle; `classify_row` makes the
+                   # ranked ref being one of them a hard failure.
+                   'reseat_declined': s.get('reseat_declined') or {},
                    'pad_conflicts_seeded': s.get('pad_conflicts_seeded'),
                    'decap_claimed': (s.get('decap_stage') or {}).get(
                        'claimed'),

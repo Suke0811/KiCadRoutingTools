@@ -283,12 +283,14 @@ Per candidate angle (the input angle and its quarter turns; the 45-degree set
 too with `--diagonal-rotations`; or `--rotations`), the intent plus one block
 declaring the part's `rotation`, then `place_seed` for every `--seeds` value,
 exactly as `compare_seeds.py` runs it. The written board is read back: a part
-left unseated, or written at another angle, is a hard fail and ranks last. The
+left unseated, or written at another angle, is a hard fail and ranks last. An
+angle where a seed's re-seat could not put the part back (`reseat_declined`,
+#1117) ranks after every angle whose seeds held it, and still ranks. The
 rest rank by unseated parts, then a probe verdict when `--probe` routed it
 (the top `--probe-top` angles, full-board, no timeout), then median crossings,
 hpwl and grade errors; a tie goes to the earlier angle in the ladder (the
-input angle when it is ranked). A seed that fails its intent gate is not a
-tier -- on a pile most do, for repairable reasons -- but each angle reports
+input angle when it is ranked). Any other seed that fails its intent gate is
+not a tier -- on a pile most do, for repairable reasons -- but each angle reports
 how many of its seeds did, and the winner line says so. A CONTROL arm seeds
 the same seeds with the intent as given (no rotation declared): it is the
 baseline the winner line compares with, because the seeder may turn the part
@@ -633,6 +635,18 @@ Only pads that share a copper layer are compared, so edge-connector fingers on o
 sides and a part's top/bottom ground pads never false-trip. Net-0 (no-connection) pads -
 fiducials, mechanical pads - are ignored. The exit code is the number of overlapping
 pairs (0 = clean), so it gates a pipeline.
+
+A pad is measured by its outline: rect corners turned by the pad's angle, and
+round, oval and roundrect corners as arcs. A CUSTOM pad's outline is only its box,
+so a pair involving one that overlaps on outlines is re-measured on the real copper
+(#1111): the union of the pad's parsed primitives, and the depth is the thickness of
+the shared copper. A solder jumper's interleaved teeth (KiCad's StickHub demo, JP1:
+0.150 mm apart, 0.150 mm overlap on the boxes) no longer reads as a short, and the
+re-measure can only remove a pair the outlines found. A custom pad the parser could
+not draw (a `gr_curve` primitive) stays measured on its box. As in KiCad, two
+copies of one UNCONNECTED pin (KiCad gives each its own `unconnected-(...)` net)
+and a footprint's `net_tie_pad_groups` are not shorts; two copies of one number
+on real nets are. An `F&B.Cu` pad is on both outer layers.
 
 ### Examples
 

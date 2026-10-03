@@ -80,7 +80,15 @@ def _overlap_depth(a: List[Tuple[float, float]], b: List[Tuple[float, float]]) -
             ex = poly[(i + 1) % n][0] - poly[i][0]
             ey = poly[(i + 1) % n][1] - poly[i][1]
             nx, ny = -ey, ex
-            L = math.hypot(nx, ny) or 1.0
+            L = math.hypot(nx, ny)
+            # A ZERO-LENGTH edge has no normal. It used to become the (0, 0)
+            # axis, on which every gap reads 0 -- so the max over axes could
+            # never go below 0 and the pair could never overlap. A circle's
+            # outline closes on its own first vertex, which made check_pads
+            # blind to every circle pad: two 1 mm discs 0.3 mm deep, even
+            # concentric, reported nothing (#1111's verifier).
+            if L < 1e-12:
+                continue
             nx, ny = nx / L, ny / L
             amin = min(nx * p[0] + ny * p[1] for p in a)
             amax = max(nx * p[0] + ny * p[1] for p in a)
@@ -101,7 +109,11 @@ def _copper_layers(pad) -> set:
     for lyr in (pad.layers or []):
         if lyr == "*.Cu":
             return {"*"}
-        if lyr.endswith(".Cu"):
+        if lyr == "F&B.Cu":
+            # Both outer layers (the #722 spelling). It ends in `.Cu`, so it
+            # used to be one layer of its own that shared nothing.
+            out |= {"F.Cu", "B.Cu"}
+        elif lyr.endswith(".Cu"):
             out.add(lyr)
     return out
 
@@ -113,28 +125,101 @@ def _shares_layer(a, b) -> bool:
     return bool(la & lb)
 
 
-def _overlaps_in(pads, tolerance):
+def _copper_geometry(pad):
+    """A pad's copper as a shapely geometry: the union of its custom-pad
+    polygons (the anchor and every primitive, board frame, as the parser keeps
+    them in `pad.polygons`), else its outline polygon. `make_valid` repairs
+    what the parser draws -- the seamed ring of an unfilled circle -- and,
+    unlike `buffer(0)`, keeps BOTH lobes of a self-crossing outline."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    from shapely.validation import make_valid
+    if pad.polygons:
+        return unary_union([make_valid(Polygon(q)) for q in pad.polygons
+                            if len(q) >= 3])
+    return Polygon(_pad_outline_polygon(pad))
+
+
+def _custom_pair_depth(a, b):
+    """How deep two pads' copper overlaps (mm) when at least one is a CUSTOM
+    pad, measured on the copper itself (#1111); 0 when it does not touch.
+
+    The depth is `overlap_thickness` of the shared copper -- the ruler the
+    placement graders use: twice the largest circle inside it, the shorter
+    side for a rectangle. Exact on the parser's polygons, which is why it,
+    not check_drc's `check_pad_pad_overlap`, decides: that one samples 8
+    points per edge, so a crossing narrower than the sample spacing (a bar
+    0.08 mm wide across a 0.08 mm strip) reads as a GAP, and an earlier
+    version of this fix asked it first and dropped real shorts the box model
+    had caught (#1111's verifier; KiCad reports them `shorting_items`).
+    """
+    from geometry_utils import overlap_thickness
+    return overlap_thickness(
+        _copper_geometry(a).intersection(_copper_geometry(b)))
+
+
+def _unconnected(pad) -> bool:
+    """A pad KiCad gave a per-pad `unconnected-(...)` net: a pin nothing is
+    wired to."""
+    return (pad.net_name or '').startswith('unconnected-(')
+
+
+def _overlaps_in(pads, tolerance, exact=True, ties=None):
     """Different-net copper overlaps among a flat pad list (deeper than tolerance).
     Only pads sharing a copper layer can short (edge-connector fingers on opposite
-    sides, for example, never conflict). Overlap depth is measured with the pad's
-    TRUE copper shape (check_drc's exact circle/oval/roundrect/custom-polygon
-    model), not a bounding rectangle -- a round pad's bbox corner otherwise reads
-    as overlapping a neighbour it doesn't actually touch (#232/#260 phantom)."""
+    sides, for example, never conflict).
+
+    A pad is measured by its outline polygon: rect corners rotated by
+    `rect_rotation`, and circle/oval/roundrect corners as sampled ARCS, so a
+    round pad's bounding-box corner does not read as overlapping a neighbour
+    it does not touch (#232/#260 phantom).
+
+    A CUSTOM pad's outline is only its box (`size_x/size_y`, symmetric about
+    the anchor), so a pair involving one that overlaps on outlines is then
+    measured on its real copper by `_custom_pair_depth` (#1111): StickHub's
+    solder jumper JP1, two toothed pads whose teeth interleave 0.15 mm apart,
+    read as a 0.150 mm overlap on its boxes. The outline test stays first, so
+    the copper measurement can only REMOVE a custom-pad hit, never add one. A
+    custom pad the parser could not draw (`polygons` None, e.g. a `gr_curve`
+    primitive) stays measured on its box. `exact=False` is the box model
+    alone, which is what this was before #1111.
+
+    `ties` = {footprint ref: [set of pad numbers, ...]}, the footprints'
+    `net_tie_pad_groups`: pads a footprint deliberately shorts (a Kelvin
+    shunt, a net tie) are not a short, as KiCad's DRC exempts them.
+    """
     pads = [p for p in pads if p.size_x > 0 and p.size_y > 0 and p.net_id != 0]
     polys = [_pad_outline_polygon(p) for p in pads]
     reach = [math.hypot(p.size_x, p.size_y) / 2.0 for p in pads]
+    ties = ties or {}
     hits = []
     for i, a in enumerate(pads):
         for j in range(i + 1, len(pads)):
             b = pads[j]
             if a.net_id == b.net_id:
                 continue
+            if a.component_ref == b.component_ref:
+                # One UNCONNECTED pin drawn as several pads (an exposed pad's
+                # thermal vias, a doubled pin): KiCad gives each copy its own
+                # `unconnected-(...)_N` net, and its DRC reports no short
+                # between two such copies of one number -- measured with
+                # kicad-cli 10; two copies on REAL nets are a short, and
+                # still one here. Seen once circles became visible (#1111):
+                # jetson U30's 0.45 mm vias on pad 57, rp2350 U8's pads 15.
+                if (a.pad_number and a.pad_number == b.pad_number
+                        and _unconnected(a) and _unconnected(b)):
+                    continue
+                if any(a.pad_number in g and b.pad_number in g
+                       for g in ties.get(a.component_ref, ())):
+                    continue
             near = reach[i] + reach[j] + tolerance
             if abs(a.global_x - b.global_x) > near or abs(a.global_y - b.global_y) > near:
                 continue
             if not _shares_layer(a, b):
                 continue
             depth = _overlap_depth(polys[i], polys[j])
+            if exact and depth > tolerance and (a.polygons or b.polygons):
+                depth = _custom_pair_depth(a, b)
             if depth > tolerance:
                 hits.append((a, b, depth))
     return hits
@@ -149,16 +234,24 @@ def find_pad_overlaps(pcb, tolerance: float = 0.05, component: str = None,
     connection) pads are skipped, so fiducials and mechanical pads don't trip it.
     `component` restricts the check to one footprint; `cross_footprint=True` also
     tests pads across different footprints (a broader board-level short check, but
-    noisier on tightly-placed passives).
+    noisier on tightly-placed passives). Custom pads are measured on their real
+    copper (`_overlaps_in`, #1111).
     """
+    # The footprints' deliberate shorts, keyed the way a pad names its part.
+    ties = {}
+    for fp in pcb.footprints.values():
+        groups = getattr(fp, 'net_tie_groups', None) or ()
+        if groups and fp.pads:
+            ties.setdefault(fp.pads[0].component_ref, []).extend(
+                set(g) for g in groups)
     if cross_footprint:
         pads = [pd for fp in pcb.footprints.values() for pd in fp.pads]
-        return _overlaps_in(pads, tolerance)
+        return _overlaps_in(pads, tolerance, ties=ties)
     hits = []
     for ref, fp in pcb.footprints.items():
         if component and ref != component:
             continue
-        hits.extend(_overlaps_in(fp.pads, tolerance))
+        hits.extend(_overlaps_in(fp.pads, tolerance, ties=ties))
     return hits
 
 

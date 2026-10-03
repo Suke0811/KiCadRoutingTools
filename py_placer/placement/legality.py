@@ -183,62 +183,18 @@ def shape_overlap(a, b):
     return area, overlap_thickness(ix), tuple(ix.bounds)
 
 
-#: The precision (mm) `overlap_thickness` measures a non-rectangular region
-#: to: the last decimal `depth_mm` is rounded to. A rectangle is exact.
-THICKNESS_TOL_MM = 1e-4
-
-
-def _areal_parts(geom):
-    """The Polygon parts of any geometry: an intersection can be a Polygon, a
-    MultiPolygon, or a collection that also carries lines and points."""
-    if geom is None or geom.is_empty:
-        return []
-    if geom.geom_type == 'Polygon':
-        return [geom] if geom.area > EPS else []
-    out = []
-    for g in getattr(geom, 'geoms', ()):
-        out.extend(_areal_parts(g))
-    return out
-
-
-def _inscribed_radius(poly) -> float:
-    """Radius of the largest circle inside `poly`, to `THICKNESS_TOL_MM`.
-    shapely 2.1 has `maximum_inscribed_circle`; before it, `polylabel` finds
-    the same centre (the pole of inaccessibility)."""
-    import shapely
-    mic = getattr(shapely, 'maximum_inscribed_circle', None)
-    if mic is not None:
-        return float(mic(poly, tolerance=THICKNESS_TOL_MM).length)
-    from shapely.ops import polylabel
-    return float(poly.boundary.distance(
-        polylabel(poly, tolerance=THICKNESS_TOL_MM)))
-
-
 def overlap_thickness(geom) -> float:
     """How thick an overlap region is, in mm: twice the radius of the largest
     circle it contains, over its thickest part.
 
-    For a rectangle that is its shorter side -- the rect channel's
-    `min(dx, dy)` -- and a rectangular region is measured exactly so, with
-    no search. The shorter side of the region's minimum ROTATED rectangle,
-    which this replaced, spans the whole region instead of its thickness: a
-    part tucked into a stepped courtyard's corner notch, grazing both arms
-    0.2 mm deep, read 2.2 mm and tripped the 0.3 mm blocking floor, and two
-    disjoint slivers read as one region as wide as the gap between them.
+    MOVED to `py_router/geometry_utils.py` (#1111), verbatim, so check_pads
+    can measure a custom pad's overlap with this same ruler without the router
+    importing a placement engine (`_placer_path.py`: one direction only). The
+    name stays here because every placement grader calls it from here.
+    Imported lazily: this module has no module-scope router import.
     """
-    best = 0.0
-    for p in _areal_parts(geom):
-        mrr = p.minimum_rotated_rectangle
-        cs = list(mrr.exterior.coords) if hasattr(mrr, 'exterior') else []
-        if len(cs) < 4:
-            continue
-        short = min(math.hypot(cs[1][0] - cs[0][0], cs[1][1] - cs[0][1]),
-                    math.hypot(cs[2][0] - cs[1][0], cs[2][1] - cs[1][1]))
-        if abs(mrr.area - p.area) <= 1e-9 * max(1.0, mrr.area):
-            best = max(best, short)            # the region IS a rectangle
-        else:
-            best = max(best, min(short, 2.0 * _inscribed_radius(p)))
-    return best
+    from geometry_utils import overlap_thickness as _thickness
+    return _thickness(geom)
 
 
 #: A body overlap at or above this fraction of the SMALLER body is a
@@ -3509,6 +3465,12 @@ class LegalityContext:
         self._degenerate_refs = frozenset(
             r for refs in _buckets.values() if len(refs) >= 3 for r in refs)
 
+    @property
+    def pad_clearance_model(self):
+        """The active `PadClearanceModel`, or None for the flat scalar --
+        what `pad_pair_conflict` takes as `model` (#1065)."""
+        return self._floors
+
     # -- pair measurement ------------------------------------------------------
     def pair_shortfall(self, a: str, b: str, pose_a=None,
                        pose_b=None) -> PairShortfall:
@@ -4335,6 +4297,75 @@ def grade_pad_edge_clearance(pcb_data, required: float, pcb_file=None) -> Dict:
     return EdgeCopperContext(pcb_data, required, pcb_file).grade()
 
 
+def pad_pair_conflict(pp_a, rects_a, pads_a, pp_b, rects_b, pads_b,
+                      clearance, model, check_exact, routing_layers):
+    """How far two parts' pads fall short of their clearance: the census
+    `grade_pad_legality` takes per part pair, as a function (#1065).
+
+    `pp_*` are the parts' `PartPads`; `rects_*` their `pad_rects` at the pose
+    being graded, and `pads_*` their footprint's `Pad` objects AT THAT SAME
+    POSE (`_pad_with_copper` indexes them the way `rects_*` count). `model` is
+    the active `PadClearanceModel` or None (a flat `clearance`), and
+    `check_exact` is check_drc's `check_pad_pad_overlap` or None (the rect
+    gap alone).
+
+    Returns `(pair_mm, pair_hit, pair_required, pair_source)`: the summed
+    shortfall over the conflicting pad pairs, each at its own requirement --
+    the mm `grade_pad_legality` reports in `worst` -- whether any pad pair
+    conflicts, and the largest requirement charged with where it came from.
+
+    Lifted out VERBATIM so `render_placement`'s pad-clearance checklist can
+    CALL the grader instead of mirroring it with bounding-box gaps
+    (`LegalityContext.pair_shortfall` is the seeder and quench gate, and
+    stays as it is). Same-net pads never conflict here; a net-0 pad conflicts
+    with everything.
+    """
+    floors_a = pp_a.pad_floors if model is not None else None
+    floors_b = pp_b.pad_floors if model is not None else None
+    pair_reach = (clearance if model is None else
+                  max(clearance, model.base, pp_a.max_floor,
+                      pp_b.max_floor))
+    pair_mm = 0.0
+    pair_hit = False
+    pair_required = 0.0
+    pair_source = ''
+    for ai, (a0, a1, a2, a3, na, sa) in enumerate(rects_a):
+        fa = floors_a[ai] if floors_a else None
+        for bi, (b0, b1, b2, b3, nb, sb) in enumerate(rects_b):
+            if na == nb and na > 0:
+                continue
+            if not _sides_interact(sa, sb):
+                continue
+            g = rect_gap((a0, a1, a2, a3), (b0, b1, b2, b3))
+            if g >= pair_reach - EPS:
+                continue
+            if fa is None:
+                eff, src = clearance, ''
+            else:
+                eff, src = model.pair_with_source(fa, floors_b[bi])
+            if g >= eff - EPS:
+                continue
+            if check_exact is not None:
+                pa = _pad_with_copper(pads_a, ai, clearance)
+                pb = _pad_with_copper(pads_b, bi, clearance)
+                if pa is not None and pb is not None:
+                    hit, over, _pt = check_exact(pa, pb, eff,
+                                                 routing_layers,
+                                                 clearance_margin=0.0)
+                    if not hit:
+                        continue
+                    pair_mm += over
+                    pair_hit = True
+                    if eff > pair_required:
+                        pair_required, pair_source = eff, src
+                    continue
+            pair_mm += eff - g
+            pair_hit = True
+            if eff > pair_required:
+                pair_required, pair_source = eff, src
+    return pair_mm, pair_hit, pair_required, pair_source
+
+
 def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                        edge_margin: Optional[float] = None,
                        worst_n: int = 10,
@@ -4468,49 +4499,10 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                 continue
             seen_pairs.add(key)
             rects_b, holes_b = entries[other]
-            floors_a = parts[ref].pad_floors if model is not None else None
-            floors_b = parts[other].pad_floors if model is not None else None
-            pair_reach = (clearance if model is None else
-                          max(clearance, model.base, parts[ref].max_floor,
-                              parts[other].max_floor))
-            pair_mm = 0.0
-            pair_hit = False
-            pair_required = 0.0
-            pair_source = ''
-            for ai, (a0, a1, a2, a3, na, sa) in enumerate(rects_a):
-                fa = floors_a[ai] if floors_a else None
-                for bi, (b0, b1, b2, b3, nb, sb) in enumerate(rects_b):
-                    if na == nb and na > 0:
-                        continue
-                    if not _sides_interact(sa, sb):
-                        continue
-                    g = rect_gap((a0, a1, a2, a3), (b0, b1, b2, b3))
-                    if g >= pair_reach - EPS:
-                        continue
-                    if fa is None:
-                        eff, src = clearance, ''
-                    else:
-                        eff, src = model.pair_with_source(fa, floors_b[bi])
-                    if g >= eff - EPS:
-                        continue
-                    if check_exact is not None:
-                        pa = _pad_with_copper(pads_by_ref[ref], ai, clearance)
-                        pb = _pad_with_copper(pads_by_ref[other], bi, clearance)
-                        if pa is not None and pb is not None:
-                            hit, over, _pt = check_exact(pa, pb, eff,
-                                                         routing_layers,
-                                                         clearance_margin=0.0)
-                            if not hit:
-                                continue
-                            pair_mm += over
-                            pair_hit = True
-                            if eff > pair_required:
-                                pair_required, pair_source = eff, src
-                            continue
-                    pair_mm += eff - g
-                    pair_hit = True
-                    if eff > pair_required:
-                        pair_required, pair_source = eff, src
+            pair_mm, pair_hit, pair_required, pair_source = pad_pair_conflict(
+                parts[ref], rects_a, pads_by_ref[ref],
+                parts[other], rects_b, pads_by_ref[other],
+                clearance, model, check_exact, routing_layers)
             if pair_hit:
                 pad_conflicts += 1
                 pad_shortfall += pair_mm

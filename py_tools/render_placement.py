@@ -434,6 +434,32 @@ def legality_findings(model) -> Dict[str, object]:
         except Exception as e:                               # noqa: BLE001
             out['keepout_copper_unmeasured'] = [['*', 'error', '%s: %s'
                                                  % (type(e).__name__, e)]]
+        # #1065: pad CLEARANCE is the grader's own measurement, not a mirror.
+        # `pair_shortfall` (the seeder and quench gate) charges bounding-box
+        # gaps, so an oval pad 0.277 mm from its neighbour read 0.0215 mm
+        # short at 0.25 and render flagged a pose grade_pad_legality and
+        # check_drc both call clean -- and a run gated its search on it. Its
+        # pad term is a NECESSARY condition (every pad pair the grader can
+        # charge is short on the rects too), so it nominates; the grader's
+        # per-pair census, `pad_pair_conflict`, decides and gives the mm, on
+        # the copper at the MODEL's pose, at each pad pair's own requirement.
+        from placement.legality import footprint_at_pose, pad_pair_conflict
+        try:
+            from check_drc import check_pad_pad_overlap as _exact
+        except Exception:                                    # noqa: BLE001
+            _exact = None
+        _layers = list(getattr(state.pcb_data.board_info, 'copper_layers',
+                               None) or [])
+        _copper = {}
+
+        def _copper_at_pose(r):
+            if r not in _copper:
+                p = state.parts[r]
+                _copper[r] = (
+                    ctx.parts[r].pad_rects(p.x, p.y, p.rot),
+                    footprint_at_pose(state.pcb_data.footprints[r],
+                                      (p.x, p.y, p.rot)).pads)
+            return _copper[r]
         refs = sorted(ctx.parts)
         for i, a in enumerate(refs):
             pa = state.parts.get(a)
@@ -445,8 +471,14 @@ def legality_findings(model) -> Dict[str, object]:
                     continue
                 sf = ctx.pair_shortfall(a, bb)
                 if sf.pad > 1e-6:
-                    out['pad_conflict_pairs_refs'].append(
-                        [a, bb, round(sf.pad, 4)])
+                    (_ra, _pa), (_rb, _pb) = _copper_at_pose(a), _copper_at_pose(bb)
+                    _mm, _hit, _req, _src = pad_pair_conflict(
+                        ctx.parts[a], _ra, _pa, ctx.parts[bb], _rb, _pb,
+                        ctx.clearance, ctx.pad_clearance_model, _exact,
+                        _layers)
+                    if _hit:
+                        out['pad_conflict_pairs_refs'].append(
+                            [a, bb, round(_mm, 4)])
                 if sf.hole > 1e-6:
                     out['hole_conflict_pairs_refs'].append(
                         [a, bb, round(sf.hole, 4)])
@@ -1702,7 +1734,17 @@ def caption(spec: PanelSpec, extra: Optional[Dict] = None) -> str:
         # checklist and the stack read as noise)
         bits.append(f"BODY-STACKS {m['pad_intersection_pairs']:.0f}")
     if m.get('pad_conflict_pairs') is not None:
-        bits.append(f"pad-conflicts {m['pad_conflict_pairs']:.0f}")
+        # #1065: the GRADER's pair count -- the list the checklist, the
+        # overlay and --gate carry. `metrics.pad_conflict_pairs` is the
+        # optimizer's bounding-box currency (place_optimize labels it so in
+        # `pad_conflict_pairs_currency`),
+        # so the caption printed "pad-conflicts 10" on a glasgow panel whose
+        # checklist named one pair. The metric itself stays in the JSON: the
+        # quench moves on it, and the film plots it against its own floor.
+        _ctx = getattr(getattr(spec.model, 'state', None), 'legality_ctx', None)
+        _n = (len(legality_findings(spec.model)['pad_conflict_pairs_refs'])
+              if _ctx is not None else m['pad_conflict_pairs'])
+        bits.append(f"pad-conflicts {_n:.0f}")
     if m.get('hole_shortfall'):
         bits.append(f"hole-conflict {m['hole_shortfall']:.2f}mm")
     bits.append("oob n/a (no Edge.Cuts)" if spec.model.no_outline

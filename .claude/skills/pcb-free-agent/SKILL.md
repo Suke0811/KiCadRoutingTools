@@ -12,10 +12,12 @@ prescribe the process.
 
 Invocation: `/pcb-free-agent <mode> <board.kicad_pcb> [intent.json]`, where
 mode is `full`, `place` or `route`. With no mode, use `full` for an unplaced
-board and `route` for a placed one. `board_brief.py <board> --json`
-(`pile`, `has_copper`) is the positive test for which one; exit codes are
-not. Read `pile`, not `unplaced`: a staging ring of parts around the outline
-is a pile but reads `unplaced: false` (#1109).
+board and `route` for a placed one. The positive test for which one is
+`python3 -X utf8 py_tools/board_brief.py <board> --json wk/<run>/brief.json`:
+read `pile` and `has_copper` on its `JSON_SUMMARY` line (the file carries
+them under `state`); exit codes are not the test. Read `pile`, not
+`unplaced`: a staging ring of parts around the outline is a pile but reads
+`unplaced: false` (#1109).
 
 **Measured basis.** Two runs used this contract before it became a skill:
 - **An 18-part 2-layer board, from a pile:** DONE in 12 min, 6 vias. The
@@ -99,7 +101,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 | job | tools |
 |---|---|
 | score (the authority on `blocking`) | `py_tools/board_score.py <board> --intent <i> --json <out>`; `check_complete.py <board> --intent <i>` (fails closed) |
-| read the board | `py_tools/board_brief.py --json`, `py_tools/board_context.py --md` (per-part sheet: pin order, `CROSSED` pairs) |
+| read the board | `py_tools/board_brief.py <board> --json <out>`, `py_tools/board_context.py --md` (per-part sheet: pin order, `CROSSED` pairs) |
 | place from scratch | lock the fixed parts with `py_placer/place_pose.py` first, then `py_placer/place_seed.py` (about 5–15 min on a 250-part board; rank seeds with `py_placer/compare_seeds.py`) |
 | improve a placement | `py_placer/place_optimize.py --max-displacement 3` (the quench, for ROUGH placements), `py_placer/place_reconstruct.py` (structural damage), `place_seed --repair` (local violations) / `--reseat` (parts far off), `py_placer/place_portfolio.py --intent --lock --full-probe` (on a SEEDED board), `py_placer/converge.py poses --ref X` (rank one part's poses), `py_placer/place_fanout_clearance.py` |
 | placement vs routing, in a loop | `py_placer/place_route_loop.py` (when routing failed on congestion) |
@@ -125,7 +127,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   against its pins (its `dropped_by` says what vetoed each move). Rank it at
   seed level, passing the same `--seed-args` you will seed with:
   `python3 -X utf8 py_placer/rank_rotations.py <pile> --intent <intent.json> --out-dir wk/<run>/rot --probe --write-intent wk/<run>/intent_rot.json`
-  then seed from the written intent. Without `--ref` it ranks the unlocked,
+  then seed from the written intent. The seed holds that angle through its
+  polish and re-seat: a part the re-seat cannot put back at it is named on a
+  `NOT repaired` line (`reseat_declined`) and the seed exits 4. Without
+  `--ref` it ranks the unlocked,
   undeclared part with the most connected pads. It costs one `place_seed`
   per angle plus one full-board probe per `--probe-top` angle (default 2).
   Run 39 found StickHub's U1 at 270 instead of the pile's 0 by hand: seed
@@ -137,9 +142,12 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 - **`place_pose` "legal" is not "buildable".** It does not see a same-net pad
   stacked on another part's pad (#1064). After every pose change, run
   `check_assembly` and read `buildable`, not `blocking`.
-- **`render_placement`'s pad-clearance list uses bounding boxes.** It can flag
-  an oval pad that `check_drc` passes (#1065). `check_drc` and `place_pose`
-  are the truth.
+- **`render_placement`'s pad-clearance list is the grader's** (#1065): each
+  pair is confirmed with `check_drc`'s exact pad check at the pose it
+  draws, so it agrees with `grade_pad_legality`, and so does the caption's
+  `pad-conflicts`. Two render numbers are still bounding-box counts: the
+  pad-stack list (`b_body_overlap_pairs`; read stacks from
+  `check_assembly`) and the JSON `metrics`, the optimizer's own currency.
 - **Keep-out bands.** A pad in a `(keepout (tracks not_allowed))` band cannot
   be routed even on an empty board (#1031). Treat
   `checklist.a_off_outline.keepout_copper` like off-outline pad copper.
