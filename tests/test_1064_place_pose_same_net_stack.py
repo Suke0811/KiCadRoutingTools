@@ -52,6 +52,13 @@ DAMAGED = os.path.join(ROOT, 'tests', 'fixtures', 'run23',
 C4_Y = 104.100
 C4_STACK_X = 136.063
 C4_KISS_X = 136.188
+#: A rotated near-touch the bounding-box census calls a stack and the exact
+#: grader does not: C4 at -45 degrees beside Y1's corner. Found by a 0.01 mm
+#: sweep at 16c096b1, 0.04-0.05 mm inside every boundary measured (exact pad
+#: gap about 0.05-0.075 mm); quench's `pad_intersection_pairs` reads 1 here
+#: and check_assembly reads 0. The issue's own proposal (gate on the
+#: box-based `PairShortfall.stack`) would refuse it.
+C4_NEAR = (136.06, 103.62, 315)
 
 #: The census on the inputs this test leans on, measured at 16c096b1 with
 #: check_assembly's own channel (grade_body_overlap's pad_intersection
@@ -198,6 +205,23 @@ def test_the_boundary_is_check_assemblys():
         _pose(ESP, os.path.join(td, 'b.kicad_pcb'), 'set', 'C4', 136.138,
               C4_Y, '--rot', '0', accept=True)
     print("  136.137 refused, 136.138 accepted")
+
+
+def _near_touch_board(td):
+    out = os.path.join(td, 'near.kicad_pcb')
+    r = _pose(ESP, out, 'set', 'C4', *C4_NEAR[:2], '--rot', C4_NEAR[2],
+              accept=True)
+    return out, _summary(r)
+
+
+def test_a_rotated_near_touch_is_not_a_stack():
+    """Arm 5. The exact grader decides, not the bounding boxes."""
+    with tempfile.TemporaryDirectory() as td:
+        out, s = _near_touch_board(td)
+        assert s['pad_stack_count_after'] == 0, s['pad_stack_pairs_after']
+        assert not s.get('refused'), s.get('refused')
+        assert _assembly_stacks(out, td) == [], 'check_assembly disagrees'
+    print("  C4 at -45 beside Y1: no stack, accepted")
 
 
 # --------------------------------------------------------------------------
@@ -435,11 +459,34 @@ def test_check_floorplan_prints_the_exact_count():
     print("  check_floorplan prints 'pad stacks: 1' and C4 <-> Y1")
 
 
+def test_check_floorplan_is_exact_where_the_box_census_is_not():
+    """Arm 18. On the near-touch board the printed count and
+    `pad_stack_count` are 0 while the bounding-box `pad_intersection_pairs`
+    beside them is 1 -- the line prints the exact census, not the box one,
+    and the box key keeps its meaning."""
+    with tempfile.TemporaryDirectory() as td:
+        out, _s = _near_touch_board(td)
+        intent = os.path.join(td, 'i.json')
+        run_utils.check([sys.executable, '-X', 'utf8', FLOORPLAN, ESP,
+                         '--emit-intent', intent], accept=True)
+        r = run_utils.check([sys.executable, '-X', 'utf8', FLOORPLAN, out,
+                             '--intent', run_utils.evidence(intent),
+                             '--exit-zero'], accept=True)
+        assert 'pad stacks: 0 ' in r.stdout, r.stdout[-2000:]
+        s = _summary(r)
+        assert s['pad_stack_count'] == 0, s['pad_stack_count']
+        assert s['pad_intersection_pairs'] == 1, (
+            'the fixture no longer separates the two censuses: %r'
+            % s['pad_intersection_pairs'])
+    print("  near-touch: printed 0, box census 1")
+
+
 TESTS = [
     test_the_issue_repro_is_refused,
     test_force_writes_and_check_assembly_agrees,
     test_a_kiss_is_legal,
     test_the_boundary_is_check_assemblys,
+    test_a_rotated_near_touch_is_not_a_stack,
     test_run38_shape_is_refused,
     test_near_snaps_off_the_stack,
     test_an_inherited_stack_is_not_charged_but_is_not_legal,
@@ -452,6 +499,7 @@ TESTS = [
     test_the_census_is_check_assemblys,
     test_scope_names_it_and_main_does_not_grade,
     test_check_floorplan_prints_the_exact_count,
+    test_check_floorplan_is_exact_where_the_box_census_is_not,
 ]
 
 
