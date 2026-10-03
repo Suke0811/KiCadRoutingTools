@@ -6,9 +6,10 @@ checklist, `--gate`, the overlay, the caption). The film kept plotting
 `metrics.pad_conflict_pairs` -- the quench's bounding-box currency -- against
 `metrics.locked_contact_pairs` as its floor, while `docs/route-animation.md`
 credited the panel to `render_placement --json-out`. On glasgow_revC the film
-said 10 pairs where render's checklist names 1, and on every glasgow board
-it drew "floor 6 = locked parts" for six FID/MK box phantoms the grader
-confirms none of.
+said 10 pairs where render's checklist names 1; every glasgow board counted
+six FID/MK box contacts as locked, and where those six were every pair left
+(run 32's placed_v2/v3) it drew "floor 6 = locked parts" for phantoms the
+grader confirms none of.
 
 All three LEGALITY series now come from render's checklist: the gating
 off-outline parts, the grader's pad-clearance pairs (floor: those with a
@@ -138,6 +139,41 @@ def test_a_locked_member_on_either_side_counts():
     print("  either member locked counts; none counts none")
 
 
+def test_no_outline_is_unmeasured():
+    """A board with no Edge.Cuts has nothing to be off: off-outline is
+    None, not 0, while the pair census still runs."""
+    pad = ('    (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") '
+           '(net 1 "N1"))\n')
+    fps = ''.join(
+        '  (footprint "t:%s" (layer "F.Cu") (at %s 10)\n'
+        '    (property "Reference" "%s" (at 0 0) (layer "F.SilkS"))\n%s  )\n'
+        % (ref, x, ref, pad) for ref, x in (('A', 10), ('B', 20)))
+    with tempfile.TemporaryDirectory() as td:
+        b = os.path.join(td, 'b.kicad_pcb')
+        with open(b, 'w', encoding='utf-8') as fh:
+            fh.write('(kicad_pcb (version 20240108) (generator pcbnew)\n'
+                     '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) '
+                     '(44 "Edge.Cuts" user))\n  (net 0 "") (net 1 "N1")\n'
+                     + fps + ')\n')
+        m = MP.measure_board(b, cache={})
+    assert m['off_outline'] is None, m
+    assert m['conflict_pairs'] == 0, m
+    print("  no outline: off-outline None, pairs %s" % m['conflict_pairs'])
+
+
+def test_the_floor_needs_every_pair_locked():
+    """The floor is drawn only when every pair left has a locked member:
+    one locked pair among three is not a floor."""
+    def track(conflict, locked):
+        beat = MP.Beat('b', 'b', 0, 0, conflict, 1.0, 0, 0.0, locked, None,
+                       '', None)
+        return MP.PlacementTrack((beat, beat), None, '', (), (), None, '')
+    assert MP._floor(track(3, 1)) is None
+    assert MP._floor(track(2, 2)) == 2
+    assert MP._floor(track(0, 0)) is None
+    print("  3 pairs / 1 locked: no floor; 2 / 2: floor 2")
+
+
 def test_not_measured_is_none():
     """Without a legality context the pad lists sit at their empty defaults:
     the film reports them unmeasured, and the courtyard census -- which does
@@ -196,6 +232,8 @@ TESTS = [
     test_no_phantom_floor_on_glasgow,
     test_a_box_phantom_draws_no_floor,
     test_a_locked_member_on_either_side_counts,
+    test_no_outline_is_unmeasured,
+    test_the_floor_needs_every_pair_locked,
     test_not_measured_is_none,
     test_a_census_error_is_none,
     test_run32_draws_no_phantom_floor,

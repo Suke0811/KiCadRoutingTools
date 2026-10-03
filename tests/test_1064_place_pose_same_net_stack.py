@@ -65,6 +65,10 @@ C4_NEAR = (136.06, 103.62, 315)
 #: pairs). The tracked corpus has none; the two fixtures are why arm 15 is
 #: not an equality of empty lists.
 PINNED_STACKS = {'run29_pile': 83, 'tigard_damaged': 29}
+#: ... and their sides: front copper, and '' for a through-hole pair (all
+#: layers), as check_assembly prints them.
+PINNED_SIDES = {'run29_pile': {'F': 66, '': 17},
+                'tigard_damaged': {'F': 28, '': 1}}
 
 CAP = ('  (footprint "t:C" (layer "F.Cu") (at {x} {y} {rot}){lock}\n'
        '    (property "Reference" "{ref}" (at 0 0) (layer "F.SilkS"))\n'
@@ -166,6 +170,9 @@ def test_the_issue_repro_is_refused():
         assert s['pad_stack_pairs_after'] == [['C4', 'Y1', 0.0412, 'F']], \
             s['pad_stack_pairs_after']
         assert 'NOT BUILDABLE' in s['refused'], s['refused']
+        assert s['pad_stack_basis'].startswith(
+            "check_assembly's pad_intersection channel"), s['pad_stack_basis']
+        assert "pads are stacked" in s['legal_basis'], s['legal_basis']
     print("  C4 on Y1 refused at exit 4, nothing written")
 
 
@@ -276,6 +283,19 @@ def _stacked(td, dy=OFF[1], extra=()):
                        ('C19', C19[0], C19[1], 180, False),
                        ('C20', C20[0], C20[1], 180, False)] + list(extra),
                   rs=[('R3', 10, 25, 3, 4)])
+
+
+def test_a_mixed_refusal_still_explains_the_stack():
+    """R2 moved onto R1 (different nets): a new pad conflict AND a new
+    stack. The stack sentence must survive beside the other category."""
+    with tempfile.TemporaryDirectory() as td:
+        b = _board(td, [], rs=[('R1', 30, 25, 3, 4), ('R2', 10, 10, 1, 2)])
+        r = _pose(b, os.path.join(td, 'o.kicad_pcb'), 'set', 'R2', 30.4, 25,
+                  '--rot', '0', refuse='NOT BUILDABLE', code=4)
+        reason = _summary(r)['refused']
+        assert 'pad_conflict' in reason and 'pad_stack' in reason, reason
+        assert "A pad stack is two parts' pad copper" in reason, reason
+    print("  pad conflict + stack: both named, the stack explained")
 
 
 def test_an_inherited_stack_is_not_charged_but_is_not_legal():
@@ -479,6 +499,10 @@ def test_the_census_is_check_assemblys():
         name = os.path.splitext(os.path.basename(b))[0]
         if name in PINNED_STACKS:
             assert len(lifted) == PINNED_STACKS[name], (name, len(lifted))
+            sides = {}
+            for r in rows:
+                sides[r[3]] = sides.get(r[3], 0) + 1
+            assert sides == PINNED_SIDES[name], (name, sides)
         else:
             assert len(lifted) == 0, (name, len(lifted))
         total += len(lifted)
@@ -493,6 +517,9 @@ def test_scope_names_it_and_main_does_not_grade():
     import ast
     from placement.pose_ops import LEGAL_SCOPE
     assert any('pad stack' in s for s in LEGAL_SCOPE), LEGAL_SCOPE
+    from placement.pose_ops import LEGAL_UNMEASURED
+    assert any('coincident_origins' in s for s in LEGAL_UNMEASURED), \
+        LEGAL_UNMEASURED
     with open(PLACE_POSE, encoding='utf-8') as fh:
         tree = ast.parse(fh.read())
     main = next(n for n in tree.body
@@ -550,6 +577,25 @@ def test_check_floorplan_is_exact_where_the_box_census_is_not():
     print("  near-touch: printed 0, box census 1")
 
 
+def test_check_floorplan_lists_five_and_counts_the_rest():
+    """tigard_damaged carries 29 stacks: five are listed, the rest counted,
+    and the line says check_assembly grades them NOT BUILDABLE."""
+    with tempfile.TemporaryDirectory() as td:
+        intent = os.path.join(td, 'i.json')
+        run_utils.check([sys.executable, '-X', 'utf8', FLOORPLAN, DAMAGED,
+                         '--emit-intent', intent], accept=True)
+        r = run_utils.check([sys.executable, '-X', 'utf8', FLOORPLAN,
+                             DAMAGED, '--intent', run_utils.evidence(intent),
+                             '--exit-zero'], accept=True)
+    lines = r.stdout.splitlines()
+    (i,) = [k for k, ln in enumerate(lines) if 'pad stacks: 29 ' in ln]
+    assert lines[i].endswith('check_assembly grades these NOT BUILDABLE'), \
+        lines[i]
+    assert all(' <-> ' in ln for ln in lines[i + 1:i + 6]), lines[i:i + 7]
+    assert lines[i + 6].strip() == '... 24 more', lines[i + 6]
+    print("  29 stacks: five listed, '... 24 more', NOT BUILDABLE said")
+
+
 TESTS = [
     test_the_issue_repro_is_refused,
     test_force_writes_and_check_assembly_agrees,
@@ -558,6 +604,7 @@ TESTS = [
     test_a_rotated_near_touch_is_not_a_stack,
     test_run38_shape_is_refused,
     test_near_snaps_off_the_stack,
+    test_a_mixed_refusal_still_explains_the_stack,
     test_an_inherited_stack_is_not_charged_but_is_not_legal,
     test_a_shrinking_stack_is_accepted,
     test_a_deepening_stack_is_refused,
@@ -572,6 +619,7 @@ TESTS = [
     test_scope_names_it_and_main_does_not_grade,
     test_check_floorplan_prints_the_exact_count,
     test_check_floorplan_is_exact_where_the_box_census_is_not,
+    test_check_floorplan_lists_five_and_counts_the_rest,
 ]
 
 

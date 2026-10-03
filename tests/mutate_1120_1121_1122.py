@@ -41,10 +41,13 @@ Not covered by a row, and why:
   * dropping a row from test_893's `_DECLARATION_CALLS` -- that deletes the
     guard rather than weakening it, and no assertion can see its own table
     shrink without restating the table;
-  * the cap pass's escalation guard (`and len(_cap_rotations(...)) > 1`) --
-    without it a cap with no other angle spends a stuck round arming a turn
-    it cannot make before its budget grows; that changes when, not whether,
-    the budget grows, and no fixture pins the round it happens in;
+  * the via-clear fallback passing `None` for the claim -- no fixture sends
+    a DECLARED cap into the fallback with a clear pose only at another
+    angle (#1122's verifier measured that mutant SURVIVE); the AST arm
+    `rotations_confined` pins that the fallback asks `_cap_rotations` at all;
+  * (the escalation guard has a row: `escalation-arms-a-turn-it-cannot-make`.
+    It is NOT "when, not whether" -- #1122's verifier measured it flip
+    which cap the U30 crop leaves grazing, both ways);
   * `declared_cap_rotations`' `intent is None` return -- its mutant raises
     in every witness that runs the pass without an intent.
 """
@@ -99,6 +102,9 @@ CONFINED = _t(T1122, 'confined_to_the_helper')
 HELD = _t(T1122, 'not_turned_in_the_run_that_ships')
 UNGATED = _t(T1122, 'ungated_arm_is_handed')
 CONTRA = _t(T1122, 'contradiction_writes')
+GUARD = _t(T1122, 'escalation_guard')
+UNRESOLVED = _t(T1122, 'unresolved_rotation_block')
+OFF_NAMED = _t(T1122, 'off_lattice_member_is_named')
 # The GUI gate exits 2 without KiCad's python, which the unmutated baseline
 # would report as a refusal before any row runs -- never as a kill.
 GUI = _t(os.path.join('gui_parity', 'test_1122_cap_rotation_gui.py'))
@@ -225,8 +231,8 @@ ROWS = [
      "    if not rotate:",
      (ROT_LIST,), 'KILLED'),
     ('claims-never-resolved', 'fc',
-     "    kw['declared_rotations'] = declared_cap_rotations(intent, pcb_data)",
-     "    kw['declared_rotations'] = {}",
+     "    kw['declared_rotations'] = declared_cap_rotations(intent, pcb_data,",
+     "    kw['declared_rotations'] = {} or declared_cap_rotations(None, pcb_data,",
      (HELD, UNGATED), 'KILLED'),
     ('ungated-arm-loses-the-claims', 'fc',
      "                                                    on_move=None))",
@@ -252,6 +258,26 @@ ROWS = [
      "            declared_cap_rotations(intent, _pcb1122)",
      "            pass",
      (CONTRA,), 'KILLED'),
+    ('helper-first-angle-is-the-seed', 'fc',
+     "    out1122 = [cap.rot]",
+     "    out1122 = [cap.seed_rot]",
+     (ROT_LIST,), 'KILLED'),
+    ('helper-turns-a-cap-not-armed', 'fc',
+     "    if not (allow_rotations and rotate):",
+     "    if not allow_rotations:",
+     (ROT_LIST,), 'KILLED'),
+    ('escalation-arms-a-turn-it-cannot-make', 'fc',
+     "                                                   True, True)) > 1):",
+     "                                                   True, True)) > 0):",
+     (GUARD,), 'KILLED'),
+    ('rotation-block-problems-unsaid', 'fc',
+     "            if v.block in rot1122:",
+     "            if False:",
+     (UNRESOLVED,), 'KILLED'),
+    ('off-lattice-note-dropped', 'fc',
+     "              + ''.join(' (%s: %s not offered -- off its quarter-turn '",
+     "              + ''.join(' (%s: %s offered -- off its quarter-turn '",
+     (OFF_NAMED,), 'KILLED'),
     ('gui-contradiction-runs', 'gui',
      "                    _fc1122.declared_cap_rotations(_cap_intent, pcb_data)",
      "                    pass",

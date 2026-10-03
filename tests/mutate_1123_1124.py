@@ -12,8 +12,9 @@ restore the defect each issue measured, or the reason it went unseen:
     the box, which then missed the copper at any turn but a half one;
   * `film-plots-the-box-pairs` / `floor-from-the-box` (#1124) -- the film
     plotted the quench's bounding-box pairs against a box floor: 10 pairs on
-    glasgow_revC where render's checklist names 1, and "floor 6 = locked
-    parts" for six FID/MK phantoms.
+    glasgow_revC where render's checklist names 1, and -- on run 32's
+    placed_v2/v3, where six FID/MK box contacts were every pair left --
+    "floor 6 = locked parts" for phantoms the grader confirms none of.
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty
@@ -30,9 +31,6 @@ target's own ending. A witness is `(test file, case-name substring...)`: the
 test files run only the cases whose names contain one of the substrings.
 
 Not covered by a row, and why:
-  * `_copper_vertices` reading only the first polygon of a MultiPolygon --
-    no tracked or fixture custom pad's copper is disjoint, so no witness can
-    see it; the union of a real pad's primitives is one polygon;
   * the `oob_pad_copper_basis` text -- a disclosure; test_937 pins its
     `margin 0` clause, which this does not touch.
 """
@@ -66,6 +64,7 @@ SPIKE = _t(T1123, 'spiked_primitive')
 QUARTER = _t(T1123, 'quarter_turn')
 OBLIQUE = _t(T1123, 'oblique_turn')
 CASTELLATED = _t(T1123, 'castellation_reads')
+DISJOINT = _t(T1123, 'disjoint_copper')
 T1094 = _t('test_1094_rotated_courtyards.py')
 T1124 = 'test_1124_film_grader_census.py'
 CHECKLIST = _t(T1124, 'reads_renders_checklist')
@@ -74,6 +73,8 @@ BOX_PHANTOM = _t(T1124, 'box_phantom')
 EITHER_SIDE = _t(T1124, 'locked_member')
 NO_CTX = _t(T1124, 'not_measured')
 CENSUS_ERR = _t(T1124, 'census_error')
+NO_OUTLINE = _t(T1124, 'no_outline')
+EVERY_PAIR = _t(T1124, 'every_pair_locked')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -106,6 +107,27 @@ ROWS = [
      "    pts = [pt for poly in posed.polygons for pt in poly]",
      "    return original.size_x, original.size_y",
      (OBLIQUE,), 'KILLED'),
+    # -- found surviving by #1123's verifier, now witnessed ---------------
+    ('vertices-first-part-only', 'leg',
+     "    parts = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)",
+     "    parts = [geom] if geom.geom_type == 'Polygon' else list(geom.geoms)[:1]",
+     (DISJOINT,), 'KILLED'),
+    ('copper-first-part-only', 'pads',
+     "    return parts[0] if len(parts) == 1 else unary_union(parts)",
+     "    return parts[0]",
+     (DISJOINT,), 'KILLED'),
+    ('occupancy-drops-multipolygon', 'leg',
+     "            if pp.is_valid and not shape.contains(pp):",
+     "            if pp.is_valid and not shape.contains(pp) and pp.geom_type == 'Polygon':",
+     (DISJOINT,), 'KILLED'),
+    ('posed-custom-tilt-turns', 'leg',
+     "            pad.rect_rotation = getattr(original, 'rect_rotation', 0.0)",
+     "            pad.rect_rotation = (-delta + 90.0) % 180.0 - 90.0",
+     (OBLIQUE,), 'KILLED'),
+    ('quarter-tolerance-1deg', 'leg',
+     "    if abs(math.remainder(delta, 90.0)) <= 1e-9:",
+     "    if abs(math.remainder(delta, 90.0)) <= 1.0:",
+     (OBLIQUE,), 'KILLED'),
     # -- #1124: the film's LEGALITY panel reads render's checklist ----------
     ('film-plots-the-box-pairs', 'mp',
      "        'conflict_pairs': len(pairs) if ran else None,",
@@ -135,6 +157,14 @@ ROWS = [
      "                             if a in locked or b in locked)",
      "                             if a in locked)",
      (EITHER_SIDE,), 'KILLED'),
+    ('no-outline-reads-zero', 'mp',
+     "                        if ran and not getattr(model, 'no_outline', False)",
+     "                        if ran",
+     (NO_OUTLINE,), 'KILLED'),
+    ('floor-any-locked', 'mp',
+     "            and lb.conflict_pairs <= lb.locked_pairs):",
+     "            and lb.locked_pairs >= 1):",
+     (EVERY_PAIR,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

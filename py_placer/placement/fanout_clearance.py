@@ -3031,25 +3031,39 @@ def _decap_violations(intent, pcb_data, pcb_file, poses=None):
     return [v for v in g.violations if v.rule.startswith('decap_')]
 
 
-def declared_cap_rotations(intent, pcb_data) -> Dict:
+def declared_cap_rotations(intent, pcb_data, report: bool = False) -> Dict:
     """{ref: (rotation, candidates)} the intent's blocks declare (#1122),
     resolved the way the CLIs resolve an intent gate (`parse_sources('auto')`,
     `cli_gates.resolve_intent_gate_for_cli`). {} with no intent. Raises
-    `floorplan.IntentError` when two blocks claim one ref at different
-    angles -- the CLI and the GUI ask before anything is written."""
+    `floorplan.IntentError` when two blocks claim one ref (any part) at
+    different angles -- the CLI and the GUI ask before anything is written.
+
+    `report` prints, as the CLIs' gate does (#702), each block that DECLARES
+    a rotation and resolves to no part: a declaration that holds nothing
+    must not look like one that holds (#1122's verifier: a `group:` block
+    naming no group ran silently, every cap free to turn)."""
     if intent is None:
         return {}
     from . import floorplan
     from .groups import parse_sources
-    blocks, _problems = floorplan.resolve_blocks(intent, pcb_data,
-                                                 parse_sources('auto'))
+    blocks, problems = floorplan.resolve_blocks(intent, pcb_data,
+                                                parse_sources('auto'))
+    if report:
+        rot1122 = {z.name for z in intent.blocks
+                   if z.rotation is not None or z.rotation_candidates}
+        for v in problems:
+            if v.block in rot1122:
+                print(f"  INTENT WARN [{v.rule}] {v.message} -- the "
+                      f"rotation it declares holds no part (#1122)")
     return floorplan.rotations_for_ref(intent, blocks)
 
 
 def _on_cap_lattice(cap, rot) -> bool:
     """`_Cap` prices its pads only at quarter turns from its seed angle
-    (`_pad_cache_for` swaps half-extents), so an angle off that lattice
-    cannot be priced here and is not offered."""
+    (`_pad_cache_for` swaps half-extents), so a DECLARED angle off that
+    lattice cannot be priced here and is not offered. (An undeclared cap
+    is offered the absolute `ROTATIONS` as before #1122, on its lattice or
+    not.)"""
     return abs((rot - cap.seed_rot + 45.0) % 90.0 - 45.0) <= 1e-6
 
 
@@ -3122,7 +3136,8 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
     # the pass WITHOUT the decap gate) and is the run kept when it ends
     # better: a hold read from `intent` inside the pass would not be in the
     # board that ships.
-    kw['declared_rotations'] = declared_cap_rotations(intent, pcb_data)
+    kw['declared_rotations'] = declared_cap_rotations(intent, pcb_data,
+                                                      report=True)
     if intent is None:
         return _repair_one_arm(pcb_data, **kw)
     import contextlib

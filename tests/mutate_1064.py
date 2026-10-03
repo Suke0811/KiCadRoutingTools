@@ -83,6 +83,8 @@ SPREAD = _t(T, 'spreads_to_more_pads')
 SCOPE = _t(T, 'scope_names_it')
 FLOORPLAN = _t(T, 'floorplan_prints')
 FLOORPLAN_EXACT = _t(T, 'floorplan_is_exact')
+MIXED = _t(T, 'mixed_refusal')
+FIVE = _t(T, 'five_and_counts')
 LOCKED = _t('test_run8_locked_contact.py')
 
 # (name, target, old, new, tests, expect)
@@ -126,6 +128,14 @@ ROWS = [
      "    return {'pad_stack_count': len(rows),",
      "    return {'pad_stack_count': len({r[0] for r in rows}),",
      (ROWS_UNIT,), 'KILLED'),
+    ('stack-side-dropped', 'leg',
+     "                        side = sa if sa in ('F', 'B') else ''",
+     "                        side = ''",
+     (CENSUS,), 'KILLED'),
+    ('basis-unpublished', 'leg',
+     "PAD_STACK_BASIS = (\"check_assembly's pad_intersection channel \"",
+     "PAD_STACK_BASIS = (\"the box census \"",
+     (REPRO,), 'KILLED'),
     # -- pose_ops: the three arms and the grade that feeds them --------------
     ('pose-grade-skips-stacks', 'pose',
      "    g.update(pad_stack_census(pcb_data, clearance))",
@@ -155,6 +165,18 @@ ROWS = [
      "               \"-- a pad stack, check_assembly's pad_intersection (#1064)\")",
      "               \"-- check_assembly's pad_intersection (#1064)\")",
      (SCOPE,), 'KILLED'),
+    ('legal-basis-silent-on-stacks', 'pose',
+     "            'stacked (any net), and edge coverage is complete; no_worse = no '",
+     "            'overlapping, and edge coverage is complete; no_worse = no '",
+     (REPRO,), 'KILLED'),
+    ('unmeasured-silent-on-origins', 'pose',
+     "                    \"(check_assembly's coincident_origins)\")",
+     "                    \"(check_assembly's other channel)\")",
+     (SCOPE,), 'KILLED'),
+    ('mixed-refusal-drops-the-why', 'pose',
+     "        if any(k.startswith('pad_stack_') for k in bad):",
+     "        if all(k.startswith('pad_stack_') for k in bad):",
+     (MIXED,), 'KILLED'),
     # -- check_floorplan: printed, exact --------------------------------------
     ('floorplan-not-measured', 'cfp',
      "                       with_pad_stacks=True)",
@@ -168,6 +190,18 @@ ROWS = [
      "        out['pad_stack_count'] = r.pad_stacks['pad_stack_count']",
      "        out['pad_stack_count'] = r.legality.get('pad_intersection_pairs')",
      (FLOORPLAN_EXACT,), 'KILLED'),
+    ('floorplan-lists-every-stack', 'fp',
+     "        for a, b, area, side in _ps1064['pad_stack_pairs'][:5]:",
+     "        for a, b, area, side in _ps1064['pad_stack_pairs']:",
+     (FIVE,), 'KILLED'),
+    ('floorplan-hides-the-rest', 'fp',
+     "        if _ps1064['pad_stack_count'] > 5:",
+     "        if False:",
+     (FIVE,), 'KILLED'),
+    ('floorplan-silent-on-the-verdict', 'fp',
+     "            + (\" -- check_assembly grades these NOT BUILDABLE\"",
+     "            + (\"\"",
+     (FIVE,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

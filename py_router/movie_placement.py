@@ -556,8 +556,10 @@ def _floor(track):
     """The conflict count the KiCad-locked parts hold up, when every pair
     left has a locked member. Both counts come from ONE census, the grader's
     (#1124): locked pairs are a subset of the conflict pairs, so `conflict
-    <= locked` means they are equal. It used to compare two box counts, and
-    on every glasgow board drew "floor 6" for six FID/MK phantoms."""
+    <= locked` means they are equal. It used to compare two box counts:
+    every glasgow board counted six FID/MK box contacts as locked, and run
+    32's placed_v2/v3 -- whose six box pairs were exactly those -- drew
+    "floor 6" for pairs the grader confirms none of."""
     lb = track.beats[-1]
     if (lb.conflict_pairs is not None and lb.locked_pairs
             and lb.conflict_pairs <= lb.locked_pairs):

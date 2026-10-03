@@ -1185,8 +1185,10 @@ class BGAOptionsPanel(wx.ScrolledWindow):
             "error) are held while caps move; a cap whose every clear pose "
             "breaks one clears the foreign copper anyway and the summary "
             "names it. Its declared rotations are held too: a cap declared "
-            "at one angle is never turned, one with rotation_candidates "
-            "turns only within them (#1122). A relative path is read from "
+            "at one angle is never turned away from it, one with "
+            "rotation_candidates turns only within them (#1122); a held "
+            "cap can leave a graze the free pass would clear, and the "
+            "summary names it. A relative path is read from "
             "the board's folder. Empty = no intent, and a cap can be moved "
             "past a decap limit, or turned, silently.")
         intent_sizer.Add(self.cap_intent_path, 1, wx.EXPAND | wx.RIGHT, 4)

@@ -115,6 +115,12 @@ def test_the_rotation_list():
     assert _cap_rotations(c270, (None, (45.0, 90.0)), True, True) \
         == [270.0, 90.0], 'an off-lattice member is offered'
     assert _cap_rotations(c270, (None, (90.0,)), False, True) == [270.0]
+    # Not armed: a declared cap does not turn either (#1122 verifier, M4).
+    assert _cap_rotations(c270, (None, (270.0, 90.0)), True, False) == [270.0]
+    # The first angle is where the cap IS, not where it was seeded: a cap
+    # that turned into its declaration stays offered it (M3).
+    assert _cap_rotations(Cap(0.0, seed=90.0), (0.0, None), True, True) \
+        == [0.0]
     print("  undeclared unchanged; declared turns only within the claim")
 
 
@@ -157,14 +163,17 @@ def test_a_declared_cap_is_not_turned_in_the_run_that_ships():
 
 def test_a_candidate_set_turns_only_within_it():
     with tempfile.TemporaryDirectory() as td:
-        _s, t24, _o, _p = _run(td, [{'name': 'a', 'refs': ['C24'],
-                                     'rotation_candidates': [270.0, 90.0]}],
-                               'set24')
+        s24, t24, o24, _p = _run(td, [{'name': 'a', 'refs': ['C24'],
+                                       'rotation_candidates': [270.0, 90.0]}],
+                                 'set24')
         _s, t33, _o, _p = _run(td, [{'name': 'b', 'refs': ['C33'],
                                      'rotation_candidates': [180.0, 0.0]}],
                                'set33')
     # Without a claim C24 goes to 180; with {270, 90} it may only reach 90.
     assert t24.get('C24') == (270.0, 90.0), t24
+    # A set is disclosed as a set, in the line and the JSON (M8, M10).
+    assert 'C24 within [270.0, 90.0]' in o24, o24[-1500:]
+    assert s24['declared_rotations'] == {'C24': [270.0, 90.0]}, s24
     # A turn the set admits is still made.
     assert t33.get('C33') == (180.0, 0.0), t33
     print("  C24 {270, 90} -> %r; C33 {180, 0} -> %r"
@@ -225,8 +234,57 @@ def test_a_contradiction_writes_and_records_nothing():
         assert not os.path.exists(out), 'a refusal wrote a board'
         assert not (os.path.exists(manifest) and os.path.getsize(manifest)), \
             'a refusal was recorded'
-    print("  two blocks, two angles for C24: exit 2, nothing written or "
-          "recorded")
+        # A candidate SET against a single angle is a contradiction too, and
+        # the pre-check reads sets as well as single angles (M6).
+        ip2 = _intent(td, [{'name': 'a', 'refs': ['C24'],
+                            'rotation_candidates': [270.0, 90.0]},
+                           {'name': 'b', 'refs': ['C24'], 'rotation': 180.0}],
+                      'contra2')
+        run_utils.check([sys.executable, '-X', 'utf8', CLI, b, out] + TIGHT
+                        + ['--intent', ip2], refuse='different rotations',
+                        code=2, env=dict(os.environ, REDO_MANIFEST=manifest))
+        assert not os.path.exists(out), 'a refusal wrote a board'
+    print("  two blocks, two angles for C24 (single or set): exit 2, nothing "
+          "written or recorded")
+
+
+def test_an_off_lattice_member_is_named_not_offered():
+    """C24 declared {45, 90}: 45 is off its quarter-turn lattice, so it is
+    not offered, and the run says so by name (M5)."""
+    with tempfile.TemporaryDirectory() as td:
+        _s, turned, out, _p = _run(td, [{'name': 'a', 'refs': ['C24'],
+                                         'rotation_candidates': [45.0, 90.0]}],
+                                   'offl')
+    assert '(C24: 45 not offered -- off its quarter-turn lattice)' in out, \
+        out[-1500:]
+    assert turned.get('C24', (270.0, 270.0))[1] in (270.0, 90.0), turned
+    print("  C24 {45, 90}: 45 named and not offered; C24 -> %r"
+          % (turned.get('C24'),))
+
+
+def test_the_escalation_guard_decides_an_outcome():
+    """#1122's verifier measured the guard (a cap whose declaration leaves
+    no other angle is not armed to turn) flip which cap the crop leaves
+    grazing: C63 declared at 0 resolves every graze WITH it, and leaves C63
+    grazing without it. Pinned so the guard has a witness."""
+    with tempfile.TemporaryDirectory() as td:
+        s, _t, _o, _p = _run(td, [{'name': 'a', 'refs': ['C63'],
+                                   'rotation': 0.0}], 'c63')
+    assert s['unresolved'] == [], s['unresolved']
+    assert s['decap']['compared']['kept'] == 'ungated', s['decap']['compared']
+    print("  C63 declared 0: every graze resolved, ungated run kept")
+
+
+def test_an_unresolved_rotation_block_is_said():
+    """A block that declares a rotation and resolves to no part holds
+    nothing; it is printed rather than run silently (#1122's verifier)."""
+    with tempfile.TemporaryDirectory() as td:
+        _s, turned, out, _p = _run(td, [{'name': 'ghost',
+                                         'group': 'NO_SUCH_GROUP',
+                                         'rotation': 270.0}], 'ghost')
+    assert '[block_unresolved]' in out and 'holds no part' in out, \
+        out[-1500:]
+    print("  a rotation block naming no group: INTENT WARN printed")
 
 
 TESTS = [
@@ -238,6 +296,9 @@ TESTS = [
     test_the_ungated_arm_is_handed_the_claims,
     test_a_declaration_on_a_part_that_is_not_a_cap_changes_nothing,
     test_a_contradiction_writes_and_records_nothing,
+    test_an_off_lattice_member_is_named_not_offered,
+    test_the_escalation_guard_decides_an_outcome,
+    test_an_unresolved_rotation_block_is_said,
 ]
 
 

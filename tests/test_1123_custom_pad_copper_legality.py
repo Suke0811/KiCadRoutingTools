@@ -44,6 +44,9 @@ _BAR_POLY = ('(gr_poly (pts (xy 0 -0.2) (xy 2 -0.2) (xy 2 0.2) (xy 0 0.2)) '
 #: A zero-area spike: `make_valid` returns the polygon AND a line.
 _SPIKE_POLY = ('(gr_poly (pts (xy 0 -0.2) (xy 1 -0.2) (xy 1 0.2) (xy 0.5 0.2) '
                '(xy 0.5 0.8) (xy 0.5 0.2) (xy 0 0.2)) (width 0) (fill yes))')
+#: Two primitives that do not touch: the copper is a MultiPolygon.
+_SQUARE_POLY = ('(gr_poly (pts (xy 1.5 -0.2) (xy 2 -0.2) (xy 2 0.2) '
+                '(xy 1.5 0.2)) (width 0) (fill yes))')
 _CURVE = ('(gr_curve (pts (xy 0 0) (xy 0.3 0) (xy 0.6 0.3) (xy 0.6 0.6)) '
           '(width 0.1))')
 
@@ -201,8 +204,11 @@ def test_an_oblique_turn_encloses_the_copper():
     from placement.writer import write_placed_output
     path = _board(_fp('U1', 10, 10, _pad('1', [_BAR_POLY])))
     fp = _parse(path).footprints['U1']
-    for d in (33.0, 45.0):
+    for d in (33.0, 45.0, 89.5):
         (p,) = pads_at_pose(fp, (fp.x, fp.y, d))
+        # The derived box is axis-aligned: no residual tilt is turned in.
+        assert p.rect_rotation == getattr(fp.pads[0], 'rect_rotation', 0.0) \
+            == 0.0, (d, p.rect_rotation)
         pts = [pt for poly in p.polygons for pt in poly]
         assert all(abs(u - p.global_x) <= p.size_x / 2 + 1e-9
                    and abs(v - p.global_y) <= p.size_y / 2 + 1e-9
@@ -214,8 +220,31 @@ def test_an_oblique_turn_encloses_the_copper():
         # gr_poly primitives and a rect anchor: the extent is exact.
         assert abs(p.size_x - rp.size_x) < 1e-4, (d, p.size_x, rp.size_x)
         assert abs(p.size_y - rp.size_y) < 1e-4, (d, p.size_y, rp.size_y)
-    print("  33 and 45: the posed box encloses the copper and equals a "
-          "re-parse")
+    print("  33, 45 and 89.5: the posed box encloses the copper, is "
+          "untilted, and equals a re-parse")
+
+
+def test_disjoint_copper_is_every_part():
+    """A bar and a square that do not touch: the copper is a MultiPolygon,
+    and every part of it is read -- by the helper, the overrun's vertices
+    and the occupancy."""
+    import check_pads
+    from placement.legality import _copper_vertices
+    path = _board(_fp('U1', 10, 10, _pad('1', [_BAR_POLY.replace(
+        '(xy 2 -0.2) (xy 2 0.2)', '(xy 1 -0.2) (xy 1 0.2)'), _SQUARE_POLY]),
+        court=(-0.3, -0.3, 1.1, 0.3)))
+    pcb = _parse(path)
+    cu = check_pads.custom_pad_copper(pcb.footprints['U1'].pads[0])
+    assert cu is not None and cu.geom_type == 'MultiPolygon', cu
+    # anchor + bar x[-0.2, 1] (0.48) and the square x[1.5, 2] (0.2)
+    assert abs(cu.area - 0.68) < 1e-6, cu.area
+    xs = [x for x, _y in _copper_vertices(cu)]
+    assert (round(min(xs), 6), round(max(xs), 6)) == (9.8, 12.0), xs
+    # courtyard 1.4 x 0.6 holds the bar; the square lies outside it
+    area = _occupancy_area(path, 'U1')
+    assert abs(area - 1.04) < 1e-6, area
+    print("  disjoint copper: %.2f mm2 in two parts, vertices x %.1f..%.1f, "
+          "occupancy %.2f" % (cu.area, min(xs), max(xs), area))
 
 
 def test_castellation_reads_the_copper():
@@ -330,6 +359,7 @@ TESTS = [
     test_a_spiked_primitive_is_measured_on_its_area,
     test_a_quarter_turn_reposes_the_box_and_the_copper,
     test_an_oblique_turn_encloses_the_copper,
+    test_disjoint_copper_is_every_part,
     test_castellation_reads_the_copper,
     test_the_helper_is_check_pads_copper,
     test_no_tracked_grade_moves,
