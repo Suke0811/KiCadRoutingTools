@@ -266,7 +266,7 @@ def test_near_snaps_off_the_stack():
         x, y = _on(C19)
         out = os.path.join(td, 'o.kicad_pcb')
         # The courtyards (2.6 x 1.6) veto every pose within 1 mm of the
-        # stack; the nearest legal one is 2.016 mm away.
+        # stack, so the snap gets a 2.5 mm radius (it lands 2.5 mm away).
         r = _pose(b, out, 'set', 'C15', '--near', x, y, '--rot', '180',
                   '--radius', '2.5', accept=True)
         s = _summary(r)

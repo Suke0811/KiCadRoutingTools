@@ -704,8 +704,9 @@ placement laps into its one curve instead.
   Nothing starts a subprocess of `sys.executable`: inside KiCad that is the
   pcbnew binary, and a child started that way hangs
   (`kicad_routing_plugin/deps_check.py`). Seconds per placed board for
-  each instrument, about a minute for render's census on a 300-part pile;
-  cached by board sha.
+  each instrument (7.4 s on run 32's placed boards), about a minute for
+  render's census on the 272-part glasgow pile (68.7 s, the same before
+  #1124); cached by board sha.
 - **The grader's census, not the optimizer's (#1124).** LEGALITY reads
   render's checklist: the parts whose pad copper gates off the outline,
   the grader's pad-clearance pairs, and the courtyard census area. It

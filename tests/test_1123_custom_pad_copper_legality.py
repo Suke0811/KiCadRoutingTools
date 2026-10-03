@@ -320,9 +320,13 @@ DEMOS = os.environ.get('KICAD_DEMOS_DIR') or next(
 
 
 def test_kicad_demo_measurements():
-    """Where the copper and the box DO disagree at file pose: KiCad 10's
-    demos (not tracked; skipped without the install). Pinned from #1123's
-    census, which predicted them before the fix."""
+    """Where the drawn shape and the box DO disagree at file pose: KiCad
+    10's demos (not tracked; skipped without the install). Pinned from
+    #1123's census, which predicted them before the fix. jetson's H5-H8
+    custom pads are paste-only apertures (F.Paste, no copper layer): the
+    helper reads them because nothing here reads `pad.layers` -- the same
+    gap `pad_copper_overrun_mm` discloses -- and `grade_pad_legality`'s
+    overrun on jetson is empty before and after, so no grade moves on them."""
     if not DEMOS:
         print("  SKIP: no KiCad demos directory (KICAD_DEMOS_DIR)")
         return
@@ -349,7 +353,7 @@ def test_kicad_demo_measurements():
     for ref in ('H5', 'H6', 'H7', 'H8'):
         assert _overrun(jp, ref) == 0.0, (ref, _overrun(jp, ref))
     print("  pic_programmer JP1 occupancy %.3f (box 8.363); jetson H5-H8 "
-          "overrun 0 (box 0.888 on H5)" % area)
+          "(paste-only) direct overrun 0 (box 0.888 on H5)" % area)
 
 
 TESTS = [
