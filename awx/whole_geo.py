@@ -99,7 +99,10 @@ prs = getattr(ctx, 'pairs', {}) or {}
 RS = J['rs']; cls = J['branch']; HK = J['Hk']     # HK: each ring's start, where its lanes leave the trunk
 li = {n: i for i, n in enumerate(J['launch'])}
 cross = {frozenset(k.split('|')): v['u'] for k, v in J['cross'].items()}
-chg = {n: sorted(v) for n, v in J['changes'].items()}
+# each lane's changes, in route u -- held to its own extent: the solve's step rounds a change at a blocked end's stub
+# (its via room there the stub's end alone: whole_solve's LAYER cuts) a part of a step past it, and a via drawn there
+# stood up the stub, the lane folding back to it (synth_handoff front_src_row, mix)
+chg = {n: sorted(min(max(cu, J['entry'][n]), J['end'][n]) for cu in v) for n, v in J['changes'].items()}
 tl = {n: F(ctx.tooth_layer[n]) for n in M}
 # a pair's half width: its legs' reach at the snap's 45-degree corners and the half step its off-grid legs take, as the
 # polish and the audit price it (half its pitch alone left the polish 23 um a side to find)
@@ -1388,7 +1391,7 @@ for q in sol['paid'].get('pdive', []):
             vcuts.append({'lane': n, 'u': cu, 'w': (max(W_XB, W_XA) if is_xo(n, cu) else W_DIVE) * G})
 res['vcuts'] = vcuts
 res['flips'] = sorted(FLIP)
-res['changes'] = {n: sorted(J['changes'].get(n, [])) for n in res['lanes']}    # each lane's changes in route u, in order
+res['changes'] = {n: list(chg.get(n, [])) for n in res['lanes']}    # each lane's changes in route u, in order
 res['rules'] = {'grid': ctx.cfg.grid_step, 'track': TW, 'clear': CL, 'lane_min': bd.LANE_MIN}
 json.dump(res, open(OUT, 'w'))
 log(f'cuts for the solve: {[(c_["lane"], c_["island"], round(c_["u_lo"], 2), round(c_["u_hi"], 2)) for c_ in cuts]}; via cuts {[(c_["lane"], round(c_["u"], 2)) for c_ in vcuts]}')

@@ -114,6 +114,36 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     # ...a CROSSED pair's (pairs.opposite_hands: its legs swap once, at its first dive, a crossover) by the crossover's
     # own runs (pairs.crossover_room) -- its first change from its tooth, and at its berth where that change is its only
     # one; its other changes are plain dives, and its changes' cuts are the crossover's, the longer
+    # a single's end whose stub runs into copper a via's room past its exit (the ends model's BLOCKED FRONT, priced as the
+    # change before it: whole_ends FRONT_VIA; the fanout's plan sidecar, ends_model.front): the lane stands on the OTHER
+    # layer across that copper (a LAYER cut, below), its change between the stub and the copper -- its end room there a
+    # via's own. A ring lane's berth stub runs across its ring, not along its route: its front is the geometry's
+    FRONT = {}
+    try:
+        _side = os.path.splitext(awx_settings.req('BENCH'))[0] + '.plan.json'
+        FRONT = (json.load(open(_side)).get('ends_model') or {}).get('front') or {} if os.path.isfile(_side) else {}
+    except Exception:
+        FRONT = {}
+    LAYER_CUTS = []
+    for n, ends_ in sorted(FRONT.items()):
+        if n not in M or n in prs:
+            continue
+        # (from the exit, as the ends model measured it: the span where its TRACK meets the copper's clearance, the
+        # stretch before it where a via of its own fits -- the change stands there, the lane's end room waived down to
+        # it, and nowhere between it and the far side of the copper, a via's half width more than a track's)
+        for k_, sp_ in sorted(ends_.items()):
+            k_, vm_ = int(k_), (VIA - TRK) / 2
+            if k_ == 1 and n in bname or len(sp_) != 4:
+                continue
+            v0_, v1_, d0_, d1_ = sp_
+            if k_ == 1:
+                LAYER_CUTS.append((n, k_, 1 - dl[n], end[n] - d1_, end[n] - d0_, end[n] - d1_ - vm_, end[n] - v1_ - G / 2,
+                                   end[n] - v1_, end[n] - v0_))
+                VIN1[n] = min(VIN1[n], v0_)
+            else:
+                LAYER_CUTS.append((n, k_, 1 - tl[n], entry[n] + d0_, entry[n] + d1_, entry[n] + v1_ + G / 2,
+                                   entry[n] + d1_ + vm_, entry[n] + v0_, entry[n] + v1_))
+                VIN0[n] = min(VIN0[n], v0_)
     XO = {n for n in prs if n in M and _pairs.opposite_hands(ctx, n)}
     for n in XO:
         VIN0[n] = _pairs.crossover_room(ctx.cfg, ctx.pair_ends[n][0], _axis(ctx.tooth_dir.get(n)), 0)
@@ -237,7 +267,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
             if not (entry[n] < sp_ + w_ and sp_ - w_ < tend[n]):       # the stretch reaches into the trunk's route
                 continue
             if abs(whole_frame.ref(Fr, n, sp_) - op_) < rp_ + VIA / 2 + CLR + off_[n] + PITCH:
-                VCUTS.append({'lane': n, 'u': sp_, 'w': w_})
+                VCUTS.append({'lane': n, 'u': sp_, 'w': w_, 'built': 1})
     if len(VCUTS) > NVC1:
         print(f'   built-in via cuts at other parts\' pads and the teeth outside the bus: {len(VCUTS) - NVC1}')
     # ---- the braid rule over every triple
@@ -291,8 +321,9 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     # ---- layer changes
     cost = []
     chg, tot = {}, {}
+    T0 = {c_[0] for c_ in LAYER_CUTS if c_[1] == 0}         # (a blocked tooth's change may stand in the face's band)
     for n in M:
-        lo_n, hi_n = Q(max(entry[n] + VIN0[n], BAND)), Q(end[n] - VIN1[n])
+        lo_n, hi_n = Q(max(entry[n] + VIN0[n], BAND if n not in T0 else entry[n] + VIN0[n])), Q(end[n] - VIN1[n])
         cs_ = [m.NewIntVar(lo_n, hi_n + 1, f'c_{n}_{k}') for k in range(KMAX)]
         act = [m.NewBoolVar('') for _ in range(KMAX)]
         for k in range(KMAX):
@@ -339,9 +370,30 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     STAGGER = max(VIA, math.sqrt(max(_VV * _VV - PITCH * PITCH, 0.0)))
     fr_ivs = collections.defaultdict(lambda: collections.defaultdict(list))      # frame -> lane -> its changes there
     w_s = max(1, Q(STAGGER))
+    # (a change in its blocked end's window, between the stub and the copper, is a dog-bone's via at the array's edge,
+    # its neighbours' a ball pitch across: no stagger along)
+    DOG = collections.defaultdict(list)
+    for (n_, k_, _L, lo_u, hi_u, lo_c, hi_c, w0, w1) in LAYER_CUTS:
+        DOG[n_].append((Q(w0), Q(w1)))
+    INWIN = {}                                          # (lane, change) -> it stands in its blocked end's window
     for n in M:
         cs_, act = chg[n]
-        for x, a_ in zip(cs_, act):
+        for i_x, (x, a_) in enumerate(zip(cs_, act)):
+            if DOG.get(n):
+                ins_ = []
+                for lo_w, hi_w in DOG[n]:
+                    w1, w2, w_ = m.NewBoolVar(''), m.NewBoolVar(''), m.NewBoolVar('')
+                    m.Add(x >= lo_w).OnlyEnforceIf(w1); m.Add(x < lo_w).OnlyEnforceIf(w1.Not())
+                    m.Add(x <= hi_w).OnlyEnforceIf(w2); m.Add(x > hi_w).OnlyEnforceIf(w2.Not())
+                    m.AddBoolAnd([w1, w2]).OnlyEnforceIf(w_); m.AddBoolOr([w1.Not(), w2.Not(), w_])
+                    ins_.append(w_)
+                a2 = m.NewBoolVar('')                        # active and in no window: staggered
+                m.AddImplication(a2, a_)
+                for w_ in ins_:
+                    m.AddImplication(a2, w_.Not())
+                m.AddBoolOr([a_.Not(), a2] + ins_)
+                INWIN[(n, i_x)] = ins_
+                a_ = a2
             if n in bname:
                 # its frame is the trunk before the handoff, its ring after
                 inT, inR = m.NewBoolVar(''), m.NewBoolVar('')
@@ -366,15 +418,17 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
         if tl[a] ^ tl[b] == 1: lits = lits + [m.NewConstant(1)]
         m.AddBoolXOr(lits)
     # ---- via cuts (whole_geo.py: a change the geometry could not give its room): that lane's changes stay out of the window
-    for vc_ in sorted({(c_['lane'], round(c_['u'], 3), round(c_['w'], 3)) for c_ in VCUTS}):
-        n_, u_, w_ = vc_
+    # (a BUILT-IN cut gives way in a lane's blocked end's window: the ends model measured a via there clear of every
+    # copper on every layer, where the built-in cut only reads a pad within reach of the lane's reference path)
+    for vc_ in sorted({(c_['lane'], round(c_['u'], 3), round(c_['w'], 3), c_.get('built', 0)) for c_ in VCUTS}):
+        n_, u_, w_, bi_ = vc_
         if n_ not in chg:
             continue
         cs_v, act_v = chg[n_]
-        for x_, a_ in zip(cs_v, act_v):
+        for i_x, (x_, a_) in enumerate(zip(cs_v, act_v)):
             lo_b, hi_b = m.NewBoolVar(''), m.NewBoolVar('')
             m.Add(x_ <= Q(u_ - w_)).OnlyEnforceIf(lo_b); m.Add(x_ >= Q(u_ + w_)).OnlyEnforceIf(hi_b)
-            m.AddBoolOr([lo_b, hi_b, a_.Not()])
+            m.AddBoolOr([lo_b, hi_b, a_.Not()] + (INWIN.get((n_, i_x), []) if bi_ else []))
     if VCUTS:
         print(f'   via cuts: {len(VCUTS)}')
     # ---- SOFT cuts (SOFT_CUTS=GEO.json,..: the geometry's cuts, as CUTS reads them, that left no plan as hard ones --
@@ -413,6 +467,26 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     if SOFT:
         print(f'   soft cuts: {len(soft_broken)} ({sum(1 for s_ in soft_broken if s_[0] == "island")} island, '
               f'{sum(1 for s_ in soft_broken if s_[0] == "via")} via), each {W_SOFT / W_V:g} vias when broken')
+    # ---- LAYER cuts (the blocked fronts, above): no change of the lane inside the span, and its layer there -- its end's
+    # layer flipped by the changes before the span -- the other; soft as the geometry's cuts are, priced W_SOFT broken
+    for (n_, k_, L_, lo_u, hi_u, lo_c, hi_c, w0, w1) in LAYER_CUTS:
+        cs_l, act_l = chg[n_]
+        br_ = m.NewBoolVar('')
+        bef = []
+        for x_, a_ in zip(cs_l, act_l):
+            lo_b, hi_b, b_ = m.NewBoolVar(''), m.NewBoolVar(''), m.NewBoolVar('')
+            m.Add(x_ <= Q(lo_c)).OnlyEnforceIf(lo_b); m.Add(x_ >= QU(hi_c)).OnlyEnforceIf(hi_b)
+            m.AddBoolOr([lo_b, hi_b, a_.Not(), br_])
+            m.Add(x_ <= Q(lo_u)).OnlyEnforceIf(b_); m.Add(x_ > Q(lo_u)).OnlyEnforceIf(b_.Not())
+            bef.append(b_)
+        par = m.NewBoolVar('')
+        m.AddBoolXOr(bef + [par.Not()])                        # par: an odd number of changes before the span
+        m.Add(par == (tl[n_] ^ L_)).OnlyEnforceIf(br_.Not())
+        soft_broken[('layer', n_, k_, round(lo_u, 3))] = br_
+    if LAYER_CUTS:
+        print(f'   layer cuts (blocked fronts): {len(LAYER_CUTS)} -- ' + ', '.join(
+            f'{c_[0]} {"tooth" if c_[1] == 0 else "berth"} on {"FB"[c_[2]]} over {c_[3]:.2f}..{c_[4]:.2f}'
+            for c_ in LAYER_CUTS))
     # ---- HISTORY congestion (negotiated, as PathFinder prices a resource that was overused before): HIST=HOT.json,.. are
     # the audits' findings of earlier rounds (whole_gate --hot: where a plan was short -- a dive, a pitch, a static, a
     # shape), one file per audit. A finding marks the bins of route within a via's room of it, on the frame whose spine is

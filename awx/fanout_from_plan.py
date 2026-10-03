@@ -1194,7 +1194,7 @@ def explain_plan(choice, st, names, out_path=None, board=None, achieved=None):
             # whole_frame), where recomputed from the laid stubs, a hair off the menu's exits, two near-equal gaps could
             # split the face the other way and hand the solve crossings the model never priced
             pe_ = judge_by_braid.ends
-            plan['ends_model'] = {k: pe_.get('lane_' + k, {}) for k in ('over', 'load', 'x')}
+            plan['ends_model'] = {k: pe_.get('lane_' + k, {}) for k in ('over', 'load', 'x', 'front')}
             if pe_.get('cut') is not None:
                 plan['dest_cut'] = float(pe_['cut'])
         with open(side, 'w', encoding='utf-8') as f:

@@ -414,11 +414,19 @@ Linux, and an unproved state ranks last.
 - **what stands in front of a single lane's exit** (`exit_front`): its
   straight run out, `FRONT_REACH` (1.2 mm) along its escape on its layer,
   against copper outside the run -- a passive's pads, another net's track or
-  via; a track threading the gap between two pads is clear. Blocked with room
-  for a via before the block, the lane can change layer there: `FRONT_VIA`,
-  one via. Blocked with none: `FRONT_BLOCKED`, past any via count, yet no
-  refusal, so a lane with no other end keeps it. A pair leg's menu keeps only
-  exits with room for the pair there (`fanout_from_plan.pair_exit_clear`);
+  via -- at the router's bar, which grows by its corner buffer at a pad's
+  corners (`pairs.pad_corner_buffer`): a track threading the gap between two
+  pads is clear only where a grid column crosses it. Blocked with room for a
+  via before the block, the lane can change layer there: `FRONT_VIA`, one
+  via. Blocked with none: `FRONT_BLOCKED`, past any via count, yet no
+  refusal, so a lane with no other end keeps it. Where an earlier round's
+  audits found the end crowded, that change is **planned**: the block's span
+  along the escape, to the last step within the reach that meets copper, and
+  where the via fits before it go to the solve (`front_span`, through the
+  fanout's plan sidecar, `ends_model.front`) -- never at a block on every
+  layer, a barrel or a hole, which the lane goes round. A pair leg's menu
+  keeps only exits with room for the pair there
+  (`fanout_from_plan.pair_exit_clear`);
 - the feedback's prices (`FB_AVOID`, `FB_PAIR`), by place and escalated
   ([feedback](#feedback-whole_feedbackpy));
 - a conflict, a split pair or a refused move, at a price no via count
@@ -548,6 +556,11 @@ once, proved optimal in its vias.
   via-to-via rule.
 - An opposite-hands pair makes at least one change where its tooth and berth
   share a layer.
+- A single's end with a planned change (the ends model's, above): the lane
+  on the other layer across the block, its change where the via fits -- its
+  end room waived down to that, and no stagger or pad cut there, the ends
+  model having measured that via clear of every copper on every layer. Soft,
+  priced as the geometry's cuts (`W_SOFT`).
 
 **Pairs and fixed obstacles.**
 
@@ -619,6 +632,9 @@ solve as **cuts**.
   pitch, four times as steeply below halfway to the bar.
 - **Turns:** a lane turns at most 45 degrees a column, a pair 45 degrees per
   turning run. A lane is bounded by the free interval its reference lies in.
+- **Vias** stand at the solve's changes, held within the lane's own extent:
+  a change the solve's grid rounds a part of a step past a stub's end stands
+  at it.
 - **Islands:** one split per island and layer, in the lane order, pinned by
   the lanes' own ends. An island is a part, or parts no lane can surely pass
   between (`whole_ctx.part_islands`). A two-pad part whose pads stand a lane
@@ -1198,17 +1214,21 @@ channels first, and the other escapes leave round it.
 
 ### Next, the whole route (`whole_*.py`)
 
-- **Parts in the solve.** The solve knows nothing of the parts in the lanes'
-  way; the geometry fits the lanes round them afterwards, deciding each
-  part's side from where its first pass laid them. A part as a fixed slot in
-  the solve's lane order, on its layers, would make the side a decision of
-  the solve's own, priced with everything else -- and passing under it on the
-  other layer one more choice, a lane's change placed before the part rather
-  than history that cannot buy a via. `synth_handoff.py` has the cases that
-  need it: a row of 0402s standing as one wall in front of the facing
-  column's berths (`btw_row`), or of the source's teeth (`front_src_row`),
-  or the like among everything else at once (`mix`), leaves nets open -- the ends model prices each blocked front at the via
-  that fits before the part, and nothing places that via.
+- **Parts in the solve.** The solve knows of a part in the lanes' way only
+  where an end's planned change answers it (a wall within the ends model's
+  reach of a crowded tooth or berth); the geometry fits the lanes round every
+  other part afterwards, deciding each part's side from where its first pass
+  laid them. A part as a fixed slot in the solve's lane order, on its layers,
+  would make the side a decision of the solve's own, priced with everything
+  else, and passing under it on the other layer one more choice:
+  - **A wall in the channel**, past the ends' reach (`synth_handoff.py`
+    `wall_src_g100`), leaves a net open: the geometry's cut for a lane it
+    could not keep off an island reaches the solve only as "no crossings
+    there", never as "on the other layer there" for an island on one layer.
+  - **Round its end or under it:** an end named crowded gets its change
+    planned, and the lane crosses under the wall where going round its end
+    would cost fewer vias (`wall_dst_g60`: 12 vias under it, 4 round it).
+    The solve weighing the two, the length round against the vias under.
 - **A row of islands, one side.** The geometry decides a lane's side of
   each island apart, from where its first pass laid the lane; nothing keeps a
   lane on one side along a row of them, so a header's pins, or a two-pad

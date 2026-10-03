@@ -255,7 +255,7 @@ class Ends:
         # keeps only exits with room for the pair there (fanout_from_plan.pair_exit_clear), a single's was checked
         # only to its tooth's tip -- and the loop's audits then found it against a passive the solve cannot move it
         # off (zynq: C105 0.6 mm in front of the source teeth, C98 beside the berths -- most of the static findings)
-        self.front = {}
+        self.front, self.run_ids = {}, run_ids
         for lane, lg in self.lanes:
             if len(lg) != 1:
                 continue
@@ -608,6 +608,20 @@ class Ends:
                + FB_PAIR * sum(ia.get(state[a_][k_], 0.0) * ib.get(state[b_][k_], 0.0)
                                for a_, b_, k_, ia, ib in self.fb_pairs))
         front = sum(c_.get(state[l_][k_], 0.0) for (l_, k_), c_ in self.front.items())
+        # (each chosen end blocked with room for a via before the block, where an earlier round's audits found it
+        # crowded: that block's span along its escape, for the solve to hold the lane on the other layer across it --
+        # fanout_from_plan writes it, whole_solve reads it. An end nobody found crowded goes round the block on its
+        # own layer, as a lane goes round a part: a change planned there cost two vias where none were needed)
+        lane_front = collections.defaultdict(dict)
+        for (l_, k_), c_ in self.front.items():
+            if (l_, k_) not in self.fb_avoid:
+                continue
+            i_ = state[l_][k_]
+            if c_.get(i_) == FRONT_VIA:
+                o_ = (self.T if k_ == 0 else self.B)[l_][i_]
+                sp_ = front_span(self.st['pcb'], self.st['byname'][self.legs_of[l_][0]][0], o_[0][0], self.run_ids)
+                if sp_ is not None:
+                    lane_front[l_][k_] = sp_
         obj = (W_OVER * over + fan + route + ride / VIA_MM + cong + fbk + EPS_X * len(inv) + BIG * (nconf + nsplit + nref)
                + STACK_COST * stacks + front)
         # (each lane's share, for a round the whole route laid nothing on or left nets open -- whole_feedback --name
@@ -621,6 +635,7 @@ class Ends:
                          crossings=len(inv), same=len(same), conflicts=nconf, splits=nsplit, refused=nref,
                          lane_over=lane_over, lane_load={l_: round(v_, 3) for l_, v_ in loads.items()},
                          lane_x=dict(xl), stacks=stacks, exact_failed=exact_failed, cut=cut, front=front,
+                         lane_front=dict(lane_front),
                          conf_lanes=(sorted({lane_of[c[0]] for c in chosen for o in self.conf.get(c, ())
                                              if o in chosen}) if nconf else []))
 
@@ -949,35 +964,89 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
     return out
 
 
-def exit_front(pcb, nid, m, kids):
-    """0 where the straight run out of a single lane's exit `m` -- FRONT_REACH along its escape direction, on its layer --
-    is clear of copper outside the run (braid.build_obstacles: every foreign pad, segment and via, inflated by clearance
-    and half a track; the segments of the run's nets `kids` left out, as they move with the search); 1 where it is
-    blocked but a via fits on the way before the block (clear of that copper on every layer, a barrel piercing them
-    all), so the lane can change layer there; 2 where none does. Kept on the board per exit."""
+def _corner_blocked(pcb, nid, layer, pts, bar):
+    """[bool per point]: within `bar` of a foreign pad's copper on `layer` -- its copper as KiCad draws it, and in its
+    corner's zone the router's corner buffer further (pairs.pad_corner_buffer), as the router keeps a single's track
+    or via off it and the audit measures it (plan_audit.check_static); an unplated hole by its drill"""
+    import numpy as _np
+    P = _np.asarray(pts, float)
+    out = _np.zeros(len(P), bool)
+    x0, y0 = P.min(0) - bar - 3.0
+    x1, y1 = P.max(0) + bar + 3.0
+    for fp in pcb.footprints.values():
+        for pd in fp.pads:
+            if pd.net_id == nid and nid or not (x0 <= pd.global_x <= x1 and y0 <= pd.global_y <= y1):
+                continue
+            if pd.pad_type == 'np_thru_hole':
+                d = _np.hypot(P[:, 0] - pd.global_x, P[:, 1] - pd.global_y) - (pd.drill or 0) / 2
+            elif (pd.drill and pd.drill > 0) or any(L_.startswith('*') for L_ in pd.layers) or layer in pd.layers:
+                cr = _pairs.pad_corner_radius(pd)
+                dx, dy = P[:, 0] - pd.global_x, P[:, 1] - pd.global_y
+                d = (_pairs.pad_distance(dx, dy, pd.size_x / 2, pd.size_y / 2, cr)
+                     - _pairs.pad_corner_buffer(dx, dy, pd.size_x / 2, pd.size_y / 2, cr, _bd.GRID))
+            else:
+                continue
+            out |= d < bar - 1e-9
+    return out
+
+
+def _front(pcb, nid, m, kids):
+    """(level, span) of a single lane's exit `m`: what stands in the straight run out of it, FRONT_REACH along its
+    escape direction on its layer, against copper outside the run (braid.build_obstacles: every foreign pad, segment
+    and via, inflated by clearance and half a track; the segments of the run's nets `kids` left out, as they move with
+    the search; a pad also by the router's bar at its corners, _corner_blocked). Level 0 where the run is clear; 1
+    where it is blocked but a via fits on the way before the block (clear of that copper on every layer by a via's
+    room, a barrel piercing them all); 2 where none does. `span`, the layer change the solve plans there (whole_solve's
+    LAYER cuts): (via_near, via_far, near, far) in mm from the exit -- where such a via stands with the run on another
+    layer clear from it across the block, and the span of the copper blocking the track beyond it (the first step that
+    meets it, the first past the last within the reach that does); None where no via stands so, a block on every layer
+    (a barrel, a hole) among them: the lane goes round that, priced as the via its bend is like. Kept on the board per
+    exit"""
     from escape_moves import DIRS
     d = DIRS.get(getattr(m, 'direction', None))
     if d is None or getattr(m, 'exit_pt', None) is None:
-        return 0
+        return 0, None
     key = (nid, m.layer, m.direction, round(m.exit_pt[0], 4), round(m.exit_pt[1], 4))
     memo = pcb.__dict__.setdefault('_exit_front', {})
     if key in memo:
         return memo[key]
     kids = frozenset(kids) | {nid}
     step, (x0, y0) = 0.05, m.exit_pt
+    at = lambda k: (x0 + d[0] * step * k, y0 + d[1] * step * k)
+    n = int(FRONT_REACH / step + 1e-9)
+    pts = [at(k) for k in range(n + 1)]
+    layers = list(getattr(pcb.board_info, 'copper_layers', None) or ('F.Cu', 'B.Cu'))
+    t_bar, v_bar = _bd.CLEAR + _bd.TRACK / 2, _bd.VIA_SIZE / 2 + _bd.CLEAR
+    cnr = {L: _corner_blocked(pcb, nid, L, pts, t_bar) for L in layers}
     track = _bd.build_obstacles(pcb, nid, kids, m.layer)
-    hit = next((k for k in range(1, int(FRONT_REACH / step + 1e-9) + 1)
-                if track.point_violation((x0 + d[0] * step * k, y0 + d[1] * step * k))), None)
-    if hit is None:
-        level = 0
-    else:
-        layers = list(getattr(pcb.board_info, 'copper_layers', None) or ('F.Cu', 'B.Cu'))
-        vias = [_bd.build_obstacles(pcb, nid, kids, L, margin=_bd.VIA_SIZE / 2 + _bd.CLEAR) for L in layers]
-        fits = any(not any(v.point_violation((x0 + d[0] * step * k, y0 + d[1] * step * k)) for v in vias)
-                   for k in range(hit))
-        level = 1 if fits else 2
-    memo[key] = level
-    return level
+    blocked = lambda o, L, k: o.point_violation(at(k)) or cnr[L][k]
+    hits = [k for k in range(1, n + 1) if blocked(track, m.layer, k)]
+    k0 = hits[0] if hits else None
+    out = (0, None)
+    if k0 is not None:
+        k1 = min(hits[-1] + 1, n)          # (past the last step within the reach that meets copper)
+        vias = [_bd.build_obstacles(pcb, nid, kids, L, margin=v_bar) for L in layers]
+        vcn = [_corner_blocked(pcb, nid, L, pts[:k0], v_bar) for L in layers]
+        fit = [k for k in range(k0) if not any(v.point_violation(at(k)) or c[k] for v, c in zip(vias, vcn))]
+        others = [(_bd.build_obstacles(pcb, nid, kids, L), L) for L in layers if L != m.layer]
+        # (the lane past its via on another layer, clear from the via across the block: a layer it can stand on)
+        on = [k for k in fit if any(not any(blocked(o, L, j) for j in range(k, k1 + 1)) for o, L in others)]
+        out = (1 if fit else 2, (round(min(on) * step, 3), round(max(on) * step, 3), round(k0 * step, 3),
+                                 round(k1 * step, 3)) if on else None)
+    memo[key] = out
+    return out
+
+
+def exit_front(pcb, nid, m, kids):
+    """the level of what stands in front of a single lane's exit `m` (_front): 0 clear, 1 blocked with room for a via
+    before the block, 2 blocked with none"""
+    return _front(pcb, nid, m, kids)[0]
+
+
+def front_span(pcb, nid, m, kids):
+    """(via_near, via_far, near, far) of a single lane's exit `m` blocked where a layer change answers it (_front):
+    where its via stands and where the copper blocking it does, in mm from the exit; None for any other exit"""
+    return _front(pcb, nid, m, kids)[1]
 
 
 def fb_weights(opts, item):
