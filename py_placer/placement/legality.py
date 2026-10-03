@@ -3946,13 +3946,18 @@ def _custom_box_at_pose(original, posed, delta):
     The parser's box is symmetric about the anchor and encloses every
     primitive, its stroke and the anchor (`kicad_parser.
     _custom_pad_board_extent`). A QUARTER turn swaps its extents, exactly as
-    a re-parse gives; a half turn keeps them. Any other angle takes the
-    anchor-symmetric extent of the posed polygon vertices, which encloses the
-    copper exactly and differs from a re-parse by little and with a known
-    sign: smaller by at most a circle's sagitta (the parser boxes a circular
-    anchor's rect corners), larger by at most (sqrt 2 - 1) x the half stroke
-    of a diagonal primitive. A re-parse cannot be reproduced here: `Pad`
-    keeps the primitives' polygons, not their text.
+    a re-parse gives; a half turn keeps them -- and so inherits whatever the
+    parser's box misses (up to 0.0236 mm2 of copper on KiCad's jetson demo,
+    H5, at file pose too). Any other angle takes the anchor-symmetric extent
+    of the posed polygon vertices, which encloses the posed copper by
+    construction and can differ from a re-parse either way: 0.29 mm WIDER
+    on the jetson demo's H5-H8 at 33 degrees, where the parser's own box
+    leaves 0.042 mm2 of the copper outside it, and 0.07 mm NARROWER on
+    RoyalBlue54L's U5 at 45, where the parser boxes a round anchor's
+    corners. #1123's census (865 custom pad x angle cases on 10 boards):
+    no copper outside the posed box at any oblique angle. A re-parse cannot
+    be reproduced here: `Pad` keeps the primitives' polygons, not their
+    text.
     """
     if abs(math.remainder(delta, 90.0)) <= 1e-9:
         if int(round(delta / 90.0)) % 2:
