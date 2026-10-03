@@ -15,7 +15,10 @@ restore the defect each issue measured, or the reason it went unseen:
   * `stage1-set-not-applied` / `stage1-unfit-set-measured-at-the-input`
     (#1120) -- stage 1's edge seat applied a single declared rotation and
     no set, and no later stage re-seats what it seats, so splitflap's J5
-    declared `[0, 90]` was written at its input 180, graded clean.
+    declared `[0, 90]` was written at its input 180, graded clean;
+  * `ungated-arm-loses-the-claims` (#1122) -- the cap pass's comparison
+    run drops `intent`, and on the U30 crop it is the run KEPT: a hold read
+    from `intent` would not be in the board that ships.
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty
@@ -37,7 +40,13 @@ Not covered by a row, and why:
     is that assertion failing;
   * dropping a row from test_893's `_DECLARATION_CALLS` -- that deletes the
     guard rather than weakening it, and no assertion can see its own table
-    shrink without restating the table.
+    shrink without restating the table;
+  * the cap pass's escalation guard (`and len(_cap_rotations(...)) > 1`) --
+    without it a cap with no other angle spends a stuck round arming a turn
+    it cannot make before its budget grows; that changes when, not whether,
+    the budget grows, and no fixture pins the round it happens in;
+  * `declared_cap_rotations`' `intent is None` return -- its mutant raises
+    in every witness that runs the pass without an intent.
 """
 from __future__ import annotations
 
@@ -55,6 +64,9 @@ TARGETS = {
     'pf': os.path.join(_PL, 'portfolio.py'),
     't893': os.path.join(_TESTS, 'test_893_declared_rotation.py'),
     'sd': os.path.join(_PL, 'seeder.py'),
+    'fc': os.path.join(_PL, 'fanout_clearance.py'),
+    'pfc': os.path.join(_ROOT, 'py_placer', 'place_fanout_clearance.py'),
+    'gui': os.path.join(_ROOT, 'kicad_routing_plugin', 'fanout_gui.py'),
 }
 
 
@@ -80,6 +92,15 @@ C7 = _t(T983, '-k', 'test_c7_')
 C8 = _t(T983, '-k', 'test_c8_')
 C9 = _t(T983, '-k', 'test_c9_')
 C10 = _t(T983, '-k', 'test_c10_')
+T1122 = 'test_1122_fanout_declared_rotation.py'
+ROT_LIST = _t(T1122, 'rotation_list')
+CONFINED = _t(T1122, 'confined_to_the_helper')
+HELD = _t(T1122, 'not_turned_in_the_run_that_ships')
+UNGATED = _t(T1122, 'ungated_arm_is_handed')
+CONTRA = _t(T1122, 'contradiction_writes')
+# The GUI gate exits 2 without KiCad's python, which the unmutated baseline
+# would report as a refusal before any row runs -- never as a kill.
+GUI = (os.path.join(_TESTS, 'gui_parity', 'test_1122_cap_rotation_gui.py'),)
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -173,6 +194,63 @@ ROWS = [
      "                    f\"edge connector {ref}: none of its declared \"",
      "                    f\"edge connector {ref}: \"",
      (C8,), 'KILLED'),
+    # -- #1122: the cap pass ---------------------------------------------------
+    ('descent-reads-the-lattice', 'fc',
+     "                rots = _cap_rotations(cap, _c1122, allow_rotations, rotate[ref])",
+     "                rots = ROTATIONS if (allow_rotations and rotate[ref]) else [cap.rot]",
+     (CONFINED, HELD), 'KILLED'),
+    ('fallback-reads-the-lattice', 'fc',
+     "                rots = _cap_rotations(cap, _c1122, allow_rotations, True)",
+     "                rots = ROTATIONS if allow_rotations else [cap.rot]",
+     (CONFINED,), 'KILLED'),
+    ('helper-ignores-the-claim', 'fc',
+     "    if claim is None:",
+     "    if True:",
+     (ROT_LIST, HELD), 'KILLED'),
+    ('helper-drops-the-current-angle', 'fc',
+     "    out1122 = [cap.rot]",
+     "    out1122 = []",
+     (ROT_LIST,), 'KILLED'),
+    ('helper-admits-off-lattice', 'fc',
+     "    return abs((rot - cap.seed_rot + 45.0) % 90.0 - 45.0) <= 1e-6",
+     "    return True",
+     (ROT_LIST,), 'KILLED'),
+    ('helper-ignores-allow-rotations', 'fc',
+     "    if not (allow_rotations and rotate):",
+     "    if not rotate:",
+     (ROT_LIST,), 'KILLED'),
+    ('claims-never-resolved', 'fc',
+     "    kw['declared_rotations'] = declared_cap_rotations(intent, pcb_data)",
+     "    kw['declared_rotations'] = {}",
+     (HELD, UNGATED), 'KILLED'),
+    ('ungated-arm-loses-the-claims', 'fc',
+     "                                                    on_move=None))",
+     "                                                    on_move=None, declared_rotations=None))",
+     (UNGATED, HELD), 'KILLED'),
+    ('pass-reads-no-claims', 'fc',
+     "    claims1122 = {r: c for r, c in sorted((declared_rotations or {}).items())",
+     "    claims1122 = {r: c for r, c in sorted({}.items())",
+     (HELD,), 'KILLED'),
+    ('disclosure-dropped', 'fc',
+     "        print(\"Declared rotations (intent): %d cap(s): %s\" % (",
+     "        (\"Declared rotations (intent): %d cap(s): %s\" % (",
+     (HELD,), 'KILLED'),
+    ('result-key-dropped', 'fc',
+     "        out['declared_rotations'] = {",
+     "        out['declared_rotations_unused'] = {",
+     (HELD,), 'KILLED'),
+    ('json-key-dropped', 'pfc',
+     "            'declared_rotations': result.get('declared_rotations'),",
+     "            'declared_rotations': None,",
+     (HELD,), 'KILLED'),
+    ('cli-refuses-late', 'pfc',
+     "            declared_cap_rotations(intent, _pcb1122)",
+     "            pass",
+     (CONTRA,), 'KILLED'),
+    ('gui-contradiction-runs', 'gui',
+     "                    _fc1122.declared_cap_rotations(_cap_intent, pcb_data)",
+     "                    pass",
+     (GUI,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

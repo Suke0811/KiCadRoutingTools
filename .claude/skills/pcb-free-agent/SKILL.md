@@ -179,7 +179,9 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     also runs the pass without the gate and keeps whichever ends with fewer
     unresolved grazes, then fewer decap claims made worse (`Decap: ...`
     says which).
-    It prints the decap grade before and after.
+    It prints the decap grade before and after. It also holds the
+    intent's declared rotations in both passes (#1122); without
+    `--intent` it can turn a cap whose angle you declared.
     Without `--intent` it can move a cap past `decap_pin_distance`
     silently;
   - `place_seed --reseat`'s intent basis counts only the rules it prints
