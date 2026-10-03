@@ -415,6 +415,60 @@ class Spine:
         s, o = self.project(np.array([p[0]]), np.array([p[1]]))
         return float(s[0]), float(o[0])
 
+    def lane_line(self, so: Sequence[Tuple[float, float]], fixed=()) -> List[Tuple[float, float, float]]:
+        """Board polyline of a lane given by its COLUMN points so [(s, o)], s increasing: [(x, y, s)], each column on
+        its own leg, and at each corner of the spine the lane's two legs MEET where its own two lines cross -- the line
+        through its last two points before the corner and the line through its first two after it. A point past that
+        crossing is left out: a lane inside a corner lies, near it, beyond where its line meets the other leg's (by
+        |o| tan(turn / 2) at a fixed offset, sooner where its offset grows into the corner), and drawn there it
+        stepped past the corner and back. The constant-offset mitre lane_xy puts in is that crossing only for a lane
+        whose offset does not change. Points whose index is in `fixed` (terminals, layer changes) are never left out;
+        where one would have to be, or the two lines cross farther than a turn of 120 degrees would put them, the
+        lane runs straight across the corner."""
+        pts = [(float(s), float(o), i) for i, (s, o) in enumerate(so)]
+        at = {}                                         # pts index -> the corner put in after it
+        for j in range(1, self.n):
+            if abs(float(self.turn[j - 1])) < 1e-6:
+                continue
+            Sj = float(self.S[j])
+            # (a column ON the corner is drawn on the leg after it, as Spine.xy draws it: one of the points after)
+            b = next((k for k, p in enumerate(pts) if p[0] >= Sj - 1e-9), None)
+            if b is None or b == 0:
+                continue
+            a = b - 1
+            X = None
+            while a >= 1 and b + 1 < len(pts) and self.seg_of(pts[a - 1][0]) == j - 1 and self.seg_of(pts[b + 1][0]) == j:
+                P0, P1 = self.xy(*pts[a - 1][:2]), self.xy(*pts[a][:2])
+                Q0, Q1 = self.xy(*pts[b][:2]), self.xy(*pts[b + 1][:2])
+                r = (P1[0] - P0[0], P1[1] - P0[1]); q = (Q1[0] - Q0[0], Q1[1] - Q0[1])
+                den = r[0] * q[1] - r[1] * q[0]
+                if abs(den) < 1e-12:
+                    break                               # the two lines parallel: straight across
+                w = (Q0[0] - P0[0], Q0[1] - P0[1])
+                t = (w[0] * q[1] - w[1] * q[0]) / den   # P0 + t r = Q0 + u q
+                u = (w[0] * r[1] - w[1] * r[0]) / den
+                if t < 1.0 - 1e-9 and pts[a][2] not in fixed:
+                    del pts[a]; a -= 1; b -= 1          # the last point before the corner lies past the crossing
+                    continue
+                if u > 1e-9 and pts[b][2] not in fixed:
+                    del pts[b]                          # the first one after it lies before the crossing
+                    continue
+                if t >= 1.0 - 1e-9 and u <= 1e-9:
+                    X = (P0[0] + t * r[0], P0[1] + t * r[1])
+                    gap = math.hypot(Q0[0] - P1[0], Q0[1] - P1[1])
+                    if math.hypot(X[0] - P1[0], X[1] - P1[1]) + math.hypot(Q0[0] - X[0], Q0[1] - X[1]) > 2.0 * gap + 1e-9:
+                        X = None
+                break
+            if X is not None:
+                at[pts[a][2]] = (X[0], X[1], Sj)
+        out = []
+        for s, o, i in pts:
+            x, y = self.xy(s, o)
+            out.append((x, y, s))
+            if i in at:
+                out.append(at[i])
+        return out
+
     def extend(self, back: float, fwd: float) -> 'Spine':
         """The same spine with its first leg extended backwards by
         `back` and its last leg forwards by `fwd`."""
@@ -473,6 +527,73 @@ class Spine:
         if len(out) == 1:
             out.append(out[0])
         return out
+
+
+# ---------------------------------------------------------------- a part seen from several spines
+# The whole route's geometry (whole_geo) lays each lane in frames -- the trunk, a ring round the destination -- each a
+# spine whose offset o runs across it. A part a lane must pass is one thing on the board, and which side of it the lane
+# passes is decided once there (decide_sides) and carried into every frame (side_carry); each frame only measures it,
+# column by column, along the column's own offset line (line_extent) -- the box of its four corners projected into a
+# BENT frame is far larger than its copper (zynq K44: C98 at the corner where the trunk hands its lanes to the ring).
+
+def line_extent(sp: Spine, s: float, rects, g: float) -> Optional[Tuple[float, float]]:
+    """(lo, hi): the offsets where spine `sp`'s offset line at `s` -- sp.xy(s, o) for every o -- meets the rectangles
+    `rects` [(x0, y0, x1, y1)] grown by `g` on every side; None where it misses them all. The line is infinite: a
+    caller bounds it (whole_geo gates it by the part's span and its box, and the lane's reach)."""
+    ax, ay = sp.xy(s, 0.0)
+    nx, ny = (float(v) for v in sp.nrm[sp.seg_of(s)])
+    lo, hi = math.inf, -math.inf
+    for (x0, y0, x1, y1) in rects:
+        a_, b_ = -math.inf, math.inf
+        for p0, p1, q, d in ((x0 - g, x1 + g, ax, nx), (y0 - g, y1 + g, ay, ny)):
+            if abs(d) < 1e-12:
+                if not (p0 <= q <= p1):
+                    a_, b_ = 1.0, -1.0
+                continue
+            t0, t1 = sorted(((p0 - q) / d, (p1 - q) / d))
+            a_, b_ = max(a_, t0), min(b_, t1)
+        if a_ <= b_:
+            lo, hi = min(lo, a_), max(hi, b_)
+    return (lo, hi) if lo <= hi else None
+
+
+def part_home(spines, spans, centre: Pt):
+    """the frame that sees a part WHOLE -- its span (sa, sb), the s of its four corners there, not cut at the frame's
+    ends -- nearest its spine; `spines` {frame: Spine}, `spans` {frame: (sa, sb)}"""
+    return min((not (spans[f][0] > 1e-6 and spans[f][1] < spines[f].L - 1e-6), abs(spines[f].project_pt(centre)[1]), f)
+               for f in sorted(spines))[2]
+
+
+def side_carry(sp_from: Spine, sp_to: Spine, centre: Pt, o_hi: float, room: float) -> int:
+    """+1 or -1: a part's +1 side in spine `sp_from` (its offsets above `o_hi`, the top of its box there) as a side in
+    `sp_to` -- a point `room` beyond it at the centre's s, against the centre, both measured in `sp_to`"""
+    s_c, _o = sp_from.project_pt(centre)
+    up = sp_from.xy(s_c, o_hi + room)
+    return 1 if sp_to.project_pt(up)[1] >= sp_to.project_pt(centre)[1] else -1
+
+
+def decide_sides(meets, home, split_side, box_mid, carry):
+    """{(lane, part): side in the part's HOME frame's terms} for every lane meeting a part in two frames or more.
+    `meets` {(lane, part): {frame: [the lane's offsets at its columns meeting the part]}}; `home` {part: frame};
+    `split_side` {(frame, lane, part): side}, the frames' own splits; `box_mid` {(frame, part): the middle of the
+    part's offsets there}; `carry` {(part, frame): +1 / -1, side_carry from the home frame}. The home frame's split
+    where the lane is in it -- a split reads the lane order at the part's middle column, where a lane handing off
+    before it is absent -- else the frame the lane meets the part in over most columns (the home first among equals):
+    that frame's split, else its mean offset against the part's middle there"""
+    out = {}
+    for (n, ii), byf in meets.items():
+        if len(byf) < 2:
+            continue
+        h = home[ii]
+        if (h, n, ii) in split_side:
+            src, sd = h, split_side[(h, n, ii)]
+        else:
+            src = max(sorted(byf), key=lambda f: (len(byf[f]), f == h))
+            sd = split_side.get((src, n, ii))
+            if sd is None:
+                sd = -1 if float(np.mean(byf[src])) < box_mid[(src, ii)] else 1
+        out[(n, ii)] = sd * carry[(ii, src)]
+    return out
 
 
 # ---------------------------------------------------------------- obstacles

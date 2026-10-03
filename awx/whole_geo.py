@@ -4,7 +4,8 @@ over the trunk and both rings: smooth lanes, each at any angle, in their frames.
 Frames: the trunk spine (u = s) and each ring's spine (u = Hk + s_b - rs). A lane of class W lives in the trunk
 from its tooth to its berth; a lane of class N / S in the trunk from its tooth to its ring's start (s = Hk), then in
 its ring from the handoff to its berth -- the two pieces joined by a linear equality (the ring's start offset is an
-affine function of the trunk's handoff offset) and a bend term across the join. Columns every G mm of s in each
+affine function of the trunk's end offset), a bend term across the join, and the trunk's end held on its ring's side of
+the ring's start (elastic, priced W_HARD, `ringside`). Columns every G mm of s in each
 frame; the solve fixes the ORDER of the lanes present at every column (below(): launch order, flipped by each
 solved crossing) and each lane's LAYER (flipped at each solved change; both layers within a via's reach of one).
   hard (elastic, priced W_HARD, reported): the order of each layer's own lanes (a lane on the other layer may run
@@ -29,6 +30,7 @@ from types import SimpleNamespace
 import detmath
 import whole_ctx
 import whole_frame
+import corridor as _cor
 import braid as bd
 import pairs as _pairs
 
@@ -402,6 +404,12 @@ for n in M:
                                ex0=max(hold0 + 1, EXC), ex1=max(hold1 + 1, EXC), ref=ref)
 
 
+# each ring's START on the trunk's handoff line (whole_frame: a lane pitch inside its innermost lane, clear of the
+# destination's corner and the copper hugging it), and the side its lanes stand on: (sign, its trunk offset)
+RING_OUT = {}
+for f in ring_sp:
+    o0_ = Fr.spine.project_pt(ring_sp[f].pts[0])[1]
+    RING_OUT[f] = (1.0 if sum(Fr.o_h[n] - o0_ for n in M if cls.get(n) == f) > 0 else -1.0, o0_)
 S0C = {f: RS[f] for f in SB0}             # the solve's ring origin: ahead of every lane's trunk end (no step back at the seam)
 # each lane of a ring enters it where its trunk ends (sb0, its own column): started at the ring's one origin column
 # instead, the stretch from its trunk end to there was in no column -- no pitch, static or via row -- and the output
@@ -735,18 +743,25 @@ def build_and_solve(sides, prev=None):
                 for k in ks:
                     # dirn * (o[k+1] - o[k]) >= 0
                     le([(var[(f, n, k)], dirn), (var[(f, n, k + 1)], -dirn)], 0.0, ('approach', f, k, n))
-    # the handoff joins: ring start = alpha + beta * trunk handoff offset; and a bend across the join
+    # the handoff joins: ring start = alpha + beta * the trunk's END offset, taken at the trunk's last column (taken on
+    # the handoff line, a column short of it, every join was 0.017 mm off across the ring); and a bend across the join
     for n in M:
         if n not in cls:
             continue
         vT, vR = PIECE[('T', n)], PIECE[(cls[n], n)]
         sp = ring_sp[cls[n]]
-        o_h = vR['o_h']
-        ob1, ob2 = sp.project_pt(Fr.spine.xy(HK[cls[n]], o_h))[1], sp.project_pt(Fr.spine.xy(HK[cls[n]], o_h + 1.0))[1]
+        o_h, s_e = vR['o_h'], vT['k1'] * G
+        ob1, ob2 = sp.project_pt(Fr.spine.xy(s_e, o_h))[1], sp.project_pt(Fr.spine.xy(s_e, o_h + 1.0))[1]
         beta = ob2 - ob1
         alpha = ob1 - beta * o_h
         jT, jR = var[('T', n, vT['k1'])], var[(cls[n], n, vR['k0'])]
         le([(jR, 1.0), (jT, -beta)], alpha); le([(jR, -1.0), (jT, beta)], -alpha)
+        # ...and the trunk ENDS on its ring's side of the ring's start, as the frame planned it: ended inside it, a lane
+        # cut the destination's corner through the parts hugging it, and its end lay behind the ring's first column,
+        # where the ring could not see it -- the lane jumped up to 0.62 mm along the ring to its first column, across
+        # whatever stood there (zynq K44: DQ3, DQ12, DQ10 and DQ1 through C98's pads)
+        sg_, o0_ = RING_OUT[cls[n]]
+        le([(jT, -sg_)], -sg_ * o0_, ('ringside', 'T', vT['k1'], n))
         if ('T', n, vT['k1'] - 1) in var and (cls[n], n, vR['k0'] + 1) in var:
             jT0, jR1 = var[('T', n, vT['k1'] - 1)], var[(cls[n], n, vR['k0'] + 1)]
             d2 = newvar(W_BEND)
@@ -869,6 +884,21 @@ def static_sides(sol):
             so = [sp.project_pt(p) for p in ((x0, y0), (x0, y1), (x1, y0), (x1, y1))]
             bl.append((min(q[0] for q in so), max(q[0] for q in so), min(q[1] for q in so), max(q[1] for q in so), Ls, lab, own))
         boxes[f] = bl
+    # ONE SIDE ON THE BOARD: a part both a trunk and a ring see (one at the destination's corner, where the trunk hands
+    # its lanes to the ring) is decided in its HOME frame -- the one that sees it whole, its box not cut at the frame's
+    # ends, nearest its spine -- and carried into every other frame by a point on that side. Each frame's offset runs
+    # its own way round the part: decided in each, the trunk sent DQ10 below C98 and the ring above it, the handoff
+    # crossed C98 between the two, and a flip flipped both and crossed it again (zynq K44)
+    home, carry = {}, {}
+    spines = {f: FR[f]['sp'] for f in FR}
+    for ii, st_ in enumerate(STATIC):
+        (x0, y0, x1, y1) = st_[:4]
+        c_ = ((x0 + x1) / 2, (y0 + y1) / 2)
+        h = home[ii] = _cor.part_home(spines, {f: boxes[f][ii][:2] for f in FR}, c_)
+        for f in FR:
+            carry[(ii, f)] = 1 if f == h else _cor.side_carry(spines[h], spines[f], c_, boxes[h][ii][3], LANE_ST)
+    # each part's own pads (an island's: whole_ctx.part_islands joins parts no lane passes between), its box else
+    RECTS = [ISL.get((st_[5], frozenset(st_[4]))) or [tuple(st_[:4])] for st_ in STATIC]
     vboxes = {}
     for f in FR:
         sp = FR[f]['sp']
@@ -1063,7 +1093,51 @@ def static_sides(sol):
                     moved = True
                 if not moved:
                     break
-    for (f, n, k), o_ in sol['o'].items():
+    def extent(f, s_, ii, g):
+        """(lo, hi): where column s_'s offset line in frame f meets part ii's pads grown by g (None: it misses them)"""
+        return _cor.line_extent(FR[f]['sp'], s_, RECTS[ii], g)
+
+    # every column of every piece -- a ring piece re-anchored to the trunk's end (reanchor) has columns the first pass
+    # never laid, at the handoff: unchecked, DQ10 ran through C98 there -- its offset between the trunk's end and the
+    # first column the pass laid
+    cols = []
+    for (f, n), v in PIECE.items():
+        laid = [k for k in range(v['k0'], v['k1'] + 1) if (f, n, k) in sol['o']]
+        if not laid:
+            continue
+        k1_ = laid[0]
+        for k in range(v['k0'], v['k1'] + 1):
+            o_ = sol['o'].get((f, n, k))
+            if o_ is None:
+                if k > k1_:
+                    o_ = sol['o'][(f, n, max(k_ for k_ in laid if k_ < k))]
+                else:
+                    o0_ = v.get('o_start', sol['o'][(f, n, k1_)])
+                    o_ = o0_ + (sol['o'][(f, n, k1_)] - o0_) * (k - v['k0']) / max(1, k1_ - v['k0'])
+            cols.append((f, n, k, o_))
+    # ONE side per lane and part where the lane meets it in more than one frame (the columns the loop below tests): the
+    # home frame's split where the lane is in it -- a split reads the lane order at the part's middle column, where a
+    # lane handing off before it is absent (DQ10's trunk ends at s 34.5, C98's middle is 35.1) -- else the frame it meets
+    # the part in over most columns, that frame's split or its first-pass offset; held in the home frame's terms
+    meet = collections.defaultdict(lambda: collections.defaultdict(list))      # (n, ii) -> frame -> [o_]
+    for (f, n, k, o_) in cols:
+        v = PIECE[(f, n)]
+        s_ = k * G
+        lay = layers_at(n, FR[f]['u'](s_))
+        at_end = (k - v['k0'] < 2 and v['o0'] is not None) or (v['k1'] - k < 2 and v['o1'] is not None)
+        for ii, (sa, sb, oa, ob, Ls, lab, own) in enumerate(boxes[f]):
+            g = LANE_ST + hw[n]
+            if (own == n or oa - WIN > o_ or o_ > ob + WIN or not (Ls & lay) or not (sa - g <= s_ <= sb + g)
+                    or (at_end and not lab.startswith(('end ', 'stub ', 'svia ')))):
+                continue
+            ext = extent(f, s_, ii, g)
+            if (ext is None or max(ext[0], oa - g) > min(ext[1], ob + g)
+                    or max(ext[0] - o_, o_ - ext[1], 0.0) > WIN):
+                continue
+            meet[(n, ii)][f].append(o_)
+    DECIDED = _cor.decide_sides(meet, home, SIDE, {(f, ii): (b_[2] + b_[3]) / 2 for f in boxes
+                                                   for ii, b_ in enumerate(boxes[f])}, carry)
+    for (f, n, k, o_) in cols:
         v = PIECE[(f, n)]
         s_ = k * G
         lay = layers_at(n, FR[f]['u'](s_))
@@ -1076,11 +1150,21 @@ def static_sides(sol):
             g = LANE_ST + hw[n]
             if at_end and not lab.startswith(('end ', 'stub ', 'svia ')):
                 continue
-            if Ls & lay and sa - g <= s_ <= sb + g:
+            # (the exact extent REFINES the frame's box and never replaces it: a column's offset line is infinite, and in
+            # a ring it met a 2x12 header 23 mm off -- K44, P2, 27 mm paid -- so the box's span gates it and its offsets
+            # bound it)
+            ext = extent(f, s_, ii, g) if Ls & lay and sa - g <= s_ <= sb + g else None
+            if ext is not None:
+                ext = (max(ext[0], oa - g), min(ext[1], ob + g))
+            if ext is not None and ext[0] <= ext[1] and max(ext[0] - o_, o_ - ext[1], 0.0) <= WIN:
                 # ONE side for the island's whole span: where the lane's own fixed terminal is, when that terminal lies
                 # in the span (it cannot move); else its mean first-pass offset over the span -- so a lane that must
-                # pass the island's offset does it outside the span, never through the island
+                # pass the island's offset does it outside the span, never through the island; decided in the part's
+                # home frame where the lane meets it there
                 side = SIDE.get((f, n, ii))
+                carried = (n, ii) in DECIDED
+                if carried:
+                    side = DECIDED[(n, ii)] * carry[(ii, f)]
                 if side is None and (f, ii) in SPLIT:
                     # the split left this lane out (another free interval): it keeps the side it is on -- a row it
                     # meets for free, but binding (SBA0 / SCAS ran through C6's pads with no row at all)
@@ -1098,9 +1182,9 @@ def static_sides(sol):
                 forced = ROOMLESS.get((f, ii))
                 pinned = any(ot_ is not None and sa - g <= kt_ * G <= sb + g
                              for kt_, ot_ in ((v['k0'], v['o0']), (v['k1'], v['o1'])))
-                if forced and (f, ii) not in SPLIT and not pinned:
-                    side = forced             # never against the lane's own fixed end
-                out.append((f, n, k, oa - g, ob + g, side, lab))
+                if forced and (f, ii) not in SPLIT and not pinned and not carried:
+                    side = forced             # never against the lane's own fixed end, nor against its home side
+                out.append((f, n, k, ext[0], ext[1], side, lab))
             # (a pair's via is two barrels VX either side of its centreline -- its half width hw is less: 74 um short)
             g2 = VIA_ST + max(hw[n], VX[n])
             if k in vcol[(f, n)] and sa - g2 <= s_ <= sb + g2:
@@ -1127,9 +1211,10 @@ def reanchor(sol_):
         if n in cls and ('T', n, PIECE[('T', n)]['k1']) in sol_['o']:
             vR = PIECE[(cls[n], n)]
             oT = sol_['o'][('T', n, PIECE[('T', n)]['k1'])]
-            sb_, _ob = ring_sp[cls[n]].project_pt(Fr.spine.xy(HK[cls[n]], oT))
+            sb_, ob_ = ring_sp[cls[n]].project_pt(Fr.spine.xy(PIECE[('T', n)]['k1'] * G, oT))
             vR['k0'] = min(max(int(round(sb_ / G)), 0), vR['k1'] - 2)
             vR['o_h'] = oT
+            vR['o_start'] = ob_                     # the trunk's end, on the ring: where its first column starts
 
 
 reanchor(sol)
@@ -1150,18 +1235,25 @@ for n in M:
         # mitre straight to its far end, which is not the image of a leg whose offset changes (SA13 over SA7)
         keep = [(k * G, sol['o'][(f, n, k)]) for k in range(v['k0'], v['k1'] + 1)]
         cuts = sorted(sfun(cu) for cu in chg[n] if (f == 'T') == (n not in cls or cu <= HK[cls[n]]))
-        pts = []
+        pts, fix = [], set()
         for (sa, oa), (sb, ob) in zip(keep, keep[1:]):
             pts.append((sa, oa))
             for sc in cuts:
                 if sa < sc < sb:
+                    fix.add(len(pts))
                     pts.append((sc, oa + (ob - oa) * (sc - sa) / (sb - sa)))
         pts.append(keep[-1])
-        for (sa, oa), (sb, ob) in zip(pts, pts[1:]):
-            if abs(sb - sa) < 1e-9 and abs(ob - oa) < 1e-9:
+        # ...drawn as its own lines: at a spine corner its two legs meet where they cross (Spine.lane_line), a column
+        # past that crossing left out. Drawn through every column, with the mitre of a CONSTANT offset between, a lane
+        # inside a corner stepped past it and back -- K44 DQ3, 0.8 mm inside the south ring's first corner and moving
+        # further in: a hook of 0.18 mm, turns of 117 and 81 degrees; at the constant offset's fold only, a dip of
+        # 0.14 mm. Its terminals and its layer changes (a via stands at its column's point) are always drawn
+        line = sp.lane_line(pts, fixed=fix | {0, len(pts) - 1})
+        for (xa, ya, sa), (xb, yb, sb) in zip(line, line[1:]):
+            if math.hypot(xb - xa, yb - ya) < 1e-9:
                 continue
             Ly = layer_of(n, ufun((sa + sb) / 2))
-            xy = sp.lane_xy([(sa, oa), (sb, ob)])
+            xy = [(xa, ya), (xb, yb)]
             if xy_all and pieces and len(xy) >= 2:
                 # inside a spine corner the two segments' offset lines overlap: a column point stepped back from
                 # the last one drawn is a mapping artifact, not a shape -- drop the reversing vertex
@@ -1172,6 +1264,12 @@ for n in M:
                         and min(l1, l2) < P_MIN and pieces[-1][4] == LNAME[Ly]:
                     pieces[-1] = (px, py, rx, ry, pieces[-1][4]); xy_all[-1] = (rx, ry)
                     continue
+            if pieces and math.hypot(xy[0][0] - pieces[-1][2], xy[0][1] - pieces[-1][3]) > 1e-9:
+                # the HANDOFF, drawn: the trunk's end to the ring's first column. The join ties them exactly across
+                # the ring and leaves them apart along it -- by the half column the ring's first column rounds to and
+                # the move the second pass made from the end it was tied about (K44: up to 0.12 mm). Skipped, the line
+                # ran from the trunk's end to the ring's SECOND column, a segment no frame had checked
+                pieces.append((pieces[-1][2], pieces[-1][3], xy[0][0], xy[0][1], LNAME[Ly]))
             for p, q in zip(xy, xy[1:]):
                 pieces.append((p[0], p[1], q[0], q[1], LNAME[Ly]))
             xy_all += xy if not xy_all else xy[1:]
