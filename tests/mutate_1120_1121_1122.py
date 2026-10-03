@@ -100,7 +100,7 @@ UNGATED = _t(T1122, 'ungated_arm_is_handed')
 CONTRA = _t(T1122, 'contradiction_writes')
 # The GUI gate exits 2 without KiCad's python, which the unmutated baseline
 # would report as a refusal before any row runs -- never as a kill.
-GUI = (os.path.join(_TESTS, 'gui_parity', 'test_1122_cap_rotation_gui.py'),)
+GUI = _t(os.path.join('gui_parity', 'test_1122_cap_rotation_gui.py'))
 
 # (name, target, old, new, tests, expect)
 ROWS = [
