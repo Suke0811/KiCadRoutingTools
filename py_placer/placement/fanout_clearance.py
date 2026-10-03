@@ -3039,9 +3039,11 @@ def declared_cap_rotations(intent, pcb_data, report: bool = False) -> Dict:
     different angles -- the CLI and the GUI ask before anything is written.
 
     `report` prints, as the CLIs' gate does (#702), each block that DECLARES
-    a rotation and resolves to no part: a declaration that holds nothing
-    must not look like one that holds (#1122's verifier: a `group:` block
-    naming no group ran silently, every cap free to turn)."""
+    a rotation and did not resolve whole -- once, with its problems: a
+    declaration that holds nothing must not look like one that holds
+    (#1122's verifier: a `group:` block naming no group ran silently, every
+    cap free to turn), and one whose `refs` resolved while its `group` did
+    not still holds those refs."""
     if intent is None:
         return {}
     from . import floorplan
@@ -3051,10 +3053,16 @@ def declared_cap_rotations(intent, pcb_data, report: bool = False) -> Dict:
     if report:
         rot1122 = {z.name for z in intent.blocks
                    if z.rotation is not None or z.rotation_candidates}
+        said1122: Dict[str, List] = {}
         for v in problems:
             if v.block in rot1122:
-                print(f"  INTENT WARN [{v.rule}] {v.message} -- the "
-                      f"rotation it declares holds no part (#1122)")
+                said1122.setdefault(v.block, []).append(v)
+        for name, vs in said1122.items():
+            held = ('the rotation it declares holds no part' if not
+                    blocks.get(name) else 'its rotation holds only %s'
+                    % ', '.join(blocks[name]))
+            print("  INTENT WARN %s -- %s (#1122)" % ('; '.join(
+                '[%s] %s' % (v.rule, v.message) for v in vs), held))
     return floorplan.rotations_for_ref(intent, blocks)
 
 

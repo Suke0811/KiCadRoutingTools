@@ -188,7 +188,7 @@ def _legality_census(model, fnd):
 
     `metrics.pad_conflict_pairs` and `locked_contact_pairs` are the quench's
     bounding-box currency: on glasgow_revC 10 pairs where render's checklist
-    names 1, and a "floor" of six FID/MK pairs the grader confirms none of.
+    names 1, and six locked FID/MK contacts the grader confirms none of.
 
     It reads only what `legality_findings` already computed, so it costs
     nothing. NOT MEASURED is None, never 0: without a legality context the
@@ -557,9 +557,11 @@ def _floor(track):
     left has a locked member. Both counts come from ONE census, the grader's
     (#1124): locked pairs are a subset of the conflict pairs, so `conflict
     <= locked` means they are equal. It used to compare two box counts:
-    every glasgow board counted six FID/MK box contacts as locked, and run
-    32's placed_v2/v3 -- whose six box pairs were exactly those -- drew
-    "floor 6" for pairs the grader confirms none of."""
+    every glasgow board counts six FID/MK box contacts (FID1-6 against
+    MK1/3/4) as locked, and wherever those six were every pair left --
+    run 32's placed boards and every board routed from them (placed,
+    placed_v2, placed_v3, placed_v3b, frozen, A_bga, C2_route, routed_c3)
+    -- it drew "floor 6" for pairs the grader confirms none of."""
     lb = track.beats[-1]
     if (lb.conflict_pairs is not None and lb.locked_pairs
             and lb.conflict_pairs <= lb.locked_pairs):

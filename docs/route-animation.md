@@ -745,9 +745,10 @@ placement laps into its one curve instead.
   `b_pad_clearance_pairs` has a member in `c_locked_refs` -- one census,
   so the locked pairs are a subset of the pairs -- the legend reads
   "floor N = locked parts", and a dashed line marks the value. Read off
-  the box metrics, every glasgow board counted six fiducial/marker
-  contacts as locked, and run 32's placed_v2/v3, whose six box pairs were
-  exactly those, drew "floor 6" for pairs the grader confirms none of.
+  the box metrics, every glasgow board counts six fiducial/marker
+  contacts as locked, and wherever those six were every pair left (run
+  32's placed boards and every board routed from them) it drew "floor 6"
+  for pairs the grader confirms none of.
 - **Defect flags.** A ledger row with `kind == classification` and
   `shape == placement` flags the first placement board after it. The flag is
   a numbered marker in a lane above the INTENT plot, off every series line.

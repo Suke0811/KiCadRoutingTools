@@ -144,10 +144,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   "buildable".** Two parts' pad copper overlapping, any net, is
   `check_assembly`'s `pad_intersection`; `place_pose` measures it with
   the same function (#1064), so `legal` and `no_worse` see it and
-  `--near` looks for a pose off it. A snap tries only `--snap-tries`
-  poses and can refuse with a no-worse pose in reach: compare
-  `snap_census.candidates_tried` with `lattice` and raise
-  `--snap-tries` / `--radius` before reading it as "stuck".
+  `--near` looks for a pose off it. A snap re-grades at most
+  `--snap-tries` ranked poses, then as many nearer lattice ones, so it
+  can refuse with a no-worse pose still in reach: when place_pose's snap
+  census shows `candidates_tried` short of its `ranked` + `lattice`
+  counts, raise `--snap-tries` / `--radius` before reading it as "stuck".
   Courtyards, bodies and coincident origins are
   still `check_assembly`'s alone: after every pose change, run it and
   read `buildable`, not `blocking`.

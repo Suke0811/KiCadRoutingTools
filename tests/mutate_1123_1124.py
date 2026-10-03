@@ -12,9 +12,10 @@ restore the defect each issue measured, or the reason it went unseen:
     the box, which then missed the copper at any turn but a half one;
   * `film-plots-the-box-pairs` / `floor-from-the-box` (#1124) -- the film
     plotted the quench's bounding-box pairs against a box floor: 10 pairs on
-    glasgow_revC where render's checklist names 1, and -- on run 32's
-    placed_v2/v3, where six FID/MK box contacts were every pair left --
-    "floor 6 = locked parts" for phantoms the grader confirms none of.
+    glasgow_revC where render's checklist names 1, and -- wherever six
+    FID/MK box contacts were every pair left (run 32's placed boards and
+    every board routed from them) -- "floor 6 = locked parts" for phantoms
+    the grader confirms none of.
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty

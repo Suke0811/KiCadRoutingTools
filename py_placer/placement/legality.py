@@ -2259,8 +2259,9 @@ def pad_intersection_pairs(pcb_data, clearance: float,
 #: What `pad_stack_census` measured, published beside its numbers (#1064).
 PAD_STACK_BASIS = ("check_assembly's pad_intersection channel "
                    "(legality.pad_intersection_pairs): two parts' pad copper "
-                   "intersecting on a shared side, any net, confirmed exactly "
-                   "by check_drc; never waivable")
+                   "intersecting on a shared side, any net, confirmed on the "
+                   "pads' outlines by check_drc's pad-pad check; never "
+                   "waivable")
 
 
 def pad_stack_census(pcb_data, clearance: float) -> Dict[str, object]:
@@ -3999,11 +4000,9 @@ def pads_at_pose(fp, pose) -> List[_PosedPad]:
     size bake, so the tilt keeps the sign the DRC sampler applies. Custom pad
     polygons are transformed point by point, and their size box is re-derived
     for the new angle (`_custom_box_at_pose`, #1123): the box IS read -- by
-    check_pads' pair scan, which tests every pad's box FIRST and lets the
-    copper only remove a hit, by `check_pads.pad_outline_polygon` wherever
-    the parser could not draw the copper, by `pad_half_extents`, and by every
-    trial-pose consumer of `footprint_at_pose` -- and carried unchanged it
-    missed copper after any
+    `check_pads.pad_outline_polygon` wherever the parser could not draw the
+    copper, by `pad_half_extents`, and by every trial-pose consumer of
+    `footprint_at_pose` -- and carried unchanged it missed copper after any
     turn other than a half one (tigard JP1/JP2, 0.402 mm2 outside it at +90).
 
     It agrees with writing the pose and re-parsing -- except a CUSTOM pad's
@@ -4112,9 +4111,10 @@ def pad_copper_overrun_mm(pads, gate) -> float:
     box, whose empty corner can read as off the board when no copper is.
     It stays a distance read at the vertices -- the farthest copper past a
     convex outline is a vertex -- so check_assembly's "mm past the outline"
-    keeps its unit. A curved primitive is a polygon INSCRIBED in its curve
-    (a `gr_circle` is a 32-gon), so its reach can read short by the
-    sagitta, R(1 - cos(pi/32)): 4.8 um per mm of radius.
+    keeps its unit. A curved primitive is a polygon INSCRIBED in its curve,
+    so its reach can read short by the parser's sagitta: R(1 - cos(pi/32))
+    for a `gr_circle` (a 32-gon, 4.8 um per mm of radius), at most 1 um for
+    a `gr_arc` stroke, at most 5 um for a polygon's arc or a round anchor.
     A pad on no copper layer (a paste-only aperture) is read like copper,
     as it was before #1123: nothing here reads `pad.layers`.
     A CASTELLATED pad is exempt only while it STRADDLES the outline -- some

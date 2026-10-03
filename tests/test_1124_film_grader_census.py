@@ -6,10 +6,10 @@ checklist, `--gate`, the overlay, the caption). The film kept plotting
 `metrics.pad_conflict_pairs` -- the quench's bounding-box currency -- against
 `metrics.locked_contact_pairs` as its floor, while `docs/route-animation.md`
 credited the panel to `render_placement --json-out`. On glasgow_revC the film
-said 10 pairs where render's checklist names 1; every glasgow board counted
-six FID/MK box contacts as locked, and where those six were every pair left
-(run 32's placed_v2/v3) it drew "floor 6 = locked parts" for phantoms the
-grader confirms none of.
+said 10 pairs where render's checklist names 1; every glasgow board counts
+six FID/MK box contacts as locked, and wherever those six were every pair
+left (run 32's placed boards and every board routed from them) it drew
+"floor 6 = locked parts" for phantoms the grader confirms none of.
 
 All three LEGALITY series now come from render's checklist: the gating
 off-outline parts, the grader's pad-clearance pairs (floor: those with a

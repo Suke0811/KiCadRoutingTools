@@ -284,7 +284,39 @@ def test_an_unresolved_rotation_block_is_said():
                                          'rotation': 270.0}], 'ghost')
     assert '[block_unresolved]' in out and 'holds no part' in out, \
         out[-1500:]
-    print("  a rotation block naming no group: INTENT WARN printed")
+    # Once per block, whatever number of problems it has.
+    assert sum('(#1122)' in ln for ln in out.splitlines()) == 1, out[-1500:]
+    print("  a rotation block naming no group: INTENT WARN printed, once")
+
+
+def test_a_partly_resolved_block_is_not_said_to_hold_nothing():
+    """Block a's `refs` resolve while its `group` does not: it still holds
+    C24, so it is warned without "holds no part". Block b declares no
+    rotation, so its problem is not #1122's to print. (#1122's round-2
+    verifier: every rotation block's problem read "holds no part".)"""
+    import contextlib
+    import io as _io
+    from kicad_parser import parse_kicad_pcb
+    from placement import floorplan as fp
+    from placement.fanout_clearance import declared_cap_rotations
+    with tempfile.TemporaryDirectory() as td:
+        ip = _intent(td, [{'name': 'a', 'refs': ['C24'],
+                           'group': 'NO_SUCH_GROUP', 'rotation': 270.0},
+                          {'name': 'b', 'group': 'NO_SUCH_GROUP'},
+                          {'name': 'ghost', 'group': 'NO_SUCH_GROUP',
+                           'rotation': 90.0}], 'part')
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            held = declared_cap_rotations(fp.load_intent(ip),
+                                          parse_kicad_pcb(FIX), report=True)
+    lines = [ln for ln in buf.getvalue().splitlines() if '(#1122)' in ln]
+    assert len(lines) == 2, buf.getvalue()
+    (a,) = [ln for ln in lines if "block 'a'" in ln]
+    (g,) = [ln for ln in lines if "block 'ghost'" in ln]
+    assert 'holds only C24' in a and 'holds no part' not in a, a
+    assert 'holds no part' in g, g
+    assert held.get('C24') == (270.0, None), held
+    print("  a: holds only C24; ghost: holds no part; b: not #1122's")
 
 
 TESTS = [
@@ -299,6 +331,7 @@ TESTS = [
     test_an_off_lattice_member_is_named_not_offered,
     test_the_escalation_guard_decides_an_outcome,
     test_an_unresolved_rotation_block_is_said,
+    test_a_partly_resolved_block_is_not_said_to_hold_nothing,
 ]
 
 

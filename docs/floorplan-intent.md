@@ -737,7 +737,7 @@ anyway (wrong side) is not a typo.
 on a shared side, ANY net, which check_assembly grades NOT BUILDABLE -- with
 up to five pairs, and carries the count as `pad_stack_count` in its
 `JSON_SUMMARY` (`--json` has the rows under `pad_stacks`). Each stack is
-confirmed exactly, by check_assembly's own `legality.pad_intersection_pairs`
+confirmed on the pads' outlines, by check_assembly's own `legality.pad_intersection_pairs`
 (#1064), and its area is that channel's pad-rectangle overlap,
 and it is never a violation: a floorplan PASS still says nothing about it, and
 the line is there so a reader of the grade cannot miss it. The

@@ -104,6 +104,7 @@ UNGATED = _t(T1122, 'ungated_arm_is_handed')
 CONTRA = _t(T1122, 'contradiction_writes')
 GUARD = _t(T1122, 'escalation_guard')
 UNRESOLVED = _t(T1122, 'unresolved_rotation_block')
+PARTLY = _t(T1122, 'partly_resolved_block')
 OFF_NAMED = _t(T1122, 'off_lattice_member_is_named')
 # The GUI gate exits 2 without KiCad's python, which the unmutated baseline
 # would report as a refusal before any row runs -- never as a kill.
@@ -274,6 +275,18 @@ ROWS = [
      "            if v.block in rot1122:",
      "            if False:",
      (UNRESOLVED,), 'KILLED'),
+    ('warn-every-block', 'fc',
+     "            if v.block in rot1122:",
+     "            if True:",
+     (PARTLY,), 'KILLED'),
+    ('holds-no-part-always', 'fc',
+     "            held = ('the rotation it declares holds no part' if not",
+     "            held = ('the rotation it declares holds no part' if True or not",
+     (PARTLY,), 'KILLED'),
+    ('one-warning-per-problem', 'fc',
+     "                said1122.setdefault(v.block, []).append(v)",
+     "                said1122.setdefault((v.block, len(said1122)), []).append(v)",
+     (UNRESOLVED, PARTLY), 'KILLED'),
     ('off-lattice-note-dropped', 'fc',
      "              + ''.join(' (%s: %s not offered -- off its quarter-turn '",
      "              + ''.join(' (%s: %s offered -- off its quarter-turn '",
