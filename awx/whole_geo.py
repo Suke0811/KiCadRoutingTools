@@ -135,6 +135,19 @@ DST_REF = awx_settings.req('DEST')
 SRC_REF = collections.Counter(ctx.src_ref[n] for n in M).most_common(1)[0][0]
 BOX = [Fr.SB, Fr.DB]       # the arrays' pad boxes, grown by how far outside them the terminals sit (whole_frame)
 log(f'pad boxes grown by the terminals: {[round(b[2] - b[0], 3) for b in BOX]}')
+
+
+def _pads_box(ref, b):
+    """array `ref`'s pads' box, grown by their reach and a clearance -- inside its grown box `b`"""
+    ps = ctx.pcb.footprints[ref].pads
+    r_ = max(max(p_.size_x, p_.size_y) / 2 for p_ in ps) + CL
+    return (max(b[0], min(p_.global_x for p_ in ps) - r_), max(b[1], min(p_.global_y for p_ in ps) - r_),
+            min(b[2], max(p_.global_x for p_ in ps) + r_), min(b[3], max(p_.global_y for p_ in ps) + r_))
+
+
+# ...and by their pads alone: what bounds a lane whose own tooth or berth stands inside its array's grown box (shorter
+# than the median the box is grown by) -- its first or last columns are its stub's room beside the longer stubs
+PADS_BOX = [_pads_box(SRC_REF, BOX[0]), _pads_box(DST_REF, BOX[1])]
 BX0, BY0, BX1, BY1 = ctx.pcb.board_info.board_bounds
 EDGE = (float(getattr(ctx.cfg, 'board_edge_clearance', 0.0) or 0.0) or ctx.cfg.clearance) + TW / 2
 _SPAN = max(BX1 - BX0, BY1 - BY0)
@@ -150,13 +163,15 @@ def spine_xy_vec(sp, s, O):
 _ivc = {}
 
 
-def intervals(ftag, sp, s, margin):
-    key = (ftag, round(s, 4), margin)
+def intervals(ftag, sp, s, margin, own=(False, False)):
+    """the free intervals of offset on frame `ftag`'s column at s: inside the board, outside the arrays' boxes by
+    `margin` -- the source's (own[0]) or the destination's (own[1]) its pads' box, not its grown one"""
+    key = (ftag, round(s, 4), margin, own)
     if key in _ivc:
         return _ivc[key]
     X, Y = spine_xy_vec(sp, s, OS)
     ok = (X >= BX0 + EDGE) & (X <= BX1 - EDGE) & (Y >= BY0 + EDGE) & (Y <= BY1 - EDGE)
-    for b in BOX:
+    for b in [PADS_BOX[i] if own[i] else BOX[i] for i in (0, 1)]:
         ok &= ~((X > b[0] - margin) & (X < b[2] + margin) & (Y > b[1] - margin) & (Y < b[3] + margin))
     out, i = [], 0
     while i < len(OS):
@@ -640,6 +655,10 @@ def build_and_solve(sides, prev=None):
     # references was the one NORTH of the box, and six lanes were bounded 2.7 to 3.9 mm off where they ran); the
     # nearest one only with neither
     held_iv = {}
+    # (a lane whose tooth -- or a trunk lane whose berth -- stands inside its array's grown box: bounded by the
+    # array's pads on the trunk, where it leaves its tooth or reaches its berth)
+    _in = lambda p_, b: b[0] + 1e-6 < p_[0] < b[2] - 1e-6 and b[1] + 1e-6 < p_[1] < b[3] - 1e-6
+    OWN = {n: (_in(Fr.tooth[n], BOX[0]), n not in cls and _in(bend_xy[n], BOX[1])) for n in M}
     for (f, n, k), j in var.items():
         v = PIECE[(f, n)]
         s_ = k * G
@@ -651,7 +670,7 @@ def build_and_solve(sides, prev=None):
         mg = 0.0 if near_end else B_M
         if (f, n, k) in via_at:
             mg = M_VIA + VX[n]
-        iv = intervals(f, FR[f]['sp'], s_, round(mg, 4))
+        iv = intervals(f, FR[f]['sp'], s_, round(mg, 4), OWN[n] if f == 'T' else (False, False))
         if not iv:
             continue
         ref = v['ref'](s_)

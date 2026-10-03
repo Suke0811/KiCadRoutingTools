@@ -92,8 +92,8 @@ Reading the tables:
   and off the stub rows and the router's grid, turned, of every kind, on
   either layer, at both ends of a lane; and walls of parts no lane threads,
   in front of the teeth and the berths -- and grades each on the route and on
-  the handoff; the ones that do not pass are the
-  [TODO](#next-the-whole-route-whole_py)'s generated cases.
+  the handoff. 107 pass; the one that does not is the
+  [TODO](#next-the-whole-route-whole_py)'s wall in the channel.
 
 <img src="img/k51_own_ends.png" alt="K51 routed on our own ends, beside the human's" width="900">
 
@@ -631,7 +631,11 @@ solve as **cuts**.
   the bar, wherever there is room); the bends; every neighbour short of that
   pitch, four times as steeply below halfway to the bar.
 - **Turns:** a lane turns at most 45 degrees a column, a pair 45 degrees per
-  turning run. A lane is bounded by the free interval its reference lies in.
+  turning run. A lane is bounded by the free interval its reference lies in,
+  outside the arrays' pad boxes grown to the line their stubs end on (the
+  median stub) -- a lane whose own tooth or berth stands inside that line, on
+  the trunk, by the array's pads alone: held out of the grown box, a short
+  tooth among long ones was sent to the nearest interval round it, 5 mm off.
 - **Vias** stand at the solve's changes, held within the lane's own extent:
   a change the solve's grid rounds a part of a step past a stub's end stands
   at it.
@@ -1234,9 +1238,6 @@ channels first, and the other escapes leave round it.
   lane on one side along a row of them, so a header's pins, or a two-pad
   part's pads lying along the lanes, stay one island and no lane runs between
   them. A lane's sides along a row, changing at one gap at most, would let it.
-- **A tooth stub up an array gap.** On a crossing pattern the fanout can run a
-  tooth's stub up a gap inside the source array, and two lanes then fold round
-  each other in front of it, one through 155 degrees (`s4_bulgeW`).
 - **A dead band in the decisions.** The two machines part on choices that turn
   on the last digits: on zynq K42 a stub join 9.4 µm apart in the polish, from
   geometry 6e-14 mm apart, decides a side flip the Mac takes and Linux does
