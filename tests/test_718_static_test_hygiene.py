@@ -75,6 +75,9 @@ _WK_DEPENDENT = {
     # kicad_files/ boards, and the absent case is SAID in the summary line,
     # not passed silently.
     'test_1042_placement_panels.py': ['wk/run32'],
+    # #1124 CORROBORATION only: the run-32 no-floor arm. Every other arm runs
+    # on tracked boards or a synthetic one, and the absent case is SAID.
+    'test_1124_film_grader_census.py': ['wk/run32'],
     # #887 CORROBORATION only. The regression lives in
     # test_887_cmd_timing_reader.py, against two small tracked fixtures, and
     # passes in full on a clean clone. This arm re-derives run 24's published

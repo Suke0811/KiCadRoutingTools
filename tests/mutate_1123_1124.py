@@ -9,7 +9,11 @@ restore the defect each issue measured, or the reason it went unseen:
     size box is symmetric about its anchor, so its empty side enlarged the
     part's occupancy and its empty corner could read as copper off the board;
   * `posed-box-stale` (#1123) -- `pads_at_pose` turned the copper and kept
-    the box, which then missed the copper at any turn but a half one.
+    the box, which then missed the copper at any turn but a half one;
+  * `film-plots-the-box-pairs` / `floor-from-the-box` (#1124) -- the film
+    plotted the quench's bounding-box pairs against a box floor: 10 pairs on
+    glasgow_revC where render's checklist names 1, and "floor 6 = locked
+    parts" for six FID/MK phantoms.
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty
@@ -47,6 +51,7 @@ _PL = os.path.join(_ROOT, 'py_placer', 'placement')
 TARGETS = {
     'leg': os.path.join(_PL, 'legality.py'),
     'pads': os.path.join(_ROOT, 'py_router', 'check_pads.py'),
+    'mp': os.path.join(_ROOT, 'py_router', 'movie_placement.py'),
 }
 
 
@@ -62,6 +67,13 @@ QUARTER = _t(T1123, 'quarter_turn')
 OBLIQUE = _t(T1123, 'oblique_turn')
 CASTELLATED = _t(T1123, 'castellation_reads')
 T1094 = _t('test_1094_rotated_courtyards.py')
+T1124 = 'test_1124_film_grader_census.py'
+CHECKLIST = _t(T1124, 'reads_renders_checklist')
+GLASGOW_FLOOR = _t(T1124, 'phantom_floor_on_glasgow')
+BOX_PHANTOM = _t(T1124, 'box_phantom')
+EITHER_SIDE = _t(T1124, 'locked_member')
+NO_CTX = _t(T1124, 'not_measured')
+CENSUS_ERR = _t(T1124, 'census_error')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -94,6 +106,35 @@ ROWS = [
      "    pts = [pt for poly in posed.polygons for pt in poly]",
      "    return original.size_x, original.size_y",
      (OBLIQUE,), 'KILLED'),
+    # -- #1124: the film's LEGALITY panel reads render's checklist ----------
+    ('film-plots-the-box-pairs', 'mp',
+     "        'conflict_pairs': len(pairs) if ran else None,",
+     "        'conflict_pairs': model.metrics.get('pad_conflict_pairs'),",
+     (CHECKLIST, BOX_PHANTOM), 'KILLED'),
+    ('floor-from-the-box', 'mp',
+     "        'locked_pairs': (sum(1 for a, b, *_rest in pairs",
+     "        'locked_pairs': (model.metrics.get('locked_contact_pairs') + sum(0 for a, b, *_rest in pairs",
+     (GLASGOW_FLOOR,), 'KILLED'),
+    ('overlap-is-the-quench-rects', 'mp',
+     "                        else fnd.get('courtyard_overlap_mm2')),",
+     "                        else model.metrics.get('overlap_area')),",
+     (CHECKLIST,), 'KILLED'),
+    ('off-outline-is-the-ranking-list', 'mp',
+     "        'off_outline': (len(fnd.get('oob_refs_pad_copper_gating') or [])",
+     "        'off_outline': (len(fnd.get('oob_refs_pad_copper') or [])",
+     (CHECKLIST,), 'KILLED'),
+    ('no-ctx-reads-as-zero', 'mp',
+     "    ran = getattr(getattr(model, 'state', None), 'legality_ctx', None) \\",
+     "    ran = True or getattr(getattr(model, 'state', None), 'legality_ctx', None) \\",
+     (NO_CTX,), 'KILLED'),
+    ('census-error-reads-as-zero', 'mp',
+     "        'overlap_mm2': (None if fnd.get('courtyard_census_error')",
+     "        'overlap_mm2': (None if False",
+     (CENSUS_ERR,), 'KILLED'),
+    ('locked-member-one-sided', 'mp',
+     "                             if a in locked or b in locked)",
+     "                             if a in locked)",
+     (EITHER_SIDE,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)
