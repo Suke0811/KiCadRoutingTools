@@ -181,7 +181,9 @@ The quench is deterministic by design (#457), so re-running it never produces
 a different placement: every run walks into the same local minimum. When the
 question is "what are my placement OPTIONS", this tool generates them: legal
 seeded perturbations of the input placement (`jitter` disc offsets, `poses`
-rotation variants pruned by `pair_order` inversions, `swap` block-interior
+rotation variants pruned by `pair_order` inversions -- a part whose rotation
+the intent declares is turned only into that declaration (#1121) -- `swap`
+block-interior
 position exchanges), each quenched with the ordinary engine, scored **without
 routing**, pruned to a diverse slate, probe-routed at the top, and presented
 as per-candidate renders plus `portfolio.json`.
@@ -298,7 +300,8 @@ quench, whose swaps no longer trade a declared angle away), an array's
 `rotation`
 (the row is seated at one angle and the quench only translates it), or a
 `fixed_poses[]` entry's `rot` (seated exactly, then locked). Explore rotations
-deliberately with `place_portfolio.py --strategy poses`.
+deliberately with `place_portfolio.py --strategy poses`, which with `--intent`
+explores a declared part only within its declaration (#1121).
 
 ### The eviction rung (`--evict-depth`, #630, #699)
 

@@ -56,7 +56,8 @@ part. The advice this paragraph used to give -- lock it -- costs the part its
 POSITION too, because `_Part.locked` is one boolean covering both, and
 `place_seed` stamps it into the board. The angle is held by handing
 `_try_place` a one-element ladder instead. `place_portfolio`'s `poses`
-strategy is still how you EXPLORE rotations; this is how you FIX one.
+strategy is still how you EXPLORE rotations (within a declaration, since
+#1121); this is how you FIX one.
 
 Determinism: the only randomness is ``random.Random(f"{seed}")`` -- it breaks
 ties in the packing order and jitters non-spec targets, so different seeds
