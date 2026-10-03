@@ -6,7 +6,7 @@ the others, and where each changes layer. It holds two routers:
 
 | | how it works | status |
 |---|---|---|
-| **The whole route**<br>`whole_route.py`, `whole_*.py`, `route_bus.py` | Chooses every net's ends, then plans every lane's **whole path before anything is routed** -- crossings, layer changes, geometry on the router's grid -- checks the plan against the router's own rules, and routes every lane in its band at once. | **The current router.** Every rung of both benches routes connected and DRC-clean on a Mac, with fewer vias and less copper than the human; on Linux all but two. |
+| **The whole route**<br>`whole_route.py`, `whole_*.py`, `route_bus.py` | Chooses every net's ends, then plans every lane's **whole path before anything is routed** -- crossings, layer changes, geometry on the router's grid -- checks the plan against the router's own rules, and routes every lane in its band at once. | **The current router.** Every rung of both benches routes connected and DRC-clean on a Mac, with fewer vias and less copper than the human, on a Mac and on Linux. |
 | The braid chain<br>`chain_k.sh`, `braid.py`, `evolve.py` | A CP-SAT plan of both ends, a corridor braid routed stage by stage, then a population of routed boards improved by probes the real router judges. | The earlier router. The whole route reuses its fanout, router, benches and audits. |
 
 Two rules both keep:
@@ -54,15 +54,14 @@ Both benches route on **our own ends**: the fanout chooses every net's tooth
 and berth with the whole route's ends model, and the whole route plans and
 routes on them, every lane in its band at once. Each cell counts every via
 and millimetre of the run's nets on the board; the human's are counted the
-same way. Every Mac cell, and every Linux cell with numbers, is connected and
-DRC-clean.
+same way. Every cell is connected and DRC-clean.
 
 H3 to DDR3 (`fb_t2q_pairs`):
 
 | | K15 | K28 | K35 | K41 | K51 |
 |---|---|---|---|---|---|
-| **the whole route, Mac** | **12 v, 192 mm** | **32 v, 541 mm** | **48 v, 775 mm** | **54 v, 958 mm** | **80 v, 1330 mm** |
-| the whole route, Linux | 12 v, 192 mm | 32 v, 544 mm | 48 v, 764 mm | 54 v, 958 mm | no grade: stopped at the 3 h cap |
+| **the whole route, Mac** | **12 v, 193 mm** | **32 v, 544 mm** | **48 v, 777 mm** | **54 v, 965 mm** | **80 v, 1264 mm** |
+| the whole route, Linux | 12 v, 193 mm | 32 v, 548 mm | 48 v, 769 mm | 54 v, 972 mm | 82 v, 1280 mm |
 | human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm | 70 v, 1081 mm | 88 v, 1337 mm |
 
 Zynq to DDR3 (the article's first build, 44 lanes in the ladder; see
@@ -71,23 +70,26 @@ carries its length-matching meanders):
 
 | | K18 | K26 | K32 | K38 | K42 | K44 |
 |---|---|---|---|---|---|---|
-| **the whole route, Mac** | **14 v, 453 mm** | **28 v, 745 mm** | **38 v, 968 mm** | **50 v, 1170 mm** | **60 v, 1286 mm** | **66 v, 1373 mm** |
-| the whole route, Linux | 14 v, 453 mm | 28 v, 745 mm | 38 v, 968 mm | 50 v, 1170 mm | 1 open (62 v, 1257 mm) | 66 v, 1373 mm |
+| **the whole route, Mac** | **14 v, 458 mm** | **28 v, 737 mm** | **38 v, 974 mm** | **48 v, 1168 mm** | **64 v, 1258 mm** | **68 v, 1383 mm** |
+| the whole route, Linux | 14 v, 458 mm | 28 v, 737 mm | 38 v, 974 mm | 48 v, 1168 mm | 56 v, 1316 mm | 68 v, 1383 mm |
 | human | 45 v, 662 mm | 57 v, 923 mm | 74 v, 1166 mm | 86 v, 1373 mm | 97 v, 1534 mm | 103 v, 1617 mm |
 
 Reading the tables:
 
-- **Rounds.** Every rung routes in its first fanout round but zynq K42 and
-  K44, which take a second.
+- **Rounds.** Every rung routes in its first fanout round, on both machines.
 - **Mac and Linux** keep different plans among a solve's equal optima, and
-  the ends model's exact ranking can part on them too. Two Linux rungs fail
-  that way (the [TODO](#next-the-whole-route-whole_py) has both): at zynq K42
-  round 2's solve kept another plan, whose loop stopped at crowded ends with
-  one net open; at H3 K51 Linux chose other ends (375 crossings against the
-  Mac's 315), on which the solve found no plan before the cap.
-- **Time.** The Mac ran three rungs at a time: K51 took 21 min, zynq K42 and
-  K44 18 and 17, the rest under 12. On Linux (a container a rung, slower
-  cores) the same rungs took two to three times as long.
+  the ends model's exact ranking can part on them too: zynq K42 lays 56 vias
+  on Linux and 64 on the Mac, H3 K51 82 and 80.
+- **Time.** The Mac ran two rungs at a time: K51 took 30 min, zynq K42 19,
+  K41 15, the rest under 10. On Linux (a container a rung, slower cores) the
+  same rungs took one and a half to four times as long, K51 50 min.
+- **Generated cases.** `synth_handoff.py` routes 45 generated buses whole --
+  lanes handed to a ring on either side of the destination, parts at its
+  corner and in the lanes' way (passives and rows of them, PTH headers,
+  mounting holes, rows of via barrels), the bus arriving at an angle, lanes
+  crossing, pairs -- and grades each on the route and on the handoff. 37
+  pass; the 8 that do not are the
+  [TODO](#next-the-whole-route-whole_py)'s generated cases.
 
 <img src="img/k51_own_ends.png" alt="K51 routed on our own ends, beside the human's" width="900">
 
@@ -374,7 +376,10 @@ the end-layer changes, a least-weight cover of the crossings between lanes on
 one layer end to end, the settling of a lane whose end layers differ, and the
 coupling of two such lanes. The best few states are then ranked **exact** on
 their orders: the whole solve's order model without its lengths, CP-SAT on
-one worker to a deterministic work limit.
+one worker to a deterministic work limit (`EXACT_WORK`, 60). The limit stands
+well above what a proof takes on a Mac, because a machine's deterministic time
+is its own: H3 K51's best ends prove at 17 on a Mac and need more than 20 on
+Linux, and an unproved state ranks last.
 
 **The objective**, one sum in vias:
 
@@ -391,7 +396,16 @@ one worker to a deterministic work limit.
 - **stacking**: five for every two lanes' ends at one point on different
   layers where either lane changes layer, ten where either is a pair (a
   pair's dive is two barrels beside the other lane's via);
-- the feedback's prices (`FB_AVOID`, `FB_PAIR`);
+- **what stands in front of a single lane's exit** (`exit_front`): its
+  straight run out, `FRONT_REACH` (1.2 mm) along its escape on its layer,
+  against copper outside the run -- a passive's pads, another net's track or
+  via; a track threading the gap between two pads is clear. Blocked with room
+  for a via before the block, the lane can change layer there: `FRONT_VIA`,
+  one via. Blocked with none: `FRONT_BLOCKED`, past any via count, yet no
+  refusal, so a lane with no other end keeps it. A pair leg's menu keeps only
+  exits with room for the pair there (`fanout_from_plan.pair_exit_clear`);
+- the feedback's prices (`FB_AVOID`, `FB_PAIR`), by place and escalated
+  ([feedback](#feedback-whole_feedbackpy));
 - a conflict, a split pair or a refused move, at a price no via count
   reaches.
 
@@ -471,7 +485,10 @@ corridor, branch or path:
 - a **ring** round the destination for each of its north and south faces,
   the far face split between them at the ends model's cut (the sidecar's
   `dest_cut`, mirrored with a board turned over; without one, the middle of
-  the widest gap);
+  the widest gap). It goes round the destination's **hull** -- its pads, the
+  berths, and other parts' pads within a lane pitch and two lanes' room of
+  them -- its lanes stacked across the trunk's handoff line outside it, the
+  ring starting a lane pitch inside the first;
 - the two **orders** the solve inverts: the teeth round the source, the
   berths round the destination;
 - each lane's taut **reference path**.
@@ -587,11 +604,41 @@ solve as **cuts**.
   between (`whole_ctx.part_islands`). The rows hold a lane over its whole
   piece but its own tooth and berth, and a pair's via off an island by its
   barrels' reach.
+- **One side on the board:** which side of a part a lane passes is decided
+  once, not per frame. A part's **home** is the frame that sees it whole,
+  nearest its spine; a lane that meets the part in two frames -- the trunk and
+  a ring, at the corner where the one hands its lanes to the other -- takes the
+  home frame's split, else that of the frame it meets the part in over most
+  columns, and every frame holds it there (`corridor.decide_sides`,
+  `side_carry`): both frames' offsets run the same way round a part a lane
+  travels past. Decided in each frame, the trunk and the ring could send one
+  lane past the part on opposite sides, the handoff crossing the part between
+  them -- and a flip flipped both.
+- **Each column measured on its own line:** a part's rows hold a lane off
+  where that column's offset line meets the part's pads (`corridor.line_extent`),
+  within the frame's box of the part and the lane's reach; the box of its four
+  corners projected into a slanted or bent frame is far larger than its
+  copper. Every column of a piece is held, the handoff's included.
 - **Pairs** run straight for the pair router's straight run either side of
   each dive; a dive within reach of its fixed end runs straight from the end
   through it.
-- **Trunk to ring:** each ring lane enters where its trunk ends, re-anchored
-  after the first pass.
+- **Trunk to ring:** a ring lane's trunk ends on its ring's side of the
+  ring's start (`ringside`, elastic): the frame starts each ring outside the
+  destination's corner and the parts hugging it, and a trunk end inside it
+  lies behind the ring's first column, where the ring cannot see it. The ring
+  piece enters where its trunk ends, re-anchored after the first pass, its
+  offset tied to the trunk's end offset at the trunk's last column; the
+  columns the re-anchoring adds are held off the parts like every other, at
+  offsets between the trunk's end and the first column the pass laid. The tie
+  is exact across the ring; along it the two ends stay apart by the half
+  column the ring's first column rounds to and the second pass's move from
+  the end it was tied about, and that stretch is drawn.
+- **Drawn as its own lines:** at a spine corner a lane's two legs meet where
+  its own two lines cross, and a column past the crossing is not drawn
+  (`Spine.lane_line`). A lane inside a corner lies, near it, beyond where its
+  leg's line meets the other's -- sooner where its offset grows into the
+  corner -- and drawn through every column it stepped past the corner and
+  back.
 - **Cuts** for the solve: an island a lane could not be kept off, a change it
   could not give its room, a pair's dive it could not lay straight.
 - **The solver:** the LP goes to HiGHS as its **dual**, the lanes read back
@@ -775,12 +822,27 @@ The channels:
 - **A refused fanout** (`--refused`): a pair the laid fanout split, and a
   tooth on the source's far face, avoided.
 - **By name** (`--name`): a round that leaves nets open names them, whatever
-  its audits found; one that lays nothing, with nothing new from its audits,
-  names the lanes the ends model reads worst -- those over two, else those
-  loaded past `LOAD_OK`, else the three most crossed.
+  its audits found, each at the end where it fails -- where the round's
+  findings name it, else the array nearer its ball cut off from its copper,
+  else both; one that lays nothing, with nothing new from its audits, names
+  the lanes the ends model reads worst -- those over two, else those loaded
+  past `LOAD_OK`, else the three most crossed.
 
-A feedback end is matched by **any leg at any point**, so a pair cannot dodge
-it by moving one leg.
+A feedback end is priced **by place**: in full where **any leg** of the lane
+stands at any of its points on its layer, so a pair cannot dodge it by moving
+one leg; half (`FB_OTHER_LAYER`) on the other layer there, as a layer change
+is some answer; and off the place at most that half, falling to nothing
+`FB_RADIUS` (0.76 mm) beyond, as moving away -- to the nearest other exit, or
+further -- is a better one. An end named again in a **later round** is not
+added twice: its price doubles (`FB_ESCALATE`), once a round.
+
+**Raised when not followed** (`--raise`): a fanout that lays the round
+before's ends again has priced its feedback and not followed it, and the rest
+of the round would be the same. The ends named in that round are raised once
+more and the fanout alone runs again, up to `FANOUT_RAISES` (3) times; the
+second time the other ends of the lanes named are added too, at the base
+price, for a lane named where it fails whose failing end has nowhere else to
+go (a via-in-pad berth).
 
 </details>
 
@@ -793,7 +855,9 @@ for some of the lanes exists:
   held (`held_plan`: its snapped plan, else its best smooth plan snapped with
   no gate); a lane that cannot be laid stays open;
 - a round that lays nothing, or leaves nets open, feeds the next fanout
-  (above), up to `ROUNDS`;
+  (above), up to `ROUNDS`; a fanout that lays the round before's ends again
+  has its feedback raised and runs again (above), and the rounds end only
+  when it still does;
 - when no round laid anything, the **last resort** is a partial plan on the
   last ends laid: the lanes the rounds named left out (else the three most
   crossed), then more, to a quarter and to half of the lanes -- never every
@@ -944,10 +1008,11 @@ With nothing supplied, as on the benches:
 | `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`) |
 | `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape; the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`) |
 | `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the ladder in the cloud, one container per rung |
-| `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`); the frame of a bench; what goes back to the fanout |
-| `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP, the polish, the snap onto the router's grid |
+| `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`); the frame of a bench; what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
+| `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP (a part seen from several frames: `tests/test_622_part_frames.py`), the polish, the snap onto the router's grid |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a plan installed and audited, gated, linted, drawn; the bench they share |
 | `whole_ladder.py` | the ladders on this machine: rungs side by side, each stopped at a cap with every stage it started, one grade line each |
+| `synth_handoff.py` | the trunk-to-ring handoff on generated buses (`synth_bus.py --ring-n/--ring-s`, parts at the destination's corner with `--hcap`): ring faces, parts beside the facing column and in the ring's path on either layer, the bus arriving at an angle, crossings, pairs -- each routed whole and graded on the route and on the handoff (every join drawn, no lane stepping back, nothing paid holding a trunk end) |
 | `resolve_round.py`, `fanout_logdiff.py` | a round's first solve again on its own board; the first decision two fanout logs made differently -- where two runs part |
 | `whole_compare.py`, `whole_movie.py` | a rung beside the human's board, the run's nets alone (the renders above); a film of one run, the fanout to the copper |
 | `baseline_bench.py`, `baseline_freerouting.py`, `baseline_render.py` | a rung by two other routers on the same bench, nets, rules and grade -- the toolkit's production chain without the bus step, and Freerouting through KiCad's Specctra DSN (`FREEROUTING_JAR`, `FREEROUTING_JAVA`) -- and the boards drawn alike, every other net's copper grey |
@@ -1105,25 +1170,54 @@ channels first, and the other escapes leave round it.
 
 ### Next, the whole route (`whole_*.py`)
 
-- **Every rung on Linux.** Two rungs route on the Mac and not on Linux
-  ([results](#results)):
-  - **zynq K42**: the two machines agree through round 1; round 2's solve
-    keeps another plan among its equal optima (33 vias against the Mac's 34),
-    whose loop stops at crowded ends, and round 3 still leaves DDR3_DQ9 open.
-    The lever is the feedback (*feedback that escalates*, below).
-  - **H3 K51**: the first ends search's exact ranking picks another state on
-    Linux (its exact routes come out differently), and from there Linux
-    chooses ends whose exact route is 52 vias where the estimate said 44 --
-    and the Mac's 45 and 43. No solve finds a plan on them. The levers are
-    `EXACT_MARGIN` (below) and carrying the first search's best few states
-    into the second, not one.
-  `fanout_logdiff.py` and `resolve_round.py` find where two runs part.
+- **Parts in the solve.** The solve knows nothing of the parts in the lanes'
+  way; the geometry fits the lanes round them afterwards, deciding each
+  part's side from where its first pass laid them. A part as a fixed slot in
+  the solve's lane order, on its layers, would make the side a decision of
+  the solve's own, priced with everything else -- and passing under it on the
+  other layer one more choice, a lane's change placed before the part rather
+  than history that cannot buy a via. `synth_handoff.py` has the cases that
+  need it: a row of 0402s standing as one wall in front of the facing
+  column's berths (`btw_row`), or of the source's teeth (`front_src_row`),
+  or the like among everything else at once (`mix`), leaves nets open -- the ends model prices each blocked front at the via
+  that fits before the part, and nothing places that via.
+- **Between a part's pads.** A part is one island (`whole_ctx.part_islands`):
+  a lane passes it on one side, never between its own pads, though an 0402's
+  pads stand 0.42 mm apart and an 0603's 0.65, past the bar a lane between two
+  parts is held to (0.387 on the synth bench). Islands made of pads, joined
+  below that bar whatever part they belong to, would let the geometry send a
+  lane through (`synth_handoff.py` `btw_0402`, `btw_0603`).
+- **A part at the destination's corner: round it, or inside it.** The frame
+  takes a part into the hull the ring goes round by a fixed margin from the
+  hull. Just past that margin, a cap at the corner can stand on the ring's
+  handoff stack -- the ring's first lane planned on its pad, its start inside
+  it (`s4_pathF`) -- while a header lying along the face with the ring's
+  berths between it and the face has to be passed inside, not round
+  (`pth_corner`). Those, a mounting hole at the corner (`npth_corner`) and a
+  row of via barrels under the south face (`vias_ds`) all route; the geometry
+  pays to hold a trunk end on its ring's side. The frame should decide it by whether the gap between the
+  part and the hull holds the ring's lanes.
+- **A tooth stub up an array gap.** On a crossing pattern the fanout can run a
+  tooth's stub up a gap inside the source array, and two lanes then fold round
+  each other in front of it, one through 155 degrees (`s4_bulgeW`).
+- **A dead band in the decisions.** The two machines part on choices that turn
+  on the last digits: on zynq K42 a stub join 9.4 µm apart in the polish, from
+  geometry 6e-14 mm apart, decides a side flip the Mac takes and Linux does
+  not. A choice -- a side flip, a cut, a finding counted at its bar, an end
+  taken over another -- made only when it gains more than a small tolerance,
+  and held otherwise, lets such differences pass without tipping it. To try:
+  find each such threshold in the loop (polish, snap, audit) and the ends'
+  ranking, give it a tolerance well above the machines' numeric noise and
+  well below a grid step, and compare the two machines round by round.
 - **Tune the policy weights,** one at a time over both ladders and synthetic
   buses, judged on passes on every machine, then vias, then time:
   - the ends' prices: `X_TRUNK`, `W_CONG` and `LOAD_OK`, the surcharge past
-    two vias, the stacking price, `FB_AVOID` and `FB_PAIR`;
+    two vias, the stacking price, `FRONT_VIA` and `FRONT_REACH`;
+  - the feedback's: `FB_AVOID`, `FB_PAIR`, `FB_OTHER_LAYER`, `FB_RADIUS`,
+    `FB_ESCALATE`, `FANOUT_RAISES`;
   - the ends' search: `ILS_ROUNDS`, `ILS_KICK`, `ILS_PATIENCE`, the ban
-    kicks' count, lanes and patience, `EXACT_TOP`, `EXACT_MARGIN`;
+    kicks' count, lanes and patience, `EXACT_TOP`, `EXACT_MARGIN`,
+    `EXACT_WORK`;
   - the solve's budget and stall (`WHOLE_SOLVE_BATCHES`, `SOLVE_STALL`);
   - the geometry's comfort pitch (`P_COMF`), the snap's `W_KEEP`, the loop's
     `PATIENCE`, the street sites (`DST_STREET`).
@@ -1139,9 +1233,6 @@ channels first, and the other escapes leave round it.
   model's exact route ranks the orders without their lengths, and ends with
   fewer crossings in all but more on one layer can look cheaper to it and be
   far harder for the solve. Further, the cut a solve variable.
-- **Feedback that escalates:** a feedback end is a flat price however many
-  rounds name it, and a lane can still leave it for the other layer at the
-  same point.
 - **`EXACT_MARGIN` against the estimate's error:** the margin (4 vias) is
   below what the estimate can be off, so a state just outside it is never
   ranked on the exact route.
@@ -1169,7 +1260,7 @@ channels first, and the other escapes leave round it.
   surface code -- and a minimum-weight matching (PyMatching, Blossom) solves
   it exactly, in integers, in milliseconds, the same on every machine.
   `exact_route` instead asks CP-SAT the whole question within a deterministic
-  work limit, the limit H3 K51 hits on Linux. To try: a local search over the
+  work limit, whose proofs cost each machine its own time. To try: a local search over the
   crossing order by braid moves (a triangle's three crossings taken in the
   other order), each order scored by the matching, its best given to CP-SAT
   as a hint, or standing in where the work limit is hit; and the matching's

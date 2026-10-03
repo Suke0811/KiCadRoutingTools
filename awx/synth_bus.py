@@ -1380,6 +1380,107 @@ def cap_block(ref, cx, cy, side, key):
     return ''.join(out)
 
 
+def smd2_block(ref, cx, cy, side, key, orient, pw, ph, dx, name='C'):
+    """A two-pad SMD passive: pads `pw` x `ph` (along x before turning) at
+    +-`dx`, side by side along x (`orient` 'h') or along y ('v')."""
+    lay = 'F' if side == 'F' else 'B'
+    out = [f'\t(footprint "Synth:{name}"\n\t\t(layer "{lay}.Cu")\n'
+           f'\t\t(uuid "{uid(key)}")\n\t\t(at {cx:.4f} {cy:.4f})\n'
+           f'\t\t(attr smd)\n'
+           f'\t\t(property "Reference" "{ref}"\n\t\t\t(at 0 -1 0)\n'
+           f'\t\t\t(layer "{lay}.SilkS")\n\t\t\t(uuid "{uid(key, "ref")}")\n'
+           f'\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 0.6 0.6)\n'
+           f'\t\t\t\t\t(thickness 0.1)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n']
+    for i, d in ((1, -dx), (2, dx)):
+        at, size = (f'{d} 0', f'{pw} {ph}') if orient == 'h' else (f'0 {d}', f'{ph} {pw}')
+        out.append(f'\t\t(pad "{i}" smd roundrect\n\t\t\t(at {at})\n'
+                   f'\t\t\t(size {size})\n'
+                   f'\t\t\t(layers "{lay}.Cu" "{lay}.Mask" "{lay}.Paste")\n'
+                   f'\t\t\t(roundrect_rratio 0.25)\n'
+                   f'\t\t\t(uuid "{uid(key, i)}")\n\t\t)\n')
+    out.append('\t)\n')
+    return ''.join(out)
+
+
+def pth_row_block(ref, cx, cy, n, orient, pitch, pad, drill, key):
+    """N plated through-hole pads in a row (a pin header, or a row of via-sized
+    barrels) along x ('h') or y ('v'), centred on (cx, cy): net 0, copper on
+    every layer, so both of the bus's layers go round or between them."""
+    out = [f'\t(footprint "Synth:PTH_1x{n}_P{pitch}"\n\t\t(layer "F.Cu")\n'
+           f'\t\t(uuid "{uid(key)}")\n\t\t(at {cx:.4f} {cy:.4f})\n'
+           f'\t\t(attr through_hole)\n'
+           f'\t\t(property "Reference" "{ref}"\n\t\t\t(at 0 -1.5 0)\n'
+           f'\t\t\t(layer "F.SilkS")\n\t\t\t(uuid "{uid(key, "ref")}")\n'
+           f'\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 0.8 0.8)\n'
+           f'\t\t\t\t\t(thickness 0.12)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n']
+    for i in range(n):
+        t = (i - (n - 1) / 2) * pitch
+        at = f'{t:.4f} 0' if orient == 'h' else f'0 {t:.4f}'
+        out.append(f'\t\t(pad "{i + 1}" thru_hole circle\n\t\t\t(at {at})\n'
+                   f'\t\t\t(size {pad} {pad})\n\t\t\t(drill {drill})\n'
+                   f'\t\t\t(layers "*.Cu" "*.Mask")\n'
+                   f'\t\t\t(uuid "{uid(key, i)}")\n\t\t)\n')
+    out.append('\t)\n')
+    return ''.join(out)
+
+
+def npth_block(ref, cx, cy, d, key):
+    """A mounting hole: one non-plated hole of diameter `d`, written as KiCad's
+    own MountingHole footprints write it (*.Cu *.Mask, no net)."""
+    return (f'\t(footprint "Synth:MountingHole_{d}mm"\n\t\t(layer "F.Cu")\n'
+            f'\t\t(uuid "{uid(key)}")\n\t\t(at {cx:.4f} {cy:.4f})\n'
+            f'\t\t(attr exclude_from_pos_files exclude_from_bom)\n'
+            f'\t\t(property "Reference" "{ref}"\n\t\t\t(at 0 {-d / 2 - 1:.3f} 0)\n'
+            f'\t\t\t(layer "F.SilkS")\n\t\t\t(uuid "{uid(key, "ref")}")\n'
+            f'\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 0.8 0.8)\n'
+            f'\t\t\t\t\t(thickness 0.12)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n'
+            f'\t\t(pad "" np_thru_hole circle\n\t\t\t(at 0 0)\n'
+            f'\t\t\t(size {d} {d})\n\t\t\t(drill {d})\n'
+            f'\t\t\t(layers "*.Cu" "*.Mask")\n'
+            f'\t\t\t(uuid "{uid(key, "h")}")\n\t\t)\n\t)\n')
+
+
+# the kinds --part writes: (writer of (ref, x, y, layer, orient, n, pitch, d, key) -> text, default n, default pitch)
+PART_KINDS = {
+    'c0402': lambda r, x, y, L, o, n, p_, d, k: smd2_block(r, x, y, L, k, o, 0.54, 0.64, 0.48, 'C_0402'),
+    'c0603': lambda r, x, y, L, o, n, p_, d, k: smd2_block(r, x, y, L, k, o, 0.9, 0.95, 0.775, 'C_0603'),
+    'row': lambda r, x, y, L, o, n, p_, d, k: ''.join(
+        smd2_block(f'{r}_{i + 1}', x + ((i - (n - 1) / 2) * p_ if o == 'h' else 0.0),
+                   y + ((i - (n - 1) / 2) * p_ if o == 'v' else 0.0), L, f'{k}_{i}', 'h' if o == 'v' else 'v',
+                   0.54, 0.64, 0.48, 'C_0402') for i in range(n)),
+    'pth': lambda r, x, y, L, o, n, p_, d, k: pth_row_block(r, x, y, n, o, p_, 1.7, 1.0, k),
+    'vias': lambda r, x, y, L, o, n, p_, d, k: pth_row_block(r, x, y, n, o, p_, 0.6, 0.3, k),
+    'npth': lambda r, x, y, L, o, n, p_, d, k: npth_block(r, x, y, d, k),
+}
+PART_DEFAULTS = {'row': (4, 1.0), 'pth': (4, 2.54), 'vias': (4, 1.0)}
+
+
+def parse_part(spec):
+    """KIND@ANCHOR:U:V[:opt...] -> dict; opts: F|B (layer), h|v (orientation), nN (count), pP (pitch, mm),
+    dD (a hole's diameter, mm)"""
+    try:
+        kind, rest = spec.split('@', 1)
+        anchor, u_, v_, *opts = rest.split(':')
+        u_, v_ = float(u_), float(v_)
+    except ValueError:
+        raise SystemExit(f'--part {spec!r}: want KIND@ANCHOR:U:V[:F|B][:h|v][:nN][:pP][:dD]')
+    if kind not in PART_KINDS or anchor not in ('sw', 'nw', 'dw', 'ds', 'dn', 'sf', 'ch'):
+        raise SystemExit(f'--part {spec!r}: KIND one of {sorted(PART_KINDS)}, ANCHOR sw|nw|dw|ds|dn|sf|ch')
+    n_, p_ = PART_DEFAULTS.get(kind, (1, 0.0))
+    out = {'kind': kind, 'anchor': anchor, 'u': u_, 'v': v_, 'layer': 'F', 'orient': 'h', 'n': n_, 'pitch': p_,
+           'd': 3.2}
+    for o in opts:
+        if o in ('F', 'B'):
+            out['layer'] = o
+        elif o in ('h', 'v'):
+            out['orient'] = o
+        elif o[:1] in 'npd' and o[1:]:
+            out[{'n': 'n', 'p': 'pitch', 'd': 'd'}[o[0]]] = int(o[1:]) if o[0] == 'n' else float(o[1:])
+        else:
+            raise SystemExit(f'--part {spec!r}: unknown option {o!r}')
+    return out
+
+
 def obstacle_block(ref, cx, cy, w, h, key, pitch=1.0):
     """A foreign part sitting IN THE CHANNEL: a grid of net-0 THROUGH-HOLE
     pads filling `w` x `h` mm at `pitch`.
@@ -1458,7 +1559,30 @@ def build(a):
         return out[:n]
 
     src_slots = face_slots(K, cols, east=True)
-    dst_slots = face_slots(K, cols, east=False)
+    # RING lanes (--ring-n / --ring-s, 2026-10-02): that many lanes end on the
+    # destination's NORTH / SOUTH face instead of the face toward the source,
+    # so the whole route hands them from its trunk to a ring round the
+    # destination's corner. Their ranks follow the destination's PERIMETER as
+    # the channel sees it -- the north face east to west, the facing column
+    # top to bottom, the south face west to east -- so a lane order that is
+    # planar across the channel stays planar round the corners, and the truth
+    # below (crossings = inversions of that order) is unchanged. Corner balls
+    # are skipped as on the facing face; the facing column's lanes are centred,
+    # or packed against its north / south corner (--w-align), where they crowd
+    # the ring's lanes turning past it
+    nN, nS = max(0, getattr(a, 'ring_n', 0) or 0), max(0, getattr(a, 'ring_s', 0) or 0)
+    dcols = getattr(a, 'dst_cols', None) or cols
+    if nN or nS:
+        nW = K - nN - nS
+        if nW < 0 or depth > 1 or max(nN, nS) > dcols - 2 or nW > rows - 2 - 2 * off:
+            raise SystemExit(f'--ring-n {nN} --ring-s {nS} of K={K}: needs depth 1, at most --dst-cols - 2 = '
+                             f'{dcols - 2} a face and the rest ({nW}) on the facing column ({rows - 2 - 2 * off})')
+        free = rows - 2 - 2 * off - nW
+        r0 = 1 + off + {'north': 0, 'south': free}.get(getattr(a, 'w_align', 'centre'), free // 2)
+        dst_slots = ([(0, c) for c in range(nN, 0, -1)] + [(r, 0) for r in range(r0, r0 + nW)]
+                     + [(rows - 1, c) for c in range(1, nS + 1)])
+    else:
+        dst_slots = face_slots(K, dcols, east=False)
     names = [f'SYN{i:02d}' for i in range(K)]
     # --pairs N: N DIFFERENTIAL PAIRS among the bus (2026-09-20), each two
     # nets whose balls are NEIGHBOURS at both arrays -- adjacent in the
@@ -1488,22 +1612,26 @@ def build(a):
 
     h = (rows - 1) * PITCH
     wsrc = (cols - 1) * PITCH
+    wdst = (dcols - 1) * PITCH
     sx, sy = 0.0, 0.0
-    dx = wsrc / 2 + a.gap + wsrc / 2
+    dx = wsrc / 2 + a.gap + wdst / 2
+    # --dst-dy: the destination moved across the channel, so the bus arrives
+    # at it at an angle (and turns onto its rings at another)
+    dy = getattr(a, 'dst_dy', 0.0) or 0.0
     txt = [HEAD.format(version=VERSION)]
     # `--margin-y` walls the channel: generous by default (no escape is
     # edge-clearance bound), small enough and a lane cannot ride round an
     # array at all, which is what the channel-confined optimum assumes
     m, my = 6.0, a.margin_y
-    x0, y0 = sx - wsrc / 2 - m, sy - h / 2 - my
-    x1, y1 = sx + dx + wsrc / 2 + m, sy + h / 2 + my
+    x0, y0 = sx - wsrc / 2 - m, min(sy, sy + dy) - h / 2 - my
+    x1, y1 = sx + dx + wdst / 2 + m, max(sy, sy + dy) + h / 2 + my
     txt.append(f'\t(gr_rect\n\t\t(start {x0:.3f} {y0:.3f})\n'
                f'\t\t(end {x1:.3f} {y1:.3f})\n'
                f'\t\t(stroke\n\t\t\t(width 0.1)\n\t\t\t(type default)\n\t\t)\n'
                f'\t\t(fill no)\n\t\t(layer "Edge.Cuts")\n\t\t(uuid "{uid("edge")}")\n\t)\n')
     txt.append(array_block(a.src, sx, sy, rows, cols, 0, 'F', src_assign, PITCH,
                            a.pad, a.pad_inner))
-    txt.append(array_block(a.dst, sx + dx, sy, rows, cols, a.dst_rot, 'F', dst_assign,
+    txt.append(array_block(a.dst, sx + dx, sy + dy, rows, dcols, a.dst_rot, 'F', dst_assign,
                            PITCH, a.pad, a.pad_inner))
     # foreign parts: a row of caps on the BACK face under each array, as
     # the corpus bench carries -- they take room out of the B page's
@@ -1512,7 +1640,34 @@ def build(a):
         f = i / max(1, a.caps - 1) if a.caps > 1 else 0.5
         cy = sy - h / 2 + f * h
         txt.append(cap_block(f'C{i + 1}', sx, cy, 'B', f'cap{i}'))
-        txt.append(cap_block(f'C{a.caps + i + 1}', sx + dx, cy, 'B', f'capd{i}'))
+        txt.append(cap_block(f'C{a.caps + i + 1}', sx + dx, cy + dy, 'B', f'capd{i}'))
+    # --hcap CORNER:U:V:LAYER:ORIENT -- a 0402 at the destination's north- or
+    # south-west corner, where the trunk hands its lanes to a ring: its centre
+    # U mm west of the facing column's balls and V mm past the corner ball along
+    # the face (negative: beside the facing column, as zynq's C98 stands by
+    # U2), on F or B, its pads along x (h) or y (v)
+    # --part KIND@ANCHOR:U:V[:opts] -- a foreign part anywhere round the bus,
+    # placed from an ANCHOR: `sw` / `nw` the destination's corner ball (U west
+    # of its facing column, V past the corner along the face -- negative:
+    # beside the facing column); `dw` the facing column's middle (U west, V
+    # south); `ds` / `dn` the south / north face's west end (U east along the
+    # face, V out from it); `sf` the source's facing column's middle (U east,
+    # into the channel, V south); `ch` the channel (U east of the source's
+    # facing column, V south of the bus's middle)
+    hcaps = []
+    xw, yn, ys = sx + dx - wdst / 2, sy + dy - h / 2, sy + dy + h / 2
+    xs = sx + wsrc / 2
+    specs = [f'c0402@{c_.split(":", 1)[0]}:{c_.split(":", 1)[1]}' for c_ in (getattr(a, 'hcap', None) or [])]
+    for j, spec in enumerate(specs + list(getattr(a, 'part', None) or [])):
+        q = parse_part(spec)
+        u_, v_ = q['u'], q['v']
+        cx_, cy_ = {'sw': (xw - u_, ys + v_), 'nw': (xw - u_, yn - v_), 'dw': (xw - u_, sy + dy + v_),
+                    'ds': (xw + u_, ys + v_), 'dn': (xw + u_, yn - v_), 'sf': (xs + u_, sy + v_),
+                    'ch': (xs + u_, sy + v_)}[q['anchor']]
+        ref_ = {'npth': 'H', 'pth': 'J', 'vias': 'TP'}.get(q['kind'], 'CH') + str(j + 1)
+        txt.append(PART_KINDS[q['kind']](ref_, cx_, cy_, q['layer'], q['orient'], q['n'], q['pitch'], q['d'],
+                                         f'part{j}'))
+        hcaps.append(dict(q, ref=ref_, x=round(cx_, 4), y=round(cy_, 4)))
     # the part IN the corridor: the bus has to fan in around it
     obs = None
     if a.obstacle_h > 0 and a.obstacle_w > 0:
@@ -1549,6 +1704,8 @@ def build(a):
         'row_offset': off,
         'pad': a.pad, 'pad_inner': a.pad_inner, 'margin_y': a.margin_y,
         'dst_rot': a.dst_rot, 'caps': a.caps,
+        'ring_n': nN, 'ring_s': nS, 'dst_cols': dcols, 'dst_dy': dy, 'parts': hcaps,
+        'w_align': getattr(a, 'w_align', 'centre'),
         'crossings': len(edges),
         'inversions': len(edges),
         'lis': lis,
@@ -1616,6 +1773,26 @@ def main(argv=None):
                          'so a lane cannot ride around an array')
     ap.add_argument('--dst-rot', type=float, default=0.0)
     ap.add_argument('--caps', type=int, default=0)
+    ap.add_argument('--ring-n', type=int, default=0,
+                    help='lanes ending on the destination\'s NORTH face (a ring round its corner), not the facing one')
+    ap.add_argument('--ring-s', type=int, default=0,
+                    help='lanes ending on the destination\'s SOUTH face')
+    ap.add_argument('--dst-cols', type=int, default=None,
+                    help='the destination\'s columns (default --cols): its north and south faces hold this minus 2')
+    ap.add_argument('--w-align', default='centre', choices=('centre', 'north', 'south'),
+                    help='with ring lanes: the facing column\'s lanes centred, or packed against its north / south corner')
+    ap.add_argument('--dst-dy', type=float, default=0.0,
+                    help='the destination moved this far across the channel, mm (+ south): the bus arrives at an angle')
+    ap.add_argument('--hcap', action='append', default=[],
+                    help='CORNER:U:V:LAYER:ORIENT -- a 0402 at the destination\'s nw / sw corner, U mm west of its '
+                         'facing column, V mm past its corner ball along the face (negative: beside it), F|B, h|v. '
+                         'Repeatable; the same as --part c0402@CORNER:U:V:LAYER:ORIENT')
+    ap.add_argument('--part', action='append', default=[],
+                    help='KIND@ANCHOR:U:V[:F|B][:h|v][:nN][:pP][:dD] -- a foreign part: KIND c0402, c0603, row (N '
+                         '0402s, pitch P), pth (an N-pin header, 2.54), vias (N via-sized barrels, 1.0), npth (a '
+                         'hole of diameter D, 3.2); ANCHOR sw / nw (the destination\'s corner), dw (its facing '
+                         'column), ds / dn (its south / north face), sf (the source\'s facing column), ch (the '
+                         'channel) -- see build(). Repeatable')
     ap.add_argument('--pairs', type=int, default=0,
                     help='differential pairs among the bus: two neighbouring nets each, '
                          'named SYPj_P / SYPj_N')
