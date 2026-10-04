@@ -21,8 +21,9 @@ Each arm also prints a DIAGNOSTIC the go rule does not read: how many caps
 the written board leaves beyond the 5 mm decap search radius of their chip,
 and their summed distance. The signal cannot see them -- under these intents
 `decap_ungraded` stays a WARN (#1142) -- so a variant that pushes caps out of
-the radius reads as better on the signal. Measured at 7890c5d6: NO-GO, the
-candidate improved 1 of 7 piles; the numbers are in #1105.
+the radius reads as better on the signal. Measured at 39affafb, after the
+#1141 fix: NO-GO, the candidate improved 1 of 7 piles (before that fix also
+1 of 7); the numbers are in #1105.
 
 Not collected by run_all (no `test_` prefix): about 30-45 minutes.
 

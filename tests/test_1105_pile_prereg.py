@@ -33,8 +33,11 @@ sys.path.insert(0, TESTS_DIR)
 
 PREREG = os.path.join(TESTS_DIR, '1105_pile_ab_prereg.json')
 
-#: sha256 of the pre-registration with CRLF folded to LF. Committed with the
-#: file at bea2b055's child, before any pile measurement.
+#: sha256 of the pre-registration with CRLF folded to LF, committed with the
+#: file before any pile measurement. The file's `base` names the commits the
+#: branch's first build sat on (PR #1140's head, since closed); the branch was
+#: rebuilt on upstream main without #1140's routing commits, and the record is
+#: kept as written rather than edited after the fact.
 PREREG_SHA256 = ('c885671e73c0145ac9c7a9ebd4a25be5a6df1fed06ea36542dbef6ceb06e3dce')
 
 

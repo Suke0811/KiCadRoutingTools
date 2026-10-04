@@ -31,7 +31,8 @@ Soundness, reported alongside: the ON arms' `body_blocking` (check_assembly's
 pad_intersection channel) never above the OFF arms', i.e. the confirmation
 never admits a stack the exact channel would block.
 
-Measured at 1472f1b7 (#1127 has the table): NO-GO for both engines. On 6 of
+Measured at 39affafb, and identically on an earlier build of the branch
+apart from wall times (#1127 has the table): NO-GO for both engines. On 6 of
 the 9 corpus boards neither engine reaches a box stack at all, and on 7 of 9
 confirming flips none (orangecrab's seed reaches 16 and flips 0); rp2350 and
 ulx3s flip and stay neutral; on StickHub (diagonal parts) the seed's
