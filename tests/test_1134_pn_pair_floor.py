@@ -15,6 +15,7 @@ Rows, each at the flat value (no class: the verdict is unchanged) and under a
   - diff_pair_multipoint._pn_self_overlaps;
   - diff_pair_routing._make_offset_connector_check (the launch leg grazing
     the partner's escape via);
+  - diff_pair_routing._collapse_leg_attach_join's intra-pair floor;
   - diff_pair_routing._pn_overlap_count (nested in the hybrid builder, so
     held statically: it must price through pair_clearance).
 
@@ -112,6 +113,31 @@ def test_offset_connector_partner_via():
     assert old(2.0, 1.5, 1.0, 0.0)
 
 
+def test_collapse_join_intra_floor():
+    """A hybrid leg's grid corner sits 0.30 mm (edge) from the partner; the
+    collapsed corner would sit 0.42 mm away. Flat (0.2): the corner already
+    clears, nothing to fix. Under a 0.35 class with the gap route_diff
+    raised to it, the corner grazes and the collapse fixes it."""
+    from synth import make_seg
+    from diff_pair_routing import _collapse_leg_attach_join
+
+    def leg():
+        return [make_seg(0, 1.0, 5, 0.5, net_id=1),       # body -> grid corner
+                make_seg(5, 0.5, 5.04, 0.62, net_id=1)]   # short join
+    partner = [make_seg(0, 0, 10, 0, net_id=2)]
+    flat = _cfg()
+    flat.diff_pair_gap = 0.2
+    cls = _cfg(CLASS)
+    cls.diff_pair_gap = CLASS
+    got = _collapse_leg_attach_join(leg(), (5.04, 0.62), flat, None, 1,
+                                    partner)
+    assert len(got) == 2, 'flat: the corner clears 0.2, the join stays'
+    got = _collapse_leg_attach_join(leg(), (5.04, 0.62), cls, None, 1,
+                                    partner)
+    assert len(got) == 1 and abs(got[0].end_y - 0.62) < 1e-9, \
+        'class 0.35: the corner grazes the partner, the join collapses'
+
+
 def test_hybrid_pn_overlap_count_prices_the_pair():
     """`_pn_overlap_count` is nested inside the hybrid builder, so it is held
     statically: its threshold must come from pair_clearance, not the flat
@@ -127,7 +153,7 @@ def test_hybrid_pn_overlap_count_prices_the_pair():
 
 
 TESTS = [test_count_pn_overlaps_matches_check_drc, test_pn_self_overlaps,
-         test_offset_connector_partner_via,
+         test_offset_connector_partner_via, test_collapse_join_intra_floor,
          test_hybrid_pn_overlap_count_prices_the_pair]
 
 

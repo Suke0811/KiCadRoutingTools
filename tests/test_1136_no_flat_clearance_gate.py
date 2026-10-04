@@ -111,9 +111,10 @@ ALLOWED = {
      'net_half + config.clearance + corner_margin + diff_pair_extra'):
         (1, _FLAT_SCALAR + ' (pad_clearance)'),
     ('py_router/diff_pair_routing.py', '_collapse_leg_attach_join',
-     'min(config.clearance, config.diff_pair_gap)'):
-        (1, 'the INTRA-pair floor (P against its own N), #1134\'s, not '
-            'this issue\'s'),
+     'config.pair_clearance(net_id, partner_segs[0].net_id, pen.layer) if '
+     'partner_segs else config.clearance'):
+        (1, 'the INTRA-pair floor (#1134): priced at the pair when the '
+            'partner has copper; with none there is nothing to graze'),
 }
 
 _CFG_NAMES = ('config', 'tap_config', 'cfg', 'c')

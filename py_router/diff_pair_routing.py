@@ -3594,8 +3594,14 @@ def _collapse_leg_attach_join(leg_segs, attach_xy, config, pcb_data, net_id, par
     # at that floor. Gating on the full clearance made the collapse a no-op
     # whenever gap < clearance (#357 open_weather_station RD+/RD-: the join sat
     # 0.10 from the partner, the collapsed corner 0.15 -- a real fix at the
-    # 0.15 floor, but the 0.2 full-clearance gate rejected it).
-    intra = min(config.clearance, config.diff_pair_gap)
+    # 0.15 floor, but the 0.2 full-clearance gate rejected it). The clearance
+    # side of the min is the PAIR's own (#1134): KiCad grades P against N at
+    # max(clearance, class P, class N) and the layer rule, and route_diff
+    # raises a pair's gap to its class (#530), so a wide-class pair's floor is
+    # its class, not the flat Default.
+    _pn = (config.pair_clearance(net_id, partner_segs[0].net_id, pen.layer)
+           if partner_segs else config.clearance)
+    intra = min(_pn, config.diff_pair_gap)
     # Only act on a REAL local violation: the grid corner (penultimate's far end)
     # must currently sit below the intra-pair floor to the partner copper.
     before = _seg_to_seglist_min_edge(pen.start_x, pen.start_y, pen.end_x, pen.end_y,
