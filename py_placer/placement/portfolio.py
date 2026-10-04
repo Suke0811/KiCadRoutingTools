@@ -104,19 +104,28 @@ class Candidate:
 
 def free_refs(pcb_data, pcb_file: str,
               lock_globs: Optional[Sequence[str]] = None,
-              refused: Optional[Dict[str, str]] = None) -> List[str]:
+              refused: Optional[Dict[str, str]] = None,
+              intent_locks: Optional[Sequence[str]] = None) -> List[str]:
     """Sorted refs the portfolio may perturb: pad-bearing, not `(locked yes)`
-    on the board, not matching a --lock glob, and not drawing the board's own
-    outline (#829). The same lock sources the quench itself honors, resolved
-    once so every consumer agrees.
+    on the board, not matching a --lock glob, not drawing the board's own
+    outline (#829), and not locked by the intent gate (`intent_locks`, its
+    `lock_refs`: `must_lock` and the edge claims, #1129). The same lock
+    sources the quench itself honors, resolved once so every consumer agrees.
+
+    The intent's locks matter because the quench FREEZES them (quench.py,
+    "Locked via intent") but freezes a part where it stands: a strategy that
+    had already turned a must_lock part shipped it turned. None (perturb's
+    callers, which have no intent channel) leaves the list as it was.
 
     `refused` is an optional out-dict `{ref: why}`, the idiom `seeder.
     reseat_scope` uses: name the source, and end with what the caller can do
-    about it. Only the #829 refusal is recorded -- the pad and lock rules were
-    always silent here and stay that way, because the quench discloses those.
+    about it. The #829 and intent-lock refusals are recorded -- the pad and
+    file/--lock rules were always silent here and stay that way, because the
+    quench discloses those.
     """
     from placement.parser import extract_locked_refs
     locked = set(extract_locked_refs(pcb_file))
+    held = set(intent_locks or ())
     out = []
     for ref, fp in pcb_data.footprints.items():
         if not fp.pads:
@@ -134,6 +143,13 @@ def free_refs(pcb_data, pcb_file: str,
                 refused[ref] = ("draws the board outline -- moving it would "
                                 "resize the board, which is not this tool's "
                                 "to change (#829)")
+            continue
+        if ref in held:
+            if refused is not None:
+                refused[ref] = ("locked by the intent (must_lock or an edge "
+                                "claim) -- the quench freezes it where it "
+                                "stands, so no strategy may move it first "
+                                "(#1129)")
             continue
         out.append(ref)
     return sorted(out)
@@ -610,7 +626,9 @@ def generate(input_file: str, out_dir: str, *, seed: int = 0,
 
     pcb = parse_kicad_pcb(input_file)
     _refused: Dict[str, str] = {}
-    free = free_refs(pcb, input_file, lock_globs, refused=_refused)
+    free = free_refs(pcb, input_file, lock_globs, refused=_refused,
+                     intent_locks=(qkw.get('intent_gate') or {}).get(
+                         'lock_refs'))
     for _ref, _why in sorted(_refused.items()):
         print(f"  NOTE: {_ref} not perturbed: {_why}")
     ids = ignore_net_ids(pcb, ignore_nets)
@@ -623,8 +641,8 @@ def generate(input_file: str, out_dir: str, *, seed: int = 0,
     # #1121: the SAME block claims the quench is gated with (its
     # intent_gate), so the `poses` variant offers a block-declared part only
     # an angle the quench would admit too. Not held here: an
-    # `arrays[].rotation` member, and a part the gate locks (`must_lock`,
-    # an edge claim) -- `free_refs` reads neither.
+    # `arrays[].rotation` member. A part the gate locks (`must_lock`, an edge
+    # claim) is not free at all: `free_refs` drops it (#1129).
     _declared = dict((qkw.get('intent_gate') or {}).get('rotations') or {})
     _held = sorted(r for r in free if r in _declared)
     if _held and 'poses' in strategies:

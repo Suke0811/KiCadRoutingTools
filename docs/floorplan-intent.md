@@ -33,7 +33,10 @@ The intent is also a GENERATOR input, not only a grader's, and it now has
    tools that run the most quench iterations in a real chain could walk a part
    straight out of a zone the file declared. Measured on ulx3s: the seed grades
    clean, an ungated quench manufactures 4 `zone_containment` errors, a gated
-   one manufactures none.
+   one manufactures none. The gate FREEZES a `must_lock` part and an
+   edge-claimed connector where it stands, so `place_portfolio`'s strategies
+   do not perturb them in the first place (#1129: a `poses` candidate used to
+   turn a `must_lock` U1 and the quench then froze it turned).
 3. **A rank gate and a health source.** `place_portfolio.py` ranks K perturbed
    candidates only if they grade error-free, using the `health` signals in the
    rank key.
