@@ -200,7 +200,12 @@ def main(argv=None):
                     help='Only these pre-registered boards (repeatable); a '
                          'partial run prints its table but no GO verdict')
     args = ap.parse_args(argv)
-    pre = _prereg()
+    try:
+        pre = _prereg()
+    except Exception as exc:                      # noqa: BLE001 - exit 2
+        print(f"MEASUREMENT NOT TAKEN: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 2
     boards = list(pre['boards'])
     if args.board:
         bad = sorted(set(args.board) - set(boards))
@@ -213,16 +218,17 @@ def main(argv=None):
         work = args.workdir or tempfile.mkdtemp(prefix='m1105_')
         print(f"pre-registered candidate: {cand}; workdir {work}", flush=True)
         out = measure(boards, work, pre)
+        if args.json_out:
+            with open(args.json_out, 'w', encoding='utf-8') as fh:
+                json.dump({'candidate': cand, 'boards': out}, fh, indent=1,
+                          default=str)
+        go, n, improve, need = verdict(out, cand)
     except Exception as exc:                      # noqa: BLE001 - exit 2
         # A broken measurement is not a NO-GO: an AssertionError from
         # `_pile_inputs` (not a pile) used to exit 1, the NO-GO code.
         print(f"MEASUREMENT NOT TAKEN: {type(exc).__name__}: {exc}",
               file=sys.stderr)
         return 2
-    if args.json_out:
-        with open(args.json_out, 'w', encoding='utf-8') as fh:
-            json.dump({'candidate': cand, 'boards': out}, fh, indent=1,
-                      default=str)
     print()
     for name in VARIANTS:
         marks = [out[b][name]['mark'] for b in boards
@@ -234,7 +240,6 @@ def main(argv=None):
     if args.board:
         print("partial run: no GO verdict")
         return 3
-    go, n, improve, need = verdict(out, cand)
     print(f"\n{'GO' if go else 'NO-GO'}: {cand} improves {len(improve)} of "
           f"{n} eligible pile(s) {sorted(improve)}; the pre-registered rule "
           f"needs >= {need} (and N >= 3)")

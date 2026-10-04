@@ -15,8 +15,11 @@ Two arms on ONE tree, so the difference is that population and nothing else:
 Removing them changes nothing the measures do not read: `PartPads` and
 `_pad_with_copper` already skip those pads, and the paste apertures are built
 at parse time. Before the #1128 fix the arm difference is the fix's impact;
-after it the difference must be 0 on every board, which is the check that the
-fix landed at both sites.
+after it the difference must be 0 on every board. Measured at the fix's
+parent it was ALREADY 0 on all 16 boards that carry such pads (their
+apertures sit inside copper or courtyard), so this script shows the fix moves
+no real board; that the fix landed is pinned by
+tests/test_1128_paste_only_not_copper.py's synthetic cases, not here.
 
 Per board: the paste-only pad population, the courtyard census (every
 courtyard pair from `grade_body_overlap`: count and area), the census's

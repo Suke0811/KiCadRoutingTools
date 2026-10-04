@@ -103,13 +103,37 @@ def test_no_census_prints_na():
 
 
 def test_the_pair_diff_names_both_numbers():
-    text, J = RP.describe_pair(_model(), _model(), None)
-    assert J['courtyard_overlap_mm2'] == {'before': 52.252, 'after': 52.252}, J
+    # Two DIFFERENT boards, so a census read from the wrong side shows: the
+    # pair diff's numbers are per model, whatever the pair is.
+    esp = _model(os.path.join(ROOT, 'kicad_files', 'esp_prog.kicad_pcb'))
+    esp_cen = RP.legality_findings(esp)['courtyard_overlap_mm2']
+    assert abs(esp_cen - 52.252) > 0.01, esp_cen
+    text, J = RP.describe_pair(_model(), esp, None)
+    assert J['courtyard_overlap_mm2'] == {'before': 52.252,
+                                          'after': round(esp_cen, 4)}, J
     assert abs(J['overlap_area']['before'] - 70.05) < 0.005, J
-    assert 'courtyard overlap mm2 (census): 52.25 == 52.25' in text, text
-    assert 'overlap mm2 (optimizer rects): 70.05 == 70.05' in text, text
-    print("  PASS: the pair diff carries the census and the optimizer's "
-          "number, each labelled")
+    assert (f'courtyard overlap mm2 (census): 52.25 -> {esp_cen:.2f}'
+            in text), text
+    assert 'overlap mm2 (optimizer rects): 70.05 ->' in text, text
+    # a side whose census raised has no census number to diff
+    from placement import legality
+    before = _model()
+    RP.legality_findings(before)
+    real = legality.grade_body_overlap
+
+    def boom(*a, **k):
+        raise RuntimeError('census unavailable')
+    legality.grade_body_overlap = boom
+    try:
+        after = _model()
+        text2, J2 = RP.describe_pair(before, after, None)
+    finally:
+        legality.grade_body_overlap = real
+    assert 'courtyard_overlap_mm2' not in J2, J2
+    assert '(census)' not in text2, text2
+    print(f"  PASS: the pair diff carries each side's census (52.25 -> "
+          f"{esp_cen:.2f}) and the optimizer's number, each labelled; a "
+          f"side with no census diffs none")
 
 
 TESTS = [

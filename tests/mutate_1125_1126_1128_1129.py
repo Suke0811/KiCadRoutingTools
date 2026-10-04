@@ -168,12 +168,28 @@ def _dirty(path):
     return bool(p.stdout.strip())
 
 
+def _purge_pycache():
+    """Drop every compiled module under the engine trees before a row is
+    applied. Two rows that make same-size edits within one second leave the
+    source's (mtime, size) unchanged, so a witness would import the PREVIOUS
+    row's bytecode -- a false SURVIVED, measured on this battery's
+    overrun-reads-paste-as-copper (mutate_829 has the same guard)."""
+    import shutil
+    for base in ('py_placer', 'py_router', 'py_tools'):
+        for dirpath, dirnames, _files in os.walk(os.path.join(_ROOT, base)):
+            if os.path.basename(dirpath) == '__pycache__':
+                shutil.rmtree(dirpath, ignore_errors=True)
+                dirnames[:] = []
+
+
 def _run_tests(tests):
     failed = []
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
     for t in tests:
-        p = subprocess.run([sys.executable, '-X', 'utf8', t[0]] + list(t[1:]),
+        p = subprocess.run([sys.executable, '-B', '-X', 'utf8', t[0]]
+                           + list(t[1:]),
                            capture_output=True, text=True, encoding='utf-8',
-                           errors='replace', timeout=2400, cwd=_ROOT)
+                           errors='replace', timeout=2400, cwd=_ROOT, env=env)
         if p.returncode != 0:
             failed.append((os.path.basename(t[0]) + ':' + ','.join(t[1:]),
                            p.returncode,
@@ -216,6 +232,7 @@ def run(only=None):
                 results.append((name, 'BROKEN', expect,
                                 ['anchor matched %d times' % base.count(o)]))
                 continue
+            _purge_pycache()
             io.open(path, 'w', encoding='utf-8', newline='').write(
                 base.replace(o, n, 1))
             try:

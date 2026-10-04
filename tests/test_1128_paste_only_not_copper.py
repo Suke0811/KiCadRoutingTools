@@ -167,6 +167,7 @@ def test_jetson_spacers_do_not_move():
     pcb = _parse(jet)
     got = {g.ref: g.poly.area for g in graded_parts_from_file(pcb, jet)
            if g.ref in ('H5', 'H6', 'H7', 'H8')}
+    assert sorted(got) == ['H5', 'H6', 'H7', 'H8'], got
     for ref, area in sorted(got.items()):
         paste = [p for p in pcb.footprints[ref].pads
                  if not _pad_carries_copper(p)]

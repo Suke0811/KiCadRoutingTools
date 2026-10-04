@@ -848,8 +848,10 @@ def score_candidate(cand: Candidate, *, free: Sequence[str],
     reasons: List[str] = []
     overlap = cand.metrics.get('overlap_area', 0.0)
     if overlap > baseline_overlap + EPS:
-        reasons.append(f"courtyard overlap {overlap:.4f}mm2 exceeds the "
-                       f"baseline's {baseline_overlap:.4f}mm2")
+        # The optimizer's courtyard RECTS (`metrics.overlap_area`), not
+        # check_assembly's drawn-outline census -- labelled so (#1126).
+        reasons.append(f"optimizer courtyard-rect overlap {overlap:.4f}mm2 "
+                       f"exceeds the baseline's {baseline_overlap:.4f}mm2")
     oob = cand.metrics.get('oob_count', 0)
     if oob > baseline_oob:
         reasons.append(f"{oob} part(s) out of board vs the baseline's "

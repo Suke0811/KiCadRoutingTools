@@ -4064,8 +4064,8 @@ def decap_graded_distance(pcb_data, state, cap: str, chips, placed
     Stage 3.5's within-limit check reads this. It used to read the distance
     from the cap to the PIN TARGET it was aimed at, which is never shorter
     than the distance to the pin's own IC's pad box, so it declined seats the
-    grade accepts: seeding a watchy pile with after_queue, 9 of the 16 seats
-    it undid were inside the limit as graded."""
+    grade accepts (#1141: seeding a watchy pile with after_queue at upstream
+    main 055fa9e1 undid 16 seats, 9 of them inside the limit as graded)."""
     from . import groups as _g
     from .legality import footprint_at_pose
 
