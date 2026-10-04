@@ -138,9 +138,14 @@ def test_copper_pads_outside_still_count():
         _pad('1', 0, 0.6, 0.4, '"F.Cu"'),
         _pad('2', 3.0, 1, 1, '"F.Cu" "F.Paste"')]))
     assert abs(over - 3.21) < 1e-6, over
+    hole = _overrun(_board('U1', 29.71, 15, [
+        _pad('1', 0, 0.6, 0.4, '"F.Cu"'),
+        _pad('2', 3.0, 1, 1, '"*.Cu" "*.Mask"', kind='np_thru_hole',
+             drill=0.9)]))
+    assert abs(hole - 0.01) < 1e-6, hole
     print(f"  PASS: F.Cu+F.Paste {smd:.1f} and THT {tht:.1f} mm2 still "
           f"counted, NPTH {npth:.1f}; a copper pad 3.21 mm out still "
-          f"overruns")
+          f"overruns, an NPTH hole there does not ({hole:.2f})")
 
 
 DEMOS = os.environ.get('KICAD_DEMOS_DIR') or next(
