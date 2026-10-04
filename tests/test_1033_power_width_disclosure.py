@@ -438,9 +438,10 @@ def t_gui_oracle_payload():
     """The GUI's fallback plane-finalize oracle (posted as
     results_data['plane_finalize_oracle'], run by swig_gui through
     gui_utils.run_kicad_oracle_on_live_board) must receive the per-net widths
-    the CLI's oracle config (_ocfg) carries, or its weld ladder stops at a
-    different width. Every payload key must be a parameter of the applier
-    and be forwarded by swig_gui."""
+    the CLI's oracle leg gets, or its weld ladder stops at a different
+    width. They travel by net NAME (#1133: the applier's staged save numbers
+    its nets afresh), as one payload key the applier takes and swig_gui
+    forwards, built from all three per-net width maps."""
     import ast
     import inspect
     sys.path.insert(0, ROOT)
@@ -460,12 +461,17 @@ def t_gui_oracle_payload():
                      if isinstance(k, ast.Constant)}
     gui_src = open(os.path.join(ROOT, 'kicad_routing_plugin', 'swig_gui.py'),
                    encoding='utf-8').read()
-    check('GUI oracle payload carries the per-net widths',
+    check('GUI oracle payload carries the per-net widths, by name',
+          'net_widths_by_name' in keys
+          and not ({'power_net_widths', 'net_track_widths',
+                    'net_layer_widths'} & keys), sorted(keys))
+    check('GUI applier accepts and swig_gui forwards net_widths_by_name',
+          'net_widths_by_name' in params
+          and "net_widths_by_name=_pfo.get('net_widths_by_name')" in gui_src)
+    from kicad_oracle import ORACLE_WIDTH_MAPS
+    check('the by-name payload covers every per-net width map',
           {'power_net_widths', 'net_track_widths',
-           'net_layer_widths'} <= keys, sorted(keys))
-    for k in ('net_track_widths', 'net_layer_widths'):
-        check(f'GUI applier accepts and swig_gui forwards {k}',
-              k in params and f"{k}=_pfo.get('{k}')" in gui_src)
+           'net_layer_widths'} <= set(ORACLE_WIDTH_MAPS), ORACLE_WIDTH_MAPS)
 
 
 # ------------------------------------------- --strict-sizes, both ways

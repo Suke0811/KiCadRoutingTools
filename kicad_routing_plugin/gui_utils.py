@@ -993,10 +993,9 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
                                    hole_to_hole_clearance=None,
                                    layer_clearances=None,
                                    layers=None, layer_costs=None,
-                                   power_net_widths=None,
-                                   net_track_widths=None,
-                                   net_layer_widths=None,
-                                   progress_callback=None):
+                                   net_widths_by_name=None,
+                                   progress_callback=None,
+                                   net_clearances_by_name=None):
     """Staged-save kicad-oracle recheck against the LIVE pcbnew board.
 
     The CLI plane fronts (and route.py's plane finalize, #562) finish with
@@ -1010,6 +1009,17 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
     refill zones AFTER this returns (the routed links change the fill).
     Returns the oracle result dict, or None when skipped (no kicad-cli).
     Skips quietly on any error: the recheck is an earner, never a blocker.
+
+    `net_clearances_by_name` (#1137) is the engine run's resolved net-class
+    map by net NAME, and `net_widths_by_name` (#1133) its per-net width maps
+    the same way ({'power_net_widths' | 'net_track_widths' |
+    'net_layer_widths': {net name: value}}, kicad_oracle.
+    oracle_net_widths_by_name). Both are handed to the oracle as they are: the
+    staged save numbers its nets afresh (pcbnew writes a KiCad 10 board by
+    net NAME and the parser numbers them by first appearance), and the oracle
+    re-keys them onto it. For the same reason the oracle hands its copper
+    back on the LIVE board's netcodes (`net_ids_by_name` below) before this
+    applies it with SetNetCode.
     """
     try:
         import os
@@ -1039,19 +1049,14 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
         # Costs are soft, so a weld that MUST cross a plane layer still can.
         # Omitted values fall back to the dataclass defaults, so an older
         # caller that passes none behaves exactly as before.
+        # The per-net maps (#658 power-net membership, #1033 widths) are not
+        # put on this config: they travel by NAME (net_widths_by_name, #1133)
+        # and the oracle installs them on each parse of the staged save.
         _cfg_kw = {}
         if layers:
             _cfg_kw['layers'] = list(layers)
         if layer_costs:
             _cfg_kw['layer_costs'] = list(layer_costs)
-        if power_net_widths:
-            _cfg_kw['power_net_widths'] = dict(power_net_widths)
-        # #1033: per-net widths too, mirroring route.py's _ocfg, so the weld's
-        # width ladder climbs to the same net width on both fronts.
-        if net_track_widths:
-            _cfg_kw['net_track_widths'] = dict(net_track_widths)
-        if net_layer_widths:
-            _cfg_kw['net_layer_widths'] = dict(net_layer_widths)
         ocfg = GridRouteConfig(
             clearance=clearance, track_width=track_width,
             via_size=via_size, via_drill=via_drill, grid_step=grid_step,
@@ -1090,6 +1095,13 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
             _proj_from = board.GetFileName() or None
         except Exception:
             _proj_from = None
+        # #1133: the LIVE board's {net name: netcode}, so the copper the
+        # oracle returns is applied (SetNetCode below) on the right nets.
+        _live_ids = {'': 0}
+        for _nm, _ni in board.GetNetInfo().NetsByName().items():
+            _nm = str(_nm)
+            if _nm:
+                _live_ids[_nm] = _ni.GetNetCode()
         orc = oracle_reconnect(
             tmp, nets, ocfg,
             project_from=_proj_from,
@@ -1099,7 +1111,10 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
             hole_to_hole_clearance=(hole_to_hole_clearance
                                     if hole_to_hole_clearance is not None
                                     else defaults.HOLE_TO_HOLE_CLEARANCE),
-            progress_callback=progress_callback)
+            progress_callback=progress_callback,
+            net_clearances_by_name=net_clearances_by_name,
+            net_widths_by_name=net_widths_by_name,
+            net_ids_by_name=_live_ids)
         from copy_board import SIBLING_EXTS as _sib_exts
         for _p in (tmp,) + tuple(os.path.splitext(tmp)[0] + _e
                                  for _e in _sib_exts):

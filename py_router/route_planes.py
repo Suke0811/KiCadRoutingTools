@@ -3448,8 +3448,14 @@ def create_plane(
         config.same_net_pad_clearance = same_net_pad_clearance
     # #498: per-layer .kicad_dru clearance rules -- tap tracks/vias, region
     # joins and blocker reroutes must obey them like every other routed copper.
-    from kicad_dru import install_layer_clearances
+    from kicad_dru import install_layer_clearances, install_track_clearances
     install_layer_clearances(config, None, input_file, pcb_data)
+    # #1135: and the track-to-track rules (#735), as batch_route installs
+    # them: a tap track or a blocker reroute is a track, and a board's
+    # `A.Type == 'track' && B.Type == 'track'` rule binds it too. Raise-only
+    # on seg-vs-seg pairs; the effective map over the nets this step pours.
+    install_track_clearances(config, None, input_file, pcb_data,
+                             routed_net_ids=net_ids)
     # Cross-class clearance (#434, mirrors batch_route/repair): auto-read the
     # board's non-Default netclasses from the INPUT's sibling .kicad_pro when
     # no map was passed, so tap tracks/vias and blocker reroutes honor KiCad's
