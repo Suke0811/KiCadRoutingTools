@@ -4034,6 +4034,38 @@ def _decap_owner_ok(ref: str, chips: Optional[Set[str]]) -> bool:
     return (ref in chips) if chips is not None else (ref[0:1] == 'U')
 
 
+def decap_graded_distance(pcb_data, state, cap: str, chips, placed
+                          ) -> Tuple[Optional[str], Optional[float]]:
+    """`(chip, mm)`: how far `cap` is from its IC AS THE GRADE MEASURES IT,
+    at the state's live poses -- the cap's pad centroid to the nearest pad
+    box among the `chips` that are `placed` (`groups.elect_live`, the
+    election `rule_decap_distance` reads and the quench's #1043 gate calls
+    per pose). An unplaced chip still sits at its staging pose, which is not
+    where the grade will find it, so it is not a candidate. `(None, None)`
+    when no placed chip is given, and then the grade has no tether to grade
+    either.
+
+    Stage 3.5's within-limit check reads this. It used to read the distance
+    from the cap to the PIN TARGET it was aimed at, which is never shorter
+    than the distance to the pin's own IC's pad box, so it declined seats the
+    grade accepts: seeding a watchy pile with after_queue, 9 of the 16 seats
+    it undid were inside the limit as graded."""
+    from . import groups as _g
+    from .legality import footprint_at_pose
+
+    def _posed(ref):
+        p = state.parts[ref]
+        return footprint_at_pose(pcb_data.footprints[ref], (p.x, p.y, p.rot))
+    cands = []
+    for c in chips:
+        if c not in placed:
+            continue
+        b = _g.chip_bounds_of(_posed(c))
+        if b is not None:
+            cands.append((c, b))
+    return _g.elect_live(_posed(cap), cands)
+
+
 def _decap_rail(nets, net_refs) -> Optional[int]:
     """A decap's rail: of its nets with two or more owners, the one with the
     FEWEST owners (GND has the most), ties by net id (#1105: shared by the
@@ -5078,9 +5110,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         parts placed before it, stage 3.5 (#1105) over the owner ICs the
         centroid stage seated since. `tag` marks which stage wrote a note.
         `decline_beyond` (stage 3.5 under `DECAP_LATE_WITHIN_LIMIT`) undoes a
-        seat that lands farther than that from its pin target, adding the cap
-        to `declined`: it keeps its own centroid turn instead."""
+        seat whose cap lands farther than that from its IC as the GRADE
+        measures it (`decap_graded_distance`: pad centroid to the elected
+        chip's pad box, over the placed chips on its rail), adding the cap to
+        `declined`: it keeps its own centroid turn instead."""
         _last = {'declined': False}   # did the latest `_seat` decline?
+        _rail_chips: Dict[str, List[str]] = {}   # cap -> its rail's chips
         avail = [r for r in _order(sorted(unplaced)) if r in decap_scope]
         rail_of: Dict[str, int] = {}
         for ref in avail:
@@ -5145,6 +5180,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
 
         def _seat(ref, tx, ty, owner, pn, constraint=None, tol=0.5):
             _last['declined'] = False
+            _el = _off = None
             _ladder = _cap_ladder(ref, owner)
             _was = (state.parts[ref].x, state.parts[ref].y,
                     state.parts[ref].rot)
@@ -5157,8 +5193,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             if clr is None:
                 return False
             if decline_beyond is not None:
-                _off = math.hypot(state.parts[ref].x - tx,
-                                  state.parts[ref].y - ty)
+                if ref not in _rail_chips:
+                    _rail_chips[ref] = _g.rail_chips(pcb_data, ref)
+                _el, _off = decap_graded_distance(
+                    pcb_data, state, ref, _rail_chips[ref], placed)
+                if _off is None:
+                    _off = 0.0    # no placed chip on its rail: no tether to grade
                 if _off > decline_beyond:
                     state.apply_move(ref, *_was)
                     _last['declined'] = True
@@ -5166,8 +5206,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                         declined.append(ref)
                     notes.append(
                         f"{ref}: stage 3.5 declined its seat for {owner} -- "
-                        f"it landed {_off:.2f}mm from the pin target, past "
-                        f"the {decline_beyond:g}mm decap limit")
+                        f"it landed {_off:.2f}mm from {_el} as the grade "
+                        f"measures it, past the {decline_beyond:g}mm decap "
+                        f"limit")
                     return False
             avail.remove(ref)
             placed.add(ref)
@@ -5181,7 +5222,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                          f" [{net}], landed "
                          f"{math.hypot(p2.x - tx, p2.y - ty):.2f}mm"
                          + (f" at reduced clearance {clr:g}"
-                            if clr < state.clearance else "") + tag)
+                            if clr < state.clearance else "")
+                         + (f", {_off:.2f}mm from {_el} as graded"
+                            if _el is not None else "") + tag)
             return True
 
         # Pass 1: a cap declared in a zone serves a pin INSIDE that zone --

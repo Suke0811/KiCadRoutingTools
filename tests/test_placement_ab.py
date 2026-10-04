@@ -638,9 +638,11 @@ _AFTER_ICS_BOARDS = ('esp_prog', 'splitflap_driver', 'tigard', 'watchy',
 #: (family, board) -> the measured mark of a rejected row.
 _AFTER_ICS_MARKS = {
     ('decap-within-limit', 'esp_prog'): 'neutral',
+    # #1141: the within-limit check measures as the grade does since then
+    ('decap-within-limit', 'orangecrab_ext_pll'): 'improve',
     ('decap-after-queue', 'splitflap_driver'): 'neutral',
     ('decap-after-queue', 'tigard'): 'improve',
-    ('decap-after-queue', 'glasgow_revC'): 'improve',
+    ('decap-after-queue', 'glasgow_revC'): 'neutral',
     ('decap-after-queue', 'ulx3s'): 'improve',
 }
 ROWS += [
@@ -664,8 +666,9 @@ ROWS += [
                 'claim draws no RNG, so every IC pose is the OFF arm\'s; only '
                 'the caps (at a supply pin instead of their own net '
                 'centroid) and the parts seated after them move'
-                + (', and a seat landing past the decap limit is undone so '
-                   'that cap keeps its centroid turn' if flags.get(
+                + (', and a seat landing past the decap limit (as the grade '
+                   'measures it) is undone so that cap keeps its centroid '
+                   'turn' if flags.get(
                        'DECAP_LATE_WITHIN_LIMIT') else '')
                 + ('; the caps wait until every other part is seated.'
                    if flags.get('DECAP_LATE_AT') == 'after_queue' else '.')),

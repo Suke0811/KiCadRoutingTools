@@ -69,6 +69,7 @@ AGREE = _t(T, 'forecast_agrees')
 FLAGS = _t(T, 'flag_pair')
 DEFAULT = _t(T, 'default_is')
 LIMIT = _t(T, 'past_the_limit')
+GRADED = _t(T, 'measures_as_the_grade')
 T1051 = _t('test_1051_seed_arrays.py', 'zero_claim_reports_why')
 J = 'test_1105_stage3_jitter.py'
 JIT_SAME = _t(J, 'same_with_the_claim')
@@ -113,6 +114,23 @@ ROWS = [
      "                if _off > decline_beyond:",
      "                if False:",
      (LIMIT,), 'KILLED'),
+    # the within-limit check's MEASURE: back to the distance from the pin
+    # target, which declines seats the grade accepts (C2, 7.07 mm from its
+    # pin, 0.82 mm from U1's pad box)
+    ('decline-measures-the-pin-target', 'seeder',
+     "                _el, _off = decap_graded_distance(",
+     "                _el, _off = (lambda *_a: ('pin', math.hypot("
+     "state.parts[ref].x - tx, state.parts[ref].y - ty)))(",
+     (LIMIT,), 'KILLED'),
+    ('decline-sees-unplaced-chips', 'seeder',
+     "        if c not in placed:",
+     "        if False:",
+     (GRADED,), 'KILLED'),
+    ('decline-elects-its-own-chip', 'seeder',
+     "    return _g.elect_live(_posed(cap), cands)",
+     "    return (cands[0][0], _g.elect_live(_posed(cap), cands[:1])[1]) "
+     "if cands else (None, None)",
+     (GRADED,), 'KILLED'),
     ('forecast-blind-to-fixed-poses', 'seeder',
      "                 | {str(f['ref']) for f in intent.fixed_poses}",
      "                 | set()",
