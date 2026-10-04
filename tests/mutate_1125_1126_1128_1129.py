@@ -78,6 +78,9 @@ C5 = _t(T983, '-k', 'test_c5_')
 C14 = _t(T983, '-k', 'test_c14_')
 C15 = _t(T983, '-k', 'test_c15_')
 C16 = _t(T983, '-k', 'test_c16_')
+C17 = _t(T983, '-k', 'test_c17_')
+C18 = _t(T983, '-k', 'test_c18_')
+C19 = _t(T983, '-k', 'test_c19_')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -150,6 +153,18 @@ ROWS = [
      "                _geo_rot = _member1125",
      "                pass",
      (C14,), 'KILLED'),
+    ('skip-late-not-walked', 'seeder',
+     "            if (_out not in ('crowded', 'skip_late') or _claim is None",
+     "            if (_out not in ('crowded',) or _claim is None",
+     (C17,), 'KILLED'),
+    ('crowded-includes-kept', 'seeder',
+     "            return ('crowded' if (_pick is None and _kept is None",
+     "            return ('crowded' if (_pick is None or _kept is None",
+     (C19,), 'KILLED'),
+    ('crowded-member-not-kept', 'seeder',
+     "                if _o == 'crowded' and _crowded is None:",
+     "                if False:",
+     (C18,), 'KILLED'),
     ('walk-order-reversed', 'seeder',
      "    nxt = _stage1_geometry_rot(part, claim, fits=_left)",
      "    nxt = _stage1_geometry_rot(part, (claim[0], tuple(reversed("
