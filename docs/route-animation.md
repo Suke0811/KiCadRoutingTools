@@ -713,9 +713,10 @@ placement laps into its one curve instead.
   used to plot the quench's bounding-box metrics, so the film said 10
   pairs on glasgow_revC where render's checklist, caption and `--gate`
   name 1. Without a legality context the counts are unmeasured, never 0.
-  Render's caption still prints `overlap` from `metrics.overlap_area`
-  (the quench's rects: 70.05 mm² against the panel's 52.25 on
-  glasgow_revC).
+  Render's caption prints the same census since #1126 (`courtyard
+  overlap`, 52.25 mm² on glasgow_revC); it used to print the quench's
+  rect `metrics.overlap_area` (70.05 there), which a project waiver
+  zeroes.
 - **Cheap gates first.** Before anything is measured, the chain must have at
   least two copper-free boards and a part must have moved between them
   (poses are parsed, no instrument runs). A routing chain whose first
