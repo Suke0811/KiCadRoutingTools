@@ -908,12 +908,19 @@ def stub_clear_of_foreign_pads(segments: List[Segment], dest_layer: str, net_id:
     pads only block their own layer, so this only bites on the swap's destination
     layer. Own net and the swap partner's nets are excluded.
 
+    Each stub is sized at its OWN width (config.track_width only when it has
+    none), as stub_clear_of_foreign_tracks sizes it (#1136): sizing every stub
+    at the config width refused a narrower stub where it fits and admitted a
+    wider one where it grazes.
+
     Returns (clear, reason).
     """
     exclude = set(exclude_net_ids) | {net_id}
-    clear_dist = config.track_width / 2 + config.clearance
     step = max(config.grid_step / 2, 0.02)
     for seg in segments:
+        seg_half = (seg.width if getattr(seg, 'width', 0) and seg.width > 0
+                    else config.track_width) / 2
+        clear_dist = seg_half + config.clearance
         x1, y1, x2, y2 = seg.start_x, seg.start_y, seg.end_x, seg.end_y
         seg_len = math.hypot(x2 - x1, y2 - y1)
         n = max(2, int(seg_len / step) + 1)
