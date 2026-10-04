@@ -77,6 +77,12 @@ LAST_RIPPED_RECONNECT: Optional[Dict] = None
 LAST_RIPPED_STILL_OPEN: List[str] = []
 LAST_RIPPED_CUSTODY: Optional[Dict] = None
 
+# The class map the last repair_planes() run resolved (after its
+# --clearance-ceiling clamp), keyed by net NAME (#1137), for main()'s oracle
+# leg: the oracle re-parses its board, so an id-keyed map could land on other
+# nets. {} = no class map (the flat clearance).
+LAST_NET_CLEARANCES_BY_NAME: Dict[str, float] = {}
+
 
 def plane_tap_launch_layers(pad, zone_layers, routing_layers) -> List[str]:
     """Copper layers a last-resort plane tap may launch from, in
@@ -819,6 +825,8 @@ def repair_planes(
     # the CLI passes a real default (never None), so this is a no-op there.
     if zone_clearance is None:
         zone_clearance = clearance if clearance is not None else defaults.PLANE_ZONE_CLEARANCE
+    global LAST_NET_CLEARANCES_BY_NAME
+    LAST_NET_CLEARANCES_BY_NAME = {}   # #1137: this run's, set below
     from route import _dump_engine_config
     _dump_engine_config('repair_planes', dict(locals()))
     # Board-setup copper-to-edge rule (#338): engine-side so the GUI planes
@@ -986,6 +994,7 @@ def repair_planes(
                           for nid, c in net_clearances.items()}
     if net_clearances:
         config.net_clearances = dict(net_clearances)
+    LAST_NET_CLEARANCES_BY_NAME = config.net_clearances_by_name(pcb_data.nets)
     # Publish the SAME map to the fill model (#483 item 5): KiCad refills a
     # zone at max(zone clearance, pairwise netclass), so on honor-classes
     # chains a looser foreign class carves copper the model would otherwise
@@ -3641,11 +3650,13 @@ Examples:
             board_edge_clearance=_oracle_edge)
         from kicad_dru import install_layer_clearances
         install_layer_clearances(_ocfg, None, args.input_file, None)  # #498
+        # #1137: the class map the engine run resolved, by NAME.
         _orc = oracle_reconnect(args.output_file, net_names, _ocfg,
                                 track_via_clearance=args.track_via_clearance,
                                 hole_to_hole_clearance=args.hole_to_hole_clearance,
                                 verbose=args.verbose,
-                                project_from=args.input_file)
+                                project_from=args.input_file,
+                                net_clearances_by_name=LAST_NET_CLEARANCES_BY_NAME)
         try:
             import json as _json
             print('JSON_ORACLE: ' + _json.dumps(

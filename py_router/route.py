@@ -4901,12 +4901,23 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                 power_net_widths=dict(
                                     getattr(config, 'power_net_widths',
                                             None) or {}))
+                            # #1137: the board's .kicad_dru layer rules, as
+                            # its sibling oracle configs install them (with
+                            # the board, so an inner-layer rule expands over
+                            # its real copper), and the run's resolved class
+                            # map by NAME -- the oracle re-parses the file.
+                            from kicad_dru import install_layer_clearances
+                            install_layer_clearances(_cap_cfg, None,
+                                                     input_file, pcb_data)
                             _orc_cap = oracle_reconnect(
                                 output_file, _mvnames, _cap_cfg,
                                 track_via_clearance=config.clearance,
                                 hole_to_hole_clearance=(
                                     config.hole_to_hole_clearance),
-                                project_from=input_file)
+                                project_from=input_file,
+                                net_clearances_by_name=(
+                                    config.net_clearances_by_name(
+                                        pcb_data.nets)))
                             # The FOURTH oracle_reconnect consumer, and the one
                             # #713 item 3's first pass missed. Without this it
                             # printed "0 link(s) welded, -1 remaining" for an
@@ -5433,6 +5444,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         getattr(config, 'net_track_widths', None) or {}),
                     'net_layer_widths': dict(
                         getattr(config, 'net_layer_widths', None) or {}),
+                    # #1137: the run's resolved class map, by NAME -- the
+                    # applier's staged save numbers its nets afresh.
+                    'net_clearances_by_name':
+                        config.net_clearances_by_name(pcb_data.nets),
                 }
                 # Hands-off for the reconcile comes from the FILL-AWARE
                 # checker instead of the oracle verdict: zone nets the model
@@ -5537,13 +5552,19 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 if progress_callback:
                     _opc9 = (lambda c, t, m, _o=progress_callback:
                              _o(c, t, f"Plane finalize: {m}"))
+                # #1137: the run's resolved class map (after the
+                # --clearance-ceiling clamp) by NAME: the oracle re-parses its
+                # board every round, and on the GUI that board is a pcbnew
+                # save whose net ids are not this run's.
+                _ncbn9 = config.net_clearances_by_name(pcb_data.nets)
                 _orc = oracle_reconnect(
                     _orc_file9, _zna, _ocfg,
                     track_via_clearance=defaults.PLANE_TRACK_VIA_CLEARANCE,
                     hole_to_hole_clearance=config.hole_to_hole_clearance,
                     progress_callback=_opc9,
                     cancel_check=cancel_check,
-                    project_from=input_file)
+                    project_from=input_file,
+                    net_clearances_by_name=_ncbn9)
                 print(f"  [finalize timing] oracle leg: "
                       f"{_time9.time() - _t9:.1f}s")
                 # #713 item 3: this leg had NO summary key at all, so an
@@ -5557,9 +5578,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     ('available', 'reason', 'why', 'rounds', 'links_routed',
                      'links_failed', 'remaining')}
                 if not _gui9:
-                    # #589: keep the oracle's net list + config for the
-                    # post-reconciliation re-audit (CLI file mode only).
-                    _reaudit9 = (list(_zna), _ocfg)
+                    # #589: keep the oracle's net list + config (and its
+                    # by-name class map, #1137) for the post-reconciliation
+                    # re-audit (CLI file mode only).
+                    _reaudit9 = (list(_zna), _ocfg, _ncbn9)
                 if _gui9:
                     # The staged file is a throwaway: hand the oracle's copper
                     # back through the SAME channels the engine leg uses.
@@ -6380,7 +6402,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         track_via_clearance=defaults.PLANE_TRACK_VIA_CLEARANCE,
                         hole_to_hole_clearance=config.hole_to_hole_clearance,
                         cancel_check=cancel_check,
-                        project_from=input_file)
+                        project_from=input_file,
+                        net_clearances_by_name=_reaudit9[2])
                 _pd678b = _pk678b(_file678)
                 _aud678c = _apo678b(_pd678b, _prom678, board_file=_file678,
                                     project_from=input_file,
@@ -6440,7 +6463,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 output_file, sorted(_scope10), _reaudit9[1],
                 track_via_clearance=defaults.PLANE_TRACK_VIA_CLEARANCE,
                 hole_to_hole_clearance=config.hole_to_hole_clearance,
-                project_from=input_file)
+                project_from=input_file,
+                net_clearances_by_name=_reaudit9[2])
             try:
                 results_data['post_reconcile_oracle'] = _orc10
             except (NameError, UnboundLocalError):
