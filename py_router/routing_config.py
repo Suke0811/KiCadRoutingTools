@@ -583,6 +583,39 @@ class GridRouteConfig:
                     v = mv
         return v
 
+    def pair_clearance_inert(self) -> bool:
+        """True when no channel can move a pair off the floor it is given: no
+        class map, no .kicad_dru layer rule, no track rule. A hot loop may
+        then keep its flat term instead of pricing every item."""
+        return not (self.net_clearances or self.layer_clearances
+                    or self.track_clearances)
+
+    def pad_pair_clearance_before_override(self, pad, other_net: int,
+                                           layer: Optional[str] = None, *,
+                                           other_pad=None,
+                                           base: Optional[float] = None
+                                           ) -> float:
+        """`pad_pair_clearance` short of its last step, the pad / footprint
+        override: the pair's classes, then the .kicad_dru rule on `layer` (a
+        track) or over the copper the two share (a via, or `other_pad`).
+
+        For a site that keeps its own override handling (#1136 converts the
+        class and rule term only, so a board that declares neither is
+        unchanged whatever its pads carry). `pad_pair_clearance` is
+        `pad_override_clearance(<this>, pad, other_pad)`."""
+        eff = self.pair_clearance(getattr(pad, 'net_id', 0) or 0, other_net,
+                                  base=base)
+        if layer is not None:
+            return self.layer_clearance(layer, eff)
+        if self.layer_clearances:
+            from check_drc import pads_shared_layer_clearance, pad_copper_layers
+            cu = list(self.board_copper_layers or self.layers)
+            eff = pads_shared_layer_clearance(
+                eff, self.layer_clearances, pad_copper_layers(pad, cu),
+                pad_copper_layers(other_pad, cu) if other_pad is not None
+                else None)
+        return eff
+
     def net_clearances_by_name(self, nets) -> Dict[str, float]:
         """The class map keyed by NET NAME, for a consumer that re-parses a
         board whose net ids may differ from this run's (the KiCad oracle reads

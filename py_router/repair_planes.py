@@ -497,14 +497,18 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
                           'end': (s.end_x, s.end_y),
                           'width': s.width, 'layer': s.layer}
                     if _restored_piece_collides(sd, None, new_vias, new_segs,
-                                                via_size, clr):
+                                                via_size, clr, config=tap_config,
+                                                piece_net=blocker,
+                                                plane_net=net_id):
                         dropped += 1
                     else:
                         keep_segs.append(s)
                 for v in rvias:
                     vd = {'x': v.x, 'y': v.y, 'size': v.size}
                     if _restored_piece_collides(None, vd, new_vias, new_segs,
-                                                via_size, clr):
+                                                via_size, clr, config=tap_config,
+                                                piece_net=blocker,
+                                                plane_net=net_id):
                         dropped += 1
                     else:
                         keep_vias.append(v)
