@@ -10,7 +10,9 @@ restore a defect somebody measured:
   * `caption-prints-the-optimizer` -- glasgow_revC's caption read 70.05 mm2
     against the census's 52.252 (#1126);
   * `free-refs-ignores-intent-locks` -- place_portfolio turned a must_lock U1
-    270 -> 90 and the quench froze it there (#1129).
+    270 -> 90 and the quench froze it there (#1129);
+  * `walk-never-runs` -- splitflap's J5 declared [180, 90] kept 180, which
+    only crowds J17, where 90 seats clear (#1125).
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty
@@ -23,7 +25,18 @@ fails would score every row as killed.
 A row is KILLED by a failure or an error. An anchor that does not match
 EXACTLY ONCE is BROKEN, never skipped; `preflight()` runs right after `ROWS`.
 Edits are `str.replace(old, new, 1)`; anchors are LF and translated to the
-target's own ending. A witness is `(test file, case-name substring...)`.
+target's own ending. A witness is `(test file, case-name substring...)`;
+test_983's witnesses select a case with unittest's `-k`.
+
+Not covered by a row, and why:
+  * #1125's walk on an EARLY skip (wider than the edge, outside the window):
+    `_stage1_geometry_rot` picks a member those refusals pass whenever one
+    exists, so an early skip means no member fits and the walk finds none --
+    an equivalent mutant;
+  * #1125's `edge_floor_fallback.pop` and `placed.discard` in the undo: no
+    fixture's crowded seat carries a floor record, and a ref left in
+    `placed` is skipped by `_shorted_by` (`other == ref`) and re-added by the
+    next seat -- no observable difference on these boards.
 """
 from __future__ import annotations
 
@@ -38,6 +51,7 @@ _ROOT = os.path.dirname(_TESTS)
 _PL = os.path.join(_ROOT, 'py_placer', 'placement')
 
 TARGETS = {
+    'seeder': os.path.join(_PL, 'seeder.py'),
     'legality': os.path.join(_PL, 'legality.py'),
     'portfolio': os.path.join(_PL, 'portfolio.py'),
     'render': os.path.join(_ROOT, 'py_tools', 'render_placement.py'),
@@ -59,6 +73,11 @@ PAIR = _t(T1126, 'pair_diff')
 T1129 = 'test_1129_portfolio_intent_locks.py'
 UNIT = _t(T1129, 'drops_the_gate_locks')
 E2E = _t(T1129, 'keeps_its_input_pose')
+T983 = 'test_983_seat_grade_bounds.py'
+C5 = _t(T983, '-k', 'test_c5_')
+C14 = _t(T983, '-k', 'test_c14_')
+C15 = _t(T983, '-k', 'test_c15_')
+C16 = _t(T983, '-k', 'test_c16_')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -110,6 +129,32 @@ ROWS = [
      "                     intent_locks=(qkw.get('intent_gate') or {}).get(",
      "                     intent_locks=({}).get(",
      (E2E,), 'KILLED'),
+    # #1125
+    ('walk-never-runs', 'seeder',
+     "            if (_out not in ('crowded', 'skip_late') or _claim is None",
+     "            if (True or _claim is None",
+     (C14, C5), 'KILLED'),
+    ('walk-keeps-the-last-crowded-member', 'seeder',
+     "            if len(_tried) > 1:",
+     "            if False:",
+     (C15,), 'KILLED'),
+    ('notes-not-rolled-back', 'seeder',
+     "            del notes[n0:]",
+     "            pass",
+     (C14,), 'KILLED'),
+    ('pose-not-restored', 'seeder',
+     "            state.apply_move(ref, *pose)",
+     "            pass",
+     (C15,), 'KILLED'),
+    ('walked-member-not-applied', 'seeder',
+     "                _geo_rot = _member1125",
+     "                pass",
+     (C14,), 'KILLED'),
+    ('walk-order-reversed', 'seeder',
+     "    nxt = _stage1_geometry_rot(part, claim, fits=_left)",
+     "    nxt = _stage1_geometry_rot(part, (claim[0], tuple(reversed("
+     "claim[1]))), fits=_left)",
+     (C16,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)
