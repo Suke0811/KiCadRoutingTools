@@ -31,6 +31,12 @@ Soundness, reported alongside: the ON arms' `body_blocking` (check_assembly's
 pad_intersection channel) never above the OFF arms', i.e. the confirmation
 never admits a stack the exact channel would block.
 
+Measured at 1472f1b7 (#1127 has the table): NO-GO for both engines. On 7 of
+the 9 corpus boards neither engine reaches a box stack at all; rp2350 and
+ulx3s flip and stay neutral; on StickHub (diagonal parts) the seed's
+body_blocking goes 6 -> 0 while its crossings rise, and the quench adds an
+edge_connector error. ON never raised body_blocking above OFF.
+
 Not collected by run_all (no `test_` prefix). About an hour.
 
     python3 -X utf8 tests/measure_1127_stack_gate_census.py [--workdir DIR]

@@ -542,6 +542,15 @@ this tool exists for. `--strict-legal` is the absolute arm, `--force` the
 waiver, and a KiCad `(locked yes)` is refused unless the same call `unlock`s
 it. See `docs/utilities.md` for the full contract.
 
+The SEARCH's own stack test (`legality.pads_ok` refusing a new
+`PairShortfall.stack`) is still measured on pad BOXES, conservative by
+design. `legality.STACK_EXACT_CONFIRM` (#1127, default off) confirms each box
+hit on the pads' outlines with `_exact_pad_stack`, the check check_assembly
+makes. `tests/measure_1127_stack_gate_census.py` measured it before any
+default: the corpus seeds and quenches almost never reach a box stack, and
+the placement A/B did not pass (the census and its numbers are in #1127), so
+it stays off.
+
 ## place_fanout_clearance.py — decoupling-cap clearance repair (issue #130)
 
 Run **after** `bga_fanout.py`. Nudges decoupling caps near a BGA so their
