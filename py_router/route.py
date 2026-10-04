@@ -1895,7 +1895,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     from kicad_dru import install_layer_clearances, install_track_clearances
     install_layer_clearances(config, layer_clearances, input_file, pcb_data)
     install_track_clearances(config, track_clearances, input_file, pcb_data,
-                             routed_net_ids=list(net_ids))
+                             routed_net_ids=[nid for _, nid in net_ids])
 
     # Apply target swaps for single-ended swappable-nets
     single_ended_target_swaps: Dict[str, str] = {}
@@ -4915,8 +4915,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                             # table either), and the run's resolved class map
                             # by NAME -- the oracle re-parses the file.
                             from kicad_dru import install_layer_clearances
-                            install_layer_clearances(_cap_cfg, None,
-                                                     input_file, None)
+                            install_layer_clearances(
+                                _cap_cfg, dict(config.layer_clearances or {}),
+                                input_file, None)
                             _orc_cap = oracle_reconnect(
                                 output_file, _mvnames, _cap_cfg,
                                 track_via_clearance=config.clearance,
@@ -5543,7 +5544,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # that is a pcbnew save whose net ids are not this run's.
                 _wbn9 = oracle_net_widths_by_name(config, pcb_data.nets)
                 from kicad_dru import install_layer_clearances
-                install_layer_clearances(_ocfg, None, input_file, None)
+                # the run's RESOLVED map (expanded over the board's copper,
+                # not this config's routed subset), as the GUI payload carries
+                install_layer_clearances(
+                    _ocfg, dict(config.layer_clearances or {}),
+                    input_file, None)
                 # #527 follow-up: the oracle's own per-round / per-link
                 # callbacks were already there, but THIS call site never
                 # passed one -- so the whole leg ran behind the cleanup

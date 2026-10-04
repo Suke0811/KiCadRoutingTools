@@ -165,6 +165,10 @@ def test_escalation_and_cap_config_carry_the_rules():
     assert len(ocfg) == 1, len(ocfg)
     assert ast.unparse(cap[0]).replace('_cap_cfg', '_ocfg') == \
         ast.unparse(ocfg[0]), (ast.unparse(cap[0]), ast.unparse(ocfg[0]))
+    # ...and both are handed the run's RESOLVED map (expanded over the
+    # board's copper), not re-read over their own routed subset of layers
+    assert 'config.layer_clearances' in ast.unparse(ocfg[0].args[1]), \
+        ast.unparse(ocfg[0])
     print(f"  PASS: {len(esc)} escalation call(s) pass the round's class map; "
           f"_cap_cfg installs its layer rules as _ocfg does")
 

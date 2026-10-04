@@ -3316,6 +3316,9 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
         return best
 
     _clr_max_by_layer = {}
+    # the widest #735 track rule: the segment prefilter must reach it (#1135)
+    _trk = getattr(config, 'track_clearances', None) or {}
+    _trk_max = max(_trk.values()) if _trk else 0.0
     # #617: the board's own copper-to-hole floor, resolved once per call
     # (cached per board path inside the helper). Raise-only, so a board that
     # declares nothing keeps this predicate's decisions bit-identical.
@@ -3339,7 +3342,7 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
                 continue
             if _seg_pt(x1, y1, x2, y2, v.x, v.y) < req - EPS:
                 return False
-        sreq = half + _shalf + clr_max
+        sreq = half + _shalf + max(clr_max, _trk_max)
         _lh = hash(layer)
         for si in np.nonzero((_slay == _lh)
                              & (bb[0] - sreq <= _sxhi)
@@ -3349,8 +3352,11 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
             s = _segs_l[si]
             if s.layer != layer:
                 continue
-            req = half + s.width / 2.0 + config.layer_clearance(  # #498
-                layer, config.obstacle_clearance(s.net_id))
+            # #498 layer rule, then the #735 track rule (#1135): the leg is a
+            # track, and so is this foreign segment
+            req = half + s.width / 2.0 + config.track_obstacle_clearance(
+                s.net_id, config.layer_clearance(
+                    layer, config.obstacle_clearance(s.net_id)))
             if not (bb[0] - req <= max(s.start_x, s.end_x)
                     and min(s.start_x, s.end_x) <= bb[2] + req
                     and bb[1] - req <= max(s.start_y, s.end_y)
@@ -3565,7 +3571,11 @@ def build_base_obstacles(
                 _block_segment_via_obstacle(obstacles, seg, coord,
                                             via_seg_expansion_mm)
             continue
-        seg_expansion_mm = track_width / 2 + seg.width / 2 + _seg_clr + cushion
+        # #1135: the track stamp also takes the .kicad_dru track-to-track rule
+        # (#735, raise-only; the via stamp below does not -- it binds tracks)
+        seg_expansion_mm = (track_width / 2 + seg.width / 2
+                            + config.track_obstacle_clearance(seg.net_id, _seg_clr)
+                            + cushion)
         _block_segment_obstacle(obstacles, seg, coord, layer_idx, seg_expansion_mm)
         # Also block vias along this segment - must include segment width for proper clearance
         via_seg_expansion_mm = config.via_size / 2 + seg.width / 2 + _seg_clr + cushion

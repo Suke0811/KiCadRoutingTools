@@ -60,6 +60,7 @@ def _bare_pad_pair_vias_fit(pcb_data, new_vias, config) -> Tuple[bool, str]:
                             check_pad_via_overlap, check_pad_drill_via_overlap)
     clearance = config.clearance
     mp = config.max_pair_clearance()
+    _inert = config.pair_clearance_inert()
     h2h = config.hole_to_hole_clearance
     margin = _DRC_CLEARANCE_MARGIN
     routing_layers = [l for l in config.layers if l.endswith('.Cu')]
@@ -113,7 +114,8 @@ def _bare_pad_pair_vias_fit(pcb_data, new_vias, config) -> Tuple[bool, str]:
                 # (moving off one worsens the other), so a margin-graze ships.
                 # #1136: the override is weighed against the pair's own value.
                 if pad_net != v.net_id:
-                    pad_base = config.pad_pair_clearance_before_override(
+                    pad_base = clearance if _inert else \
+                        config.pad_pair_clearance_before_override(
                         pad, v.net_id)
                     pad_clr = max(pad_base,
                                   getattr(pad, 'local_clearance', 0.0) or 0.0)

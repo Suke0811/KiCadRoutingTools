@@ -1692,7 +1692,7 @@ def oracle_reconnect(board_file: str, net_names, config,
     own ids (`rekey_by_name`), so the weld obstacle maps, the escalation and
     the admission checks price every foreign net at its class, and each
     link's routing floor is its own net's class. None or {}: the config's own
-    map (none, from every caller today), i.e. the flat clearance.
+    map, i.e. the flat clearance when the caller's config carries none.
     `net_widths_by_name` (#1133) carries the per-net width maps the same way
     ({field: {net name: value}} for the fields in ORACLE_WIDTH_MAPS, built by
     `oracle_net_widths_by_name`); each one given replaces the config's own.

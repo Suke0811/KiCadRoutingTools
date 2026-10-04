@@ -45,16 +45,16 @@ def _count_pn_overlaps(p_segs, n_segs, config) -> int:
     decide whether the standard coupled route pinches its own pair.
 
     P and N are two nets, so KiCad grades them at the pair's own value
-    (#1134): max(clearance, class P, class N), then the layer rule. route_diff
-    raises the coupling gap to the same class value (#530), so this is the
-    floor the coupled run is built to."""
+    (#1134): max(clearance, class P, class N), then the layer rule, held to
+    the gap the coupled run is built at (`GridRouteConfig.pn_clearance`)."""
     if not n_segs:
         return 0
     n_net = n_segs[0].net_id
     cnt = 0
     for s in p_segs:
         if _seg_to_seglist_min_edge(s.start_x, s.start_y, s.end_x, s.end_y,
-                                    s.width, s.layer, n_segs)                 < config.pair_clearance(s.net_id, n_net, s.layer) - 1e-6:
+                                    s.width, s.layer, n_segs) \
+                < config.pn_clearance(s.net_id, n_net, s.layer) - 1e-6:
             cnt += 1
     return cnt
 

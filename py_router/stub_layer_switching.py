@@ -1067,12 +1067,14 @@ def stub_clear_of_foreign_tracks(segments: List[Segment], dest_layer: str, net_i
         for other in pcb_data.segments:
             if other.layer != dest_layer or other.net_id in exclude:
                 continue
-            if (max(other.start_x, other.end_x) < bminx or
-                    min(other.start_x, other.end_x) > bmaxx or
-                    max(other.start_y, other.end_y) < bminy or
-                    min(other.start_y, other.end_y) > bmaxy):
-                continue
             other_half = (other.width if other.width > 0 else config.track_width) / 2
+            # the window is grown by the foreign track's own half-width: a
+            # wide track whose centreline is outside it can still reach (#1136)
+            if (max(other.start_x, other.end_x) < bminx - other_half or
+                    min(other.start_x, other.end_x) > bmaxx + other_half or
+                    max(other.start_y, other.end_y) < bminy - other_half or
+                    min(other.start_y, other.end_y) > bmaxy + other_half):
+                continue
             d = segment_to_segment_distance_seg(seg, other)
             if d < seg_half + other_half + config.pair_clearance(
                     net_id, other.net_id, dest_layer, kind='track'):
@@ -1085,9 +1087,11 @@ def stub_clear_of_foreign_tracks(segments: List[Segment], dest_layer: str, net_i
         for via in pcb_data.vias:
             if via.net_id in exclude:
                 continue
-            if not (bminx <= via.x <= bmaxx and bminy <= via.y <= bmaxy):
+            _vr = (via.size or 0) / 2
+            if not (bminx - _vr <= via.x <= bmaxx + _vr
+                    and bminy - _vr <= via.y <= bmaxy + _vr):
                 continue
-            d = point_to_segment_distance_seg(via.x, via.y, seg) - (via.size or 0) / 2
+            d = point_to_segment_distance_seg(via.x, via.y, seg) - _vr
             if d < seg_half + config.pair_clearance(net_id, via.net_id,
                                                     dest_layer):
                 net = pcb_data.nets.get(via.net_id)

@@ -553,22 +553,29 @@ class GridRouteConfig:
                            layer: Optional[str] = None, *, other_pad=None,
                            base: Optional[float] = None) -> float:
         """check_drc's clearance between `pad` and copper of `other_net`
-        (`_pad_pair_cl`): the pair value, then the #498 rule on `layer` when
-        the pad meets the other item on one layer (a track), else the max over
-        the copper layers the two share (a via, or `other_pad`), and last a
-        pad / footprint clearance OVERRIDE, which replaces the value."""
-        eff = self.pair_clearance(getattr(pad, 'net_id', 0) or 0, other_net,
-                                  base=base)
-        if layer is not None:
-            eff = self.layer_clearance(layer, eff)
-        elif self.layer_clearances:
-            from check_drc import pads_shared_layer_clearance, pad_copper_layers
-            cu = list(self.board_copper_layers or self.layers)
-            eff = pads_shared_layer_clearance(
-                eff, self.layer_clearances, pad_copper_layers(pad, cu),
-                pad_copper_layers(other_pad, cu) if other_pad is not None
-                else None)
-        return self.pad_override_clearance(eff, pad, other_pad)
+        (`_pad_pair_cl`): `pad_pair_clearance_before_override`, then a pad /
+        footprint clearance OVERRIDE, which replaces the value."""
+        return self.pad_override_clearance(
+            self.pad_pair_clearance_before_override(
+                pad, other_net, layer, other_pad=other_pad, base=base),
+            pad, other_pad)
+
+    def pn_clearance(self, p_net: int, n_net: int,
+                     layer: Optional[str] = None) -> float:
+        """The floor a diff pair's P is checked against its own N at (#1134).
+
+        KiCad grades P against N like any two nets (`pair_clearance`), and
+        route_diff raises each pair's coupling gap to its class (#530) and to
+        the clearance (#441) -- but not to a .kicad_dru layer or track rule.
+        So the P/N self-checks are held to the pair value only as far as the
+        gap the coupled run is BUILT at: `min(pair, max(gap, clearance))`.
+        Above that, a self-check would flag every coupled segment of a clean
+        run, which no reroute can fix. With nothing declared this is
+        `clearance` (the gap is never below it), as these checks always were."""
+        gap = self.diff_pair_gap if self.diff_pair_gap is not None else 0.0
+        cap = gap if gap > self.clearance else self.clearance
+        pc = self.pair_clearance(p_net, n_net, layer)
+        return pc if pc < cap else cap
 
     def max_pair_clearance(self, base: Optional[float] = None) -> float:
         """An upper bound of `pair_clearance` over every pair and kind: the

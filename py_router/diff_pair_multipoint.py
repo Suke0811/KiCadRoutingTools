@@ -113,14 +113,16 @@ def _pn_self_overlaps(new_segments, p_net_id, n_net_id, config, pcb_data=None) -
         return False
     # Only the NEW segments need testing as the moving party -- pre-existing
     # stub-vs-stub spacing was already DRC-valid before this leg. P and N are
-    # graded at the pair's own value, class and layer rule (#1134).
+    # graded at the pair's own floor (#1134, `pn_clearance`).
     for s in new_p:
         if _seg_to_seglist_min_edge(s.start_x, s.start_y, s.end_x, s.end_y,
-                                    s.width, s.layer, all_n)                 < config.pair_clearance(p_net_id, n_net_id, s.layer) - 1e-6:
+                                    s.width, s.layer, all_n) \
+                < config.pn_clearance(p_net_id, n_net_id, s.layer) - 1e-6:
             return True
     for s in new_n:
         if _seg_to_seglist_min_edge(s.start_x, s.start_y, s.end_x, s.end_y,
-                                    s.width, s.layer, all_p)                 < config.pair_clearance(p_net_id, n_net_id, s.layer) - 1e-6:
+                                    s.width, s.layer, all_p) \
+                < config.pn_clearance(p_net_id, n_net_id, s.layer) - 1e-6:
             return True
     return False
 
@@ -459,6 +461,8 @@ def _fans_fit(pcb_data, fans, relocated_pads, config) -> bool:
                            check_pad_drill_via_overlap)
     clearance = config.clearance
 
+    _inert = config.pair_clearance_inert()
+
     def _via_clr(a, b):
         return (clearance if a == b
                 else config.pair_clearance(a, b, kind='stack'))
@@ -500,8 +504,8 @@ def _fans_fit(pcb_data, fans, relocated_pads, config) -> bool:
                 # margin slack when the override governs (the via-nudge cannot fix
                 # a via boxed between two long override pads). #1136: the
                 # override is weighed against the pair's own value.
-                pad_base = (clearance if pad.net_id == v.net_id else
-                            config.pad_pair_clearance_before_override(
+                pad_base = (clearance if _inert or pad.net_id == v.net_id
+                            else config.pad_pair_clearance_before_override(
                                 pad, v.net_id))
                 pad_clr = max(pad_base, getattr(pad, 'local_clearance', 0.0) or 0.0)
                 pad_margin = margin if pad_clr == pad_base else 0.0

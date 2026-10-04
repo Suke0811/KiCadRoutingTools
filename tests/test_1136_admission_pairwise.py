@@ -455,9 +455,26 @@ def test_meander_amplitude():
                         lambda c, kw=kw: amp(pcb_data=pcb(), net_id=OWN,
                                              config=c, **kw, **_AMP))
     pair = pcb(segs=[make_seg(0, 1.2, 10, 1.2, net_id=P2)])
+
+    def gap_raised(c):
+        # route_diff raises a pair's coupling gap to its class (#530) and to
+        # the clearance (#441); the P/N floor is held to that gap (#1134)
+        from dataclasses import replace
+        return replace(c, diff_pair_gap=max(c.diff_pair_gap,
+                                            c.pair_clearance(OWN, P2)))
     _amp_three_ways('intra-pair meander vs its partner (paired_clearance)',
-                    lambda c: amp(pcb_data=pair, net_id=OWN, config=c,
+                    lambda c: amp(pcb_data=pair, net_id=OWN,
+                                  config=gap_raised(c),
                                   paired_net_id=P2, **_AMP), net=P2)
+    # a layer rule ABOVE the gap the coupled run is built at does not shrink
+    # the bump: the partner sits at the gap by construction (#1134)
+    ruled = gap_raised(cfg(layer_clearances={'F.Cu': 0.3}))
+    flat_a = amp(pcb_data=pair, net_id=OWN, config=gap_raised(cfg()),
+                 paired_net_id=P2, **_AMP)
+    ruled_a = amp(pcb_data=pair, net_id=OWN, config=ruled,
+                  paired_net_id=P2, **_AMP)
+    check('intra-pair meander: a layer rule above the gap leaves the '
+          f'amplitude ({flat_a:.3f} -> {ruled_a:.3f})', ruled_a, flat_a)
 
 
 def test_meander_own_pad_keeps_the_flat_value():
@@ -640,9 +657,57 @@ def test_before_override_is_pad_pair_clearance_short_of_the_override():
           bad, 0)
 
 
+def test_stub_track_window_reaches_the_items_edge():
+    """stub_clear_of_foreign_tracks windows each foreign item; the window
+    must reach the item's EDGE, not its centre: a wide via or track whose
+    centre is past `seg_half + mp` can still be within its pair value."""
+    import stub_layer_switching as sls
+    stub = [make_seg(0, 0, 5, 0, net_id=OWN, width=0.2)]
+    for wide, vy, vsize in ((1.3, 1.6, 0.6), (2.5, 2.8, 0.8)):
+        b = pcb(vias=[make_via(2.5, vy, net_id=FOREIGN, size=vsize)])
+        ok, _ = sls.stub_clear_of_foreign_tracks(
+            stub, 'F.Cu', OWN, b, cfg({FOREIGN: wide}), set())
+        check(f'stub vs a {vsize} via of a {wide} class, edge '
+              f'{vy - vsize / 2 - 0.1:.2f} away: refused', ok, False)
+    for wide, ty, tw in ((1.3, 1.6, 0.6), (2.5, 3.0, 1.5)):
+        b = pcb(segs=[make_seg(0, ty, 5, ty, net_id=FOREIGN, width=tw)])
+        ok, _ = sls.stub_clear_of_foreign_tracks(
+            stub, 'F.Cu', OWN, b, cfg({FOREIGN: wide}), set())
+        check(f'stub vs a {tw} track of a {wide} class, edge '
+              f'{ty - tw / 2 - 0.1:.2f} away: refused', ok, False)
+    # no class at all: a 3 mm power track overlapping the stub is a short
+    b = pcb(segs=[make_seg(0, 1.55, 5, 1.55, net_id=FOREIGN, width=3.0)])
+    ok, _ = sls.stub_clear_of_foreign_tracks(stub, 'F.Cu', OWN, b, cfg(),
+                                             set())
+    check('stub vs an overlapping 3 mm track, no class: refused', ok, False)
+
+
+def test_custom_pad_gets_the_class_excess():
+    """A custom-shape foreign pad of a wide class is priced at its class
+    like a rect one: the helpers `_pair_floor` feeds fold the class excess
+    into the custom-pad distance too."""
+    import single_ended_routing as ser
+    c = cfg({FOREIGN: WIDE})
+    base, ncl = ser._pair_floor(c, OWN, 'F.Cu')
+    got = {}
+    for custom in (False, True):
+        kw = ({'polygons': [[(9.5, 9.5), (10.5, 9.5), (10.5, 10.5),
+                             (9.5, 10.5)]]} if custom else {})
+        p = make_pad(FOREIGN, 10, 10, size_x=1.0, size_y=1.0,
+                     shape='custom' if custom else 'rect', **kw)
+        b = pcb(pads=[p])
+        got[custom] = ser._pt_foreign_pad_dist(
+            b, OWN, 10.8, 10.0, 'F.Cu', base_clearance=base,
+            net_clearances=ncl)
+    check(f'custom pad effective distance {got[True]:.3f} == rect '
+          f'{got[False]:.3f}', abs(got[True] - got[False]) < 1e-6, True)
+
+
 TESTS = [test_stub_pad_check_reads_the_stub_width,
          test_stub_validators, test_stub_kind_and_layer,
          test_stub_windows_reach_a_wide_class,
+         test_stub_track_window_reaches_the_items_edge,
+         test_custom_pad_gets_the_class_excess,
          test_rescue_leg, test_rescue_via_site, test_rescue_cap_relocation,
          test_rescue_cap_conflicts,
          test_swap_via_fit, test_swap_and_fan_pad_override,

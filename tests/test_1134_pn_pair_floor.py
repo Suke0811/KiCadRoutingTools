@@ -8,6 +8,11 @@ that decide whether a coupled route pinches its own pair priced the pinch at
 the flat Default clearance, so on a pair whose class is wider than Default
 they passed a P/N approach KiCad flags.
 
+The floor is `GridRouteConfig.pn_clearance`: the pair value, held to the gap
+the coupled run is built at (route_diff does not raise the gap for a layer
+or track rule, so a check above the gap would flag every segment of a clean
+coupled run). The configs here carry the gap route_diff would give them.
+
 Rows, each at the flat value (no class: the verdict is unchanged) and under a
 0.35 class on both nets:
   - diff_pair_loop._count_pn_overlaps, on a board check_drc grades, with
@@ -39,12 +44,15 @@ CLASS = 0.35
 BASE = 0.2
 
 
-def _cfg(cls=None):
+def _cfg(cls=None, **kw):
     from routing_config import GridRouteConfig
     c = GridRouteConfig(clearance=BASE, track_width=0.2, via_size=0.6,
-                        via_drill=0.3, layers=['F.Cu', 'B.Cu'])
+                        via_drill=0.3, layers=['F.Cu', 'B.Cu'], **kw)
     if cls:
         c.set_net_clearances({1: cls, 2: cls}, routed_net_ids=[1, 2])
+    # the gap route_diff gives the pair: raised to the clearance (#441) and
+    # to the pair's class (#530) -- never to a layer or track rule
+    c.diff_pair_gap = max(c.diff_pair_gap, c.clearance, cls or 0.0)
     return c
 
 
@@ -93,6 +101,30 @@ def test_pn_self_overlaps():
     assert not _pn_self_overlaps(wide, 1, 2, _cfg(CLASS))
 
 
+def test_layer_rule_above_the_gap_is_not_a_self_graze():
+    """A clean coupled run sits AT the gap. An F.Cu rule of 0.3 above the
+    0.2 gap route_diff built it at would make every segment of it a
+    self-graze that no reroute can fix, so the floor is held to the gap; a
+    real pinch below the gap still counts."""
+    from synth import make_seg
+    from diff_pair_loop import _count_pn_overlaps
+    from diff_pair_multipoint import _pn_self_overlaps
+    ruled = _cfg(layer_clearances={'F.Cu': 0.3})
+    at_gap = [make_seg(5, 10, 15, 10, net_id=1),
+              make_seg(5, 10.4, 15, 10.4, net_id=2)]        # edge gap 0.2
+    p = [s for s in at_gap if s.net_id == 1]
+    n = [s for s in at_gap if s.net_id == 2]
+    assert _count_pn_overlaps(p, n, ruled) == 0
+    assert not _pn_self_overlaps(at_gap, 1, 2, ruled)
+    pinch = [make_seg(5, 10, 15, 10, net_id=1),
+             make_seg(5, 10.35, 15, 10.35, net_id=2)]       # edge gap 0.15
+    assert _pn_self_overlaps(pinch, 1, 2, ruled), \
+        'a pinch below the gap must still count'
+    # a RELAXING rule replaces the value as check_drc does
+    relaxed = _cfg(layer_clearances={'F.Cu': 0.14})
+    assert not _pn_self_overlaps(pinch, 1, 2, relaxed)
+
+
 def test_offset_connector_partner_via():
     """The P leg runs from (0, 0) to (2, 0); the partner's escape via (0.6 mm)
     sits 0.62 mm off the leg's centreline. Need: flat 0.2 + 0.1 + 0.3 = 0.6
@@ -111,6 +143,18 @@ def test_offset_connector_partner_via():
     # a caller that passes no net ids keeps the flat value
     old = _make_offset_connector_check(*args, _cfg(CLASS))
     assert old(2.0, 1.5, 1.0, 0.0)
+    # the launch layer, when the caller gives it, prices the pair there: a
+    # rule on ANOTHER layer does not refuse the F.Cu launch (the stack bound
+    # would), and the rule on the launch layer does
+    other = _make_offset_connector_check(
+        *args, _cfg(layer_clearances={'B.Cu': 0.5}), 1, 2)
+    assert other(2.0, 1.5, 1.0, 0.0, layer='F.Cu')
+    assert not other(2.0, 1.5, 1.0, 0.0), 'no layer given: the stack bound'
+    assert not other(2.0, 1.5, 1.0, 0.0, layer='B.Cu')
+    # a via of the leg's OWN net keeps the flat value
+    own = _make_offset_connector_check(
+        p_term, n_term, [(1.0, 0.62, 0.6, 1)], 1.5, _cfg(CLASS), 1, 2)
+    assert own(2.0, 1.5, 1.0, 0.0)
 
 
 def test_collapse_join_intra_floor():
@@ -140,7 +184,7 @@ def test_collapse_join_intra_floor():
 
 def test_hybrid_pn_overlap_count_prices_the_pair():
     """`_pn_overlap_count` is nested inside the hybrid builder, so it is held
-    statically: its threshold must come from pair_clearance, not the flat
+    statically: its threshold must come from pn_clearance, not the flat
     config.clearance."""
     path = os.path.join(ROOT, 'py_router', 'diff_pair_routing.py')
     tree = ast.parse(open(evidence(path), encoding='utf-8').read())
@@ -148,11 +192,12 @@ def test_hybrid_pn_overlap_count_prices_the_pair():
            and n.name == '_pn_overlap_count']
     assert len(fns) == 1, f'expected one _pn_overlap_count, found {len(fns)}'
     src = ast.unparse(fns[0])
-    assert 'pair_clearance' in src, src
+    assert 'pn_clearance' in src, src
     assert 'config.clearance' not in src, src
 
 
 TESTS = [test_count_pn_overlaps_matches_check_drc, test_pn_self_overlaps,
+         test_layer_rule_above_the_gap_is_not_a_self_graze,
          test_offset_connector_partner_via, test_collapse_join_intra_floor,
          test_hybrid_pn_overlap_count_prices_the_pair]
 

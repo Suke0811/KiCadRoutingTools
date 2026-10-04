@@ -172,6 +172,8 @@ def _via_site_clear(pcb_data: "PCBData", x: float, y: float, config,
     vr = (getattr(config, 'via_size', 0.6) or 0.6) / 2.0
     vd = (getattr(config, 'via_drill', 0.3) or 0.3) / 2.0
     h2h = getattr(config, 'hole_to_hole_clearance', 0.2) or 0.2
+    clr = config.clearance
+    _inert = config.pair_clearance_inert()
     for v in pcb_data.vias:
         d = math.hypot(x - v.x, y - v.y)
         if v.net_id != net_id:
@@ -202,8 +204,9 @@ def _via_site_clear(pcb_data: "PCBData", x: float, y: float, config,
                 continue
             dx = max(abs(x - p.global_x) - p.size_x / 2.0, 0.0)
             dy = max(abs(y - p.global_y) - p.size_y / 2.0, 0.0)
-            if math.hypot(dx, dy) < vr + \
-                    config.pad_pair_clearance_before_override(p, net_id):
+            if math.hypot(dx, dy) < vr + (
+                    clr if _inert else
+                    config.pad_pair_clearance_before_override(p, net_id)):
                 return False
     for s in pcb_data.segments:
         if s.net_id == net_id:

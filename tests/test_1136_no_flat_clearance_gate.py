@@ -75,7 +75,12 @@ _LM = 'py_router/length_matching.py'
 ALLOWED = {
     ('py_router/layer_swap_optimization.py', '_bare_pad_pair_vias_fit',
      'clearance = config.clearance'): (1, _SAME_NET + ' (two new vias of '
-                                          'one net)'),
+                                          'one net); also the pads\' inert '
+                                          'fast path'),
+    ('py_router/net_rescue.py', '_via_site_clear',
+     'clr = config.clearance'): (1, 'the pads\' inert fast path: the value '
+                                    'pad_pair_clearance_before_override '
+                                    'returns when nothing is declared'),
     ('py_router/diff_pair_multipoint.py', '_fans_fit',
      'clearance = config.clearance'): (1, _SAME_NET),
     (_LM, 'get_safe_amplitude_at_point',

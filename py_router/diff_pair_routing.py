@@ -305,24 +305,31 @@ def _make_offset_connector_check(p_term, n_term, escape_vias, spacing_mm, config
     # not sit exactly on the stub tip) -- the connector legitimately starts on
     # it, so don't count it as a graze of its own leg.
     own_tol = _launch_assoc_tol(config)
-    # A leg grazing the PARTNER's via is a P/N pair, graded at the pair's own
-    # class value (#1134). The launch layer is not known here, so a layer
-    # rule is bounded by the max over the stack.
-    pn_clr = (config.stack_clearance(config.pair_clearance(p_net_id, n_net_id))
-              if p_net_id is not None and n_net_id is not None
-              else config.clearance)
+    _nets = p_net_id is not None and n_net_id is not None
 
-    def _leg_grazes(term, off):
-        for vx, vy, vsize, _ in escape_vias:
+    def _via_clr(leg_net, via_net, layer):
+        # A leg grazing the PARTNER's via is a P/N pair, graded at the pair's
+        # class value and the rule of the layer they meet on (#1134); the max
+        # over the stack bounds it when the caller does not say which layer.
+        # A via of the leg's OWN net keeps the flat value it was always
+        # tested at (KiCad grades no clearance between them).
+        if not _nets or via_net == leg_net:
+            return config.clearance
+        pc = config.pair_clearance(p_net_id, n_net_id, layer)
+        return pc if layer is not None else config.stack_clearance(pc)
+
+    def _leg_grazes(term, off, leg_net, layer):
+        for vx, vy, vsize, via_net in escape_vias:
             # skip the via at this terminal (its own launch via)
             if math.hypot(vx - term[0], vy - term[1]) <= own_tol:
                 continue
-            need = pn_clr + config.track_width / 2 + vsize / 2
+            need = (_via_clr(leg_net, via_net, layer)
+                    + config.track_width / 2 + vsize / 2)
             if _pt_seg_dist(vx, vy, term[0], term[1], off[0], off[1]) < need:
                 return True
         return False
 
-    def check(lx, ly, dx, dy):
+    def check(lx, ly, dx, dy, layer=None):
         px, py = -dy, dx  # perpendicular
         off_a = (lx + px * spacing_mm, ly + py * spacing_mm)
         off_b = (lx - px * spacing_mm, ly - py * spacing_mm)
@@ -336,7 +343,8 @@ def _make_offset_connector_check(p_term, n_term, escape_vias, spacing_mm, config
             legs = ((p_term, off_a), (n_term, off_b))
         else:
             legs = ((p_term, off_b), (n_term, off_a))
-        return not (_leg_grazes(*legs[0]) or _leg_grazes(*legs[1]))
+        return not (_leg_grazes(*legs[0], p_net_id, layer)
+                    or _leg_grazes(*legs[1], n_net_id, layer))
     return check
 
 
@@ -646,7 +654,8 @@ def _find_open_positions(center_x, center_y, dir_x, dir_y, layer_idx, setback,
             return None
         # Reject if a per-half offset connector from this launch would clip a
         # partner escape via (the own-net via the obstacle map excludes) -- #165.
-        if offset_check is not None and not offset_check(x, y, dx, dy):
+        if offset_check is not None and not offset_check(
+                x, y, dx, dy, layer=current_layer):
             return None
         return (gx, gy, dx, dy, x, y)
 
@@ -3100,13 +3109,13 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
 
         def _pn_overlap_count(all_segs):
             # Intra-pair P/N segments closer than clearance (the #248/#215
-            # self-graze), at the pair's own value (#1134).
+            # self-graze), at the pair's own floor (#1134, pn_clearance).
             ps = [s for s in all_segs if s.net_id == p_net_id]
             ns = [s for s in all_segs if s.net_id == n_net_id]
             return sum(1 for s in ps
                        if _seg_to_seglist_min_edge(s.start_x, s.start_y, s.end_x, s.end_y,
                                                    s.width, s.layer, ns)
-                       < config.pair_clearance(p_net_id, n_net_id, s.layer) - 1e-6)
+                       < config.pn_clearance(p_net_id, n_net_id, s.layer) - 1e-6)
 
         def _assemble(pol):
             """Build the full hybrid (coupled middle + 4 legs) for polarity `pol`.
@@ -3600,7 +3609,7 @@ def _collapse_leg_attach_join(leg_segs, attach_xy, config, pcb_data, net_id, par
     # raises a pair's gap to its class (#530), so a wide-class pair's floor is
     # its class, not the flat Default.
     _pn = (config.pair_clearance(net_id, partner_segs[0].net_id, pen.layer)
-           if partner_segs else config.clearance)
+           if partner_segs else config.clearance)   # min'd with the gap below
     intra = min(_pn, config.diff_pair_gap)
     # Only act on a REAL local violation: the grid corner (penultimate's far end)
     # must currently sit below the intra-pair floor to the partner copper.

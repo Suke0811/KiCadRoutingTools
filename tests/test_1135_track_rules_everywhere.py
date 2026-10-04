@@ -284,10 +284,65 @@ def test_the_oracle_installs_the_rule_on_its_parse():
           f"the rule")
 
 
+def test_the_plane_builders_read_the_rule():
+    """Installing the rule is only half of it: the builders and the gate the
+    plane steps and the oracle's main weld lay copper through must READ it,
+    on a track-vs-track pair only. Net A (the plane / weld net) and B's 0.2
+    track at y=10.48: flat, A's 0.2 track at y=10.0 needs 0.4 centre to
+    centre (clears 0.48); under B's 0.5 rule it needs 0.7 (refused)."""
+    from kicad_parser import parse_kicad_pcb
+    from routing_config import GridRouteConfig, GridCoord
+    from plane_region_connector import build_base_obstacles, wide_route_clear
+    from plane_obstacle_builder import build_routing_obstacle_map
+    with tempfile.TemporaryDirectory() as td:
+        b = os.path.join(td, 'b.kicad_pcb')
+        write_board(b, segments=[(5, 10, 10, 10, 0.2, 'F.Cu', 1),
+                                 (5, 10.48, 15, 10.48, 0.2, 'F.Cu', 2)])
+        pcb = parse_kicad_pcb(b)
+
+    def cfg(tc):
+        c = GridRouteConfig(clearance=0.2, track_width=0.2, via_size=0.6,
+                            via_drill=0.3, layers=['F.Cu', 'B.Cu'],
+                            grid_step=0.05)
+        c.track_clearances = dict(tc)
+        return c
+    flat, ruled = cfg({}), cfg({2: 0.5})
+    g = GridCoord(0.05)
+    probe = g.to_grid(12.0, 10.05)      # 0.43 from B's centreline
+    with contextlib.redirect_stdout(io.StringIO()):
+        maps = {name: build_base_obstacles(
+            exclude_net_ids={1}, routing_layers=['F.Cu', 'B.Cu'],
+            pcb_data=pcb, config=c, track_width=0.2,
+            track_via_clearance=0.2, hole_to_hole_clearance=0.2)[0]
+            for name, c in (('flat', flat), ('ruled', ruled))}
+        rmaps = {name: build_routing_obstacle_map(pcb, c, 1, 'F.Cu',
+                                                  verbose=False)
+                 for name, c in (('flat', flat), ('ruled', ruled))}
+    assert not maps['flat'].is_blocked(*probe, 0), \
+        'fixture: flat, 0.43 c-c clears the 0.4 keep-out'
+    assert maps['ruled'].is_blocked(*probe, 0), \
+        'plane_region_connector.build_base_obstacles ignores the track rule'
+    assert not rmaps['flat'].is_blocked(*probe, 0)
+    assert rmaps['ruled'].is_blocked(*probe, 0), \
+        'plane_obstacle_builder.build_routing_obstacle_map ignores the rule'
+    weld = [(10.0, 10.0, 'F.Cu'), (10.6, 10.0, 'F.Cu')]
+    assert wide_route_clear(weld, 0.2, pcb, 1, flat, board_edge_clearance=0.0)
+    assert not wide_route_clear(weld, 0.2, pcb, 1, ruled,
+                                board_edge_clearance=0.0), \
+        "wide_route_clear (the oracle's emitted-copper gate) ignores the rule"
+    # the rule binds tracks: a via stamp is not raised by it
+    vprobe = g.to_grid(12.0, 10.48 - 0.1 - 0.3 - 0.2 - 0.05)
+    assert maps['flat'].is_via_blocked(*vprobe) == \
+        maps['ruled'].is_via_blocked(*vprobe), 'the track rule raised a via stamp'
+    print("  PASS: build_base_obstacles, build_routing_obstacle_map and "
+          "wide_route_clear price B's track at its 0.5 rule; vias untouched")
+
+
 TESTS = [test_route_style_config_sees_the_rule,
          test_plane_engines_install_the_rule,
          test_the_finalize_forwards_the_runs_rules,
-         test_the_oracle_installs_the_rule_on_its_parse]
+         test_the_oracle_installs_the_rule_on_its_parse,
+         test_the_plane_builders_read_the_rule]
 
 
 if __name__ == '__main__':

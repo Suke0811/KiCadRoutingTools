@@ -183,11 +183,13 @@ def _foreign_pad_arrays(pcb_data, layer):
     return arr
 
 
-def _custom_pad_min_dist(custom, net_id, pts, base_clearance=None):
+def _custom_pad_min_dist(custom, net_id, pts, base_clearance=None,
+                         net_clearances=None):
     """Exact min edge distance from sample points to the CUSTOM pads of other
     nets (check_drc.point_to_pad_distance -- the model kicad-cli agrees with to
     ~0.1um). Windowed by each pad's bbox + _FOREIGN_PAD_WINDOW; same
-    base_clearance local-override adjustment as the vectorized kernels."""
+    base_clearance local-override and #436 net-class excess adjustments as
+    the vectorized kernels."""
     if not custom:
         return 1e9
     from check_drc import point_to_pad_distance
@@ -201,6 +203,9 @@ def _custom_pad_min_dist(custom, net_id, pts, base_clearance=None):
         adj = 0.0
         if base_clearance is not None:
             adj = max((getattr(pad, 'local_clearance', 0.0) or 0.0) - base_clearance, 0.0)
+            if net_clearances:
+                adj = max(adj, net_clearances.get(nid, base_clearance)
+                          - base_clearance)
         # Branch-and-bound prune (exact-result-preserving): the polygons are
         # stored in GLOBAL coordinates, so the distance from a sample point to
         # the polygon's bounding BOX is a valid lower bound on its edge
@@ -262,7 +267,8 @@ def _pt_foreign_pad_dist(pcb_data, net_id, x, y, layer, base_clearance=None,
     against a pad in a wider (e.g. controlled-impedance) class. Inert when None."""
     nids, cx, cy, hx, hy, cr, rc, rs, ex, ey, plc, custom = \
         _foreign_pad_arrays(pcb_data, layer)
-    best_custom = _custom_pad_min_dist(custom, net_id, ((x, y),), base_clearance)
+    best_custom = _custom_pad_min_dist(custom, net_id, ((x, y),), base_clearance,
+                                       net_clearances)
     if cx.size == 0:
         return best_custom
     R = _FOREIGN_PAD_WINDOW
@@ -311,7 +317,7 @@ def _seg_foreign_pad_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
     sx = x1 + (x2 - x1) * _t
     sy = y1 + (y2 - y1) * _t
     best_custom = _custom_pad_min_dist(
-        custom, net_id, list(zip(sx, sy)), base_clearance)
+        custom, net_id, list(zip(sx, sy)), base_clearance, net_clearances)
     if cx.size == 0:
         return best_custom
     R = _FOREIGN_PAD_WINDOW
