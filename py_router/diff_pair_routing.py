@@ -287,7 +287,8 @@ def _terminal_escape_vias(pcb_data, p_net_id, n_net_id, p_term, n_term, config):
     return out
 
 
-def _make_offset_connector_check(p_term, n_term, escape_vias, spacing_mm, config):
+def _make_offset_connector_check(p_term, n_term, escape_vias, spacing_mm, config,
+                                 p_net_id=None, n_net_id=None):
     """Build an offset_check(launch_x, launch_y, dir_x, dir_y) -> bool closure.
 
     For a candidate setback launch point, the P and N tracks sit at +-spacing
@@ -304,13 +305,19 @@ def _make_offset_connector_check(p_term, n_term, escape_vias, spacing_mm, config
     # not sit exactly on the stub tip) -- the connector legitimately starts on
     # it, so don't count it as a graze of its own leg.
     own_tol = _launch_assoc_tol(config)
+    # A leg grazing the PARTNER's via is a P/N pair, graded at the pair's own
+    # class value (#1134). The launch layer is not known here, so a layer
+    # rule is bounded by the max over the stack.
+    pn_clr = (config.stack_clearance(config.pair_clearance(p_net_id, n_net_id))
+              if p_net_id is not None and n_net_id is not None
+              else config.clearance)
 
     def _leg_grazes(term, off):
         for vx, vy, vsize, _ in escape_vias:
             # skip the via at this terminal (its own launch via)
             if math.hypot(vx - term[0], vy - term[1]) <= own_tol:
                 continue
-            need = config.clearance + config.track_width / 2 + vsize / 2
+            need = pn_clr + config.track_width / 2 + vsize / 2
             if _pt_seg_dist(vx, vy, term[0], term[1], off[0], off[1]) < need:
                 return True
         return False
@@ -2088,12 +2095,12 @@ def _try_route_direction(src, tgt, pcb_data, config, obstacles, base_obstacles,
         (p_src_x, p_src_y), (n_src_x, n_src_y),
         _terminal_escape_vias(pcb_data, p_net_id, n_net_id,
                               (p_src_x, p_src_y), (n_src_x, n_src_y), config),
-        spacing_mm, config)
+        spacing_mm, config, p_net_id, n_net_id)
     tgt_offset_check = _make_offset_connector_check(
         (p_tgt_x, p_tgt_y), (n_tgt_x, n_tgt_y),
         _terminal_escape_vias(pcb_data, p_net_id, n_net_id,
                               (p_tgt_x, p_tgt_y), (n_tgt_x, n_tgt_y), config),
-        spacing_mm, config)
+        spacing_mm, config, p_net_id, n_net_id)
 
     # Get all valid setback positions for source and target, sorted by
     # preference, scanning a ladder of radii per terminal (issue #90), free to
@@ -3092,12 +3099,14 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
         pads_by_net = getattr(pcb_data, 'pads_by_net', None) or {}
 
         def _pn_overlap_count(all_segs):
-            # Intra-pair P/N segments closer than clearance (the #248/#215 self-graze).
+            # Intra-pair P/N segments closer than clearance (the #248/#215
+            # self-graze), at the pair's own value (#1134).
             ps = [s for s in all_segs if s.net_id == p_net_id]
             ns = [s for s in all_segs if s.net_id == n_net_id]
             return sum(1 for s in ps
                        if _seg_to_seglist_min_edge(s.start_x, s.start_y, s.end_x, s.end_y,
-                                                   s.width, s.layer, ns) < config.clearance - 1e-6)
+                                                   s.width, s.layer, ns)
+                       < config.pair_clearance(p_net_id, n_net_id, s.layer) - 1e-6)
 
         def _assemble(pol):
             """Build the full hybrid (coupled middle + 4 legs) for polarity `pol`.
