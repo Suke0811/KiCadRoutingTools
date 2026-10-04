@@ -1485,8 +1485,9 @@ def occupancy_shape(fp, lb: 'LocalBounds', geom=None):
     (`check_pads.custom_pad_copper`, #1123), not as its size box, which is
     symmetric about the anchor and so covers whatever side the copper does
     not reach; the box only where the parser could not draw the pad.
-    A pad on no copper layer (a paste-only aperture) is united too, as it
-    was before #1123: nothing here reads `pad.layers`.
+    A pad that puts no copper on a copper layer -- an NPTH hole, or a
+    paste-only aperture -- is not occupancy and is skipped
+    (`_pad_carries_copper`, the predicate `PartPads` builds from, #1128).
     """
     from shapely.geometry import Polygon, box
     from shapely.ops import unary_union
@@ -1497,7 +1498,7 @@ def occupancy_shape(fp, lb: 'LocalBounds', geom=None):
     from check_pads import custom_pad_copper, pad_outline_polygon
     extra = []
     for pad in (fp.pads or ()):
-        if getattr(pad, 'pad_type', '') == 'np_thru_hole':
+        if not _pad_carries_copper(pad):
             continue
         try:
             pp = custom_pad_copper(pad)
@@ -4115,18 +4116,19 @@ def pad_copper_overrun_mm(pads, gate) -> float:
     so its reach can read short by the parser's sagitta: R(1 - cos(pi/32))
     for a `gr_circle` (a 32-gon, 4.8 um per mm of radius), at most 1 um for
     a `gr_arc` stroke, at most 5 um for a polygon's arc or a round anchor.
-    A pad on no copper layer (a paste-only aperture) is read like copper,
-    as it was before #1123: nothing here reads `pad.layers`.
+    A pad that puts no copper on a copper layer -- an NPTH hole, or a
+    paste-only aperture (a 1 mm F.Paste pad 3 mm off the board used to gate
+    its part at 3.21 mm, #1128) -- carries none past the outline either.
     A CASTELLATED pad is exempt only while it STRADDLES the outline -- some
     of its copper on the board, as a half-hole on a module edge is; one
     wholly off the board counts like any other (a module parked off the
-    board is not on its edge). NPTH pads carry no copper. A pad whose
+    board is not on its edge). A pad whose
     outline cannot be computed falls back to its rect, never to "clean".
     """
     from check_pads import custom_pad_copper, pad_outline_polygon
     over = 0.0
     for p in pads or ():
-        if getattr(p, 'pad_type', '') == 'np_thru_hole':
+        if not _pad_carries_copper(p):
             continue
         try:
             copper = custom_pad_copper(p)

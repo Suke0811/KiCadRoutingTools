@@ -323,10 +323,9 @@ def test_kicad_demo_measurements():
     """Where the drawn shape and the box DO disagree at file pose: KiCad
     10's demos (not tracked; skipped without the install). Pinned from
     #1123's census, which predicted them before the fix. jetson's H5-H8
-    custom pads are paste-only apertures (F.Paste, no copper layer): the
-    helper reads them because nothing here reads `pad.layers` -- the same
-    gap `pad_copper_overrun_mm` discloses -- and `grade_pad_legality`'s
-    overrun on jetson is empty before and after, so no grade moves on them."""
+    custom pads are paste-only apertures (F.Paste, no copper layer), which
+    both graders skip since #1128 (`_pad_carries_copper`); their overrun was
+    0 before that too, so no grade moves on them."""
     if not DEMOS:
         print("  SKIP: no KiCad demos directory (KICAD_DEMOS_DIR)")
         return
