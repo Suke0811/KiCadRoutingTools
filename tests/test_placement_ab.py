@@ -1085,7 +1085,8 @@ def _ignore_ids(pcb, patterns):
 
 
 def _run_seed(board_path, out_path, intent, seed_kw,
-              group_sources=GROUP_SOURCES, ignore_nets=(), grade_intent=None):
+              group_sources=GROUP_SOURCES, ignore_nets=(), grade_intent=None,
+              engine_flags=None):
     """One SEED (from the intent, every part re-seated) + write + the same
     independent grade `_run` applies. The engine switch for a row that
     measures the seeder rather than the quench: `place_seed`'s path, minus
@@ -1106,11 +1107,12 @@ def _run_seed(board_path, out_path, intent, seed_kw,
 
     pcb = parse_kicad_pcb(board_path)
     t0 = time.time()
-    res = seeder.seed_from_intent(
-        pcb, board_path, intent, random.Random('0'),
-        group_sources=group_sources, clearance=QUENCH_BASE['clearance'],
-        board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
-        grid_step=QUENCH_BASE['grid_step'], **seed_kw)
+    with _module_flags(engine_flags):
+        res = seeder.seed_from_intent(
+            pcb, board_path, intent, random.Random('0'),
+            group_sources=group_sources, clearance=QUENCH_BASE['clearance'],
+            board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
+            grid_step=QUENCH_BASE['grid_step'], **seed_kw)
     write_placed_output(board_path, out_path, res['placements'])
     for ext in ('.kicad_pro', '.kicad_dru'):
         src = os.path.splitext(board_path)[0] + ext
@@ -1305,7 +1307,7 @@ def _run_repair(seeded_path, out_path, intent, repair_kw,
 
 
 def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES,
-         grade_intent=None):
+         grade_intent=None, engine_flags=None):
     """One quench + write + independent grade. Returns the measured row.
 
     `group_sources` is NOT optional in spirit, only in signature. Every block
@@ -1326,8 +1328,9 @@ def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES,
     pcb = parse_kicad_pcb(board_path)
     metrics = {}
     t0 = time.time()
-    placements = quench(pcb, pcb_file=board_path, metrics_out=metrics,
-                        **quench_kw)
+    with _module_flags(engine_flags):
+        placements = quench(pcb, pcb_file=board_path, metrics_out=metrics,
+                            **quench_kw)
     write_placed_output(board_path, out_path, placements)
     for ext in ('.kicad_pro', '.kicad_dru'):
         src = os.path.splitext(board_path)[0] + ext
@@ -1462,6 +1465,39 @@ def _verdict(off, on, row):
     return 'neutral', [f"{key} unchanged at {a}"]
 
 
+class _module_flags:
+    """Set `placement` module flags named `module.FLAG` for one ENGINE call,
+    and restore them (#1127: `legality.STACK_EXACT_CONFIRM`). A row's
+    `engine_flags` reach the seed or the quench only -- never the grade,
+    which builds its own `pose_score` state and must read both arms with one
+    ruler. An unknown module or flag raises: a typo would otherwise measure
+    the OFF arm twice and read like a term with no effect."""
+
+    def __init__(self, flags):
+        self.flags = dict(flags or {})
+        self.saved = []
+
+    def __enter__(self):
+        import importlib
+        for name, v in self.flags.items():
+            mod_name, _, flag = name.rpartition('.')
+            if not mod_name or not flag:
+                raise AssertionError(f"engine flag {name!r}: expected "
+                                     f"'module.FLAG'")
+            mod = importlib.import_module('placement.' + mod_name)
+            if not hasattr(mod, flag):
+                raise AssertionError(f"placement.{mod_name} has no flag "
+                                     f"{flag!r}")
+            self.saved.append((mod, flag, getattr(mod, flag)))
+            setattr(mod, flag, v)
+        return self
+
+    def __exit__(self, *exc):
+        for mod, flag, v in reversed(self.saved):
+            setattr(mod, flag, v)
+        return False
+
+
 class _seeder_flags:
     """Set `placement.seeder` module flags for one arm, and restore them.
     For a behaviour the engine holds as module state rather than a kwarg --
@@ -1558,8 +1594,9 @@ def run_row(row, workdir):
         # grade, same print.
         si = row.get('seed_intents')
         flags = row.get('seeder_flags') or {}
+        eflags = row.get('engine_flags') or {}
         if (not row.get('seed_on') and not row.get('seed_off') and not si
-                and not flags):
+                and not flags and not eflags):
             raise AssertionError(f"{row['name']}: a seed row states neither "
                                  f"seed_on/seed_off nor seed_intents -- it "
                                  f"would measure the same seed twice")
@@ -1584,11 +1621,13 @@ def run_row(row, workdir):
         with _seeder_flags(flags.get('off')):
             off = _run_seed(seed_board, os.path.join(d, 'off.kicad_pcb'),
                             i_off, dict(row.get('seed_off') or {}, **scope),
-                            ignore_nets=_ign, grade_intent=i_grade)
+                            ignore_nets=_ign, grade_intent=i_grade,
+                            engine_flags=eflags.get('off'))
         with _seeder_flags(flags.get('on')):
             on = _run_seed(seed_board, os.path.join(d, 'on.kicad_pcb'), i_on,
                            dict(row.get('seed_on') or {}, **scope),
-                           ignore_nets=_ign, grade_intent=i_grade)
+                           ignore_nets=_ign, grade_intent=i_grade,
+                           engine_flags=eflags.get('on'))
         mark, notes = _verdict(off, on, row)
         expected = row.get('expect')
         tag = mark.upper()
@@ -1642,16 +1681,17 @@ def run_row(row, workdir):
         kw_on['corridor_specs'] = row['corridors']
     # A row that states no difference measures nothing, and reads exactly like
     # a flag that never reached the engine.
-    if kw_on == kw_off:
+    _ef = row.get('engine_flags') or {}
+    if kw_on == kw_off and (_ef.get('on') or {}) == (_ef.get('off') or {}):
         raise AssertionError(
             f"{row['name']}: quench_on {row.get('quench_on')} / gate_intents "
             f"{row.get('gate_intents')} leave the ON kwargs identical to OFF"
             f" -- the row would measure the same run twice")
 
     off = _run(board, os.path.join(d, 'off.kicad_pcb'), intent, kw_off,
-               grade_intent=i_grade)
+               grade_intent=i_grade, engine_flags=_ef.get('off'))
     on = _run(board, os.path.join(d, 'on.kicad_pcb'), intent, kw_on,
-              grade_intent=i_grade)
+              grade_intent=i_grade, engine_flags=_ef.get('on'))
     mark, notes = _verdict(off, on, row)
     expected = row.get('expect')
     tag = mark.upper()
@@ -2215,6 +2255,28 @@ def _self_test():
             pass
         else:
             raise AssertionError(f'_emit_kwargs{bad} must refuse')
+    # 33. (#1127) an engine flag is set for the call and restored after it,
+    #     even when the call raises; an unknown flag or a name with no module
+    #     refuses rather than running the OFF arm twice.
+    from placement import legality as _lg
+    _was = _lg.STACK_EXACT_CONFIRM
+    with _module_flags({'legality.STACK_EXACT_CONFIRM': not _was}):
+        assert _lg.STACK_EXACT_CONFIRM is (not _was)
+    assert _lg.STACK_EXACT_CONFIRM is _was
+    try:
+        with _module_flags({'legality.STACK_EXACT_CONFIRM': not _was}):
+            raise KeyError('engine')
+    except KeyError:
+        pass
+    assert _lg.STACK_EXACT_CONFIRM is _was
+    for bad in ({'legality.NO_SUCH_FLAG': True}, {'STACK_EXACT_CONFIRM': True}):
+        try:
+            with _module_flags(bad):
+                pass
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f'_module_flags({bad}) must refuse')
 
 
 def _self_test_live():
