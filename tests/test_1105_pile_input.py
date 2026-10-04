@@ -100,6 +100,123 @@ def test_a_placed_board_is_refused_not_ineligible():
     print("  PASS: a placed board is refused as a broken measurement")
 
 
+def test_the_pile_row_seeds_the_pile_in_both_arms():
+    """run_row's pile branch hands BOTH arms the pile (not the corpus
+    board), the ONE pile intent for seeding and grading, and place_seed's
+    seed scope; the arms differ only in the row's own seed kwargs. The seed
+    itself is replaced by a recorder, so this checks the plumbing, not a
+    placement."""
+    calls = []
+
+    def rec(board_path, out_path, intent, seed_kw, group_sources=None,
+            ignore_nets=(), grade_intent=None):
+        calls.append({'board': board_path, 'out': out_path, 'intent': intent,
+                      'kw': dict(seed_kw), 'grade': grade_intent,
+                      'ignore': list(ignore_nets)})
+        return {'seconds': 0.0, 'crossings': 0, 'hpwl': 0.0, 'inversions': 0,
+                'unseated': 0, 'body_blocking': 0, 'intent_errors': 0}
+    row = {'name': 'pile-plumbing', 'board': 'esp_prog.kicad_pcb',
+           'corridors': [], 'engine': 'seed', 'input': 'pile',
+           'seed_off': {'decap_claim_after_ics': False},
+           'seed_on': {'decap_claim_after_ics': True},
+           'ignore_nets': ['GND'], 'signal': 'intent_errors',
+           'guard': ('crossings',)}
+    real = AB._run_seed
+    AB._run_seed = rec
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            AB.run_row(row, td)
+            pile = os.path.join(td, 'pile-plumbing', 'pile',
+                                'esp_prog.kicad_pcb')
+    finally:
+        AB._run_seed = real
+    assert len(calls) == 2, calls
+    off, on = calls
+    for c in (off, on):
+        assert c['board'] == pile, c['board']
+        assert c['intent'] is off['intent'] and c['grade'] is off['intent']
+        assert c['kw'].get('seed_refs') and 'U1' in c['kw']['seed_refs'], c
+        assert c['ignore'] == ['GND'], c
+    assert off['kw']['seed_refs'] == on['kw']['seed_refs']
+    assert off['kw']['decap_claim_after_ics'] is False
+    assert on['kw']['decap_claim_after_ics'] is True
+    assert {k for k in off['kw'] if off['kw'][k] != on['kw'].get(k)} == {
+        'decap_claim_after_ics'}, (off['kw'], on['kw'])
+    print("  PASS: both arms seed the pile from the one pile intent, with "
+          "place_seed's scope; they differ only in the row's seed kwarg")
+
+
+def test_an_intent_without_the_limit_is_ineligible():
+    """The emitted intent arms no decaps.max_distance_mm (simulated by
+    stripping it from the CLI's output): `PileIneligible`, the
+    pre-registration's pinned-neutral outcome, not a skip."""
+    import json
+    import subprocess
+    real = subprocess.run
+
+    def strip(argv, *a, **k):
+        r = real(argv, *a, **k)
+        if '--emit-intent' in argv:
+            path = argv[argv.index('--emit-intent') + 1]
+            with open(path, encoding='utf-8') as fh:
+                doc = json.load(fh)
+            (doc.get('decaps') or {}).pop('max_distance_mm', None)
+            with open(path, 'w', encoding='utf-8') as fh:
+                json.dump(doc, fh)
+        return r
+    subprocess.run = strip
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                AB._pile_inputs(ESP, td)
+            except AB.PileIneligible as exc:
+                assert 'armed no decaps.max_distance_mm' in str(exc), exc
+            else:
+                raise AssertionError("an intent with no limit was eligible")
+    finally:
+        subprocess.run = real
+    print("  PASS: an intent with no decap limit is PileIneligible")
+
+
+def test_a_stage_the_emitter_does_not_call_a_pile_is_refused():
+    """A staged board `assess_placement` calls partially unplaced but whose
+    emitted intent withholds nothing (one passive moved onto another -- a
+    stack, not a heap): a broken measurement, not an ineligible board. This
+    is the second refusal in `_pile_inputs`; the first one cannot see it."""
+    from kicad_parser import parse_kicad_pcb
+    from placement.writer import write_placed_output
+    stress = os.path.join(ROOT, 'tests', 'stress')
+    if stress not in sys.path:
+        sys.path.insert(0, stress)
+    import stage_unaided
+    real = stage_unaided.stage
+    pcb = parse_kicad_pcb(ESP)
+    two = sorted(r for r, fp in pcb.footprints.items()
+                 if r.startswith('R') and fp.layer == 'F.Cu')[:2]
+    a = pcb.footprints[two[0]]
+
+    def fake(src, out_board, *x, **k):
+        write_placed_output(src, out_board, [{
+            'reference': two[1], 'new_x': a.x, 'new_y': a.y,
+            'new_rotation': a.rotation or 0.0}])
+        return {}
+    stage_unaided.stage = fake
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                AB._pile_inputs(ESP, td)
+            except AB.PileIneligible as exc:
+                raise AssertionError(f"a stacked board read as INELIGIBLE: "
+                                     f"{exc}")
+            except AssertionError as exc:
+                assert 'did not treat' in str(exc), exc
+            else:
+                raise AssertionError("a stacked board was accepted as a pile")
+    finally:
+        stage_unaided.stage = real
+    print(f"  PASS: {two[1]} stacked on {two[0]} is refused as not a pile")
+
+
 def test_a_pile_row_reads_no_seed_intents():
     row = {'name': 'pile-ctl', 'board': 'esp_prog.kicad_pcb', 'corridors': [],
            'engine': 'seed', 'input': 'pile',
@@ -122,6 +239,9 @@ def test_a_pile_row_reads_no_seed_intents():
 TESTS = [
     test_the_pile_basis_is_a_pile,
     test_a_placed_board_is_refused_not_ineligible,
+    test_the_pile_row_seeds_the_pile_in_both_arms,
+    test_an_intent_without_the_limit_is_ineligible,
+    test_a_stage_the_emitter_does_not_call_a_pile_is_refused,
     test_a_pile_row_reads_no_seed_intents,
 ]
 

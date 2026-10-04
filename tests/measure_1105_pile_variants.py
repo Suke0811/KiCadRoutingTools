@@ -17,12 +17,20 @@ boards. The other two variants are diagnostics: they cannot change the
 candidate. Eligibility is decided from the emitted intent alone, before any
 seed: the decap limit is armed and the forecast's scope is at least 1.
 
+Each arm also prints a DIAGNOSTIC the go rule does not read: how many caps
+the written board leaves beyond the 5 mm decap search radius of their chip,
+and their summed distance. The signal cannot see them -- under these intents
+`decap_ungraded` stays a WARN (#1142) -- so a variant that pushes caps out of
+the radius reads as better on the signal. Measured at 7890c5d6: NO-GO, the
+candidate improved 1 of 7 piles; the numbers are in #1105.
+
 Not collected by run_all (no `test_` prefix): about 30-45 minutes.
 
     python3 -X utf8 tests/measure_1105_pile_variants.py [--workdir DIR]
         [--json-out PATH] [--board esp_prog.kicad_pcb ...]
 
-Exit 0 = GO, 1 = NO-GO, 2 = the measurement could not be taken.
+Exit 0 = GO, 1 = NO-GO, 2 = the measurement could not be taken, 3 = a
+partial (--board) run, which gives no verdict.
 """
 import argparse
 import json
@@ -56,7 +64,7 @@ def _candidate_name(pre):
     cand = {k: v for k, v in pre['candidate'].items() if k.isupper()}
     names = [n for n, f in VARIANTS.items() if f == cand]
     if len(names) != 1:
-        raise SystemExit(f"the pre-registered candidate {cand} is not exactly "
+        raise ValueError(f"the pre-registered candidate {cand} is not exactly "
                          f"one of the variants {VARIANTS}")
     return names[0]
 
@@ -64,6 +72,19 @@ def _candidate_name(pre):
 def _decap_errors(m):
     return sum(n for r, n in (m.get('intent_errors_by_rule') or {}).items()
                if r.startswith('decap_'))
+
+
+def _beyond(path):
+    """(count, summed mm) of the caps `path` leaves beyond the decap search
+    radius of the chip they tether to -- `groups.decap_populations`'
+    `beyond`, the population `decap_ungraded` reports."""
+    import contextlib
+    import io
+    from kicad_parser import parse_kicad_pcb
+    from placement import groups
+    with contextlib.redirect_stdout(io.StringIO()):
+        _near, beyond, _o = groups.decap_populations(parse_kicad_pcb(path))
+    return len(beyond), round(sum(d for _c, _ic, d in beyond), 1)
 
 
 def _late(m):
@@ -122,6 +143,7 @@ def measure(boards, workdir, pre):
                                dict(decap_claim_after_ics=False, **scope),
                                ignore_nets=ign, grade_intent=intent)
         rec['off'] = off
+        rec['off_beyond'] = _beyond(os.path.join(d, 'off.kicad_pcb'))
         for name, flags in VARIANTS.items():
             with AB._seeder_flags(flags):
                 on = AB._run_seed(pile, os.path.join(d, f'{name}.kicad_pcb'),
@@ -130,7 +152,9 @@ def measure(boards, workdir, pre):
                                   ignore_nets=ign, grade_intent=intent)
             mark, notes = AB._verdict(off, on, row)
             rec[name] = {'mark': mark, 'notes': notes, 'on': on,
-                         'unread_rose': _unread(off, on, pre)}
+                         'unread_rose': _unread(off, on, pre),
+                         'beyond': _beyond(os.path.join(d,
+                                                        f'{name}.kicad_pcb'))}
         rec['seconds'] = round(time.time() - t0, 1)
         print(f"{b}: {'eligible' if rec['eligible'] else 'INELIGIBLE'} "
               f"scope {rec['scope']} (early {rec['early']}, late "
@@ -140,14 +164,17 @@ def measure(boards, workdir, pre):
         print(f"    OFF  intent_errors {off['intent_errors']} (decap "
               f"{_decap_errors(off)}) crossings {off['crossings']} hpwl "
               f"{off['hpwl']} unseated {off['unseated']} body_blocking "
-              f"{off['body_blocking']}", flush=True)
+              f"{off['body_blocking']} | beyond 5 mm {rec['off_beyond'][0]} "
+              f"({rec['off_beyond'][1]} mm)", flush=True)
         for name in VARIANTS:
             on = rec[name]['on']
             print(f"    {name:<13} {rec[name]['mark']:<8} intent_errors "
                   f"{on['intent_errors']} (decap {_decap_errors(on)}) "
                   f"crossings {on['crossings']} hpwl {on['hpwl']} unseated "
                   f"{on['unseated']} body_blocking {on['body_blocking']} | "
-                  f"3.5 {_late(on)}", flush=True)
+                  f"beyond 5 mm {rec[name]['beyond'][0]} "
+                  f"({rec[name]['beyond'][1]} mm) | 3.5 {_late(on)}",
+                  flush=True)
             for n in rec[name]['notes']:
                 print(f"        {n}", flush=True)
             if rec[name]['unread_rose']:
@@ -181,10 +208,17 @@ def main(argv=None):
             print(f"not pre-registered: {bad}", file=sys.stderr)
             return 2
         boards = [b for b in boards if b in args.board]
-    cand = _candidate_name(pre)
-    work = args.workdir or tempfile.mkdtemp(prefix='m1105_')
-    print(f"pre-registered candidate: {cand}; workdir {work}", flush=True)
-    out = measure(boards, work, pre)
+    try:
+        cand = _candidate_name(pre)
+        work = args.workdir or tempfile.mkdtemp(prefix='m1105_')
+        print(f"pre-registered candidate: {cand}; workdir {work}", flush=True)
+        out = measure(boards, work, pre)
+    except Exception as exc:                      # noqa: BLE001 - exit 2
+        # A broken measurement is not a NO-GO: an AssertionError from
+        # `_pile_inputs` (not a pile) used to exit 1, the NO-GO code.
+        print(f"MEASUREMENT NOT TAKEN: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 2
     if args.json_out:
         with open(args.json_out, 'w', encoding='utf-8') as fh:
             json.dump({'candidate': cand, 'boards': out}, fh, indent=1,
@@ -199,7 +233,7 @@ def main(argv=None):
                  else ''))
     if args.board:
         print("partial run: no GO verdict")
-        return 0
+        return 3
     go, n, improve, need = verdict(out, cand)
     print(f"\n{'GO' if go else 'NO-GO'}: {cand} improves {len(improve)} of "
           f"{n} eligible pile(s) {sorted(improve)}; the pre-registered rule "
