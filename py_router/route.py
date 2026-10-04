@@ -5235,6 +5235,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         routing_layers=config.layers,
                         net_clearances=net_clearances,
                         layer_clearances=dict(config.layer_clearances or {}),
+                        # #1135: the run's .kicad_dru track rules too (the
+                        # CLI leg below cannot auto-read them; both legs
+                        # forward the same map).
+                        track_clearances=dict(config.track_clearances or {}),
                         # #338 (review DRC-1): forward THIS run's RESOLVED
                         # copper-to-edge floor. The engine's own re-resolve
                         # cannot work here: its PLANE_EDGE_CLEARANCE default
@@ -5324,6 +5328,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         # yet, so the engine's own auto-read would find none
                         # and tap/join copper would route blind to the rules.
                         layer_clearances=dict(config.layer_clearances or {}),
+                        # #1135: same reason for the track-to-track rules.
+                        track_clearances=dict(config.track_clearances or {}),
                         # #338 (review DRC-1): same reason for the edge floor
                         # -- output_file has no sibling .kicad_pro yet, and
                         # the engine default 0.5 masks the project read.

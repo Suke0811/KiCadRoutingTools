@@ -1695,6 +1695,9 @@ def oracle_reconnect(board_file: str, net_names, config,
     the caller's net id instead of the id of the parse that made it (an
     object whose net the caller does not have is dropped, never shipped on a
     guessed net). None: the parse's ids, as before.
+    The board's .kicad_dru track-to-track rules (#735) are installed on every
+    parse too (#1135), read beside `project_from` (else `board_file`) and
+    resolved against the parse's own nets, over this call's scope nets.
     `config` is never mutated: the oracle works on a private copy.
 
     progress_callback(current, total, label) fires per round (0, 0, label:
@@ -1780,6 +1783,17 @@ def oracle_reconnect(board_file: str, net_names, config,
         raise ValueError(f"net_widths_by_name: unknown field(s) "
                          f"{sorted(_bad_fields)}; expected {ORACLE_WIDTH_MAPS}")
     _w_by_name = {f: dict(m) for f, m in (net_widths_by_name or {}).items()}
+    # #1135: the .kicad_dru track-to-track rules. Read from the rules source
+    # the caller names (`project_from`: the real project, as the exact-fill
+    # refill stages it -- a GUI staged save has no .kicad_dru sibling) and
+    # resolved on each parse below, so the map is keyed by THAT board's ids
+    # whichever front staged it. No rules file: nothing is installed.
+    _track_src = project_from or board_file
+    try:
+        from kicad_dru import read_board_track_clearances
+        _track_live = bool(read_board_track_clearances(_track_src)[0])
+    except Exception:                                       # noqa: BLE001
+        _track_live = False
 
     def _install_net_maps(pcb):
         """Install the by-name maps on the board just parsed, by ITS ids."""
@@ -1789,6 +1803,21 @@ def oracle_reconnect(board_file: str, net_names, config,
         # these by net id, so they follow the parse too
         for _f, _m in _w_by_name.items():
             setattr(config, _f, rekey_by_name(_m, pcb.nets))
+        if _track_live:
+            # #1135: effective over this call's scope nets, as batch_route's
+            # is over its routed set (raise-only on seg-vs-seg pairs: the
+            # weld router's maps, the escalation, the sliver weld)
+            from kicad_dru import install_track_clearances
+            try:
+                install_track_clearances(
+                    config, None, _track_src, pcb,
+                    routed_net_ids=[nid for nid, n in pcb.nets.items()
+                                    if n.name in names])
+            except Exception as _te:                        # noqa: BLE001
+                # the leg is an earner, never a blocker: route on without
+                # the raise rather than lose the whole recheck
+                print(f"  KiCad-oracle recheck: .kicad_dru track rules not "
+                      f"installed ({_te})")
         # `pad_pair_clearance` resolves a `*.Cu` pad's shared layers over the
         # BOARD's copper list, as check_drc does; the callers' configs record
         # their routed subset (or the default two) when they had no board.

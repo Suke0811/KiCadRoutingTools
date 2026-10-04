@@ -774,6 +774,11 @@ def repair_planes(
     # clearance. None (default) auto-reads the persisted .kicad_pro record;
     # explicit values win (the #562 finalize forwards its resolved value).
     same_net_pad_clearance: Optional[float] = None,
+    # #1135: the .kicad_dru track-to-track rules ({obstacle_net_id: mm}).
+    # None (default) auto-reads the board's own; an explicit map wins -- the
+    # #562 finalize forwards its run's, as it does layer_clearances, because
+    # the output's .kicad_dru sibling does not exist yet mid-run.
+    track_clearances: Optional[dict] = None,
 ) -> Tuple[int, int]:
     """
     Route between disconnected regions in power plane zones.
@@ -960,8 +965,15 @@ def repair_planes(
     # it after batch_route returns, so an auto-read here would find NOTHING
     # and tap/join copper would route blind to the board's layer rules. Same
     # reasoning as the reconciliation sub-run's forwarded map.
-    from kicad_dru import install_layer_clearances
+    from kicad_dru import install_layer_clearances, install_track_clearances
     install_layer_clearances(config, layer_clearances, input_file, pcb_data)
+    # #1135: and the track-to-track rules, as route.py installs them -- a
+    # region join or a pad tap is a track like any other, and a board's
+    # `A.Type == 'track' && B.Type == 'track'` rule binds it too (raise-only
+    # on seg-vs-seg pairs; the effective map over the plane nets this run
+    # repairs). Same precedence as the layer map above.
+    install_track_clearances(config, track_clearances, input_file, pcb_data,
+                             routed_net_ids=net_ids)
 
     # Cross-class clearance (#434): the repair step's own copper (region joins,
     # pad taps) and its ripped-blocker reconnects were priced at the uniform
