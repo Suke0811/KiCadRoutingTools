@@ -4886,7 +4886,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                             pcb_data.nets[n].name for n in _mvnets
                             if n in pcb_data.nets)
                         if _mvnames:
-                            from kicad_oracle import oracle_reconnect
+                            from kicad_oracle import (
+                                oracle_reconnect, oracle_net_widths_by_name)
                             _cap_cfg = GridRouteConfig(
                                 clearance=config.clearance,
                                 track_width=config.track_width,
@@ -4897,10 +4898,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                 layer_costs=(list(config.layer_costs)
                                              if getattr(config,
                                                         'layer_costs',
-                                                        None) else []),
-                                power_net_widths=dict(
-                                    getattr(config, 'power_net_widths',
-                                            None) or {}))
+                                                        None) else []))
                             # #1137: the board's .kicad_dru layer rules, as
                             # its sibling oracle configs install them (with
                             # the board, so an inner-layer rule expands over
@@ -4917,7 +4915,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                 project_from=input_file,
                                 net_clearances_by_name=(
                                     config.net_clearances_by_name(
-                                        pcb_data.nets)))
+                                        pcb_data.nets)),
+                                # #1133: the power widths, by NAME as well
+                                net_widths_by_name=oracle_net_widths_by_name(
+                                    config, pcb_data.nets,
+                                    fields=('power_net_widths',)))
                             # The FOURTH oracle_reconnect consumer, and the one
                             # #713 item 3's first pass missed. Without this it
                             # printed "0 link(s) welded, -1 remaining" for an
@@ -5415,6 +5417,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # planes-tab pattern). Custody cannot merge into the
                 # reconcile on this path -- there is no verdict yet.
                 _zna = sorted({n for n, _l in _zpairs_all})
+                from kicad_oracle import oracle_net_widths_by_name as _onw9
                 results_data['plane_finalize_oracle'] = {
                     'nets': _zna,
                     'clearance': config.clearance,
@@ -5436,14 +5439,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     'layer_costs': (list(config.layer_costs)
                                     if getattr(config, 'layer_costs', None)
                                     else []),
-                    'power_net_widths': dict(
-                        getattr(config, 'power_net_widths', None) or {}),
-                    # #1033: the per-net widths the CLI's _ocfg carries, so
-                    # the GUI weld's width ladder reads the same net width.
-                    'net_track_widths': dict(
-                        getattr(config, 'net_track_widths', None) or {}),
-                    'net_layer_widths': dict(
-                        getattr(config, 'net_layer_widths', None) or {}),
+                    # #658 power-net membership and #1033 per-net widths
+                    # (what the CLI's oracle leg gets), by NAME (#1133): they
+                    # used to ride keyed by this run's net ids -- on the GUI,
+                    # pcbnew's netcodes -- and the applier's staged save
+                    # numbers its nets afresh, so they landed on other nets.
+                    'net_widths_by_name': _onw9(config, pcb_data.nets),
                     # #1137: the run's resolved class map, by NAME -- the
                     # applier's staged save numbers its nets afresh.
                     'net_clearances_by_name':
@@ -5489,7 +5490,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 import time as _time9
                 _zna = sorted({n for n, _l in _zpairs_all})
                 _t9 = _time9.time()
-                from kicad_oracle import oracle_reconnect
+                from kicad_oracle import (oracle_reconnect,
+                                          oracle_net_widths_by_name,
+                                          oracle_net_ids_by_name)
                 try:
                     from fix_kicad_drc_settings import \
                         effective_board_edge_clearance
@@ -5513,20 +5516,16 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     layer_costs=(list(config.layer_costs)
                                  if getattr(config, 'layer_costs', None)
                                  else []),
-                    # #658: power-net membership rides along so the weld
-                    # leg's per-net KICAD_POWER_LAYER_COSTS multipliers
-                    # (power_layer_config in oracle_reconnect) can fire.
-                    power_net_widths=dict(
-                        getattr(config, 'power_net_widths', None) or {}),
-                    # #1033: per-net widths ride along too, so the weld's
-                    # width ladder (and its narrowing record) reads the
-                    # net's own width -- a netclass or stored-impedance
-                    # width, not only a --power-nets one.
-                    net_track_widths=dict(
-                        getattr(config, 'net_track_widths', None) or {}),
-                    net_layer_widths=dict(
-                        getattr(config, 'net_layer_widths', None) or {}),
                     board_edge_clearance=_oedge)
+                # #658: power-net membership rides along so the weld leg's
+                # per-net KICAD_POWER_LAYER_COSTS multipliers
+                # (power_layer_config in oracle_reconnect) can fire; #1033:
+                # the per-net widths too, so the weld's width ladder (and its
+                # narrowing record) reads the net's own width -- a netclass or
+                # stored-impedance width, not only a --power-nets one. All by
+                # NAME (#1133): the oracle re-parses its board, and on the GUI
+                # that is a pcbnew save whose net ids are not this run's.
+                _wbn9 = oracle_net_widths_by_name(config, pcb_data.nets)
                 from kicad_dru import install_layer_clearances
                 install_layer_clearances(_ocfg, None, input_file, None)
                 # #527 follow-up: the oracle's own per-round / per-link
@@ -5564,7 +5563,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     progress_callback=_opc9,
                     cancel_check=cancel_check,
                     project_from=input_file,
-                    net_clearances_by_name=_ncbn9)
+                    net_clearances_by_name=_ncbn9,
+                    net_widths_by_name=_wbn9,
+                    # #1133: its returned copper comes back on THIS run's
+                    # net ids (the _gui9 merge below hands it to the applier)
+                    net_ids_by_name=oracle_net_ids_by_name(pcb_data.nets))
                 print(f"  [finalize timing] oracle leg: "
                       f"{_time9.time() - _t9:.1f}s")
                 # #713 item 3: this leg had NO summary key at all, so an
@@ -5579,9 +5582,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                      'links_failed', 'remaining')}
                 if not _gui9:
                     # #589: keep the oracle's net list + config (and its
-                    # by-name class map, #1137) for the post-reconciliation
-                    # re-audit (CLI file mode only).
-                    _reaudit9 = (list(_zna), _ocfg, _ncbn9)
+                    # by-name class and width maps, #1137/#1133) for the
+                    # post-reconciliation re-audit (CLI file mode only).
+                    _reaudit9 = (list(_zna), _ocfg, _ncbn9, _wbn9)
                 if _gui9:
                     # The staged file is a throwaway: hand the oracle's copper
                     # back through the SAME channels the engine leg uses.
@@ -6403,7 +6406,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         hole_to_hole_clearance=config.hole_to_hole_clearance,
                         cancel_check=cancel_check,
                         project_from=input_file,
-                        net_clearances_by_name=_reaudit9[2])
+                        net_clearances_by_name=_reaudit9[2],
+                        net_widths_by_name=_reaudit9[3])
                 _pd678b = _pk678b(_file678)
                 _aud678c = _apo678b(_pd678b, _prom678, board_file=_file678,
                                     project_from=input_file,
@@ -6464,7 +6468,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 track_via_clearance=defaults.PLANE_TRACK_VIA_CLEARANCE,
                 hole_to_hole_clearance=config.hole_to_hole_clearance,
                 project_from=input_file,
-                net_clearances_by_name=_reaudit9[2])
+                net_clearances_by_name=_reaudit9[2],
+                net_widths_by_name=_reaudit9[3])
             try:
                 results_data['post_reconcile_oracle'] = _orc10
             except (NameError, UnboundLocalError):

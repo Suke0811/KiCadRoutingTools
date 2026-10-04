@@ -1567,6 +1567,41 @@ def _via_drill_radius(via, fallback: float) -> float:
     return d / 2.0
 
 
+#: The per-net WIDTH maps a GridRouteConfig keys by net id, which a caller
+#: hands the oracle by NAME (#1133): the weld's power-layer discipline
+#: (power_net_widths membership) and its width ladder (get_net_track_width).
+ORACLE_WIDTH_MAPS = ('power_net_widths', 'net_track_widths', 'net_layer_widths')
+
+
+def oracle_net_widths_by_name(config, nets, fields=ORACLE_WIDTH_MAPS) -> dict:
+    """``config``'s per-net width maps keyed by net NAME, for
+    ``oracle_reconnect(net_widths_by_name=...)``: {field: {net name: value}},
+    only the non-empty ones. ``nets`` is the run's ``pcb_data.nets``, the id
+    space the maps are keyed in (on the GUI, pcbnew's netcodes, which the
+    staged save the oracle parses does not keep, #1133)."""
+    out = {}
+    for f in fields:
+        named = {}
+        for nid, v in (getattr(config, f, None) or {}).items():
+            name = getattr(nets.get(nid), 'name', None)
+            if name:
+                named[name] = dict(v) if isinstance(v, dict) else v
+        if named:
+            out[f] = named
+    return out
+
+
+def oracle_net_ids_by_name(nets) -> dict:
+    """{net name: net id} of the CALLER's board (``pcb_data.nets``), for
+    ``oracle_reconnect(net_ids_by_name=...)``. The no-net name '' is 0."""
+    out = {'': 0}
+    for nid, net in nets.items():
+        name = getattr(net, 'name', None)
+        if name:
+            out[name] = nid
+    return out
+
+
 def rekey_by_name(by_name, nets) -> dict:
     """A {net name: value} map re-keyed onto ``nets``' own ids
     ({net_id: Net}, a parsed board's ``pcb_data.nets``). Names the board does
@@ -1635,7 +1670,9 @@ def oracle_reconnect(board_file: str, net_names, config,
                      progress_callback=None,
                      cancel_check=None,
                      project_from: str = None,
-                     net_clearances_by_name: Optional[Dict[str, float]] = None
+                     net_clearances_by_name: Optional[Dict[str, float]] = None,
+                     net_widths_by_name: Optional[Dict[str, dict]] = None,
+                     net_ids_by_name: Optional[Dict[str, int]] = None
                      ) -> dict:
     """Route the exact missing links kicad-cli reports for `net_names` on
     `board_file`, in place, until KiCad is satisfied or no progress.
@@ -1649,6 +1686,15 @@ def oracle_reconnect(board_file: str, net_names, config,
     the admission checks price every foreign net at its class, and each
     link's routing floor is its own net's class. None or {}: the config's own
     map (none, from every caller today), i.e. the flat clearance.
+    `net_widths_by_name` (#1133) carries the per-net width maps the same way
+    ({field: {net name: value}} for the fields in ORACLE_WIDTH_MAPS, built by
+    `oracle_net_widths_by_name`); each one given replaces the config's own.
+    `net_ids_by_name` ({net name: id} of the CALLER's board,
+    `oracle_net_ids_by_name`) is the way back: every object returned in
+    new_segments / new_vias / removed_segments / removed_vias then carries
+    the caller's net id instead of the id of the parse that made it (an
+    object whose net the caller does not have is dropped, never shipped on a
+    guessed net). None: the parse's ids, as before.
     `config` is never mutated: the oracle works on a private copy.
 
     progress_callback(current, total, label) fires per round (0, 0, label:
@@ -1729,11 +1775,20 @@ def oracle_reconnect(board_file: str, net_names, config,
     # routes exactly as before.
     config = replace(config)
     _ncl_by_name = dict(net_clearances_by_name or {})
+    _bad_fields = set(net_widths_by_name or {}) - set(ORACLE_WIDTH_MAPS)
+    if _bad_fields:
+        raise ValueError(f"net_widths_by_name: unknown field(s) "
+                         f"{sorted(_bad_fields)}; expected {ORACLE_WIDTH_MAPS}")
+    _w_by_name = {f: dict(m) for f, m in (net_widths_by_name or {}).items()}
 
     def _install_net_maps(pcb):
         """Install the by-name maps on the board just parsed, by ITS ids."""
         if _ncl_by_name:
             config.net_clearances = rekey_by_name(_ncl_by_name, pcb.nets)
+        # #1133: the weld's power-layer discipline and width ladder read
+        # these by net id, so they follow the parse too
+        for _f, _m in _w_by_name.items():
+            setattr(config, _f, rekey_by_name(_m, pcb.nets))
         # `pad_pair_clearance` resolves a `*.Cu` pad's shared layers over the
         # BOARD's copper list, as check_drc does; the callers' configs record
         # their routed subset (or the default two) when they had no board.
@@ -1757,6 +1812,18 @@ def oracle_reconnect(board_file: str, net_names, config,
     # delete -- the file strip has no pcbnew equivalent.
     removed_board_segments = []
     removed_board_vias = []
+    # #1133: the NET NAME of every returned object, read off the parse that
+    # made it (keyed by id(): the objects live in the lists above for the
+    # whole call), so `net_ids_by_name` can put it back on the caller's ids.
+    _obj_net_names = {}
+
+    def _note_net_names(pcb):
+        by_id = {nid: n.name for nid, n in pcb.nets.items()}
+        by_id.setdefault(0, '')
+        for _o in (emitted_segments + emitted_vias + removed_board_segments
+                   + removed_board_vias):
+            if id(_o) not in _obj_net_names:
+                _obj_net_names[id(_o)] = by_id.get(_o.net_id)
     attempted = {}  # (net, endpoints) -> attempt count (graduated retries)
     # #562 custody: links no copper can ever join (cross-board) stay in
     # `links` and keep counting in `remaining`, so a caller that treats
@@ -3079,6 +3146,7 @@ def oracle_reconnect(board_file: str, net_names, config,
             routed += 1
             progress = True
 
+        _note_net_names(pcb_data)   # #1133: this round's ids, by name
         if new_sexprs or content_dirty:
             if new_sexprs:
                 idx = content.rfind(')')
@@ -3194,6 +3262,29 @@ def oracle_reconnect(board_file: str, net_names, config,
         if _content2 is not None:
             with open(board_file, 'w', encoding='utf-8') as f:
                 f.write(_content2)
+        _note_net_names(pcb_data)   # #1133
+
+    # #1133: hand every returned object back on the CALLER's net ids. The
+    # GUI applies them to its live board by id (SetNetCode), and the staged
+    # save's parse numbers nets afresh, so a parse id there is another net.
+    _out_lists = (emitted_segments, emitted_vias, removed_board_segments,
+                  removed_board_vias)
+    if net_ids_by_name is not None:
+        _dropped_ids = 0
+        for _lst in _out_lists:
+            _keep = []
+            for _o in _lst:
+                _cid = net_ids_by_name.get(_obj_net_names.get(id(_o)))
+                if _cid is None:
+                    _dropped_ids += 1
+                    continue
+                _o.net_id = _cid
+                _keep.append(_o)
+            _lst[:] = _keep
+        if _dropped_ids:
+            print(f"  KiCad-oracle recheck: {_dropped_ids} returned copper "
+                  f"item(s) whose net the caller's board does not carry -- "
+                  f"dropped from the result, not shipped on a guessed net")
 
     if rounds and remaining > 0:
         _xb = f" ({cross_board} cross-board exempt)" if cross_board else ""
