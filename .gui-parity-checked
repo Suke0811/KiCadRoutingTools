@@ -1086,3 +1086,19 @@ rendered stage3d; there was never a dialog control or settings key for a
 layout or the iso panel, and settings_persistence is untouched. A retired
 knob still set in the environment is now said once on stderr
 (frame_layout.warn_retired_knobs) instead of choosing a layout.
+
+NOTE 2026-10-04 (#1105 pile basis, #1125, #1126, #1127, #1128, #1129, #1141;
+not an audit, so the first token above is unchanged).
+
+No GUI surface changes. Nothing in kicad_routing_plugin/ calls the code this
+branch changes: seeder stage 1 / stage 3.5 (place_seed is a REFUSED tool in
+manifest_to_plan), portfolio.free_refs / generate, render_placement's caption
+and describe_pair, or legality.occupancy_shape / pad_copper_overrun_mm; the
+placement GUI drives those CLIs through the agent. legality.STACK_EXACT_CONFIRM
+is a module toggle, off, with no flag or control. The one shared low-level
+change is check_drc's _pad_perimeter_array / _polys_edge_arrays caches, which
+now hold their keyed object: same answers, except an id reused by a new
+object is recomputed instead of served stale.
+
+GATES RUN: test_cli_postpass_coverage: 14 registered, 22 in active use, 2
+CLI-only, 0 failures.
