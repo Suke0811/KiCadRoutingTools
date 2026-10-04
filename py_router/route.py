@@ -4909,14 +4909,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                              if getattr(config,
                                                         'layer_costs',
                                                         None) else []))
-                            # #1137: the board's .kicad_dru layer rules, as
-                            # its sibling oracle configs install them (with
-                            # the board, so an inner-layer rule expands over
-                            # its real copper), and the run's resolved class
-                            # map by NAME -- the oracle re-parses the file.
+                            # #1137: the board's .kicad_dru layer rules,
+                            # installed exactly as the finalize leg's _ocfg
+                            # installs them (no board, so no design-rules
+                            # table either), and the run's resolved class map
+                            # by NAME -- the oracle re-parses the file.
                             from kicad_dru import install_layer_clearances
                             install_layer_clearances(_cap_cfg, None,
-                                                     input_file, pcb_data)
+                                                     input_file, None)
                             _orc_cap = oracle_reconnect(
                                 output_file, _mvnames, _cap_cfg,
                                 track_via_clearance=config.clearance,

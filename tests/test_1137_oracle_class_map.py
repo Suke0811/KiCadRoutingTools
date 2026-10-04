@@ -14,7 +14,7 @@ the parsed ids. What each case pins:
   it, gui_utils takes and forwards it, swig_gui hands it over, repair_planes'
   main() passes the map its engine resolved; the escalation's `_attempt_edge`
   calls pass the round's map, and route.py's `_cap_cfg` installs the
-  .kicad_dru layer rules with the board (an AST walk, not a grep);
+  .kicad_dru layer rules as `_ocfg` does (an AST walk, not a grep);
 * repair_planes() publishes the map it resolved AFTER the ceiling clamp;
 * on a written board whose parse numbers the nets differently from the
   caller, the map lands on the right nets BY NAME, the link's routing floor
@@ -157,13 +157,16 @@ def test_escalation_and_cap_config_carry_the_rules():
            if c.args and isinstance(c.args[0], ast.Name)
            and c.args[0].id == '_cap_cfg']
     assert len(cap) == 1, len(cap)
-    board = (cap[0].args[3] if len(cap[0].args) > 3
-             else getattr(_kw(cap[0], 'pcb_data'), 'value', None))
-    assert board is not None and not (isinstance(board, ast.Constant)
-                                      and board.value is None), \
-        ast.unparse(cap[0])
+    # installed the way the finalize leg's _ocfg installs them, so the two
+    # oracle configs cannot drift apart
+    ocfg = [c for c in _calls(route, 'install_layer_clearances')
+            if c.args and isinstance(c.args[0], ast.Name)
+            and c.args[0].id == '_ocfg']
+    assert len(ocfg) == 1, len(ocfg)
+    assert ast.unparse(cap[0]).replace('_cap_cfg', '_ocfg') == \
+        ast.unparse(ocfg[0]), (ast.unparse(cap[0]), ast.unparse(ocfg[0]))
     print(f"  PASS: {len(esc)} escalation call(s) pass the round's class map; "
-          f"_cap_cfg installs its layer rules with the board")
+          f"_cap_cfg installs its layer rules as _ocfg does")
 
 
 # ---------------------------------------------------------------- re-keying
