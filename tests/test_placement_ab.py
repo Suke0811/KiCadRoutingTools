@@ -1113,8 +1113,94 @@ def _run_seed(board_path, out_path, intent, seed_kw,
         src = os.path.splitext(board_path)[0] + ext
         if os.path.exists(src):
             shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
-    return _grade_row(out_path, grade_intent or intent, group_sources,
-                      ignore_nets, t0, len(res.get('unseated') or ()))
+    graded = _grade_row(out_path, grade_intent or intent, group_sources,
+                        ignore_nets, t0, len(res.get('unseated') or ()))
+    # What the decap stages did, for a reader of the --json report. Not a
+    # BASELINE_KEYS column, so it is never recorded or compared.
+    graded['decap_stage'] = res.get('decap_stage')
+    return graded
+
+
+#: #1105's pile basis, fixed before any pile number existed and pinned by
+#: tests/test_1105_pile_prereg.py. The pile rows and the pilot read it.
+PILE_PREREG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           '1105_pile_ab_prereg.json')
+
+
+class PileIneligible(AssertionError):
+    """The pile's emitted intent does not arm the decap rule the row's signal
+    reads (the pre-registration's eligibility rule): the board is run as a
+    pinned-neutral row, never silently skipped."""
+
+
+def _pile_inputs(board_path, d):
+    """#1105's basis (`PILE_PREREG`): `board_path` staged as an UNAIDED pile
+    under `d/pile/` -- `stage_unaided.stage`, every non-mechanical part at the
+    outline's bbox centre at rotation 0, the mechanical refs carried in a
+    `mechanical.json` beside it -- and its intent emitted through the CLI
+    with `--decaps-from` the board itself, once, for both arms and the grade.
+
+    THE CLI, not `emit_intent`: only `check_floorplan`'s main compiles the
+    `mechanical.json` it discovers into `fixed_poses`, which is what decides
+    the owners seated before stage 2.5 when a run starts from this pile.
+
+    `stage` ARMS the unaided provenance regime over `d/pile/`, so the arms
+    must be written outside it (the caller writes `d/off`, `d/on`).
+
+    Returns `(pile, intent, doc, seed_refs)`: `seed_refs` is place_seed's
+    own scope without --force -- the stacked suspects of a partially-unplaced
+    board, else None (every unlocked part).
+
+    Raises AssertionError -- never skips -- when the staged board does not
+    read as a pile, because that would measure a placed board under a pile's
+    name; `PileIneligible` when the intent arms no decap limit."""
+    import subprocess
+    from kicad_parser import parse_kicad_pcb
+    from placement import floorplan
+    from placement.placement_state import assess_placement
+    stress = os.path.join(ROOT, 'tests', 'stress')
+    if stress not in sys.path:
+        sys.path.insert(0, stress)
+    from stage_unaided import stage
+    pdir = os.path.join(d, 'pile')
+    os.makedirs(pdir, exist_ok=True)
+    pile = os.path.join(pdir, os.path.basename(board_path))
+    stage(board_path, pile)
+    st = assess_placement(parse_kicad_pcb(pile), pile)
+    if not (st.unplaced or st.partially_unplaced):
+        raise AssertionError(f"{pile}: staged, but assess_placement does not "
+                             f"read it as unplaced ({'; '.join(st.reasons[:2])})")
+    ipath = os.path.join(d, 'pile_intent.json')
+    r = subprocess.run(
+        [sys.executable, '-X', 'utf8',
+         os.path.join(ROOT, 'py_tools', 'check_floorplan.py'), pile,
+         '--allow-unplaced', '--emit-intent', ipath,
+         '--decaps-from', board_path],
+        capture_output=True, text=True, encoding='utf-8', errors='replace',
+        cwd=ROOT)
+    if r.returncode != 0 or not os.path.isfile(ipath):
+        raise AssertionError(f"{pile}: check_floorplan --emit-intent exited "
+                             f"{r.returncode}: {(r.stdout + r.stderr)[-800:]}")
+    with open(ipath, encoding='utf-8') as fh:
+        doc = json.load(fh)
+    if not (doc.get('context') or {}).get('pose_claims_withheld'):
+        raise AssertionError(f"{ipath}: the emitter did not treat {pile} as a "
+                             f"pile (no context.pose_claims_withheld)")
+    if (doc.get('decaps') or {}).get('max_distance_mm') is None:
+        raise PileIneligible(
+            f"{ipath}: --decaps-from {os.path.basename(board_path)} armed no "
+            f"decaps.max_distance_mm ("
+            f"{(doc.get('context') or {}).get('decap_census', {}).get('derivation')})")
+    seed_refs = (set(st.stacked_suspect_refs)
+                 if st.partially_unplaced and not st.unplaced else None)
+    return pile, floorplan.load_intent(ipath), doc, seed_refs
+
+
+def _pile_forecast(doc):
+    """The emitted pile intent's `seeder_forecast` (what the pin stages can
+    claim), the input the eligibility rule reads; {} when none was taken."""
+    return ((doc.get('context') or {}).get('decap_census') or {}).get(
+        'seeder_forecast') or {}
 
 
 def _grade_row(out_path, grade_intent, group_sources, ignore_nets, t0,
@@ -1476,17 +1562,30 @@ def run_row(row, workdir):
                                  f"would measure the same seed twice")
         _ign = list(row.get('ignore_nets') or ())
         i_off = i_on = i_grade = intent
-        if si:
+        seed_board, scope = board, {}
+        if row.get('input') == 'pile':
+            # #1105: the issue's own basis -- an unaided pile of this board,
+            # one CLI-emitted --decaps-from intent for both arms and the
+            # grade, seeded with place_seed's own scope.
+            if si:
+                raise AssertionError(f"{row['name']}: a pile row's intent is "
+                                     f"the pile's own; seed_intents is not "
+                                     f"read")
+            seed_board, i_off, _pdoc, _refs = _pile_inputs(board, d)
+            i_on = i_grade = i_off
+            if _refs is not None:
+                scope = {'seed_refs': _refs}
+        elif si:
             i_off, i_on = _mk(si['off'], 'off'), _mk(si['on'], 'on')
             i_grade = _mk(si['grade'], 'grade')
         with _seeder_flags(flags.get('off')):
-            off = _run_seed(board, os.path.join(d, 'off.kicad_pcb'), i_off,
-                            dict(row.get('seed_off') or {}),
+            off = _run_seed(seed_board, os.path.join(d, 'off.kicad_pcb'),
+                            i_off, dict(row.get('seed_off') or {}, **scope),
                             ignore_nets=_ign, grade_intent=i_grade)
         with _seeder_flags(flags.get('on')):
-            on = _run_seed(board, os.path.join(d, 'on.kicad_pcb'), i_on,
-                           dict(row.get('seed_on') or {}), ignore_nets=_ign,
-                           grade_intent=i_grade)
+            on = _run_seed(seed_board, os.path.join(d, 'on.kicad_pcb'), i_on,
+                           dict(row.get('seed_on') or {}, **scope),
+                           ignore_nets=_ign, grade_intent=i_grade)
         mark, notes = _verdict(off, on, row)
         expected = row.get('expect')
         tag = mark.upper()
