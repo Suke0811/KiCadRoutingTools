@@ -1884,6 +1884,19 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # Track total number of layer swaps applied
     total_layer_swaps = 0
 
+    # #498 / #530: the board's .kicad_dru layer rules and design-rules table,
+    # installed engine-side so the GUI inherits them with no wiring (see
+    # kicad_dru.install_layer_clearances). Installed BEFORE the swap passes
+    # below (#1132), as route_diff does: their admission checks price pairs
+    # through the layer rules and their via-shrink ladders read the rule
+    # minimums (config.rule_floors). The track rules (#735) are installed
+    # here for the swap passes over the nets this call routes, and again over
+    # the full routed set once it is known (below).
+    from kicad_dru import install_layer_clearances, install_track_clearances
+    install_layer_clearances(config, layer_clearances, input_file, pcb_data)
+    install_track_clearances(config, track_clearances, input_file, pcb_data,
+                             routed_net_ids=list(net_ids))
+
     # Apply target swaps for single-ended swappable-nets
     single_ended_target_swaps: Dict[str, str] = {}
     single_ended_target_swap_info: List[Dict] = []
@@ -2352,12 +2365,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # computed over the ROUTED nets (== base map's nets_to_route) so the base map
     # and the incremental stampers agree. Inert when net_clearances is empty.
     config.set_net_clearances(net_clearances, base_map_exclusions)
-    # #498: per-layer .kicad_dru clearance rules, installed engine-side so the
-    # GUI inherits them with no wiring (see kicad_dru.install_layer_clearances).
-    from kicad_dru import install_layer_clearances, install_track_clearances
-    install_layer_clearances(config, layer_clearances, input_file, pcb_data)
-    # Track-scoped .kicad_dru rules (#735), same engine-side pattern (raise-only
-    # on seg-vs-seg stamps; effective map over THIS call's routed set).
+    # Track-scoped .kicad_dru rules (#735), re-installed over the full routed
+    # set (raise-only on seg-vs-seg stamps; the layer rules went in before
+    # the swap passes, above).
     install_track_clearances(config, track_clearances, input_file, pcb_data,
                              routed_net_ids=base_map_exclusions)
     # #568: arming is run-scoped and the flag is module-global, so reset it
