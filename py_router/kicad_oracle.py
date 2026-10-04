@@ -1409,10 +1409,11 @@ def _direct_sliver_weld(pcb_data, net_id, ax, ay, bx, by, layer, config,
 
     Each foreign item is priced at the value check_drc grades the pair at
     (#1137): `config.pair_clearance` for a track (kind 'track': the weld IS a
-    track) or a via (met on `layer`), `config.pad_pair_clearance` for a pad
-    (class, the layer rule on `layer`, the pad's override). An NPTH hole has
-    no net and keeps the flat clearance. With no class map, no .kicad_dru
-    rule and no pad override every term is `config.clearance`, as before."""
+    track) or a via (met on `layer`), and for a pad the class and the layer
+    rule on `layer` (`pad_pair_clearance_before_override`), raised to the
+    pad's override as before. An NPTH hole has no net and keeps the flat
+    clearance. With no class map and no .kicad_dru rule every term is what
+    it was."""
     import math as _m
     from kicad_parser import Segment, pad_is_plated_through
     from geometry_utils import point_to_segment_distance
@@ -1498,7 +1499,12 @@ def _direct_sliver_weld(pcb_data, net_id, ax, ay, bx, by, layer, config,
                 layer in expand_pad_layers(pad.layers, cu_layers)
             if not on_layer:
                 continue
-            need = reach + config.pad_pair_clearance(pad, net_id, layer=layer)
+            # the pad's override only RAISES the value here, as it always
+            # did: the class and rule term is what #1137 changes
+            need = reach + max(
+                config.pad_pair_clearance_before_override(pad, net_id,
+                                                          layer=layer),
+                getattr(pad, 'local_clearance', 0) or 0)
             for px, py in pts:
                 if _pt_pad_dist(px, py, pad) < need:
                     return None
@@ -1628,10 +1634,11 @@ def _stitch_via_clear(pcb_data, net_id, x, y, config, h2h) -> bool:
     (#1137): a track meets the via on the track's layer
     (`config.pair_clearance`, kind 'layer'), a via meets it on every layer
     (kind 'stack'), a pad on the copper layers it shares with a through via
-    (`config.pad_pair_clearance`: class, layer rules, the pad's override).
-    The pad keeps its circumscribed radius; hole-to-hole is a different term
-    and stays as it was. With no class map, no .kicad_dru rule and no pad
-    override every clearance term is `config.clearance`, as before."""
+    (`pad_pair_clearance_before_override`: class and layer rules; this check
+    never read a pad override and still does not). The pad keeps its
+    circumscribed radius; hole-to-hole is a different term and stays as it
+    was. With no class map and no .kicad_dru rule every clearance term is
+    `config.clearance`, as before."""
     from geometry_utils import point_to_segment_distance
     vr = config.via_size / 2.0
     vdr = config.via_drill / 2.0
@@ -1654,7 +1661,7 @@ def _stitch_via_clear(pcb_data, net_id, x, y, config, h2h) -> bool:
             d2 = math.hypot(pd2.global_x - x, pd2.global_y - y)
             if pd2.net_id != net_id and d2 < (
                     vr + max(pd2.size_x, pd2.size_y) / 2
-                    + config.pad_pair_clearance(pd2, net_id)):
+                    + config.pad_pair_clearance_before_override(pd2, net_id)):
                 return False
             if pd2.drill and pd2.drill > 0 and d2 < vdr + pd2.drill / 2 + h2h:
                 return False

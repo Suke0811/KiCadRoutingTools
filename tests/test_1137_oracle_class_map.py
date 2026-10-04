@@ -322,6 +322,47 @@ def test_sliver_weld_admission_prices_the_pair():
           "rule and the track rule; flat unchanged")
 
 
+def test_pad_override_handling_is_unchanged():
+    """#1137 changes the class and rule term only. A pad's own clearance
+    override keeps the handling each site always had, so a board that
+    declares no class and no rule is unchanged whatever its pads carry: the
+    weld's override only RAISES its value, and the stitching via never read
+    one. (KiCad lets an override replace the class, floored at the board
+    minimum; the oracle's configs carry no board minimum, so replacing here
+    would admit copper below it.)"""
+    from kicad_oracle import _direct_sliver_weld, _stitch_via_clear
+    from routing_config import GridRouteConfig
+    with tempfile.TemporaryDirectory() as td:
+        # the weld: A from (10, 10) to (10.6, 10), reach 0.105; B's 0.6 pad
+        # edge 0.2 off it. Flat need 0.305 -> refused.
+        b = os.path.join(td, 'w.kicad_pcb')
+        _v10_board(b, pads=[('R1', 30, 30, 'A'), ('R2', 10.3, 10.5, 'B')])
+        pcb, ids = _parse(b)
+        pad = pcb.footprints['R2'].pads[0]
+
+        def weld():
+            c = GridRouteConfig(clearance=0.2, track_width=0.2,
+                                layers=['F.Cu', 'B.Cu'])
+            return _direct_sliver_weld(pcb, ids['A'], 10, 10, 10.6, 10,
+                                       'F.Cu', c)
+        assert weld() is None, 'fixture: the flat weld grazes the pad'
+        pad.local_clearance = 0.05
+        assert weld() is None, 'a LOW override must not relax the weld'
+        # stitching via of A at (10, 10), 0.6: B's 0.6 pad 0.7 away, need
+        # 0.3 + 0.3 + 0.2 = 0.8 -> refused, override or not
+        s = os.path.join(td, 's.kicad_pcb')
+        _v10_board(s, pads=[('R1', 30, 30, 'A'), ('R2', 10.7, 10, 'B')])
+        pcb, ids = _parse(s)
+        cfg = GridRouteConfig(clearance=0.2, via_size=0.6, via_drill=0.3,
+                              layers=['F.Cu', 'B.Cu'])
+        assert not _stitch_via_clear(pcb, ids['A'], 10, 10, cfg, 0.2)
+        pcb.footprints['R2'].pads[0].local_clearance = 0.05
+        assert not _stitch_via_clear(pcb, ids['A'], 10, 10, cfg, 0.2), \
+            'the stitching via never read a pad override'
+    print("  PASS: a low pad override relaxes neither the weld nor the "
+          "stitching via")
+
+
 # ----------------------------------------------------- the oracle, end to end
 def _run_oracle(by_name, caller_ids_map=None):
     """One stubbed oracle round on a v10 board where the PARSE numbers
@@ -447,6 +488,7 @@ TESTS = [test_every_oracle_call_hands_over_the_map,
          test_repair_planes_publishes_the_clamped_map,
          test_stitch_via_admission_prices_the_pair,
          test_sliver_weld_admission_prices_the_pair,
+         test_pad_override_handling_is_unchanged,
          test_the_map_lands_by_name_and_the_floor_is_the_links_class,
          test_admission_uses_the_handed_in_class_end_to_end]
 
