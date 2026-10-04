@@ -37,6 +37,13 @@ from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 EPS = 1e-6
 
+#: #1127: confirm a box `PairShortfall.stack` on the pads' own outlines
+#: (`_exact_pad_stack`, the check check_assembly's pad_intersection channel
+#: makes) before the gate refuses a pose for it. Read ONCE, when a
+#: `PartPads` / `LegalityContext` is built, so one context never mixes the two
+#: answers. Off: the conservative box answer, unchanged.
+STACK_EXACT_CONFIRM = False
+
 # Run-6: a courtyard covering at least this fraction of the board bbox is a
 # CONTAINER (a module-outline footprint hosting the design -- a frame, not a
 # body). Calibration: rp2350_fpga_eensy U8 = 1.13x board area; the largest
@@ -2132,6 +2139,25 @@ def grade_body_overlap(pcb_data, clearance: float,
                 if p not in _waivers_hit and all(r in fps for r in p))}
 
 
+def _exact_pad_stack(pa, pb, routing_layers) -> bool:
+    """Do two pads' copper outlines INTERSECT? check_drc's exact pad-pad
+    check, the confirmation check_assembly's pad_intersection channel puts
+    on every box hit (#1064), shared with the placement gate (#1127) so the
+    two cannot disagree.
+
+    `check_pad_pad_overlap`'s perimeter distance clamps at 0 for interior
+    points, so clearance-0 can never register an intersection. Ask at a tiny
+    epsilon and require the FULL-epsilon shortfall: over >= eps <=> exact
+    edge distance <= 0 <=> real intersection (merely-near pads at
+    0 < gap < eps read over < eps). `routing_layers` resolves a `*.Cu`
+    pad's layers; with none a through pad shares no layer with anything."""
+    from check_drc import check_pad_pad_overlap
+    eps = 1e-3
+    hit, over, _pt = check_pad_pad_overlap(pa, pb, eps, routing_layers,
+                                           clearance_margin=0.0)
+    return bool(hit and over >= eps - 1e-9)
+
+
 def pad_intersection_pairs(pcb_data, clearance: float,
                            locked_refs=frozenset(),
                            totals=None) -> List[BodyOverlapPair]:
@@ -2216,22 +2242,13 @@ def pad_intersection_pairs(pcb_data, clearance: float,
                     if ov <= EPS:
                         continue
                     if check_exact is not None:
-                        # check_pad_pad_overlap's perimeter distance clamps
-                        # at 0 for interior points, so clearance-0 can never
-                        # register an intersection. Ask at a tiny epsilon and
-                        # require the FULL-epsilon shortfall: over >= eps
-                        # <=> exact edge distance <= 0 <=> real intersection
-                        # (merely-near pads at 0 < gap < eps read over < eps
-                        # and are skipped).
-                        eps = 1e-3
+                        # Confirmed on the pads' outlines (`_exact_pad_stack`,
+                        # which says why it asks at a tiny epsilon).
                         pa = _pad_with_copper(pads_by_ref[ref], ai, clearance)
                         pb = _pad_with_copper(pads_by_ref[other], bi,
                                               clearance)
                         if pa is not None and pb is not None:
-                            hit, over, _pt = check_exact(
-                                pa, pb, eps, routing_layers,
-                                clearance_margin=0.0)
-                            if not (hit and over >= eps - 1e-9):
+                            if not _exact_pad_stack(pa, pb, routing_layers):
                                 continue
                     if totals is not None:
                         totals[key] = totals.get(key, 0.0) + ov
@@ -2778,6 +2795,7 @@ class PartPads:
     """
 
     __slots__ = ('ref', 'side', 'has_tht', 'seed_rot', 'pads_local', '_pad_tilt',
+                 'fp_snapshot',
                  'holes_local', 'holes_extent', 'n_pads', '_pad_cache',
                  '_hole_cache', '_keepout_cache', '_ext_cache', 'pad_floors',
                  'max_floor', 'clearance', 'hole_reach', 'holes_req',
@@ -2801,6 +2819,12 @@ class PartPads:
         # can forget to, which is exactly how the keep-out came to be graded
         # without one.
         self.clearance = float(clearance)
+        # #1127: the footprint as it stood when the offsets below were taken
+        # -- its pose and SHALLOW copies of its pads -- so the gate can pose
+        # the real pads for an exact stack check even after something moves
+        # the live footprint in memory (the reason this class owns the
+        # transform). Only under STACK_EXACT_CONFIRM; None costs nothing.
+        self.fp_snapshot = _fp_snapshot(fp) if STACK_EXACT_CONFIRM else None
         self.pads_local = []    # (off_x, off_y, half_x, half_y, net_id, pside)
         # #1094: each pad's own box and tilt, parallel to `pads_local`, for
         # the off-lattice turns in `_rotated`. `(hx, hy, tilt)`: the seed
@@ -3514,6 +3538,11 @@ class LegalityContext:
         self.pose_of = pose_of
         self.seed_of = seed_of
         self._baselines: Dict[Tuple[str, str], PairShortfall] = {}
+        # #1127: confirm a box stack on the pads' outlines. Fixed here, so a
+        # context never mixes the two answers -- `seed_baseline` caches its
+        # verdicts for the whole run.
+        self.stack_exact = bool(STACK_EXACT_CONFIRM)
+        self._posed_pads: Dict[Tuple, Optional[List]] = {}
         # run-19: a PILE seed is not a license. Every conjunct of pads_ok is
         # relative to seed_baseline, and on a pile the seed pair carries huge
         # base.pad with pad_overlap and stack both True -- so ANY smaller
@@ -3672,11 +3701,16 @@ class LegalityContext:
                 if not _sides_interact(sa, sb):
                     continue
                 g = rect_gap((a0, a1, a2, a3), (b0, b1, b2, b3))
-                if g < 0.0:
+                if g < 0.0 and not stack:
                     # any-net physical intersection: the assembly channel,
                     # measured BEFORE the same-net skip below (which exists
-                    # for the SHORT semantics only)
-                    stack = True
+                    # for the SHORT semantics only). #1127: under
+                    # STACK_EXACT_CONFIRM a box hit counts only when the two
+                    # pads' outlines intersect, check_assembly's own test --
+                    # a rotated near-touch the boxes overlap is not a stack.
+                    stack = (not self.stack_exact
+                             or self._stack_confirmed(a, ai, (xa, ya, ra),
+                                                      b, bi, (xb, yb, rb)))
                 if na == nb and na > 0:
                     continue
                 # Cheap pre-reject before resolving the pair's requirement: it
@@ -3695,6 +3729,40 @@ class LegalityContext:
                              _hole_shortfall(pa, xa, ya, ra, rects_b,
                                              pb, xb, yb, rb, rects_a),
                              stack)
+
+    def _posed_copper(self, ref: str, pose) -> Optional[List]:
+        """`ref`'s COPPER pads, real `Pad` copies at `pose`, in the index
+        order `pad_rects` emits (#1127); None when the part carries no
+        snapshot. Cached by pose, bounded."""
+        key = (ref, round(pose[0], 6), round(pose[1], 6),
+               round(pose[2] % 360.0, 6))
+        if key in self._posed_pads:
+            return self._posed_pads[key]
+        pp = self.parts.get(ref)
+        snap = getattr(pp, 'fp_snapshot', None) if pp is not None else None
+        out = None
+        if snap is not None:
+            posed = footprint_at_pose(snap, tuple(pose))
+            out = [p for p in posed.pads if _pad_carries_copper(p)]
+            if len(out) != pp.n_pads:
+                out = None
+        if len(self._posed_pads) > 4096:
+            self._posed_pads.clear()
+        self._posed_pads[key] = out
+        return out
+
+    def _stack_confirmed(self, a, ai, pose_a, b, bi, pose_b) -> bool:
+        """Is the box hit between pad `ai` of `a` and pad `bi` of `b` a real
+        intersection (#1127)? `_exact_pad_stack` on the posed pads, on the
+        two outer faces -- the shared-face question `_sides_interact` already
+        answered for the boxes. True, the box's answer, whenever a pad
+        cannot be posed: the gate may falsely reject, never falsely accept."""
+        pa_pads = self._posed_copper(a, pose_a)
+        pb_pads = self._posed_copper(b, pose_b)
+        if (pa_pads is None or pb_pads is None or ai >= len(pa_pads)
+                or bi >= len(pb_pads)):
+            return True
+        return _exact_pad_stack(pa_pads[ai], pb_pads[bi], ['F.Cu', 'B.Cu'])
 
     def seed_baseline(self, a: str, b: str) -> PairShortfall:
         # The single choke point every consumer routes through (pads_ok and
@@ -5433,6 +5501,14 @@ def keepout_pad_findings(keepouts: 'RuleAreaKeepouts',
                                        if ko is not None else None),
         'keepout_copper_basis': KEEPOUT_COPPER_BASIS,
     }
+
+
+def _fp_snapshot(fp):
+    """A shallow copy of `fp` holding shallow copies of its pads (#1127)."""
+    import copy as _copy
+    snap = _copy.copy(fp)
+    snap.pads = [_copy.copy(p) for p in (fp.pads or ())]
+    return snap
 
 
 def _pad_with_copper(pads, copper_index: int, clearance: float):

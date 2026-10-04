@@ -584,10 +584,14 @@ _POLYS_EDGE_CACHE: Dict[int, tuple] = {}
 
 
 def _polys_edge_arrays(polys):
+    # Keyed by id(), so the entry HOLDS the list (#1127): a freed list's id is
+    # reused by the next one allocated, and a vertex-COUNT fingerprint cannot
+    # tell a turned copy of a polygon from the original -- the placement gate
+    # poses short-lived pad copies, which made that reachable.
     key = id(polys)
     fp = (len(polys), tuple(len(p) for p in polys))
     hit = _POLYS_EDGE_CACHE.get(key)
-    if hit is not None and hit[0] == fp:
+    if hit is not None and hit[2] is polys and hit[0] == fp:
         return hit[1]
     vx, vy, ex, ey = [], [], [], []
     for poly in polys:
@@ -606,7 +610,7 @@ def _polys_edge_arrays(polys):
         arrays = (x1, y1, dx, dy, dx * dx + dy * dy)
     if len(_POLYS_EDGE_CACHE) > 64:
         _POLYS_EDGE_CACHE.clear()
-    _POLYS_EDGE_CACHE[key] = (fp, arrays)
+    _POLYS_EDGE_CACHE[key] = (fp, arrays, polys)
     return arrays
 
 
@@ -1191,18 +1195,22 @@ _PAD_PERIMETER_CACHE: Dict[int, tuple] = {}
 
 
 def _pad_perimeter_array(pad):
+    # Keyed by id(), so the entry HOLDS the pad (#1127): the fingerprint has
+    # no `rect_rotation` or shape, so a freed pad's id reused by a copy of the
+    # same pad turned 30 -> 330 degrees about its own centre read the first
+    # copy's perimeter. The placement gate poses short-lived pad copies.
     key = id(pad)
     fp = (pad.pad_number, round(pad.global_x, 9), round(pad.global_y, 9),
           round(pad.size_x, 9), round(pad.size_y, 9))
     hit = _PAD_PERIMETER_CACHE.get(key)
-    if hit is not None and hit[0] == fp:
+    if hit is not None and hit[2] is pad and hit[0] == fp:
         return hit[1]
     pts = _pad_perimeter_points(pad)
     arr = (np.array([p[0] for p in pts], dtype=np.float64),
            np.array([p[1] for p in pts], dtype=np.float64), pts)
     if len(_PAD_PERIMETER_CACHE) > 4096:
         _PAD_PERIMETER_CACHE.clear()
-    _PAD_PERIMETER_CACHE[key] = (fp, arr)
+    _PAD_PERIMETER_CACHE[key] = (fp, arr, pad)
     return arr
 
 
