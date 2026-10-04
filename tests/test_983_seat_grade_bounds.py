@@ -71,6 +71,12 @@ refusals) pin the function directly. A10 and B7 go through
           everything but one note is the single-member set's.
       C16 (#1125) a member that seats clear is not walked, and the walk's
           order is the member choice's.
+      C17 (#1125) a member refused after the turn is walked past too.
+      C18 (#1125) with no clear member, the first member that seats at all
+          (crowded) beats a refusal; with none seating, the part is left to
+          the later stages and the note says so.
+      C19 (#1125) a conflict-free seat short of the edge-copper floor is
+          kept, not walked past.
 """
 import os
 from pathlib import Path
@@ -544,8 +550,9 @@ class StageOneRotation(_Graded):
         self.assertEqual(self.pose(res, 'J5'), self.seat_j5_single())
         walk = [n for n in res['notes'] if '(#1125)' in n]
         self.assertEqual(len(walk), 1, walk)
-        self.assertIn('no other member of its rotation_candidates [180.0, '
-                      '181.0] seats clear', walk[0])
+        self.assertIn('no member of its rotation_candidates [180.0, 181.0] '
+                      'seats clear on the north edge, so it keeps the crowded '
+                      'seat of 180deg', walk[0])
         self.assertEqual([n for n in res['notes'] if n not in walk],
                          one['notes'])
         self.assertEqual(res['placements'], one['placements'])
@@ -578,6 +585,68 @@ class StageOneRotation(_Graded):
                                [180.0, 90.0, 270.0]))
         self.assertIsNone(walk(p180, (None, (90.0, 270.0)), [180.0],
                                fits=lambda r: False))
+
+    @staticmethod
+    def refusing(rots):
+        """`edge_seat_ok` refusing J5 at the given angles (None: at every
+        angle) -- stage 1 then reports the attempt refused after the turn."""
+        real = seeder.edge_seat_ok
+
+        def ok(state, part, *a, **k):
+            if getattr(part, 'ref', None) == 'J5' and (
+                    rots is None or any(abs((part.rot - r) % 360.0) < 1e-6
+                                        for r in rots)):
+                return False
+            return real(state, part, *a, **k)
+        return patch.object(seeder, 'edge_seat_ok', ok)
+
+    def test_c17_a_member_refused_after_the_turn_is_walked_past(self):
+        clear90 = self.seat_j5_single(90)
+        with self.refusing((180.0,)):
+            res = self.seat_j5_set([180, 90])
+        self.assertEqual(self.pose(res, 'J5'), clear90)
+        self.assertTrue([n for n in self.j5_notes(res)
+                         if 'member 180deg was refused after the turn, so '
+                            'stage 1 seated it at 90deg' in n],
+                        self.j5_notes(res))
+
+    def test_c18_with_no_clear_member_a_crowded_seat_beats_none(self):
+        # 180 refused after the turn, 181 seats but only crowds J17: the
+        # crowded seat on the declared edge is kept, not the refusal.
+        with self.refusing((180.0,)):
+            res = self.seat_j5_set([180, 181])
+        self.assertAlmostEqual(self.pose(res, 'J5')[2] % 360.0, 181.0,
+                               delta=1e-6)
+        self.assertTrue([n for n in res['notes']
+                         if 'keeps the crowded seat of 181deg' in n],
+                        res['notes'])
+        # nothing seats at all: the part is left to the later stages, and
+        # the note says so rather than claiming a seat it does not have
+        with self.refusing(None):
+            res = self.seat_j5_set([180, 90])
+        self.assertTrue([n for n in res['notes'] if 'none seats there and '
+                         'it is left to the later stages' in n],
+                        res['notes'])
+        self.assertFalse([n for n in res['notes'] if 'keeps the crowded' in n])
+
+    def test_c19_a_clear_seat_short_of_the_floor_is_not_walked(self):
+        # A conflict-free rung the edge-copper floor reads short of is KEPT
+        # (`_kept`) -- it crowds nothing, so it is not a member to walk past.
+        real = seeder._floor_rung
+
+        def short(state, part, *a, **k):
+            if getattr(part, 'ref', None) == 'J5':
+                return None, None, {'why': 'test_floor_short'}
+            return real(state, part, *a, **k)
+        doc = intent_doc(dict(self.J5, **self.CENTRE),
+                         blocks=[{'name': 'j5', 'refs': ['J5'],
+                                  'rotation_candidates': [180, 90]}])
+        with patch.object(seeder, '_floor_rung', short):
+            res = self.stage1(SPLIT, doc, seed_refs={'J5', 'J17'})
+        self.assertAlmostEqual(self.pose(res, 'J5')[2] % 360.0, 180.0,
+                               delta=1e-9)
+        self.assertFalse([n for n in res['notes'] if '(#1125)' in n],
+                         res['notes'])
 
 
 ISSUE_J1 = ('  (footprint "t" (layer "F.Cu") (at 14.15 9.0 270)\n'

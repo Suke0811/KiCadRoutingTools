@@ -4835,8 +4835,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # crowds what is placed (or is refused after the turn) are the
             # set's other fitting members tried, in the same order, and the
             # first that seats clear is kept. When none does, the first
-            # member's seat is made again. splitflap's J5 declared [180, 90]
-            # kept 180, which only crowds J17, where 90 seats clear.
+            # member that SEATS at all is made again -- a crowded seat on its
+            # declared edge beats the interior the later stages would park it
+            # in, stage 1's own crowding-fallback rule -- and when none
+            # seats, attempt 1 is, which leaves the part to the later stages
+            # exactly as before. splitflap's J5 declared [180, 90] kept 180,
+            # which only crowds J17, where 90 seats clear.
             _ref1125 = c['ref']
             _part1125 = state.parts[_ref1125]
             _pose1125 = (_part1125.x, _part1125.y, _part1125.rot)
@@ -4848,6 +4852,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 continue
             _tried = [_used]
             _won = None
+            _crowded = _used if _out == 'crowded' else None
             while True:
                 _next = _stage1_walk_member(
                     _part1125, _claim, _tried,
@@ -4861,6 +4866,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 if _o == 'clean':
                     _won = _u
                     break
+                if _o == 'crowded' and _crowded is None:
+                    _crowded = _u
             if _won is not None:
                 notes.append(
                     f"edge connector {_ref1125}: its rotation_candidates "
@@ -4872,12 +4879,20 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 continue
             if len(_tried) > 1:
                 _stage1_undo(_ref1125, _pose1125, _n1125)
-                _stage1_one(k, c)
+                if _crowded is not None and _crowded != _used:
+                    _stage1_one(k, c, _member1125=_crowded)
+                else:
+                    _stage1_one(k, c)
+                _set = [float(r) for r in _claim[1]]
                 notes.append(
-                    f"edge connector {_ref1125}: no other member of its "
-                    f"rotation_candidates {[float(r) for r in _claim[1]]} "
-                    f"seats clear on the {edge} edge either, so it keeps "
-                    f"{_used:g}deg (#1125)")
+                    f"edge connector {_ref1125}: no member of its "
+                    f"rotation_candidates {_set} seats clear on the {edge} "
+                    f"edge, so "
+                    + (f"it keeps the crowded seat of {_crowded:g}deg, the "
+                       f"first member that seats there at all (#1125)"
+                       if _crowded is not None else
+                       f"none seats there and it is left to the later "
+                       f"stages (#1125)"))
 
     # ---- 1.5 must_lock parts seat FIRST, in place when possible ------------
     # Under --force, previously-good must_lock parts used to be re-derived at

@@ -531,7 +531,9 @@ declared `[0, 90]` was written at its input 180. That member is then judged
 by the SEAT it gets (#1125): when it only crowds what is already placed, or
 is refused after the turn, the set's other fitting members are tried in the
 same order and the first that seats clear is kept; when none does, the
-first member's seat stands and the notes say so. splitflap's J5 declared
+first member that seats there at all keeps its crowded seat on the edge, and
+when none seats the part is left to the later stages, as before -- the notes
+say which. splitflap's J5 declared
 `[180, 90]` used to keep 180, which crowds J17, where 90 seats clear.
 
 **What a correction may not trade for its fix.** Both this step and the band

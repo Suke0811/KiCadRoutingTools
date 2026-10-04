@@ -98,6 +98,15 @@ def test_the_grid_agrees_with_check_assembly():
         diff_off += off.legality_ctx.pair_shortfall('C4', 'Y1').stack != ex
     assert diff_off == 35, (diff_off, 'the grid moved: #1064 measured 35')
     assert diff_on == 0, diff_on
+    # the same points turned 45 degrees: the gate's posed-pad cache must
+    # key on the angle, or a turn at one x, y reads the last angle's pads
+    turned = 0
+    for x, y, _r in _grid():
+        pose = (x, y, 0.0)
+        ex = _exact(pcb, 'C4', 'Y1', pose)
+        on.apply_move('C4', *pose)
+        turned += on.legality_ctx.pair_shortfall('C4', 'Y1').stack != ex
+    assert turned == 0, turned
     print(f"  PASS: 121 poses -- box vs exact disagree at {diff_off} with the "
           f"toggle off, at {diff_on} with it on")
 
@@ -122,11 +131,29 @@ def _board(kind='smd', layers='"F.Cu"', drill=''):
     return path
 
 
+def _back_board():
+    """A through-hole pad (A, `*.Cu`) on a back-side SMD pad (B on B.Cu):
+    the stack is on the BACK face, which a confirmation on F.Cu alone
+    would miss."""
+    text = (SMD.format(kind='smd', layers='"B.Cu"', drill='')
+            .replace('(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu")',
+                     '(pad "1" thru_hole rect (at 0 0) (size 1 1) (drill 0.4)'
+                     ' (layers "*.Cu" "*.Mask")', 1)
+            .replace('(footprint "b" (layer "F.Cu")',
+                     '(footprint "b" (layer "B.Cu")', 1))
+    path = os.path.join(_TMP.name, 'b_back.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(text)
+    return path
+
+
 def test_a_real_stack_is_still_a_stack():
     for kind, layers, drill in (('smd', '"F.Cu"', ''),
                                 ('thru_hole', '"*.Cu" "*.Mask"',
-                                 ' (drill 0.4)')):
-        path = _board(kind, layers, drill)
+                                 ' (drill 0.4)'),
+                                ('back', '"B.Cu"', '')):
+        path = (_back_board() if kind == 'back'
+                else _board(kind, layers, drill))
         st = _state(path, True)
         sf = st.legality_ctx.pair_shortfall('A', 'B')
         assert sf.stack, (kind, sf)
@@ -141,8 +168,70 @@ def test_a_real_stack_is_still_a_stack():
         st2.parts['A'].seed_x = 2.0     # seed: far apart
         st2.legality_ctx._baselines.clear()
         assert not st2.legality_ctx.pads_ok('A', 10.0, 10.0, 0.0, ['B'])
-    print("  PASS: a same-net SMD stack and a THT-on-SMD stack are stacks "
-          "with the toggle on, and pads_ok refuses them")
+    print("  PASS: a same-net SMD stack, a THT-on-SMD stack and a THT pad "
+          "on a BACK pad are stacks with the toggle on, and pads_ok refuses "
+          "them")
+
+
+TWO = ('(kicad_pcb (version 20240108) (generator "t1127")\n'
+       '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))\n'
+       '  (net 0 "") (net 1 "N1") (net 2 "N2")\n'
+       '  (gr_rect (start 0 0) (end 30 30) (layer "Edge.Cuts"))\n'
+       '  (footprint "a" (layer "F.Cu") (at 10 10)\n'
+       '    (property "Reference" "A")\n'
+       '    (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 1 "N1"))\n'
+       '    (pad "2" smd circle (at 3 0) (size 1 1) (layers "F.Cu") (net 2 "N2")))\n'
+       '  (footprint "b" (layer "F.Cu") (at 10.5 10)\n'
+       '    (property "Reference" "B")\n'
+       '    (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 1 "N1"))\n'
+       '    (pad "2" smd circle (at {bx} {by}) (size 1 1) (layers "F.Cu")'
+       ' (net 2 "N2"))))\n')
+
+
+def _two(bx, by, name):
+    path = os.path.join(_TMP.name, name)
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(TWO.format(bx=bx, by=by))
+    return path
+
+
+def test_a_box_only_hit_after_a_real_stack_keeps_the_stack():
+    """A1 really stacks on B1; A2 and B2 are circles whose boxes overlap
+    diagonally while the circles stay 0.06 mm apart. The box-only pair comes
+    LATER in the sweep, and it must not turn the pair's confirmed stack back
+    off."""
+    path = _two(3.25, 0.75, 'two.kicad_pcb')
+    st = _state(path, True)
+    sf = st.legality_ctx.pair_shortfall('A', 'B')
+    assert sf.stack, sf
+    # and the box-only pair alone is no stack (the control)
+    path2 = _two(3.25 + 5.0, 0.75, 'two_far.kicad_pcb')
+    p2 = parse_kicad_pcb(path2)
+    a2 = [p for p in p2.footprints['A'].pads if p.pad_number == '2'][0]
+    b2 = [p for p in parse_kicad_pcb(path).footprints['B'].pads
+          if p.pad_number == '2'][0]
+    assert not legality._exact_pad_stack(a2, b2, ['F.Cu', 'B.Cu'])
+    print("  PASS: a box-only hit later in the sweep leaves a confirmed stack "
+          "standing")
+
+
+def test_the_exact_check_needs_contact_not_nearness():
+    """Two 1 mm circles 1.0005 mm apart are near (closer than the check's
+    epsilon) and not touching; 0.9995 mm apart they overlap. Only the second
+    is a stack -- in the gate and in check_assembly, which share the check."""
+    import math
+    out = {}
+    for d in (1.0005, 0.9995):
+        off = d / math.sqrt(2.0)
+        pcb = parse_kicad_pcb(_two(round(off - 0.5, 6) + 3.0, round(off, 6),
+                                   f'near_{d}.kicad_pcb'))
+        a2 = [p for p in pcb.footprints['A'].pads if p.pad_number == '2'][0]
+        b2 = [p for p in pcb.footprints['B'].pads if p.pad_number == '2'][0]
+        got = math.hypot(a2.global_x - b2.global_x, a2.global_y - b2.global_y)
+        assert abs(got - d) < 2e-6, (d, got)
+        out[d] = legality._exact_pad_stack(a2, b2, ['F.Cu', 'B.Cu'])
+    assert out == {1.0005: False, 0.9995: True}, out
+    print("  PASS: 1.0005 mm apart is not a stack, 0.9995 mm apart is")
 
 
 def test_the_extent_shortcut_is_a_box_answer():
@@ -207,6 +296,8 @@ def test_check_drc_caches_hold_their_pad():
 TESTS = [
     test_the_grid_agrees_with_check_assembly,
     test_a_real_stack_is_still_a_stack,
+    test_a_box_only_hit_after_a_real_stack_keeps_the_stack,
+    test_the_exact_check_needs_contact_not_nearness,
     test_the_extent_shortcut_is_a_box_answer,
     test_the_mode_is_fixed_at_build_and_a_snapshotless_part_is_a_box,
     test_check_drc_caches_hold_their_pad,
