@@ -1479,22 +1479,30 @@ class _module_flags:
 
     def __enter__(self):
         import importlib
-        for name, v in self.flags.items():
-            mod_name, _, flag = name.rpartition('.')
-            if not mod_name or not flag:
-                raise AssertionError(f"engine flag {name!r}: expected "
-                                     f"'module.FLAG'")
-            mod = importlib.import_module('placement.' + mod_name)
-            if not hasattr(mod, flag):
-                raise AssertionError(f"placement.{mod_name} has no flag "
-                                     f"{flag!r}")
-            self.saved.append((mod, flag, getattr(mod, flag)))
-            setattr(mod, flag, v)
+        try:
+            for name, v in self.flags.items():
+                mod_name, _, flag = name.rpartition('.')
+                if not mod_name or not flag:
+                    raise AssertionError(f"engine flag {name!r}: expected "
+                                         f"'module.FLAG'")
+                mod = importlib.import_module('placement.' + mod_name)
+                if not hasattr(mod, flag):
+                    raise AssertionError(f"placement.{mod_name} has no flag "
+                                         f"{flag!r}")
+                self.saved.append((mod, flag, getattr(mod, flag)))
+                setattr(mod, flag, v)
+        except BaseException:
+            # A refusal part-way would otherwise leave the flags set before
+            # it on for the rest of the process: __exit__ never runs when
+            # __enter__ raises.
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, *exc):
         for mod, flag, v in reversed(self.saved):
             setattr(mod, flag, v)
+        self.saved = []
         return False
 
 
@@ -1558,6 +1566,10 @@ def run_row(row, workdir):
         if not row.get('repair_on') and not row.get('repair_off'):
             raise AssertionError(f"{row['name']}: a repair row states "
                                  f"neither repair_on nor repair_off")
+        if row.get('engine_flags'):
+            raise AssertionError(f"{row['name']}: the repair engine does not "
+                                 f"read engine_flags -- the row would "
+                                 f"measure one engine twice")
         _ign = list(row.get('ignore_nets') or ())
         intent = _intent_for(board, row['corridors'], d,
                              row.get('zone_flags'),
@@ -2277,6 +2289,14 @@ def _self_test():
             pass
         else:
             raise AssertionError(f'_module_flags({bad}) must refuse')
+    # ...and a refusal part-way restores the flags set before it
+    try:
+        with _module_flags({'legality.STACK_EXACT_CONFIRM': not _was,
+                            'legality.NO_SUCH_FLAG': 1}):
+            pass
+    except AssertionError:
+        pass
+    assert _lg.STACK_EXACT_CONFIRM is _was, 'a partial enter leaked a flag'
 
 
 def _self_test_live():

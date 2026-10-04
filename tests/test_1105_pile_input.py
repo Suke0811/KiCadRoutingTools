@@ -109,10 +109,10 @@ def test_the_pile_row_seeds_the_pile_in_both_arms():
     calls = []
 
     def rec(board_path, out_path, intent, seed_kw, group_sources=None,
-            ignore_nets=(), grade_intent=None):
+            ignore_nets=(), grade_intent=None, engine_flags=None):
         calls.append({'board': board_path, 'out': out_path, 'intent': intent,
                       'kw': dict(seed_kw), 'grade': grade_intent,
-                      'ignore': list(ignore_nets)})
+                      'ignore': list(ignore_nets), 'flags': engine_flags})
         return {'seconds': 0.0, 'crossings': 0, 'hpwl': 0.0, 'inversions': 0,
                 'unseated': 0, 'body_blocking': 0, 'intent_errors': 0}
     row = {'name': 'pile-plumbing', 'board': 'esp_prog.kicad_pcb',
