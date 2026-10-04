@@ -63,6 +63,14 @@ refusals) pin the function directly. A10 and B7 go through
       C12 (#1120) place_seed, end to end: the unseated set is named and the
           run exits 4; a fitting member is written.
       C13 (#1120) an off-lattice member is judged on its own box.
+      C14 (#1125) a member whose seat only crowds what is placed is walked
+          past: J5 declared [180, 90] seats at 90, clear of J17 (C5 holds
+          both orders); the blind twin, which replaces the member choice,
+          replaces the walk too.
+      C15 (#1125) when every member crowds, the first member's seat stands:
+          everything but one note is the single-member set's.
+      C16 (#1125) a member that seats clear is not walked, and the walk's
+          order is the member choice's.
 """
 import os
 from pathlib import Path
@@ -333,13 +341,16 @@ class StageOneRotation(_Graded):
                          and 'rotation_candidates' in n], res['notes'])
         self.assertEqual(self.pose(self.seat_j5_set([270, 90]), 'J5'),
                          self.seat_j5_single(270))   # the author's order, not sorted
-        # A set that holds the input angle does not turn the part, whatever
-        # its order: stage 1 does not turn a part already at a member that
-        # fits (one at a member that does not fit is turned -- see the unit
-        # case below).
-        undeclared = self.seat_j5_single()
-        self.assertEqual(self.pose(self.seat_j5_set([180, 90]), 'J5'), undeclared)
-        self.assertEqual(self.pose(self.seat_j5_set([90, 180]), 'J5'), undeclared)
+        # A set that holds the input angle is tried at that angle first,
+        # whatever its order (stage 1 does not turn a part already at a member
+        # that fits; one at a member that does not fit is turned -- see the
+        # unit case below). Since #1125 the member is judged by the SEAT it
+        # gets: J5 at its input 180 only crowds J17, so the walk seats it at
+        # 90, exactly where 90 declared alone seats (C14 has the walk).
+        clear90 = self.seat_j5_single(90)
+        self.assertEqual(clear90, (124.435, 38.5, 90.0))
+        self.assertEqual(self.pose(self.seat_j5_set([180, 90]), 'J5'), clear90)
+        self.assertEqual(self.pose(self.seat_j5_set([90, 180]), 'J5'), clear90)
         # The blind twin is the defect: the input angle, outside the set.
         blind = self.pose(self.seat_j5_set([0, 90], blind=True), 'J5')
         self.assertAlmostEqual(blind[2] % 360.0, 180.0, delta=1e-9)
@@ -503,6 +514,70 @@ class StageOneRotation(_Graded):
                 else:
                     r = run_utils.check(argv, refuse='UNSEATED', code=4)
                     self.assertIn('J1: declared [0.0, 180.0]', r.stdout)
+
+    def j5_notes(self, res):
+        return [n for n in res['notes'] if n.startswith('edge connector J5')]
+
+    def test_c14_a_member_that_only_crowds_is_walked_past(self):
+        # #1125: J5 declared [180, 90] used to keep 180, whose only seat on
+        # the north band crowds J17, and say so; 90 seats clear.
+        res = self.seat_j5_set([180, 90])
+        notes = self.j5_notes(res)
+        self.assertFalse([n for n in notes if 'clears J17' in n], notes)
+        self.assertTrue([n for n in notes if 'member 180deg only crowded what '
+                         'is placed, so stage 1 seated it at 90deg' in n], notes)
+        self.assertTrue([n for n in notes if 'seats clear of what is placed '
+                         'on the north edge' in n], notes)
+        self.assertNotIn('J5', res.get('edge_floor_fallback') or {})
+        # the blind twin -- the member choice replaced by the input angle --
+        # replaces the walk too, so it is the defect: 180, crowding J17
+        with input_rotation():
+            blind = self.seat_j5_set([180, 90])
+        self.assertEqual(self.pose(blind, 'J5'), self.seat_j5_single())
+        self.assertTrue([n for n in self.j5_notes(blind) if 'clears J17' in n])
+
+    def test_c15_when_every_member_crowds_the_first_seat_is_kept(self):
+        # 181 crowds J17 exactly as 180 does. The walk then changes nothing
+        # but one note: the seat, every other note and every placement are
+        # the single-member set's, which has nothing to walk.
+        res, one = self.seat_j5_set([180, 181]), self.seat_j5_set([180])
+        self.assertEqual(self.pose(res, 'J5'), self.seat_j5_single())
+        walk = [n for n in res['notes'] if '(#1125)' in n]
+        self.assertEqual(len(walk), 1, walk)
+        self.assertIn('no other member of its rotation_candidates [180.0, '
+                      '181.0] seats clear', walk[0])
+        self.assertEqual([n for n in res['notes'] if n not in walk],
+                         one['notes'])
+        self.assertEqual(res['placements'], one['placements'])
+        self.assertEqual(res.get('edge_floor_fallback'),
+                         one.get('edge_floor_fallback'))
+        self.assertEqual(len([n for n in self.j5_notes(res)
+                              if 'clears J17' in n]), 1)
+
+    def test_c16_a_member_that_seats_clear_is_not_walked(self):
+        # Nothing crowds when J17 is not yet placed: J5 keeps its own angle,
+        # and the author's order still decides between members that both
+        # seat clear (C5's [270, 90] is the other half).
+        doc = intent_doc(dict(self.J5, **self.CENTRE),
+                         blocks=[{'name': 'j5', 'refs': ['J5'],
+                                  'rotation_candidates': [180, 90]}])
+        res = self.stage1(SPLIT, doc, seed_refs={'J5', 'J17'})
+        self.assertAlmostEqual(self.pose(res, 'J5')[2] % 360.0, 180.0,
+                               delta=1e-9)
+        self.assertFalse([n for n in res['notes'] if '(#1125)' in n],
+                         res['notes'])
+        self.assertEqual(self.pose(self.seat_j5_set([270, 90]), 'J5'),
+                         self.seat_j5_single(270))
+        # the walk's own order is the member choice's order
+        p180 = type('P', (), {'rot': 180.0})()
+        walk = seeder._stage1_walk_member
+        self.assertEqual(walk(p180, (None, (90.0, 270.0)), [180.0]), 90.0)
+        self.assertEqual(walk(p180, (None, (90.0, 270.0)), [180.0, 90.0]),
+                         270.0)
+        self.assertIsNone(walk(p180, (None, (90.0, 270.0)),
+                               [180.0, 90.0, 270.0]))
+        self.assertIsNone(walk(p180, (None, (90.0, 270.0)), [180.0],
+                               fits=lambda r: False))
 
 
 ISSUE_J1 = ('  (footprint "t" (layer "F.Cu") (at 14.15 9.0 270)\n'

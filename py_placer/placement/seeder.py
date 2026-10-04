@@ -2560,6 +2560,22 @@ def _stage1_geometry_rot(part, claim, fits=None):
     return part.rot
 
 
+def _stage1_walk_member(part, claim, tried, fits=None):
+    """#1125: the next member of a candidate set stage 1 tries after the
+    angles in `tried` -- `_stage1_geometry_rot`'s own choice with the tried
+    members taken out, so the walk follows the order that choice does (the
+    part's own angle, then the author's), and anything that replaces the
+    choice replaces the walk with it. None when no untried member fits."""
+    def _new(r):
+        return not any(abs((r - t + 180.0) % 360.0 - 180.0) < 1e-6
+                       for t in tried)
+
+    def _left(r):
+        return _new(r) and (fits is None or fits(r))
+    nxt = _stage1_geometry_rot(part, claim, fits=_left)
+    return nxt if _left(nxt) else None
+
+
 def _stage1_fits(state, part, entry, bounds, edge, rot) -> bool:
     """Would stage 1 seat `part` on `edge` at `rot`? Its two refusals before
     any turn, repeated: the part is wider than the edge, or the declared
@@ -4404,7 +4420,15 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         _floor_context_note(state, notes)
     for edge in sorted(by_edge):
         specs = sorted(by_edge[edge], key=lambda c: c['ref'])
-        for k, c in enumerate(specs):
+
+        def _stage1_one(k, c, _member1125=None):
+            # #1125: ONE stage-1 attempt at one connector, at the member
+            # `_stage1_geometry_rot` picks, or at `_member1125` when the walk
+            # below tries a later member of a candidate set. Returns
+            # (outcome, the angle measured at): 'skip' -- wider than the edge
+            # or outside its window, the two refusals `_stage1_fits` already
+            # applied to every member; 'skip_late' -- refused after the turn;
+            # 'crowded' -- seated at the crowding fallback; 'clean'.
             ref = c['ref']
             part = state.parts[ref]
             band = c.get('overhang_mm') or {}
@@ -4427,6 +4451,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             _geo_rot = _stage1_geometry_rot(
                 part, declared_rot.get(ref),
                 fits=lambda r: _stage1_fits(state, part, c, bounds, edge, r))
+            if _member1125 is not None:
+                _geo_rot = _member1125
             if _geo_rot != part.rot:
                 _geo_rot = _materialise_rotation(part, _geo_rot)
             _geo = _AtRotation(part, _geo_rot)
@@ -4471,7 +4497,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             if f_lo > f_hi:
                 notes.append(f"edge connector {ref}: wider than the {edge} "
                              f"edge, so stage 1 leaves it to the later stages")
-                continue
+                return 'skip', _geo_rot
             _win = _declared_frac_window(c, _e_hi - _e_lo)
             if _win is not None:
                 _w_lo = declared_to_ladder_frac(_geo, bounds, edge,
@@ -4488,7 +4514,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                         f"{ladder_to_declared_frac(_geo, bounds, edge, _e_lo, _e_hi, f_hi):.3f}] "
                         f"on the {edge} edge, so stage 1 leaves it to the "
                         f"later stages")
-                    continue
+                    return 'skip', _geo_rot
                 f_lo, f_hi = _n_lo, _n_hi
             frac = min(f_hi, max(f_lo, frac))
             # #893. An edge connector is the class whose rotation is most often
@@ -4522,8 +4548,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                         f"edge connector {ref}: seated at the declared "
                         f"rotation {_want:g}deg (input was {part.rot:g}deg)"
                         + (f", the first of its rotation_candidates "
-                           f"{[float(r) for r in _edge_decl[1]]} that fits "
-                           f"the {edge} edge" if _edge_decl[0] is None
+                           f"{[float(r) for r in _edge_decl[1]]} "
+                           + ("that fits " if _member1125 is None else
+                              "that seats clear of what is placed on ")
+                           + f"the {edge} edge" if _edge_decl[0] is None
                            else ''))
                     state.apply_move(ref, part.x, part.y, _want)
             # #701: SLIDE along the edge when a declared keep-out refuses the
@@ -4745,7 +4773,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 notes.append(f"edge connector {ref}: the overhang walk did "
                              f"not converge on the {edge} edge, so stage 1 "
                              f"left it for the later stages")
-                continue
+                return 'skip_late', _geo_rot
             # The SAME containment predicate _seat_edge uses. Stage 1 got the
             # fraction clamp and the convergence skip but not this, and was
             # measured still seating a connector at (159.909, 132.830) with
@@ -4765,7 +4793,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                                 + ', '.join(sorted(set(_why))) if _why else
                                 f"the {edge} band would put it off the board")
                              + ", so stage 1 left it for the later stages")
-                continue
+                return 'skip_late', _geo_rot
             state.apply_move(ref, round(x, 3), round(y, 3), part.rot)
             _missed = _window_miss_note(state, part, c, edge, 'edge connector ')
             if _missed:
@@ -4784,6 +4812,72 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 if _record is not None:
                     edge_floor_fallback[ref] = _record
                     notes.append(_floor_note('edge connector ', ref, _record))
+            return ('crowded' if (_pick is None and _kept is None
+                                  and _fallback is not None) else 'clean',
+                    _geo_rot)
+
+        def _stage1_undo(ref, pose, n0):
+            """#1125: take back one stage-1 attempt -- its pose, its notes,
+            its floor record and its seat -- so the next member is tried on
+            the board the first one saw. The `bounds_by_rot` / `tht_by_rot`
+            entries an attempt adds stay: they cache the part's own extents
+            at an angle, the same whoever asks."""
+            state.apply_move(ref, *pose)
+            del notes[n0:]
+            edge_floor_fallback.pop(ref, None)
+            placed.discard(ref)
+            unplaced.add(ref)
+
+        for k, c in enumerate(specs):
+            # #1125: a candidate SET is walked by the SEAT each member gets,
+            # not only by whether it fits. The member `_stage1_geometry_rot`
+            # picks is tried first, exactly as before; only when that seat
+            # crowds what is placed (or is refused after the turn) are the
+            # set's other fitting members tried, in the same order, and the
+            # first that seats clear is kept. When none does, the first
+            # member's seat is made again. splitflap's J5 declared [180, 90]
+            # kept 180, which only crowds J17, where 90 seats clear.
+            _ref1125 = c['ref']
+            _part1125 = state.parts[_ref1125]
+            _pose1125 = (_part1125.x, _part1125.y, _part1125.rot)
+            _n1125 = len(notes)
+            _out, _used = _stage1_one(k, c)
+            _claim = declared_rot.get(_ref1125)
+            if (_out not in ('crowded', 'skip_late') or _claim is None
+                    or _claim[0] is not None or not _claim[1]):
+                continue
+            _tried = [_used]
+            _won = None
+            while True:
+                _next = _stage1_walk_member(
+                    _part1125, _claim, _tried,
+                    fits=lambda r, _p=_part1125, _c=c: _stage1_fits(
+                        state, _p, _c, bounds, edge, r))
+                if _next is None:
+                    break
+                _stage1_undo(_ref1125, _pose1125, _n1125)
+                _tried.append(_next)
+                _o, _u = _stage1_one(k, c, _member1125=_next)
+                if _o == 'clean':
+                    _won = _u
+                    break
+            if _won is not None:
+                notes.append(
+                    f"edge connector {_ref1125}: its rotation_candidates "
+                    f"member {_used:g}deg "
+                    + ("only crowded what is placed" if _out == 'crowded'
+                       else "was refused after the turn")
+                    + f", so stage 1 seated it at {_won:g}deg, the next "
+                    f"member that seats clear on the {edge} edge (#1125)")
+                continue
+            if len(_tried) > 1:
+                _stage1_undo(_ref1125, _pose1125, _n1125)
+                _stage1_one(k, c)
+                notes.append(
+                    f"edge connector {_ref1125}: no other member of its "
+                    f"rotation_candidates {[float(r) for r in _claim[1]]} "
+                    f"seats clear on the {edge} edge either, so it keeps "
+                    f"{_used:g}deg (#1125)")
 
     # ---- 1.5 must_lock parts seat FIRST, in place when possible ------------
     # Under --force, previously-good must_lock parts used to be re-derived at
