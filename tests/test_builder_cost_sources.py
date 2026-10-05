@@ -3,7 +3,9 @@
 Rows:
   - a net is not priced against its OWN track-proximity entry (a multipoint
     net's Phase 3 taps were pushed off its own main route), nor its river
-    siblings', and nothing is copied when nothing is dropped;
+    siblings', and nothing is copied when nothing is dropped; the same view
+    is handed out again while its sources are unchanged (the merge memo is
+    keyed on its identity) and a new one once any of them changes;
   - stub-proximity sources: every unrouted net, a multipoint net whose taps
     are still pending although its Phase 1 route is in, and a pre-existing net
     ripped this run and not yet back; never the net being routed, never a
@@ -36,6 +38,11 @@ def test_own_track_proximity_entry_dropped():
     assert set(got) == {6, -1}, got
     assert rc._per_net_cost_sources(cache, (9,)) is cache, "copied for nothing"
     assert set(rc._per_net_cost_sources(cache, (5, 6))) == {7, -1}
+    again = rc._per_net_cost_sources(cache, (5,), sibs={7})
+    assert again is got, "an unchanged view was rebuilt: the merge memo misses"
+    cache[6] = 'rerouted'
+    fresh = rc._per_net_cost_sources(cache, (5,), sibs={7})
+    assert fresh is not got and fresh[6] == 'rerouted', fresh
 
 
 def test_stub_proximity_sources():

@@ -6,6 +6,7 @@ like building obstacle maps and recording route results.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import List, Set, Dict, Optional, Tuple, TYPE_CHECKING
 import math
 import numpy as np
@@ -76,18 +77,43 @@ def filter_ripped_ghosts(ghost_dict, config: GridRouteConfig, routed_net_ids=Non
             if nid not in done and v is not None and len(v) > 0}
 
 
+# (id of the run's cache, the keys a derived view drops) -> (that cache, the
+# view last handed out). See _per_net_cost_sources.
+_DERIVED_SOURCES: "OrderedDict[tuple, tuple]" = OrderedDict()
+_DERIVED_SOURCES_MAX = 64
+
+
 def _per_net_cost_sources(track_proximity_cache, net_ids, sibs=()):
     """The track_proximity_cache entries the net(s) being routed are priced
     with: all of them but their river siblings' corridors (#658), their own
     pours' plane-fragility rows (a same-net track joins its plane, it cannot
     cut it) and their own track-proximity entry (a multipoint net's Phase 3
-    taps were pushed off its own main route). The same dict when nothing is
-    dropped, so the merge memo keeps its key."""
+    taps were pushed off its own main route).
+
+    The merge memo is keyed on this dict's identity, so a view equal to the
+    one handed out last time for the same drop (same keys, same arrays) is
+    THAT object again: a fresh dict per prepare would never hit the memo, and
+    each miss would pin another stacked copy of every source. The same dict
+    as the cache when nothing is dropped."""
     from plane_fragility import without_own_fragility
     cache = without_own_fragility(track_proximity_cache, net_ids)
     drop = set(sibs) | {n for n in net_ids if n in cache}
     if drop:
         cache = {k: v for k, v in cache.items() if k not in drop}
+    if cache is track_proximity_cache:
+        return cache
+    key = (id(track_proximity_cache),
+           tuple(sorted(repr(k) for k in track_proximity_cache if k not in cache)))
+    prev = _DERIVED_SOURCES.get(key)
+    if (prev is not None and prev[0] is track_proximity_cache
+            and prev[1].keys() == cache.keys()
+            and all(prev[1][k] is v for k, v in cache.items())):
+        _DERIVED_SOURCES.move_to_end(key)
+        return prev[1]
+    # The entry holds the cache, so its id cannot be reused while it is live.
+    _DERIVED_SOURCES[key] = (track_proximity_cache, cache)
+    while len(_DERIVED_SOURCES) > _DERIVED_SOURCES_MAX:
+        _DERIVED_SOURCES.popitem(last=False)
     return cache
 
 
