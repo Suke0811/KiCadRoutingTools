@@ -77,7 +77,7 @@ from connectivity import (
     get_stub_endpoints, get_net_endpoints, calculate_stub_length, get_multipoint_net_pads
 )
 from net_queries import get_chip_pad_positions, calculate_route_length
-from pcb_modification import add_route_to_pcb_data
+from pcb_modification import add_route_to_pcb_data, remove_route_from_pcb_data
 from single_ended_routing import (route_net_with_obstacles,
                                   route_multipoint_main, route_oracle_links,
                                   deferred_diagnostics, flush_diagnostics)
@@ -86,7 +86,6 @@ from rip_up_reroute import rip_up_net, restore_net
 from leg_rip import LEG_RIP_ENABLED, select_blocking_branch  # #510
 from rip_defer import queue_reroute  # #510 churn
 from diff_pair_custody import record_casualty
-from keep_away import stamp_keep_away   # #1146
 from polarity_swap import get_canonical_net_id, rip_combo_already_tried
 from routing_context import (
     build_single_ended_obstacles, build_incremental_obstacles,
@@ -126,6 +125,31 @@ def _swap_blocking_net_ids(pcb_data, stub, dest_layer, config, moved_segs):
     return hits
 
 
+def _route_on_prepared_map(pcb_data, net_id, config, state, routed_net_ids,
+                           track_proximity_cache, layer_map):
+    """Route one net on the working map prepared for it, as the main pass
+    routes it, and restore the map afterwards.
+
+    The rescue rungs used to route on the map as the previous net's restore
+    left it: every soft cost cleared (stub, BGA, fragility, history, ghosts,
+    keep-away), no same-net hole-to-hole rings (a stub swap's new pad via
+    included), no own-pad lift, no free vias -- and the net's OWN cached copper
+    back on the map as an obstacle, which blocked rescues that should succeed
+    (#1146 audit: 6 of 10 two-pad nets on a fanned board against 10 of 10 on
+    a prepared map)."""
+    _stubs, via_cells = prepare_obstacles_inplace(
+        state.working_obstacles, pcb_data, config, net_id,
+        state.all_unrouted_net_ids, routed_net_ids, track_proximity_cache,
+        layer_map, state.net_obstacles_cache,
+        state.ripped_route_layer_costs, state.ripped_route_via_positions)
+    try:
+        return route_net_with_obstacles(pcb_data, net_id, config,
+                                        state.working_obstacles)
+    finally:
+        restore_obstacles_inplace(state.working_obstacles, net_id,
+                                  state.net_obstacles_cache, via_cells)
+
+
 def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
                            routed_net_ids, remaining_net_ids, routed_results,
                            routed_net_paths, track_proximity_cache, layer_map,
@@ -159,15 +183,26 @@ def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
                              state.net_obstacles_cache, via)
         if token is None:
             continue
-        # #1146: this route runs on the restored working map, which carries
-        # no per-net soft costs; give it the net's keep-away band at least.
-        _ka = stamp_keep_away(state.working_obstacles, config, pcb_data, net_id)
-        result = route_net_with_obstacles(pcb_data, net_id, config,
-                                          state.working_obstacles)
-        if _ka:
-            state.working_obstacles.clear_layer_proximity()
+        result = _route_on_prepared_map(pcb_data, net_id, config, state,
+                                        routed_net_ids, track_proximity_cache,
+                                        layer_map)
         if result and not result.get('failed'):
             from tap_relocation import retap_pad
+            # Commit the route BEFORE re-tapping, so the replacement tap via
+            # is placed against the copper it just made room for (it used to
+            # be placed blind to it). #803: remove the net's old cache entry
+            # from the map before adding the recomputed one, or it is counted
+            # twice.
+            old_entry = state.net_obstacles_cache.get(net_id)
+            if old_entry is not None:
+                remove_net_obstacles_from_cache(state.working_obstacles,
+                                                old_entry)
+            add_route_to_pcb_data(pcb_data, result,
+                                  debug_lines=config.debug_lines)
+            update_net_obstacles_after_routing(
+                pcb_data, net_id, result, config, state.net_obstacles_cache)
+            add_net_obstacles_from_cache(
+                state.working_obstacles, state.net_obstacles_cache[net_id])
             _retap = retap_pad(pcb_data, config, state.working_obstacles,
                                state.net_obstacles_cache, token)
             if not _retap:
@@ -175,6 +210,15 @@ def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
                 # allowed to stand; drop the route and put the tap back.
                 print(f"  TAP RELOCATION: re-tap declined -> reverting "
                       f"(route discarded)")
+                remove_net_obstacles_from_cache(
+                    state.working_obstacles, state.net_obstacles_cache[net_id])
+                remove_route_from_pcb_data(pcb_data, result)
+                if old_entry is not None:
+                    state.net_obstacles_cache[net_id] = old_entry
+                    add_net_obstacles_from_cache(state.working_obstacles,
+                                                 old_entry)
+                else:
+                    state.net_obstacles_cache.pop(net_id, None)
                 restore_tap(pcb_data, state.working_obstacles,
                             state.net_obstacles_cache, token)
                 continue
@@ -197,8 +241,6 @@ def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
             result['route_length'] = calculate_route_length(
                 result['new_segments'], result.get('new_vias', []), pcb_data)
             results.append(result)
-            add_route_to_pcb_data(pcb_data, result,
-                                  debug_lines=config.debug_lines)
             from plane_fragility import fragility_on_copper_change  # #466
             fragility_on_copper_change(config, pcb_data,
                                        result.get('new_segments'),
@@ -211,10 +253,6 @@ def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
                 routed_net_paths[net_id] = result['path']
             track_proximity_cache[net_id] = compute_track_proximity_for_net(
                 pcb_data, net_id, config, layer_map)
-            update_net_obstacles_after_routing(
-                pcb_data, net_id, result, config, state.net_obstacles_cache)
-            add_net_obstacles_from_cache(
-                state.working_obstacles, state.net_obstacles_cache[net_id])
             invalidate_obstacle_cache(obstacle_cache, net_id)
             return result
         restore_tap(pcb_data, state.working_obstacles,
@@ -248,7 +286,6 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
     from stub_layer_switching import (get_stub_info, validate_single_swap,
                                       apply_stub_layer_switch,
                                       revert_stub_layer_switch)
-    from single_ended_routing import route_net_with_obstacles
 
     ends = get_stub_endpoints(pcb_data, [net_id])
     if not ends:
@@ -334,14 +371,9 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                 continue
             new_vias, seg_mods = apply_stub_layer_switch(
                 pcb_data, stub, dest, config, debug=False)
-            # #1146: the restored working map carries no per-net soft
-            # costs; give this route the net's keep-away band at least.
-            _ka = stamp_keep_away(state.working_obstacles, config, pcb_data,
-                                  net_id)
-            result = route_net_with_obstacles(pcb_data, net_id, config,
-                                              state.working_obstacles)
-            if _ka:
-                state.working_obstacles.clear_layer_proximity()
+            result = _route_on_prepared_map(pcb_data, net_id, config, state,
+                                            routed_net_ids,
+                                            track_proximity_cache, layer_map)
             if result and not result.get('failed'):
                 net = pcb_data.nets.get(net_id)
                 nname = net.name if net else str(net_id)

@@ -471,9 +471,9 @@ def keep_away_rows(config, pcb_data, net_ids,
 def stamp_keep_away(obstacles, config, pcb_data, net_ids,
                     single_track=False) -> bool:
     """Price the keep-away band on a map no proximity builder prepared: the
-    restored working map a terminal rescue routes on, or a rescue clone.
-    Returns True when it stamped anything; on a map that outlives the route
-    the caller clears it again with clear_layer_proximity(). Nothing is
+    per-attempt clones net_rescue's gap rescue and terminal escalation route
+    on. Returns True when it stamped anything; on a map that outlives the
+    route the caller clears it again with clear_layer_proximity(). Nothing is
     stamped without a rule, so a run without one routes exactly as before."""
     rows = keep_away_rows(config, pcb_data, net_ids, single_track)
     if rows is None:

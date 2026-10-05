@@ -173,9 +173,9 @@ def test_class_terms():
 
 
 def test_stamp_on_rescue_maps():
-    """Rescue paths (stub-swap, tap relocation, net_rescue, terminal
-    escalation) route on maps no proximity builder prepared; they stamp the
-    band themselves, and stamp nothing at all without a rule."""
+    """net_rescue's gap rescue and terminal escalation route on clones no
+    proximity builder prepared; they stamp the band themselves, and stamp
+    nothing at all without a rule."""
     class Map:
         def __init__(self):
             self.calls = []

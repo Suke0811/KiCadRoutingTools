@@ -521,6 +521,10 @@ def prepare_obstacles_inplace(
     working_obstacles.clear_cross_layer_tracks()
     working_obstacles.clear_free_vias()
     working_obstacles.clear_source_target_cells()  # Clear source/target overrides from previous route
+    # Terminal escape rects (route_net_with_obstacles, the #189 via unblock)
+    # are per route too; left on the map they opened BGA-zone cells for every
+    # later net, and clone_fresh() copied them into Phase 3's maps.
+    working_obstacles.clear_allowed_cells()
 
     # Remove current net's obstacles so we can route through our own stubs
     if net_id in net_obstacles_cache:
@@ -790,6 +794,7 @@ def restore_obstacles_inplace(
     working_obstacles.clear_layer_proximity()
     working_obstacles.clear_cross_layer_tracks()
     working_obstacles.clear_free_vias()
+    working_obstacles.clear_allowed_cells()
 
     # Remove same-net via clearance cells
     if len(same_net_via_cells) > 0:
