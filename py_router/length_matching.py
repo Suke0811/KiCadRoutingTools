@@ -532,10 +532,10 @@ def get_safe_amplitude_at_point(
         meander_clearance_margin, 0.0, required_clearance, via_clearance,
         pad_clearance)
     if paired_net_id is not None:
-        # the P/N partner at the pair's own floor, held to the gap the
-        # coupled run is built at (#1134: a bump moving away from a partner
-        # that sits at the gap must not be refused for it)
-        paired_clearance = net_half + config.track_width / 2 + config.pn_clearance(
+        # the P/N partner at the pair's own value (#1134): route_diff builds
+        # the coupled run at a gap raised to the class (#530) and to any
+        # .kicad_dru rule binding the pair (#1145), so the partner sits at it
+        paired_clearance = net_half + config.track_width / 2 + config.pair_clearance(
             net_id, paired_net_id, layer)
     if chamfer is None:
         chamfer = resolve_meander_chamfer(config, net_id, layer, own_width)

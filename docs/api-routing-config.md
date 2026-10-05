@@ -510,6 +510,14 @@ With nothing declared every method hands back the floor it was given, so a site 
 swaps its flat `config.clearance` for one of them is byte-identical on such a board.
 `tests/test_1136_pair_clearance_parity.py` holds them to `check_drc` itself.
 
+A diff pair's own P/N spacing is such a verdict too. `batch_route_diff_pairs` raises
+the coupling gap to the clearance (#441), the pair's class (#530) and the widest
+`.kicad_dru` rule that binds the pair on a layer it may route on (#1145,
+`kicad_dru.pair_gap_rule_floor`: a layer rule, or a track rule read pair-exactly).
+It raises the gap before the `--impedance` solve and again per pair, and never
+lowers it. The P/N self-checks, the #318 neck and the intra-pair meander price the
+partner at `pair_clearance(P, N, layer)`.
+
 ```python
 from routing_config import GridRouteConfig
 config = GridRouteConfig(clearance=0.2)

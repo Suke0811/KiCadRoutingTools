@@ -601,7 +601,7 @@ This helps visualize the routing structure without affecting the actual routed c
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--diff-pair-gap` | 0.101 | Gap between P and N traces (mm) |
+| `--diff-pair-gap` | 0.101 | Gap between P and N traces (mm). Raised, never lowered, to the clearance (#441), the pair's net class (#530) and any `.kicad_dru` clearance rule that binds the pair on a layer it routes on (#1145): KiCad grades P against N as two nets |
 | `--diff-pair-centerline-setback` | 2x P-N dist | Distance in front of stubs to start centerline (mm) |
 | `--min-turning-radius` | 0.2 | Minimum turning radius for pose-based routing (mm) |
 | `--max-turn-angle` | 180 | Max cumulative turn angle (degrees) to prevent U-turns |

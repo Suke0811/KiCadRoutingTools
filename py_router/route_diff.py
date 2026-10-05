@@ -499,6 +499,50 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         costs_str = ', '.join(f"{layers[i]}={layer_costs[i]}x" for i in range(min(len(layers), len(layer_costs))))
         print(f"  Layer costs: {costs_str}")
 
+    # #1145: KiCad grades P against N under a .kicad_dru clearance rule as it
+    # does any two nets -- a layer rule (#498) on a layer the pair may route
+    # on, or a track rule (#735) whose class takes in the pair. #441 and #530
+    # raise the gap to the clearance and the class, never to a rule, so a
+    # rule above both made every coupled segment on its layer a violation.
+    # Raise the call's gap to the widest rule binding one of its pairs HERE,
+    # before the --impedance solve (as #441 is), so the solved widths are
+    # those of the gap the pairs are built at. Each pair is floored again at
+    # its own rule below, where its net-class gap may replace this one (#435).
+    from kicad_dru import (resolve_layer_clearances, board_track_rules,
+                           pair_gap_rule_floor)
+    _routable_layers = [l for i, l in enumerate(layers)
+                        if i >= len(layer_costs) or layer_costs[i] >= 0]
+    _gap_layer_map = resolve_layer_clearances(layer_clearances, input_file,
+                                              pcb_data, layers)
+    _gap_track_rules, _gap_classes = (
+        ([], {}) if track_clearances is not None
+        else board_track_rules(pcb_data, input_file))
+
+    def _pair_rule_gap(p_net_id, n_net_id):
+        g, why = pair_gap_rule_floor(
+            _gap_layer_map, _routable_layers, _gap_track_rules,
+            _gap_classes.get(p_net_id, frozenset()),
+            _gap_classes.get(n_net_id, frozenset()))
+        if track_clearances:
+            # an explicit map (tests) prices the pair as pair_clearance does
+            v = max(track_clearances.get(p_net_id) or 0.0,
+                    track_clearances.get(n_net_id) or 0.0)
+            if v > g:
+                g, why = v, "the track-clearance map"
+        return g, why
+
+    _gap_rules_bind = bool(_gap_layer_map or _gap_track_rules or track_clearances)
+    if _gap_rules_bind and diff_pair_gap is not None:
+        _rg, _rwhy = 0.0, None
+        for _pair in find_differential_pairs(pcb_data, net_names).values():
+            _g, _why = _pair_rule_gap(_pair.p_net_id, _pair.n_net_id)
+            if _g > _rg:
+                _rg, _rwhy = _g, _why
+        if _rg > diff_pair_gap + 1e-9:
+            print(f"Diff-pair gap {diff_pair_gap}mm is below {_rwhy} ({_rg:g}mm); "
+                  f"raising gap to {_rg:g}mm (KiCad grades P<->N under it, #1145).")
+            diff_pair_gap = _rg
+
     # Calculate layer-specific widths for impedance-controlled routing
     # For diff pairs, we use the diff_pair_gap as the fixed spacing and calculate width.
     # #610: with --track-width OMITTED the impedance request sets the width floor
@@ -1088,7 +1132,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         # intra-pair clearance violations, 0 before). Floor each pair's gap at
         # max(class clearance of P, of N) through the same per-pair geometry
         # machinery, so the pair reserves and routes its wider channel.
-        if diff_pair_width_from_class or diff_pair_gap_from_class or net_clearances:
+        # #1145: ...or when a .kicad_dru rule binds a pair (`_pair_rule_gap`).
+        if (diff_pair_width_from_class or diff_pair_gap_from_class or net_clearances
+                or _gap_rules_bind):
             try:
                 from list_nets import read_design_rules, resolve_net_class, fab_floors
                 _rules = read_design_rules(input_file) if input_file else {}
@@ -1114,6 +1160,11 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                     print(f"  #530: {_pn}: coupling gap {_eg:.4g} mm raised to its net-class "
                           f"clearance {_pclr:.4g} mm (KiCad grades P<->N as clearance).")
                     _eg = _pclr
+                _rg, _rwhy = _pair_rule_gap(_pair.p_net_id, _pair.n_net_id)
+                if _rg > _eg + 1e-9:
+                    print(f"  #1145: {_pn}: coupling gap {_eg:.4g} mm raised to "
+                          f"{_rwhy} {_rg:.4g} mm (KiCad grades P<->N under it).")
+                    _eg = _rg
                 geom = (round(_ew, 4), round(_eg, 4))
                 if geom == _global_geom and not (diff_pair_width_from_class
                                                  or diff_pair_gap_from_class):

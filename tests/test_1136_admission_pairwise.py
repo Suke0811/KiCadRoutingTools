@@ -457,24 +457,25 @@ def test_meander_amplitude():
     pair = pcb(segs=[make_seg(0, 1.2, 10, 1.2, net_id=P2)])
 
     def gap_raised(c):
-        # route_diff raises a pair's coupling gap to its class (#530) and to
-        # the clearance (#441); the P/N floor is held to that gap (#1134)
+        # route_diff raises a pair's coupling gap to the clearance (#441),
+        # its class (#530) and a .kicad_dru rule on its layer (#1145)
         from dataclasses import replace
         return replace(c, diff_pair_gap=max(c.diff_pair_gap,
-                                            c.pair_clearance(OWN, P2)))
+                                            c.pair_clearance(OWN, P2, 'F.Cu')))
     _amp_three_ways('intra-pair meander vs its partner (paired_clearance)',
                     lambda c: amp(pcb_data=pair, net_id=OWN,
                                   config=gap_raised(c),
                                   paired_net_id=P2, **_AMP), net=P2)
-    # a layer rule ABOVE the gap the coupled run is built at does not shrink
-    # the bump: the partner sits at the gap by construction (#1134)
-    ruled = gap_raised(cfg(layer_clearances={'F.Cu': 0.3}))
+    # a layer rule binds the partner like a class does: the coupled run is
+    # built at a gap raised to it (#1145), so the bump is held to it too
+    # (0.4: the amplitude search steps 0.7 -> 0.49, so 0.3 would tie)
+    ruled = gap_raised(cfg(layer_clearances={'F.Cu': 0.4}))
     flat_a = amp(pcb_data=pair, net_id=OWN, config=gap_raised(cfg()),
                  paired_net_id=P2, **_AMP)
     ruled_a = amp(pcb_data=pair, net_id=OWN, config=ruled,
                   paired_net_id=P2, **_AMP)
-    check('intra-pair meander: a layer rule above the gap leaves the '
-          f'amplitude ({flat_a:.3f} -> {ruled_a:.3f})', ruled_a, flat_a)
+    check('intra-pair meander: a layer rule shrinks the amplitude '
+          f'({flat_a:.3f} -> {ruled_a:.3f})', ruled_a < flat_a, True)
 
 
 def test_meander_own_pad_keeps_the_flat_value():

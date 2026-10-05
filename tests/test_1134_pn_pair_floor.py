@@ -8,13 +8,13 @@ that decide whether a coupled route pinches its own pair priced the pinch at
 the flat Default clearance, so on a pair whose class is wider than Default
 they passed a P/N approach KiCad flags.
 
-The self-checks price the full pair value -- a .kicad_dru rule above the
-coupling gap included (route_diff does not raise the gap for one): they
-choose between alternatives (the hybrid, single-ended legs) that can route
-off the ruled layer, and cap_chain shows it end to end. Only the meander's
-partner check is held to the built gap (`GridRouteConfig.pn_clearance`,
-tests/test_1136_admission_pairwise.py). The configs here carry the gap
-route_diff would give them.
+The self-checks price the full pair value, a .kicad_dru layer rule
+included. Since #1145 route_diff raises the coupling gap to that rule too
+(tests/test_1145_pair_gap_rule.py), so on a ruled layer the counts here are
+the pinches where the connectors diverge. The rows below hold the checks to
+the pair value directly, with configs whose gap sits BELOW a rule -- the
+state #1145 removed from route_diff, kept here because the checks must not
+lean on it.
 
 Rows, each at the flat value (no class: the verdict is unchanged) and under a
 0.35 class on both nets:
@@ -53,8 +53,9 @@ def _cfg(cls=None, **kw):
                         via_drill=0.3, layers=['F.Cu', 'B.Cu'], **kw)
     if cls:
         c.set_net_clearances({1: cls, 2: cls}, routed_net_ids=[1, 2])
-    # the gap route_diff gives the pair: raised to the clearance (#441) and
-    # to the pair's class (#530) -- never to a layer or track rule
+    # the gap route_diff gives the pair for its clearance (#441) and class
+    # (#530); a .kicad_dru rule (#1145) is left out, so a rule row prices a
+    # gap below it
     c.diff_pair_gap = max(c.diff_pair_gap, c.clearance, cls or 0.0)
     return c
 
@@ -131,10 +132,9 @@ def test_layer_rule_above_the_gap_counts():
 
 def test_cap_chain_routes_off_a_ruled_layer():
     """End to end: cap_chain's pairs with an F.Cu rule of 0.3 above their
-    coupling gap. route_diff builds the coupled run at the gap on F.Cu; the
-    self-check counts it, the hybrid runs its coupled middle on an unruled
-    layer, and check_drc grades the board clean (the flat floor shipped 28
-    F.Cu P/N violations here)."""
+    class gap, the #215 hybrid on, graded clean (the flat floor shipped 28
+    F.Cu P/N violations here). Since #1145 the coupled run is built at the
+    rule; test_1145 grades it with the hybrid off."""
     import contextlib
     import io
     import shutil

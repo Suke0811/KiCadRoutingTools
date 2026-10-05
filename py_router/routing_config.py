@@ -560,25 +560,6 @@ class GridRouteConfig:
                 pad, other_net, layer, other_pad=other_pad, base=base),
             pad, other_pad)
 
-    def pn_clearance(self, p_net: int, n_net: int,
-                     layer: Optional[str] = None) -> float:
-        """The floor the intra-pair MEANDER keeps from its own partner at
-        (#1134): the pair value (`pair_clearance`), held to the gap the
-        coupled run is BUILT at, `min(pair, max(gap, clearance))`.
-
-        route_diff raises each pair's coupling gap to its class (#530) and to
-        the clearance (#441), but not to a .kicad_dru layer or track rule. A
-        bump moves AWAY from a partner that sits at the gap by construction,
-        so refusing it at a rule above the gap fixes nothing and loses the
-        skew match. The coupled-run SELF-CHECKS (`_count_pn_overlaps` and
-        kin) price the full pair value instead: they choose between
-        alternatives (the hybrid, single-ended legs) that can route off the
-        ruled layer. With nothing declared this is `clearance`."""
-        gap = self.diff_pair_gap if self.diff_pair_gap is not None else 0.0
-        cap = gap if gap > self.clearance else self.clearance
-        pc = self.pair_clearance(p_net, n_net, layer)
-        return pc if pc < cap else cap
-
     def max_pair_clearance(self, base: Optional[float] = None) -> float:
         """An upper bound of `pair_clearance` over every pair and kind: the
         radius a prefilter must reach. Pad overrides are not included; a pad

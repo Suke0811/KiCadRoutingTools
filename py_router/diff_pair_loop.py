@@ -45,11 +45,10 @@ def _count_pn_overlaps(p_segs, n_segs, config) -> int:
     decide whether the standard coupled route pinches its own pair.
 
     P and N are two nets, so KiCad grades them at the pair's own value
-    (#1134): max(clearance, class P, class N), then the layer rule. That
-    includes a .kicad_dru rule above the coupling gap (route_diff does not
-    raise the gap for one): the count then sends the pair to the hybrid,
-    which is adopted only when strictly cleaner and can run its coupled
-    middle on an unruled layer."""
+    (#1134): max(clearance, class P, class N), then the layer rule.
+    route_diff raises the coupling gap to the class (#530) and to any
+    .kicad_dru rule binding the pair (#1145), so on a ruled layer this
+    counts where the connectors diverge, not the coupled run itself."""
     if not n_segs:
         return 0
     n_net = n_segs[0].net_id
