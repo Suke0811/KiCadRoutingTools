@@ -43,10 +43,32 @@ broken: exit 2.
 Then, per cell (board x engine; corpus seed and quench, pile seed, and
 StickHub as a diagnostic):
 - `pads_ok` calls, OFF refusals, L-holes (calls and distinct pairs), and
-  C-flips (`pads_ok` level and any level), each with its callers;
+  C-flips (`pads_ok` level and any level), each with its callers. The any
+  level is split into calls inside a `pads_ok` (already decided in all three
+  modes) and outside one;
 - every real pad stack in the OFF output (`pad_intersection_pairs`), classed
   at the input board as one of: box-only licence, genuine (exact) licence,
-  over-cap pair, pile part, or new.
+  over-cap pair, pile part, or unexplained (the prereg's term).
+
+A cell counts ONLY inside the engine call (`Shim(engine_only=True)`: the
+`test_placement_ab._module_flags` scope). The A/B harness's grade runs after
+it in box mode in every arm, so nothing it meets is a flip an arm could
+change. The first full run, at f90801c1, counted the grader too, and that
+alone made orangecrab a seed trial board.
+
+What the census does NOT observe:
+- `relocate.exact_refusal`, which compares `.stack` against `seed_baseline`
+  the same way `pads_ok` does. It is reached only through `place_route_loop
+  --relocate-block`.
+- `place_pose`/`rank_poses`, `reseat`, `portfolio` and `perturb`. Each
+  reaches `pads_ok` through `candidate_valid`, but none is in these cells.
+- Other intents, other quench parameters and RNG seeds, and chained steps
+  whose seed is an earlier step's output.
+
+On the committed corpus the L-hole zero is STRUCTURAL: no committed input
+carries a box-only licence, and a pile has none by `_degenerate_refs`.
+StickHub has 35 such licences, which the cells do not visit (Phase-3
+verifier).
 
 The decision the pre-registration asks for is printed last:
 - L1, L0-demonstrated or L0-undemonstrated;
@@ -92,11 +114,21 @@ def _quiet(fn, *a, **k):
 
 class Shim:
     """Observe an OFF run: every `pads_ok` call in three modes, and every box
-    stack `pair_shortfall` returns, at no cost to the run's decisions."""
+    stack `pair_shortfall` returns, at no cost to the run's decisions.
 
-    def __init__(self):
+    `engine_only` (the cells) counts ONLY inside `test_placement_ab.
+    _module_flags`, the scope `_run_seed` and `_run` put around the engine
+    call and nothing else. Their GRADE runs after it, in box mode in every
+    arm, so a flip the grader meets is not one any arm could change -- the
+    first run counted it, and that alone made orangecrab a seed trial board
+    (its pile cell's 2 any-level flips were all the grader's; Phase-3
+    verifier). The controls, which call `pads_ok` directly, count always."""
+
+    def __init__(self, engine_only=False):
         from placement import legality as L
         self.L = L
+        self.engine_only = engine_only
+        self.counting = not engine_only
         self._saved = {}
         self.reset()
 
@@ -107,10 +139,17 @@ class Shim:
         self.l_hole = 0
         self.c_flip = 0
         self.c_flip_any = 0
+        # The any-level count split by where the pair call came from: inside
+        # a `pads_ok` call (whose verdict is already counted in all three
+        # modes, so these change nothing by themselves) or outside one (the
+        # consumers that read `.stack` with no baseline).
+        self.c_flip_any_in_pads_ok = 0
+        self.c_flip_any_outside = 0
         self.l_hole_pairs = set()
-        self.c_flip_pairs = set()
+        self.c_flip_refs = set()
         self.by_caller = collections.Counter()
         self._inside = False
+        self._in_pads_ok = False
 
     # -- exact answers, outside the context's own caches --------------------
     def _exact(self, ctx, a, b, pose_a=None, pose_b=None):
@@ -195,7 +234,8 @@ class Shim:
 
         def pair_shortfall(ctx, a, b, pose_a=None, pose_b=None):
             sf = orig_pair(ctx, a, b, pose_a=pose_a, pose_b=pose_b)
-            if (sf.stack and not ctx.stack_exact and not shim._inside):
+            if (sf.stack and not ctx.stack_exact and not shim._inside
+                    and shim.counting):
                 shim._inside = True
                 try:
                     x = shim._exact(ctx, a, b, pose_a=pose_a, pose_b=pose_b)
@@ -203,13 +243,24 @@ class Shim:
                     shim._inside = False
                 if not x.stack:
                     shim.c_flip_any += 1
+                    if shim._in_pads_ok:
+                        shim.c_flip_any_in_pads_ok += 1
+                    else:
+                        shim.c_flip_any_outside += 1
                     shim.by_caller['any:' + sys._getframe(1).f_code.co_name] += 1
             return sf
 
         def pads_ok(ctx, ref, x, y, rot, neighbors, exclude=None, why=None):
             neighbors = list(neighbors)
-            real = orig_pads_ok(ctx, ref, x, y, rot, neighbors,
-                                exclude=exclude, why=why)
+            prev_in = shim._in_pads_ok
+            shim._in_pads_ok = True
+            try:
+                real = orig_pads_ok(ctx, ref, x, y, rot, neighbors,
+                                    exclude=exclude, why=why)
+            finally:
+                shim._in_pads_ok = prev_in
+            if not shim.counting:
+                return real
             if ctx.stack_exact:
                 raise AssertionError('the census observes an OFF run; this '
                                      'context was built exact')
@@ -231,13 +282,29 @@ class Shim:
                 shim.by_caller['l_hole:' + caller] += 1
             if not o and f:
                 shim.c_flip += 1
-                shim.c_flip_pairs.add(ref)
+                shim.c_flip_refs.add(ref)
                 shim.by_caller['c_flip:' + caller] += 1
             return real
 
         L.PartPads.__init__ = pp_init
         L.LegalityContext.pair_shortfall = pair_shortfall
         L.LegalityContext.pads_ok = pads_ok
+        if self.engine_only:
+            mf = AB._module_flags
+            self._saved['mf_enter'] = mf.__enter__
+            self._saved['mf_exit'] = mf.__exit__
+            enter0, exit0 = mf.__enter__, mf.__exit__
+
+            def mf_enter(this):
+                r = enter0(this)
+                shim.counting = True
+                return r
+
+            def mf_exit(this, *exc):
+                shim.counting = False
+                return exit0(this, *exc)
+            mf.__enter__ = mf_enter
+            mf.__exit__ = mf_exit
         return self
 
     def __exit__(self, *exc):
@@ -245,6 +312,9 @@ class Shim:
         L.PartPads.__init__ = self._saved['pp_init']
         L.LegalityContext.pads_ok = self._saved['pads_ok']
         L.LegalityContext.pair_shortfall = self._saved['pair']
+        if 'mf_enter' in self._saved:
+            AB._module_flags.__enter__ = self._saved.pop('mf_enter')
+            AB._module_flags.__exit__ = self._saved.pop('mf_exit')
         return False
 
     def summary(self):
@@ -252,8 +322,15 @@ class Shim:
                 'mismatch': self.mismatch, 'l_hole': self.l_hole,
                 'l_hole_pairs': sorted(self.l_hole_pairs),
                 'c_flip': self.c_flip, 'c_flip_any': self.c_flip_any,
-                'c_flip_refs': sorted(self.c_flip_pairs),
+                'c_flip_any_in_pads_ok': self.c_flip_any_in_pads_ok,
+                'c_flip_any_outside': self.c_flip_any_outside,
+                'c_flip_refs': sorted(self.c_flip_refs),
                 'by_caller': dict(self.by_caller)}
+
+
+class NotAPile(Exception):
+    """`_pile_inputs` refused the staged board. Kept apart from the shim's
+    own AssertionError, which must never read as "not a pile"."""
 
 
 # -- the output-stack attribution ------------------------------------------
@@ -288,7 +365,9 @@ def attribute(board_in, board_out, clearance=0.2):
         elif ctx.pair_shortfall(a, b).stack:
             cls = 'box_only_licence'
         else:
-            cls = 'new'
+            # the prereg's 'unexplained': no stack of either kind at the
+            # input poses, so not a licence the stack gate gave
+            cls = 'unexplained'
         out[cls] += 1
         rows.append((a, b, cls))
     return dict(out), rows
@@ -344,7 +423,10 @@ def controls(work):
     # pads), in every mode.
     ok1 = (out['grid']['box_only'] == 35
            and out['grid']['c_flip_pair_level'] == 35
-           and out['grid']['c_flip_pads_ok'] >= 1)
+           and out['grid']['c_flip_pads_ok'] >= 1
+           # the prereg says >= 1; the measured value is pinned too, so a
+           # drift in the instrument shows (Phase-3 verifier)
+           and out['grid']['c_flip_pads_ok'] == 6)
     # 2. the licence witness: seed C4 at a box-only pose, ask for an exact
     #    stack -- OFF admits it (licensed), L refuses it.
     ok2 = False
@@ -391,14 +473,17 @@ def cell(board, engine, work, pile=False):
     d = os.path.join(work, f"{name}_{engine}{'_pile' if pile else ''}")
     os.makedirs(d, exist_ok=True)
     if pile:
-        src, intent, _doc, refs = _quiet(AB._pile_inputs, board, d,
-                                         require_decaps=False)
+        try:
+            src, intent, _doc, refs = _quiet(AB._pile_inputs, board, d,
+                                             require_decaps=False)
+        except AssertionError as exc:
+            raise NotAPile(str(exc)) from exc
         kw = {'seed_refs': refs}
     else:
         src, intent, kw = board, _quiet(AB._intent_for, board, [], d), {}
     out = os.path.join(d, 'off.kicad_pcb')
     t0 = time.time()
-    with Shim() as sh:
+    with Shim(engine_only=True) as sh:
         if engine == 'seed':
             g = _quiet(AB._run_seed, src, out, intent, kw, ignore_nets=['GND'])
         else:
@@ -411,7 +496,9 @@ def cell(board, engine, work, pile=False):
     print(f"{name}{' (pile)' if pile else ''} [{engine}] calls {rec['calls']}"
           f", OFF refusals {rec['off_refuse']}, L-holes {rec['l_hole']} "
           f"({len(rec['l_hole_pairs'])} pair(s) {rec['l_hole_pairs'][:4]}), "
-          f"C-flips {rec['c_flip']} (any level {rec['c_flip_any']}), "
+          f"C-flips {rec['c_flip']} (any level {rec['c_flip_any']}: "
+          f"{rec['c_flip_any_in_pads_ok']} inside pads_ok, "
+          f"{rec['c_flip_any_outside']} outside), "
           f"mismatch {rec['mismatch']}; OFF body_blocking "
           f"{rec['body_blocking']} = {att} ({rec['seconds']}s)", flush=True)
     return rec
@@ -426,12 +513,9 @@ def decide(cells, doc):
                 if board_of(k) in committed and r['l_hole'] > 0]
     l_sh = [k for k, r in cells.items()
             if board_of(k) not in committed and r['l_hole'] > 0]
-    sh_box_only = sum((r['attribution'] or {}).get('box_only_licence', 0)
-                      for k, r in cells.items()
-                      if board_of(k) not in committed)
     if l_corpus:
         lv = 'L1'
-    elif l_sh or sh_box_only:
+    elif l_sh:
         lv = 'L0-demonstrated'
     else:
         lv = 'L0-undemonstrated'
@@ -482,7 +566,7 @@ def main(argv=None):
         if not a.no_piles:
             try:
                 cells[f'{n}|seed|pile'] = cell(b, 'seed', work, pile=True)
-            except AssertionError as exc:
+            except NotAPile as exc:
                 print(f"{n} (pile): not a pile ({str(exc)[:160]})")
     if not a.no_stickhub:
         sh = stickhub()
