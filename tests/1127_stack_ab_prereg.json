@@ -52,7 +52,7 @@
   "observes": "every LegalityContext.pads_ok call in an OFF run, re-evaluated per neighbour in all three modes. An L-HOLE is a call OFF admits and L refuses. A C-FLIP is a call OFF refuses and FULL admits. Both are attributed to the caller, and C-flips are also counted at any pair_shortfall level",
   "attribution": "every pad_intersection_pairs stack in the OFF output is classed as: box-only licence, genuine licence (exact stack at the seeds), over-cap pair, pile part, or unexplained",
   "controls_before_any_count_is_read": [
-   "positive: the esp_prog C4/Y1 grid (121 poses at 315 degrees, #1064) registers its 35 box-only poses as C-flips",
+   "positive: the esp_prog C4/Y1 grid (121 poses at 315 degrees, #1064) registers its 35 box-only poses as C-flips AT THE PAIR LEVEL (the any-level count over the grid's 121 pads_ok calls is exactly 35), and at least one of them survives to the pads_ok level",
    "positive: a constructed licence witness (C4 seeded at a box-only pose, then moved to an exact-stack pose) registers as an L-hole",
    "self-check: the shim's OFF verdict equals the real pads_ok return on every call",
    "purity: the esp_prog seed is placement-identical with and without the shim"
@@ -98,5 +98,12 @@
   "only_licence_sound": "default 'licence'; closes the licence issue; Refs #1127",
   "neither": "STOP and report to the user; Refs #1127; Phases 4-5 reverted with git revert"
  },
- "stop_rule": "The decisive run is tests/measure_1127_stack_modes_ab.py on the engine at its commit, taken once. A failed control, an unexplained shim mismatch or a crash is 'not taken', never a verdict. Arms, cells, signals, guards and thresholds are not edited after a number exists. A change to any of them is a new pre-registration with its own sha pin"
+ "stop_rule": "The decisive run is tests/measure_1127_stack_modes_ab.py on the engine at its commit, taken once. A failed control, an unexplained shim mismatch or a crash is 'not taken', never a verdict. Arms, cells, signals, guards and thresholds are not edited after a number exists. A change to any of them is a new pre-registration with its own sha pin",
+ "amendments": [
+  {
+   "date": "2026-10-05",
+   "what": "census control 1 reworded from '35 box-only poses register as C-flips' to the pair-level count (exactly 35) plus at least one at the pads_ok level",
+   "why": "Running the controls, before any census cell or A/B number existed, gave 6 pads_ok-level C-flips, not 35. Of the 35 box-only poses, 29 are refused by pads_ok's PAD conjunct in every mode: a box-currency clearance or overlap with Y1's different-net pads (C4 nets 5,2; Y1 nets 5,3,2,2). Only 6 are refused by the stack conjunct alone. The any-level count is exactly 35. The original wording conflated #1144's pair-level census with the pads_ok verdict. It was the control's expectation that was wrong, not the census, and no outcome had been seen. The finding stands on its own: the pad-clearance channel is box currency too, so even FULL clears only 6 of #1064's 35 false refusals on that grid"
+  }
+ ]
 }

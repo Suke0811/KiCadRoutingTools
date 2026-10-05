@@ -35,8 +35,10 @@ sys.path.insert(0, TESTS_DIR)
 PREREG = os.path.join(TESTS_DIR, '1127_stack_ab_prereg.json')
 
 #: sha256 of the pre-registration with CRLF folded to LF, committed with the
-#: file before the census or any A/B number.
-PREREG_SHA256 = ('2aa59db9615a23ca8eadccfab50a5384ec2d5f002bd618bce6bbe5232ce73f00')
+#: file before the census or any A/B number. Re-pinned once, for the
+#: `amendments` entry (control 1's wording, found by running the controls
+#: before any cell): the first pin was 2aa59db9615a.
+PREREG_SHA256 = ('d3329fd8c97319b4170456bdc8abf7c16d8bc47abd5f53c17df24c27cacdf933')
 
 
 def _bytes():
