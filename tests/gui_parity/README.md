@@ -388,6 +388,16 @@ skip cleanly without KiCad python). Run any directly:
   renamed "In1.Cu" as copper. Real Planes/Route tabs, each arm with a
   negative control (the display-name mapping patched back in). On the
   pre-fix code the pour lands on F.Cu and a re-apply doubles it.
+- `test_1133_staged_save_widths.py` -- the GUI oracle leg
+  (`gui_utils.run_kicad_oracle_on_live_board`) on a real `pcbnew.SaveBoard`
+  of `flat_hierarchy`, whose save renumbers 94 of its 111 nets (pcbnew 8 ->
+  staged 81 for `/pic_programmer/PC-CLOCK-OUT`). A power width posted BY NAME
+  for one net must reach exactly that net on the staged board, and the track
+  the oracle lays must land on that net on the LIVE board (`SetNetCode`
+  receives the live netcode, not the save's id). Negative control: the live
+  netcode names another net (GND) in the save. KiCad's link source, the
+  routers and the sliver weld are stubbed; the wx-free half is
+  `tests/test_1133_oracle_width_keying.py`.
 - `test_movie_recorder.py` -- the Advanced tab's **Make routing movie** debug
   checkbox (#506): default OFF and inert while off; one routing step renders
   ONE movie; a plan run (`begin_group`/`end_group`, what the AI tab's Run

@@ -339,6 +339,11 @@ class GridRouteConfig:
     # the rules file is the one source of truth, and the graders (check_drc,
     # staged kicad-cli) read the same file.
     layer_clearances: Dict[str, float] = field(default_factory=dict)
+    # The BOARD's copper layer list the layer map above was expanded over:
+    # `pad_pair_clearance` resolves a `*.Cu` pad's shared layers over it, as
+    # check_drc does. Set by kicad_dru.install_layer_clearances; `layers`
+    # stands in when empty.
+    board_copper_layers: List[str] = field(default_factory=list)
     # Track-to-track clearance from the board's .kicad_dru (#735),
     # {obstacle_net_id: mm} -- the EFFECTIVE per-obstacle map for this call's
     # routed set (kicad_dru.effective_track_clearances). RAISE-ONLY, applied
@@ -483,6 +488,152 @@ class GridRouteConfig:
             self.net_clearance_floor = max([self.clearance] + routed)
         else:
             self.net_clearance_floor = self.clearance
+
+    # ---- KiCad's pairwise clearance, for admit/refuse verdicts (#1136) -----
+    #
+    # `obstacle_clearance` is the value a foreign obstacle is STAMPED at. It is
+    # floored at `net_clearance_floor`, the widest class routed in this call,
+    # so the ADD and REMOVE stamps stay ref-count symmetric (#208/#309). A
+    # verdict about two SPECIFIC nets (may this stub sit here, may this via go
+    # there) is graded by check_drc at the pair's own value instead:
+    # `max(clearance, classA, classB)`, then the .kicad_dru layer rule. Pricing
+    # a verdict at the stamp value would refuse legal copper whenever a wider
+    # class is routed anywhere in the call.
+
+    def pair_clearance(self, net_a: int, net_b: int,
+                       layer: Optional[str] = None, *, kind: str = 'layer',
+                       base: Optional[float] = None) -> float:
+        """check_drc's clearance between copper of `net_a` and `net_b`.
+
+        `base` is the floor the pair starts from (`self.clearance` when None;
+        a site that was handed a clearance passes it). Then the two nets'
+        classes (`max`), then by `kind`:
+
+        * 'layer' -- the two items meet on one layer (track vs track, track
+          vs via): the #498 rule for `layer` REPLACES the value, as
+          check_drc's `_pair_cl(a, b, layer)` does. A pad is
+          `pad_pair_clearance`, which also applies the pad's override;
+        * 'track' -- track vs track: 'layer', then the #735 track rule raises
+          it (check_drc's `_track_pair_cl`). The router side reads the
+          per-obstacle-net map, an over-approximation of check_drc's
+          pair-exact rule. Net-0 copper is in no class and missing from that
+          map, so it is priced at the widest track rule;
+        * 'stack' -- via vs via, which meet on every layer: the max over the
+          stack (check_drc's `_stack_cl`). `layer` is ignored.
+
+        With no class map, no layer rule and no track rule it returns `base`
+        unchanged, so a site that swaps its flat term for this call is
+        byte-identical on such a board."""
+        clr = self.clearance if base is None else base
+        nc = self.net_clearances
+        if nc:
+            a = nc.get(net_a)
+            if a is not None and a > clr:
+                clr = a
+            b = nc.get(net_b)
+            if b is not None and b > clr:
+                clr = b
+        if kind == 'stack':
+            return self.stack_clearance(clr)
+        if kind != 'layer' and kind != 'track':
+            raise ValueError(f"pair_clearance kind {kind!r}: expected "
+                             f"'layer', 'track' or 'stack'")
+        if layer is not None:
+            clr = self.layer_clearance(layer, clr)
+        if kind == 'track' and self.track_clearances:
+            if not net_a or not net_b:
+                widest = max(self.track_clearances.values())
+                if widest > clr:
+                    clr = widest
+            clr = max(self.track_obstacle_clearance(net_a, clr),
+                      self.track_obstacle_clearance(net_b, clr))
+        return clr
+
+    def pad_pair_clearance(self, pad, other_net: int,
+                           layer: Optional[str] = None, *, other_pad=None,
+                           base: Optional[float] = None) -> float:
+        """check_drc's clearance between `pad` and copper of `other_net`
+        (`_pad_pair_cl`): `pad_pair_clearance_before_override`, then a pad /
+        footprint clearance OVERRIDE, which replaces the value."""
+        return self.pad_override_clearance(
+            self.pad_pair_clearance_before_override(
+                pad, other_net, layer, other_pad=other_pad, base=base),
+            pad, other_pad)
+
+    def pn_clearance(self, p_net: int, n_net: int,
+                     layer: Optional[str] = None) -> float:
+        """The floor a diff pair's P is checked against its own N at (#1134).
+
+        KiCad grades P against N like any two nets (`pair_clearance`), and
+        route_diff raises each pair's coupling gap to its class (#530) and to
+        the clearance (#441) -- but not to a .kicad_dru layer or track rule.
+        So the P/N self-checks are held to the pair value only as far as the
+        gap the coupled run is BUILT at: `min(pair, max(gap, clearance))`.
+        Above that, a self-check would flag every coupled segment of a clean
+        run, which no reroute can fix. With nothing declared this is
+        `clearance` (the gap is never below it), as these checks always were."""
+        gap = self.diff_pair_gap if self.diff_pair_gap is not None else 0.0
+        cap = gap if gap > self.clearance else self.clearance
+        pc = self.pair_clearance(p_net, n_net, layer)
+        return pc if pc < cap else cap
+
+    def max_pair_clearance(self, base: Optional[float] = None) -> float:
+        """An upper bound of `pair_clearance` over every pair and kind: the
+        radius a prefilter must reach. Pad overrides are not included; a pad
+        site resolves its pads one by one."""
+        v = self.clearance if base is None else base
+        for m in (self.net_clearances, self.layer_clearances,
+                  self.track_clearances):
+            if m:
+                mv = max(m.values())
+                if mv > v:
+                    v = mv
+        return v
+
+    def pair_clearance_inert(self) -> bool:
+        """True when no channel can move a pair off the floor it is given: no
+        class map, no .kicad_dru layer rule, no track rule. A hot loop may
+        then keep its flat term instead of pricing every item."""
+        return not (self.net_clearances or self.layer_clearances
+                    or self.track_clearances)
+
+    def pad_pair_clearance_before_override(self, pad, other_net: int,
+                                           layer: Optional[str] = None, *,
+                                           other_pad=None,
+                                           base: Optional[float] = None
+                                           ) -> float:
+        """`pad_pair_clearance` short of its last step, the pad / footprint
+        override: the pair's classes, then the .kicad_dru rule on `layer` (a
+        track) or over the copper the two share (a via, or `other_pad`).
+
+        For a site that keeps its own override handling (#1136 converts the
+        class and rule term only, so a board that declares neither is
+        unchanged whatever its pads carry). `pad_pair_clearance` is
+        `pad_override_clearance(<this>, pad, other_pad)`."""
+        eff = self.pair_clearance(getattr(pad, 'net_id', 0) or 0, other_net,
+                                  base=base)
+        if layer is not None:
+            return self.layer_clearance(layer, eff)
+        if self.layer_clearances:
+            from check_drc import pads_shared_layer_clearance, pad_copper_layers
+            cu = list(self.board_copper_layers or self.layers)
+            eff = pads_shared_layer_clearance(
+                eff, self.layer_clearances, pad_copper_layers(pad, cu),
+                pad_copper_layers(other_pad, cu) if other_pad is not None
+                else None)
+        return eff
+
+    def net_clearances_by_name(self, nets) -> Dict[str, float]:
+        """The class map keyed by NET NAME, for a consumer that re-parses a
+        board whose net ids may differ from this run's (the KiCad oracle reads
+        a staged copy; on the GUI path that is a pcbnew save, which numbers
+        its nets afresh, #1133). `nets` is `pcb_data.nets`."""
+        out: Dict[str, float] = {}
+        for nid, c in (self.net_clearances or {}).items():
+            name = getattr(nets.get(nid), 'name', None)
+            if name and c:
+                out[name] = float(c)
+        return out
 
     def get_track_width(self, layer: str) -> float:
         """Get track width for a specific layer (impedance-aware).

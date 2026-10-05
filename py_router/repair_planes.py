@@ -77,6 +77,12 @@ LAST_RIPPED_RECONNECT: Optional[Dict] = None
 LAST_RIPPED_STILL_OPEN: List[str] = []
 LAST_RIPPED_CUSTODY: Optional[Dict] = None
 
+# The class map the last repair_planes() run resolved (after its
+# --clearance-ceiling clamp), keyed by net NAME (#1137), for main()'s oracle
+# leg: the oracle re-parses its board, so an id-keyed map could land on other
+# nets. {} = no class map (the flat clearance).
+LAST_NET_CLEARANCES_BY_NAME: Dict[str, float] = {}
+
 
 def plane_tap_launch_layers(pad, zone_layers, routing_layers) -> List[str]:
     """Copper layers a last-resort plane tap may launch from, in
@@ -497,14 +503,18 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
                           'end': (s.end_x, s.end_y),
                           'width': s.width, 'layer': s.layer}
                     if _restored_piece_collides(sd, None, new_vias, new_segs,
-                                                via_size, clr):
+                                                via_size, clr, config=tap_config,
+                                                piece_net=blocker,
+                                                plane_net=net_id):
                         dropped += 1
                     else:
                         keep_segs.append(s)
                 for v in rvias:
                     vd = {'x': v.x, 'y': v.y, 'size': v.size}
                     if _restored_piece_collides(None, vd, new_vias, new_segs,
-                                                via_size, clr):
+                                                via_size, clr, config=tap_config,
+                                                piece_net=blocker,
+                                                plane_net=net_id):
                         dropped += 1
                     else:
                         keep_vias.append(v)
@@ -768,6 +778,11 @@ def repair_planes(
     # clearance. None (default) auto-reads the persisted .kicad_pro record;
     # explicit values win (the #562 finalize forwards its resolved value).
     same_net_pad_clearance: Optional[float] = None,
+    # #1135: the .kicad_dru track-to-track rules ({obstacle_net_id: mm}).
+    # None (default) auto-reads the board's own; an explicit map wins -- the
+    # #562 finalize forwards its run's, as it does layer_clearances, because
+    # the output's .kicad_dru sibling does not exist yet mid-run.
+    track_clearances: Optional[dict] = None,
 ) -> Tuple[int, int]:
     """
     Route between disconnected regions in power plane zones.
@@ -819,6 +834,8 @@ def repair_planes(
     # the CLI passes a real default (never None), so this is a no-op there.
     if zone_clearance is None:
         zone_clearance = clearance if clearance is not None else defaults.PLANE_ZONE_CLEARANCE
+    global LAST_NET_CLEARANCES_BY_NAME
+    LAST_NET_CLEARANCES_BY_NAME = {}   # #1137: this run's, set below
     from route import _dump_engine_config
     _dump_engine_config('repair_planes', dict(locals()))
     # Board-setup copper-to-edge rule (#338): engine-side so the GUI planes
@@ -952,8 +969,15 @@ def repair_planes(
     # it after batch_route returns, so an auto-read here would find NOTHING
     # and tap/join copper would route blind to the board's layer rules. Same
     # reasoning as the reconciliation sub-run's forwarded map.
-    from kicad_dru import install_layer_clearances
+    from kicad_dru import install_layer_clearances, install_track_clearances
     install_layer_clearances(config, layer_clearances, input_file, pcb_data)
+    # #1135: and the track-to-track rules, as route.py installs them -- a
+    # region join or a pad tap is a track like any other, and a board's
+    # `A.Type == 'track' && B.Type == 'track'` rule binds it too (raise-only
+    # on seg-vs-seg pairs; the effective map over the plane nets this run
+    # repairs). Same precedence as the layer map above.
+    install_track_clearances(config, track_clearances, input_file, pcb_data,
+                             routed_net_ids=net_ids)
 
     # Cross-class clearance (#434): the repair step's own copper (region joins,
     # pad taps) and its ripped-blocker reconnects were priced at the uniform
@@ -986,6 +1010,7 @@ def repair_planes(
                           for nid, c in net_clearances.items()}
     if net_clearances:
         config.net_clearances = dict(net_clearances)
+    LAST_NET_CLEARANCES_BY_NAME = config.net_clearances_by_name(pcb_data.nets)
     # Publish the SAME map to the fill model (#483 item 5): KiCad refills a
     # zone at max(zone clearance, pairwise netclass), so on honor-classes
     # chains a looser foreign class carves copper the model would otherwise
@@ -3641,11 +3666,13 @@ Examples:
             board_edge_clearance=_oracle_edge)
         from kicad_dru import install_layer_clearances
         install_layer_clearances(_ocfg, None, args.input_file, None)  # #498
+        # #1137: the class map the engine run resolved, by NAME.
         _orc = oracle_reconnect(args.output_file, net_names, _ocfg,
                                 track_via_clearance=args.track_via_clearance,
                                 hole_to_hole_clearance=args.hole_to_hole_clearance,
                                 verbose=args.verbose,
-                                project_from=args.input_file)
+                                project_from=args.input_file,
+                                net_clearances_by_name=LAST_NET_CLEARANCES_BY_NAME)
         try:
             import json as _json
             print('JSON_ORACLE: ' + _json.dumps(

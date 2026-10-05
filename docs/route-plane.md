@@ -360,7 +360,7 @@ When multiple nets share the same plane layer (e.g., `--nets "VA19|VA11" --plane
 Rationale (measured on orangecrab vs its human original): the previous pad-Voronoi partition scored 0.3–2.6 mm mean cell widths and split the dominant rail into 7 crumbs; the human's grammar is one deep sheet (15.8 mm mean width) plus compact islands. `KICAD_GRAMMAR_POUR=0` reverts to the Voronoi partition, which also remains the fallback when the grammar is degenerate (a single seeded net, or no identifiable dominant net). The Voronoi path uses MST-based routing to ensure connected zones:
 
 1. **Compute MST** - For each net, computes a Minimum Spanning Tree between all its vias
-2. **Route MST edges** - Routes each MST edge on the plane layer using A* pathfinding, avoiding other nets' vias and previously routed paths
+2. **Route MST edges** - Routes each MST edge on the plane layer using A* pathfinding, avoiding other nets' vias, their tracks on the layer, and previously routed paths. A track or path is kept at the clearance KiCad grades the two nets at: both net classes, then the `.kicad_dru` layer rule
 3. **Retry with reordering** - If some edges fail to route, retries with failed nets processed first (up to 5 iterations), keeping the best result
 4. **Sample routes for Voronoi** - Samples points along successful routes as additional Voronoi seed points
 5. **Compute final zones** - Uses Voronoi diagram with augmented seeds to create non-overlapping zone polygons per net

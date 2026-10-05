@@ -4026,9 +4026,9 @@ class RoutingDialog(wx.Dialog):
                     layer_clearances=_pfo.get('layer_clearances'),
                     layers=_pfo.get('layers'),
                     layer_costs=_pfo.get('layer_costs'),
-                    power_net_widths=_pfo.get('power_net_widths'),
-                    net_track_widths=_pfo.get('net_track_widths'),
-                    net_layer_widths=_pfo.get('net_layer_widths'),
+                    net_widths_by_name=_pfo.get('net_widths_by_name'),
+                    net_clearances_by_name=_pfo.get(
+                        'net_clearances_by_name'),
                     progress_callback=(
                         lambda c, t, m: self._apply_status(
                             f"{m} ({c}/{t})" if t else m)))

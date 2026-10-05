@@ -846,13 +846,15 @@ def build_plane_base_obstacles(
     proximity_radius: float = 3.0,
     proximity_cost: float = 2.0,
     track_via_clearance: float = defaults.PLANE_TRACK_VIA_CLEARANCE,
-    previous_routes: Optional[List[List[Tuple[float, float]]]] = None
+    previous_routes: Optional[List[Tuple[int, List[Tuple[float, float]]]]] = None
 ) -> GridObstacleMap:
     """
     Build base obstacle map for plane routing (reusable across multiple MST edges).
 
     Includes: other nets' via blocking + proximity, segment blocking, previous route
     blocking, and board edge blocking. Does NOT include source/target cells.
+    `previous_routes` are (net_id, path) pairs, so each is kept at its pair
+    clearance with `net_id`.
     """
     coord = GridCoord(config.grid_step)
     layer_idx = 0
@@ -903,21 +905,34 @@ def build_plane_base_obstacles(
             proximity_cost_grid
         )
 
-    # Block existing segments on this layer from other nets
+    # Block existing segments on this layer from other nets. The stamp takes
+    # MILLIMETRES (an exact capsule since #173); it was handed a grid-cell
+    # count, which kept every foreign track 4-8 mm away instead of ~0.4 (#1131).
+    # Each track is priced at its PAIR with this net, as check_drc grades it:
+    # the two classes, then the layer rule. kind='layer', not 'track': these
+    # paths are not copper (they steer the split of the layer between its
+    # nets: Voronoi seeds, or grammar-pour hull points), and
+    # the zone fill that follows is not a track, so #735's track-to-track rule
+    # does not apply.
     for seg in pcb_data.segments:
         if seg.net_id == net_id:
             continue
         if seg.layer != plane_layer:
             continue
-        seg_expansion_mm = config.track_width / 2 + seg.width / 2 + config.clearance
-        seg_expansion_grid = max(1, coord.to_grid_dist_safe(seg_expansion_mm))
-        _add_segment_routing_obstacle(obstacles, seg, coord, layer_idx, seg_expansion_grid)
+        seg_expansion_mm = (config.track_width / 2 + seg.width / 2
+                            + config.pair_clearance(net_id, seg.net_id,
+                                                    plane_layer))
+        _add_segment_routing_obstacle(obstacles, seg, coord, layer_idx,
+                                      seg_expansion_mm)
 
-    # Block previous routes from other nets
+    # Block previous routes from other nets, each at its pair with this net
+    # (#1131), as above. This stamp does take GRID CELLS: a disc template
+    # around each Bresenham cell of the path.
     if previous_routes:
-        route_expansion_mm = config.track_width + config.clearance
-        route_expansion_grid = max(1, coord.to_grid_dist_safe(route_expansion_mm))
-        for route_path in previous_routes:
+        for route_net_id, route_path in previous_routes:
+            route_expansion_mm = config.track_width + config.pair_clearance(
+                net_id, route_net_id, plane_layer)
+            route_expansion_grid = max(1, coord.to_grid_dist_safe(route_expansion_mm))
             _block_route_as_obstacle(obstacles, route_path, coord, layer_idx, route_expansion_grid)
 
     # Block board edges
@@ -939,7 +954,7 @@ def route_plane_connection(
     track_via_clearance: float = defaults.PLANE_TRACK_VIA_CLEARANCE,
     max_iterations: int = 200000,
     verbose: bool = False,
-    previous_routes: Optional[List[List[Tuple[float, float]]]] = None,
+    previous_routes: Optional[List[Tuple[int, List[Tuple[float, float]]]]] = None,
     base_obstacles: Optional[GridObstacleMap] = None,
     router: Optional[GridRouter] = None
 ) -> Optional[List[Tuple[float, float]]]:
@@ -960,7 +975,8 @@ def route_plane_connection(
             This should be large enough to leave room for polygon fill.
         max_iterations: Maximum A* iterations
         verbose: Print debug info
-        previous_routes: List of previously routed paths from other nets to avoid (each is a list of (x,y) points)
+        previous_routes: Previously routed paths from other nets to avoid, as
+            (net_id, path) pairs; each path is a list of (x,y) points
         base_obstacles: Optional pre-built obstacle map (cloned for this route).
             If None, builds from scratch (backward compatible).
         router: Optional pre-built GridRouter instance to reuse.
@@ -1564,7 +1580,7 @@ def _generate_multinet_layer_zones(
             # Compute other_nets_routes once per net (only contains routes from OTHER nets,
             # so it doesn't change within this net's MST edge loop)
             other_nets_routes = [
-                route for route_net_id, _, route in connection_routes
+                (route_net_id, route) for route_net_id, _, route in connection_routes
                 if route_net_id != net_id
             ]
 
@@ -3432,8 +3448,14 @@ def create_plane(
         config.same_net_pad_clearance = same_net_pad_clearance
     # #498: per-layer .kicad_dru clearance rules -- tap tracks/vias, region
     # joins and blocker reroutes must obey them like every other routed copper.
-    from kicad_dru import install_layer_clearances
+    from kicad_dru import install_layer_clearances, install_track_clearances
     install_layer_clearances(config, None, input_file, pcb_data)
+    # #1135: and the track-to-track rules (#735), as batch_route installs
+    # them: a tap track or a blocker reroute is a track, and a board's
+    # `A.Type == 'track' && B.Type == 'track'` rule binds it too. Raise-only
+    # on seg-vs-seg pairs; the effective map over the nets this step pours.
+    install_track_clearances(config, None, input_file, pcb_data,
+                             routed_net_ids=net_ids)
     # Cross-class clearance (#434, mirrors batch_route/repair): auto-read the
     # board's non-Default netclasses from the INPUT's sibling .kicad_pro when
     # no map was passed, so tap tracks/vias and blocker reroutes honor KiCad's
