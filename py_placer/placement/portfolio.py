@@ -127,9 +127,10 @@ def free_refs(pcb_data, pcb_file: str,
     locked = set(extract_locked_refs(pcb_file))
     held = set(intent_locks or ())
     out = []
-    from kicad_parser import non_aperture_pads
     for ref, fp in pcb_data.footprints.items():
-        if not non_aperture_pads(fp):   # apertures are not pads (#1143)
+        # `fp.pads` on purpose (#1143): the portfolio perturbs what the
+        # quench moves, and the quench keeps an aperture-only part movable.
+        if not fp.pads:
             continue
         if ref in locked:
             continue
@@ -527,10 +528,10 @@ def perturb_swaps(state, blocks: Dict[str, Sequence[str]], rng: random.Random,
 def _final_poses(pcb_data, placements: List[Dict]) -> Dict[str, Tuple[float, float, float]]:
     """Seed poses overlaid with the quench's returned moves. The quench omits
     parts that ended exactly on their seed, so the overlay IS the final state."""
-    from kicad_parser import non_aperture_pads
+    # `fp.pads` on purpose (#1143): the overlay covers what the quench can
+    # move, which includes a part whose only pads are apertures.
     out = {ref: (fp.x, fp.y, fp.rotation % 360)
-           for ref, fp in pcb_data.footprints.items()
-           if non_aperture_pads(fp)}   # apertures are not pads (#1143)
+           for ref, fp in pcb_data.footprints.items() if fp.pads}
     for p in placements:
         out[p['reference']] = (p['new_x'], p['new_y'], p['new_rotation'])
     return out

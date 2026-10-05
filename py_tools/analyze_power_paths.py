@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Set, Optional, Tuple
 from enum import Enum
 
-from kicad_parser import parse_kicad_pcb, PCBData, Footprint, Pad
+from kicad_parser import parse_kicad_pcb, PCBData, Footprint, Pad, non_aperture_pads
 # Re-exported, not re-implemented (#705). These used to be a local tuple and a
 # closure inside `get_power_net_recommendations`; they are the repo's only
 # pin-level power predicate and every other caller was locked out of them.
@@ -96,7 +96,7 @@ def extract_components_for_analysis(pcb_data: PCBData) -> Dict[str, ComponentInf
             ref=ref,
             value=fp.value,
             footprint_name=fp.footprint_name,
-            pad_count=len(fp.pads),
+            pad_count=len(non_aperture_pads(fp)),   # pins, not apertures
             net_connections=net_connections,
             pin_functions=pin_functions,
             pin_types=pin_types

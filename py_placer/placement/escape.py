@@ -337,7 +337,7 @@ def _min_step(vals: Sequence[float]) -> float:
 def _pads(fp) -> list:
     """`fp`'s pads without its aperture-only ones (#1143): a thermal pad's
     split paste windows are not pads, and read as pads they collapse the
-    lattice step (tigard U3 0.033 mm against its real 0.5 mm pitch). Bound
+    lattice step (tigard U3 read 0.033 mm; its pins read 0.108). Bound
     lazily, as this module keeps a stdlib-only import surface at module scope.
     """
     from kicad_parser import non_aperture_pads

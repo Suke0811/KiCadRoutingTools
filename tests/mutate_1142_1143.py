@@ -63,6 +63,8 @@ TARGETS = {
     'edge_facing': os.path.join(_PL, 'edge_facing.py'),
     'state': os.path.join(_PL, 'placement_state.py'),
     'portfolio': os.path.join(_PL, 'portfolio.py'),
+    'reconcile': os.path.join(_PL, 'reconcile.py'),
+    'arrays': os.path.join(_PL, 'arrays.py'),
     'recovery': os.path.join(_PL, 'recovery.py'),
     'pockets': os.path.join(_ROOT, 'py_tools', 'check_pockets.py'),
     'context': os.path.join(_ROOT, 'py_tools', 'board_context.py'),
@@ -89,6 +91,7 @@ CHIP = _t(T1143, 'chip_bounds')
 QUENCH = _t(T1143, 'quench_keeps')
 TIGARD = _t(T1143, 'tigard_c25')
 GATES = _t(T1143, 'every_gate')
+ANCHOR = _t(T1143, 'mechanical_aperture')
 T1142 = 'test_1142_ungraded_per_cap.py'
 EMIT = _t(T1142, 'emits_the_held_list')
 STRAND = _t(T1142, 'held_cap_stranded')
@@ -201,9 +204,28 @@ ROWS = [
      "           if non_aperture_pads(fp)]\n",
      "           if fp.pads]\n",
      (GATES,), 'KILLED'),
-    ('final-poses-count-paste-only-parts', 'portfolio',
-     "           if non_aperture_pads(fp)}   # apertures are not pads (#1143)\n",
-     "           if fp.pads}\n",
+    # The "can a run MOVE it" sites follow the quench (fp.pads): mutating
+    # them to the measures' predicate drops a part the quench moves.
+    ('final-poses-drop-aperture-only-parts', 'portfolio',
+     "           for ref, fp in pcb_data.footprints.items() if fp.pads}\n",
+     "           for ref, fp in pcb_data.footprints.items()\n"
+     "           if __import__('kicad_parser').non_aperture_pads(fp)}\n",
+     (GATES,), 'KILLED'),
+    ('free-refs-drop-aperture-only-parts', 'portfolio',
+     "        if not fp.pads:\n            continue\n        if ref in locked:\n",
+     "        if not __import__('kicad_parser').non_aperture_pads(fp):\n"
+     "            continue\n        if ref in locked:\n",
+     (GATES,), 'KILLED'),
+    ('anchor-skips-aperture-only-parts', 'reconcile',
+     "        if not fp.pads:\n            skipped[ref] = ('pad-less",
+     "        if not __import__('kicad_parser').non_aperture_pads(fp):\n"
+     "            skipped[ref] = ('pad-less",
+     (ANCHOR,), 'KILLED'),
+    ('pose-free-chips-read-paste', 'arrays',
+     "        pads = non_aperture_pads(fp)\n"
+     "        if len(pads) < groups_mod.DECAP_MIN_IC_PADS:\n",
+     "        pads = list(fp.pads or ())\n"
+     "        if len(pads) < groups_mod.DECAP_MIN_IC_PADS:\n",
      (GATES,), 'KILLED'),
     ('board-poses-count-paste-only-parts', 'recovery',
      "            if non_aperture_pads(fp)}     # apertures are not pads "
@@ -226,10 +248,10 @@ ROWS = [
      "            'pads': len(non_aperture_pads(fp)),\n",
      "            'pads': len(fp.pads or ()),\n",
      (GATES,), 'KILLED'),
-    ('agent-grade-counts-paste-only-parts', 'agent_grade',
-     "            if non_aperture_pads(f)}     # apertures are not pads "
-     "(#1143)\n",
-     "            if f.pads}\n",
+    ('agent-grade-drops-aperture-only-parts', 'agent_grade',
+     "            for k, f in pcb.footprints.items() if f.pads}\n",
+     "            for k, f in pcb.footprints.items()\n"
+     "            if __import__('kicad_parser').non_aperture_pads(f)}\n",
      (GATES,), 'KILLED'),
     # The deliberate exclusion: an aperture-only part stays movable.
     ('quench-locks-aperture-only-parts', 'quench',

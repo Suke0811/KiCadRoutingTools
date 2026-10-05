@@ -394,6 +394,14 @@ def test_every_gate_reads_pins_not_apertures():
         st = placement_state.assess_placement(pcb, path)
     got['placement_state.n_footprints'] = st.n_footprints
     got['portfolio._final_poses'] = sorted(portfolio._final_poses(pcb, []))
+    with contextlib.redirect_stdout(io.StringIO()):
+        got['portfolio.free_refs'] = sorted(portfolio.free_refs(pcb, path))
+    from placement import arrays
+    # U1 is a 1x4 ROW once its off-line paste window is ignored: neither the
+    # posed nor the pose-free chip test may call it a chip.
+    got['groups.chip_refs'] = sorted(groups.chip_refs(pcb))
+    got['arrays.pose_free_chip_refs'] = sorted(
+        arrays.pose_free_chip_refs(pcb))
     got['recovery.board_poses'] = sorted(recovery.board_poses(pcb))
     got['recovery.part_displacement'] = round(recovery.part_displacement(
         u1, (10.0, 10.0, 0.0), (10.0, 10.0, 180.0)), 6)
@@ -437,17 +445,41 @@ def test_every_gate_reads_pins_not_apertures():
         'edge_facing.rect_maxy': 10.0,
         'escape.assign_faces': 4,
         'placement_state.n_footprints': 2,
-        'portfolio._final_poses': ['C1', 'U1'],
+        # The "can a run MOVE it" sites follow the quench, which keeps the
+        # aperture-only U2 movable (the deliberate exclusion): U2 is IN.
+        'portfolio._final_poses': ['C1', 'U1', 'U2'],
+        'portfolio.free_refs': ['C1', 'U1', 'U2'],
+        'groups.chip_refs': [],
+        'arrays.pose_free_chip_refs': [],
         'recovery.board_poses': ['C1', 'U1'],
         'recovery.part_displacement': round(rms, 6),
         'utility.refs_in_rect': [],
         'check_pockets.u2_bin': False,
         'board_context.pads': [4],
-        'agent_grade._poses': ['C1', 'U1'],
+        'agent_grade._poses': ['C1', 'U1', 'U2'],
     }
     bad = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
     assert not bad, bad
-    print(f"  PASS: {len(want)} sites read U1's pins and skip U2")
+    print(f"  PASS: {len(want)} sites read U1's pins; U2 is pad-less to the "
+          f"measures and movable to the movers")
+
+
+def test_a_mechanical_aperture_only_part_is_anchored():
+    """reconcile.anchor_blocks asks the quench's question -- does the seeder
+    PLACE this part -- so an aperture-only part with a mechanical pose is
+    anchored like any placed part, not skipped as "pad-less: the seeder never
+    places it" (Phase-1 second-pass verifier: under that skip a G1 the seeder
+    did place drifted 3.16 mm without an anchor)."""
+    from placement import reconcile
+    path = _board(_fp('U1', 10, 10, [_pad('1', 0, 0.6, 0.4, CU)]),
+                  _fp('G1', 30, 10, [_pad('1', 0, 1, 1, PASTE)]))
+    pcb = _parse(path)
+    mech = {'poses': {'G1': {'x': 30.0, 'y': 10.0, 'rot': 0.0}}}
+    with contextlib.redirect_stdout(io.StringIO()):
+        blocks, skipped = reconcile.anchor_blocks(pcb, path, mech)
+    assert 'G1' not in skipped, skipped
+    assert any('G1' in (b.get('refs') or ()) for b in blocks), blocks
+    print("  PASS: the aperture-only G1 is anchored, not skipped")
 
 
 def test_tigard_c25_measures_to_j1_copper():

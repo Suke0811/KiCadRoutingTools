@@ -1577,7 +1577,10 @@ def mechanical_drift(intent: Intent, pcb_data, mechanical: Dict, *,
         # ERROR where nothing else can see it -- a TURN (a symmetric body
         # sits inside its anchor turned 180: 68 of 97 anchored corpus refs)
         # and ANY drift of a pad-less ref, which is never anchored.
-        default = ERROR if (turned or not non_aperture_pads(fp)) else WARN
+        # `fp.pads` on purpose (#1143): a ref is never anchored when the
+        # seeder never places it, and the quench places an aperture-only
+        # part (reconcile.anchor_blocks reads the same predicate).
+        default = ERROR if (turned or not fp.pads) else WARN
         # The plan may PROMOTE the move-only WARN, never demote the ERROR:
         # the pose is a recorded fact, and a plan's severity map overruling
         # it at grade and P-close is exactly what the anchor's fixed ERROR

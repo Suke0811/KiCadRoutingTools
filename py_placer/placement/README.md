@@ -551,6 +551,22 @@ default: the corpus seeds and quenches almost never reach a box stack, and
 the placement A/B did not pass (the census and its numbers are in #1127), so
 it stays off.
 
+A second, pre-registered look (`tests/1127_stack_ab_prereg.json`) split the
+toggle into a LICENCE fix and the exact gate itself. The licence fix targets
+box mode's seed baseline, which records a box-only near-touch at the seed as
+a stack and so licenses a later real one with that neighbour. Its census,
+`tests/measure_1127_licence_census.py`, counts on an OFF run, inside the
+engine call only, every `pads_ok` decision the licence or the exact gate
+would take differently. It found 0 licence holes in every cell, StickHub
+included. On the committed corpus that zero is structural: no input carries
+a box-only licence, and a pile has none by `_degenerate_refs`. The exact gate
+could change decisions on rp2350 and ulx3s only, 2 boards per engine against
+the 3 the rule needs, so the run stopped there (STOP A) and nothing changed
+default. Two findings stand: the PAD conjunct is box currency too, so on the
+#1064 C4/Y1 grid the exact gate clears only 6 of the 35 box-only refusals; and
+the census does not observe `relocate.exact_refusal`, `place_pose`,
+`reseat`, `portfolio` or `perturb`.
+
 ## place_fanout_clearance.py — decoupling-cap clearance repair (issue #130)
 
 Run **after** `bga_fanout.py`. Nudges decoupling caps near a BGA so their

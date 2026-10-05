@@ -44,12 +44,13 @@ def _load(path):
 
 def _poses(board):
     sys.path.insert(0, os.path.join(ROOT, 'py_router'))
-    from kicad_parser import non_aperture_pads, parse_kicad_pcb
+    from kicad_parser import parse_kicad_pcb
     pcb = parse_kicad_pcb(board)
+    # `f.pads` on purpose (#1143): these are the poses a run can MOVE, and
+    # the quench moves a part whose only pads are paste/mask apertures.
     return {k: (round(f.x, 4), round(f.y, 4), round((f.rotation or 0) % 360, 3),
                 f.layer)
-            for k, f in pcb.footprints.items()
-            if non_aperture_pads(f)}     # apertures are not pads (#1143)
+            for k, f in pcb.footprints.items() if f.pads}
 
 
 def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None,

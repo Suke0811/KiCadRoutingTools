@@ -54,12 +54,15 @@ from placement.options import deficit_totals                  # noqa: E402
 #: Boards absent from a checkout are skipped, not failed.
 EXPECTED = {
     'ulx3s': (6, 2, 2),        # #862: 5, 1, 1 before the corridor
-    # #1143: 116, 20, 51 before (#862: 115, 20, 50 before that). U6 (WSON-8)
-    # and U10 (X2SON-4) left fine_pitch_parts: their split paste windows sat
-    # on the pad lattice and collapsed the pitch read off it.
+    # #1143: 116, 20, 51 before (#862: 115, 20, 50 before that). Two parts
+    # left fine_pitch_parts, for two different reasons: U6 (WSON-8) on PITCH
+    # (its paste windows collapsed the lattice to 0.365; its pins read 0.635),
+    # U10 (X2SON-4) on COUNT (13 pads with its windows, 5 pins, under
+    # MIN_PADS 6; its pitch still reads 0.325).
     'orangecrab_ext_pll': (107, 18, 46),
     'glasgow_revC': (55, 16, 25),
-    # #1143: 79, 10, 27 before -- U4 left fine_pitch_parts the same way.
+    # #1143: 79, 10, 27 before -- U4 (X2SON-4, like orangecrab's U10) left
+    # fine_pitch_parts on pin COUNT (13 -> 5, under MIN_PADS 6).
     'rp2350_fpga_eensy_prePlane': (76, 9, 24),
     # #835's controls were "does not move under the SIDE or CONTAINER arm",
     # and they still hold for those two arms. They are NOT controls for #841:
@@ -105,8 +108,8 @@ DEMAND = {
     'ulx3s': (233, 314),
     # #1143: (236, 303) before. Not the demand model collapsing: the LEDGER
     # lost two parts. U6 (demand 9) and U10 (demand 5), both with 0 interior
-    # pads, left fine_pitch_parts once their split paste windows stopped
-    # collapsing the pitch -- 236 - 9 - 5 = 222, measured at the parent.
+    # pads, left fine_pitch_parts (EXPECTED above says why) --
+    # 236 - 9 - 5 = 222, measured at the parent.
     'orangecrab_ext_pll': (222, 303),
     'glasgow_revC': (307, 108),
     # #1143: (130, 36) before -- U4 (demand 3, interior 0) left the ledger.
@@ -128,10 +131,11 @@ DEMAND_AT_PAD_CENTRES = {
     'glasgow_revC': (305, 116),
     # #1143: (122, 46) before -- U4 (3, 1) left the ledger.
     'rp2350_fpga_eensy_prePlane': (119, 45),
-    # #1143: (102, 20) before. No part left: U3 stays, but its pitch is read
-    # off its pins (0.108, not its paste windows' 0.033) and its 9 paste
-    # windows are no longer assigned faces, so at pad centres two pads leave
-    # the interior bucket and one more lane is demanded.
+    # #1143: (102, 20) before. No part left; the move is J1 (the USB-C
+    # receptacle whose 8 paste windows widened its pad box): at pad centres
+    # its demand/interior went (7, 2) -> (8, 0). U3 reads (39, 18) at both
+    # commits -- only its pitch changed, 0.033 -> 0.108 (second-pass
+    # verifier; this comment first named U3).
     'tigard': (103, 18),
     'splitflap_driver': (0, 0),
     'watchy': (113, 1),
