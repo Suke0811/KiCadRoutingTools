@@ -236,10 +236,11 @@ ROWS = [
     # unchanged in kind -- fail to move the reader when a declarable field
     # arrives -- so it reverts 4 to the version before this key, exactly as it
     # used to revert 3 to the version before `assembly.sides`.
-    # ...and again for #959 (#1000), 5 -> 6, and for #1051, 6 -> 7.
+    # ...and again for #959 (#1000), 5 -> 6, for #1051, 6 -> 7, and for
+    # #1142, 7 -> 8.
     ('the-reader-version-does-not-move', 'fp',
+     "READER_VERSION = 8\n",
      "READER_VERSION = 7\n",
-     "READER_VERSION = 6\n",
      (CEN,), 'KILLED'),
 
     # ------------------------------------------------------- the arithmetic

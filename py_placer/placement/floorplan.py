@@ -170,7 +170,15 @@ EDGE_BAND_SANITY_MM = 5.0
 #: opts a block into moving as one piece. One bump for the three: they
 #: arrived together, and each changes a verdict or a placement, so the rule
 #: above mandates it. An older build refuses each key by name.
-READER_VERSION = 7
+#: 8 (#1142): `decaps.within_radius_refs` and `decaps.within_radius_mm` -- the
+#: caps a `--decaps-from` reference keeps within the tether search radius of
+#: their chip, and the radius it was read at. A held cap the graded board
+#: leaves beyond the radius is an ERROR (`decap_ungraded`, per cap), where
+#: #1102 promoted the rule board-wide and only when the reference kept EVERY
+#: cap inside -- which none of the seven #1105 references did. It changes the
+#: exit code, so the rule above mandates the bump; an older build refuses
+#: both keys by name.
+READER_VERSION = 8
 
 _TOP_LEVEL_KEYS = {
     'schema', 'kind', 'board', 'units', 'envelope', 'defaults', 'blocks',
@@ -275,7 +283,8 @@ _CENTER_ON_EDGE_KEYS = {'tolerance_mm'}
 #: resize. `from < to`, both in [0, 1].
 _ALONG_EDGE_BAND_KEYS = {'from', 'to'}
 _DECAP_KEYS = {'max_distance_mm', 'exempt', 'search_radius_mm',
-               'max_pin_distance_mm', 'pin_functions', 'same_side'}
+               'max_pin_distance_mm', 'pin_functions', 'same_side',
+               'within_radius_refs', 'within_radius_mm'}
 #: #902. One declared claim: these two named parts, no further apart than
 #: `max_mm`. `ref` is always a SINGLE ref here -- the brief's list form is
 #: sugar that `compile_brief` expands, so the intent carries one row per claim
@@ -1376,6 +1385,40 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         if v <= 0:
             raise IntentError(
                 f"decaps.search_radius_mm must be positive, got {v}")
+    if 'within_radius_refs' in decaps or 'within_radius_mm' in decaps:
+        # #1142: the caps a --decaps-from reference keeps within the radius,
+        # each held to it per cap. Refused rather than half-read: a list with
+        # no limit arms nothing (`rule_decap_ungraded` returns without a
+        # `max_distance_mm`), and a list read at one radius cannot be applied
+        # at another -- a hand-shrunk `search_radius_mm` would hold a cap the
+        # reference keeps at 4 mm to a 3 mm horizon, and the reference would
+        # then fail its own intent.
+        decaps = dict(decaps)
+        if 'within_radius_refs' not in decaps \
+                or 'within_radius_mm' not in decaps:
+            raise IntentError(
+                "decaps.within_radius_refs and decaps.within_radius_mm come "
+                "together: the list is the caps the reference keeps within "
+                "THAT radius. Re-emit the intent with --decaps-from")
+        decaps['within_radius_refs'] = sorted(_str_tuple(
+            decaps['within_radius_refs'], 'decaps.within_radius_refs'))
+        r = decaps['within_radius_mm']
+        if isinstance(r, bool) or not isinstance(r, (int, float)) or r <= 0:
+            raise IntentError(
+                f"decaps.within_radius_mm must be a positive number, got "
+                f"{r!r}")
+        if 'max_distance_mm' not in decaps:
+            raise IntentError(
+                "decaps.within_radius_refs without decaps.max_distance_mm: "
+                "the held caps are graded by decap_ungraded, which only "
+                "runs under a tether limit, so the list would grade nothing")
+        search = decaps.get('search_radius_mm', groups_mod.DECAP_RADIUS_MM)
+        if abs(float(search) - float(r)) > 1e-9:
+            raise IntentError(
+                f"decaps.within_radius_refs was read at "
+                f"{float(r):g} mm but decaps.search_radius_mm is "
+                f"{float(search):g} mm: a cap held within one radius cannot "
+                f"be graded at another. Re-emit the intent with --decaps-from")
 
     health = _obj(raw.get('health'), 'health')
     _reject_unknown(health, _HEALTH_KEYS, 'health')
@@ -2855,7 +2898,8 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
         so it holds them to `decap_distance` as well -- stricter, never looser.
 
     `decap_distance` pairs outside the radius at election (`graded: False`)
-    are carried too: the grade calls them `decap_ungraded` (warn), and one
+    are carried too: the grade calls them `decap_ungraded` (warn; per cap an
+    error for a cap a --decaps-from reference holds, #1142), and one
     that walks INTO the radius past the limit becomes an error, which the gate
     must see.
     """
@@ -4812,6 +4856,15 @@ def rule_decap_ungraded(ctx) -> Iterator[Violation]:
     _near, beyond, _orphans = ctx.decap_populations(radius)
     sev = ctx.intent.severity_of('decap_ungraded', default=WARN)
     sup = ctx.superseded()
+    # #1142, PER CAP: a cap a --decaps-from reference keeps within the radius
+    # (`within_radius_refs`) is HELD to it, so leaving it beyond is an ERROR;
+    # a cap the reference itself keeps beyond -- likelier a bulk or filter cap
+    # than a failed decoupler, the reasoning above -- stays a WARN. An explicit
+    # `severity.decap_ungraded` still wins in both directions (an author can
+    # turn the rule down, and an intent #1102 promoted board-wide grades as it
+    # always did).
+    explicit = 'decap_ungraded' in (ctx.intent.severity or {})
+    held = frozenset(spec.get('within_radius_refs') or ())
     for cap, ic, dist in beyond:
         # An author who waived a cap from the distance claim has already
         # decided about it; telling them it is also ungraded is noise about
@@ -4819,17 +4872,25 @@ def rule_decap_ungraded(ctx) -> Iterator[Violation]:
         # graded -- by that relation.
         if any(fnmatch.fnmatch(cap, pat) for pat in exempt) or cap in sup:
             continue
+        is_held = cap in held
+        # `sev` stays the answer for every cap the list does not raise, so
+        # the rule's WARN default is still the one line that decides it.
+        cap_sev = ERROR if (is_held and not explicit) else sev
         yield Violation(
-            rule='decap_ungraded', severity=sev,
+            rule='decap_ungraded', severity=cap_sev,
             ref=cap, block=ctx.owner.get(cap),
             message=(f"{cap} is {dist:.2f}mm from {ic}, the IC it decouples "
                      f"-- beyond the {radius:.2f}mm tether search radius, so "
                      f"decap_distance never measured it against the "
-                     f"{limit:.2f}mm limit. That limit was derived from the "
-                     f"caps INSIDE the radius, so it says nothing about this "
-                     f"one"),
+                     f"{limit:.2f}mm limit. "
+                     + ("The reference board keeps it WITHIN that radius, so "
+                        "here it is a stranded decoupler, not a bulk cap"
+                        if is_held else
+                        "That limit was derived from the caps INSIDE the "
+                        "radius, so it says nothing about this one")),
             measured={'distance_mm': round(dist, 4), 'ic': ic,
-                      'search_radius_mm': round(radius, 4)},
+                      'search_radius_mm': round(radius, 4),
+                      'held_by_reference': is_held},
             expected={'max_distance_mm': limit})
 
 
@@ -6100,6 +6161,11 @@ def _gating(rule: str, intent: Intent, ctx) -> bool:
         if 'rail_net' in chans:
             return intent.severity.get('decap_pin_distance_inferred') == ERROR
         return False
+    if (rule == 'decap_ungraded' and rule not in intent.severity
+            and (intent.decaps or {}).get('within_radius_refs')):
+        # #1142: a held cap left beyond the radius is an ERROR, per cap. An
+        # explicit severity is read below and wins, as it does in the rule.
+        return True
     if intent.severity.get(rule) == ERROR:
         return True
     return _RULE_DEFAULT_SEVERITY.get(rule, ERROR) == ERROR
@@ -7824,6 +7890,10 @@ def _emitted_basis(decaps, budget, conns, blocks,
         out['decaps.max_distance_mm'] = decaps_basis or 'observed_baseline'
     if 'max_pin_distance_mm' in (decaps or {}) and pin_basis:
         out['decaps.max_pin_distance_mm'] = pin_basis
+    if 'within_radius_refs' in (decaps or {}):
+        # #1142: read off the same reference as the limit.
+        out['decaps.within_radius_refs'] = decaps_basis or 'observed_baseline'
+        out['decaps.within_radius_mm'] = 'derived_default'
     for k in sorted(budget or {}):
         out[f'legality_budget.{k}'] = 'observed_baseline'
     for c in conns or ():
@@ -8311,9 +8381,6 @@ def emit_intent(pcb_data, pcb_file: str, *,
     if _sup:
         _census['superseded'] = dict(sorted(_sup.items()))
     _decaps: Dict[str, object] = {}
-    # #1102: rule severities an emitted number argues for (the intent's
-    # top-level `severity`); empty unless --decaps-from promotes one.
-    _severity_extra: Dict[str, str] = {}
     _mode = _decap_mode(derive_decaps)
     _derive = _mode == 'strict'
     if _mode == 'auto':
@@ -8385,15 +8452,36 @@ def emit_intent(pcb_data, pcb_file: str, *,
                                        + os.path.basename(decaps_from))
             # #1102: the tether currency is the cap to the chip's inflated
             # PAD BBOX, and it stops at the 5 mm search radius -- a cap
-            # left 10 mm away is only `decap_ungraded`, a WARN. When the
-            # reference itself keeps EVERY rail cap inside the radius, a cap
-            # beyond it on this board is a regression, not a horizon: run
-            # 37 stranded C3, C7, C12 at 7.8-10.2 mm with no error.
-            if not _ref_census.get('beyond_radius'):
-                _severity_extra['decap_ungraded'] = ERROR
+            # left 10 mm away is only `decap_ungraded`, a WARN. A cap the
+            # reference keeps INSIDE the radius and this board leaves beyond
+            # it is a regression, not a horizon: run 37 stranded C3, C7, C12
+            # at 7.8-10.2 mm with no error.
+            # #1142: PER CAP. #1102 promoted the rule board-wide, and only
+            # when the reference kept EVERY rail cap inside -- one bulk cap
+            # beyond 5 mm switched it off for the whole board, and none of
+            # the seven #1105 references passed. The list names the caps the
+            # reference keeps within the radius (same ref, same footprint on
+            # this board); a cap it keeps beyond stays a WARN.
+            _r = groups_mod.DECAP_RADIUS_MM
+            _near_ref = groups_mod.decap_populations(_ref_pcb, radius=_r)[0]
+            _ours_fp = {r: f.footprint_name
+                        for r, f in (pcb_data.footprints or {}).items()}
+            _held = sorted(
+                c for caps in _near_ref.values() for c, _d in caps
+                if c in _ours_fp
+                and _ours_fp[c] == _ref_pcb.footprints[c].footprint_name)
+            if _held:
+                _decaps['within_radius_refs'] = _held
+                _decaps['within_radius_mm'] = _r
+                _ref_beyond = sorted(
+                    _ref_census.get('beyond_radius_refs') or ())
+                _census['reference_beyond_radius_refs'] = _ref_beyond
                 _census['decap_ungraded_promoted'] = (
-                    'the reference keeps every rail cap within '
-                    f"{_ref_census.get('search_radius_mm')} mm of a chip")
+                    f"per cap, for the {len(_held)} cap(s) the reference "
+                    f"keeps within {_r:g} mm of their chip"
+                    + (f"; the {len(_ref_beyond)} it keeps beyond "
+                       f"({', '.join(_ref_beyond)}) stay warn"
+                       if _ref_beyond else ''))
         # #1102, the PIN currency: every supply pin to the nearest cap on its
         # net, pad edge to pad edge (`decap_pin_distance`, #705). A cap 1.6
         # mm from a QFP's box can be 5 mm from the pin it decouples; the
@@ -8499,8 +8587,9 @@ def emit_intent(pcb_data, pcb_file: str, *,
         'keepouts': [],
         'edge_connectors': conns,
         'decaps': _decaps,
-        **({'severity': dict(sorted(_severity_extra.items()))}
-           if _severity_extra else {}),
+        # No top-level `severity`: #1102 wrote `decap_ungraded: error` here;
+        # #1142 holds caps PER CAP through `decaps.within_radius_refs`
+        # instead, and an explicit severity would override that list.
         # must_lock is a REQUIREMENT ("these refs must end up locked"), and an
         # emitted intent describes a board rather than making demands of it.
         # Filling it with the board's own locked set (as this did) closed a
@@ -8613,6 +8702,10 @@ def emit_intent(pcb_data, pcb_file: str, *,
             if b['name'] in rigid_blocks:
                 b['rigid'] = True
         doc['min_reader'] = max(int(doc.get('min_reader') or 0), 7)
+    # #1142: a reader-7 build would refuse the held list by name anyway; the
+    # stamp says which build can act on it.
+    if 'within_radius_refs' in (doc.get('decaps') or {}):
+        doc['min_reader'] = max(int(doc.get('min_reader') or 0), 8)
     return doc
 
 

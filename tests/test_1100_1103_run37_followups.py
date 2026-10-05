@@ -130,12 +130,17 @@ class TestPinLimitFromTheReference(unittest.TestCase):
         radius, so `decap_ungraded` is promoted to error, while only 2 supply
         pins are covered and the pin limit is withheld. The promotion was
         printed only beside a derived pin limit, so here the emit raised a
-        severity without a word."""
+        severity without a word.
+
+        Since #1142 the promotion is PER CAP: the held caps are listed in
+        `decaps.within_radius_refs` rather than raised board-wide through a
+        top-level `severity`, and the print still says so."""
         board = os.path.join(ROOT, 'tests', 'fixtures', 'run25',
                              'esp_prog_placed.kicad_pcb')
         r, doc = emit(board, '--decaps-from', board)
-        self.assertEqual((doc.get('severity') or {}).get('decap_ungraded'),
-                         'error')
+        held = (doc.get('decaps') or {}).get('within_radius_refs')
+        self.assertTrue(held, doc.get('decaps'))
+        self.assertNotIn('decap_ungraded', doc.get('severity') or {})
         self.assertNotIn('max_pin_distance_mm', doc.get('decaps') or {})
         self.assertIn('decap_ungraded promoted to error', r.stdout)
 
@@ -155,7 +160,9 @@ class TestPinLimitFromTheReference(unittest.TestCase):
             self.skipTest('KiCad StickHub demo not installed')
         _r, doc = emit(path, '--decaps-from', path)
         self.assertEqual(doc['decaps']['max_pin_distance_mm'], 1.7716)
-        self.assertEqual(doc['severity']['decap_ungraded'], 'error')
+        # #1142: the horizon is held per cap, not raised board-wide.
+        self.assertTrue(doc['decaps'].get('within_radius_refs'), doc['decaps'])
+        self.assertNotIn('decap_ungraded', doc.get('severity') or {})
         # The reference grades clean against what it produced (the fixed
         # point); rounding before the ceiling once put the limit BELOW the
         # true max and failed it.

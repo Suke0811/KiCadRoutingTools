@@ -417,7 +417,8 @@ class IntentProbe:
     def _tether_guard_values(self) -> Tuple[float, ...]:
         """The LICENCE's view: as the gate reads each term. They differ for a
         decap pair past the search radius -- the grade stops grading it
-        (`decap_ungraded`, warn), so the count drops; the gate keeps
+        (`decap_ungraded`: a warn, or per cap an error the tether count
+        still does not see, #1142), so the count drops; the gate keeps
         measuring it, so the licence sees a cap that walked further from its
         IC as the regression it is, not as a fix (phase-2 verifier: esp_prog
         C3, radius 2.2, moved 1mm out, read `1 -> 0` and licensed)."""
@@ -2542,7 +2543,8 @@ class QuenchState:
         the measurement `IntentProbe` counts, never the gate's. No cache is
         read or written (the gate's caches are keyed by ITS term index), and
         a decap pair the live election puts beyond the search radius reads 0,
-        because the grade calls it `decap_ungraded` (warn) however it was
+        because the grade calls it `decap_ungraded` (a warn, or per cap an
+        error under a --decaps-from intent, #1142) however it was
         elected at build -- the gate deliberately keeps measuring that pair,
         which is stricter than the grade and therefore not a count of it."""
         return self._tether_measure(t, None, None, grade_view=True)

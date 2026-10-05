@@ -7038,7 +7038,8 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                         if after is not None else None)
         # A cap pushed past the decap search radius does not clear its
         # `decap_distance` charge, it stops being GRADED: the finding becomes
-        # `decap_ungraded` (warn) under a different claim key. Read as the
+        # `decap_ungraded` (warn, or per cap an error under a --decaps-from
+        # intent, #1142) under a different claim key. Read as the
         # charge persisting, or leaving the radius would be a way to be fixed.
         ungraded = ({v.ref for v in after if v.rule == 'decap_ungraded'}
                     if after is not None else set())

@@ -145,7 +145,7 @@ source, suspect, suspect_reason
 | `edge_connectors[].overhang_mm` | `min`, `max` |
 | `edge_connectors[].center_on_edge` | `tolerance_mm` (required — see below) |
 | `edge_connectors[].along_edge_band` | `from`, `to` |
-| `decaps` | `max_distance_mm`, `exempt`, `search_radius_mm`, `max_pin_distance_mm`, `pin_functions`, `same_side` |
+| `decaps` | `max_distance_mm`, `exempt`, `search_radius_mm`, `max_pin_distance_mm`, `pin_functions`, `same_side`, and the `--decaps-from`-written `within_radius_refs` / `within_radius_mm` (#1142: the caps the reference keeps within that radius of their chip, each held to it per cap; the two come together, need `max_distance_mm`, must match `search_radius_mm`, and need `min_reader` 8) |
 | `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `why`, `context` |
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `note`, `context`, and the compiler-written `source` |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (#1051; see "Arrays" below; needs `min_reader` 7) |
@@ -283,6 +283,14 @@ arrived together. Each changes a verdict or a placement: `arrays[]` arms
 `array_formation`, a `fixed_poses[]` entry is graded by an anchor compiled from
 it, and `rigid` opts a block into moving as one piece. The design brief
 compiles `arrays` and `fixed[].pose` with `min_reader` 7.
+
+**Reader 8 arrived with [#1142](https://github.com/drandyhaas/KiCadRoutingTools/issues/1142):**
+`decaps.within_radius_refs` and `decaps.within_radius_mm`, which
+`--decaps-from` writes. They list the caps the reference keeps within the
+tether search radius of their chip, and the radius that was read at. A listed
+cap the graded board leaves beyond the radius is a `decap_ungraded` ERROR, per
+cap. It changes the exit code, so the intent is stamped `min_reader` 8, and an
+older build refuses both keys by name.
 
 ### Arrays: parts that form one row (#1051)
 
@@ -837,7 +845,7 @@ status from this list:
 | `keepout` | any part enters a keep-out, unless in `allow` | courtyard **and** through-hole rect. **Enforced, not only graded, since [#701](https://github.com/drandyhaas/KiCadRoutingTools/issues/701)** — the seat search refuses such a pose through the same `keepout_hit` this rule calls — and since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702) the quench refuses such a MOVE through it too |
 | `edge_connector` | overhang outside `[min,max]`; the wrong edge; on the body path, pad copper past the OUTLINE (castellated pads excepted); a `connector_affinity` entry seated more than 3 mm from every edge fires at **warn** whatever the configured severity | the band: the drawn body's overhang past the outline, summed over the sides it crosses (`body_outside_mm`, `connector_geometry`, #961), else `BoardOutlineGate.rect_outside_amount`; the seat: `edge_clearance` |
 | `decap_distance` | a decoupling cap is too far from its own IC | `groups.decap_populations` (`near`) |
-| `decap_ungraded` | a cap in scope lies BEYOND the tether search radius, so `decap_distance` never measured it against the declared limit — a claim about COVERAGE, not compliance. **warn** by default ([#794](https://github.com/drandyhaas/KiCadRoutingTools/issues/794)) | `groups.decap_populations` (`beyond`) |
+| `decap_ungraded` | a cap in scope lies BEYOND the tether search radius, so `decap_distance` never measured it against the declared limit — a claim about COVERAGE, not compliance. **warn** by default ([#794](https://github.com/drandyhaas/KiCadRoutingTools/issues/794)). **ERROR, per cap, for a cap in `decaps.within_radius_refs`** ([#1142](https://github.com/drandyhaas/KiCadRoutingTools/issues/1142)): one the `--decaps-from` reference keeps inside the radius, so leaving it beyond strands a decoupler. An explicit `severity.decap_ungraded` wins either way | `groups.decap_populations` (`beyond`) |
 | `decap_pin_distance` | a DECLARED supply pin is further than `max_pin_distance_mm` from the nearest decoupling cap on its own rail, pad edge to pad edge ([#705](https://github.com/drandyhaas/KiCadRoutingTools/issues/705)) | `floorplan.supply_pins`, `legality.pad_rect` + `rect_gap` |
 | `decap_pin_distance_inferred` | the same measurement for a pin inferred from a net NAME rather than from a `pintype` or `pinfunction`. **warn** by default, because the pin set is the inference | same |
 | `decap_pin_uncovered` | a declared supply pin's rail carries no decoupling cap at all, anywhere. A design fact, not a placement failure, so **warn** and per (IC, rail) rather than per pin | same |
@@ -908,7 +916,7 @@ reports the whole picture in `accept_basis`.
 | `zone_side` | yes | — | no | **vacuous, not conservative**: the quench never flips a side, so the term is invariant under every move it can make. Reported once at load instead |
 | `assembly_side` | yes | — | no | same reason, one level up: since #714 the WRITER can mirror a footprint, but no move in any search carries a side (#836), so the term is invariant under every move. Reported once at load, and **warn** by default so it cannot become a permanent red mark |
 | `envelope` | yes | — | no | a claim about the intent FILE against the board, not about any pose |
-| `decap_ungraded`, `decap_pin_uncovered`, `decap_pin_distance_inferred` | yes | — | no | `decap_ungraded` and `decap_pin_uncovered` are claims about what the GRADE covers rather than about any pose, so there is nothing for a search to refuse. `decap_pin_distance_inferred` is a WARN about a pin inferred from a net name, and the gate holds only what the exit gate counts |
+| `decap_ungraded`, `decap_pin_uncovered`, `decap_pin_distance_inferred` | yes | — | no | `decap_ungraded` and `decap_pin_uncovered` are claims about what the GRADE covers rather than about any pose, so there is nothing for a search to refuse. `decap_pin_distance_inferred` is a WARN about a pin inferred from a net name, and the gate holds only what the exit gate counts. **Since #1142 a `decap_ungraded` on a cap the `--decaps-from` reference holds IS an error the exit gate counts, and this gate still does not hold it**: `tether_graded_value` reads a cap past the radius as no breach, so the quench neither refuses nor repairs a stranded held cap, and nor does the seeder's decap repair rung. That gap was already there for #1102's board-wide promotion; #1142 makes it reachable on real references |
 | `decap_pin_distance` | yes | — | **yes** (#1043) | — armed by `decaps.max_pin_distance_mm` at error severity. Per (IC, declared supply pin), measured by CALLING `floorplan.nearest_rail_cap` over the rule's own cap set (`decap_pin_caps`) on footprints posed at the live poses |
 | `decap_distance` | yes | scope stage | **yes** (#1043) | — armed by `decaps.max_distance_mm` at error severity. The currency objection that kept it out is met by CALLING the grader's own distance (`groups.elect_live`: cap pad centroid to the inflated pad bbox of the nearest chip on its rail) rather than re-deriving one. The election is re-run per candidate pose over the chips on the cap's rail, because the grade re-elects: a frozen cap→IC pair is not conservative for a cap elected beyond the radius, which can walk into another chip's radius past the limit (run 32's C26). The population (which caps, graded or beyond the radius) is fixed once at state build (`floorplan.tether_pairings`) |
 | `legality` | yes | — | no | a whole-board aggregate against a BUDGET, so a per-pose form is non-local: whether A's move is admissible would depend on B's violation |
@@ -1487,7 +1495,16 @@ reference is itself unplaced.
 StickHub's human board gives 2.18 mm from 38 tethers; run 36, with no limit
 armed, left the hub's decaps 2.1-9.8 mm from their pins. Since #1102 it also
 derives the PIN limit, `max_pin_distance_mm` (see "The emitter derives no pin
-limit" below for why only from a reference).
+limit" below for why only from a reference). Since #1142 it also lists the caps
+the reference keeps within the search radius (`within_radius_refs`, with the
+radius in `within_radius_mm`): each of them is held to that radius, PER CAP.
+Leaving a listed cap beyond it is a `decap_ungraded` ERROR, while a cap the
+reference itself keeps beyond (likelier a bulk or filter cap) stays a WARN.
+Measured on the seven #1105 piles (`tests/measure_1142_ungraded_per_cap.py`),
+one seed each strands 0 (esp_prog), 7, 7, 4, 15, 41 and 16 held caps. All of
+those were WARNs under #1102, because none of the seven references keeps every
+cap inside 5 mm. Graded on its own `--decaps-from` intent, every corpus board
+and demo with a tether limit still has 0 such errors.
 
 **Three states since #959**, selected by `--no-declare-decaps`,
 `--declare-decaps` (strict) and `--auto-declare-decaps`. The default,
@@ -1856,17 +1873,24 @@ goes to `context.decap_census` instead, which has no key set to grow.
 `max_pin_distance_mm` from the REFERENCE, where neither objection holds: it is
 not the board being graded, and the derivation is withheld when more than 25%
 of the reference's supply pins have no cap on their net (the censoring case) or
-fewer than 3 are covered. When the reference also keeps every rail cap inside
-the 5 mm tether radius, the intent promotes `decap_ungraded` to error, so a cap
-stranded beyond it is named. Run 37 (StickHub) stranded C3, C7, C12 at 7.8-10.2
-mm with no error; with the human board as reference it gets 10 pin errors and
-C3, C7, C12 and C21 by name, and the human board grades clean against its own
-limits (1.7716 mm pins, 2.1828 mm tethers).
+fewer than 3 are covered. #1102 also promoted `decap_ungraded` to error, but
+only board-wide and only when the reference kept EVERY rail cap inside the
+5 mm tether radius; since #1142 the promotion is per cap, through
+`decaps.within_radius_refs` (above), so a cap stranded beyond the radius is
+named even when the reference has bulk caps of its own out there. Run 37
+(StickHub) stranded C3, C7, C12 at 7.8-10.2 mm with no error; with the human
+board as reference it gets 10 pin errors and C3, C7, C12 and C21 by name, and
+the human board grades clean against its own limits (1.7716 mm pins,
+2.1828 mm tethers).
 
-`READER_VERSION` stays 1. `_reject_unknown` already refuses an unknown `decaps`
-key loudly and automatically, and `min_reader` exists for what refusal *cannot*
-see: a widened value set, a changed meaning, a changed default. Adding keys is
-none of those.
+#705's pin keys did not move `READER_VERSION` (it was 1 then):
+`_reject_unknown` already refuses an unknown `decaps` key loudly and
+automatically, and `min_reader` exists for what refusal *cannot* see -- a
+widened value set, a changed meaning, a changed default. The rule in
+`floorplan.py` has since been applied to every declarable field that changes a
+verdict, so the number an author copies into `min_reader` names a build that
+acts on the claim. #1142's `within_radius_refs` took it to 8 (see "Reader 8"
+above).
 
 ### `keepouts` stays empty, and says so
 
