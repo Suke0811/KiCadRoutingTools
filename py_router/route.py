@@ -511,7 +511,22 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     return record
 
 
-def _write_summary_min_file(json_out: Optional[str], status: str) -> None:
+class _BoardCopper:
+    """A board read through another copper set: `base` for everything else
+    (nets, pads, the project path), `segments` / `vias` as given. The GUI's
+    shipped copper is its write model, not pcb_data (#1146's re-measure)."""
+
+    def __init__(self, base, segments, vias):
+        self._base = base
+        self.segments = segments
+        self.vias = vias
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+
+def _write_summary_min_file(json_out: Optional[str], status: str,
+                            extra: Optional[dict] = None) -> None:
     """Write the --json-out file for a run that legitimately did nothing.
 
     The console contract above ("exactly one JSON_SUMMARY_MIN per outermost
@@ -524,7 +539,8 @@ def _write_summary_min_file(json_out: Optional[str], status: str) -> None:
 
     The document carries the same empty tally the console line prints, the
     `status` naming WHY it is empty, and the env-knob echo the normal
-    end-of-run summary carries. Deliberately NO min_clearance_used: a run
+    end-of-run summary carries, plus any measurement of the board as it stands
+    (`extra`: the keep-away report). Deliberately NO min_clearance_used: a run
     that routed nothing applied no clearance, and inventing a number here
     would defeat a reader's floor check.
     """
@@ -532,7 +548,8 @@ def _write_summary_min_file(json_out: Optional[str], status: str) -> None:
         return
     try:
         from route_summary import write_summary_file
-        document = {'successful': 0, 'failed': 0, 'status': status}
+        document = {'successful': 0, 'failed': 0, 'status': status,
+                    **(extra or {})}
         try:
             import env_knobs as _ek653
             document['env_knobs'] = _ek653.active_env_knobs()
@@ -1567,9 +1584,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         config_kwargs['keep_away'] = normalize_keep_away_specs(keep_away)
         config_kwargs['keep_away_free'] = keep_away_free
         config_kwargs['keep_away_cost'] = keep_away_cost
-        # Resolve the rules and cache the bands against THIS run's board: the
-        # GUI keeps one PCBData across runs and re-syncs its copper and pads.
-        pcb_data._keep_away_state = {}
+        # Resolve the rules against THIS run's board: the GUI keeps one
+        # PCBData across runs and may re-sync its nets and classes. Nested
+        # sub-runs (finalize, reconcile laps) share the outer run's board and
+        # keep its bands, which are keyed by geometry.
+        if final_reconcile:
+            pcb_data._keep_away_state = {}
     config_kwargs['neckdown_length'] = neckdown_length
     config_kwargs['neckdown_taper_length'] = neckdown_taper_length
     if direction_order is not None:
@@ -1906,9 +1926,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
               f"{', ...' if len(_finalize_zone_nets1112) > 6 else ''} (#1112)")
     elif not net_ids:
         print("All nets are already fully connected - nothing to route!")
+        # #1146: a routed board graded against keep-away rules lands here
+        # (`--keep-away-cost 0` on an already-routed board), so the report is
+        # emitted on this path too, measured on the board as it stands.
+        from keep_away import disclose_keep_away
+        _ka_done = disclose_keep_away(pcb_data, config)
         if final_reconcile:
             _emit_summary_min(status='already_connected')
-        _write_summary_min_file(json_out, 'already_connected')
+        _write_summary_min_file(json_out, 'already_connected',
+                                {'keep_away': _ka_done} if _ka_done else None)
         # The sweep runs HERE too (#659). The fragment gate diverts a net whose
         # extra fragments are all pad-less to this sweep instead of the router,
         # so a step whose WHOLE scope is diverted lands on this early return --
@@ -1918,6 +1944,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # because the sweep only ran at the normal end of a run.
         if return_results:
             _rd659 = _empty_results_data()
+            _rd659['keep_away'] = keep_away_entries(_ka_done)
             _late_orphan_sweep659(pcb_data, output_file, True, _rd659,
                                   None, keep_input_copper, skip_routing)
             return 0, 0, 0.0, _rd659
@@ -4685,16 +4712,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         pass
     # #1146: per net, the track length that ended up inside a keep-away band
     # (the cost is soft, so a band the router could not avoid is routed
-    # through, and this is where that is said). Measured on the whole board.
-    if getattr(config, 'keep_away', None):
-        try:
-            from keep_away import keep_away_report, print_keep_away_report
-            _ka = keep_away_report(pcb_data, config)
-            if _ka is not None:
-                print_keep_away_report(_ka)
-                summary['keep_away'] = _ka
-        except Exception as _kae:                              # noqa: BLE001
-            summary['keep_away'] = {'error': str(_kae)}
+    # through, and this is where that is said). Measured on the whole board,
+    # on the run's FIRST summary only: a nested sub-run's reading would be
+    # superseded anyway, by the outermost run's measurement of the board it
+    # ships (below, at the end of the run).
+    if not _SUMMARY_SINK:
+        from keep_away import disclose_keep_away
+        _ka = disclose_keep_away(pcb_data, config)
+        if _ka is not None:
+            summary['keep_away'] = _ka
     # WHICH SUMMARY IS THIS? A run that fires the reconciliation sub-pass emits
     # a SECOND JSON_SUMMARY, scoped to that subset, and the only thing saying so
     # was a prose "Note:" printed after it. Anything that scrapes the last
@@ -6787,6 +6813,39 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                   f"({type(_rge).__name__}: {_rge}); the tally falls back to "
                   f"the summaries alone")
 
+    # #1146: the keep-away report again, on the board this run SHIPS. The
+    # printed JSON_SUMMARY measured the first pass, before the plane finalize
+    # and the reconciliation laid copper (taps, joins, welds, re-routes) that
+    # can enter a band. --json-out and the GUI's results carry this reading;
+    # it is printed when it differs from the first.
+    _ka_shipped = None
+    if final_reconcile and not _ckpt_stop and getattr(config, 'keep_away', None):
+        from keep_away import disclose_keep_away
+        _rd_ka = locals().get('results_data')
+        _ka_board = _ka_on = None
+        if return_results and _rd_ka is not None:
+            _ka_s, _ka_v = _gui_write_model(_rd_ka)
+            _ka_board = _BoardCopper(pcb_data,
+                                     [s for _l in _ka_s.values() for s in _l],
+                                     [v for _l in _ka_v.values() for v in _l])
+            _ka_on = 'change-set (write model)'
+        elif output_file and os.path.isfile(output_file):
+            from kicad_parser import parse_kicad_pcb as _pk_ka
+            _ka_board = _pk_ka(output_file)
+            _ka_on = 'written board'
+        if _ka_board is not None:
+            _ka_shipped = disclose_keep_away(_ka_board, config, quiet=True)
+        if _ka_shipped is not None and 'rules' in _ka_shipped:
+            _ka_shipped['measured_on'] = _ka_on
+            _ka_first = (locals().get('summary') or {}).get('keep_away') or {}
+            if ((_ka_first.get('in_band_mm'), _ka_first.get('nets_in_band'))
+                    != (_ka_shipped['in_band_mm'], _ka_shipped['nets_in_band'])):
+                from keep_away import print_keep_away_report
+                print_keep_away_report(_ka_shipped,
+                                       title='Keep-away on the shipped board')
+        if return_results and _rd_ka is not None and _ka_shipped is not None:
+            _rd_ka['keep_away'] = keep_away_entries(_ka_shipped)
+
     # Per-net story dump (KICAD_NET_STORY=1): the complete journey of every
     # net -- bus membership, ordering, failures with named blockers, rips,
     # rescues, Phase-3 tap order, costs -- assembled from state.
@@ -6799,6 +6858,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # predates the finalize, so it cannot carry this.
             if _merged is not None and _via_in_pad962 is not None:
                 _merged['via_in_pad'] = _via_in_pad962
+            # #1146: likewise the keep-away reading of the shipped board.
+            if _merged is not None and _ka_shipped is not None:
+                _merged['keep_away'] = _ka_shipped
             # ALL-OR-NOTHING (#830). This was `open(json_out,'w')` +
             # `json.dump`, which truncates the destination before the first
             # chunk is encoded and then STREAMS into it -- so a failure partway
@@ -7319,7 +7381,8 @@ For differential pair routing, use route_diff.py:
                              "patterns as in --nets and/or net classes as class=NAME, e.g. "
                              "'CLK*,/I2C_*:/AUDIO_*:0.5' or 'class=Digital:class=Audio:0.5'. "
                              "Nets of one side route against each other at the normal "
-                             "clearance. The "
+                             "clearance. GAP is at most 10 mm; rules are split on spaces, "
+                             "so write a space inside a name as '?'. The "
                              "run reports per net the length left inside a band "
                              "(JSON_SUMMARY keep_away).")
     parser.add_argument("--keep-away-free", type=float, default=defaults.KEEP_AWAY_FREE,
@@ -7677,6 +7740,10 @@ For differential pair routing, use route_diff.py:
             parse_keep_away_rules(args.keep_away)
         except ValueError as _kae:
             parser.error(f"--keep-away: {_kae}")
+    from keep_away import keep_away_knob_error
+    _kae = keep_away_knob_error(args.keep_away_free, args.keep_away_cost)
+    if _kae:
+        parser.error(_kae)
 
     if args.force_reroute and not all_patterns and not component_patterns:
         parser.error("--force-reroute requires an explicit net scope "

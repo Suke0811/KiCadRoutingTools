@@ -682,9 +682,12 @@ def _attempt_edge(pcb_data, net_id, gap, config, net_clearances,
                 # window can honestly route. Do not weld a random pair.
                 continue
             src_over = tgt_over = None
-        # #1146: the keep-away band, measured on the whole board (the
-        # clone is per attempt, so nothing needs clearing).
-        stamp_keep_away(obstacles, cfg, pcb_data, net_id)
+        # #1146: the keep-away band of the whole board's copper, priced only
+        # where it reaches the window the rung routes in (the clone is per
+        # attempt, so nothing needs clearing). The rung's grid is fine enough
+        # that the board-wide band would cost about a minute per stamp.
+        stamp_keep_away(obstacles, cfg, pcb_data, net_id,
+                        window=window.board_info.board_bounds)
         result = route_net_with_obstacles(window, net_id, cfg, obstacles, bounds=bounds,
                                           sources_override=src_over,
                                           targets_override=tgt_over)

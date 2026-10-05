@@ -207,8 +207,10 @@ clocks, I2C, relay coils and switch nodes kept a few tenths of a millimetre
 further from analog nets than the netclass asks. Each rule `AGG:VICTIM:GAP`
 names two sides as comma-separated net patterns (resolved like `--nets`)
 and/or net classes as `class=NAME` (a glob; `!class=NAME` takes one out,
-`class=Default` is every net no class claims), and a GAP in mm, edge to edge
-on the same layer. `class=Digital:class=Audio:0.5` is KiCad's
+`class=Default` is every net no class claims; a class never brings in an
+`unconnected-*` net), and a GAP in mm (at most 10), edge to edge on the same
+layer. Rules are separated by spaces, so a space inside a net or class name
+is written `?` (`class=High?Speed`). `class=Digital:class=Audio:0.5` is KiCad's
 `A.NetClass == 'Digital' && B.NetClass == 'Audio'` as a soft rule; classes
 are read from the board's project by the resolver the router and `check_drc`
 share. While a net of either side is
@@ -242,19 +244,22 @@ tracks in place without bumping it. Who routes first matters: a net is priced
 against the other side's tracks routed before it and against all of its pads.
 The stub-swap and tap-relocation rescues route on a map prepared like the
 main pass's; `net_rescue` and terminal escalation, which route on clones no
-builder prepared, stamp the band themselves; and the plane finalize's reroute
-sub-runs inherit the rules. The finalize's own
-pad taps, region joins and oracle welds do not price it; the report covers
-whatever they ship.
+builder prepared, stamp the band themselves (a rescue rung only where the
+band reaches its window); and the plane finalize's reroute and region-join
+sub-runs inherit the rules. The copper the finalize lays directly -- pad
+taps, join segments, oracle welds -- does not price it, but the report below
+is measured on the shipped board, so it counts them.
 
-Because it is soft, the route step measures what shipped:
-`JSON_SUMMARY['keep_away']` gives, per net of either group left inside a
-band, the track length inside it beyond the free radius, the closest
-spacing and the net it came closest to, with board totals (the GUI's
-`results_data['keep_away']` carries the same per-net entries as a list,
-and the report prints to its log). It reads the
-whole board, so `--keep-away-cost 0` grades a board without changing the
-route. `route.py` and `route_diff.py` take the rules; in the GUI they are the
+Because it is soft, the route step measures what shipped: per net of either
+group left inside a band, the track length inside it beyond the free radius,
+the closest spacing to the other side's copper and the net it came closest
+to, with board totals. The printed `JSON_SUMMARY['keep_away']` is the first
+pass's reading; `route.py` measures again on the board it ships, after the
+plane finalize and the reconciliation, and that reading is the one
+`--json-out` carries (`measured_on`), the GUI's `results_data['keep_away']`
+carries as a list, and the log prints when it differs. It reads the whole
+board, so `--keep-away-cost 0` grades a board without changing the route,
+including a board with nothing left to route. `route.py` and `route_diff.py` take the rules; in the GUI they are the
 Advanced tab's Keep-away field, used by the Route and Differential tabs.
 
 #### Via proximity multiplier: `via_proximity_cost`

@@ -847,8 +847,13 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     net_ids, _ = filter_already_routed(pcb_data, net_ids, config)
     if not net_ids:
         print("All nets are already fully connected - nothing to route!")
+        # #1146: grading an already-routed board against keep-away rules
+        # lands here, so the report is emitted on this path too.
+        from keep_away import disclose_keep_away
+        _ka_done = disclose_keep_away(pcb_data, config)
         if return_results:
-            return 0, 0, 0.0, {'results': [], 'all_swap_vias': [], 'exclusion_zone_lines': [], 'boundary_debug_labels': []}
+            return 0, 0, 0.0, {'results': [], 'all_swap_vias': [], 'exclusion_zone_lines': [], 'boundary_debug_labels': [],
+                               'keep_away': keep_away_entries(_ka_done)}
         # Pass the board through unchanged so a chained pipeline never loses
         # its output file (#86/#90/#167 -- route.py has had this fallback all
         # along; this early-exit lacked it, so a retry step whose pairs turned
@@ -1821,15 +1826,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         summary['plane_fragility'] = dict(_pfg)
     # #1146: per net, the track length left inside a keep-away band, measured
     # on the whole board (route.py reports the same key).
-    if getattr(config, 'keep_away', None):
-        try:
-            from keep_away import keep_away_report, print_keep_away_report
-            _ka = keep_away_report(pcb_data, config)
-            if _ka is not None:
-                print_keep_away_report(_ka)
-                summary['keep_away'] = _ka
-        except Exception as _kae:                              # noqa: BLE001
-            summary['keep_away'] = {'error': str(_kae)}
+    from keep_away import disclose_keep_away
+    _ka = disclose_keep_away(pcb_data, config)
+    if _ka is not None:
+        summary['keep_away'] = _ka
     try:                       # #653: env knobs into the machine-readable
         import env_knobs as _ek653   # summary, so a harness can detect a
         summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
@@ -2174,8 +2174,10 @@ Examples:
                              "side cost --keep-away-cost. Each side is comma-separated net "
                              "patterns as in --nets and/or net classes as class=NAME, e.g. "
                              "'class=Clocks:/AUDIO_*:0.5'. Nets of one side route against "
-                             "each other at the normal clearance. The run reports per net the "
-                             "length left inside a band (JSON_SUMMARY keep_away).")
+                             "each other at the normal clearance. GAP is at most 10 mm; rules "
+                             "are split on spaces, so write a space inside a name as '?'. The "
+                             "run reports per net the length left inside a band "
+                             "(JSON_SUMMARY keep_away).")
     parser.add_argument("--keep-away-free", type=float, default=defaults.KEEP_AWAY_FREE,
                         help=f"Within this many mm of the routed pair's own pads the keep-away "
                              f"band is not priced (default: {defaults.KEEP_AWAY_FREE})")
@@ -2330,6 +2332,10 @@ Examples:
             parse_keep_away_rules(args.keep_away)
         except ValueError as _kae:
             parser.error(f"--keep-away: {_kae}")
+    from keep_away import keep_away_knob_error
+    _kae = keep_away_knob_error(args.keep_away_free, args.keep_away_cost)
+    if _kae:
+        parser.error(_kae)
     # --track-width IS the diff-pair LEG WIDTH here: when omitted, default to the
     # board's OWN Default net-class diff_pair_width (else routing_defaults), so a
     # bare diff route uses the board's own differential geometry -- parity with the

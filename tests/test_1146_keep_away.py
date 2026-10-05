@@ -8,21 +8,29 @@ normal clearance. The run reports per net the track length left inside a
 band (JSON_SUMMARY keep_away).
 
 Rows:
-  - rule parsing, and route.py refusing a malformed rule for that reason;
+  - rule parsing (a GAP above 10 mm, a name split by a space), and route.py
+    refusing a malformed rule, or a free radius / cost outside the GUI's
+    range, for that reason;
   - the band rows a net is priced with: opposite copper only, the band's
     edge, the free radius, and nothing at cost 0 or for a net in no rule;
   - net-class sides (`class=NAME`, `!class=NAME`) resolved from the project,
-    alone and mixed with net patterns;
-  - the rescue paths' stamp: the same rows, and nothing without a rule;
+    alone and mixed with net patterns, whose name terms read as --nets reads
+    them (an active-low `!NAME` net) and which never pull in unconnected-*;
+  - the rescue paths' stamp: the same rows, nothing without a rule, and a
+    rung's window prices only the band that reaches it, caching nothing;
   - the band follows the copper: gone with a ripped track (a pad's stays),
-    back on restore, and moved by an in-place edit that bumps no epoch;
+    back on restore, moved by an in-place edit that bumps no epoch, and by a
+    pad that moves while the copper does not;
   - the report on two parallel tracks of known spacing: in-band length, the
-    free radius, a narrower GAP and another layer;
+    free radius, a narrower GAP and another layer; and its closest spacing is
+    the closest copper, not the deepest band;
   - route_diff takes the same rules (lvds_converter_dualclk's clock pair kept
     off its data pair);
   - end to end on splitflap_driver: routing with the cost leaves less length
     inside a 2 mm band than routing without it, every net still routed, both
-    boards graded by the same report.
+    boards graded by the same report, which --json-out carries as measured on
+    the written board; and re-running on the routed board at cost 0, with
+    nothing left to route, still reports it.
 
     python3 tests/test_1146_keep_away.py
 """
@@ -87,6 +95,9 @@ def test_parse():
                      ('A:B:C:0.5', 'expected AGGRESSOR:VICTIM:GAP'),
                      ('A:B:wide', 'is not a number'),
                      ('A:B:0', 'GAP must be > 0'),
+                     ('A:B:50', 'GAP must be > 0 and <= 10 mm'),
+                     ('class=High Speed:B:0.5', "write a space inside a net or "
+                                                "class name as '?'"),
                      (':B:0.5', 'both net groups')):
         try:
             ka.parse_keep_away_rules([bad])
@@ -95,6 +106,7 @@ def test_parse():
         else:
             raise AssertionError(f"{bad!r} was accepted")
     assert ka.parse_keep_away_rules(None) == ()
+    assert ka.normalize_keep_away_specs(['A:B:0.123456789']) == ('A:B:0.123456789',)
 
 
 def test_route_refuses_a_bad_rule():
@@ -103,6 +115,11 @@ def test_route_refuses_a_bad_rule():
                os.path.join(td, 'o.kicad_pcb'), '--keep-away', 'A:B'],
               refuse="keep-away rule 'A:B': expected AGGRESSOR:VICTIM:GAP",
               code=2)
+        # The GUI's spin control stops at 5; a plan must not carry more.
+        check([sys.executable, '-X', 'utf8', 'py_router/route.py', BOARD,
+               os.path.join(td, 'o.kicad_pcb'), '--keep-away', 'A:B:1',
+               '--keep-away-cost', '9'],
+              refuse='--keep-away-cost 9 is outside 0..5', code=2)
 
 
 def _cells(rows):
@@ -160,6 +177,17 @@ def test_class_terms():
         assert sides('A*,!class=Digital:V:0.5')[:2] == (['A2'], ['V'])
         _a, _v, st = sides('class=Nope:V:0.5')
         assert st.unmatched and "class 'Nope' has no nets" in st.notes[0], st.notes
+        # Name terms read as --nets reads them: '!RESET' naming a real
+        # active-low net is that net (#177), here as in a plain rule; and a
+        # class, like '*', never brings in an unconnected-* net.
+        pcb.nets[5] = Net(5, '!RESET')
+        pcb.nets[6] = Net(6, 'unconnected-(U1-Pad3)')
+        pcb._keep_away_state = {}       # new nets: what a new run starts with
+        assert sides('!RESET:V:0.5')[0] == ['!RESET']
+        assert sides('class=Digital,!RESET:V:0.5')[0] == ['!RESET', 'A']
+        assert sides('class=Default:V:0.5')[0] == ['!RESET', 'A2', 'X']
+        assert sides('!class=Audio:class=Audio:0.5')[0] == ['!RESET', 'A', 'A2', 'X']
+        assert sides('class=Default,!X:V:0.5')[0] == ['!RESET', 'A2']
         # The band is the one a pattern rule naming the same nets builds.
         assert (_cells(_quiet(ka.keep_away_rows, _config(['class=Digital:class=Audio:0.5']),
                               pcb, 1))
@@ -188,7 +216,25 @@ def test_stamp_on_rescue_maps():
                                   pcb, 1) and m.calls == []
     cfg = _config(['A:V:0.5'])
     assert ka.stamp_keep_away(m, cfg, pcb, 1) and len(m.calls) == 1
-    assert _cells(m.calls[0]) == _cells(_quiet(ka.keep_away_rows, cfg, pcb, 1))
+    full = _cells(_quiet(ka.keep_away_rows, cfg, pcb, 1))
+    assert _cells(m.calls[0]) == full
+    # A rung routing inside a window prices only the band that reaches it:
+    # the same cells there, none of V's far pad, and nothing cached (a
+    # rung's grid is fine enough that the whole board's band costs minutes).
+    pcb.pads_by_net[2] = [Pad('R3', '1', 20.0, 0.0, 0.0, 0.0, 0.5, 0.5, 'circle',
+                              ['F.Cu'], 2, 'V', pad_type='smd')]
+    full = _cells(_quiet(ka.keep_away_rows, cfg, pcb, 1))
+    st = ka._state(cfg, pcb)
+    cached = (len(st._fields), len(st._composites))
+    win = (6.0, -1.0, 9.0, 1.0)
+    assert ka.stamp_keep_away(m, cfg, pcb, 1, window=win)
+    got = _cells(m.calls[-1])
+
+    def inside(c):
+        return 60 <= c[1] <= 90 and -10 <= c[2] <= 10
+    assert {c for c in got if inside(c)} == {c for c in full if inside(c)}
+    assert (0, 200, 0) in full and (0, 200, 0) not in got, "far copper rasterised"
+    assert (len(st._fields), len(st._composites)) == cached, "window cached"
 
 
 def test_band_follows_the_copper():
@@ -220,6 +266,14 @@ def test_band_follows_the_copper():
     assert (0, 80, 0) not in moved and (0, 80, 10) in moved, "stale band"
     pcb.segments = [pcb.segments[0]]               # the GUI's sync replaces lists
     assert (0, 80, 10) not in _cells(_quiet(ka.keep_away_rows, cfg, pcb, 1))
+    # A pad that moves while no copper does (a polarity swap re-nets pads).
+    far = Pad('R4', '1', 20.0, 0.0, 0.0, 0.0, 0.5, 0.5, 'circle', ['F.Cu'], 2, 'V',
+              pad_type='smd')
+    pcb.pads_by_net[2].append(far)
+    assert (0, 200, 0) in _cells(_quiet(ka.keep_away_rows, cfg, pcb, 1))
+    far.global_y = 5.0
+    moved = _cells(_quiet(ka.keep_away_rows, cfg, pcb, 1))
+    assert (0, 200, 0) not in moved and (0, 200, 50) in moved, "stale pad band"
 
 
 def test_report():
@@ -239,6 +293,17 @@ def test_report():
     assert _quiet(ka.keep_away_report, _board('B.Cu'),
                   _config(['A:V:0.5']))['nets_in_band'] == 0, "other layer"
     json.dumps(rep)
+    # The closest spacing is the closest copper: A runs 0.8 mm from X under a
+    # 2 mm rule (deep in that band) and 0.3 mm from V under a 0.35 mm rule.
+    pcb = _board()
+    pcb.segments = [Segment(0.0, 0.0, 10.0, 0.0, 0.2, 'F.Cu', 1),
+                    Segment(0.0, 1.0, 10.0, 1.0, 0.2, 'F.Cu', 4),
+                    Segment(0.0, -0.5, 10.0, -0.5, 0.2, 'F.Cu', 2)]
+    pcb.pads_by_net = {}
+    a = _quiet(ka.keep_away_report, pcb,
+               _config(['A:X:2', 'A:V:0.35'], free=0))['nets']['A']
+    assert a['closest_net'] == 'V' and abs(a['min_spacing_mm'] - 0.3) < 1e-3, a
+    assert a['gap_mm'] == 0.35, a
 
 
 def _summary(log):
@@ -254,8 +319,10 @@ def test_cost_steers_the_route():
         for arm, extra in (('off', []),
                            ('on', ['--keep-away', rule, '--keep-away-cost', '1'])):
             out = os.path.join(td, f'{arm}.kicad_pcb')
+            jout = os.path.join(td, f'{arm}.json')
             r = subprocess.run([sys.executable, '-X', 'utf8', 'py_router/route.py',
-                                evidence(BOARD), out, '--nets', '/*'] + extra,
+                                evidence(BOARD), out, '--nets', '/*',
+                                '--json-out', jout] + extra,
                                cwd=ROOT, capture_output=True, text=True,
                                encoding='utf-8', errors='replace', env=env,
                                timeout=900)
@@ -264,11 +331,32 @@ def test_cost_steers_the_route():
             assert s['failed'] == 0 and s['successful'] == 71, (arm, s['failed'])
             graded[arm] = _quiet(ka.keep_away_report,
                                  parse_kicad_pcb(evidence(out)), cfg)
+            with open(evidence(jout), encoding='utf-8') as fh:
+                doc = json.load(fh)
             if arm == 'on':
                 assert abs(s['keep_away']['in_band_mm']
                            - graded[arm]['in_band_mm']) < 0.5, s['keep_away']
+                # --json-out carries the reading of the board this run wrote.
+                assert doc['keep_away']['measured_on'] == 'written board', doc
+                assert abs(doc['keep_away']['in_band_mm']
+                           - graded[arm]['in_band_mm']) < 0.01, doc['keep_away']
             else:
-                assert 'keep_away' not in s
+                assert 'keep_away' not in s and 'keep_away' not in doc
+        # Grading the routed board at cost 0: nothing is left to route, and
+        # the report is still made, on the board as it stands.
+        jout = os.path.join(td, 'grade.json')
+        r = subprocess.run([sys.executable, '-X', 'utf8', 'py_router/route.py',
+                            evidence(out), os.path.join(td, 'grade.kicad_pcb'),
+                            '--nets', '/*', '--json-out', jout,
+                            '--keep-away', rule, '--keep-away-cost', '0'],
+                           cwd=ROOT, capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', env=env, timeout=900)
+        assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
+        assert 'All nets are already' in r.stdout, r.stdout[-2000:]
+        with open(evidence(jout), encoding='utf-8') as fh:
+            doc = json.load(fh)
+        assert abs(doc['keep_away']['in_band_mm']
+                   - graded['on']['in_band_mm']) < 0.01, doc.get('keep_away')
     off, on = graded['off']['in_band_mm'], graded['on']['in_band_mm']
     print(f"    in band: {off} mm without the cost, {on} mm with it")
     assert off > 5 and on < off / 2, (off, on)

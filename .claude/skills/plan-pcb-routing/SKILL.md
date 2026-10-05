@@ -931,7 +931,13 @@ way: `class=Digital:class=Audio:0.5` is KiCad's
 `A.NetClass == 'Digital' && B.NetClass == 'Audio'` as a soft rule. The class
 list is printed by `list_nets.py --design-rules` (Step 4). `!class=NAME`
 removes a class, and `class=Default` means every net no class claims. Write one
-rule per gap, and repeat the flag.
+rule per gap, and repeat the flag. Rules are split on spaces, so a space inside
+a net or class name is written `?` (`class=High?Speed`).
+
+**Never use a catch-all side.** `class=Default`, `!class=Audio` or a bare `*`
+on the aggressor side pulls in GND and the power nets, so every ground via, pad
+and pour-tap track grows a band and the victims have nowhere to go. Name the
+aggressor signals (or their own class) instead.
 
 **Choosing the gap** (edge to edge), from the coupling being guarded against:
 - **0.3 mm:** slow or static digital (LED, GPIO enables) near analog.
@@ -960,7 +966,8 @@ against its own no-rule route by the same report):
 - `--keep-away-free` (default 1.5) is the radius around a net's OWN pads where
   the band is not priced. It lets a relay coil pin leave the relay beside its
   contact pins, and a codec clock pin leave the codec beside its analog pins.
-  With 0 such pins are sealed in.
+  At 0 those pins pay the band from their first step, and the detour shows up
+  as in-band length on nets that had no other way out.
 - `--keep-away-cost` (default 0.5) is the cost per cell inside a band, in the
   same unit as the other proximity costs.
 
@@ -992,11 +999,19 @@ placement change, a user-drawn guide corridor, or a `User.2` keepout around the
 analog block if it matters. `--keep-away-cost 0` measures a board against the
 rules without changing a single route.
 
+**Keep the better run.** Route the step once more with the same rules at
+`--keep-away-cost 0` and compare the two the way every retry is compared:
+`check_connected` and `check_drc` at the routed clearance first, then in-band
+length. Keep the rule only when completion and DRC are no worse and in-band
+length fell; a rule that buys separation with a new open net or a new DRC
+violation is not kept.
+
 **Other soft costs can quietly weaken it.** The band shares the per-layer cost
 map with track proximity, ripped-route ghosts, plane fragility and history,
-and a cell pays the LARGEST of them, not their sum. So a retry at
-`--track-proximity-cost 2` makes every cell near a routed track as expensive
-as the band, and near those tracks the rule stops telling the two groups
+and in the default max composition a cell pays the LARGEST of them, not their
+sum (`KICAD_PROXIMITY_SUM` adds them instead). So a retry at
+`--track-proximity-cost 2` prices the cells beside a routed track at up to 4x
+the 0.5 band, and near those tracks the rule stops telling the two groups
 apart. Bus attraction and the global-plan attraction discount the whole step,
 band included. After any soft-cost retry, or with the Step 2c env stack, re-read
 `keep_away` in JSON_SUMMARY and reject a result whose in-band length grew.

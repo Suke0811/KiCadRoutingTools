@@ -27,8 +27,8 @@ KiCad's ``A.NetClass == 'Digital' && B.NetClass == 'Audio'`` as a soft rule.
 Classes come from the board's project through the resolver the router and
 check_drc share; a net no class claims is in ``Default``. Several rules may
 share one string, separated by whitespace or ``;`` (the GUI's one-line
-field). Net patterns may therefore not contain ``:``, ``,``, ``;`` or
-whitespace; use ``?`` for such a character.
+field). Net patterns and class names may therefore not contain ``:``, ``,``,
+``;`` or whitespace; use ``?`` for such a character (``class=High?Speed``).
 """
 
 from __future__ import annotations
@@ -61,6 +61,13 @@ CLASS_PREFIX = 'class='
 REPORT_TOL = 0.01
 # Sample pitch (mm) along each track for the report.
 _REPORT_STEP = 0.05
+# The widest GAP a rule may ask for (mm). A band is rasterised around every
+# copper item of the other side, so its cost grows with GAP squared: a typo
+# such as 50 for 0.5 would allocate gigabytes.
+MAX_GAP = 10.0
+# Memory the cached bands may hold (bytes): per-net fields, and composites.
+_FIELD_BYTES_MAX = 256 * 2 ** 20
+_COMPOSITE_BYTES_MAX = 256 * 2 ** 20
 
 
 @dataclass(frozen=True)
@@ -71,7 +78,8 @@ class KeepAwayRule:
 
     @property
     def spec(self) -> str:
-        return f"{','.join(self.aggressor)}:{','.join(self.victim)}:{self.gap:g}"
+        return (f"{','.join(self.aggressor)}:{','.join(self.victim)}:"
+                f"{self.gap:.12g}")
 
 
 def split_keep_away_specs(specs) -> List[str]:
@@ -91,20 +99,27 @@ def parse_keep_away_rules(specs) -> Tuple[KeepAwayRule, ...]:
     """Parse ``AGGRESSOR:VICTIM:GAP`` rules; raises ValueError naming the bad
     rule."""
     rules = []
+    raw = [specs] if isinstance(specs, str) else list(specs or ())
+    # Rules are split on whitespace, so a name with a space in it arrives
+    # here in pieces; say so rather than blame the piece.
+    hint = (" -- rules are separated by spaces, so write a space inside a net "
+            "or class name as '?'" if any(re.search(r'\s', s or '') for s in raw)
+            else "")
     for tok in split_keep_away_specs(specs):
         head, sep, gap_s = tok.rpartition(':')
         agg_s, sep2, vic_s = head.partition(':')
         if not sep or not sep2 or ':' in vic_s:
             raise ValueError(
                 f"keep-away rule {tok!r}: expected AGGRESSOR:VICTIM:GAP "
-                f"(net patterns may not contain ':')")
+                f"(net patterns may not contain ':'){hint}")
         try:
             gap = float(gap_s)
         except ValueError:
             raise ValueError(f"keep-away rule {tok!r}: GAP {gap_s!r} is not "
-                             f"a number of mm") from None
-        if not (math.isfinite(gap) and gap > 0):
-            raise ValueError(f"keep-away rule {tok!r}: GAP must be > 0 mm")
+                             f"a number of mm{hint}") from None
+        if not (math.isfinite(gap) and 0 < gap <= MAX_GAP):
+            raise ValueError(f"keep-away rule {tok!r}: GAP must be > 0 and "
+                             f"<= {MAX_GAP:g} mm")
         agg = tuple(p for p in agg_s.split(',') if p)
         vic = tuple(p for p in vic_s.split(',') if p)
         if not agg or not vic:
@@ -120,6 +135,19 @@ def parse_keep_away_rules(specs) -> Tuple[KeepAwayRule, ...]:
 def normalize_keep_away_specs(specs) -> Tuple[str, ...]:
     """Validated, canonical rule strings for GridRouteConfig.keep_away."""
     return tuple(r.spec for r in parse_keep_away_rules(specs))
+
+
+def keep_away_knob_error(free: float, cost: float) -> Optional[str]:
+    """Why --keep-away-free / --keep-away-cost is refused, or None. The range
+    is the one the GUI's spin controls offer, so a CLI value a plan carries
+    over is never clamped silently there."""
+    import routing_defaults as defaults
+    for flag, name, v in (('--keep-away-free', 'keep_away_free', free),
+                          ('--keep-away-cost', 'keep_away_cost', cost)):
+        r = defaults.PARAM_RANGES[name]
+        if not (math.isfinite(v) and r['min'] <= v <= r['max']):
+            return f"{flag} {v:g} is outside {r['min']:g}..{r['max']:g}"
+    return None
 
 
 def _pack(layer_idx: int, gx: np.ndarray, gy: np.ndarray) -> np.ndarray:
@@ -161,6 +189,16 @@ def _pad_layers(pad, routing_layers) -> List[str]:
             if L in routing_layers]
 
 
+def _pads_sig(pcb_data, net_id: int) -> tuple:
+    """A net's pads as geometry, order-free: what its band and its free
+    radius are drawn from besides its copper."""
+    return tuple(sorted(
+        (p.global_x, p.global_y, p.size_x, p.size_y, str(p.shape),
+         float(getattr(p, 'rect_rotation', 0.0) or 0.0),
+         tuple(p.layers or ()), str(getattr(p, 'pad_type', '')))
+        for p in pcb_data.pads_by_net.get(net_id, [])))
+
+
 def _routed_half_width(config, net_ids, single_track=False) -> float:
     """Half the copper the routed object puts either side of the searched
     centreline: one track, or a diff pair's P + gap + N (a hybrid pair's
@@ -191,7 +229,8 @@ class _KeepAwayState:
             self.groups.append((sides[0], sides[1], r.gap))
         self.members = frozenset().union(*(a | v for a, v, _g in self.groups))
         self.copper: Dict[int, tuple] = {}
-        self._fields: Dict[tuple, np.ndarray] = {}
+        self._fields: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+        self._field_bytes = 0
         self._exempt: Dict[tuple, np.ndarray] = {}
         self._composites: "OrderedDict[tuple, Optional[np.ndarray]]" = OrderedDict()
 
@@ -216,7 +255,10 @@ class _KeepAwayState:
         """Net ids one side names. Without a class term the side is exactly
         what expand_net_patterns makes of it (as --nets). With one, the side
         is the union of its included net patterns and `class=NAME` terms
-        (NAME may be a glob) minus its `!` terms of either kind."""
+        (NAME may be a glob) minus its `!` terms of either kind -- the name
+        terms read exactly as --nets reads them (a `!NAME` that names a real
+        active-low net is that net, #177), and, as --nets does, a class never
+        brings in an `unconnected-*` net."""
         from fnmatch import fnmatchcase
         from net_queries import expand_net_patterns
         name_to_id: Dict[str, int] = {}
@@ -233,23 +275,36 @@ class _KeepAwayState:
 
         def by_class(cls_glob):
             ids = {nid for nid, cs in classes.items()
-                   if any(fnmatchcase(c, cls_glob) for c in cs)}
+                   if any(fnmatchcase(c, cls_glob) for c in cs)
+                   and not pcb_data.nets[nid].name.lower().startswith('unconnected-')}
             if not ids:
                 known = sorted({c for cs in classes.values() for c in cs})
                 self.notes.append(f"class '{cls_glob}' has no nets on this board "
                                   f"(its classes: {', '.join(known) or 'none'})")
             return ids
-        incl = [p for p in pats if not p.startswith('!')]
-        excl = [p[1:] for p in pats if p.startswith('!')]
-        ids = set()
-        if not incl:                   # exclusions only: everything else
-            ids = set(classes)
-        for p in incl:
-            ids |= (by_class(p[len(CLASS_PREFIX):]) if p.startswith(CLASS_PREFIX)
-                    else by_name([p]))
-        for p in excl:
-            ids -= (by_class(p[len(CLASS_PREFIX):]) if p.startswith(CLASS_PREFIX)
-                    else by_name([p]))
+        incl, excl, incl_cls, excl_cls = [], [], [], []
+        for p in pats:
+            neg = p.startswith('!')
+            body = p[1:] if neg else p
+            if body.startswith(CLASS_PREFIX):
+                (excl_cls if neg else incl_cls).append(body[len(CLASS_PREFIX):])
+            elif neg and p not in name_to_id:
+                excl.append(p)
+            else:
+                incl.append(p)
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):   # a reference set,
+            everything = by_name(['*'])                   # not a request
+        ids = by_name(incl) if incl else set()
+        for c in incl_cls:
+            ids |= by_class(c)
+        if not incl and not incl_cls:  # exclusions only: everything else
+            ids = set(everything)
+        if excl:
+            ids -= everything - by_name(['*'] + excl)
+        for c in excl_cls:
+            ids -= by_class(c)
         return frozenset(ids)
 
     def opposite(self, net_ids: Iterable[int]) -> Dict[int, float]:
@@ -274,7 +329,8 @@ class _KeepAwayState:
         coordinate nudged) without bumping it or changing a length, and a
         band built from copper that has since moved prices the wrong cells.
         A net's signature is its geometry, order-free, so a ripped and
-        restored net gets its cached band back."""
+        restored net gets its cached band back. Its PADS are part of it: a
+        polarity swap moves a net's pads without touching its copper."""
         segs: Dict[int, list] = {n: [] for n in self.members}
         vias: Dict[int, list] = {n: [] for n in self.members}
         for s in pcb_data.segments:
@@ -288,25 +344,43 @@ class _KeepAwayState:
             sig = hash((tuple(sorted((s.start_x, s.start_y, s.end_x, s.end_y,
                                       s.width, s.layer) for s in segs[n])),
                         tuple(sorted((v.x, v.y, v.size, tuple(v.layers or ()))
-                                     for v in vias[n]))))
+                                     for v in vias[n])),
+                        _pads_sig(pcb_data, n)))
             self.copper[n] = (sig, segs[n], vias[n])
-        # Bands of copper that no longer exists are dead weight; keep the
-        # last few per net so a ripped-and-restored net finds its band again.
-        live = {(n, c[0]) for n, c in self.copper.items()}
-        if len(self._fields) > 4 * max(1, len(self.members)):
-            self._fields = {k: f for k, f in self._fields.items()
-                            if (k[0], k[3]) in live}
 
-    def field(self, pcb_data, config, net_id: int, gap: float,
-              half_w: float) -> np.ndarray:
-        """Packed cells where a track of half-width `half_w` would sit closer
-        than `gap` to `net_id`'s copper on the same layer."""
+    def field(self, pcb_data, config, net_id: int, margin: float,
+              window=None) -> np.ndarray:
+        """Packed cells within `margin` of `net_id`'s copper on the same layer
+        (a band's GAP plus the routed track's half-width: the cells where
+        that track would sit closer than GAP). With `window` (x0, y0, x1, y1
+        in mm) only the copper whose band reaches the window is rasterised,
+        and nothing is cached: a rescue rung routes inside a small window, at
+        a grid fine enough that the whole board's band is ~1 minute and
+        ~0.5 GB per net."""
         from connectivity import via_copper_layers
         sig, segs, vias = self.copper[net_id]
-        key = (net_id, gap, half_w, sig)
-        hit = self._fields.get(key)
-        if hit is not None:
-            return hit
+        margin = round(margin, 9)
+        key = (net_id, margin, sig)
+        if window is None:
+            hit = self._fields.get(key)
+            if hit is not None:
+                self._fields.move_to_end(key)
+                return hit
+        pads = pcb_data.pads_by_net.get(net_id, [])
+        if window is not None:
+            x0, y0, x1, y1 = window
+
+            def meets(lx, ly, hx, hy, r):
+                return lx - r <= x1 and hx + r >= x0 and ly - r <= y1 and hy + r >= y0
+            segs = [s for s in segs if meets(
+                min(s.start_x, s.end_x), min(s.start_y, s.end_y),
+                max(s.start_x, s.end_x), max(s.start_y, s.end_y),
+                (s.width or 0.0) / 2 + margin)]
+            vias = [v for v in vias if meets(v.x, v.y, v.x, v.y,
+                                             (v.size or 0.0) / 2 + margin)]
+            pads = [p for p in pads if meets(
+                p.global_x, p.global_y, p.global_x, p.global_y,
+                math.hypot(p.size_x, p.size_y) / 2 + margin)]
         coord = GridCoord(config.grid_step)
         step = config.grid_step
         lidx = {L: i for i, L in enumerate(config.layers)}
@@ -317,31 +391,35 @@ class _KeepAwayState:
                 continue
             _xs, _ys, gxg, gyg, mask = _capsule_mask(
                 s.start_x, s.start_y, s.end_x, s.end_y,
-                (s.width or 0.0) / 2 + gap + half_w, step)
+                (s.width or 0.0) / 2 + margin, step)
             parts.append(_pack(li, gxg[mask], gyg[mask]))
         for v in vias:
             _xs, _ys, gxg, gyg, mask = _capsule_mask(
-                v.x, v.y, v.x, v.y, (v.size or 0.0) / 2 + gap + half_w, step)
+                v.x, v.y, v.x, v.y, (v.size or 0.0) / 2 + margin, step)
             gx, gy = gxg[mask], gyg[mask]
             for L in via_copper_layers(v, config.layers):
                 if L in lidx:
                     parts.append(_pack(lidx[L], gx, gy))
-        for pad in pcb_data.pads_by_net.get(net_id, []):
+        for pad in pads:
             layers = _pad_layers(pad, config.layers)
             if not layers:
                 continue
-            cells = _pad_cells(pad, gap + half_w, coord)
+            cells = _pad_cells(pad, margin, coord)
             for L in layers:
                 parts.append(_pack(lidx[L], cells[:, 0], cells[:, 1]))
         out = (np.unique(np.concatenate(parts)) if parts
                else np.empty(0, dtype=np.int64))
-        self._fields[key] = out
+        if window is None:
+            self._fields[key] = out
+            self._field_bytes += out.nbytes
+            while self._field_bytes > _FIELD_BYTES_MAX and len(self._fields) > 1:
+                self._field_bytes -= self._fields.popitem(last=False)[1].nbytes
         return out
 
     def exempt(self, pcb_data, config, net_ids: Tuple[int, ...],
                radius: float) -> np.ndarray:
         """Packed (gx, gy) cells within `radius` of the routed net's own pads."""
-        key = (net_ids, radius)
+        key = (net_ids, radius, tuple(_pads_sig(pcb_data, n) for n in net_ids))
         hit = self._exempt.get(key)
         if hit is not None:
             return hit
@@ -351,11 +429,13 @@ class _KeepAwayState:
                  if _pad_layers(pad, config.layers)]
         out = (np.unique(np.concatenate(parts)) if parts
                else np.empty(0, dtype=np.int64))
+        if len(self._exempt) >= 256:
+            self._exempt.clear()
         self._exempt[key] = out
         return out
 
     def rows(self, pcb_data, config, net_ids: Tuple[int, ...],
-             single_track: bool = False) -> Optional[np.ndarray]:
+             single_track: bool = False, window=None) -> Optional[np.ndarray]:
         opp = self.opposite(net_ids)
         if not opp:
             return None
@@ -366,10 +446,10 @@ class _KeepAwayState:
         parts_key = tuple(sorted((o, g, self.copper[o][0])
                                  for o, g in opp.items() if o in self.copper))
         ckey = (net_ids, half_w, free, cost, parts_key)
-        if ckey in self._composites:
+        if window is None and ckey in self._composites:
             self._composites.move_to_end(ckey)
             return self._composites[ckey]
-        fields = [f for f in (self.field(pcb_data, config, o, g, half_w)
+        fields = [f for f in (self.field(pcb_data, config, o, g + half_w, window)
                               for o, g, _s in parts_key) if len(f)]
         rows = None
         if fields:
@@ -378,9 +458,13 @@ class _KeepAwayState:
             # A NEW array per composition: merge_track_proximity_costs
             # memoizes on the ids of the arrays it is handed.
             rows = _compose(fields, ex, cost)
-        self._composites[ckey] = rows
-        while len(self._composites) > 8:
-            self._composites.popitem(last=False)
+        if window is None:
+            self._composites[ckey] = rows
+            while len(self._composites) > 8 or (
+                    len(self._composites) > 1
+                    and sum(r.nbytes for r in self._composites.values()
+                            if r is not None) > _COMPOSITE_BYTES_MAX):
+                self._composites.popitem(last=False)
         return rows
 
 
@@ -453,29 +537,32 @@ def _state(config, pcb_data) -> Optional[_KeepAwayState]:
     return st
 
 
-def keep_away_rows(config, pcb_data, net_ids,
-                   single_track=False) -> Optional[np.ndarray]:
+def keep_away_rows(config, pcb_data, net_ids, single_track=False,
+                   window=None) -> Optional[np.ndarray]:
     """[layer, gx, gy, cost] rows pricing the keep-away band for the routed
     net (an int) or diff pair (a tuple of its P and N ids); `single_track`
-    sizes a pair's band for one track (a hybrid pair's legs). None when no
-    rule concerns it or the cost is 0."""
+    sizes a pair's band for one track (a hybrid pair's legs); `window`
+    (x0, y0, x1, y1 mm) prices only the band that reaches it, uncached. None
+    when no rule concerns it or the cost is 0."""
     if getattr(config, 'keep_away_cost', 0) <= 0:
         return None
     st = _state(config, pcb_data)
     if st is None:
         return None
     ids = (net_ids,) if isinstance(net_ids, int) else tuple(sorted(net_ids))
-    return st.rows(pcb_data, config, ids, single_track)
+    return st.rows(pcb_data, config, ids, single_track, window)
 
 
 def stamp_keep_away(obstacles, config, pcb_data, net_ids,
-                    single_track=False) -> bool:
+                    single_track=False, window=None) -> bool:
     """Price the keep-away band on a map no proximity builder prepared: the
     per-attempt clones net_rescue's gap rescue and terminal escalation route
-    on. Returns True when it stamped anything; on a map that outlives the
-    route the caller clears it again with clear_layer_proximity(). Nothing is
-    stamped without a rule, so a run without one routes exactly as before."""
-    rows = keep_away_rows(config, pcb_data, net_ids, single_track)
+    on. A rescue rung that routes inside a window passes it as `window`
+    (x0, y0, x1, y1 mm). Returns True when it stamped anything; on a map
+    that outlives the route the caller clears it again with
+    clear_layer_proximity(). Nothing is stamped without a rule, so a run
+    without one routes exactly as before."""
+    rows = keep_away_rows(config, pcb_data, net_ids, single_track, window)
     if rows is None:
         return False
     obstacles.set_layer_proximity_batch(rows)
@@ -593,7 +680,7 @@ def keep_away_report(pcb_data, config) -> Optional[dict]:
                     float(np.hypot(o_pads[:, 3], o_pads[:, 4]).max())
                     if len(o_pads) else 0.0) + max(opp.values())
         length = in_band = 0.0
-        best = (math.inf, None, 0.0)      # (deficit, net, its GAP)
+        best = (math.inf, None, 0.0)      # (closest spacing, net, its GAP)
         for li, x1, y1, x2, y2, hw in own['segs']:
             seg_len = math.hypot(x2 - x1, y2 - y1)
             length += seg_len
@@ -607,8 +694,9 @@ def keep_away_report(pcb_data, config) -> Optional[dict]:
                 continue
             lo_x, hi_x = min(x1, x2) - hw - reach, max(x1, x2) + hw + reach
             lo_y, hi_y = min(y1, y2) - hw - reach, max(y1, y2) + hw + reach
-            # Edge-to-edge spacing minus GAP per (sample, item); < 0 = in band.
-            deficit = [np.full((k, 1), math.inf)]
+            # Edge-to-edge spacing per (sample, item), and each item's GAP.
+            spacing = [np.full((k, 1), math.inf)]
+            gaps = [np.zeros(1)]
             owners = [np.full(1, -1.0)]
             sel = o_segs[(o_segs[:, 0] == li)
                          & (np.maximum(o_segs[:, 1], o_segs[:, 3]) >= lo_x)
@@ -616,8 +704,8 @@ def keep_away_report(pcb_data, config) -> Optional[dict]:
                          & (np.maximum(o_segs[:, 2], o_segs[:, 4]) >= lo_y)
                          & (np.minimum(o_segs[:, 2], o_segs[:, 4]) <= hi_y)]
             if len(sel):
-                deficit.append(_seg_dist(px, py, sel) - sel[None, :, 5]
-                               - hw - sel[None, :, 6])
+                spacing.append(_seg_dist(px, py, sel) - sel[None, :, 5] - hw)
+                gaps.append(sel[:, 6])
                 owners.append(sel[:, 7])
             for arr, dist in ((o_vias, lambda a: np.hypot(
                                    px[:, None] - a[None, :, 1],
@@ -627,25 +715,32 @@ def keep_away_report(pcb_data, config) -> Optional[dict]:
                           & (arr[:, 1] >= lo_x) & (arr[:, 1] <= hi_x)
                           & (arr[:, 2] >= lo_y) & (arr[:, 2] <= hi_y)]
                 if len(sel):
-                    deficit.append(dist(sel) - hw - sel[None, :, -2])
+                    spacing.append(dist(sel) - hw)
+                    gaps.append(sel[:, -2])
                     owners.append(sel[:, -1])
-            d = np.hstack(deficit)
+            sp = np.hstack(spacing)
+            gap_of = np.concatenate(gaps)
             own_of = np.concatenate(owners)
-            worst = d.argmin(axis=1)
-            dmin = d[np.arange(k), worst]
+            # In band where spacing < GAP for ANY item (each its own GAP).
+            dmin = (sp - gap_of[None, :]).min(axis=1)
             hit = keep & (dmin < -REPORT_TOL)
             if hit.any():
                 in_band += seg_len * float(hit.sum()) / k
-                j = int(np.flatnonzero(hit)[dmin[hit].argmin()])
-                if dmin[j] < best[0]:
-                    o = int(own_of[worst[j]])
-                    best = (float(dmin[j]), o, opp.get(o, 0.0))
+            # The closest copper of the other side, over the samples the band
+            # prices -- the spacing a reader compares with the GAP.
+            near = sp.argmin(axis=1)
+            spmin = sp[np.arange(k), near]
+            kept = np.flatnonzero(keep)
+            j = int(kept[spmin[kept].argmin()])
+            if spmin[j] < best[0]:
+                o = int(own_of[near[j]])
+                best = (float(spmin[j]), o, opp.get(o, 0.0))
         if in_band > 0:
             total_in += in_band
             per_net[names[n]] = {
                 'in_band_mm': round(in_band, 2),
                 'length_mm': round(length, 2),
-                'min_spacing_mm': round(best[0] + best[2], 3),
+                'min_spacing_mm': round(best[0], 3),
                 'gap_mm': best[2],
                 'closest_net': names.get(best[1], str(best[1])),
             }
@@ -661,17 +756,34 @@ def keep_away_report(pcb_data, config) -> Optional[dict]:
     }
 
 
+def disclose_keep_away(board, config, title: str = 'Keep-away',
+                       quiet: bool = False) -> Optional[dict]:
+    """keep_away_report on `board`, printed unless `quiet`. None without a
+    rule; {'error': ...} when the measurement raised, so a summary says the
+    reading is missing rather than dropping the key."""
+    if not getattr(config, 'keep_away', None):
+        return None
+    try:
+        rep = keep_away_report(board, config)
+    except Exception as e:                                     # noqa: BLE001
+        return {'error': str(e)}
+    if rep is not None and not quiet:
+        print_keep_away_report(rep, title=title)
+    return rep
+
+
 def keep_away_entries(report: Optional[dict]) -> List[dict]:
     """The report's in-band nets as a list, {'net': name, ...} each -- the
     shape results_data carries (every field there is a list)."""
     return [{'net': n, **e} for n, e in ((report or {}).get('nets') or {}).items()]
 
 
-def print_keep_away_report(report: Optional[dict], limit: int = 20) -> None:
-    if not report:
+def print_keep_away_report(report: Optional[dict], limit: int = 20,
+                           title: str = 'Keep-away') -> None:
+    if not report or 'rules' not in report:
         return
     n_in = report['nets_in_band']
-    print(f"\nKeep-away ({len(report['rules'])} rule(s), free radius "
+    print(f"\n{title} ({len(report['rules'])} rule(s), free radius "
           f"{report['free_radius_mm']:g} mm): {n_in} of "
           f"{report['nets_checked']} net(s) run {report['in_band_mm']:g} mm "
           f"inside a band")
