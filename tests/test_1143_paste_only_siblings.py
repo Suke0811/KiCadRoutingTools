@@ -110,11 +110,13 @@ def test_the_predicate_keeps_npth_and_drilled_pads():
         _pad('4', 9, 1, 1, CU_PASTE),
         _pad('5', 12, 1, 1, NPTH_LAYERS, kind='np_thru_hole', drill=1),
         _pad('6', 15, 1.6, 1.6, '"*.Cu" "*.Mask"', kind='thru_hole',
-             drill=0.8)])
+             drill=0.8),
+        # a drilled pad that names no copper layer: still a hole, so kept
+        _pad('7', 18, 1.6, 1.6, '"*.Mask"', kind='thru_hole', drill=0.8)])
     got = {p.pad_number: pad_is_aperture_only(p)
            for p in pcb.footprints['U1'].pads}
     want = {'1': False, '2': True, '3': True, '4': False, '5': False,
-            '6': False}
+            '6': False, '7': False}
     assert got == want, got
     print(f"  PASS: aperture-only = paste/mask windows only {got}")
 
