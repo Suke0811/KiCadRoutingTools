@@ -76,7 +76,13 @@ def rip_up_net(net_id: int, pcb_data: PCBData, routed_net_ids: List[int],
             (another net wanted the ground). Pass False for an own-tree
             re-ask (#444 seam dissolution), which rips a net's own copper to
             re-ask it: no second net is competing, so charging the negotiated-
-            congestion field there would price a cell nobody contested.
+            congestion field there would price a cell nobody contested --
+            and so is the ripped-route ghost, whose job is to steer a
+            CONTESTED net's retry off the ground it lost. Ghosting an own-tree
+            re-ask prices the net's reroute against its own old corridor (the
+            very tree it is trying to improve on) and, if the re-ask is
+            undone, leaves the rejected tree's corridor priced for every later
+            net. A False rip records no ghost and drops a stale one.
 
     Returns:
         tuple: (saved_result, ripped_net_ids, was_in_results) for later restoration
@@ -196,12 +202,9 @@ def rip_up_net(net_id: int, pcb_data: PCBData, routed_net_ids: List[int],
             add_net_obstacles_from_cache(working_obstacles, net_obstacles_cache[net_id])
         # Ripped-route avoidance: steer the retry away from the branch we freed,
         # exactly as the whole-net path does for the copper it removed.
-        if config.ripped_route_avoidance_cost > 0 and ripped_route_layer_costs is not None \
-                and layer_map is not None:
-            _lc, _vp = compute_ripped_route_costs(partial, config, layer_map)
-            ripped_route_layer_costs[net_id] = _lc
-            if ripped_route_via_positions is not None:
-                ripped_route_via_positions[net_id] = _vp
+        _record_ripped_ghost(partial, [net_id], config, layer_map,
+                             ripped_route_layer_costs,
+                             ripped_route_via_positions, history_conflict)
         # #590: the branch we just tore out was contested ground -- bump its
         # cells' PERMANENT history cost (no-op unless KICAD_HISTORY_COST > 0).
         # Unlike the ghost above this survives the victim's reroute.
@@ -286,12 +289,9 @@ def rip_up_net(net_id: int, pcb_data: PCBData, routed_net_ids: List[int],
             add_net_obstacles_from_cache(working_obstacles, net_obstacles_cache[rid])
 
     # Compute and store ripped route avoidance costs if enabled
-    if config.ripped_route_avoidance_cost > 0 and ripped_route_layer_costs is not None and layer_map is not None:
-        layer_costs, via_positions = compute_ripped_route_costs(saved_result, config, layer_map)
-        for rid in ripped_net_ids:
-            ripped_route_layer_costs[rid] = layer_costs
-            if ripped_route_via_positions is not None:
-                ripped_route_via_positions[rid] = via_positions
+    _record_ripped_ghost(saved_result, ripped_net_ids, config, layer_map,
+                         ripped_route_layer_costs, ripped_route_via_positions,
+                         history_conflict)
 
     # #590 history congestion: one conflict event per rip, charged to the
     # cells the ripped copper occupied. Independent of the ghosts above --
@@ -338,6 +338,29 @@ def _seg_seg_dist_sq(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1) -> float:
         _pt_seg_dist_sq(bx0, by0, ax0, ay0, ax1, ay1),
         _pt_seg_dist_sq(bx1, by1, ax0, ay0, ax1, ay1),
     )
+
+
+def _record_ripped_ghost(result, net_ids, config, layer_map,
+                         ripped_route_layer_costs, ripped_route_via_positions,
+                         contention: bool) -> None:
+    """The ripped-route ghost of `result`'s copper for `net_ids`: recorded on a
+    contention rip, and for an own-tree re-ask (contention False) not recorded,
+    with any ghost an earlier rip left for those nets dropped -- it would come
+    back to life the moment the net is unrouted again."""
+    if not contention:
+        for ledger in (ripped_route_layer_costs, ripped_route_via_positions):
+            if ledger is not None:
+                for rid in net_ids:
+                    ledger.pop(rid, None)
+        return
+    if (config.ripped_route_avoidance_cost > 0
+            and ripped_route_layer_costs is not None and layer_map is not None):
+        layer_costs, via_positions = compute_ripped_route_costs(
+            result, config, layer_map)
+        for rid in net_ids:
+            ripped_route_layer_costs[rid] = layer_costs
+            if ripped_route_via_positions is not None:
+                ripped_route_via_positions[rid] = via_positions
 
 
 def _saved_route_collides(saved_result: dict, pcb_data: PCBData,
