@@ -234,7 +234,9 @@ def _probe_abandon_world(stranded_ids, orig_tap_segs, orig_tap_vias, ctx):
                     state.working_obstacles, pcb_data, config, rid,
                     ctx['all_unrouted_net_ids'], ctx['routed_net_ids'],
                     ctx['track_proximity_cache'], ctx['layer_map'],
-                    state.net_obstacles_cache)
+                    state.net_obstacles_cache,
+                    state.ripped_route_layer_costs,
+                    state.ripped_route_via_positions)
             else:
                 phase3_routed_ids = [x for x in ctx['routed_net_ids'] if x != rid]
                 obstacles, _ = build_single_ended_obstacles(
@@ -438,7 +440,8 @@ def _phase3_tap_relocation_retry(net_id, completed_result, pcb_data, config,
 
     retry_obstacles, _ = build_incremental_obstacles(
         working, pcb_data, config, net_id, all_unrouted_net_ids,
-        routed_net_ids, track_proximity_cache, layer_map, cache)
+        routed_net_ids, track_proximity_cache, layer_map, cache,
+        state.ripped_route_layer_costs, state.ripped_route_via_positions)
     retry = route_multipoint_taps(
         pcb_data, net_id, config, retry_obstacles, dict(completed_result),
         global_offset=global_tap_offset, global_total=total_tap_edges,
@@ -643,7 +646,8 @@ def run_phase3_tap_routing(
             obstacles, _ = build_incremental_obstacles(
                 state.working_obstacles, pcb_data, config, net_id,
                 all_unrouted_net_ids, routed_net_ids, track_proximity_cache, layer_map,
-                state.net_obstacles_cache
+                state.net_obstacles_cache,
+                state.ripped_route_layer_costs, state.ripped_route_via_positions
             )
         else:
             # Full rebuild needed when length matching modified segments
@@ -731,6 +735,9 @@ def run_phase3_tap_routing(
                 add_route_to_pcb_data(pcb_data, tap_result, debug_lines=config.debug_lines)
                 # #466: Phase 3's taps carve the pours like any commit.
                 fragility_on_copper_change(config, pcb_data, tap_segments, tap_vias)
+                # ...and later nets see them in the net's track-proximity field.
+                track_proximity_cache[net_id] = compute_track_proximity_for_net(
+                    pcb_data, net_id, config, layer_map)
                 print(f"  Added {len(tap_segments)} tap segments, {len(tap_vias)} tap vias")
 
                 # IMPORTANT: Update completed_result['new_segments'] to match what's in pcb_data
@@ -1062,7 +1069,8 @@ def try_phase3_ripup(
             obstacles, _ = build_incremental_obstacles(
                 state.working_obstacles, pcb_data, config, net_id,
                 all_unrouted_net_ids, routed_net_ids, track_proximity_cache, layer_map,
-                state.net_obstacles_cache
+                state.net_obstacles_cache,
+                state.ripped_route_layer_costs, state.ripped_route_via_positions
             )
         else:
             phase3_routed_ids = [rid for rid in routed_net_ids if rid != net_id]
@@ -1504,7 +1512,8 @@ def _retry_victim_main_with_ripup(
             obstacles, _ = build_incremental_obstacles(
                 state.working_obstacles, pcb_data, config, victim_id,
                 all_unrouted_net_ids, routed_net_ids, track_proximity_cache,
-                layer_map, state.net_obstacles_cache)
+                layer_map, state.net_obstacles_cache,
+                state.ripped_route_layer_costs, state.ripped_route_via_positions)
         else:
             phase3_routed_ids = [rid for rid in routed_net_ids if rid != victim_id]
             obstacles, _ = build_single_ended_obstacles(
@@ -1607,7 +1616,8 @@ def _reroute_phase3_ripped_nets(
             obstacles, _ = build_incremental_obstacles(
                 state.working_obstacles, pcb_data, config, ripped_net_id,
                 all_unrouted_net_ids, routed_net_ids, track_proximity_cache, layer_map,
-                state.net_obstacles_cache
+                state.net_obstacles_cache,
+                state.ripped_route_layer_costs, state.ripped_route_via_positions
             )
         else:
             phase3_routed_ids = [rid for rid in routed_net_ids if rid != ripped_net_id]
@@ -1730,7 +1740,8 @@ def _reroute_phase3_ripped_nets(
                     tap_obstacles, _ = build_incremental_obstacles(
                         state.working_obstacles, pcb_data, config, ripped_net_id,
                         all_unrouted_net_ids, routed_net_ids, track_proximity_cache, layer_map,
-                        state.net_obstacles_cache
+                        state.net_obstacles_cache,
+                        state.ripped_route_layer_costs, state.ripped_route_via_positions
                     )
                 else:
                     tap_obstacles = obstacles
@@ -1781,6 +1792,9 @@ def _reroute_phase3_ripped_nets(
                         add_route_to_pcb_data(pcb_data, tap_result_data, debug_lines=config.debug_lines)
                         fragility_on_copper_change(config, pcb_data,      # #466
                                                    tap_segments, tap_vias)
+                        track_proximity_cache[ripped_net_id] = \
+                            compute_track_proximity_for_net(
+                                pcb_data, ripped_net_id, config, layer_map)
                         print(f"    Re-routed {len(tap_segments)} tap segments, {len(tap_vias)} tap vias")
 
                         # IMPORTANT: Update tap_result['new_segments'] to match what's in pcb_data

@@ -78,15 +78,41 @@ def filter_ripped_ghosts(ghost_dict, config: GridRouteConfig, routed_net_ids=Non
 
 def _per_net_cost_sources(track_proximity_cache, net_ids, sibs=()):
     """The track_proximity_cache entries the net(s) being routed are priced
-    with: all of them but their river siblings' corridors (#658) and their own
+    with: all of them but their river siblings' corridors (#658), their own
     pours' plane-fragility rows (a same-net track joins its plane, it cannot
-    cut it). The same dict when nothing is dropped, so the merge memo keeps
-    its key."""
+    cut it) and their own track-proximity entry (a multipoint net's Phase 3
+    taps were pushed off its own main route). The same dict when nothing is
+    dropped, so the merge memo keeps its key."""
     from plane_fragility import without_own_fragility
     cache = without_own_fragility(track_proximity_cache, net_ids)
-    if sibs:
-        cache = {k: v for k, v in cache.items() if k not in sibs}
+    drop = set(sibs) | {n for n in net_ids if n in cache}
+    if drop:
+        cache = {k: v for k, v in cache.items() if k not in drop}
     return cache
+
+
+def _stub_proximity_source_ids(config, pcb_data, all_unrouted_net_ids,
+                               routed_net_ids, exclude):
+    """Nets whose stub free ends and unescaped chip pads repel the net(s)
+    being routed (`exclude`).
+
+    Every unrouted net, as before, plus two the batch-start list misses:
+    - a multipoint net whose Phase 1 main route is in but whose taps are still
+      pending -- it joins routed_net_ids after Phase 1, which used to strip its
+      unconnected tap pads of escape protection for the rest of Phase 1 and
+      all of Phase 3 (`config._pending_multipoint`, the run's pending dict);
+    - a pre-existing net ripped this run and not yet back
+      (`pcb_data._preexisting_rips`): its pads are bare again, but it was
+      routed when the list was made."""
+    routed = set(routed_net_ids)
+    pending = getattr(config, '_pending_multipoint', None) or {}
+    ripped = getattr(pcb_data, '_preexisting_rips', None) or {}
+    ids = list(all_unrouted_net_ids)
+    if ripped:
+        listed = set(ids)
+        ids += [n for n in ripped if n not in listed]
+    return [n for n in ids
+            if n not in exclude and (n not in routed or n in pending)]
 
 
 def build_diff_pair_obstacles(
@@ -156,9 +182,9 @@ def build_diff_pair_obstacles(
             add_net_pads_as_obstacles(obstacles, pcb_data, other_net_id, config, extra_clearance)
 
     # Add stub proximity costs (includes chip pads as pseudo-stubs)
-    stub_proximity_net_ids = [nid for nid in all_unrouted_net_ids
-                               if nid != p_net_id and nid != n_net_id
-                               and nid not in routed_net_ids]
+    stub_proximity_net_ids = _stub_proximity_source_ids(
+        config, pcb_data, all_unrouted_net_ids, routed_net_ids,
+        {p_net_id, n_net_id})
     unrouted_stubs = get_stub_endpoints(pcb_data, stub_proximity_net_ids)
     chip_pads = get_chip_pad_positions(pcb_data, stub_proximity_net_ids)
     all_stubs = unrouted_stubs + chip_pads
@@ -337,8 +363,8 @@ def build_single_ended_obstacles(
             add_net_pads_as_obstacles(obstacles, pcb_data, other_net_id, config)
 
     # Add stub proximity costs (includes chip pads as pseudo-stubs)
-    stub_proximity_net_ids = [nid for nid in all_unrouted_net_ids
-                               if nid != net_id and nid not in routed_net_ids]
+    stub_proximity_net_ids = _stub_proximity_source_ids(
+        config, pcb_data, all_unrouted_net_ids, routed_net_ids, {net_id})
     # #658 river: same-bus siblings exert NO soft proximity on a member --
     # hard clearance stays (obstacle stamps), so members can pack to the
     # legal minimum pitch instead of being repelled from the hug zone the
@@ -406,7 +432,9 @@ def build_incremental_obstacles(
     routed_net_ids: List[int],
     track_proximity_cache: Dict,
     layer_map: Dict,
-    net_obstacles_cache: Dict[int, NetObstacleData]
+    net_obstacles_cache: Dict[int, NetObstacleData],
+    ripped_route_layer_costs: Dict[int, np.ndarray] = None,
+    ripped_route_via_positions: Dict[int, List[Tuple[int, int]]] = None
 ):
     """
     Build obstacle map for single-ended routing using incremental approach.
@@ -440,8 +468,8 @@ def build_incremental_obstacles(
         remove_net_obstacles_from_cache(obstacles, net_obstacles_cache[net_id])
 
     # Add stub proximity costs (includes chip pads as pseudo-stubs)
-    stub_proximity_net_ids = [nid for nid in all_unrouted_net_ids
-                               if nid != net_id and nid not in routed_net_ids]
+    stub_proximity_net_ids = _stub_proximity_source_ids(
+        config, pcb_data, all_unrouted_net_ids, routed_net_ids, {net_id})
     # #658 river: same-bus siblings exert NO soft proximity (hard clearance
     # stays) -- this is the FAST main-loop builder, the path that actually
     # prices the hug zone (measured: the exemption in the slow builder was
@@ -457,19 +485,31 @@ def build_incremental_obstacles(
     unrouted_stubs = get_stub_endpoints(pcb_data, stub_proximity_net_ids)
     chip_pads = get_chip_pad_positions(pcb_data, stub_proximity_net_ids)
     all_stubs = unrouted_stubs + chip_pads
+    # Ripped-route ghosts and congestion v2, as the main pass prices them:
+    # Phase 3 used to route taps and rip victims blind to the corridors of
+    # pending victims, and differently depending on whether length matching
+    # sent it to the slow builder (which has them).
+    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config,
+                                       routed_net_ids)
     _stub_surplus = apply_stub_proximity(obstacles, pcb_data,
                                          stub_proximity_net_ids, all_stubs,
-                                         config, layer_map=layer_map)
+                                         config, ghost_via_groups=_ghost_vias,
+                                         layer_map=layer_map)
 
-    # Add track proximity costs (+ layer-aware stub surplus, #590 history)
+    # Add track proximity costs (+ ripped-corridor layer ghosts + layer-aware
+    # stub surplus + congestion v2, #590 history, one composition pass)
+    from congestion_field import congestion2_rows
     from history_congestion import add_history_source
     from global_plan import add_plan_source
     from keep_away import add_keepaway_source
+    _c2 = congestion2_rows(config, net_id, routed_net_ids)
     merge_track_proximity_costs(
         obstacles,
         _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),
-        ghost_costs=add_keepaway_source(add_plan_source(
-            add_history_source(_stub_surplus or None, config),
+        ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
+            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
+             **(_stub_surplus or {}),
+             **({('congestion2',): _c2} if _c2 is not None else {})}, config),
             config, net_id, routed_net_ids), config, pcb_data, net_id) or None,
         config=config)
 
@@ -608,8 +648,8 @@ def prepare_obstacles_inplace(
                         config.cell_cost(_tie_cost))
 
     # Add stub proximity costs (includes chip pads as pseudo-stubs)
-    stub_proximity_net_ids = [nid for nid in all_unrouted_net_ids
-                               if nid != net_id and nid not in routed_net_ids]
+    stub_proximity_net_ids = _stub_proximity_source_ids(
+        config, pcb_data, all_unrouted_net_ids, routed_net_ids, {net_id})
     # #658 river: same-bus siblings exert NO soft proximity on a member
     # (hard clearance stays). THIS is the hot in-place path the main loop
     # actually uses -- the slow/incremental builders only serve fallbacks

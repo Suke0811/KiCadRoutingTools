@@ -1037,7 +1037,9 @@ def route_diff_pairs(
                         routed_net_paths, routed_results, diff_pair_by_net_id, layer_map,
                         target_swaps, results=results, obstacle_cache=obstacle_cache,
                         working_obstacles=state.working_obstacles,          # #806
-                        net_obstacles_cache=state.net_obstacles_cache)
+                        net_obstacles_cache=state.net_obstacles_cache,
+                        ripped_route_layer_costs=state.ripped_route_layer_costs,
+                        ripped_route_via_positions=state.ripped_route_via_positions)
 
                     if swap_success and swap_result:
                         # Calculate actual routed length from segments (includes connectors and via barrels)

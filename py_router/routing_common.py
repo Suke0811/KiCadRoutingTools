@@ -881,6 +881,15 @@ def sync_pcb_data_segments(
                   + [s for s in pcb_data.segments if s.net_id in routed_net_ids_set
                      and id(s) not in original_segment_ids])
         fragility_on_copper_change(config, pcb_data, _moved, [])
+        # The meandered nets' track-proximity fields follow their copper.
+        _tpc = getattr(state, 'track_proximity_cache', None) if state else None
+        _lm = getattr(state, 'layer_map', None) if state else None
+        if _tpc is not None and _lm is not None:
+            from obstacle_costs import compute_track_proximity_for_net
+            for _nid in routed_results:
+                if _nid in _tpc:
+                    _tpc[_nid] = compute_track_proximity_for_net(
+                        pcb_data, _nid, config, _lm)
 
     # Same reconciliation for VIAS (#874). Identity, not geometry: two distinct
     # objects at one point are two real barrels, and the writer holds each once.

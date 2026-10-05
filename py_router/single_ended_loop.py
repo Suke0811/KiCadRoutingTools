@@ -506,6 +506,10 @@ def route_single_ended_nets(
     base_obstacles = state.base_obstacles
     gnd_net_id = state.gnd_net_id
     all_unrouted_net_ids = state.all_unrouted_net_ids
+    # The builders keep pending multipoint nets' tap pads as stub-proximity
+    # sources (routing_context._stub_proximity_source_ids); they read the
+    # run's live pending dict through the config they are handed.
+    config._pending_multipoint = state.pending_multipoint_nets
     total_routes = state.total_routes
 
     # Counters (kept as locals)
