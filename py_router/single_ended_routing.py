@@ -2909,6 +2909,21 @@ def _net_pads_near(pcb_data, net_id, cells, coord):
                                                  str(t[1].pad_number)))]
 
 
+# _SCOPE_OVERRIDES_NOTE. A source/target override is the one thing that lets
+# the A* into a cell another net's copper blocks (an allowed cell only lifts a
+# BGA zone), and the multipoint main loop and the tap loop route every edge of
+# a net on ONE map. Overrides used to accumulate there: an earlier edge's
+# endpoints, and its #189 unblock via -- overridden on EVERY layer, and still
+# committed to the board after the edge failed -- stayed open for every later
+# edge, which could then pass THROUGH them. Measured on esp_prog: /+3.3V's tap
+# into U2.3 failed the short check, and the fallback retry reached the
+# leftover unblock via on B.Cu through /RTS's clearance, changed layer there,
+# and shipped a 0.3 mm approach 0.200 mm from /RTS -- an interior point of the
+# retry, so neither the terminal neck nor the short check saw it. Each edge
+# (each main-edge attempt) now clears the overrides before marking its own;
+# an unblock via registered DURING the edge stays for that edge's retry.
+
+
 def _register_unblock_via(obstacles, vgx, vgy, layer_names):
     """Expose a placed via cell on every layer and let the router transit/place a
     free via there (so the retry A* can reach the pad through it)."""
@@ -4148,7 +4163,12 @@ def route_multipoint_main(
         targets = _augment_all_blocked_pad_side(targets, pad_b_obj, config,
                                                 obstacles)
 
-        # Mark source/target cells (same-net pad cells; safe to accumulate)
+        # Mark source/target cells -- THIS attempt's only. An override lets
+        # the A* enter a cell another net's clearance blocks, so it belongs to
+        # the endpoints it was made for; left on the map it is a hole a later
+        # attempt can route THROUGH, as interior copper the terminal neck and
+        # short check never examine (_SCOPE_OVERRIDES_NOTE).
+        obstacles.clear_source_target_cells()
         for gx, gy, layer in sources + targets:
             obstacles.add_source_target_cell(gx, gy, layer)
 
@@ -4899,7 +4919,8 @@ def _route_multipoint_taps_impl(
                         targets.append(_cell)
                         _tset.add(_cell)
 
-        # Mark source/target cells
+        # Mark source/target cells -- THIS edge's only (_SCOPE_OVERRIDES_NOTE).
+        obstacles.clear_source_target_cells()
         for gx, gy, layer in sources + targets:
             obstacles.add_source_target_cell(gx, gy, layer)
 
