@@ -14,6 +14,12 @@ Usage:
     python3 tests/run_all.py --list          # print classification, run nothing
     python3 tests/run_all.py --timeout 300   # per-test timeout (seconds)
     python3 tests/run_all.py -j 1            # serial (default runs 4 in parallel)
+    python3 tests/run_all.py --shard 3/50    # one of 50 duration-balanced slices
+    python3 tests/run_all.py --durations-out d.json   # per-test wall seconds
+
+Every run ends with a `DURATIONS: {...}` line (per-test wall seconds);
+tests/stress/modal_suite/run_all_modal.py --write-durations gathers those into
+tests/run_all_durations.json, which `--shard` balances on.
 
 A test is "integration" (slow; skipped by --fast) if its source shells out --
 it imports run_utils or uses subprocess. That auto-classification needs no
@@ -27,6 +33,7 @@ temp dir). Run a single test directly to keep its temp output for a look.
 """
 import argparse
 import glob
+import json
 import os
 import re
 import shutil
@@ -117,8 +124,36 @@ def discover(filters):
     return out
 
 
-def shard(tests, index, count):
+#: Measured per-test wall seconds, {file name: seconds}, from a fan-out run
+#: (run_all_modal.py --write-durations). Read by `shard`; regenerate it when
+#: the suite's cost shape moves -- a stale entry only makes a shard a little
+#: less even, never wrong.
+DURATIONS_FILE = os.path.join(TESTS_DIR, 'run_all_durations.json')
+
+
+def load_durations(path=DURATIONS_FILE):
+    """{test file name: seconds}, or {} when there is no table."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {k: float(v) for k, v in data.items()
+            if isinstance(v, (int, float))}
+
+
+def shard(tests, index, count, durations=None):
     """The `index`-th of `count` disjoint slices of `tests` (0-based index).
+
+    With a `durations` table ({file name: seconds}) the slices are BALANCED:
+    longest first, each test onto the shard with the least time so far (LPT).
+    The wall-clock of a fan-out is its slowest shard, and a strided split
+    measured 2462 s on one shard against a 195 s mean, because cost is nothing
+    like uniform across files. A test the table does not know is priced at the
+    median of the known tests of its kind (integration or unit). Deterministic:
+    ties go to the lowest shard index, tests are taken in (-seconds, name)
+    order, and each shard lists its tests by name. Without a table it is the
+    strided split below.
 
     STRIDED (`tests[index::count]`), not contiguous blocks, and that is the
     whole point: `discover` returns the list SORTED BY NAME, so adjacent
@@ -135,7 +170,30 @@ def shard(tests, index, count):
     50-way fan-out over 30 files must report 20 empty shards green rather
     than failing 20 times.
     """
-    return tests[index::count]
+    if not durations:
+        return tests[index::count]
+    known = {True: [], False: []}
+    for f in tests:
+        name = os.path.basename(f)
+        if name in durations:
+            known[is_integration(f)].append(durations[name])
+
+    def median(xs):
+        xs = sorted(xs)
+        return xs[len(xs) // 2] if xs else 1.0
+    fallback = {k: median(v or known[True] + known[False]) for k, v in known.items()}
+
+    def cost(f):
+        name = os.path.basename(f)
+        return durations.get(name, fallback[is_integration(f)])
+    loads = [0.0] * count
+    mine = []
+    for f in sorted(tests, key=lambda f: (-cost(f), os.path.basename(f))):
+        j = min(range(count), key=lambda k: (loads[k], k))
+        loads[j] += cost(f)
+        if j == index:
+            mine.append(f)
+    return sorted(mine)
 
 
 def _parse_shard(spec):
@@ -172,6 +230,12 @@ def main():
                     help='run only the I-th of N disjoint slices (0-based), '
                          'for fanning the suite out across machines; see '
                          'tests/stress/modal_suite/run_all_modal.py')
+    ap.add_argument('--shard-by', choices=('time', 'stride'), default='time',
+                    help='time (default): balance the slices on the measured '
+                         'durations in tests/run_all_durations.json (stride '
+                         'when there is none); stride: every N-th file by name')
+    ap.add_argument('--durations-out', metavar='FILE', default=None,
+                    help='also write this run\'s per-test wall seconds as JSON')
     args = ap.parse_args()
 
     tests = discover(args.filters)
@@ -182,7 +246,8 @@ def main():
     if args.shard is not None:
         _i, _n = args.shard
         _all = len(tests)
-        tests = shard(tests, _i, _n)
+        tests = shard(tests, _i, _n,
+                      load_durations() if args.shard_by == 'time' else None)
         # Announced on its own line so a shard's log says what it covered --
         # an aggregating driver that mis-sharded is otherwise invisible.
         print(f'shard {_i}/{_n}: {len(tests)} of {_all} test file(s)')
@@ -233,14 +298,18 @@ def main():
     # build deep trees (git object stores, run/board/stage dirs) under TEMP.
     scratch_root = tempfile.mkdtemp(prefix='krt_')
 
+    durations = {}
+
     def run_one(f):
         name = os.path.basename(f)
         budget = _declared_budget(f, args.timeout)
         tdir = tempfile.mkdtemp(prefix='t', dir=scratch_root)
         env = dict(os.environ, TMPDIR=tdir, TEMP=tdir, TMP=tdir)
+        t_start = time.time()
         try:
             return _run_test(f, name, budget, env)
         finally:
+            durations[name] = round(time.time() - t_start, 1)
             _rmtree_scratch(tdir)
 
     def _run_test(f, name, budget, env):
@@ -354,6 +423,13 @@ def main():
             else f'{n} (at {b:.0f}s)' for n, b in timed_out))
         print('  A timeout is not evidence of a broken test. Re-run each one '
               'alone (or raise --timeout) before recording it as a failure.')
+    # Per-test wall seconds, for balancing shards (run_all_modal.py collects
+    # this line from every shard). One line, after the summary, so nothing
+    # that reads the summary or the PASS/FAIL lines sees it.
+    print('DURATIONS: ' + json.dumps(dict(sorted(durations.items()))))
+    if args.durations_out:
+        with open(args.durations_out, 'w', encoding='utf-8') as f:
+            json.dump(dict(sorted(durations.items())), f, indent=0)
     return 1 if (failed or timed_out) else 0
 
 

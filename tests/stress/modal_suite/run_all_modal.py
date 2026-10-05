@@ -247,14 +247,51 @@ def _named(log: str, prefix: str) -> list:
     return []
 
 
+def _durations(log: str) -> dict:
+    """run_all's `DURATIONS: {...}` line -- per-test wall seconds -- or {}."""
+    import json
+    for line in log.splitlines():
+        if line.startswith("DURATIONS: "):
+            try:
+                return json.loads(line[len("DURATIONS: "):])
+            except ValueError:
+                return {}
+    return {}
+
+
+#: The table run_all.py's `shard()` balances on (tests/run_all_durations.json).
+DURATIONS_PATH = _repo_root / "tests" / "run_all_durations.json"
+
+
+def _write_durations(measured: dict) -> int:
+    """Merge `measured` into the committed table: new measurements win,
+    entries this run did not measure (a filtered run) stay, and entries for
+    test files that no longer exist go. Returns the table's size."""
+    import json
+    try:
+        table = json.loads(DURATIONS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        table = {}
+    table.update(measured)
+    alive = {p.name for p in (_repo_root / "tests").glob("test_*.py")}
+    table = {k: v for k, v in sorted(table.items()) if k in alive}
+    DURATIONS_PATH.write_text(json.dumps(table, indent=0) + "\n",
+                              encoding="utf-8")
+    return len(table)
+
+
 @app.local_entrypoint()
 def main(shards: int = 50, fast: bool = False, timeout: float = 600.0,
-         jobs: int = 2, filters: str = "", out_dir: str = ""):
+         jobs: int = 2, filters: str = "", out_dir: str = "",
+         write_durations: bool = False):
     """Fan the suite out over `shards` containers and aggregate.
 
     filters: space-separated substrings, passed straight to run_all (so
     `--filters "908 910"` runs those families across all shards).
     out_dir:  write every shard's log here (default: a temp dir, printed).
+    write_durations: merge every shard's per-test wall seconds into
+        tests/run_all_durations.json, the table run_all.py balances the
+        shards on. Commit it when the suite's cost shape has moved.
     """
     import tempfile
 
@@ -302,6 +339,9 @@ def main(shards: int = 50, fast: bool = False, timeout: float = 600.0,
 
     tot = {k: sum(r[k] for r in results)
            for k in ("passed", "failed", "timed_out", "skipped", "self_skipped")}
+    measured = {}
+    for r in results:
+        measured.update(_durations(r["log"]))
     failed_names = [n for r in results for n in r["failed_names"]]
     timeout_names = [n for r in results for n in r["timed_out_names"]]
 
@@ -310,6 +350,21 @@ def main(shards: int = 50, fast: bool = False, timeout: float = 600.0,
           f"{tot['skipped']} skipped (+{tot['self_skipped']} self-skipped) "
           f"in {dt:.0f}s wall across {len(results)}/{shards} shard(s)")
     print(f"logs: {out}")
+    if results:
+        _slow = max(results, key=lambda r: r["seconds"])
+        _mean = sum(r["seconds"] for r in results) / len(results)
+        print(f"shard wall: slowest {_slow['seconds']:.0f}s (shard "
+              f"{_slow['index']}), mean {_mean:.0f}s")
+    if measured:
+        _top = sorted(measured.items(), key=lambda kv: -kv[1])[:5]
+        print("slowest tests: " + ", ".join(f"{n} {s:.0f}s" for n, s in _top)
+              + "  (no shard can finish before the slowest test does)")
+    if write_durations:
+        if measured:
+            print(f"durations: {len(measured)} measured -> "
+                  f"{DURATIONS_PATH} ({_write_durations(measured)} entries)")
+        else:
+            print("durations: none measured (no DURATIONS line); table untouched")
 
     if failed_names:
         print(f"\nFAILED ({len(failed_names)}):")
