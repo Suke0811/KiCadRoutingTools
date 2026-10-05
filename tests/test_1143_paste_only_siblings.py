@@ -180,9 +180,13 @@ def test_the_occupancy_rect_and_pads_rung():
     pcb = _parse(path)
     g = {x.ref: x for x in graded_parts_from_file(pcb, path)}
     assert abs(g['U1'].rect[2] - 10.3) < 1e-6, g['U1'].rect
-    from placement.body import board_bodies
+    from placement.body import board_bodies, SOURCE_NONE
     bb = board_bodies(pcb, path)
-    assert bb['U2'].source != 'pads', bb['U2']
+    # EXACTLY no source: an aperture-only part has no pads rung, and with no
+    # pads it may not claim a silk body either (Rule 2). `!= 'pads'` alone
+    # let a mutant that gave it a pads rung through the silk union pass.
+    assert bb['U2'].source == SOURCE_NONE, bb['U2']
+    assert bb['U2'].occupancy_local is None, bb['U2']
     print(f"  PASS: U1 rect {tuple(round(v, 3) for v in g['U1'].rect)}; "
           f"aperture-only U2 source {bb['U2'].source!r}")
 
