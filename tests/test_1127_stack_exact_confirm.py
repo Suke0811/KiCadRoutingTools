@@ -299,8 +299,9 @@ def test_check_drc_cache_sees_a_pad_changed_in_place():
     import check_drc
     pcb = parse_kicad_pcb(ESP)
     pad = copy.copy(pcb.footprints['C4'].pads[0])
+    # ONE input changes per step, so each fingerprint field is tested alone.
     pad.polygons = None
-    pad.shape, pad.rect_rotation = 'rect', 30.0
+    pad.shape, pad.rect_rotation, pad.roundrect_rratio = 'rect', 30.0, 0.25
 
     def served_is_fresh(what):
         got = check_drc._pad_perimeter_array(pad)[2]
@@ -311,10 +312,11 @@ def test_check_drc_cache_sees_a_pad_changed_in_place():
     first = served_is_fresh('turned 30')
     # Same pad object, same centre and size box: only the turn moves.
     pad.rect_rotation = -30.0
-    assert served_is_fresh('turned 30 -> 330 in place') != first
+    turned = served_is_fresh('turned 30 -> 330 in place')
+    assert turned != first
     pad.shape = 'roundrect'
-    pad.roundrect_rratio = 0.25
     rounded = served_is_fresh('rect -> roundrect in place')
+    assert rounded != turned
     pad.roundrect_rratio = 0.5
     assert served_is_fresh('corner ratio changed in place') != rounded
     x, y = pad.global_x, pad.global_y
