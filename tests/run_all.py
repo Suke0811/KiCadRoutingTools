@@ -17,9 +17,10 @@ Usage:
     python3 tests/run_all.py --shard 3/50    # one of 50 duration-balanced slices
     python3 tests/run_all.py --durations-out d.json   # per-test wall seconds
 
-Every run ends with a `DURATIONS: {...}` line (per-test wall seconds);
-tests/stress/modal_suite/run_all_modal.py --write-durations gathers those into
-tests/run_all_durations.json, which `--shard` balances on.
+A `--shard` run ends with a `DURATIONS: {...}` line (wall seconds of each
+test that passed or timed out); tests/stress/modal_suite/run_all_modal.py
+--write-durations gathers those into tests/run_all_durations.json, which
+`--shard` balances on once it is committed.
 
 A test is "integration" (slow; skipped by --fast) if its source shells out --
 it imports run_utils or uses subprocess. That auto-classification needs no
@@ -132,17 +133,41 @@ DURATIONS_FILE = os.path.join(TESTS_DIR, 'run_all_durations.json')
 
 
 def load_durations(path=DURATIONS_FILE):
-    """{test file name: seconds}, or {} when there is no table."""
+    """{test file name: seconds}, or {} when there is no usable table."""
     try:
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
     except (OSError, ValueError):
         return {}
+    if not isinstance(data, dict):
+        return {}
     return {k: float(v) for k, v in data.items()
-            if isinstance(v, (int, float))}
+            if isinstance(v, (int, float)) and not isinstance(v, bool)}
 
 
-def shard(tests, index, count, durations=None):
+def estimated_costs(tests, durations, fast=False):
+    """{test path: seconds} for balancing. A test the table knows costs what
+    it measured; one it does not is priced at the median of the known tests
+    of its kind (integration or unit), or of all known tests when its kind has
+    none. Under --fast an integration test is skipped, so it costs 0 -- pricing
+    it would pile the unit tests onto whichever shards drew no heavy ones."""
+    kind = {f: is_integration(f) for f in tests}
+    known = {True: [], False: []}
+    for f in tests:
+        name = os.path.basename(f)
+        if name in durations:
+            known[kind[f]].append(durations[name])
+
+    def median(xs):
+        xs = sorted(xs)
+        return xs[len(xs) // 2] if xs else 1.0
+    fallback = {k: median(v or known[True] + known[False]) for k, v in known.items()}
+    return {f: (0.0 if fast and kind[f] else
+                durations.get(os.path.basename(f), fallback[kind[f]]))
+            for f in tests}
+
+
+def shard(tests, index, count, durations=None, fast=False):
     """The `index`-th of `count` disjoint slices of `tests` (0-based index).
 
     With a `durations` table ({file name: seconds}) the slices are BALANCED:
@@ -172,25 +197,12 @@ def shard(tests, index, count, durations=None):
     """
     if not durations:
         return tests[index::count]
-    known = {True: [], False: []}
-    for f in tests:
-        name = os.path.basename(f)
-        if name in durations:
-            known[is_integration(f)].append(durations[name])
-
-    def median(xs):
-        xs = sorted(xs)
-        return xs[len(xs) // 2] if xs else 1.0
-    fallback = {k: median(v or known[True] + known[False]) for k, v in known.items()}
-
-    def cost(f):
-        name = os.path.basename(f)
-        return durations.get(name, fallback[is_integration(f)])
+    cost = estimated_costs(tests, durations, fast)
     loads = [0.0] * count
     mine = []
-    for f in sorted(tests, key=lambda f: (-cost(f), os.path.basename(f))):
+    for f in sorted(tests, key=lambda f: (-cost[f], os.path.basename(f))):
         j = min(range(count), key=lambda k: (loads[k], k))
-        loads[j] += cost(f)
+        loads[j] += cost[f]
         if j == index:
             mine.append(f)
     return sorted(mine)
@@ -235,7 +247,8 @@ def main():
                          'durations in tests/run_all_durations.json (stride '
                          'when there is none); stride: every N-th file by name')
     ap.add_argument('--durations-out', metavar='FILE', default=None,
-                    help='also write this run\'s per-test wall seconds as JSON')
+                    help='also write this run\'s per-test wall seconds (passed '
+                         'and timed-out tests) as JSON')
     args = ap.parse_args()
 
     tests = discover(args.filters)
@@ -246,11 +259,15 @@ def main():
     if args.shard is not None:
         _i, _n = args.shard
         _all = len(tests)
-        tests = shard(tests, _i, _n,
-                      load_durations() if args.shard_by == 'time' else None)
+        _table = load_durations() if args.shard_by == 'time' else {}
+        tests = shard(tests, _i, _n, _table, fast=args.fast)
         # Announced on its own line so a shard's log says what it covered --
-        # an aggregating driver that mis-sharded is otherwise invisible.
-        print(f'shard {_i}/{_n}: {len(tests)} of {_all} test file(s)')
+        # an aggregating driver that mis-sharded is otherwise invisible -- and
+        # how it was cut: the same index over a different table is a
+        # different slice.
+        print(f'shard {_i}/{_n}: {len(tests)} of {_all} test file(s), '
+              + (f'balanced on {len(_table)} measured durations'
+                 if _table else 'strided by name'))
         if not tests:
             # NOT the 'No tests matched' error above: more shards than files
             # is a legitimate fan-out, and this shard passing vacuously is the
@@ -307,9 +324,15 @@ def main():
         env = dict(os.environ, TMPDIR=tdir, TEMP=tdir, TMP=tdir)
         t_start = time.time()
         try:
-            return _run_test(f, name, budget, env)
+            result = _run_test(f, name, budget, env)
+            # Only a test that ran to the end, or to its budget, says what it
+            # COSTS: a failure or a self-skip can stop in a second and would
+            # price the test as cheap.
+            ok = result[1]
+            if ok is True or (isinstance(ok, tuple) and ok and ok[0] == 'timeout'):
+                durations[name] = round(time.time() - t_start, 1)
+            return result
         finally:
-            durations[name] = round(time.time() - t_start, 1)
             _rmtree_scratch(tdir)
 
     def _run_test(f, name, budget, env):
@@ -423,10 +446,11 @@ def main():
             else f'{n} (at {b:.0f}s)' for n, b in timed_out))
         print('  A timeout is not evidence of a broken test. Re-run each one '
               'alone (or raise --timeout) before recording it as a failure.')
-    # Per-test wall seconds, for balancing shards (run_all_modal.py collects
-    # this line from every shard). One line, after the summary, so nothing
-    # that reads the summary or the PASS/FAIL lines sees it.
-    print('DURATIONS: ' + json.dumps(dict(sorted(durations.items()))))
+    # Per-test wall seconds, for balancing shards: one line, after the
+    # summary, on a SHARD's run only (run_all_modal.py always passes --shard
+    # and collects it); a full local run would print ~30 KB of it.
+    if args.shard is not None:
+        print('DURATIONS: ' + json.dumps(dict(sorted(durations.items()))))
     if args.durations_out:
         with open(args.durations_out, 'w', encoding='utf-8') as f:
             json.dump(dict(sorted(durations.items())), f, indent=0)

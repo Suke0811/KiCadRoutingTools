@@ -40,7 +40,13 @@ Three things to know before you trust its output:
 
 - **`run_all.py --shard` does the splitting**, so discovery and classification
   have ONE source of truth -- the driver never globs `test_*.py` itself. A
-  local run and a 50-way fan-out therefore cover the same set.
+  local run and a 50-way fan-out therefore cover the same set. The slices are
+  packed longest-first onto the least-loaded shard from the measured wall
+  seconds in `tests/run_all_durations.json` (a new test is priced at the
+  median of its kind; with no table it falls back to a strided split by
+  name). `--write-durations` refreshes the table from a GREEN run; commit it
+  when the suite's cost shape has moved. Each shard's banner says whether it
+  was balanced, and on how many measured tests.
 - **The verdict is each shard's own exit code**, never the parsed counts. A
   container that OOMs prints no summary line at all, and a driver that decided
   on parsed counts would read that silence as zero failures. A shard that

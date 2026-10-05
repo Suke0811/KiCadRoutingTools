@@ -248,14 +248,19 @@ def _named(log: str, prefix: str) -> list:
 
 
 def _durations(log: str) -> dict:
-    """run_all's `DURATIONS: {...}` line -- per-test wall seconds -- or {}."""
+    """run_all's `DURATIONS: {...}` line -- per-test wall seconds -- or {}.
+
+    The LAST such line, as `_counts` takes the last summary: a failing test's
+    printed tail comes earlier in the log and may carry one of its own."""
     import json
-    for line in log.splitlines():
+    for line in reversed(log.splitlines()):
         if line.startswith("DURATIONS: "):
             try:
-                return json.loads(line[len("DURATIONS: "):])
+                got = json.loads(line[len("DURATIONS: "):])
             except ValueError:
-                return {}
+                continue
+            if isinstance(got, dict):
+                return got
     return {}
 
 
@@ -283,7 +288,7 @@ def _write_durations(measured: dict) -> int:
 @app.local_entrypoint()
 def main(shards: int = 50, fast: bool = False, timeout: float = 600.0,
          jobs: int = 2, filters: str = "", out_dir: str = "",
-         write_durations: bool = False):
+         write_durations: bool = False, force_durations: bool = False):
     """Fan the suite out over `shards` containers and aggregate.
 
     filters: space-separated substrings, passed straight to run_all (so
@@ -291,7 +296,9 @@ def main(shards: int = 50, fast: bool = False, timeout: float = 600.0,
     out_dir:  write every shard's log here (default: a temp dir, printed).
     write_durations: merge every shard's per-test wall seconds into
         tests/run_all_durations.json, the table run_all.py balances the
-        shards on. Commit it when the suite's cost shape has moved.
+        shards on. Commit it when the suite's cost shape has moved. Refused
+        on a RED run (a broken image whose tests all die in a second would
+        price the whole suite as cheap) unless force_durations.
     """
     import tempfile
 
@@ -359,12 +366,6 @@ def main(shards: int = 50, fast: bool = False, timeout: float = 600.0,
         _top = sorted(measured.items(), key=lambda kv: -kv[1])[:5]
         print("slowest tests: " + ", ".join(f"{n} {s:.0f}s" for n, s in _top)
               + "  (no shard can finish before the slowest test does)")
-    if write_durations:
-        if measured:
-            print(f"durations: {len(measured)} measured -> "
-                  f"{DURATIONS_PATH} ({_write_durations(measured)} entries)")
-        else:
-            print("durations: none measured (no DURATIONS line); table untouched")
 
     if failed_names:
         print(f"\nFAILED ({len(failed_names)}):")
@@ -390,6 +391,15 @@ def main(shards: int = 50, fast: bool = False, timeout: float = 600.0,
               f"{unparsed}\n   Read their logs above -- the counts exclude them.")
 
     ok = not (red or missing or unparsed)
+    if write_durations:
+        if not measured:
+            print("durations: none measured (no DURATIONS line); table untouched")
+        elif not ok and not force_durations:
+            print("durations: NOT written -- the run is RED (pass "
+                  "--force-durations to write it anyway)")
+        else:
+            print(f"durations: {len(measured)} measured -> "
+                  f"{DURATIONS_PATH} ({_write_durations(measured)} entries)")
     print(f"\n{'ALL GREEN' if ok else 'RED'}"
           + ("" if ok else f"  (failing shards: {red or 'none'};"
                            f" missing: {missing or 'none'};"

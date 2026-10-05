@@ -10,19 +10,29 @@ Rows:
     disjoint and their union is every test, with or without a table;
   - with a table the slowest shard is no slower than the strided split's,
     and strictly faster on a skewed suite;
-  - a test the table does not know is priced at the median of the known;
+  - a test the table does not know is priced at the median of the known
+    tests of ITS kind (integration or unit), or of all known tests when its
+    kind has none;
+  - under --fast an integration test costs 0, since it will be skipped;
   - without a table the split is exactly the old strided one;
+  - a table that is not a {name: seconds} object reads as no table;
   - the committed table, when there is one, parses into seconds.
 
     python3 tests/test_run_all_shard_balance.py
 """
+import json
 import os
+import shutil
 import sys
+import tempfile
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TESTS)
 
 import run_all  # noqa: E402
+
+# Its fixture WRITES the word subprocess into scratch files; it runs nothing.
+RUN_ALL_FAST_OK = True
 
 NAMES = [f'test_{i:03d}.py' for i in range(40)]
 PATHS = [os.path.join('nowhere', n) for n in NAMES]     # classified as unit
@@ -57,14 +67,49 @@ def test_balanced_beats_strided():
     assert _wall(_slices(4, COST), COST) < _wall(_slices(4, None), COST)
 
 
-def test_unknown_tests_get_the_median():
-    partial = {n: c for n, c in COST.items() if n != NAMES[39]}
-    a = _slices(4, partial)
-    assert sorted(p for s in a for p in s) == sorted(PATHS)
-    # The median of the known costs is 5 s, so the unknown file lands like a
-    # cheap one -- never as a phantom 0 s test piled onto an already-full shard.
-    loads = [sum(partial.get(os.path.basename(p), 5.0) for p in s) for s in a]
-    assert max(loads) - min(loads) <= 900.0, loads
+def _kinds_dir():
+    """Real files, since is_integration reads the source: u*.py are unit
+    tests, i*.py shell out."""
+    d = tempfile.mkdtemp(prefix='shard_kinds_')
+    for i in range(5):
+        for kind, body in (('u', 'x = 1\n'), ('i', 'import subprocess\n')):
+            with open(os.path.join(d, f'test_{kind}{i}.py'), 'w') as f:
+                f.write(body)
+    paths = sorted(os.path.join(d, n) for n in os.listdir(d))
+    assert [run_all.is_integration(p) for p in paths].count(True) == 5
+    return d, paths
+
+
+def test_unknown_tests_get_their_kinds_median():
+    d, paths = _kinds_dir()
+    try:
+        # Units measured at 2..4 s, integrations at 100..300 s; u4 and i4 are
+        # new. One median over both kinds would price them alike (4.0 here).
+        table = {'test_u0.py': 2.0, 'test_u1.py': 3.0, 'test_u2.py': 3.0,
+                 'test_u3.py': 4.0, 'test_i0.py': 100.0, 'test_i1.py': 200.0,
+                 'test_i2.py': 200.0, 'test_i3.py': 300.0}
+        cost = {os.path.basename(p): c
+                for p, c in run_all.estimated_costs(paths, table).items()}
+        assert cost['test_u4.py'] == 3.0, cost
+        assert cost['test_i4.py'] == 200.0, cost
+        assert cost['test_i0.py'] == 100.0 and cost['test_u3.py'] == 4.0
+        # A kind with nothing measured falls back to every known test.
+        units_only = {k: v for k, v in table.items() if k.startswith('test_u')}
+        cost = {os.path.basename(p): c
+                for p, c in run_all.estimated_costs(paths, units_only).items()}
+        assert cost['test_i0.py'] == 3.0, cost
+        # Under --fast the integrations will be skipped: they weigh nothing,
+        # so the unit tests spread across every shard instead of piling onto
+        # whichever drew no heavy test.
+        fast = {os.path.basename(p): c
+                for p, c in run_all.estimated_costs(paths, table, fast=True).items()}
+        assert all(fast[f'test_i{i}.py'] == 0.0 for i in range(5)), fast
+        assert fast['test_u1.py'] == 3.0, fast
+        slices = [run_all.shard(paths, i, 4, table, fast=True) for i in range(4)]
+        units = [sum(not run_all.is_integration(p) for p in s) for s in slices]
+        assert max(units) - min(units) <= 1, units
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_no_table_is_the_strided_split():
@@ -72,6 +117,21 @@ def test_no_table_is_the_strided_split():
         for i in range(count):
             assert run_all.shard(PATHS, i, count, None) == PATHS[i::count]
             assert run_all.shard(PATHS, i, count, {}) == PATHS[i::count]
+
+
+def test_unusable_table_reads_as_none():
+    d = tempfile.mkdtemp(prefix='shard_table_')
+    try:
+        path = os.path.join(d, 't.json')
+        for doc, want in (([1, 2], {}), ('"x"', {}), ('{not json', {}),
+                          ({'test_a.py': 2, 'test_b.py': True,
+                            'test_c.py': 'slow'}, {'test_a.py': 2.0})):
+            with open(path, 'w') as f:
+                f.write(doc if isinstance(doc, str) else json.dumps(doc))
+            assert run_all.load_durations(path) == want, (doc, want)
+        assert run_all.load_durations(os.path.join(d, 'absent.json')) == {}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_committed_table_parses():
@@ -84,8 +144,9 @@ def test_committed_table_parses():
 
 
 TESTS_LIST = [test_slices_cover_exactly_once, test_balanced_beats_strided,
-              test_unknown_tests_get_the_median, test_no_table_is_the_strided_split,
-              test_committed_table_parses]
+              test_unknown_tests_get_their_kinds_median,
+              test_no_table_is_the_strided_split,
+              test_unusable_table_reads_as_none, test_committed_table_parses]
 
 
 if __name__ == '__main__':
