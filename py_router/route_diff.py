@@ -239,7 +239,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 track_clearances: Optional[Dict[int, float]] = None,
                 bga_exclusion_zones: Optional[List[Tuple[float, float, float, float]]] = None,
                 direction_order: str = None,
-                ordering_strategy: str = "inside_out",
+                ordering_strategy: str = defaults.DEFAULT_ORDERING_STRATEGY,
                 ripup_blocker_select: str = defaults.RIPUP_BLOCKER_SELECT,
                 disable_bga_zones: Optional[List[str]] = None,
                 track_width: float = defaults.TRACK_WIDTH,

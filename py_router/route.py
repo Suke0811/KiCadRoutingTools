@@ -251,6 +251,35 @@ def _dump_engine_config(engine, cfg):
         pass
 
 
+# batch_route kwargs the in-run plane finalize hands its nested reroute
+# sub-runs (repair_planes route_knobs): how this step searches and what it
+# prices or forbids -- never geometry or scope, which the finalize sets itself.
+_FINALIZE_ROUTE_KNOBS = (
+    'via_cost', 'ordering_strategy', 'direction_order', 'max_iterations',
+    'max_probe_iterations', 'heuristic_weight', 'turn_cost',
+    'direction_preference_cost', 'proximity_heuristic_factor',
+    'stub_proximity_radius', 'stub_proximity_cost', 'via_proximity_cost',
+    'bga_proximity_radius', 'bga_proximity_cost', 'bga_exclusion_zones',
+    'disable_bga_zones', 'track_proximity_distance', 'track_proximity_cost',
+    'vertical_attraction_radius', 'vertical_attraction_cost',
+    'ripped_route_avoidance_radius', 'ripped_route_avoidance_cost',
+    'crossing_penalty', 'crossing_layer_check', 'routing_clearance_margin',
+    'max_rip_up_count', 'ripup_abandon_metric', 'ripup_blocker_select',
+    'enable_layer_switch', 'can_swap_to_top_layer', 'smoothing',
+    'mps_unroll', 'mps_reverse_rounds', 'mps_layer_swap',
+    'mps_segment_intersection', 'keepout_enabled', 'keepout_layer',
+    'guide_corridor_enabled', 'guide_corridor_layer', 'guide_corridor_spacing',
+    'bus_enabled', 'bus_detection_radius', 'bus_attraction_radius',
+    'bus_attraction_bonus', 'bus_min_nets',
+    'keep_away', 'keep_away_free', 'keep_away_cost',
+)
+
+
+def _finalize_route_knobs(call_kwargs: dict) -> dict:
+    """This batch_route call's own values of _FINALIZE_ROUTE_KNOBS."""
+    return {k: call_kwargs[k] for k in _FINALIZE_ROUTE_KNOBS if k in call_kwargs}
+
+
 def _empty_results_data() -> dict:
     """The return_results contract with every field empty (#382 E5).
 
@@ -775,7 +804,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 via_from_class: bool = False,
                 bga_exclusion_zones: Optional[List[Tuple[float, float, float, float]]] = None,
                 direction_order: str = None,
-                ordering_strategy: str = "inside_out",
+                ordering_strategy: str = defaults.DEFAULT_ORDERING_STRATEGY,
                 disable_bga_zones: Optional[List[str]] = None,
                 track_width: float = defaults.TRACK_WIDTH,
                 track_width_from_class: bool = False,
@@ -792,7 +821,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 via_size: float = defaults.VIA_SIZE,
                 via_drill: float = defaults.VIA_DRILL,
                 grid_step: float = 0.1,
-                via_cost: int = 50,
+                via_cost: int = defaults.VIA_COST,
                 max_iterations: int = 200000,
                 max_probe_iterations: int = 5000,
                 heuristic_weight: float = defaults.HEURISTIC_WEIGHT,
@@ -5287,11 +5316,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         # CLI leg below cannot auto-read them; both legs
                         # forward the same map).
                         track_clearances=dict(config.track_clearances or {}),
-                        # #1146: casualties rerouted by the finalize's
-                        # sub-runs keep this run's keep-away rules.
-                        keep_away=list(config.keep_away) or None,
-                        keep_away_free=config.keep_away_free,
-                        keep_away_cost=config.keep_away_cost,
+                        # The finalize's reroute sub-runs route by THIS
+                        # step's knobs, not batch_route's defaults.
+                        route_knobs=_finalize_route_knobs(_reconcile_kwargs),
                         # #338 (review DRC-1): forward THIS run's RESOLVED
                         # copper-to-edge floor. The engine's own re-resolve
                         # cannot work here: its PLANE_EDGE_CLEARANCE default
@@ -5387,11 +5414,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         layer_clearances=dict(config.layer_clearances or {}),
                         # #1135: same reason for the track-to-track rules.
                         track_clearances=dict(config.track_clearances or {}),
-                        # #1146: casualties rerouted by the finalize's
-                        # sub-runs keep this run's keep-away rules.
-                        keep_away=list(config.keep_away) or None,
-                        keep_away_free=config.keep_away_free,
-                        keep_away_cost=config.keep_away_cost,
+                        # The finalize's reroute sub-runs route by THIS
+                        # step's knobs, not batch_route's defaults.
+                        route_knobs=_finalize_route_knobs(_reconcile_kwargs),
                         # #338 (review DRC-1): same reason for the edge floor
                         # -- output_file has no sibling .kicad_pro yet, and
                         # the engine default 0.5 masks the project read.
