@@ -21,7 +21,10 @@ pins:
   snapshot falls back to the box answer (falsely reject, never accept);
 * check_drc's id-keyed perimeter and polygon caches HOLD their pad: an entry
   whose fingerprint matches but whose pad is another object is recomputed,
-  not served -- the posed copies the gate makes are short-lived.
+  not served -- the posed copies the gate makes are short-lived;
+* and the perimeter fingerprint is every input of the outline: the SAME pad
+  turned about its own centre, reshaped, re-cornered or given new polygons
+  is recomputed.
 
     python3 -X utf8 tests/test_1127_stack_exact_confirm.py [case ...]
 """
@@ -279,8 +282,7 @@ def test_check_drc_caches_hold_their_pad():
     import check_drc
     pcb = parse_kicad_pcb(ESP)
     pad = pcb.footprints['C4'].pads[0]
-    fp = (pad.pad_number, round(pad.global_x, 9), round(pad.global_y, 9),
-          round(pad.size_x, 9), round(pad.size_y, 9))
+    fp = check_drc._pad_perimeter_fingerprint(pad)
     check_drc._PAD_PERIMETER_CACHE[id(pad)] = (fp, 'STALE', object())
     got = check_drc._pad_perimeter_array(pad)
     assert got != 'STALE', 'an entry held for another pad was served'
@@ -293,6 +295,37 @@ def test_check_drc_caches_hold_their_pad():
           "is another is recomputed; the held one is served")
 
 
+def test_check_drc_cache_sees_a_pad_changed_in_place():
+    import check_drc
+    pcb = parse_kicad_pcb(ESP)
+    pad = copy.copy(pcb.footprints['C4'].pads[0])
+    pad.polygons = None
+    pad.shape, pad.rect_rotation = 'rect', 30.0
+
+    def served_is_fresh(what):
+        got = check_drc._pad_perimeter_array(pad)[2]
+        assert got == check_drc._pad_perimeter_points(pad), (
+            f'{what}: the cache served the outline it had before')
+        return got
+
+    first = served_is_fresh('turned 30')
+    # Same pad object, same centre and size box: only the turn moves.
+    pad.rect_rotation = -30.0
+    assert served_is_fresh('turned 30 -> 330 in place') != first
+    pad.shape = 'roundrect'
+    pad.roundrect_rratio = 0.25
+    rounded = served_is_fresh('rect -> roundrect in place')
+    pad.roundrect_rratio = 0.5
+    assert served_is_fresh('corner ratio changed in place') != rounded
+    x, y = pad.global_x, pad.global_y
+    pad.polygons = [[(x - 1, y - 1), (x + 1, y - 1), (x + 1, y + 1)]]
+    tri = served_is_fresh('polygons assigned')
+    pad.polygons = [[(x - 2, y - 2), (x + 2, y - 2), (x + 2, y + 2)]]
+    assert served_is_fresh('polygons reassigned') != tri
+    print("  PASS: a pad turned, reshaped, re-cornered or given new polygons "
+          "IN PLACE is recomputed, not served its old outline")
+
+
 TESTS = [
     test_the_grid_agrees_with_check_assembly,
     test_a_real_stack_is_still_a_stack,
@@ -301,6 +334,7 @@ TESTS = [
     test_the_extent_shortcut_is_a_box_answer,
     test_the_mode_is_fixed_at_build_and_a_snapshotless_part_is_a_box,
     test_check_drc_caches_hold_their_pad,
+    test_check_drc_cache_sees_a_pad_changed_in_place,
 ]
 
 

@@ -52,6 +52,7 @@ LATER = _t(T, 'box_only_hit_after')
 CONTACT = _t(T, 'contact_not_nearness')
 MODE = _t(T, 'mode_is_fixed')
 CACHE = _t(T, 'caches_hold')
+IN_PLACE = _t(T, 'changed_in_place')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -91,6 +92,22 @@ ROWS = [
      "    if hit is not None and hit[2] is polys and hit[0] == fp:",
      "    if hit is not None and hit[0] == fp:",
      (CACHE,), 'KILLED'),
+    ('perimeter-fingerprint-drops-rotation', 'drc',
+     "            getattr(pad, 'rect_rotation', 0.0),",
+     "            0.0,",
+     (IN_PLACE,), 'KILLED'),
+    ('perimeter-fingerprint-drops-shape', 'drc',
+     "            getattr(pad, 'shape', None),",
+     "            None,",
+     (IN_PLACE,), 'KILLED'),
+    ('perimeter-fingerprint-drops-rratio', 'drc',
+     "            getattr(pad, 'roundrect_rratio', None),",
+     "            None,",
+     (IN_PLACE,), 'KILLED'),
+    ('perimeter-fingerprint-drops-polygons', 'drc',
+     "            getattr(pad, 'polygons', None))",
+     "            None)",
+     (IN_PLACE,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

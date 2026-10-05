@@ -1194,14 +1194,29 @@ def _pad_has_no_copper(pad: Pad) -> bool:
 _PAD_PERIMETER_CACHE: Dict[int, tuple] = {}
 
 
+def _pad_perimeter_fingerprint(pad) -> tuple:
+    """Everything `_pad_perimeter_points` reads off `pad`, so a cache hit is
+    served only for the outline it would recompute. Position and size alone
+    let a pad turned about its own centre -- a copy turned 30 -> 330 degrees,
+    or the SAME pad turned in place -- read the old outline: `rect_rotation`,
+    the shape, the corner ratio and the custom polygons are part of it. The
+    polygons list rides in by reference (callers reassign it, never edit it),
+    so an unchanged pad compares it by identity, a reassigned one by its
+    vertices."""
+    return (pad.pad_number, round(pad.global_x, 9), round(pad.global_y, 9),
+            round(pad.size_x, 9), round(pad.size_y, 9),
+            getattr(pad, 'shape', None),
+            getattr(pad, 'roundrect_rratio', None),
+            getattr(pad, 'rect_rotation', 0.0),
+            getattr(pad, 'polygons', None))
+
+
 def _pad_perimeter_array(pad):
-    # Keyed by id(), so the entry HOLDS the pad (#1127): the fingerprint has
-    # no `rect_rotation` or shape, so a freed pad's id reused by a copy of the
-    # same pad turned 30 -> 330 degrees about its own centre read the first
-    # copy's perimeter. The placement gate poses short-lived pad copies.
+    # Keyed by id(), so the entry HOLDS the pad (#1127): a freed pad's id is
+    # reused by the next object allocated, and the placement gate poses
+    # short-lived pad copies. The fingerprint is the outline's every input.
     key = id(pad)
-    fp = (pad.pad_number, round(pad.global_x, 9), round(pad.global_y, 9),
-          round(pad.size_x, 9), round(pad.size_y, 9))
+    fp = _pad_perimeter_fingerprint(pad)
     hit = _PAD_PERIMETER_CACHE.get(key)
     if hit is not None and hit[2] is pad and hit[0] == fp:
         return hit[1]
