@@ -28,7 +28,8 @@ for _d in ('py_router', 'tests'):
 
 from run_utils import evidence  # noqa: E402
 
-BOARD = os.path.join(ROOT, 'kicad_files', 'fanout_output1.kicad_pcb')
+# Gitignored, built from a tracked root on a fresh clone (test_457).
+BOARD_NAME = 'fanout_output1.kicad_pcb'
 
 
 def test_rescue_routes_on_the_prepared_map():
@@ -41,7 +42,8 @@ def test_rescue_routes_on_the_prepared_map():
     import single_ended_loop as sel
     log = io.StringIO()
     with contextlib.redirect_stdout(log):
-        pcb = parse_kicad_pcb(evidence(BOARD))
+        from fixture_boards import ensure
+        pcb = parse_kicad_pcb(evidence(ensure(BOARD_NAME)))
     layers = pcb.board_info.copper_layers
     cfg = GridRouteConfig(layers=layers, track_width=0.1, clearance=0.1,
                           via_size=0.3, via_drill=0.2, grid_step=0.1)
