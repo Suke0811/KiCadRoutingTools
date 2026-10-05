@@ -912,7 +912,8 @@ class FaceAssignment(NamedTuple):
     pitch_mm: float
     pitch_source: str            # 'pad_lattice' | 'lane_fallback'
     #: The answer the BOX half alone gave, index-aligned with `faces` because
-    #: both are built in one pass over `fp.pads` (#862). NOT a count: the two
+    #: both are built in one pass over the part's pins (`_pads`, #862,
+    #: #1143). NOT a count: the two
     #: ledgers count over different populations -- `part_escape` drops
     #: `ignore_net_ids`, `face_lane_ledger` applies an owner filter -- so a
     #: count taken here would close the identity

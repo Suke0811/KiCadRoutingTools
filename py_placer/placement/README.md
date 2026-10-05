@@ -560,9 +560,14 @@ engine call only, every `pads_ok` decision the licence or the exact gate
 would take differently. It found 0 licence holes in every cell, StickHub
 included. On the committed corpus that zero is structural: no input carries
 a box-only licence, and a pile has none by `_degenerate_refs`. The exact gate
-could change decisions on rp2350 and ulx3s only, 2 boards per engine against
-the 3 the rule needs, so the run stopped there (STOP A) and nothing changed
-default. Two findings stand: the PAD conjunct is box currency too, so on the
+has trial cells (a flip at the `pads_ok` verdict or at any pair level) on
+rp2350 and ulx3s only -- and only ONE call on the whole corpus changed a
+`pads_ok` verdict (ulx3s quench, R27). That is 2 boards per engine against
+the 3 CLAUDE.md's rule needs, so the run stopped there (STOP A) and nothing
+changed default. (The STOP comes from the plan and that rule; the prereg's
+own `family_B.combine` wording would have allowed a GO with no engine at 3
+boards, a defect in that text, disclosed in
+`tests/measure_1127_stack_modes_ab.py`'s docstring.) Two findings stand: the PAD conjunct is box currency too, so on the
 #1064 C4/Y1 grid the exact gate clears only 6 of the 35 box-only refusals; and
 the census does not observe `relocate.exact_refusal`, `place_pose`,
 `reseat`, `portfolio` or `perturb`.

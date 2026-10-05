@@ -6,13 +6,15 @@ copper layer is not copper. #1143 named three more measures that still read
 it -- the occupancy rect, `pad_area_balance` and `assembly_census` -- and the
 sweep for it found the same class at about twenty more sites (the escape
 pitch, the chip bounds the decap election measures to, part_class, the copper
-geometry fallback, part_centre, the "has pads" gates of quench, portfolio,
-reconcile, recovery, lock_advisor, the board tools ...). Each now reads
+geometry fallback, part_centre, the "has pads" gates of the census,
+placement_state, recovery, lock_advisor, the board tools ...). Each now reads
 `kicad_parser.non_aperture_pads` / `pad_is_aperture_only`, or
 `paste_apertures.pad_has_copper` where the question is copper -- except the
-quench's zero-pad branch, which keeps an aperture-only part MOVABLE on
-purpose (`test_quench_keeps_an_aperture_only_part_movable`), and the router's
-own readers, which are routing.
+MOVERS (the quench's zero-pad branch, reconcile's anchors, the drift default,
+portfolio and the agent grade's poses), which keep an aperture-only part
+MOVABLE on purpose (`test_quench_keeps_an_aperture_only_part_movable`,
+`test_a_mechanical_aperture_only_part_is_anchored`), and the router's own
+readers, which are routing.
 
 An aperture-only pad is: not NPTH, no drill, and no `*.Cu` layer. NPTH and
 drilled pads are KEPT -- a mounting hole is physical extent; dropping it moves
@@ -480,6 +482,23 @@ def test_a_mechanical_aperture_only_part_is_anchored():
     assert 'G1' not in skipped, skipped
     assert any('G1' in (b.get('refs') or ()) for b in blocks), blocks
     print("  PASS: the aperture-only G1 is anchored, not skipped")
+
+
+def test_a_short_names_the_copper_pad_after_a_paste_window():
+    """`pad_intersection_pairs` indexes copper pads, so its short label must
+    too: with a paste window first in U1's pad list, a short on U1's pad 2
+    printed as U1.1 (final review)."""
+    from placement.legality import pad_intersection_pairs
+    path = _board(
+        _fp('U1', 10, 10, [_pad('', -3, 1, 1, PASTE),
+                           _pad('1', 0, 0.6, 0.6, CU),
+                           _pad('2', 1.5, 0.6, 0.6, CU, net=2)],
+            court=False),
+        _fp('U2', 11.5, 10.2, [_pad('7', 0, 0.6, 0.6, CU)], court=False))
+    pairs = pad_intersection_pairs(_parse(path), 0.2)
+    shorts = [s for q in pairs for s in (q.shorts or ())]
+    assert shorts and all('U1.2' in s for s in shorts), shorts
+    print(f"  PASS: {shorts[0]}")
 
 
 def test_tigard_c25_measures_to_j1_copper():

@@ -65,6 +65,7 @@ TARGETS = {
     'portfolio': os.path.join(_PL, 'portfolio.py'),
     'reconcile': os.path.join(_PL, 'reconcile.py'),
     'arrays': os.path.join(_PL, 'arrays.py'),
+    'seeder': os.path.join(_PL, 'seeder.py'),
     'recovery': os.path.join(_PL, 'recovery.py'),
     'pockets': os.path.join(_ROOT, 'py_tools', 'check_pockets.py'),
     'context': os.path.join(_ROOT, 'py_tools', 'board_context.py'),
@@ -92,6 +93,7 @@ QUENCH = _t(T1143, 'quench_keeps')
 TIGARD = _t(T1143, 'tigard_c25')
 GATES = _t(T1143, 'every_gate')
 ANCHOR = _t(T1143, 'mechanical_aperture')
+SHORT = _t(T1143, 'short_names')
 T1142 = 'test_1142_ungraded_per_cap.py'
 EMIT = _t(T1142, 'emits_the_held_list')
 STRAND = _t(T1142, 'held_cap_stranded')
@@ -100,6 +102,7 @@ GATING = _t(T1142, 'gating_follows')
 LOADER = _t(T1142, 'loader_refuses')
 FPMATCH = _t(T1142, 'footprint_mismatch')
 CLI = _t(T1142, 'cli_fixed_point')
+REPAIR = _t(T1142, 'repair_does_not')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -253,6 +256,12 @@ ROWS = [
      "            for k, f in pcb.footprints.items()\n"
      "            if __import__('kicad_parser').non_aperture_pads(f)}\n",
      (GATES,), 'KILLED'),
+    # Final review: the short label indexed raw fp.pads with a copper-pad
+    # index, so a short on U1.2 printed as U1.1 behind a paste window.
+    ('short-label-indexes-raw-pads', 'legality',
+     "        p = _pad_with_copper(pads, idx, clearance)\n",
+     "        p = pads[idx] if idx < len(pads) else None\n",
+     (SHORT,), 'KILLED'),
     # The deliberate exclusion: an aperture-only part stays movable.
     ('quench-locks-aperture-only-parts', 'quench',
      "            if not fp.pads:\n",
@@ -323,6 +332,13 @@ ROWS = [
      "or r <= 0:\n",
      "        if isinstance(r, bool) or not isinstance(r, (int, float)):\n",
      (LOADER,), 'KILLED'),
+    # Final review: --repair charged a stranded held cap and nudged it
+    # further from its IC (esp_prog C2 5.64 -> 5.69 mm).
+    ('repair-charges-held-caps', 'seeder',
+     "            if v.rule == 'decap_ungraded':\n"
+     "                continue\n",
+     "",
+     (REPAIR,), 'KILLED'),
     ('held-by-reference-unreported', 'floorplan',
      "                      'held_by_reference': is_held},\n",
      "                      'held_by_reference': False},\n",

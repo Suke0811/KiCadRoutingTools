@@ -239,6 +239,37 @@ def test_the_cli_fixed_point_exits_zero():
     print("  PASS: esp_prog graded on its own --decaps-from intent exits 0")
 
 
+def test_repair_does_not_push_a_held_cap_further():
+    """`place_seed --repair` seats a violator at its nearest LEGAL pose, not
+    toward its IC, so charging a stranded held cap nudged it further out and
+    shipped the worse pose (final review: esp_prog C2 at (118, 95), 5.64 ->
+    5.69 mm). The repair charges no one for `decap_ungraded`: C2 is not a
+    violator and does not move, and its ERROR stays in the grade."""
+    from placement import floorplan as fp
+    from placement import seeder
+    from placement.writer import write_placed_output
+    out = os.path.join(tempfile.mkdtemp(dir=_TMP.name), 'c2.kicad_pcb')
+    pcb0 = _parse(ESP)
+    c2 = pcb0.footprints['C2']
+    _quiet(write_placed_output, ESP, out,
+           [{'reference': 'C2', 'new_x': 118.0, 'new_y': 95.0,
+             'new_rotation': c2.rotation or 0.0}])
+    pcb = _parse(out)
+    doc = _quiet(fp.emit_intent, pcb, out, decaps_from=ESP)
+    intent = fp.intent_from_dict(doc)
+    g = _quiet(fp.grade, intent, pcb, out)
+    held = [v for v in g.errors if v.rule == 'decap_ungraded']
+    assert [v.ref for v in held] == ['C2'], [v.ref for v in held]
+    res = _quiet(seeder.repair_placement, _parse(out), out, intent,
+                 clearance=0.2)
+    assert 'C2' not in (res.get('violators') or []), res.get('violators')
+    moved = {m.get('reference') for m in (res.get('moves') or [])
+             if isinstance(m, dict)}
+    assert 'C2' not in moved, res.get('moves')
+    print(f"  PASS: C2 (held, stranded) is no violator and does not move; "
+          f"its decap_ungraded ERROR stays")
+
+
 def test_the_issue_pile_splitflap():
     """The issue's repro, on its first board: splitflap's reference keeps C3
     beyond the radius; the seed strands seven caps the reference keeps

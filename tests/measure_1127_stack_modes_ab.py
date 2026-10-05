@@ -4,13 +4,20 @@ pre-registers it.
 
 Its inputs are the licence census's own output
 (tests/measure_1127_licence_census.py `--json-out`), read through
-`--census PATH`. Its decision (taken at f90801c1):
-- L0-undemonstrated: no committed cell, and not StickHub either, has a
-  single L-hole call. By the prereg, L is DROPPED and family A has no cell.
-- Family-B trial boards: seed = orangecrab_ext_pll, rp2350_fpga_eensy_prePlane
-  and ulx3s; quench = rp2350_fpga_eensy_prePlane and ulx3s.
+`--census PATH`.
 
-So this run is family B, on the census's trial cells. Two consequences of
+NOT RUN for #1127. This script was written against the census's FIRST run
+(f90801c1), which counted the A/B harness's grader and so named orangecrab
+a seed trial board. The fixed census (6e90ddc7) gives L0-undemonstrated
+(L dropped) and 2 family-B trial boards per engine (rp2350, ulx3s), which is
+STOP A. The script refuses a STOP A census (`decision.stop_A`), so it
+records the family-B procedure as written and was never taken. STOP A comes
+from the plan and CLAUDE.md's >= 3-board rule, not from the prereg text:
+the prereg's `family_B.combine` would have allowed GO with no engine at 3
+boards and no improving cell, which is a defect in that text, disclosed
+rather than amended because the census numbers already existed.
+
+Had it run, it would be family B, on the census's trial cells. Two consequences of
 the census decision:
 - With L dropped, `legality.STACK_MODE` was never built (the plan's Phase 4
   is skipped). The arms are therefore #1144's toggle:

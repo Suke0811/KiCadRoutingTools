@@ -454,10 +454,13 @@ census, `pad_area_balance`, the escape pitch, the chip bounds the decap
 election measures to, `proximity` pads and the rest of the sites
 `tests/measure_1143_paste_only_sites.py` lists, through
 `kicad_parser.pad_is_aperture_only`, which keeps NPTH and drilled pads. Two
-readers are left on purpose: the quench keeps a part whose only pads are
-apertures MOVABLE, because the seeder seats such a logo by its courtyard; and
-the router's own readers (`detect_package_type`, `detect_bga_pitch`) are
-routing), which is what KiCad measures: KiCad's StickHub
+kinds of reader are left on purpose. The MOVERS -- the quench's zero-pad
+branch, `reconcile.anchor_blocks`, the `mechanical_drift` default,
+`stale_dispositions`, portfolio's `free_refs` / `_final_poses` and the agent
+grade's poses -- keep a part whose only pads are apertures MOVABLE, because
+the seeder seats such a logo by its courtyard. The router's own readers
+(`detect_package_type`, `detect_bga_pitch`) are routing), which is what
+KiCad measures: KiCad's StickHub
 demo, 39 parts at +-45/+-135 degrees, went from 74 phantom courtyard-blocking
 pairs and 6 phantom containments to 0. The fixed-pose seat above calls the
 same measure. A board whose own `.kicad_pro` sets `courtyards_overlap` to

@@ -6578,6 +6578,15 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                                  clearance=clearance,
                                  board_edge_clearance=board_edge_clearance)
         for v in graded.errors:
+            # #1142: a held cap stranded beyond the tether radius
+            # (`decap_ungraded`, an ERROR under a --decaps-from intent) is
+            # charged to no one. This repair seats a violator at its nearest
+            # LEGAL pose, not toward its IC, so charging one nudged the cap
+            # further out and shipped the worse pose (final review: esp_prog
+            # C2 5.64 -> 5.69 mm). The finding stays in the grade, and in its
+            # exit code; `--repair-decaps` has no rung for it either.
+            if v.rule == 'decap_ungraded':
+                continue
             if v.ref:
                 _charge(v.ref, float((v.measured or {}).get('outside_mm', 1.0)
                                      or 1.0))

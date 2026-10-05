@@ -2203,10 +2203,14 @@ def pad_intersection_pairs(pcb_data, clearance: float,
     grid: Dict[Tuple[int, int], set] = {}
 
     def _pad_label(pads, idx):
-        try:
-            return pads[idx].pad_number or '?'
-        except Exception:
-            return '?'
+        # `idx` indexes the COPPER pads (PartPads order), not `fp.pads`:
+        # read raw, it named the wrong pad whenever a paste window or an NPTH
+        # peg came first in the file (#1143 final review: a short on U1.2
+        # printed as U1.1). `_pad_with_copper` is the same walk the exact
+        # check below uses.
+        p = _pad_with_copper(pads, idx, clearance)
+        return (getattr(p, 'pad_number', None) or '?') if p is not None \
+            else '?'
 
     entries = {}
     for ref, pp in parts.items():
