@@ -1450,7 +1450,7 @@ When routing used `--clearance-ceiling` (#530; formerly the implicit meaning of
 **clearance** DOWN to the ceiling, so KiCad grades the copper at what was
 actually routed rather than at the (usually aspirational) stock class. Without
 it the classes are preserved (each net routed at its own class; `--clearance`
-alone sets only the Default class). In the GUI the **Class ceiling** checkbox
+alone sets only the Default class). In the GUI the **Clearance ceiling** checkbox
 next to Min Clearance is the switch.
 
 The **GUI plugin** does the equivalent on the live board via the pcbnew API

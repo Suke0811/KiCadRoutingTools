@@ -501,10 +501,6 @@ class PlacementTab(wx.Panel):
         ai_box = wx.StaticBox(sw, label="AI")
         ai_sizer = wx.StaticBoxSizer(ai_box, wx.VERTICAL)
 
-        self.cli_status_label = wx.StaticText(sw, label="")
-        self.cli_status_label.Wrap(280)          # the Routing tab's wrap width
-        ai_sizer.Add(self.cli_status_label, 0, wx.ALL, 5)
-
         # STACKED selectors in a 2-column grid -- ai_gui's sel_grid exactly.
         sel_grid = wx.FlexGridSizer(cols=2, hgap=5, vgap=5)
         sel_grid.AddGrowableCol(1)
@@ -697,16 +693,12 @@ class PlacementTab(wx.Panel):
 
     def _refresh_cli_status(self):
         """The Routing tab's _refresh_backend_ui, for this tab's controls:
-        status line WITH the CLI path, then the selected backend's own
+        the CLI status note in the transcript, then the selected backend's own
         model/effort entries and tooltips."""
         cli = self.backend.find_cli()
-        if cli:
-            self.cli_status_label.SetLabel(
-                f"{self.backend.label} CLI found: {cli}")
-        else:
-            self.cli_status_label.SetLabel(
-                self.backend.not_found_message() + " Then reopen this dialog.")
-        self.cli_status_label.Wrap(280)
+        note = self.backend.cli_status(cli)
+        if note not in self.transcript_ctrl.GetValue():
+            self._append_transcript(note + "\n")
         params = self._backend_params[self.backend.id]
         self.model_choice.Set(list(self.backend.model_suggestions))
         self.model_choice.SetValue(params['model'] or DEFAULT_CHOICE)

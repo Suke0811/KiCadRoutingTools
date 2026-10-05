@@ -555,8 +555,8 @@ class RoutingDialog(wx.Dialog):
             ('clearance', 'Min Clearance (mm):', defaults.CLEARANCE,
              "Copper clearance of the DEFAULT net class for this run (checked = this value, "
              "unchecked = the board's Default class). Nets in other classes keep their own "
-             "class clearance, pairwise as KiCad's DRC grades them; tick 'Class ceiling' to "
-             "cap every class at this value instead (the CLI's --clearance-ceiling)."),
+             "class clearance, pairwise as KiCad's DRC grades them; tick 'Clearance ceiling' "
+             "to cap every class at this value instead (the CLI's --clearance-ceiling)."),
             ('via_size', 'Via Size (mm):', defaults.VIA_SIZE,
              "Via outer diameter. Checked = every net's vias are this size; unchecked = each "
              "net draws its own net-class / .kicad_dru via size (the Default class for "
@@ -570,7 +570,7 @@ class RoutingDialog(wx.Dialog):
         # track/clearance/via, board Constraint for the hole floor); checking the
         # box overrides with the typed value. #530: the CLEARANCE box sets the
         # Default class for the run (== CLI --clearance); capping every class is
-        # the separate 'Class ceiling' box (== --clearance-ceiling).
+        # the separate 'Clearance ceiling' box (== --clearance-ceiling).
         for name, label, default, tooltip in params:
             r = defaults.PARAM_RANGES[name]
             grid.Add(wx.StaticText(parent, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -604,9 +604,9 @@ class RoutingDialog(wx.Dialog):
         # --clearance-ceiling, which is what the Min Clearance override alone
         # used to mean (#439). Unchecked, Min Clearance is the Default class's
         # clearance for the run and the other classes are honoured, as KiCad does.
-        grid.Add(wx.StaticText(parent, label="Class ceiling:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(wx.StaticText(parent, label="Clearance ceiling:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.clearance_ceiling_check = wx.CheckBox(
-            parent, label="Min Clearance caps every net class")
+            parent, label="Cap every net class")
         self.clearance_ceiling_check.SetValue(False)
         self.clearance_ceiling_check.SetToolTip(
             "With the Min Clearance override: cap EVERY net class (Default included) "
@@ -614,7 +614,7 @@ class RoutingDialog(wx.Dialog):
             "the 'stock net classes are aspirational' workflow, the CLI's "
             "--clearance-ceiling. Unchecked (default), Min Clearance sets only the "
             "Default class and the other classes route at their own clearance, as "
-            "KiCad's own router does.")
+            "KiCad's own router does. No effect unless Min Clearance is checked.")
         grid.Add(self.clearance_ceiling_check, 0, wx.EXPAND)
 
         grid.Add(wx.StaticText(parent, label="Fab Tier:"), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -3521,7 +3521,7 @@ class RoutingDialog(wx.Dialog):
                     if cname == 'Default':
                         continue
                     net_clearances[net_id] = class_clearance_cache.get(cname, config['clearance'])
-                # #530: the Class ceiling box (== the CLI passing --clearance-ceiling)
+                # #530: the Clearance ceiling box (== the CLI passing --clearance-ceiling)
                 # caps each class at min(class, clearance). Unchecked = every
                 # other class routed at its own clearance, no clamp.
                 if config.get('clamp_netclasses', False):
