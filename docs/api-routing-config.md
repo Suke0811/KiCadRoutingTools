@@ -72,7 +72,7 @@ source to zero at the radius.
 | `keep_away_cost` | `0.5` | Cost per cell inside a keep-away band (0 = measure and report only) |
 | `plan_probe` | `False` | Marks a config as the global plan's (#589) rough-route PROBE, whose relaxed legality lets probe terminals overlap future nets' copper. Set only on the plan's `replace()` clone — never on a config that emits copper |
 | `ripped_route_avoidance_radius` | `1.0` | Radius around just-ripped routes |
-| `ripped_route_avoidance_cost` | `0.1` | Cost near just-ripped routes (helps reroutes diverge) |
+| `ripped_route_avoidance_cost` | `0.1` | Cost for other nets near a ripped net's former route, reserving it for that net's reroute (the ripped net itself never pays it) |
 
 Two per-cell fields carry all of these: the **stub map** (one all-layer map)
 and the **layer map** (one map per copper layer). Every A* move pays
@@ -281,7 +281,11 @@ round up to at least 1.
 
 When rip-up removes a net's copper, its former corridor keeps a per-net ghost:
 segment corridors go to the **layer map** (per layer), via sites to the
-**stub map** (all-layer), both at this falloff. Ghosts are dropped the moment
+**stub map** (all-layer), both at this falloff. A ghost is a RESERVATION: every
+other net pays it -- the net that ripped the victim included, so it takes no
+more of the corridor than it needs -- and the ripped net's own reroute does
+not, so it can go back. Only a contention rip records one: an own-tree seam
+re-ask (#444) rips nothing anyone else wanted. Ghosts are dropped the moment
 the ripped net has real copper again (soft-knobs C1 — a re-routed net's ghost
 would otherwise repel everyone from a corridor that is already re-occupied or
 legitimately free), and a net can never appear as both a live corridor and a

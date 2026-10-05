@@ -285,7 +285,7 @@ See [Power Net Analysis](power-nets.md) for automatic detection, AI-powered anal
 | `--board-edge-clearance` | board's `min_copper_edge_clearance` (else 0.0) | Clearance from board edge in mm. Omitted → the board's own constraint minimum (#439) |
 | `--proximity-heuristic-factor` | 0.02 | Factor for proximity-aware A* heuristic (higher = faster but may find suboptimal paths, 0 = disabled) |
 | `--ripped-route-avoidance-radius` | 1.0 | Radius around ripped route corridors to apply soft penalty (mm) |
-| `--ripped-route-avoidance-cost` | 0.1 | Cost penalty for routing through ripped corridors (0 = disabled) |
+| `--ripped-route-avoidance-cost` | 0.1 | Cost for other nets routing through a ripped net's former corridor, reserving it for that net's reroute (0 = disabled) |
 
 See [Rip-Up and Reroute](rip-up-reroute.md) for how failed routes trigger rip-up, how blockers are identified and ranked, and how ripped nets are rerouted.
 

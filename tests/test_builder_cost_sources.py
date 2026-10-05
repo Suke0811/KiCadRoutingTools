@@ -16,6 +16,9 @@ Rows:
     Phase 3 call hands them over (it routed blind to pending victims'
     corridors, and differently whether length matching sent it to the slow
     builder or not);
+  - a ripped-route ghost reserves the ripped net's corridor: every builder
+    prices it to every other net and never to the net(s) it is routing, so a
+    victim's reroute is not charged for going back;
   - the diff-pair layer-swap fallback builds every map with the main loop's
     builder, as the main loop calls it (its victim-reroute map omitted the
     still-unrouted nets' copper and the pair's own same-net rings; then the
@@ -100,6 +103,23 @@ def test_phase3_builder_takes_the_ghosts():
         assert 'ripped_route_via_positions' in call, src[c:c + 300]
 
 
+def test_own_ghost_is_never_priced_to_its_reroute():
+    import numpy as np
+    cfg = types.SimpleNamespace(ripped_route_avoidance_cost=0.1)
+    ghosts = {5: np.ones((2, 4)), 6: np.ones((2, 4)), 7: np.ones((1, 4))}
+    got = rc.filter_ripped_ghosts(ghosts, cfg, routed_net_ids=[7], own_net_ids=(5,))
+    assert set(got) == {6}, got
+    assert set(rc.filter_ripped_ghosts(ghosts, cfg, [7])) == {5, 6}, \
+        "another net still pays 5's ghost"
+    for fn, own in ((rc.build_diff_pair_obstacles, '(p_net_id, n_net_id)'),
+                    (rc.build_single_ended_obstacles, '(net_id,)'),
+                    (rc.build_incremental_obstacles, '(net_id,)'),
+                    (rc.prepare_obstacles_inplace, '(net_id,)')):
+        src = inspect.getsource(fn)
+        assert src.count('filter_ripped_ghosts(') == 2, fn.__name__
+        assert src.count(f'routed_net_ids, {own})') == 2, fn.__name__
+
+
 def test_fallback_maps_use_the_shared_builder():
     import layer_swap_fallback
     src = inspect.getsource(layer_swap_fallback.try_fallback_layer_swap)
@@ -120,6 +140,7 @@ def test_fallback_maps_use_the_shared_builder():
 
 TESTS = [test_own_track_proximity_entry_dropped, test_stub_proximity_sources,
          test_phase3_builder_takes_the_ghosts,
+         test_own_ghost_is_never_priced_to_its_reroute,
          test_fallback_maps_use_the_shared_builder]
 
 

@@ -1079,8 +1079,8 @@ class RoutingDialog(wx.Dialog):
             ('keep_away_cost', 'Keep-away Cost:', defaults.KEEP_AWAY_COST, "#1146: cost per cell inside a keep-away band, mm equivalent like the other proximity costs (0 = measure and report only)"),
             ('vertical_attraction_radius', 'Vert. Attract (mm):', defaults.VERTICAL_ATTRACTION_RADIUS, "Radius for cross-layer track stacking: attracts the route toward ANY net's tracks on other layers (net-agnostic)"),
             ('vertical_attraction_cost', 'Vert. Attract Cost:', defaults.VERTICAL_ATTRACTION_COST, "Bonus for routing in the vertical shadow of other layers' tracks (0 = off; net-agnostic corridor stacking)"),
-            ('ripped_route_avoidance_radius', 'Rip Avoid (mm):', defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS, "Radius to avoid area where previous route failed"),
-            ('ripped_route_avoidance_cost', 'Rip Avoid Cost:', defaults.RIPPED_ROUTE_AVOIDANCE_COST, "Cost for routing through previously ripped area"),
+            ('ripped_route_avoidance_radius', 'Rip Avoid (mm):', defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS, "Radius of the corridor a ripped net's former route reserves for its reroute"),
+            ('ripped_route_avoidance_cost', 'Rip Avoid Cost:', defaults.RIPPED_ROUTE_AVOIDANCE_COST, "Cost other nets pay to cross a ripped net's former corridor, reserving it for that net's reroute (the ripped net itself never pays it)"),
             ('routing_clearance_margin', 'Clearance Margin:', defaults.ROUTING_CLEARANCE_MARGIN, "Extra clearance margin multiplier for safety"),
         ]
         for name, label, default, tooltip in float_params:

@@ -58,8 +58,17 @@ def _add_free_via_positions(obstacles, pcb_data, net_ids: List[int], config):
         obstacles.add_free_vias_batch(free_via_positions)
 
 
-def filter_ripped_ghosts(ghost_dict, config: GridRouteConfig, routed_net_ids=None):
+def filter_ripped_ghosts(ghost_dict, config: GridRouteConfig, routed_net_ids=None,
+                         own_net_ids=()):
     """C1 filter for ripped-route ghost dicts (layer costs OR via positions).
+
+    A ghost RESERVES a ripped net's former corridor for its reroute (the
+    feature's own statement, 1841cf9c: "encourages the current route to avoid
+    that area, increasing the chance the ripped net can be successfully
+    re-routed later"). So the net(s) being routed (`own_net_ids`) never pay
+    their own ghost: charging a victim's reroute for the corridor reserved for
+    it pushed it OFF that corridor, the opposite of the reservation, and no
+    builder excluded it until now.
 
     Nets that have ROUTED again since being ripped are skipped (soft-knobs
     review C1): once the net has real copper down, the reserved corridor is
@@ -72,7 +81,7 @@ def filter_ripped_ghosts(ghost_dict, config: GridRouteConfig, routed_net_ids=Non
     """
     if not ghost_dict or config.ripped_route_avoidance_cost <= 0:
         return {}
-    done = set(routed_net_ids or ())
+    done = set(routed_net_ids or ()) | set(own_net_ids or ())
     return {nid: v for nid, v in ghost_dict.items()
             if nid not in done and v is not None and len(v) > 0}
 
@@ -246,7 +255,7 @@ def build_diff_pair_obstacles(
     all_stubs = unrouted_stubs + chip_pads
     if config.verbose:
         print(f"    stub proximity: {len(stub_proximity_net_ids)} nets, {len(unrouted_stubs)} stubs, {len(chip_pads)} chip pads")
-    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids)
+    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids, (p_net_id, n_net_id))
     _stub_surplus = apply_stub_proximity(obstacles, pcb_data, stub_proximity_net_ids,
                                          all_stubs, config,
                                          ghost_via_groups=_ghost_vias,
@@ -262,7 +271,7 @@ def build_diff_pair_obstacles(
         obstacles, _per_net_cost_sources(track_proximity_cache,
                                          (p_net_id, n_net_id)),
         ghost_costs=add_keepaway_source(add_history_source(
-            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
+            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids, (p_net_id, n_net_id)),
              **(_stub_surplus or {})}, config),
             config, pcb_data, (p_net_id, n_net_id),
             # No extra clearance = build_diff_pair_leg_obstacles: the hybrid
@@ -437,7 +446,7 @@ def build_single_ended_obstacles(
     unrouted_stubs = get_stub_endpoints(pcb_data, stub_proximity_net_ids)
     chip_pads = get_chip_pad_positions(pcb_data, stub_proximity_net_ids)
     all_stubs = unrouted_stubs + chip_pads
-    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids)
+    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids, (net_id,))
     _stub_surplus = apply_stub_proximity(obstacles, pcb_data, stub_proximity_net_ids,
                                          all_stubs, config,
                                          ghost_via_groups=_ghost_vias,
@@ -454,7 +463,7 @@ def build_single_ended_obstacles(
         obstacles,
         _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),
         ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
-            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
+            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids, (net_id,)),
              **(_stub_surplus or {}),
              **({('congestion2',): _c2} if _c2 is not None else {})}, config),
             config, net_id, routed_net_ids), config, pcb_data, net_id),
@@ -546,7 +555,7 @@ def build_incremental_obstacles(
     # pending victims, and differently depending on whether length matching
     # sent it to the slow builder (which has them).
     _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config,
-                                       routed_net_ids)
+                                       routed_net_ids, (net_id,))
     _stub_surplus = apply_stub_proximity(obstacles, pcb_data,
                                          stub_proximity_net_ids, all_stubs,
                                          config, ghost_via_groups=_ghost_vias,
@@ -567,7 +576,7 @@ def build_incremental_obstacles(
         obstacles,
         _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),
         ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
-            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
+            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids, (net_id,)),
              **(_stub_surplus or {}),
              **({('congestion2',): _c2} if _c2 is not None else {})}, config),
             config, net_id, routed_net_ids), config, pcb_data, net_id) or None,
@@ -725,7 +734,7 @@ def prepare_obstacles_inplace(
     unrouted_stubs = get_stub_endpoints(pcb_data, stub_proximity_net_ids)
     chip_pads = get_chip_pad_positions(pcb_data, stub_proximity_net_ids)
     all_stubs = unrouted_stubs + chip_pads
-    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids)
+    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids, (net_id,))
     _stub_surplus = apply_stub_proximity(working_obstacles, pcb_data,
                                          stub_proximity_net_ids, all_stubs,
                                          config, ghost_via_groups=_ghost_vias,
@@ -742,7 +751,7 @@ def prepare_obstacles_inplace(
         working_obstacles,
         _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),
         ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
-            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
+            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids, (net_id,)),
              **(_stub_surplus or {}),
              **({('congestion2',): _c2} if _c2 is not None else {})}, config),
             config, net_id, routed_net_ids), config, pcb_data, net_id),

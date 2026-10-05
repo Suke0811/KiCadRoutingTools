@@ -7507,7 +7507,7 @@ For differential pair routing, use route_diff.py:
     parser.add_argument("--ripped-route-avoidance-radius", type=float, default=defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS,
                         help=f"Radius in mm around ripped route segments/vias for soft penalty (default: {defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS})")
     parser.add_argument("--ripped-route-avoidance-cost", type=float, default=defaults.RIPPED_ROUTE_AVOIDANCE_COST,
-                        help=f"Soft penalty cost for routing through ripped corridors (0 = disabled, default: {defaults.RIPPED_ROUTE_AVOIDANCE_COST})")
+                        help=f"Soft penalty other nets pay to route through a ripped net's former corridor, reserving it for that net's reroute (the ripped net itself never pays it; 0 = disabled, default: {defaults.RIPPED_ROUTE_AVOIDANCE_COST})")
 
     # Layer preference options
     parser.add_argument("--layer-costs", nargs="+", type=float, default=[],
