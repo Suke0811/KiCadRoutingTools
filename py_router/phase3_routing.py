@@ -19,7 +19,8 @@ from typing import List, Dict, Set, Optional, Tuple, Any
 from kicad_parser import PCBData
 from routing_config import GridRouteConfig
 from routing_state import RoutingState, record_net_event
-from routing_context import build_single_ended_obstacles, build_incremental_obstacles
+from routing_context import (build_single_ended_obstacles, build_incremental_obstacles,
+                             carry_run_state)
 from single_ended_routing import route_multipoint_taps, route_net_with_obstacles, route_multipoint_main
 from connectivity import get_multipoint_net_pads, get_copper_connected_terminal_groups
 from blocking_analysis import analyze_frontier_blocking, print_blocking_analysis, filter_rippable_blockers, invalidate_obstacle_cache, record_frontier_blocking
@@ -226,7 +227,8 @@ def _probe_abandon_world(stranded_ids, orig_tap_segs, orig_tap_vias, ctx):
         add_segments_list_as_obstacles(state.working_obstacles, orig_tap_segs, config)
         add_vias_list_as_obstacles(state.working_obstacles, orig_tap_vias, config, diagonal_margin=0.25)
         token = push_inflight_copper(pcb_data, orig_tap_segs, orig_tap_vias)
-    probe_cfg = _dc_replace(config, max_iterations=min(config.max_iterations, 50000))
+    probe_cfg = carry_run_state(
+        config, _dc_replace(config, max_iterations=min(config.max_iterations, 50000)))
     try:
         for rid in stranded_ids:
             if state.working_obstacles is not None and state.net_obstacles_cache:
@@ -671,6 +673,9 @@ def run_phase3_tap_routing(
             pcb_data, net_id, config, obstacles, tap_input,
             global_offset=global_tap_offset, global_total=total_tap_edges, global_failed=global_tap_failed
         )
+        # Its taps are routed (or tried): its tap pads stop being
+        # stub-proximity sources for the nets routed after it.
+        state.multipoint_taps_done.add(net_id)
 
         if completed_result:
             # Update global progress counters
@@ -1680,6 +1685,7 @@ def _reroute_phase3_ripped_nets(
             # was built to save and killed its pending taps.
             if ripped_net_id in state.pending_multipoint_nets:
                 state.pending_multipoint_nets[ripped_net_id] = result
+                state.multipoint_taps_done.discard(ripped_net_id)
             record_net_event(state, ripped_net_id, "reroute_phase1_exhausted",
                              {"taps_pending": True})
         elif result and not result.get('failed') and result.get('path'):
@@ -1709,6 +1715,7 @@ def _reroute_phase3_ripped_nets(
             # found in results[], leading to duplicate segments being written to output.
             if ripped_net_id in state.pending_multipoint_nets:
                 state.pending_multipoint_nets[ripped_net_id] = result
+                state.multipoint_taps_done.discard(ripped_net_id)
 
             # Update working obstacles
             if state.working_obstacles is not None and state.net_obstacles_cache is not None:
@@ -1947,7 +1954,7 @@ def seam_reask_one_net(net_id, pcb_data, config, state, base_obstacles,
         history_conflict=False)   # #590: own-tree re-ask, not contention
     if saved is None:
         return False
-    cfg_polish = _dc_replace(config, max_rip_up_count=0)
+    cfg_polish = carry_run_state(config, _dc_replace(config, max_rip_up_count=0))
     _reroute_phase3_ripped_nets(
         [(net_id, saved, ripped_ids, was_in)], pcb_data, cfg_polish, state,
         routed_net_ids, remaining_net_ids, all_unrouted_net_ids,
@@ -2061,7 +2068,7 @@ def se_seam_reask(state, pcb_data, config, base_obstacles, gnd_net_id,
         return 0
     print(f"\n=== #444 SE seam re-ask: {len(candidates)} composed tree(s) "
           f"above {ratio_floor:.2f}x MST bound ===")
-    cfg_polish = _dc_replace(config, max_rip_up_count=0)
+    cfg_polish = carry_run_state(config, _dc_replace(config, max_rip_up_count=0))
     improved = 0
     for _ratio, _old_len, nid in candidates:
         name = pcb_data.nets[nid].name if nid in pcb_data.nets else str(nid)

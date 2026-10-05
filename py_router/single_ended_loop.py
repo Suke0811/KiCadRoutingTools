@@ -508,8 +508,10 @@ def route_single_ended_nets(
     all_unrouted_net_ids = state.all_unrouted_net_ids
     # The builders keep pending multipoint nets' tap pads as stub-proximity
     # sources (routing_context._stub_proximity_source_ids); they read the
-    # run's live pending dict through the config they are handed.
+    # run's live pending dict (less the nets whose taps are done) through the
+    # config they are handed.
     config._pending_multipoint = state.pending_multipoint_nets
+    config._multipoint_taps_done = state.multipoint_taps_done
     total_routes = state.total_routes
 
     # Counters (kept as locals)
@@ -811,6 +813,7 @@ def route_single_ended_nets(
                 # Track for Phase 3 completion after length matching
                 if result and not result.get('failed') and result.get('is_multipoint'):
                     state.pending_multipoint_nets[net_id] = result
+                    state.multipoint_taps_done.discard(net_id)
             else:
                 result = route_net_with_obstacles(pcb_data, net_id, cfg_route, obstacles,
                                                   attraction_path=attraction_path,

@@ -77,6 +77,11 @@ def filter_ripped_ghosts(ghost_dict, config: GridRouteConfig, routed_net_ids=Non
             if nid not in done and v is not None and len(v) > 0}
 
 
+def _prices(rows) -> bool:
+    """A cache entry that puts at least one cost row on the map."""
+    return rows is not None and len(rows) > 0
+
+
 # (id of the run's cache, the keys a derived view drops) -> (that cache, the
 # view last handed out). See _per_net_cost_sources.
 _DERIVED_SOURCES: "OrderedDict[tuple, tuple]" = OrderedDict()
@@ -97,7 +102,10 @@ def _per_net_cost_sources(track_proximity_cache, net_ids, sibs=()):
     as the cache when nothing is dropped."""
     from plane_fragility import without_own_fragility
     cache = without_own_fragility(track_proximity_cache, net_ids)
-    drop = set(sibs) | {n for n in net_ids if n in cache}
+    # Only entries that price something: at the default track proximity cost
+    # 0 every routed net holds an EMPTY array, and dropping it would build a
+    # new dict (a memo miss and one more pinned stack) for nothing.
+    drop = {n for n in set(sibs) | set(net_ids) if _prices(cache.get(n))}
     if drop:
         cache = {k: v for k, v in cache.items() if k not in drop}
     if cache is track_proximity_cache:
@@ -123,15 +131,20 @@ def _stub_proximity_source_ids(config, pcb_data, all_unrouted_net_ids,
     being routed (`exclude`).
 
     Every unrouted net, as before, plus two the batch-start list misses:
-    - a multipoint net whose Phase 1 main route is in but whose taps are still
-      pending -- it joins routed_net_ids after Phase 1, which used to strip its
-      unconnected tap pads of escape protection for the rest of Phase 1 and
-      all of Phase 3 (`config._pending_multipoint`, the run's pending dict);
+    - a multipoint net whose Phase 1 main route is in but whose taps Phase 3
+      has not routed yet -- it joins routed_net_ids after Phase 1, which used
+      to strip its unconnected tap pads of escape protection for the rest of
+      Phase 1 and all of Phase 3 (`config._pending_multipoint`, the run's
+      pending dict, less `config._multipoint_taps_done`: the pending dict
+      keeps a net after its taps are done, because the Phase 3 reroute of a
+      ripped net reads it);
     - a pre-existing net ripped this run and not yet back
       (`pcb_data._preexisting_rips`): its pads are bare again, but it was
       routed when the list was made."""
     routed = set(routed_net_ids)
-    pending = getattr(config, '_pending_multipoint', None) or {}
+    done = getattr(config, '_multipoint_taps_done', None) or ()
+    pending = {n for n in (getattr(config, '_pending_multipoint', None) or {})
+               if n not in done}
     ripped = getattr(pcb_data, '_preexisting_rips', None) or {}
     ids = list(all_unrouted_net_ids)
     if ripped:
@@ -139,6 +152,23 @@ def _stub_proximity_source_ids(config, pcb_data, all_unrouted_net_ids,
         ids += [n for n in ripped if n not in listed]
     return [n for n in ids
             if n not in exclude and (n not in routed or n in pending)]
+
+
+# Run state a batch hangs on its config for the builders to read.
+# dataclasses.replace() copies only the dataclass fields, so a clone routing
+# through a builder carries these over (carry_run_state).
+_RUN_STATE_ATTRS = ('_pending_multipoint', '_multipoint_taps_done',
+                    '_fragility_field')
+
+
+def carry_run_state(src, dst):
+    """`dst` (a dataclasses.replace clone of `src` at the same grid) with the
+    run state `src` carries: the pending multipoint taps the stub-proximity
+    sources read and the live plane-fragility field its commits refresh."""
+    for a in _RUN_STATE_ATTRS:
+        if hasattr(src, a):
+            setattr(dst, a, getattr(src, a))
+    return dst
 
 
 def build_diff_pair_obstacles(
@@ -528,7 +558,11 @@ def build_incremental_obstacles(
     from history_congestion import add_history_source
     from global_plan import add_plan_source
     from keep_away import add_keepaway_source
-    _c2 = congestion2_rows(config, net_id, routed_net_ids)
+    # Phase 3 hands this builder routed_net_ids WITH net_id in it (its main
+    # route is in); congestion2_rows already takes the owner out of its own
+    # demand, so it gets the list without it, as the slow builder does.
+    _c2 = congestion2_rows(config, net_id,
+                           [r for r in routed_net_ids if r != net_id])
     merge_track_proximity_costs(
         obstacles,
         _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),

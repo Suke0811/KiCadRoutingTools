@@ -239,7 +239,11 @@ def try_fallback_layer_swap(pcb_data, pair, pair_name: str, config,
     """
 
     def _pair_map(p):
-        """(obstacles, stubs) for routing pair `p` now."""
+        """(obstacles, stubs) for routing pair `p` now, built exactly as the
+        main diff-pair loop builds it. Not from net_obstacles_cache: its
+        entries are stamped at extra clearance 0 (the single-ended width),
+        while a pair needs the other unrouted nets' copper at
+        diff_pair_extra_clearance, and they predate the swap just made."""
         from routing_context import build_diff_pair_obstacles
         return build_diff_pair_obstacles(
             diff_pair_base_obstacles, pcb_data, config, routed_net_ids,
@@ -247,7 +251,6 @@ def try_fallback_layer_swap(pcb_data, pair, pair_name: str, config,
             gnd_net_id, track_proximity_cache, layer_map,
             diff_pair_extra_clearance,
             add_own_stubs_func=add_own_stubs_as_obstacles_for_diff_pair,
-            net_obstacles_cache=net_obstacles_cache,
             ripped_route_layer_costs=ripped_route_layer_costs,
             ripped_route_via_positions=ripped_route_via_positions)
 

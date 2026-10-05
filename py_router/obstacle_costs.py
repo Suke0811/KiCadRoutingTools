@@ -497,8 +497,11 @@ def compute_track_proximity_for_net(pcb_data: PCBData, net_id: int, config: Grid
 _MERGE_MEMO: dict = {}
 # Cap: entries pin their keyed objects alive (keepalive against id() reuse), so
 # the memo must not grow unbounded in a long-lived GUI session. Cleared wholesale
-# on overflow -- this is a within-run speedup, not a correctness cache.
+# on overflow -- this is a within-run speedup, not a correctness cache. Bounded
+# by bytes too: each entry pins a stacked copy of every source, and a board's
+# fragility field alone can be a million rows.
 _MERGE_MEMO_MAX = 32
+_MERGE_MEMO_BYTES_MAX = 256 * 2 ** 20
 
 
 def merge_track_proximity_costs(obstacles: GridObstacleMap,
@@ -623,7 +626,9 @@ def merge_track_proximity_costs(obstacles: GridObstacleMap,
         # Bound first, then store WITH keepalive refs (see the note above):
         # per_net_costs and the member arrays are held so their ids cannot be
         # recycled while this entry is live.
-        if len(_MERGE_MEMO) >= _MERGE_MEMO_MAX:
+        if (len(_MERGE_MEMO) >= _MERGE_MEMO_MAX
+                or sum(e[1].nbytes for e in _MERGE_MEMO.values())
+                + all_costs.nbytes > _MERGE_MEMO_BYTES_MAX):
             _MERGE_MEMO.clear()
         _MERGE_MEMO[key] = (sig, all_costs, per_net_costs, arrays_to_merge)
     obstacles.set_layer_proximity_batch(all_costs)

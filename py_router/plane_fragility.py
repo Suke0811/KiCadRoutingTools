@@ -83,8 +83,9 @@ def fragility_cache_key(net_id) -> tuple:
 def without_own_fragility(cache, net_ids):
     """`cache` without the fragility rows of `net_ids`' own pours -- the
     same dict when there are none, so the merge memo keeps its key."""
-    own = {fragility_cache_key(n) for n in net_ids}
-    if not any(k in cache for k in own):
+    own = {k for k in (fragility_cache_key(n) for n in net_ids)
+           if cache.get(k) is not None and len(cache[k]) > 0}
+    if not own:
         return cache
     return {k: v for k, v in cache.items() if k not in own}
 
