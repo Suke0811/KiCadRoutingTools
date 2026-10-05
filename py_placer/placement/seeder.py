@@ -2560,6 +2560,22 @@ def _stage1_geometry_rot(part, claim, fits=None):
     return part.rot
 
 
+def _stage1_walk_member(part, claim, tried, fits=None):
+    """#1125: the next member of a candidate set stage 1 tries after the
+    angles in `tried` -- `_stage1_geometry_rot`'s own choice with the tried
+    members taken out, so the walk follows the order that choice does (the
+    part's own angle, then the author's), and anything that replaces the
+    choice replaces the walk with it. None when no untried member fits."""
+    def _new(r):
+        return not any(abs((r - t + 180.0) % 360.0 - 180.0) < 1e-6
+                       for t in tried)
+
+    def _left(r):
+        return _new(r) and (fits is None or fits(r))
+    nxt = _stage1_geometry_rot(part, claim, fits=_left)
+    return nxt if _left(nxt) else None
+
+
 def _stage1_fits(state, part, entry, bounds, edge, rot) -> bool:
     """Would stage 1 seat `part` on `edge` at `rot`? Its two refusals before
     any turn, repeated: the part is wider than the edge, or the declared
@@ -4034,6 +4050,38 @@ def _decap_owner_ok(ref: str, chips: Optional[Set[str]]) -> bool:
     return (ref in chips) if chips is not None else (ref[0:1] == 'U')
 
 
+def decap_graded_distance(pcb_data, state, cap: str, chips, placed
+                          ) -> Tuple[Optional[str], Optional[float]]:
+    """`(chip, mm)`: how far `cap` is from its IC AS THE GRADE MEASURES IT,
+    at the state's live poses -- the cap's pad centroid to the nearest pad
+    box among the `chips` that are `placed` (`groups.elect_live`, the
+    election `rule_decap_distance` reads and the quench's #1043 gate calls
+    per pose). An unplaced chip still sits at its staging pose, which is not
+    where the grade will find it, so it is not a candidate. `(None, None)`
+    when no placed chip is given, and then the grade has no tether to grade
+    either.
+
+    Stage 3.5's within-limit check reads this. It used to read the distance
+    from the cap to the PIN TARGET it was aimed at, which is never shorter
+    than the distance to the pin's own IC's pad box, so it declined seats the
+    grade accepts (#1141: seeding a watchy pile with after_queue at upstream
+    main 055fa9e1 undid 16 seats, 9 of them inside the limit as graded)."""
+    from . import groups as _g
+    from .legality import footprint_at_pose
+
+    def _posed(ref):
+        p = state.parts[ref]
+        return footprint_at_pose(pcb_data.footprints[ref], (p.x, p.y, p.rot))
+    cands = []
+    for c in chips:
+        if c not in placed:
+            continue
+        b = _g.chip_bounds_of(_posed(c))
+        if b is not None:
+            cands.append((c, b))
+    return _g.elect_live(_posed(cap), cands)
+
+
 def _decap_rail(nets, net_refs) -> Optional[int]:
     """A decap's rail: of its nets with two or more owners, the one with the
     FEWEST owners (GND has the most), ties by net id (#1105: shared by the
@@ -4372,7 +4420,15 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         _floor_context_note(state, notes)
     for edge in sorted(by_edge):
         specs = sorted(by_edge[edge], key=lambda c: c['ref'])
-        for k, c in enumerate(specs):
+
+        def _stage1_one(k, c, _member1125=None):
+            # #1125: ONE stage-1 attempt at one connector, at the member
+            # `_stage1_geometry_rot` picks, or at `_member1125` when the walk
+            # below tries a later member of a candidate set. Returns
+            # (outcome, the angle measured at): 'skip' -- wider than the edge
+            # or outside its window, the two refusals `_stage1_fits` already
+            # applied to every member; 'skip_late' -- refused after the turn;
+            # 'crowded' -- seated at the crowding fallback; 'clean'.
             ref = c['ref']
             part = state.parts[ref]
             band = c.get('overhang_mm') or {}
@@ -4395,6 +4451,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             _geo_rot = _stage1_geometry_rot(
                 part, declared_rot.get(ref),
                 fits=lambda r: _stage1_fits(state, part, c, bounds, edge, r))
+            if _member1125 is not None:
+                _geo_rot = _member1125
             if _geo_rot != part.rot:
                 _geo_rot = _materialise_rotation(part, _geo_rot)
             _geo = _AtRotation(part, _geo_rot)
@@ -4439,7 +4497,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             if f_lo > f_hi:
                 notes.append(f"edge connector {ref}: wider than the {edge} "
                              f"edge, so stage 1 leaves it to the later stages")
-                continue
+                return 'skip', _geo_rot
             _win = _declared_frac_window(c, _e_hi - _e_lo)
             if _win is not None:
                 _w_lo = declared_to_ladder_frac(_geo, bounds, edge,
@@ -4456,7 +4514,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                         f"{ladder_to_declared_frac(_geo, bounds, edge, _e_lo, _e_hi, f_hi):.3f}] "
                         f"on the {edge} edge, so stage 1 leaves it to the "
                         f"later stages")
-                    continue
+                    return 'skip', _geo_rot
                 f_lo, f_hi = _n_lo, _n_hi
             frac = min(f_hi, max(f_lo, frac))
             # #893. An edge connector is the class whose rotation is most often
@@ -4490,8 +4548,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                         f"edge connector {ref}: seated at the declared "
                         f"rotation {_want:g}deg (input was {part.rot:g}deg)"
                         + (f", the first of its rotation_candidates "
-                           f"{[float(r) for r in _edge_decl[1]]} that fits "
-                           f"the {edge} edge" if _edge_decl[0] is None
+                           f"{[float(r) for r in _edge_decl[1]]} "
+                           + ("that fits " if _member1125 is None else
+                              "that seats clear of what is placed on ")
+                           + f"the {edge} edge" if _edge_decl[0] is None
                            else ''))
                     state.apply_move(ref, part.x, part.y, _want)
             # #701: SLIDE along the edge when a declared keep-out refuses the
@@ -4713,7 +4773,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 notes.append(f"edge connector {ref}: the overhang walk did "
                              f"not converge on the {edge} edge, so stage 1 "
                              f"left it for the later stages")
-                continue
+                return 'skip_late', _geo_rot
             # The SAME containment predicate _seat_edge uses. Stage 1 got the
             # fraction clamp and the convergence skip but not this, and was
             # measured still seating a connector at (159.909, 132.830) with
@@ -4733,7 +4793,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                                 + ', '.join(sorted(set(_why))) if _why else
                                 f"the {edge} band would put it off the board")
                              + ", so stage 1 left it for the later stages")
-                continue
+                return 'skip_late', _geo_rot
             state.apply_move(ref, round(x, 3), round(y, 3), part.rot)
             _missed = _window_miss_note(state, part, c, edge, 'edge connector ')
             if _missed:
@@ -4752,6 +4812,87 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 if _record is not None:
                     edge_floor_fallback[ref] = _record
                     notes.append(_floor_note('edge connector ', ref, _record))
+            return ('crowded' if (_pick is None and _kept is None
+                                  and _fallback is not None) else 'clean',
+                    _geo_rot)
+
+        def _stage1_undo(ref, pose, n0):
+            """#1125: take back one stage-1 attempt -- its pose, its notes,
+            its floor record and its seat -- so the next member is tried on
+            the board the first one saw. The `bounds_by_rot` / `tht_by_rot`
+            entries an attempt adds stay: they cache the part's own extents
+            at an angle, the same whoever asks."""
+            state.apply_move(ref, *pose)
+            del notes[n0:]
+            edge_floor_fallback.pop(ref, None)
+            placed.discard(ref)
+            unplaced.add(ref)
+
+        for k, c in enumerate(specs):
+            # #1125: a candidate SET is walked by the SEAT each member gets,
+            # not only by whether it fits. The member `_stage1_geometry_rot`
+            # picks is tried first, exactly as before; only when that seat
+            # crowds what is placed (or is refused after the turn) are the
+            # set's other fitting members tried, in the same order, and the
+            # first that seats clear is kept. When none does, the first
+            # member that SEATS at all is made again -- a crowded seat on its
+            # declared edge beats the interior the later stages would park it
+            # in, stage 1's own crowding-fallback rule -- and when none
+            # seats, attempt 1 is, which leaves the part to the later stages
+            # exactly as before. splitflap's J5 declared [180, 90] kept 180,
+            # which only crowds J17, where 90 seats clear.
+            _ref1125 = c['ref']
+            _part1125 = state.parts[_ref1125]
+            _pose1125 = (_part1125.x, _part1125.y, _part1125.rot)
+            _n1125 = len(notes)
+            _out, _used = _stage1_one(k, c)
+            _claim = declared_rot.get(_ref1125)
+            if (_out not in ('crowded', 'skip_late') or _claim is None
+                    or _claim[0] is not None or not _claim[1]):
+                continue
+            _tried = [_used]
+            _won = None
+            _crowded = _used if _out == 'crowded' else None
+            while True:
+                _next = _stage1_walk_member(
+                    _part1125, _claim, _tried,
+                    fits=lambda r, _p=_part1125, _c=c: _stage1_fits(
+                        state, _p, _c, bounds, edge, r))
+                if _next is None:
+                    break
+                _stage1_undo(_ref1125, _pose1125, _n1125)
+                _tried.append(_next)
+                _o, _u = _stage1_one(k, c, _member1125=_next)
+                if _o == 'clean':
+                    _won = _u
+                    break
+                if _o == 'crowded' and _crowded is None:
+                    _crowded = _u
+            if _won is not None:
+                notes.append(
+                    f"edge connector {_ref1125}: its rotation_candidates "
+                    f"member {_used:g}deg "
+                    + ("only crowded what is placed" if _out == 'crowded'
+                       else "was refused after the turn")
+                    + f", so stage 1 seated it at {_won:g}deg, the next "
+                    f"member that seats clear on the {edge} edge (#1125)")
+                continue
+            if len(_tried) > 1:
+                _stage1_undo(_ref1125, _pose1125, _n1125)
+                if _crowded is not None and _crowded != _used:
+                    _stage1_one(k, c, _member1125=_crowded)
+                else:
+                    _stage1_one(k, c)
+                _set = [float(r) for r in _claim[1]]
+                notes.append(
+                    f"edge connector {_ref1125}: no member of its "
+                    f"rotation_candidates {_set} seats clear on the {edge} "
+                    f"edge, so "
+                    + (f"it keeps the crowded seat of {_crowded:g}deg, the "
+                       f"first member that seats there at all (#1125)"
+                       if _crowded is not None else
+                       f"none seats there and it is left to the later "
+                       f"stages (#1125)"))
 
     # ---- 1.5 must_lock parts seat FIRST, in place when possible ------------
     # Under --force, previously-good must_lock parts used to be re-derived at
@@ -4968,10 +5109,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # earlier (#1053: "the two paths cannot diverge"). The target, the jitter
     # draw, the ladder and the notes are stage 3's, in stage 3's order.
 
-    def _centroid_seat(ref):
-        """`(clearance or None, target, jx, jy)`; seats on success."""
+    def _centroid_seat(ref, jit=None):
+        """`(clearance or None, target, jx, jy)`; seats on success. `jit`
+        is a jitter drawn earlier for this ref (stage 3's `q_jit`); None
+        draws it here, as stage 2.4 does."""
         target = _partner_centroid(state, ref, placed) or center
-        jx, jy = _jitter()
+        jx, jy = _jitter() if jit is None else jit
         rot_before = state.parts[ref].rot
         clr = _try_place(state, ref, target[0] + jx, target[1] + jy,
                          unplaced - {ref},
@@ -5076,9 +5219,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         parts placed before it, stage 3.5 (#1105) over the owner ICs the
         centroid stage seated since. `tag` marks which stage wrote a note.
         `decline_beyond` (stage 3.5 under `DECAP_LATE_WITHIN_LIMIT`) undoes a
-        seat that lands farther than that from its pin target, adding the cap
-        to `declined`: it keeps its own centroid turn instead."""
+        seat whose cap lands farther than that from its IC as the GRADE
+        measures it (`decap_graded_distance`: pad centroid to the elected
+        chip's pad box, over the placed chips on its rail), adding the cap to
+        `declined`: it keeps its own centroid turn instead."""
         _last = {'declined': False}   # did the latest `_seat` decline?
+        _rail_chips: Dict[str, List[str]] = {}   # cap -> its rail's chips
         avail = [r for r in _order(sorted(unplaced)) if r in decap_scope]
         rail_of: Dict[str, int] = {}
         for ref in avail:
@@ -5143,6 +5289,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
 
         def _seat(ref, tx, ty, owner, pn, constraint=None, tol=0.5):
             _last['declined'] = False
+            _el = _off = None
             _ladder = _cap_ladder(ref, owner)
             _was = (state.parts[ref].x, state.parts[ref].y,
                     state.parts[ref].rot)
@@ -5155,8 +5302,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             if clr is None:
                 return False
             if decline_beyond is not None:
-                _off = math.hypot(state.parts[ref].x - tx,
-                                  state.parts[ref].y - ty)
+                if ref not in _rail_chips:
+                    _rail_chips[ref] = _g.rail_chips(pcb_data, ref)
+                _el, _off = decap_graded_distance(
+                    pcb_data, state, ref, _rail_chips[ref], placed)
+                if _off is None:
+                    _off = 0.0    # no placed chip on its rail: no tether to grade
                 if _off > decline_beyond:
                     state.apply_move(ref, *_was)
                     _last['declined'] = True
@@ -5164,8 +5315,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                         declined.append(ref)
                     notes.append(
                         f"{ref}: stage 3.5 declined its seat for {owner} -- "
-                        f"it landed {_off:.2f}mm from the pin target, past "
-                        f"the {decline_beyond:g}mm decap limit")
+                        f"it landed {_off:.2f}mm from {_el} as the grade "
+                        f"measures it, past the {decline_beyond:g}mm decap "
+                        f"limit")
                     return False
             avail.remove(ref)
             placed.add(ref)
@@ -5179,7 +5331,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                          f" [{net}], landed "
                          f"{math.hypot(p2.x - tx, p2.y - ty):.2f}mm"
                          + (f" at reduced clearance {clr:g}"
-                            if clr < state.clearance else "") + tag)
+                            if clr < state.clearance else "")
+                         + (f", {_off:.2f}mm from {_el} as graded"
+                            if _el is not None else "") + tag)
             return True
 
         # Pass 1: a cap declared in a zone serves a pin INSIDE that zone --
@@ -5391,6 +5545,14 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                             'declined': [], 'reason': None}
     late_left = len(unplaced & decap_scope)
     late_from = None
+    # #1105: every queue entry's jitter, drawn HERE in queue order and before
+    # any reorder. A cap stage 3.5 claims skips its centroid turn, and
+    # `after_queue` moves the caps to the end; drawing at the turn shifted the
+    # RNG stream for every part after either, so the stage's A/B measured a
+    # re-roll of their targets as well as the claim. With the stage off every
+    # entry reaches its turn in this order, so the draws are the ones the
+    # inline `_jitter()` made -- the same values, bit for bit.
+    q_jit = {r: _jitter() for r in queue}
     if late_on and late_left and DECAP_LATE_AT == 'after_queue':
         queue = ([r for r in queue if r not in decap_scope]
                  + [r for r in queue if r in decap_scope])
@@ -5413,7 +5575,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 declined=late['declined'])
         if ref not in unplaced:
             continue    # #1105: claimed by stage 3.5 just above
-        clr, target, jx, jy = _centroid_seat(ref)
+        clr, target, jx, jy = _centroid_seat(ref, jit=q_jit[ref])
         if clr is None:
             unseated.append(ref)
             # setdefault: a zone member that failed its zone stage keeps THAT

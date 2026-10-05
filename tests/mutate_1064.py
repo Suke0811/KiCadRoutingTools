@@ -96,9 +96,11 @@ ROWS = [
      "                        continue\n"
      "                    ov = rect_overlap_area((a0, a1, a2, a3),",
      (REPRO, RUN38), 'KILLED'),
+    # Re-anchored (#1127): the confirmation moved into `_exact_pad_stack`,
+    # which pad_intersection_pairs and the placement gate now share.
     ('exact-confirm-dropped', 'leg',
-     "                            if not (hit and over >= eps - 1e-9):",
-     "                            if False:",
+     "    return bool(hit and over >= eps - 1e-9)",
+     "    return True",
      (NEAR_TOUCH, FLOORPLAN_EXACT), 'KILLED'),
     ('body-overlap-drops-a-stack', 'leg',
      "    pairs.extend(pad_intersection_pairs(pcb_data, clearance, locked_refs))",

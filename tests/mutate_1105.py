@@ -1,4 +1,5 @@
-"""The #1105 mutation battery: seeder stage 3.5 and the emitter's forecast.
+"""The #1105 mutation battery: seeder stage 3.5, stage 3's jitter draw, and the
+emitter's forecast.
 
 One row per load-bearing line, each reverting it; every row names the test
 case that must fail. **THE ROWS TO LOOK AT FIRST if this file ever goes red**
@@ -68,7 +69,13 @@ AGREE = _t(T, 'forecast_agrees')
 FLAGS = _t(T, 'flag_pair')
 DEFAULT = _t(T, 'default_is')
 LIMIT = _t(T, 'past_the_limit')
+GRADED = _t(T, 'measures_as_the_grade')
+LIVE = _t(T, 'live_poses')
 T1051 = _t('test_1051_seed_arrays.py', 'zero_claim_reports_why')
+J = 'test_1105_stage3_jitter.py'
+JIT_SAME = _t(J, 'same_with_the_claim')
+JIT_OFF = _t(J, 'pre_1105_seeder')
+JIT_ANCHORS = _t(J, 'anchors_first')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -108,6 +115,27 @@ ROWS = [
      "                if _off > decline_beyond:",
      "                if False:",
      (LIMIT,), 'KILLED'),
+    # the within-limit check's MEASURE: back to the distance from the pin
+    # target, which declines seats the grade accepts (C2, 7.07 mm from its
+    # pin, 0.82 mm from U1's pad box)
+    ('decline-measures-the-pin-target', 'seeder',
+     "                _el, _off = decap_graded_distance(",
+     "                _el, _off = (lambda *_a: ('pin', math.hypot("
+     "state.parts[ref].x - tx, state.parts[ref].y - ty)))(",
+     (LIMIT,), 'KILLED'),
+    ('decline-measures-at-the-file-pose', 'seeder',
+     "        return footprint_at_pose(pcb_data.footprints[ref], (p.x, p.y, p.rot))",
+     "        return pcb_data.footprints[ref]",
+     (LIVE,), 'KILLED'),
+    ('decline-sees-unplaced-chips', 'seeder',
+     "        if c not in placed:",
+     "        if False:",
+     (GRADED,), 'KILLED'),
+    ('decline-elects-its-own-chip', 'seeder',
+     "    return _g.elect_live(_posed(cap), cands)",
+     "    return (cands[0][0], _g.elect_live(_posed(cap), cands[:1])[1]) "
+     "if cands else (None, None)",
+     (GRADED,), 'KILLED'),
     ('forecast-blind-to-fixed-poses', 'seeder',
      "                 | {str(f['ref']) for f in intent.fixed_poses}",
      "                 | set()",
@@ -134,6 +162,20 @@ ROWS = [
      "            _dcen['seeder_forecast'] = _seeder_forecast(doc, pcb, args.board,",
      "            _dcen['seeder_forecast_x'] = _seeder_forecast(doc, pcb, args.board,",
      (EMIT,), 'KILLED'),
+    # stage 3's jitter (#1105 sub-issue): drawn per queue entry, after the
+    # anchors-first reorder and before stage 3.5 can skip or reorder a turn
+    ('jitter-drawn-at-the-turn', 'seeder',
+     "        clr, target, jx, jy = _centroid_seat(ref, jit=q_jit[ref])",
+     "        clr, target, jx, jy = _centroid_seat(ref)",
+     (JIT_SAME, JIT_OFF), 'KILLED'),
+    ('jitter-drawn-before-anchors-first', 'seeder',
+     "    q_jit = {r: _jitter() for r in queue}",
+     "    q_jit = {r: _jitter() for r in _order(sorted(unplaced))}",
+     (JIT_ANCHORS,), 'KILLED'),
+    ('jitter-drawn-after-the-reorder', 'seeder',
+     "    q_jit = {r: _jitter() for r in queue}",
+     "    q_jit = {r: _jitter() for r in (sorted(queue, key=lambda r: r in decap_scope) if late_on and DECAP_LATE_AT == 'after_queue' else queue)}",
+     (JIT_SAME,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)
@@ -147,12 +189,28 @@ def _dirty(path):
     return bool(p.stdout.strip())
 
 
+def _purge_pycache():
+    """Drop every compiled module under the engine trees before a row is
+    applied. Two rows that make same-size edits within one second leave the
+    source's (mtime, size) unchanged, so a witness would import the PREVIOUS
+    row's bytecode -- a false SURVIVED, measured on this battery's
+    overrun-reads-paste-as-copper (mutate_829 has the same guard)."""
+    import shutil
+    for base in ('py_placer', 'py_router', 'py_tools'):
+        for dirpath, dirnames, _files in os.walk(os.path.join(_ROOT, base)):
+            if os.path.basename(dirpath) == '__pycache__':
+                shutil.rmtree(dirpath, ignore_errors=True)
+                dirnames[:] = []
+
+
 def _run_tests(tests):
     failed = []
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
     for t in tests:
-        p = subprocess.run([sys.executable, '-X', 'utf8', t[0]] + list(t[1:]),
+        p = subprocess.run([sys.executable, '-B', '-X', 'utf8', t[0]]
+                           + list(t[1:]),
                            capture_output=True, text=True, encoding='utf-8',
-                           errors='replace', timeout=2400, cwd=_ROOT)
+                           errors='replace', timeout=2400, cwd=_ROOT, env=env)
         if p.returncode != 0:
             failed.append((os.path.basename(t[0]) + ':' + ','.join(t[1:]),
                            p.returncode,
@@ -195,6 +253,7 @@ def run(only=None):
                 results.append((name, 'BROKEN', expect,
                                 ['anchor matched %d times' % base.count(o)]))
                 continue
+            _purge_pycache()
             io.open(path, 'w', encoding='utf-8', newline='').write(
                 base.replace(o, n, 1))
             try:

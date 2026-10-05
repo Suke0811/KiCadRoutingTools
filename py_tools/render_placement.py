@@ -1553,9 +1553,26 @@ def describe_pair(before_model, after_model, args):
         L.append(f"  VERDICT: {net_fixed} resolved, none introduced.")
     else:
         L.append("  VERDICT: no legality finding changed identity.")
-    for mk, mlabel in (('crossings', 'crossings'), ('hpwl', 'hpwl mm'),
-                       ('overlap_area', 'overlap mm2')):
-        bm, am = before_model.metrics.get(mk), after_model.metrics.get(mk)
+    # #1126: the courtyard census, as the caption and the checklist read it,
+    # beside the quench's rect metric -- labelled as the optimizer's, since
+    # the two differ (glasgow_revC 52.252 vs 70.05) and a reader comparing
+    # this diff with the checklist must be able to tell which one moved.
+    _cen = {}
+    for side, fnd, mdl in (('before', b, before_model),
+                           ('after', a, after_model)):
+        _cen[side] = (None if fnd.get('courtyard_census_error')
+                      or getattr(mdl, 'pcb', None) is None
+                      else fnd.get('courtyard_overlap_mm2'))
+    for mk, mlabel, bm, am in (
+            ('crossings', 'crossings', before_model.metrics.get('crossings'),
+             after_model.metrics.get('crossings')),
+            ('hpwl', 'hpwl mm', before_model.metrics.get('hpwl'),
+             after_model.metrics.get('hpwl')),
+            ('courtyard_overlap_mm2', 'courtyard overlap mm2 (census)',
+             _cen['before'], _cen['after']),
+            ('overlap_area', 'overlap mm2 (optimizer rects)',
+             before_model.metrics.get('overlap_area'),
+             after_model.metrics.get('overlap_area'))):
         if bm is not None and am is not None:
             arrow = '->' if abs(am - bm) > 1e-9 else '=='
             J[mk] = {'before': round(bm, 4), 'after': round(am, 4)}
@@ -1727,7 +1744,20 @@ def caption(spec: PanelSpec, extra: Optional[Dict] = None) -> str:
         if m.get(k) is not None:
             bits.append(f"{k} " + fmt.format(m[k]))
     if m.get('overlap_area') is not None:
-        bits.append(f"overlap {m['overlap_area']:.2f}mm2")
+        # #1126: the courtyard CENSUS -- every courtyard pair
+        # `grade_body_overlap` measures on the drawn outlines, waived ones
+        # included -- the number the checklist (`b_courtyard_overlap_mm2`)
+        # and the film (#1124) carry. `metrics.overlap_area` is the quench's
+        # rect courtyards, zeroed under a #1104 project waiver: glasgow_revC's
+        # caption read 70.05 against 52.252 on its panel and checklist. The
+        # metric stays in the JSON. No census (no pcb on the model, or one
+        # that raised) prints n/a, never the empty default's 0.00.
+        _f = (legality_findings(spec.model)
+              if getattr(spec.model, 'pcb', None) is not None else None)
+        bits.append("courtyard overlap n/a (census not built)"
+                    if _f is None or _f.get('courtyard_census_error')
+                    else f"courtyard overlap "
+                         f"{_f['courtyard_overlap_mm2']:.2f}mm2")
     if m.get('pad_intersection_pairs'):
         # run-6: a stack is never cosmetic -- name it in the caption (the
         # run-5 caption printed the aggregate scalar next to a zero-pair

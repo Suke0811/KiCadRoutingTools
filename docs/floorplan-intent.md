@@ -33,7 +33,10 @@ The intent is also a GENERATOR input, not only a grader's, and it now has
    tools that run the most quench iterations in a real chain could walk a part
    straight out of a zone the file declared. Measured on ulx3s: the seed grades
    clean, an ungated quench manufactures 4 `zone_containment` errors, a gated
-   one manufactures none.
+   one manufactures none. The gate FREEZES a `must_lock` part and an
+   edge-claimed connector where it stands, so `place_portfolio`'s strategies
+   do not perturb them in the first place (#1129: a `poses` candidate used to
+   turn a `must_lock` U1 and the quench then froze it turned).
 3. **A rank gate and a health source.** `place_portfolio.py` ranks K perturbed
    candidates only if they grade error-free, using the `health` signals in the
    rank key.
@@ -436,7 +439,8 @@ TP2, once TP2 is placed or declared) is still refused.
 #1095).** The courtyard and fab channels keep the part rects as their broad
 phase and measure an overlapping pair on the DRAWN outlines (courtyard united
 pad by pad with the copper -- a custom pad's parsed primitives, not its box,
-since #1123), which is what KiCad measures: KiCad's StickHub
+since #1123; a pad on no copper layer, such as a paste-only aperture, is not
+copper and is not united, since #1128), which is what KiCad measures: KiCad's StickHub
 demo, 39 parts at +-45/+-135 degrees, went from 74 phantom courtyard-blocking
 pairs and 6 phantom containments to 0. The fixed-pose seat above calls the
 same measure. A board whose own `.kicad_pro` sets `courtyards_overlap` to
@@ -523,7 +527,14 @@ when that is a member that fits the edge and its window, else the first
 member, in the author's order, that does (#1120); when none fits, stage 1
 leaves the part unturned, says so, and the later stages seat it at a member
 or report it in `rotation_unseated`. It used to apply no set at all, so J5
-declared `[0, 90]` was written at its input 180.
+declared `[0, 90]` was written at its input 180. That member is then judged
+by the SEAT it gets (#1125): when it only crowds what is already placed, or
+is refused after the turn, the set's other fitting members are tried in the
+same order and the first that seats clear is kept; when none does, the
+first member that seats there at all keeps its crowded seat on the edge, and
+when none seats the part is left to the later stages, as before -- the notes
+say which. splitflap's J5 declared
+`[180, 90]` used to keep 180, which crowds J17, where 90 seats clear.
 
 **What a correction may not trade for its fix.** Both this step and the band
 settle below are compared with the pose they replace, and every count below

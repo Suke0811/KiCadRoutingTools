@@ -255,7 +255,7 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 | 2.45 | one declared array as ONE row (`_seat_array` -> `_seat_block`, #1051): the served part's pin order, one rotation, one pitch, a capped pose count (`ARRAY_SEAT_POSE_CAP`). A row not seated whole goes to `array_unseated` and its members are seated one by one |
 | 2.5 / 2.6 | the decap-governed caps, one per supply pin; what the pin stage declines is put back into its zone. `decap_stage` says what it claimed, and why when nothing -- on an unzoned seed, that no owner IC is seated before the stage (#1053) |
 | 3 | everything else, at the nearest legal pose to its connectivity centroid |
-| 3.5 | opt-in (`--decap-claim-after-ics`, #1105): inside stage 3, at the first scoped cap after the queue's last owner IC, the pin claim again over the owner ICs stage 3 seated (never one 2.5 served). It draws no RNG, so every part seated before it -- every IC -- is seated as without it; a cap it declines keeps its own turn. `decap_stage.late` says what it did. Rejected as a default by the `decap-*` A/B rows |
+| 3.5 | opt-in (`--decap-claim-after-ics`, #1105): inside stage 3, at the first scoped cap after the queue's last owner IC, the pin claim again over the owner ICs stage 3 seated (never one 2.5 served). It draws no RNG, so every part seated before it -- every IC -- is seated as without it; a cap it declines keeps its own turn. Stage 3's target jitter is drawn for every queue entry before the claim or the `after_queue` reorder, so the parts seated after it are aimed exactly as without it too. `decap_stage.late` says what it did. Rejected as a default by the `decap-*` A/B rows |
 | 3c / 3b | the eviction rung (`--evict-depth`, below), then the gated anchor re-seat rounds |
 
 `place_seed`'s `JSON_SUMMARY` carries what stages 0, 2.45 and 2.5 did, judged
@@ -297,7 +297,8 @@ honoured by the seat search -- `place_seed`'s post-polish re-seat included
 since #1117, which names a part it cannot put back at its angle in
 `reseat_declined` rather than turning it; stage 1's edge seat applies a
 declared `rotation`, and a `rotation_candidates` set at a member that fits
-the edge since #1120 -- and held by the
+the edge since #1120, walking on to the next member when that one's seat
+only crowds what is placed since #1125 -- and held by the
 quench, whose swaps no longer trade a declared angle away), an array's
 `rotation`
 (the row is seated at one angle and the quench only translates it), or a
@@ -540,6 +541,15 @@ where the part already sits — and would refuse to arrange the unplaced pile
 this tool exists for. `--strict-legal` is the absolute arm, `--force` the
 waiver, and a KiCad `(locked yes)` is refused unless the same call `unlock`s
 it. See `docs/utilities.md` for the full contract.
+
+The SEARCH's own stack test (`legality.pads_ok` refusing a new
+`PairShortfall.stack`) is still measured on pad BOXES, conservative by
+design. `legality.STACK_EXACT_CONFIRM` (#1127, default off) confirms each box
+hit on the pads' outlines with `_exact_pad_stack`, the check check_assembly
+makes. `tests/measure_1127_stack_gate_census.py` measured it before any
+default: the corpus seeds and quenches almost never reach a box stack, and
+the placement A/B did not pass (the census and its numbers are in #1127), so
+it stays off.
 
 ## place_fanout_clearance.py — decoupling-cap clearance repair (issue #130)
 

@@ -735,6 +735,8 @@ _BASELINE_GATES = {
     'tests/878_far_face_currency.json':
         'tests/test_878_far_face_currency.py',
     'tests/placement_ab_baseline.json': 'tests/test_placement_ab.py',
+    # #1105: fixed before any pile number existed; the gate pins its sha256.
+    'tests/1105_pile_ab_prereg.json': 'tests/test_1105_pile_prereg.py',
     'tests/placement_calibration_recovered.json':
         'tests/test_803_calibration_claims.py',
     'tests/placement_calibration_rows.json':
@@ -798,7 +800,7 @@ _UNGATED_BASELINE_COUNT = 7
 #: verbatim, because the print string has since been reworded and the counts
 #: have moved -- a "measured" line spliced from two versions is exactly what
 #: #879 is about.)
-_DECLARED_BASELINE_COUNT = 22
+_DECLARED_BASELINE_COUNT = 23
 
 #: Committed JSON/JSONL under `tests/` that is an INPUT, not a recorded
 #: measurement. Full-path regexes, each with its reason.
@@ -1083,8 +1085,9 @@ _UNRESOLVABLE = {}
 #: #1111 added `mutate_1111.py`; 71 before #1065 added `mutate_1065.py`; 72
 #: before #1064 added `mutate_1064.py`; 73 before #1120, #1121 and #1122 added
 #: `mutate_1120_1121_1122.py`; 74 before #1123 and #1124 added
-#: `mutate_1123_1124.py`.
-_BATTERY_COUNT = 75
+#: `mutate_1123_1124.py`; 75 before #1125, #1126, #1128 and #1129 added
+#: `mutate_1125_1126_1128_1129.py`; 76 before #1127 added `mutate_1127.py`.
+_BATTERY_COUNT = 77
 
 #: A floor well under today's 831, not a target. Same purpose as
 #: `test_the_scanners_still_match_something`: prove the corpus is populated.

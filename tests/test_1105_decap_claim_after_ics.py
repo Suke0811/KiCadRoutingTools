@@ -203,9 +203,13 @@ def test_the_pile_claims_after_its_owner_ics():
 def test_a_seat_past_the_limit_is_undone():
     """Two adjacent supply pins on different rails send their caps to one
     spot; the second lands millimetres from the pin it claimed. Under
-    DECAP_LATE_WITHIN_LIMIT that seat is undone and the cap keeps its own
-    centroid turn. Control: with the decline off the same caps are claimed
-    at the far seats."""
+    DECAP_LATE_WITHIN_LIMIT a seat farther from its IC than the limit AS THE
+    GRADE MEASURES IT (`seeder.decap_graded_distance`: pad centroid to the
+    elected chip's pad box) is undone and the cap keeps its own centroid
+    turn; a seat far from its pin target but within the limit of its IC is
+    kept, because the grade accepts it (it used to be declined too, on the
+    distance to the pin target). Control: with the decline off the same caps
+    are claimed at the far seats."""
     with tempfile.TemporaryDirectory() as td:
         intent, _p = _intent(_doc(PILE), td, 'pile.json')
         lim = float(intent.decaps['max_distance_mm'])
@@ -222,14 +226,99 @@ def test_a_seat_past_the_limit_is_undone():
             note = [n for n in on['notes']
                     if n.startswith(f"{ref}: stage 3.5 declined its seat")]
             assert note and f"{lim:g}mm decap limit" in note[0], note
+            assert float(re.search(r'landed ([\d.]+)mm from \S+ as the '
+                                   r'grade measures it', note[0]).group(1)
+                         ) > lim, note
+        far_but_graded_in = []
         for n in _late_notes(on):
-            assert float(re.search(r'landed ([\d.]+)mm', n).group(1)) <= \
-                lim + 1e-9, n
+            graded = float(re.search(r', ([\d.]+)mm from \S+ as graded',
+                                     n).group(1))
+            assert graded <= lim + 1e-9, n
+            if float(re.search(r'landed ([\d.]+)mm', n).group(1)) > lim:
+                far_but_graded_in.append(n.split(':')[0])
+        # the defect the graded measure fixes: a seat past the limit from its
+        # PIN TARGET but inside it from its IC's pad box is the grade's pass,
+        # and is kept (the pin-target measure declined C2 here, 7.07 mm from
+        # its pin and 0.82 mm from U1)
+        assert far_but_graded_in, _late_notes(on)
         # control: the same caps are CLAIMED when the decline is off
         assert set(late['declined']) <= set(lctl['caps']), (late, lctl)
         assert lctl['declined'] == [], lctl
     print(f"  PASS: {late['declined']} declined past the {lim:g} mm limit "
           f"(claimed at the far seat when the decline is off)")
+
+
+def test_the_decline_measures_as_the_grade():
+    """`seeder.decap_graded_distance` -- what the within-limit check reads --
+    is the grade's own election on a board at its file poses: for every
+    graded tether on esp_prog and watchy it returns the chip and distance
+    `groups.decap_populations` (the population `rule_decap_distance` grades)
+    holds. A chip that is not yet placed is no candidate (it still sits at
+    its staging pose): with nothing placed there is no tether to measure."""
+    import pose_score
+    from placement import groups as groups_mod
+    n = 0
+    for board in (ESP, WATCHY):
+        pcb = parse_kicad_pcb(board)
+        state = pose_score.make_state(pcb, board)
+        near, beyond, _o = groups_mod.decap_populations(pcb)
+        pairs = [(cap, ic, d) for ic, caps in near.items()
+                 for cap, d in caps] + list(beyond)
+        assert pairs, board
+        for cap, ic, d in pairs:
+            chips = groups_mod.rail_chips(pcb, cap)
+            got = seeder.decap_graded_distance(pcb, state, cap, chips,
+                                               set(chips))
+            assert got[0] == ic and abs(got[1] - d) < 1e-6, (cap, got, ic, d)
+            assert seeder.decap_graded_distance(
+                pcb, state, cap, chips, set()) == (None, None), cap
+            n += 1
+    print(f"  PASS: {n} tether(s) on esp_prog and watchy measured exactly as "
+          f"the grade elects them; no placed chip, no tether")
+
+
+def test_the_decline_reads_live_poses_and_the_rail():
+    """Every measure the within-limit check takes during a real seed, re-taken
+    beside it: the cap and its chips POSED where the seed has them at that
+    moment (not at their file poses), and the chips the call is handed are
+    exactly the cap's rail chips (`groups.rail_chips`). A measure read at the
+    file pose flipped run 29's C3 from declined to kept ("0.00mm from U1")
+    with every other case here still passing."""
+    from placement import groups as groups_mod
+    from placement.legality import footprint_at_pose
+    real = seeder.decap_graded_distance
+    seen = []
+
+    def spy(pcb_data, state, cap, chips, placed):
+        got = real(pcb_data, state, cap, chips, placed)
+
+        def posed(r):
+            p = state.parts[r]
+            return footprint_at_pose(pcb_data.footprints[r],
+                                     (p.x, p.y, p.rot))
+        assert list(chips) == groups_mod.rail_chips(pcb_data, cap), (
+            cap, chips)
+        cands = [(c, groups_mod.chip_bounds_of(posed(c)))
+                 for c in chips if c in placed]
+        want = groups_mod.elect_live(posed(cap),
+                                     [x for x in cands if x[1] is not None])
+        seen.append((cap, got, want))
+        return got
+    with tempfile.TemporaryDirectory() as td:
+        intent, _p = _intent(_doc(PILE), td, 'pile.json')
+        seeder.decap_graded_distance = spy
+        try:
+            with _knobs(DECAP_LATE_WITHIN_LIMIT=True,
+                        DECAP_LATE_AT='after_last_owner'):
+                _seed(PILE, intent, decap_claim_after_ics=True)
+        finally:
+            seeder.decap_graded_distance = real
+    assert seen, 'the within-limit check never measured anything'
+    bad = [s for s in seen if s[1][0] != s[2][0]
+           or abs((s[1][1] or 0.0) - (s[2][1] or 0.0)) > 1e-9]
+    assert not bad, bad
+    print(f"  PASS: {len(seen)} within-limit measure(s) on run 29's pile, "
+          f"each the cap's live-pose distance to its rail's placed chips")
 
 
 def test_no_supply_pin_is_served_twice():
@@ -500,6 +589,8 @@ TESTS = [
     test_a_flat_board_claims_after_its_owner_ics,
     test_the_pile_claims_after_its_owner_ics,
     test_a_seat_past_the_limit_is_undone,
+    test_the_decline_measures_as_the_grade,
+    test_the_decline_reads_live_poses_and_the_rail,
     test_no_supply_pin_is_served_twice,
     test_a_non_u_owner_is_still_not_claimed,
     test_the_stage_off_is_the_pre_1105_seeder,
