@@ -240,6 +240,51 @@ def _drills_too_close(vias, hole_to_hole: float) -> bool:
     return False
 
 
+def _withdraw_unused_escapes(pcb_data, net_id, tap_results, config):
+    """The #666 escape vias a now-connected net did not use, taken back out.
+
+    An escape is laid BEFORE the gap routes, so they can start from a via
+    with every layer; when the route that closed the net reached the pad on
+    the pad's own layer instead, the escape via joins nothing across layers
+    -- KiCad's via_dangling: its net's copper (tracks, pads, zones, its own
+    dogbone trace included) reaches it on at most one layer -- and no cleanup
+    pass removes it: the sweeps prune dead-end SEGMENTS and the vias those
+    free, and a via in its pad has no segment of its own. Only the VIA goes
+    here; a dogbone trace it leaves dead-ended is an ordinary dead end, which
+    the post-route sweep prunes on a complete net. While the net is still
+    open every escape is kept on purpose (the terrain later passes start
+    from), so this runs only once the net is whole, and a via whose removal
+    would split the net again stays."""
+    from pcb_modification import _via_support_layers, bump_copper_epoch
+    kept = []
+    for r in tap_results:
+        segs = [x for x in pcb_data.segments if x.net_id == net_id]
+        pads = pcb_data.pads_by_net.get(net_id, [])
+        zones = [z for z in (getattr(pcb_data, 'zones', None) or [])
+                 if z.net_id == net_id]
+        dangling = {id(v) for v in r.get('new_vias', [])
+                    if len(_via_support_layers(v, segs, pads, zones,
+                                               config.layers)) <= 1}
+        if not dangling:
+            kept.append(r)
+            continue
+        before = pcb_data.vias
+        pcb_data.vias = [v for v in pcb_data.vias if id(v) not in dangling]
+        bump_copper_epoch(pcb_data)
+        if _net_component_info(pcb_data, net_id)[0] > 1:
+            pcb_data.vias = before                     # it was needed
+            bump_copper_epoch(pcb_data)
+            kept.append(r)
+            continue
+        print(f"    bare-ball escape via withdrawn: it joins nothing across "
+              f"layers ({len(dangling)} via(s)) (#666)")
+        r = dict(r, new_vias=[v for v in r.get('new_vias', [])
+                              if id(v) not in dangling])
+        if r['new_segments'] or r['new_vias']:
+            kept.append(r)
+    return kept
+
+
 def _net_component_info(pcb_data, net_id):
     """Connected components of a net's pads+copper on the REAL board.
 
@@ -1331,6 +1376,9 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                   f"{len(result.get('new_vias', []))} vias, "
                   f"{result.get('iterations', 0)} iters)")
 
+        if tap_results and num <= 1:
+            tap_results = _withdraw_unused_escapes(pcb_data, net_id,
+                                                   tap_results, config)
         elapsed = time.time() - net_start
         if not edge_results and not tap_results:
             summary['unchanged'].append(net_name)

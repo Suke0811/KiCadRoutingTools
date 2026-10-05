@@ -77,6 +77,23 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:   esp_prog:portfolio-1         segs 293 -> 223, copper 362.65 -> 347.37
 #:   splitflap_driver:authored    segs 1154 -> 832, copper 2913.88 -> 2831.72
 #:
+#: RE-RECORDED 2026-10-05 (Phase 3's fast builder prices the ripped-route
+#: ghosts, as the slow builder always did; an own-tree seam re-ask records no
+#: ghost; net_rescue withdraws a #666 escape the closing route did not use).
+#: `truth.quality` only; `truth.blocking` and the headline did not mismatch on
+#: any row, and splitflap did not move. ATTRIBUTED, not assumed, by running
+#: the escape withdrawal alone on the ghost-free code: it moves ONLY
+#: perturb-scatter-d1, 38 -> 36 vias at identical copper and segments -- two
+#: dangling escape vias (KiCad via_dangling) the old row shipped. The other
+#: two rows are the ghosts, and they split: authored +3 vias / -7.46 mm,
+#: portfolio-1 -3 vias / +1.89 mm / -10 segments -- per-board movement of a
+#: soft cost, which the corpus A/B judges, not this detector.
+#:
+#:   esp_prog:authored            vias 32 -> 35, segs 189 -> 194, copper 319.38 -> 311.92
+#:   esp_prog:perturb-scatter-d1  vias 38 -> 36, segs 235 -> 235, copper 348.89 -> 348.89
+#:   esp_prog:portfolio-1         vias 33 -> 30, segs 225 -> 215, copper 347.97 -> 349.86
+#:   splitflap_driver:authored    unmoved
+#:
 #: RE-RECORDED 2026-09-28 (#1063 follow-up: route.py runs the strict collapse
 #: ONCE at the end of the run instead of inside the in-run cleanup, so the
 #: plane finalize and the reconciliation route around the copper the router
@@ -316,7 +333,7 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 286 -> 254; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 34/344.06/254 -> 34/336.58/250
                # 2026-09-16 (#958 fine-pitch tie guard): segs 250 -> 260
-               'quality': {'vias': 32, 'copper_mm': 319.38, 'segments': 189}},
+               'quality': {'vias': 35, 'copper_mm': 311.92, 'segments': 194}},
         predictors={
             'crossings': 53, 'hpwl': 253.98092000000003,
             'halo': 127.48707486477095, 'overlap_area': 1.1400451712000104,
@@ -335,7 +352,7 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 311 -> 292; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 37/363.0/292 -> 38/361.26/296
                # 2026-09-16 (#958 fine-pitch tie guard): segs 296 -> 302
-               'quality': {'vias': 38, 'copper_mm': 348.89, 'segments': 235}},
+               'quality': {'vias': 36, 'copper_mm': 348.89, 'segments': 235}},
         predictors={
             'crossings': 50, 'hpwl': 252.34828000000005,
             'halo': 130.46454030971682, 'overlap_area': 1.1400451712000104,
@@ -393,7 +410,7 @@ EXPECTED = {
                # 2026-09-15 (#908 Phase 3 lift): 30/350.67/269 -> 35/362.75/282
                # 2026-09-16 (#958 fine-pitch tie guard): 35/362.75/282 ->
                #   35/362.65/293 (the only row whose copper moved, -0.10mm)
-               'quality': {'vias': 33, 'copper_mm': 347.97, 'segments': 225}},
+               'quality': {'vias': 30, 'copper_mm': 349.86, 'segments': 215}},
         predictors={
             'crossings': 23, 'hpwl': 260.0687799999999,
             'halo': 101.01900525631262, 'overlap_area': 1.0,
