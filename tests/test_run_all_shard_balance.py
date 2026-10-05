@@ -178,7 +178,14 @@ def test_committed_table_parses():
         print('    (no committed table yet -- the strided split is in use)')
         return
     assert all(isinstance(v, float) and v >= 0 for v in table.values())
-    assert all(k.startswith('test_') and k.endswith('.py') for k in table)
+    import re
+    unit = re.compile(r'^test_\w+\.py(\[\d+/\d+\])?$')
+    assert all(unit.match(k) for k in table), [k for k in table if not unit.match(k)]
+    # Every split test's parts are measured: the writer once dropped them as
+    # "files that no longer exist", pricing the heaviest units at a median.
+    for f in run_all.discover([]):
+        if run_all.unit_argv(f):
+            assert run_all.unit_name(f) in table, run_all.unit_name(f)
 
 
 TESTS_LIST = [test_slices_cover_exactly_once, test_balanced_beats_strided,

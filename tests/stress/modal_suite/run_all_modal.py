@@ -271,7 +271,9 @@ DURATIONS_PATH = _repo_root / "tests" / "run_all_durations.json"
 def _write_durations(measured: dict) -> int:
     """Merge `measured` into the committed table: new measurements win,
     entries this run did not measure (a filtered run) stay, and entries for
-    test files that no longer exist go. Returns the table's size."""
+    test files that no longer exist go -- by the unit's FILE, since a test
+    declaring RUN_ALL_PARTS is measured per part (`name.py[3/8]`). Returns
+    the table's size."""
     import json
     try:
         table = json.loads(DURATIONS_PATH.read_text(encoding="utf-8"))
@@ -279,7 +281,8 @@ def _write_durations(measured: dict) -> int:
         table = {}
     table.update(measured)
     alive = {p.name for p in (_repo_root / "tests").glob("test_*.py")}
-    table = {k: v for k, v in sorted(table.items()) if k in alive}
+    table = {k: v for k, v in sorted(table.items())
+             if k.split("[", 1)[0] in alive}
     DURATIONS_PATH.write_text(json.dumps(table, indent=0) + "\n",
                               encoding="utf-8")
     return len(table)
