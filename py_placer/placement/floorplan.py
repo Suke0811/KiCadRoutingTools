@@ -1400,6 +1400,12 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
                 "decaps.within_radius_refs and decaps.within_radius_mm come "
                 "together: the list is the caps the reference keeps within "
                 "THAT radius. Re-emit the intent with --decaps-from")
+        if decaps['within_radius_refs'] is None:
+            # `_str_tuple(None)` is `()`, which would disarm the per-cap
+            # rule without a word (Phase-2 verifier).
+            raise IntentError(
+                "decaps.within_radius_refs is null: give the list (empty if "
+                "the reference holds no cap), or drop both keys")
         decaps['within_radius_refs'] = sorted(_str_tuple(
             decaps['within_radius_refs'], 'decaps.within_radius_refs'))
         r = decaps['within_radius_mm']
@@ -1418,7 +1424,9 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
                 f"decaps.within_radius_refs was read at "
                 f"{float(r):g} mm but decaps.search_radius_mm is "
                 f"{float(search):g} mm: a cap held within one radius cannot "
-                f"be graded at another. Re-emit the intent with --decaps-from")
+                f"be graded at another. The emitter reads the list at "
+                f"{groups_mod.DECAP_RADIUS_MM:g} mm, so either drop "
+                f"search_radius_mm or drop both within_radius_* keys")
 
     health = _obj(raw.get('health'), 'health')
     _reject_unknown(health, _HEALTH_KEYS, 'health')
@@ -6146,6 +6154,11 @@ def _gating(rule: str, intent: Intent, ctx) -> bool:
     advisory. A dark rule never runs, so demoting it would change nothing but
     this answer -- a way to make P1's refusal go away by editing a severity
     no finding will ever carry (#959 plan review, round 3).
+
+    The one exception is `decap_ungraded` under a `--decaps-from` intent
+    (#1142): its held list makes it gating per cap, and an explicit `warn`
+    then makes it advisory again, because the rule obeys that warn for every
+    cap -- so no finding of it can be an error.
     """
     if rule in _FORCED_SEVERITY:
         return _FORCED_SEVERITY[rule] == ERROR
@@ -8481,7 +8494,9 @@ def emit_intent(pcb_data, pcb_file: str, *,
                     f"keeps within {_r:g} mm of their chip"
                     + (f"; the {len(_ref_beyond)} it keeps beyond "
                        f"({', '.join(_ref_beyond)}) stay warn"
-                       if _ref_beyond else ''))
+                       if _ref_beyond else '')
+                    + "; a cap the reference lacks, or carries under another "
+                      "footprint, stays warn")
         # #1102, the PIN currency: every supply pin to the nearest cap on its
         # net, pad edge to pad edge (`decap_pin_distance`, #705). A cap 1.6
         # mm from a QFP's box can be 5 mm from the pin it decouples; the

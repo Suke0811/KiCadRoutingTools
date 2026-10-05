@@ -6267,7 +6267,8 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
                 added.append(f'legality.{key}')
         # Past the decap search radius the finding is not cleared, it stops
         # being GRADED: `decap_distance` (error) becomes `decap_ungraded`
-        # (warn), which `findings_of` does not read. Still open, as the
+        # (a warn `findings_of` does not read -- or, since #1142, an error it
+        # does read for a cap a --decaps-from reference holds). Still open, as the
         # honesty re-grade already says (round-2 verifier: tigard C18 moved
         # 0.85mm to 5.21mm from U3 and read "cleared").
         still = (claim in findings_of(after)

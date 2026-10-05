@@ -895,8 +895,12 @@ be accepted *on*. The two read a tether term differently, on purpose: the count
 the way the GRADE does (`QuenchState.tether_graded_value`: a cap past the decap
 search radius is `decap_ungraded`, not a breach), the licence and prune the way
 the GATE does (`tether_gate_view_value`: still measured), so a cap walked out
-of the radius drops the count as the grade would and is still refused as the
-regression it is.
+of the radius drops the count and is still refused as the regression it is.
+(Since #1142 the count and the grade part ways for a cap a `--decaps-from`
+reference HOLDS: the grade swaps its `decap_distance` error for a
+`decap_ungraded` error, so the grade's error count does not drop, while the
+count here does. The licence still refuses the move, so nothing is wrongly
+accepted.)
 `accept_basis.intent_rules` names the rules that count covers, and the printed
 basis reads `intent[decap_distance,...]`, so `intent 0->0` cannot pass for a
 measurement of the whole intent. Before #1068 it counted the zone rules only,
@@ -916,7 +920,7 @@ reports the whole picture in `accept_basis`.
 | `zone_side` | yes | — | no | **vacuous, not conservative**: the quench never flips a side, so the term is invariant under every move it can make. Reported once at load instead |
 | `assembly_side` | yes | — | no | same reason, one level up: since #714 the WRITER can mirror a footprint, but no move in any search carries a side (#836), so the term is invariant under every move. Reported once at load, and **warn** by default so it cannot become a permanent red mark |
 | `envelope` | yes | — | no | a claim about the intent FILE against the board, not about any pose |
-| `decap_ungraded`, `decap_pin_uncovered`, `decap_pin_distance_inferred` | yes | — | no | `decap_ungraded` and `decap_pin_uncovered` are claims about what the GRADE covers rather than about any pose, so there is nothing for a search to refuse. `decap_pin_distance_inferred` is a WARN about a pin inferred from a net name, and the gate holds only what the exit gate counts. **Since #1142 a `decap_ungraded` on a cap the `--decaps-from` reference holds IS an error the exit gate counts, and this gate still does not hold it**: `tether_graded_value` reads a cap past the radius as no breach, so the quench neither refuses nor repairs a stranded held cap, and nor does the seeder's decap repair rung. That gap was already there for #1102's board-wide promotion; #1142 makes it reachable on real references |
+| `decap_ungraded`, `decap_pin_uncovered`, `decap_pin_distance_inferred` | yes | — | no | `decap_ungraded` and `decap_pin_uncovered` are claims about what the GRADE covers rather than about any pose, so there is nothing for a search to refuse. `decap_pin_distance_inferred` is a WARN about a pin inferred from a net name, and the gate holds only what the exit gate counts. **Since #1142 a `decap_ungraded` on a cap the `--decaps-from` reference holds IS an error the exit gate counts, and this gate still does not hold it**: the gate's tether terms are built from the caps elected WITHIN the radius at build time (`_tether_measure`, `graded=False` for a pair elected beyond), so the quench neither refuses nor repairs a cap that is already stranded, and the seeder's decap repair rung (`DECAP_RUNG_RULES`) does not seat it either. What DOES read the new errors: `place_seed --repair` charges a stranded held cap as a violator and reports it UNRESOLVED, and `place_fanout_clearance --intent` (and the GUI fanout tab, which shares its engine) counts a held cap leaving the radius as a decap claim made worse when it picks the arm to keep. That gap was already there for #1102's board-wide promotion; #1142 makes it reachable on real references |
 | `decap_pin_distance` | yes | — | **yes** (#1043) | — armed by `decaps.max_pin_distance_mm` at error severity. Per (IC, declared supply pin), measured by CALLING `floorplan.nearest_rail_cap` over the rule's own cap set (`decap_pin_caps`) on footprints posed at the live poses |
 | `decap_distance` | yes | scope stage | **yes** (#1043) | — armed by `decaps.max_distance_mm` at error severity. The currency objection that kept it out is met by CALLING the grader's own distance (`groups.elect_live`: cap pad centroid to the inflated pad bbox of the nearest chip on its rail) rather than re-deriving one. The election is re-run per candidate pose over the chips on the cap's rail, because the grade re-elects: a frozen cap→IC pair is not conservative for a cap elected beyond the radius, which can walk into another chip's radius past the limit (run 32's C26). The population (which caps, graded or beyond the radius) is fixed once at state build (`floorplan.tether_pairings`) |
 | `legality` | yes | — | no | a whole-board aggregate against a BUDGET, so a per-pose form is non-local: whether A's move is admissible would depend on B's violation |
@@ -1499,12 +1503,19 @@ limit" below for why only from a reference). Since #1142 it also lists the caps
 the reference keeps within the search radius (`within_radius_refs`, with the
 radius in `within_radius_mm`): each of them is held to that radius, PER CAP.
 Leaving a listed cap beyond it is a `decap_ungraded` ERROR, while a cap the
-reference itself keeps beyond (likelier a bulk or filter cap) stays a WARN.
+reference itself keeps beyond (likelier a bulk or filter cap) stays a WARN --
+and so does a cap the reference LACKS or carries under another footprint,
+which #1102's board-wide promotion would have made an ERROR. "Held" means only
+that the reference put the cap within 5 mm of its chip: against a machine
+placement used as the reference, that can include a bulk cap.
 Measured on the seven #1105 piles (`tests/measure_1142_ungraded_per_cap.py`),
-one seed each strands 0 (esp_prog), 7, 7, 4, 15, 41 and 16 held caps. All of
+one seed each strands this many held caps: esp_prog 0, splitflap_driver 7,
+tigard 7, watchy 4, glasgow_revC 15, ulx3s 41, orangecrab_ext_pll 16. All of
 those were WARNs under #1102, because none of the seven references keeps every
-cap inside 5 mm. Graded on its own `--decaps-from` intent, every corpus board
-and demo with a tether limit still has 0 such errors.
+cap inside 5 mm. A board graded on its own `--decaps-from` intent has 0 such
+errors -- true by construction (a held cap is in the same `decap_populations`
+near set the grade reads), and measured on every corpus board and demo with a
+tether limit.
 
 **Three states since #959**, selected by `--no-declare-decaps`,
 `--declare-decaps` (strict) and `--auto-declare-decaps`. The default,

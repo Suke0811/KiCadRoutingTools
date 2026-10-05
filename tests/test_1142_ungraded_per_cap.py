@@ -191,6 +191,8 @@ def test_the_loader_refuses_a_list_it_cannot_apply():
     refuses(lambda d: d.__setitem__('within_radius_refs', 'C2'),
             'bare string')
     refuses(lambda d: d.__setitem__('within_radius_mm', 0), 'positive')
+    # null would read as () and disarm the rule silently.
+    refuses(lambda d: d.__setitem__('within_radius_refs', None), 'is null')
     # A search radius that matches is accepted.
     doc = _esp_doc()
     doc['decaps']['search_radius_mm'] = 5.0
@@ -207,7 +209,7 @@ def test_the_loader_refuses_a_list_it_cannot_apply():
             raise AssertionError('a reader-7 build loaded min_reader 8')
     finally:
         fp.READER_VERSION = saved
-    print("  PASS: six refusals, a matching radius loads, reader 7 refuses")
+    print("  PASS: seven refusals, a matching radius loads, reader 7 refuses")
 
 
 def test_a_footprint_mismatch_is_not_held():

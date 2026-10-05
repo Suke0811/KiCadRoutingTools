@@ -97,7 +97,9 @@ _BODY_OVERLAP_EPS = 1e-6
 #: invariant under every move this engine can make and `assembly_side` (#837)
 #: is invariant for the same reason one level up, `envelope` is a claim about
 #: the intent file, `decap_ungraded` is a claim about what the GRADE covers
-#: rather than about any pose, `legality` is a whole-board budget rather than
+#: rather than about any pose (since #1142 an ERROR for a cap a --decaps-from
+#: reference holds, which this gate still does not hold -- docs/floorplan-
+#: intent.md, the quench table), `legality` is a whole-board budget rather than
 #: a per-pose predicate, `pins_to_edge` is always-warn advice for a reviewer,
 #: and `array_formation` (#1051) is held by construction -- a declared array
 #: is a rigid group that only translates -- rather than priced per pose.
