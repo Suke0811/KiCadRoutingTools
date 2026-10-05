@@ -14,7 +14,9 @@ tool as `C:/Program Files/Git/+1V1`. Nothing warns, because a tool cannot tell a
 mangled net name from a net that does not exist. Measured: 61 nets passed to
 `--ignore-nets`, 4 survived (the four not starting with `/`), and the resulting
 render reported 1315 crossings where the truth was 357. It hits `--nets`,
-`--ignore-nets`, `--power-nets`, `--rip-existing-nets` — every net-name argument.
+`--ignore-nets`, `--power-nets`, `--rip-existing-nets`, `--keep-away` — every net-name argument
+(a `--keep-away` rule at least fails LOUDLY: `/LED_A:/AIN_B:0.3` arrives as
+`C:\Program Files\Git\LED_A;...`, which the rule parser rejects).
 **The variable is not free**: it also disables conversion for legitimate paths,
 so `~/Documents/...` then arrives as an unusable `/c/Users/...`. Pass
 Windows-style paths (`C:/Users/...`) in the same command.
@@ -323,6 +325,13 @@ Validate routed boards against the *real* spec, with the right checker — most
   `--filters "908 910"` for one family, `--fast` for the unit lane.
   `run_all.py --shard I/N` does the splitting, so a local run and a 50-way
   fan-out cover the SAME set -- the driver never globs `test_*.py` itself.
+  Shards are packed on the measured wall seconds in the COMMITTED
+  `tests/run_all_durations.json` (refresh it with `run_all_modal.py
+  --write-durations`, which refuses a red run, and commit it when the cost
+  shape moves), and a test of independent rows may declare `RUN_ALL_PARTS = N`
+  and take `--part I/N` to run as N units -- `test_placement_ab` does (8).
+  No packing beats the slowest single unit (`test_compare_seeds`, ~730 s), so
+  that is the fan-out's floor: 50 shards finished green in 765 s (2026-10-05).
   Three things that decide whether you can trust the result:
   - **The verdict is each shard's own exit code, never the parsed counts.** A
     container that OOMs prints no summary line at all, so a driver deciding on
