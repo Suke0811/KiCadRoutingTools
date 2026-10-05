@@ -1334,10 +1334,19 @@ def pad_is_aperture_only(pad) -> bool:
     NPTH and drilled pads are deliberately NOT aperture-only: a mounting hole is
     physical extent, and dropping it moves splitflap's H6/H7 rects and the
     #837 assembly census. Use `pad_has_copper` instead where the question is
-    copper (it is False for NPTH too)."""
+    copper (it is False for NPTH too).
+
+    A pad object with no `layers` attribute at all is NOT an aperture: nothing
+    says it is one. Both parsers always fill `layers`, but placement code builds
+    position-only stand-ins (`arrays.pose_free_chip_refs`' SimpleNamespace
+    pads, test stubs), and reading those as apertures dropped every pad of a
+    1xN header from the row test, so headers became "chips" (Phase-1
+    verifier: 13 of 22 corpus boards)."""
     if getattr(pad, 'pad_type', '') == 'np_thru_hole':
         return False
     if (getattr(pad, 'drill', 0.0) or 0.0) > 0:
+        return False
+    if getattr(pad, 'layers', None) is None:
         return False
     return not pad_has_copper(pad)
 

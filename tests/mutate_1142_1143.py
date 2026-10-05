@@ -60,6 +60,14 @@ TARGETS = {
     'pose_ops': os.path.join(_PL, 'pose_ops.py'),
     'pscore': os.path.join(_ROOT, 'py_placer', 'placement_score.py'),
     'floorplan': os.path.join(_PL, 'floorplan.py'),
+    'edge_facing': os.path.join(_PL, 'edge_facing.py'),
+    'state': os.path.join(_PL, 'placement_state.py'),
+    'portfolio': os.path.join(_PL, 'portfolio.py'),
+    'recovery': os.path.join(_PL, 'recovery.py'),
+    'pockets': os.path.join(_ROOT, 'py_tools', 'check_pockets.py'),
+    'context': os.path.join(_ROOT, 'py_tools', 'board_context.py'),
+    'agent_grade': os.path.join(_ROOT, '.claude', 'skills', 'pcb-free-agent',
+                                'scripts', 'grade.py'),
 }
 
 
@@ -78,8 +86,9 @@ PITCH = _t(T1143, 'pad_pitch')
 GEO = _t(T1143, 'copper_geometry')
 CLASS = _t(T1143, 'part_class')
 CHIP = _t(T1143, 'chip_bounds')
-QUENCH = _t(T1143, 'quench_takes')
+QUENCH = _t(T1143, 'quench_keeps')
 TIGARD = _t(T1143, 'tigard_c25')
+GATES = _t(T1143, 'every_gate')
 T1142 = 'test_1142_ungraded_per_cap.py'
 EMIT = _t(T1142, 'emits_the_held_list')
 STRAND = _t(T1142, 'held_cap_stranded')
@@ -103,8 +112,8 @@ ROWS = [
     ('aperture-predicate-drops-drilled', 'kp',
      "    if (getattr(pad, 'drill', 0.0) or 0.0) > 0:\n"
      "        return False\n"
-     "    return not pad_has_copper(pad)\n",
-     "    return not pad_has_copper(pad)\n",
+     "    if getattr(pad, 'layers', None) is None:\n",
+     "    if getattr(pad, 'layers', None) is None:\n",
      (PRED,), 'KILLED'),
     ('bbox-reads-paste', 'util',
      "    pads = non_aperture_pads(footprint)\n",
@@ -154,11 +163,78 @@ ROWS = [
      "    return [c for c in build_chip_list(_pads_view(pcb_data),\n",
      "    return [c for c in build_chip_list(pcb_data,\n",
      (TIGARD,), 'KILLED'),
-    ('quench-aperture-part-movable', 'quench',
-     "            if not non_aperture_pads(fp):\n"
-     "                # Zero-pad footprints",
-     "            if not fp.pads:\n"
-     "                # Zero-pad footprints",
+    # The Phase-1 verifier's untested sites, each witnessed by
+    # test_every_gate_reads_pins_not_apertures.
+    ('missing-layers-reads-as-aperture', 'kp',
+     "    if getattr(pad, 'layers', None) is None:\n        return False\n",
+     "",
+     (PRED,), 'KILLED'),
+    ('copper-pads-reads-paste', 'floorplan',
+     "    return [p for p in (fp.pads or ()) if pad_has_copper(p)]\n",
+     "    return [p for p in (fp.pads or ())\n"
+     "            if getattr(p, 'pad_type', '') != 'np_thru_hole']\n",
+     (GATES,), 'KILLED'),
+    ('proximity-reads-paste', 'floorplan',
+     "                else non_aperture_pads(b_fp))\n",
+     "                else list(b_fp.pads or ()))\n",
+     (GATES,), 'KILLED'),
+    ('collinear-reads-paste', 'groups',
+     "    pads = _pads(fp) if fp is not None else ()\n",
+     "    pads = list(fp.pads or ()) if fp is not None else ()\n",
+     (GATES,), 'KILLED'),
+    ('bodyless-shape-reads-paste', 'legality',
+     "        if not pad_has_copper(p):\n            continue\n"
+     "        lx, ly = float(p.local_x), float(p.local_y)\n",
+     "        if getattr(p, 'pad_type', '') == 'np_thru_hole':\n"
+     "            continue\n"
+     "        lx, ly = float(p.local_x), float(p.local_y)\n",
+     (GATES,), 'KILLED'),
+    ('edge-facing-reads-paste', 'edge_facing',
+     "    own = non_aperture_pads(fp)\n",
+     "    own = list(fp.pads or ())\n",
+     (GATES,), 'KILLED'),
+    ('assign-faces-reads-paste', 'escape',
+     "    for pad in _pads(fp):\n",
+     "    for pad in (fp.pads or []):\n",
+     (GATES,), 'KILLED'),
+    ('state-counts-paste-only-parts', 'state',
+     "           if non_aperture_pads(fp)]\n",
+     "           if fp.pads]\n",
+     (GATES,), 'KILLED'),
+    ('final-poses-count-paste-only-parts', 'portfolio',
+     "           if non_aperture_pads(fp)}   # apertures are not pads (#1143)\n",
+     "           if fp.pads}\n",
+     (GATES,), 'KILLED'),
+    ('board-poses-count-paste-only-parts', 'recovery',
+     "            if non_aperture_pads(fp)}     # apertures are not pads "
+     "(#1143)\n",
+     "            if fp.pads}\n",
+     (GATES,), 'KILLED'),
+    ('displacement-reads-paste', 'recovery',
+     "    pads = non_aperture_pads(fp)\n    if not pads:\n        return 0.0\n",
+     "    pads = list(fp.pads or ())\n    if not pads:\n        return 0.0\n",
+     (GATES,), 'KILLED'),
+    ('refs-in-rect-reads-paste', 'util',
+     "        for pad in non_aperture_pads(fp):\n",
+     "        for pad in fp.pads:\n",
+     (GATES,), 'KILLED'),
+    ('pockets-stamp-paste', 'pockets',
+     "            if pad_is_aperture_only(p):\n                continue",
+     "            if False:\n                continue",
+     (GATES,), 'KILLED'),
+    ('context-counts-paste', 'context',
+     "            'pads': len(non_aperture_pads(fp)),\n",
+     "            'pads': len(fp.pads or ()),\n",
+     (GATES,), 'KILLED'),
+    ('agent-grade-counts-paste-only-parts', 'agent_grade',
+     "            if non_aperture_pads(f)}     # apertures are not pads "
+     "(#1143)\n",
+     "            if f.pads}\n",
+     (GATES,), 'KILLED'),
+    # The deliberate exclusion: an aperture-only part stays movable.
+    ('quench-locks-aperture-only-parts', 'quench',
+     "            if not fp.pads:\n",
+     "            if not __import__('kicad_parser').non_aperture_pads(fp):\n",
      (QUENCH,), 'KILLED'),
     ('part-centre-reads-paste', 'pose_ops',
      "    pads = non_aperture_pads(fp)        # apertures are not copper",

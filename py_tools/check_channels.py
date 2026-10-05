@@ -400,7 +400,14 @@ def main():
         for ref, fp in sorted((pcb.footprints or {}).items()):
             kind = None
             try:
-                kind = detect_package_type(fp)
+                # The router's own classifier reads every pad, so a 0201's
+                # split paste windows read as a QFN (rp2350 C28/R9, #1143);
+                # this placement tool hands it the pins only. The router's
+                # callers are deliberately unchanged.
+                import copy as _copy
+                _pins = _copy.copy(fp)
+                _pins.pads = non_aperture_pads(fp)
+                kind = detect_package_type(_pins)
             except Exception:
                 kind = None
             if kind in ('QFN', 'QFP', 'BGA'):

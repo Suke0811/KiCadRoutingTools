@@ -448,11 +448,16 @@ TP2, once TP2 is placed or declared) is still refused.
 phase and measure an overlapping pair on the DRAWN outlines (courtyard united
 pad by pad with the copper -- a custom pad's parsed primitives, not its box,
 since #1123; a pad on no copper layer, such as a paste-only aperture, is not
-copper and is not united, since #1128 -- and since #1143 it is not a pad to any
-placement measure either: not to the occupancy rect, the pads rung, the
-assembly census, `pad_area_balance`, the escape pitch or the chip bounds the
-decap election measures to, through `kicad_parser.pad_is_aperture_only`, which
-keeps NPTH and drilled pads), which is what KiCad measures: KiCad's StickHub
+copper and is not united, since #1128 -- and since #1143 it is not a pad to the
+placement measures either: the occupancy rect, the pads rung, the assembly
+census, `pad_area_balance`, the escape pitch, the chip bounds the decap
+election measures to, `proximity` pads and the rest of the sites
+`tests/measure_1143_paste_only_sites.py` lists, through
+`kicad_parser.pad_is_aperture_only`, which keeps NPTH and drilled pads. Two
+readers are left on purpose: the quench keeps a part whose only pads are
+apertures MOVABLE, because the seeder seats such a logo by its courtyard; and
+the router's own readers (`detect_package_type`, `detect_bga_pitch`) are
+routing), which is what KiCad measures: KiCad's StickHub
 demo, 39 parts at +-45/+-135 degrees, went from 74 phantom courtyard-blocking
 pairs and 6 phantom containments to 0. The fixed-pose seat above calls the
 same measure. A board whose own `.kicad_pro` sets `courtyards_overlap` to

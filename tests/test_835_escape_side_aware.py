@@ -54,9 +54,13 @@ from placement.options import deficit_totals                  # noqa: E402
 #: Boards absent from a checkout are skipped, not failed.
 EXPECTED = {
     'ulx3s': (6, 2, 2),        # #862: 5, 1, 1 before the corridor
-    'orangecrab_ext_pll': (116, 20, 51),   # #862: 115, 20, 50 before
+    # #1143: 116, 20, 51 before (#862: 115, 20, 50 before that). U6 (WSON-8)
+    # and U10 (X2SON-4) left fine_pitch_parts: their split paste windows sat
+    # on the pad lattice and collapsed the pitch read off it.
+    'orangecrab_ext_pll': (107, 18, 46),
     'glasgow_revC': (55, 16, 25),
-    'rp2350_fpga_eensy_prePlane': (79, 10, 27),
+    # #1143: 79, 10, 27 before -- U4 left fine_pitch_parts the same way.
+    'rp2350_fpga_eensy_prePlane': (76, 9, 24),
     # #835's controls were "does not move under the SIDE or CONTAINER arm",
     # and they still hold for those two arms. They are NOT controls for #841:
     # the obstruction RECT changed from the bbox of pad centres to the pad
@@ -99,9 +103,14 @@ EXPECTED = {
 #: box rule alone answers -- exactly as it did before #862.
 DEMAND = {
     'ulx3s': (233, 314),
-    'orangecrab_ext_pll': (236, 303),
+    # #1143: (236, 303) before. Not the demand model collapsing: the LEDGER
+    # lost two parts. U6 (demand 9) and U10 (demand 5), both with 0 interior
+    # pads, left fine_pitch_parts once their split paste windows stopped
+    # collapsing the pitch -- 236 - 9 - 5 = 222, measured at the parent.
+    'orangecrab_ext_pll': (222, 303),
     'glasgow_revC': (307, 108),
-    'rp2350_fpga_eensy_prePlane': (130, 36),
+    # #1143: (130, 36) before -- U4 (demand 3, interior 0) left the ledger.
+    'rp2350_fpga_eensy_prePlane': (127, 36),
     'tigard': (103, 18),
     'splitflap_driver': (0, 0),
     'watchy': (113, 1),
@@ -113,10 +122,17 @@ DEMAND = {
 #: assertion; the values are the change detector.
 DEMAND_AT_PAD_CENTRES = {
     'ulx3s': (149, 406),
-    'orangecrab_ext_pll': (232, 309),
+    # #1143: (232, 309) before; U6 (8, 1) and U10 (4, 1) left the ledger,
+    # as in DEMAND above -- 232 - 12 = 220, 309 - 2 = 307.
+    'orangecrab_ext_pll': (220, 307),
     'glasgow_revC': (305, 116),
-    'rp2350_fpga_eensy_prePlane': (122, 46),
-    'tigard': (102, 20),
+    # #1143: (122, 46) before -- U4 (3, 1) left the ledger.
+    'rp2350_fpga_eensy_prePlane': (119, 45),
+    # #1143: (102, 20) before. No part left: U3 stays, but its pitch is read
+    # off its pins (0.108, not its paste windows' 0.033) and its 9 paste
+    # windows are no longer assigned faces, so at pad centres two pads leave
+    # the interior bucket and one more lane is demanded.
+    'tigard': (103, 18),
     'splitflap_driver': (0, 0),
     'watchy': (113, 1),
     'kit-dev-coldfire-xilinx_5213': (207, 0),

@@ -40,7 +40,7 @@ from typing import Dict, List, NamedTuple, Sequence, Tuple, Set, Optional
 
 import numpy as np
 
-from kicad_parser import PCBData, local_to_global, non_aperture_pads
+from kicad_parser import PCBData, local_to_global
 from paste_apertures import pad_has_copper as _pad_has_copper
 from connectivity import compute_mst_edges
 from placement.parser import (courtyard_for_side, extract_courtyard_sides,
@@ -746,8 +746,12 @@ class _Part:
         # #1101: the PAD copper box, for a board whose project waives the
         # courtyard rule -- the seat then spaces pads, not courtyards. None
         # for a pad-less footprint (a logo occupies no copper).
+        # `fp.pads`, not `non_aperture_pads` (#1143, deliberately): an
+        # aperture-only part stays a MOVABLE quench part (see the zero-pad
+        # branch in QuenchState), so it keeps a pad box -- the bbox
+        # fallback, since its apertures are not extent.
         self.padbox_local = (compute_footprint_bbox_local(fp)
-                             if non_aperture_pads(fp) else None)
+                             if fp.pads else None)
         self.padbox_by_rot: Dict[float, Tuple[float, float, float, float]] = {}
         tlb = through_pad_bounds_local(fp) if self.has_tht else None
         self.tht_by_rot = ({r: _rotate_local_bounds(*tlb, r) for r in ROTATIONS}
@@ -999,9 +1003,16 @@ class QuenchState:
         no_courtyard = []
         outline_locked = []   # #829, reported below
         for ref, fp in pcb_data.footprints.items():
-            # An aperture-only pad (a paste/mask window) is not a pad (#1143),
-            # so a part whose only pads are apertures is a zero-pad footprint.
-            if not non_aperture_pads(fp):
+            # `fp.pads`, not `non_aperture_pads` -- the one #1143 site left
+            # reading every pad, deliberately. A part whose only pads are
+            # paste/mask apertures (a logo) stays MOVABLE here: the seeder
+            # seats such a part by its courtyard when the intent fixes its
+            # pose (test_1051_hardening's copperless logo), and taking it
+            # down this branch would lock it as a static obstacle, which the
+            # fixed-pose stage then refuses as "already placed" (Phase-1
+            # verifier). A truly pad-less footprint is refused that way too,
+            # which is a separate, older question.
+            if not fp.pads:
                 # Zero-pad footprints (graphics-only mechanical parts, logos
                 # with a courtyard) used to be dropped entirely -- neither
                 # movable NOR an obstacle, so the optimizer walked parts onto

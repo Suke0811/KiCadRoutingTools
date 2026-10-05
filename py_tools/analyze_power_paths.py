@@ -124,7 +124,10 @@ def _auto_classify_component(ref: str, fp: Footprint, pcb_data: PCBData) -> Comp
 
     # Capacitors - check if decoupling (to GND) or series
     if ref_upper.startswith('C') and len(ref) > 1 and ref[1].isdigit():
-        if len(fp.pads) == 2:
+        # Two-terminal by its pins: a 0201's split paste windows are not
+        # terminals (#1143; orangecrab's 0201 caps read as 4-pad parts).
+        from kicad_parser import non_aperture_pads
+        if len(non_aperture_pads(fp)) == 2:
             net_names = [pcb_data.nets.get(p.net_id, type('', (), {'name': ''})()).name
                         for p in fp.pads if p.net_id]
             # If one side is GND, it's a decoupling cap (shunt)

@@ -5036,10 +5036,13 @@ def proximity_pads(claim: Dict, a_fp, b_fp) -> Tuple[List, List, bool]:
     spec = claim.get('pads') or {}
     ref, near = str(claim['ref']), str(claim['near'])
     declared = bool(spec.get(ref))
+    # Undeclared: every pad but the paste/mask apertures (#1143). Read as
+    # pads, tigard J1's paste windows put C25 2.11 mm from J1, where its
+    # copper is 2.61 mm away, so a 2.5 mm claim passed (Phase-1 verifier).
     subject = (_pads_named(a_fp, spec[ref]) if declared
-               else list(a_fp.pads or ()))
+               else non_aperture_pads(a_fp))
     partners = (_pads_named(b_fp, spec[near]) if spec.get(near)
-                else list(b_fp.pads or ()))
+                else non_aperture_pads(b_fp))
     return subject, partners, declared
 
 

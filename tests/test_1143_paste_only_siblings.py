@@ -7,9 +7,12 @@ it -- the occupancy rect, `pad_area_balance` and `assembly_census` -- and the
 sweep for it found the same class at about twenty more sites (the escape
 pitch, the chip bounds the decap election measures to, part_class, the copper
 geometry fallback, part_centre, the "has pads" gates of quench, portfolio,
-reconcile, recovery, lock_advisor, the board tools ...). They all now read
+reconcile, recovery, lock_advisor, the board tools ...). Each now reads
 `kicad_parser.non_aperture_pads` / `pad_is_aperture_only`, or
-`paste_apertures.pad_has_copper` where the question is copper.
+`paste_apertures.pad_has_copper` where the question is copper -- except the
+quench's zero-pad branch, which keeps an aperture-only part MOVABLE on
+purpose (`test_quench_keeps_an_aperture_only_part_movable`), and the router's
+own readers, which are routing.
 
 An aperture-only pad is: not NPTH, no drill, and no `*.Cu` layer. NPTH and
 drilled pads are KEPT -- a mounting hole is physical extent; dropping it moves
@@ -19,7 +22,8 @@ first control below guards.
 Each case puts an F.Cu pad and an F.Paste-only pad side by side and asserts
 the site measures the F.Cu pad alone, with controls that an F.Cu+F.Paste pad,
 an NPTH hole and a drilled pad still count. A footprint whose ONLY pads are
-apertures is a zero-pad footprint everywhere, and no site crashes on it.
+apertures reads as pad-less to every measure tested here (the quench's
+movability aside), and no site crashes on it.
 
 Corpus witness: tigard C25 measures 2.93 mm to J1's copper (2.43 mm to the
 box its 8 paste windows drew). Demo witness (skipped without KiCad 10's
@@ -28,6 +32,8 @@ outline.
 
     python3 -X utf8 tests/test_1143_paste_only_siblings.py [case ...]
 """
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -112,13 +118,22 @@ def test_the_predicate_keeps_npth_and_drilled_pads():
         _pad('6', 15, 1.6, 1.6, '"*.Cu" "*.Mask"', kind='thru_hole',
              drill=0.8),
         # a drilled pad that names no copper layer: still a hole, so kept
-        _pad('7', 18, 1.6, 1.6, '"*.Mask"', kind='thru_hole', drill=0.8)])
+        _pad('7', 18, 1.6, 1.6, '"*.Mask"', kind='thru_hole', drill=0.8),
+        # an NPTH with no drill and no copper layer: the NPTH clause alone
+        # keeps it (the drill clause cannot)
+        _pad('8', 21, 1, 1, '"*.Mask"', kind='np_thru_hole')])
     got = {p.pad_number: pad_is_aperture_only(p)
            for p in pcb.footprints['U1'].pads}
     want = {'1': False, '2': True, '3': True, '4': False, '5': False,
-            '6': False, '7': False}
+            '6': False, '7': False, '8': False}
     assert got == want, got
-    print(f"  PASS: aperture-only = paste/mask windows only {got}")
+    # A stand-in with no `layers` at all (arrays.pose_free_chip_refs' pads,
+    # test stubs) is NOT an aperture: nothing says it is one.
+    from types import SimpleNamespace
+    assert pad_is_aperture_only(SimpleNamespace(global_x=0.0,
+                                                global_y=0.0)) is False
+    print(f"  PASS: aperture-only = paste/mask windows only {got}; a pad "
+          f"with no layers is not one")
 
 
 def test_the_four_copper_predicates_agree():
@@ -315,21 +330,124 @@ def test_chip_bounds_and_centroid_skip_paste():
     print(f"  PASS: chip bounds {b} (the window at 15,15 skipped)")
 
 
-def test_quench_takes_an_aperture_only_part_as_a_locked_obstacle():
-    """The quench's zero-pad branch: a part whose only pads are apertures
-    enters locked (it has a courtyard), never movable with no pad box."""
+def test_quench_keeps_an_aperture_only_part_movable():
+    """The DELIBERATE exclusion: the quench's zero-pad branch still reads
+    `fp.pads`, so a part whose only pads are apertures (a logo) stays a
+    MOVABLE quench part with a pad box, never an unmovable obstacle. The
+    seeder's fixed-pose stage seats such a part by its courtyard
+    (test_1051_hardening's copperless logo); locking it made that stage
+    refuse it as "already placed" (Phase-1 verifier). Its pad box is the
+    bbox fallback, because its apertures are not extent."""
     from placement.quench import QuenchState
     path = _board(_fp('U1', 10, 10, [_pad('1', 0, 0.6, 0.4, CU)]),
-                  _fp('U2', 30, 10, [_pad('1', 0, 1, 1, PASTE)]))
+                  _fp('U2', 30, 10, [_pad('1', 2, 1, 1, PASTE)]))
     import contextlib
     import io
     with contextlib.redirect_stdout(io.StringIO()):
         st = QuenchState(_parse(path), path, 0.2, 0.55, 10.0, 0.5, 0.25,
                          2.0, 2.0, 2.0, 0.1, 1.0)
-    assert st.parts['U2'].locked, 'an aperture-only part is movable'
-    assert st.parts['U2'].padbox_local is None
+    assert not st.parts['U2'].locked, 'an aperture-only part was locked'
+    assert st.parts['U2'].padbox_local == (-0.5, -0.5, 0.5, 0.5), (
+        st.parts['U2'].padbox_local)
     assert not st.parts['U1'].locked
-    print("  PASS: U2 (apertures only) locked, no pad box; U1 movable")
+    print("  PASS: U2 (apertures only) movable, pad box the fallback; "
+          "U1 movable")
+
+
+def _gate_board():
+    """U1: a 1x4 copper row along x plus one 1x1 paste window OFF the line;
+    C1: a two-pad cap with two paste windows; U2: apertures only."""
+    pins = [_pad(str(i), i * 1.0, 0.5, 0.5, CU) for i in range(4)]
+    return _board(
+        _fp('U1', 10, 10, pins + [_pad('W', 1.5, 1, 1, PASTE, y=3)]),
+        _fp('C1', 20, 10, [_pad('1', 0, 0.5, 0.5, CU),
+                           _pad('2', 1, 0.5, 0.5, CU, net=2),
+                           _pad('3', 0, 0.2, 0.2, PASTE, y=0.5),
+                           _pad('4', 1, 0.2, 0.2, PASTE, y=0.5)]),
+        _fp('U2', 30, 10, [_pad('1', 0, 1, 1, PASTE)]))
+
+
+def test_every_gate_reads_pins_not_apertures():
+    """One assertion per site the Phase-1 verifier found untested (#1143):
+    each reads U1's four pins, never its paste window, and none counts the
+    aperture-only U2 as a pad-bearing part."""
+    import importlib.util
+    from placement import (edge_facing, escape, floorplan, groups, legality,
+                           placement_state, portfolio, recovery, utility)
+    path = _gate_board()
+    pcb = _parse(path)
+    u1, c1 = pcb.footprints['U1'], pcb.footprints['C1']
+    got = {}
+    got['floorplan._copper_pads'] = len(floorplan._copper_pads(u1))
+    _s, partners, _d = floorplan.proximity_pads(
+        {'ref': 'U1', 'near': 'C1'}, u1, c1)
+    got['floorplan.proximity_pads'] = len(partners)
+    got['groups._pads_are_collinear'] = groups._pads_are_collinear(u1)
+    got['legality.bodyless_pad_shape'] = round(
+        legality.bodyless_pad_shape(u1).area, 6)
+    _pads, rect, _p, _c, _pitch = edge_facing.part_inputs(pcb, 'U1')
+    got['edge_facing.rect_maxy'] = round(rect[3], 6)
+    asg = escape.assign_faces(u1, None, lane_mm=0.3,
+                              fallback_rect=escape._part_rect(u1))
+    got['escape.assign_faces'] = len(asg.faces)
+    with contextlib.redirect_stdout(io.StringIO()):
+        st = placement_state.assess_placement(pcb, path)
+    got['placement_state.n_footprints'] = st.n_footprints
+    got['portfolio._final_poses'] = sorted(portfolio._final_poses(pcb, []))
+    got['recovery.board_poses'] = sorted(recovery.board_poses(pcb))
+    got['recovery.part_displacement'] = round(recovery.part_displacement(
+        u1, (10.0, 10.0, 0.0), (10.0, 10.0, 180.0)), 6)
+    # a rect around U1's paste window alone (global (11.5, 13))
+    got['utility.refs_in_rect'] = utility.refs_in_rect(
+        pcb, (11.0, 12.5, 12.0, 13.5), by='pad')
+    import check_pockets
+    bins = check_pockets.copper_touched_bins(pcb, 1.0)
+    got['check_pockets.u2_bin'] = (30, 10) in bins
+    import board_context
+    with contextlib.redirect_stdout(io.StringIO()):
+        doc = board_context.build_context(pcb, path, clearance=0.2,
+                                          track_width=0.2)
+    rows = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            if o.get('ref') == 'U1' and 'pads' in o:
+                rows.append(o['pads'])
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(doc)
+    got['board_context.pads'] = rows[:1]
+    spec = importlib.util.spec_from_file_location(
+        'agent_grade', os.path.join(ROOT, '.claude', 'skills',
+                                    'pcb-free-agent', 'scripts', 'grade.py'))
+    grade = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(grade)
+    with contextlib.redirect_stdout(io.StringIO()):
+        got['agent_grade._poses'] = sorted(grade._poses(path))
+    # the four pins at x 0..3 about the origin, turned 180 about it
+    rms = (sum((2 * i) ** 2 for i in range(4)) / 4) ** 0.5
+    want = {
+        'floorplan._copper_pads': 4,
+        'floorplan.proximity_pads': 2,
+        'groups._pads_are_collinear': True,
+        'legality.bodyless_pad_shape': 1.0,
+        'edge_facing.rect_maxy': 10.0,
+        'escape.assign_faces': 4,
+        'placement_state.n_footprints': 2,
+        'portfolio._final_poses': ['C1', 'U1'],
+        'recovery.board_poses': ['C1', 'U1'],
+        'recovery.part_displacement': round(rms, 6),
+        'utility.refs_in_rect': [],
+        'check_pockets.u2_bin': False,
+        'board_context.pads': [4],
+        'agent_grade._poses': ['C1', 'U1'],
+    }
+    bad = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
+    assert not bad, bad
+    print(f"  PASS: {len(want)} sites read U1's pins and skip U2")
 
 
 def test_tigard_c25_measures_to_j1_copper():

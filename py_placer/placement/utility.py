@@ -99,7 +99,8 @@ def refs_in_rect(pcb_data, rect, *, by='pad') -> list:
     if by != 'pad':
         raise ValueError("refs_in_rect: by must be 'pad' or 'origin'")
     for fp in pcb_data.footprints.values():
-        for pad in fp.pads:
+        # a paste/mask aperture in the rect does not put the part there (#1143)
+        for pad in non_aperture_pads(fp):
             if (x0 <= pad.global_x < x1 and y0 <= pad.global_y < y1
                     and pad.component_ref):
                 out.add(pad.component_ref)

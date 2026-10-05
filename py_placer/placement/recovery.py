@@ -89,9 +89,11 @@ def part_displacement(fp, pose_a: Pose, pose_b: Pose) -> float:
     Pads are matched **by index** through `fp.pads`, which is what makes a 180
     degree flip of a symmetric two-pad passive read 2*pad_offset rather than 0.
     That is correct rather than pedantic: the two nets have swapped ends, and
-    the airwires with them.
+    the airwires with them. Aperture-only pads (paste/mask windows) are not
+    pads and are skipped (#1143); the same filter on both poses keeps the
+    index match.
     """
-    pads = getattr(fp, 'pads', None) or ()
+    pads = non_aperture_pads(fp)
     if not pads:
         return 0.0
     ax, ay, arot = pose_a
