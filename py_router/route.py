@@ -99,6 +99,7 @@ from routing_common import (
 )
 import routing_defaults as defaults
 from keep_away import keep_away_entries   # #1146
+from pcb_modification import bump_copper_epoch
 import re
 from terminal_colors import RED, RESET, YELLOW
 from routing_constants import DEFAULT_4_LAYER_STACK, POWER_NET_EXCLUSION_PATTERNS
@@ -649,6 +650,7 @@ def _late_strict_collapse1063(pcb_data, output_file, return_results, results_dat
                 v for v in dropped if id(v) in in_ids)
             pcb_data.segments = [s for s in pcb_data.segments if id(s) not in gone]
             pcb_data.vias = [v for v in pcb_data.vias if id(v) not in gone]
+            bump_copper_epoch(pcb_data)
         else:
             from kicad_parser import is_kicad_10 as _k10_1063
             from kicad_writer import (remove_segments_from_content as _rsc1063,
@@ -1800,6 +1802,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                  if s.net_id not in force_ripped]
             pcb_data.vias = [v for v in pcb_data.vias
                              if v.net_id not in force_ripped]
+            bump_copper_epoch(pcb_data)
             sweep_scope_ids |= set(force_ripped)
             print(f"--force-reroute: stripped "
                   f"{sum(len(s) for s, _ in force_ripped.values())} segment(s) / "
@@ -3551,6 +3554,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     _stale_via_ids = {id(v) for v in stale_input_vias}
     if _stale_via_ids:
         pcb_data.vias = [v for v in pcb_data.vias if id(v) not in _stale_via_ids]
+    if _stale_ids or _stale_via_ids:
+        bump_copper_epoch(pcb_data)
 
     # Board-vs-file ledger (KICAD_BOARD_LEDGER=1): audit the pipeline contract
     # now that every strip is known -- per in-scope net, pcb_data must equal
@@ -3670,6 +3675,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         if _drop_obj_ids:
             pcb_data.vias = [v for v in pcb_data.vias
                              if id(v) not in _drop_obj_ids]
+            bump_copper_epoch(pcb_data)
         print(f"Via dedup: dropped {len(_via_dup_dropped)} duplicate stacked "
               f"via(s) already present at the same position/span for the "
               f"same net")
@@ -5317,6 +5323,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         layer_costs=list(config.layer_costs or []) or None,
                         pcb_data=pcb_data, return_results=True,
                         progress_callback=_pcb9)
+                    # The engine edits pcb_data's copper in place after its
+                    # last sub-run too; nothing cached against the old copper
+                    # may answer for the reconcile laps that follow.
+                    bump_copper_epoch(pcb_data)
                     _cursid9 = {id(s) for s in pcb_data.segments}
                     _curvid9 = {id(v) for v in pcb_data.vias}
                     _new_s9 = [s for s in pcb_data.segments
@@ -5730,6 +5740,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         pcb_data.vias[:] = [
                             v for v in pcb_data.vias
                             if _vkey9(v) not in _rm_vkeys9]
+                        bump_copper_epoch(pcb_data)
                     # Channel 2: only removals NOT matched to this-run copper
                     # ride the remove channels (the applier removes them from
                     # the live board before adding).
@@ -5752,6 +5763,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         # sees the nets it just completed.
                         pcb_data.segments.extend(_os9)
                         pcb_data.vias.extend(_ov9)
+                        bump_copper_epoch(pcb_data)
                     print(f"  Plane finalize oracle (GUI): +{len(_os9)} "
                           f"seg(s) +{len(_ov9)} via(s), -{len(_ors9)} seg(s) "
                           f"-{len(_orv9)} via(s) merged into results "

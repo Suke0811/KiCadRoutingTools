@@ -340,6 +340,11 @@ class RoutingDialog(wx.Dialog):
             # Replace pcb_data segments and vias with what's in pcbnew
             self.pcb_data.segments = new_segments
             self.pcb_data.vias = new_vias
+            # The same PCBData object lives across routing runs; work cached
+            # against its old copper (rescue maps, escape memos) must not
+            # answer for the board the user has edited since.
+            from pcb_modification import bump_copper_epoch
+            bump_copper_epoch(self.pcb_data)
 
             # Also sync zones - the connectivity check uses pcb_data.zones to
             # determine which nets are connected via copper pours. Without

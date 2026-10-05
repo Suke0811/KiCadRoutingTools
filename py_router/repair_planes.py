@@ -62,6 +62,7 @@ from plane_component_oracle import PlaneComponentOracle
 from plane_blocker_detection import find_route_blocker_from_frontier, find_via_position_blocker
 from terminal_colors import GREEN, RED, YELLOW, RESET
 import routing_defaults as defaults
+from pcb_modification import bump_copper_epoch
 import re
 
 # Outcome of the end-of-run self-reconnect of rip-blocker-nets casualties
@@ -1285,6 +1286,9 @@ def repair_planes(
                         continue
                     _pn.append(_cn)
                     _pw.append(_cw)
+            # The repair edited pcb_data's copper in place: invalidate what was
+            # cached against it before the sub-run looks anything up (#1146 audit).
+            bump_copper_epoch(pcb_data)
             _ok, _fail, _t, _rdata = batch_route(
                 input_file, "", _names,
                 layers=routing_layers,
@@ -1895,6 +1899,9 @@ def repair_planes(
                         print(f"  Preserving routed width {_cw}mm for ripped "
                               f"net {_cn} across the reconnect (this run's "
                               f"default is {track_width}mm)")
+                # The repair edited pcb_data's copper in place: invalidate what was
+                # cached against it before the sub-run looks anything up (#1146 audit).
+                bump_copper_epoch(pcb_data)
                 _ok, _fail, _t, _rdata = batch_route(
                     input_file, "", _cnames,
                     layers=routing_layers,
@@ -2513,6 +2520,9 @@ def repair_planes(
                 progress_callback(0, 0, f"{_nname}: joining remaining gaps...")
             try:
                 from route import batch_route
+                # The repair edited pcb_data's copper in place: invalidate what was
+                # cached against it before the sub-run looks anything up (#1146 audit).
+                bump_copper_epoch(pcb_data)
                 _ok3, _fail3, _t3, _rdata3 = batch_route(
                     input_file, "", [_nname],
                     layers=routing_layers,

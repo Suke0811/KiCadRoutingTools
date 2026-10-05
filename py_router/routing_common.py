@@ -844,6 +844,10 @@ def sync_pcb_data_segments(
     if not routed_results:
         return
 
+    # Rebuilds the copper lists in place (no add/remove_route): invalidate
+    # what was cached against the old ones.
+    from pcb_modification import bump_copper_epoch
+    bump_copper_epoch(pcb_data)
     routed_net_ids_set = set(routed_results.keys())
     seg_count_before = len(pcb_data.segments)
 
