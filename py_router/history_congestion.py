@@ -53,8 +53,9 @@ rounds.
 
 PROMOTED TO A SHIPPED DEFAULT (2026-08-13) at the "v1flat_01" settings: cost
 0.1, cap 0.5, rip_weight 1.0, blocked_weight 0.25, escalate 0 -- the flat
-diffuse field. It was the best arm of every one tested, on three independent
-corpora, and on sets 1-10 it recovers ~40 of the ~41-net gap that opened
+diffuse field. It was the best arm of every one tested, on the two corpora
+that compared arms (sets 1-10 and 11-20; sets 21-27 ran it against off
+only), and on sets 1-10 it recovers ~40 of the ~41-net gap that opened
 between v0.20.2 and HEAD while keeping HEAD's DRC advantage (66 vs the
 release's 144).
 

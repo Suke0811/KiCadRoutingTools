@@ -50,12 +50,11 @@ Use `route_diff.py` for differential pair routing. All nets specified are treate
 
 ```bash
 # Route a specific diff pair
-python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds_rx1_11*" \
-    --stub-proximity-radius 4
+python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds_rx1_11*"
 
 # Route with debug visualization
 python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds_rx1_11*" \
-    --stub-proximity-radius 4 --debug-lines
+    --debug-lines
 
 # Route all LVDS nets with custom gap
 python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*" \
@@ -621,7 +620,7 @@ This helps visualize the routing structure without affecting the actual routed c
 
 ## Track Proximity Avoidance
 
-The `--track-proximity-distance` and `--track-proximity-cost` options penalize routes that run close to previously routed tracks on the same layer. This encourages spread-out routing and reduces the risk of DRC violations. Disabled by default (cost = 0).
+The `--track-proximity-distance` and `--track-proximity-cost` options penalize routes that run close to previously routed tracks on the same layer. This spreads routes apart, which can rescue a congested board, but across the corpus it ADDS DRC violations (#584: +119 to +244 at cost 2), so it is a retry lever: re-run with it, compare, and keep whichever grades better. Disabled by default (cost = 0).
 
 **Note:** Track proximity works correctly for differential pair routing (pose-based A*).
 

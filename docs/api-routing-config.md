@@ -190,15 +190,20 @@ success the net's segments are sampled (~1 mm spacing, deduped within the net)
 into a per-net array in the track-proximity cache; rip-up removes the entry.
 Merged into the layer map on every prepare.
 
-**Default OFF** (`cost 0.0`) — yet it is the strongest single knob measured
-(2026-08-02 study: `--track-proximity-cost 2` took cynthion 97.9 -> 100%).
-Chain-level results were mixed across board types, so it ships as retry
-guidance rather than a default.
+**Default OFF** (`cost 0.0`): a RETRY lever, not a default. Single boards
+gain (2026-08-02: `--track-proximity-cost 2` took cynthion 97.9 -> 100%;
+mid-chain orangecrab failures 23 -> 12 once width-aware), but across the
+corpus it adds DRC (#584: +119 to +244 over the dose grid), so retry with it,
+compare, and keep whichever run grades better.
 
-Definition review flags: **pre-existing input-board copper never emits** — 
-nets registered as rippable-pre-existing skip the cache, so corridors of
-already-routed boards exert no spreading pressure on new routes. No width
-awareness (a 2 mm power trunk and a 0.1 mm signal emit the same field).
+The field is **width-aware** (#585): full cost across the copper (± width/2),
+then the standard falloff from the copper edge, so a 2 mm trunk casts a wider
+field than a 0.1 mm signal; ripped-route ghosts get the same treatment.
+**Pre-existing input-board copper does not emit** — nets registered as
+rippable-pre-existing skip the cache. Ghosting it is opt-in
+(`KICAD_TRACK_PROX_PREEXISTING`) because it screened negative mid-chain
+(failures 12 -> 17 at cost 2, +50% time): existing diff/plane copper
+over-constrains the signal step.
 
 #### Pairwise keep-away: `keep_away` / `keep_away_free` / `keep_away_cost`
 
@@ -334,8 +339,9 @@ rra pricing beats refusal"; this is that conclusion made cumulative).
 
 Conflict events, charged in mm-equivalent to the cells involved. What ships
 is #590's `v1flat_01` arm: all three events below, at a flat increment, with
-no escalation. It was the best arm on three corpora; the contest event alone
-and the doubling escalation both measured worse.
+no escalation. It was the best arm on the two corpora that compared arms
+(sets 1-10 and 11-20; sets 21-27 ran it against off only); the contest event
+alone and the doubling escalation both measured worse.
 
 - a **contest** (full increment) — the intersection of a failed
   search's blocked frontier with a routed net's keep-out: ground one net
@@ -401,7 +407,10 @@ never depends on sampling density). Across sources, per cell:
   the composition modes stay opt-in / retry-tier.)
 - **`1`/`sum`: sum.** Density gradient — corridors threading many nets' fields
   price proportionally (glasgow A/B: 11 -> 4 failures). Steeper fields around
-  clustered pads (lpddr4 A/B: 6x search, one extra pad short).
+  clustered pads (lpddr4 A/B: 6x search, one extra pad short). Those are
+  single boards: on the corpus `sum` alone measured negative (#584: +10), and
+  `sum` with `track_proximity_cost` 0.5 at heuristic weight 2.3 was +419 DRC
+  (#586), so never combine it with track proximity.
 - **`zoned`: sum, except max inside BGA escape fields** (zone +
   `bga_proximity_radius`), where stacked foreign fields price a net's
   MANDATORY approach rather than an avoidable crowd. On boards with no BGA
@@ -431,7 +440,9 @@ dataclass field itself defaults to `0.0`, so a config built field by field
 without it runs with the term off. `0` was briefly the default (1af3096), on
 a rescan that could not have measured it because `route.py` still passed
 `0.02`; once that drift was fixed connectivity fell, and `0.02` was restored
-(e9523f23). `0.01` and `0.04` also measured worse.
+(e9523f23). `0.01` and `0.04` also measured worse, on the same five-board
+probe (boards picked because they had regressed); `0.02` is sized, not tuned
+on the corpus.
 
 ### Layer preferences and alignment
 

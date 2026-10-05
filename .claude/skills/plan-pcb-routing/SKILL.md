@@ -1557,10 +1557,10 @@ route from `board_step2b.kicad_pcb`.)
 This produces the **canonical final board** — the finalize's `JSON_ORACLE`
 line reports the KiCad-verified plane-completion verdict for the run.
 
-### Step 2c: Tuned route parameters (the measured-optimal set)
+### Step 2c: Tuned route parameters (a screened bundle)
 
-A 15-board screen (2026-08-17) measured the following parameter set as
-STRICTLY DOMINANT over each board's naive parameters — total KiCad
+A 15-board screen (2026-08-17) measured a bundle of these parameters as
+dominant over each board's naive parameters — total KiCad
 post-refill unconnected 62 → 23 across the corpus at **equal total wall
 time** (better first-pass arrangement repays the extra search in saved
 rip/retry churn). Apply it whenever the board is dense enough that any
@@ -2296,9 +2296,10 @@ bound, not a plan.)
 | `--via-cost 75` | 75 | Higher = fewer vias, longer paths. 75 = corpus-measured default (#586); 25 and 100 both measured WORSE |
 | `--grid-step 0.1` | 0.1 | Smaller = finer routing but slower; 0.05 for fine-pitch |
 
-Leave these at their defaults; each was measured and no other value held up:
-`--direction-preference-cost` (default: 250), `--turn-cost` (default: 1000),
-`--proximity-heuristic-factor` (default: 0.02).
+Leave these at their defaults: `--direction-preference-cost` (default: 250)
+and `--turn-cost` (default: 1000) were measured on the corpus and no other
+value held up; `--proximity-heuristic-factor` (default: 0.02) beat 0, 0.01
+and 0.04 on a five-board probe and has had no corpus A/B since.
 
 Manufacturing constraints (set to match your fab's requirements):
 
@@ -2738,8 +2739,8 @@ purpose):**
   IMPERFECT — a 6-layer RAM board regressed −5.0 — so never blind-apply:
   always retry-and-compare.
 - **Do not stack these with `--bga-proximity-cost` or a lower `--max-ripup`**
-  — both combinations measured WORSE than either alone (they remove exactly
-  the freedom the corridor pricing needs).
+  — on a single-board combination lattice both measured WORSE than either
+  alone (they remove exactly the freedom the corridor pricing needs).
 - **Boards routing fine at defaults:** leave everything alone.
 - Leave `--via-proximity-cost` at its default 10, up or down: 100 measured
   +15 on the corpus disconnection verdict, and 3 wins / 5 losses / 3

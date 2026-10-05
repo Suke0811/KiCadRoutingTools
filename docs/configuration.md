@@ -273,7 +273,7 @@ See [Power Net Analysis](power-nets.md) for automatic detection, AI-powered anal
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--via-cost` | 75 | Via penalty in 0.1mm grid steps, i.e. 50 = 5mm of path; mm-equivalent at any `--grid-step` (effectively doubled for diff pairs since two vias are placed) |
+| `--via-cost` | 75 | Via penalty in 0.1mm grid steps, i.e. 75 = 7.5mm of path; mm-equivalent at any `--grid-step` (effectively doubled for diff pairs since two vias are placed) |
 | `--max-iterations` | 200000 | A* iteration limit per route |
 | `--max-probe-iterations` | 5000 | Quick probe per direction to detect stuck routes |
 | `--heuristic-weight` | 2.3 | A* greediness (>1 = faster, <1 = more optimal). 2.3 is the corpus dose-response peak (#586); 1.9 was the default before it |
@@ -764,10 +764,13 @@ the corpus (#586), and the stub penalty is near-optimal as shipped (#584).
 
 ```bash
 python py_router/route.py input.kicad_pcb output.kicad_pcb --nets "Net-(*)" \
-    --ordering mps \
-    --via-cost 50 \
-    --heuristic-weight 2.0
+    --ordering mps
 ```
+
+`--via-cost` is the knob that trades path length for vias: raising it above
+the default 75 buys fewer vias with longer routes, lowering it the reverse.
+The default is the corpus-measured setting, so compare a changed value
+against a default run on the same board before keeping it.
 
 ### Differential Pairs (LVDS)
 
@@ -783,10 +786,12 @@ python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*" 
 
 ```bash
 python py_router/route.py input.kicad_pcb output.kicad_pcb --nets "Net-(*)" \
-    --grid-step 0.2 \
-    --heuristic-weight 2.0 \
-    --max-iterations 50000
+    --grid-step 0.2
 ```
+
+A coarser grid is the speed lever. Keep `--heuristic-weight` at 2.3 (lower
+is slower, not faster) and `--max-iterations` at its default: a smaller
+budget fails long routes instead of finishing them sooner.
 
 ### Fine-Pitch BGA
 

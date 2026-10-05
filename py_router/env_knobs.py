@@ -531,12 +531,16 @@ def refresh() -> None:
     # per-cell bump at each conflict event. See history_congestion.py.
     # v2 (contest-targeted): the primary event charges the frontier∩blocker
     # INTERSECTION (the cells one net holds and another stalled against) at
-    # the full increment. v2's own screen measured the v1 whole-footprint rip
-    # stamp and raw-frontier charge negative/inert and switched them off; the
-    # corpus then reversed that, and both ship ON (below).
+    # the full increment. v2 switched the v1 whole-footprint rip stamp and
+    # raw-frontier charge off on a local diagnosis, not a measurement; the
+    # corpus then put the rip stamp back (the contest alone, and contests plus
+    # frontier without rip stamps, both measured worse), and the frontier
+    # ships at 0.25 only as part of the winning arm -- no "rips + contests,
+    # no frontier" arm was ever run.
     # #590 SHIPPED DEFAULT = the "v1flat_01" arm: the flat diffuse field at dose
     # 0.1 / cap 0.5, whole-footprint rip stamps at full weight, raw frontier at
-    # 0.25, and NO escalation. Best of every arm tested on three corpora; see
+    # 0.25, and NO escalation. Best of every arm on the two corpora that
+    # compared arms (sets 1-10, 11-20; sets 21-27 ran it against off); see
     # the promotion note in history_congestion.py for the evidence AND for the
     # caveat (the win is concentrated on congested boards; a pre-registered
     # sets 21-27 test did not clear its own bar). KICAD_HISTORY_COST=0 restores
