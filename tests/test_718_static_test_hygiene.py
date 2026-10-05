@@ -758,6 +758,12 @@ _BASELINE_GATES = {
 #: Committed baselines with NO gate, each with its reason. Being on this list
 #: is a DISCLOSURE, not an exemption -- see `_UNGATED_BASELINE_COUNT`.
 _BASELINE_UNGATED = {
+    # Upstream main (8c739ec3) committed this without registering it, so
+    # test_718 failed there too; registered here when the branch merged it.
+    'tests/run_all_durations.json':
+        'run_all.py\'s measured per-test wall seconds (written by '
+        '--write-durations / run_all_modal.py), read by `shard` to balance '
+        'shards; a timing table, not a verdict, so no test re-derives it',
     'tests/797_seed_exclusive_baseline.json':
         'no test names it; its own `reproduce` key carries a two-command '
         'recipe, which is a recipe rather than a gate',
@@ -790,7 +796,7 @@ _BASELINE_UNGATED = {
 #: it guards would make this agree with whatever the map currently says, and
 #: the point is that another ungated baseline be a decision somebody takes
 #: rather than a line somebody adds.
-_UNGATED_BASELINE_COUNT = 7
+_UNGATED_BASELINE_COUNT = 8     # 7 before run_all_durations.json
 
 #: And the total the walk must CONSIDER. Without it the check goes vacuous in
 #: silence: widen an exclusion to `tests/` and every baseline disappears, while
@@ -802,7 +808,7 @@ _UNGATED_BASELINE_COUNT = 7
 #: verbatim, because the print string has since been reworded and the counts
 #: have moved -- a "measured" line spliced from two versions is exactly what
 #: #879 is about.)
-_DECLARED_BASELINE_COUNT = 24     # 23 before #1127's pre-registration
+_DECLARED_BASELINE_COUNT = 25     # 23 before #1127's pre-registration; 24 before run_all_durations.json
 
 #: Committed JSON/JSONL under `tests/` that is an INPUT, not a recorded
 #: measurement. Full-path regexes, each with its reason.

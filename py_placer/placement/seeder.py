@@ -6588,8 +6588,8 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             # exit code; `--repair-decaps` has no rung for it either. The same
             # holds for a #1102 board-wide `severity.decap_ungraded: error`.
             # (`decap_distance` / `decap_pin_distance` are still charged and
-            # can be nudged the same way -- older than #1142, filed as a
-            # follow-up.) Said in `notes`, so a --dry-run, which has no final
+            # can be nudged the same way -- older than #1142, filed as
+            # #1150.) Said in `notes`, so a --dry-run, which has no final
             # grade, still names the cap.
             if v.rule == 'decap_ungraded':
                 notes.append(

@@ -55,7 +55,8 @@ sys.path.insert(0, TESTS_DIR)
 CLEARANCE = 0.2
 TOL = 1e-6
 #: The ROUTING side's readers (py_router). Measured and disclosed, NOT changed
-#: by #1143: a change there is a routing change and needs a corpus routing A/B.
+#: by #1143: a change there is a routing change and needs a corpus routing A/B
+#: (#1148).
 ROUTING_SITES = ('package_type', 'bga_pitch', 'pad_count')
 #: A board whose file is known not to parse as KiCad reads it (see docstring).
 SUSPECT = {'RoyalBlue54L-Feather.kicad_pcb':
