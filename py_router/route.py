@@ -1127,6 +1127,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if debug_memory:
         print(format_memory_stats("Initial memory", mem_start))
 
+    # Handed an in-memory board (a reconcile lap, a plane-finalize sub-run,
+    # the GUI): its copper may be newer than any fill of the file.
+    _pcb_in_memory = pcb_data is not None
     if pcb_data is None:
         print(f"Loading {input_file}...")
         pcb_data = parse_kicad_pcb(input_file, guide_layer=guide_corridor_layer,
@@ -2688,6 +2691,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # with no zones.
     from plane_fragility import register_plane_fragility
     register_plane_fragility(pcb_data, config, track_proximity_cache)
+    if _pcb_in_memory:
+        # The field was rasterized from the FILE's fill (or the live board
+        # as the GUI filled it); this run's in-memory copper is newer. Carve
+        # it once, so a sub-run prices the necks its parent already made --
+        # the CLI's reconcile laps re-read the written board and got this for
+        # free, the GUI's were priced on the input fill.
+        from plane_fragility import carve_in_memory_copper
+        carve_in_memory_copper(config, pcb_data)
 
     # Congestion v2 (#424): demand/capacity bins + owner terminals; per-net
     # stamping happens at prepare (routing_context.stamp_congestion2).

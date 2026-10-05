@@ -76,6 +76,19 @@ def filter_ripped_ghosts(ghost_dict, config: GridRouteConfig, routed_net_ids=Non
             if nid not in done and v is not None and len(v) > 0}
 
 
+def _per_net_cost_sources(track_proximity_cache, net_ids, sibs=()):
+    """The track_proximity_cache entries the net(s) being routed are priced
+    with: all of them but their river siblings' corridors (#658) and their own
+    pours' plane-fragility rows (a same-net track joins its plane, it cannot
+    cut it). The same dict when nothing is dropped, so the merge memo keeps
+    its key."""
+    from plane_fragility import without_own_fragility
+    cache = without_own_fragility(track_proximity_cache, net_ids)
+    if sibs:
+        cache = {k: v for k, v in cache.items() if k not in sibs}
+    return cache
+
+
 def build_diff_pair_obstacles(
     diff_pair_base_obstacles,
     pcb_data,
@@ -164,7 +177,8 @@ def build_diff_pair_obstacles(
     from history_congestion import add_history_source
     from keep_away import add_keepaway_source
     merge_track_proximity_costs(
-        obstacles, track_proximity_cache,
+        obstacles, _per_net_cost_sources(track_proximity_cache,
+                                         (p_net_id, n_net_id)),
         ghost_costs=add_keepaway_source(add_history_source(
             {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
              **(_stub_surplus or {})}, config),
@@ -356,8 +370,7 @@ def build_single_ended_obstacles(
     _c2 = congestion2_rows(config, net_id, routed_net_ids)
     merge_track_proximity_costs(
         obstacles,
-        ({k: v for k, v in track_proximity_cache.items() if k not in _sibs}
-         if _sibs else track_proximity_cache),
+        _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),
         ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
             {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
              **(_stub_surplus or {}),
@@ -454,8 +467,7 @@ def build_incremental_obstacles(
     from keep_away import add_keepaway_source
     merge_track_proximity_costs(
         obstacles,
-        ({k: v for k, v in track_proximity_cache.items() if k not in _sibs}
-         if _sibs else track_proximity_cache),
+        _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),
         ghost_costs=add_keepaway_source(add_plan_source(
             add_history_source(_stub_surplus or None, config),
             config, net_id, routed_net_ids), config, pcb_data, net_id) or None,
@@ -628,8 +640,7 @@ def prepare_obstacles_inplace(
     _c2 = congestion2_rows(config, net_id, routed_net_ids)
     merge_track_proximity_costs(
         working_obstacles,
-        ({k: v for k, v in track_proximity_cache.items() if k not in _sibs}
-         if _sibs else track_proximity_cache),
+        _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),
         ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
             {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
              **(_stub_surplus or {}),

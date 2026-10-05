@@ -852,6 +852,7 @@ def sync_pcb_data_segments(
     seg_count_before = len(pcb_data.segments)
 
     # Remove only ROUTED segments (not original stubs) for routed nets
+    _old_segments = pcb_data.segments
     pcb_data.segments = [s for s in pcb_data.segments
                          if s.net_id not in routed_net_ids_set or id(s) in original_segment_ids]
     seg_count_after_remove = len(pcb_data.segments)
@@ -871,6 +872,15 @@ def sync_pcb_data_segments(
             pcb_data.segments.append(seg)
             total_added += 1
     print(f"\nSync pcb_data: {seg_count_before} -> {seg_count_after_remove} (kept stubs) -> {len(pcb_data.segments)} (after adding {total_added})")
+    # #466: the meanders moved copper the plane-fragility field has carved;
+    # refresh the windows of what left and what arrived.
+    if config is not None:
+        from plane_fragility import fragility_on_copper_change
+        _kept = set(id(s) for s in pcb_data.segments)
+        _moved = ([s for s in _old_segments if id(s) not in _kept]
+                  + [s for s in pcb_data.segments if s.net_id in routed_net_ids_set
+                     and id(s) not in original_segment_ids])
+        fragility_on_copper_change(config, pcb_data, _moved, [])
 
     # Same reconciliation for VIAS (#874). Identity, not geometry: two distinct
     # objects at one point are two real barrels, and the writer holds each once.

@@ -27,6 +27,7 @@ from rip_up_reroute import rip_up_net, restore_net
 from leg_rip import LEG_RIP_ENABLED, select_blocking_branch  # #510
 from polarity_swap import get_canonical_net_id
 from pcb_modification import add_route_to_pcb_data
+from plane_fragility import fragility_on_copper_change
 from obstacle_map import (add_segments_list_as_obstacles, add_vias_list_as_obstacles,
                          remove_segments_list_from_obstacles, remove_vias_list_from_obstacles)
 from obstacle_cache import (
@@ -728,6 +729,8 @@ def run_phase3_tap_routing(
             if tap_segments or tap_vias:
                 tap_result = {'new_segments': tap_segments, 'new_vias': tap_vias}
                 add_route_to_pcb_data(pcb_data, tap_result, debug_lines=config.debug_lines)
+                # #466: Phase 3's taps carve the pours like any commit.
+                fragility_on_copper_change(config, pcb_data, tap_segments, tap_vias)
                 print(f"  Added {len(tap_segments)} tap segments, {len(tap_vias)} tap vias")
 
                 # IMPORTANT: Update completed_result['new_segments'] to match what's in pcb_data
@@ -1672,6 +1675,8 @@ def _reroute_phase3_ripped_nets(
         elif result and not result.get('failed') and result.get('path'):
             main_vias = result.get('new_vias', [])
             add_route_to_pcb_data(pcb_data, result, debug_lines=config.debug_lines)
+            fragility_on_copper_change(config, pcb_data,      # #466
+                                       result.get('new_segments'), main_vias)
             _commit_net_result(results, routed_results, ripped_net_id, result,
                                pcb_data, config)
             routed_net_ids.append(ripped_net_id)
@@ -1774,6 +1779,8 @@ def _reroute_phase3_ripped_nets(
                     if tap_segments or tap_vias:
                         tap_result_data = {'new_segments': tap_segments, 'new_vias': tap_vias}
                         add_route_to_pcb_data(pcb_data, tap_result_data, debug_lines=config.debug_lines)
+                        fragility_on_copper_change(config, pcb_data,      # #466
+                                                   tap_segments, tap_vias)
                         print(f"    Re-routed {len(tap_segments)} tap segments, {len(tap_vias)} tap vias")
 
                         # IMPORTANT: Update tap_result['new_segments'] to match what's in pcb_data

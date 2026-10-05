@@ -260,6 +260,23 @@ def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
     return None
 
 
+def _swap_footprint(seg_mods):
+    """The copper a stub layer switch moved, on BOTH layers, as segment-like
+    records (start/end/layer) for the plane-fragility refresh: the old layer
+    gets its pour back, the new layer is carved."""
+    from types import SimpleNamespace
+    out = []
+    for m in seg_mods:
+        if 'added_seg' in m:
+            out.append(m['added_seg'])
+            continue
+        (x1, y1), (x2, y2) = m['start'], m['end']
+        for layer in (m['old_layer'], m['new_layer']):
+            out.append(SimpleNamespace(start_x=x1, start_y=y1, end_x=x2,
+                                       end_y=y2, layer=layer))
+    return out
+
+
 def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                       routed_net_ids, remaining_net_ids, routed_results,
                       routed_net_paths, track_proximity_cache, layer_map,
@@ -396,6 +413,10 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                 fragility_on_copper_change(config, pcb_data,
                                            result.get('new_segments'),
                                            result.get('new_vias'))
+                # ...and the swap itself: the stub left one layer for another
+                # and may have drilled a pad via.
+                fragility_on_copper_change(
+                    config, pcb_data, _swap_footprint(seg_mods), new_vias)
                 if net_id in remaining_net_ids:
                     remaining_net_ids.remove(net_id)
                 routed_net_ids.append(net_id)

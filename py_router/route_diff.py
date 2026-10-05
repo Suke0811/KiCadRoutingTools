@@ -1353,6 +1353,12 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # cell cost via the Rust via branch.
     from congestion_field import register_congestion_field
     register_congestion_field(pcb_data, config, track_proximity_cache)
+    # Plane fragility (#424/#466), as route.py prices it: a pair crossing a
+    # pour neck severs the plane like any track. Static -- the diff engine
+    # has no commit hooks to keep the dynamic field current.
+    from plane_fragility import register_plane_fragility
+    register_plane_fragility(pcb_data, config, track_proximity_cache,
+                             dynamic=False)
 
     # History congestion (#590): fresh per-cell conflict field for this call.
     from history_congestion import reset_history
@@ -1809,6 +1815,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         # width floor, {layer: [solved_mm, floor_mm]} -- those layers will NOT
         # meet the impedance request. Key absent when no clamp fired.
         summary['impedance_width_clamped'] = impedance_width_clamped
+    # #831: which copper the plane-fragility field came from (route.py's key).
+    _pfg = getattr(config, '_plane_fragility_geometry', None)
+    if _pfg is not None:
+        summary['plane_fragility'] = dict(_pfg)
     # #1146: per net, the track length left inside a keep-away band, measured
     # on the whole board (route.py reports the same key).
     if getattr(config, 'keep_away', None):
