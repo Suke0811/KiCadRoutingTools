@@ -6404,7 +6404,8 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     an escalating displacement cap. The opposite contract of --force (which
     re-derives everything).
 
-    Violators: intent grade errors with a ref (zone/edge/decap...), pad/hole
+    Violators: intent grade errors with a ref (zone/edge/decap...; never
+    `decap_ungraded`, which no move here can target -- #1142), pad/hole
     legality conflicts (the movable member of each pair), and parts off the
     board outline -- except refs the intent declares as edge connectors,
     whose overhang is by design.
@@ -6584,8 +6585,18 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             # LEGAL pose, not toward its IC, so charging one nudged the cap
             # further out and shipped the worse pose (final review: esp_prog
             # C2 5.64 -> 5.69 mm). The finding stays in the grade, and in its
-            # exit code; `--repair-decaps` has no rung for it either.
+            # exit code; `--repair-decaps` has no rung for it either. The same
+            # holds for a #1102 board-wide `severity.decap_ungraded: error`.
+            # (`decap_distance` / `decap_pin_distance` are still charged and
+            # can be nudged the same way -- older than #1142, filed as a
+            # follow-up.) Said in `notes`, so a --dry-run, which has no final
+            # grade, still names the cap.
             if v.rule == 'decap_ungraded':
+                notes.append(
+                    f"{v.ref}: not charged -- decap_ungraded (a cap the "
+                    f"reference holds, stranded past the tether radius, "
+                    f"#1142) has no repair that moves it toward its IC; "
+                    f"the finding stays in the grade")
                 continue
             if v.ref:
                 _charge(v.ref, float((v.measured or {}).get('outside_mm', 1.0)

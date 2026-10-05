@@ -266,8 +266,11 @@ def test_repair_does_not_push_a_held_cap_further():
     moved = {m.get('reference') for m in (res.get('moves') or [])
              if isinstance(m, dict)}
     assert 'C2' not in moved, res.get('moves')
+    # ...and it is SAID, so a --dry-run (no final grade) still names it.
+    assert any(n.startswith('C2: not charged') for n in res.get('notes') or ()), (
+        res.get('notes'))
     print(f"  PASS: C2 (held, stranded) is no violator and does not move; "
-          f"its decap_ungraded ERROR stays")
+          f"its decap_ungraded ERROR stays, and the notes name it")
 
 
 def test_the_issue_pile_splitflap():

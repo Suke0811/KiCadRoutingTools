@@ -28,11 +28,13 @@ Edits are `str.replace(old, new, 1)`; anchors are LF and translated to the
 target's own ending. A witness is `(test file, case-name substring...)`.
 
 Not covered by a row, and why:
-  * the "has pads" gates of portfolio, reconcile, recovery, lock_advisor,
-    placement_state, grow_board, plan_check and the board tools: no corpus
-    board carries an aperture-only part (measure_1143), and each gate is the
-    same one-line `non_aperture_pads(fp)` the rows below already pin through
-    the predicate itself;
+  * the "has pads" gates of lock_advisor, grow_board, plan_check and some of
+    the board tools: no corpus board carries an aperture-only part
+    (measure_1143), and each gate is the same one-line
+    `non_aperture_pads(fp)` the rows below already pin through the predicate
+    itself. (The MOVERS -- portfolio, reconcile, the drift default, the
+    agent grade -- read `fp.pads` on purpose; their rows pin THAT direction:
+    `final-poses-drop-aperture-only-parts` and its siblings.)
   * the escape face assignment and `_part_rect`: `pitch-reads-paste-lattice`
     and the empty-part case in test_1143's pitch witness cover the module.
 """
@@ -336,8 +338,9 @@ ROWS = [
     # further from its IC (esp_prog C2 5.64 -> 5.69 mm).
     ('repair-charges-held-caps', 'seeder',
      "            if v.rule == 'decap_ungraded':\n"
-     "                continue\n",
-     "",
+     "                notes.append(\n",
+     "            if False:\n"
+     "                notes.append(\n",
      (REPAIR,), 'KILLED'),
     ('held-by-reference-unreported', 'floorplan',
      "                      'held_by_reference': is_held},\n",
