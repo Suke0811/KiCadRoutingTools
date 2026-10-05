@@ -582,7 +582,7 @@ class GridRouteConfig:
     grid_step: float = 0.1        # mm grid resolution
 
     # A* algorithm
-    via_cost: int = 75            # via penalty in 0.1mm grid steps = 5mm of path (diff pairs place 2 vias)
+    via_cost: int = 75            # via penalty in 0.1mm grid steps = 7.5mm of path (diff pairs place 2 vias)
     max_iterations: int = 200000
     max_probe_iterations: int = 5000  # quick probe per direction to detect stuck routes
     heuristic_weight: float = 2.3
@@ -665,10 +665,13 @@ The `via_cost` parameter controls how much the router penalizes layer changes:
 | Value | Effect |
 |-------|--------|
 | 0-25 | Many vias, shorter paths |
-| 50 (default) | Balanced, discourages unnecessary vias |
-| 75-100 | Few vias, longer paths |
+| 75 (default) | Balanced, discourages unnecessary vias |
+| 100+ | Few vias, longer paths |
 
-For BGA escape routing, lower values (10-25) work well since vias are necessary.
+75 is the corpus-measured default (#586: against the old 50 it took the
+disconnection verdict down 8 and DRC down 13, and it composes with heuristic
+weight 2.3). 25 and 100 both measured worse. Do not lower it for BGA escape
+routing: 25 lost on a corpus that includes BGA escape boards.
 
 All cost knobs (via cost, proximity costs, attraction bonuses) are calibrated at a 0.1mm
 reference grid and scale internally so the cost per mm of path is the same at any
@@ -750,12 +753,12 @@ This encourages routes to avoid blocking future routing paths.
 
 ```bash
 python py_router/route.py input.kicad_pcb output.kicad_pcb --nets "Net-(*)" \
-    --ordering inside_out \
-    --via-cost 10 \
-    --heuristic-weight 1.2 \
-    --stub-proximity-radius 2.0 \
-    --stub-proximity-cost 5.0
+    --ordering inside_out
 ```
+
+Leave the via cost, heuristic weight and stub proximity at their defaults
+(75, 2.3, 0.2): a lower via cost or heuristic weight measured worse across
+the corpus (#586), and the stub penalty is near-optimal as shipped (#584).
 
 ### Long Routes (Few Vias)
 

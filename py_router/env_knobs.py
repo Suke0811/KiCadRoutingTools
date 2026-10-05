@@ -531,8 +531,9 @@ def refresh() -> None:
     # per-cell bump at each conflict event. See history_congestion.py.
     # v2 (contest-targeted): the primary event charges the frontier∩blocker
     # INTERSECTION (the cells one net holds and another stalled against) at
-    # the full increment; the v1 whole-footprint rip stamp and raw-frontier
-    # charge were measured negative/inert and now default OFF behind weights.
+    # the full increment. v2's own screen measured the v1 whole-footprint rip
+    # stamp and raw-frontier charge negative/inert and switched them off; the
+    # corpus then reversed that, and both ship ON (below).
     # #590 SHIPPED DEFAULT = the "v1flat_01" arm: the flat diffuse field at dose
     # 0.1 / cap 0.5, whole-footprint rip stamps at full weight, raw frontier at
     # 0.25, and NO escalation. Best of every arm tested on three corpora; see

@@ -240,9 +240,10 @@ theirs) and a restored one brings the same band back. It is read from the
 geometry itself rather than from the copper epoch, because many passes edit
 tracks in place without bumping it. Who routes first matters: a net is priced
 against the other side's tracks routed before it and against all of its pads.
-Paths that route on a map no builder prepared stamp the band themselves (the
-stub-swap and tap-relocation rescues, `net_rescue`, terminal escalation), and
-the plane finalize's reroute sub-runs inherit the rules. The finalize's own
+The stub-swap and tap-relocation rescues route on a map prepared like the
+main pass's; `net_rescue` and terminal escalation, which route on clones no
+builder prepared, stamp the band themselves; and the plane finalize's reroute
+sub-runs inherit the rules. The finalize's own
 pad taps, region joins and oracle welds do not price it; the report covers
 whatever they ship.
 
@@ -288,7 +289,7 @@ otherwise invisible in flag tables:
 | Plane fragility | `KICAD_PLANE_FRAGILITY_COST` | **2.0 = ON** | Cells near pour boundaries/necks, so signals do not bisect a plane. The LARGEST default field (10x the stub tier). `0` reverts. Which copper it was rasterized from is disclosed in `JSON_SUMMARY.plane_fragility` (below). |
 | Congestion v1 | `KICAD_CONGESTION_COST` | 0 = off | All-layer copper-density field. |
 | Congestion v2 | `KICAD_CONGESTION2_COST` | 0 = off | Demand/capacity bins, owner-exempt (your own destination does not repel you). A source in the layer-map composition pass since d52f1c2 (#585 item 7): sums in sum mode, max-mode unchanged by commutativity. |
-| History congestion | `KICAD_HISTORY_COST` | 0 = off | PathFinder-style negotiated congestion (#590): per-CELL, CUMULATIVE conflict history for the rest of the call. See below. |
+| History congestion | `KICAD_HISTORY_COST` | **0.1 = ON** | PathFinder-style negotiated congestion (#590): per-CELL, CUMULATIVE conflict history for the rest of the call. On by default since 2026-08-13; `0` turns it off. See below. |
 
 ##### Plane fragility: which copper it priced (#831)
 
@@ -326,38 +327,40 @@ more expensive and the contest dissolves without anyone arbitrating whom to
 rip (the 0802 rip study refuted every frame-local rip gate and concluded "soft
 rra pricing beats refusal"; this is that conclusion made cumulative).
 
-Conflict events, charged in mm-equivalent to the cells involved (v2
-re-targeted the charging after the v1 one-board screen — whole-footprint rip
-stamps were measured negative, raw-frontier charging mostly priced static
-copper no rip can clear):
+Conflict events, charged in mm-equivalent to the cells involved. What ships
+is #590's `v1flat_01` arm: all three events below, at a flat increment, with
+no escalation. It was the best arm on three corpora; the contest event alone
+and the doubling escalation both measured worse.
 
-- a **contest** (primary, full increment) — the intersection of a failed
+- a **contest** (full increment) — the intersection of a failed
   search's blocked frontier with a routed net's keep-out: ground one net
   holds and another just stalled against, the engine's analog of
   PathFinder's *overused nodes*. Charged inside
   `analyze_frontier_blocking` (which already computes the per-blocker
   intersection for rip ranking), **before** any rip — so a ripped blocker's
   reroute already sees its contested ground priced and relocates instead of
-  re-taking it. Repeat contests **escalate**: at `KICAD_HISTORY_ESCALATE`
-  1.0 a re-charged cell *doubles* (0.1 → 0.2 → 0.4 …), because a routing
-  call has only a handful of rip rounds and a flat increment cannot build a
-  gradient in that many iterations. One failure analyzed twice in a row is
-  charged once.
-- a **rip's whole footprint** (v1) — `KICAD_HISTORY_RIP_WEIGHT` × the
+  re-taking it. A repeat contest adds the same flat increment again.
+  `KICAD_HISTORY_ESCALATE` > 0 makes it escalate instead (at 1.0 a
+  re-charged cell *doubles*: 0.1 → 0.2 → 0.4 …); that was the v2 default,
+  and on the corpus it walled off fine-pitch BGA escape fields, where
+  approaches are mandatory. One failure analyzed twice in a row is charged
+  once.
+- a **rip's whole footprint** — `KICAD_HISTORY_RIP_WEIGHT` × the
   increment over the ripped copper (half width + `KICAD_HISTORY_RADIUS`,
-  vias on every layer). Default **0**: kept only for A/B against v1.
-- a **failed search's raw blocked frontier** (v1) —
-  `KICAD_HISTORY_BLOCKED_WEIGHT` × the increment. Default **0**: the contest
-  event charges the useful subset at full weight.
+  vias on every layer). Default **1.0**. v2 had demoted it to 0, and the
+  corpus A/B reversed that: without it (contests alone, or contests plus
+  frontier) the field measured worse than baseline.
+- a **failed search's raw blocked frontier** —
+  `KICAD_HISTORY_BLOCKED_WEIGHT` × the increment. Default **0.25**.
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `KICAD_HISTORY_COST` | `0` (off) | mm-equivalent per contest event |
-| `KICAD_HISTORY_CAP` | `0` (uncapped) | Ceiling on a cell's accumulated history. Guards the *productive*-churn regime — a fine-pitch BGA escape field, where 15 rips converge, must not wall itself off. |
-| `KICAD_HISTORY_ESCALATE` | `1.0` | Repeat-contest multiplier: re-charging a cell adds `max(inc, escalate × accumulated)` — 1.0 doubles per repeat; `0` = flat v1 accumulation |
-| `KICAD_HISTORY_RIP_WEIGHT` | `0` (off) | v1 whole-footprint rip stamp weight |
-| `KICAD_HISTORY_RADIUS` | `0.25` mm | Added to the copper half-width when a v1 rip stamps |
-| `KICAD_HISTORY_BLOCKED_WEIGHT` | `0` (off) | v1 raw-frontier weight |
+| `KICAD_HISTORY_COST` | `0.1` (on) | mm-equivalent per conflict event; `0` turns the field off |
+| `KICAD_HISTORY_CAP` | `0.5` | Ceiling on a cell's accumulated history (`0` = uncapped). Guards the *productive*-churn regime — a fine-pitch BGA escape field, where 15 rips converge, must not wall itself off. |
+| `KICAD_HISTORY_ESCALATE` | `0` (flat) | Repeat-contest multiplier: when > 0, re-charging a cell adds `max(inc, escalate × accumulated)` — 1.0 doubles per repeat; `0` = flat accumulation |
+| `KICAD_HISTORY_RIP_WEIGHT` | `1.0` | Whole-footprint rip stamp weight |
+| `KICAD_HISTORY_RADIUS` | `0.25` mm | Added to the copper half-width when a rip stamps |
+| `KICAD_HISTORY_BLOCKED_WEIGHT` | `0.25` | Raw-frontier weight |
 | `KICAD_HISTORY_MAX_CELLS` | `500000` | Growth guard bounding the per-prepare merge: past this, each event **evicts the lowest-weight cells** to make room (chronological refusal would unprice the endgame conflicts — the ones completion is measured on). Evictions are disclosed in the run summary along with the field's size and upkeep time. |
 
 **Cost.** The event path is cheap (a rip stamps its corridor by vectorized
@@ -374,7 +377,12 @@ are per-NET and are **deleted** when the victim reroutes (C1); this is
 per-CELL and survives for the whole call. Scope is one routing call (fresh at
 batch start, like congestion v2's bins); cross-step persistence is a v2
 question. No decay — decay is an FPGA-ism for hundred-iteration convergence.
-No CLI flag or GUI control until the corpus says it earns one.
+There is no CLI flag or GUI control: both fronts read the env knobs through the
+shared engine, so the default reaches them identically. The win is
+concentrated on congested boards (a pre-registered sets 21-27 confirmation
+did not clear its own bar), so read a contradicting corpus result as
+informative; the evidence is in `py_router/history_congestion.py`'s
+docstring.
 
 #### Composition: how multiple sources combine (`KICAD_PROXIMITY_SUM`)
 
@@ -409,17 +417,23 @@ cleared prepare cycle.
 
 #### Search-side (not stamps)
 
-`proximity_heuristic_factor` (default `0.0` since the heuristic-weight 2.3 flip; formerly `0.02`) adds an estimated proximity cost
+`proximity_heuristic_factor` adds an estimated proximity cost
 per remaining step to the A* heuristic when a route's endpoints sit inside
 stub/BGA zones — a deliberate slight overestimate that trades exactness for
-search speed on proximity-heavy boards.
+search speed on proximity-heavy boards. The CLI and `batch_route` default is
+`0.02` (`routing_defaults.PROXIMITY_HEURISTIC_FACTOR`). The `GridRouteConfig`
+dataclass field itself defaults to `0.0`, so a config built field by field
+without it runs with the term off. `0` was briefly the default (1af3096), on
+a rescan that could not have measured it because `route.py` still passed
+`0.02`; once that drift was fixed connectivity fell, and `0.02` was restored
+(e9523f23). `0.01` and `0.04` also measured worse.
 
 ### Layer preferences and alignment
 
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `layer_costs` | `[]` | Per-layer cost multipliers (1.0 = neutral), parallel to `layers` |
-| `direction_preference_cost` | `5` | Penalty for off-direction moves; layers alternate H/V starting horizontal on top (0 = off). A WEAK nudge is the optimum: #663's corpus screen (sets 1-5, 75 boards/arm, one commit) measured 5 against the former 250 default at -22 incomplete nets (-19.6%), W15/L6, real DRC flat. 250 priced every off-axis move above 3 vias (`VIA_COST` 75), forcing detours; 0 loses the layer organization entirely (single-board dose curve 0->19, 5->9, 250->15 issues). Higher values (e.g. 5000 = 5x a move) enforce strict human-style lanes but make dense boards' short diagonal hops unroutable (sets 6-11 A/B regression). NOTE the oracle-weld and plane sub-configs never receive this parameter and run at `GridRouteConfig`'s own 250 default |
+| `direction_preference_cost` | `250` | Penalty for off-direction moves; layers alternate H/V starting horizontal on top (0 = off). #663 moved it to 5 on a corpus screen whose image had no KiCad, so every oracle leg was a no-op; re-screened with KiCad live (sets 1-5, 75 boards/arm, one commit), incomplete nets / real DRC were 5 → 95/58, 25 → 116/57, 50 → 117/62, 250 → 89/43, and 250 was restored (aaa60331). 25 and 50 are worse than either end, so do not split the difference without measuring. Much higher values (e.g. 5000 = 5x a move) enforce strict human-style lanes but make dense boards' short diagonal hops unroutable (sets 6-11 A/B: +104 incomplete nets). The oracle-weld and plane sub-configs never receive this parameter and run at `GridRouteConfig`'s own default, which is the same 250 |
 | `vertical_attraction_radius` | `1.0` | Radius for cross-layer alignment bonus (0 = off) |
 | `vertical_attraction_cost` | `0.0` | Bonus (negative cost) for vertically aligned positions (**0 = off by default**). NET-AGNOSTIC (soft-knobs C4): the per-cell layer bitmask carries no net id, so it pulls toward ANY other net's tracks on other layers; suppressed inside stub-proximity cells and BGA zones; capped so a step can never go free |
 
@@ -631,7 +645,7 @@ assert config.pair_clearance(1, 3, kind='stack') == 0.4        # via-via: max ov
 | `debug_memory` | `False` | Print memory statistics |
 | `collect_stats` | `False` | Collect A* statistics |
 | `add_teardrops` | `False` | Add teardrops to all pads in the output |
-| `proximity_heuristic_factor` | `0.0` | Tightens the A* heuristic for proximity costs (off: hw 2.3 already covers it; s2 rescan quality-neutral, -8% CPU) |
+| `proximity_heuristic_factor` | `0.0` | Tightens the A* heuristic for proximity costs. `0.0` is the dataclass default only; the CLI and `batch_route` pass `0.02`, the measured value (see "Search-side" above) |
 
 ### Methods
 

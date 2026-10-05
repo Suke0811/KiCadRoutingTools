@@ -292,7 +292,7 @@ class GridRouteConfig:
     # Debug options
     collect_stats: bool = False  # Collect A* search statistics for debugging
     # Heuristic tuning
-    proximity_heuristic_factor: float = 0.0  # proximity add-on to the A* heuristic (0 since the hw-2.3 default; the base greediness covers it)
+    proximity_heuristic_factor: float = 0.0  # proximity add-on to the A* heuristic. The CLIs and batch_route pass routing_defaults.PROXIMITY_HEURISTIC_FACTOR (0.02, restored in e9523f23 after 0 regressed 5 boards); this dataclass default is only what a direct GridRouteConfig() gets
     # Layer direction preference - alternates H/V starting with horizontal on top
     # Matches routing_defaults.DIRECTION_PREFERENCE_COST, which is back at 250
     # after the #663 revert. route.py/route_diff.py always pass the caller's
@@ -857,9 +857,9 @@ class GridRouteConfig:
     def via_cost_units(self) -> int:
         """Per-via penalty in cost units.
 
-        The via_cost knob is in grid steps at REFERENCE_GRID_STEP (default 50
-        = 5mm of path); the value scales with 1/grid_step so a via costs the
-        same mm-equivalent detour at any --grid-step.
+        The via_cost knob is in grid steps at REFERENCE_GRID_STEP (default 75
+        = 7.5mm of path, #586); the value scales with 1/grid_step so a via
+        costs the same mm-equivalent detour at any --grid-step.
         """
         return int(self.via_cost * 1000 * (REFERENCE_GRID_STEP / self.grid_step))
 
