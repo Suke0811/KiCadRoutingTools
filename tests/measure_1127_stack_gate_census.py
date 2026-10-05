@@ -62,8 +62,10 @@ BOARDS = ('esp_prog.kicad_pcb', 'splitflap_driver.kicad_pcb',
           'orangecrab_ext_pll.kicad_pcb', 'watchy.kicad_pcb',
           'rp2350_fpga_eensy_prePlane.kicad_pcb',
           'kit-dev-coldfire-xilinx_5213.kicad_pcb')
-STICKHUB = os.path.join(r'C:\Program Files\KiCad\10.0\share\kicad\demos',
-                        'stickhub', 'StickHub.kicad_pcb')
+# The demo through test_1094's resolver (KICAD_STICKHUB_DEMO, then the
+# Windows, Linux and macOS install paths). It used to be one hard-coded
+# Windows path, omitted without a word anywhere else.
+from test_1094_rotated_courtyards import stickhub  # noqa: E402
 ENGINES = {
     'seed': {'signal': 'intent_errors',
              'guard': ('crossings', 'hpwl', 'unseated', 'body_blocking')},
@@ -118,8 +120,12 @@ class _Census:
 
 def _boards(only):
     out = [os.path.join(AB.BOARDS, b) for b in BOARDS]
-    if os.path.isfile(STICKHUB):
-        out.append(STICKHUB)
+    sh = stickhub()
+    if sh:
+        out.append(sh)
+    else:
+        print("StickHub demo not found (KICAD_STICKHUB_DEMO or the install "
+              "paths): its diagnostic rows are omitted", flush=True)
     if only:
         out = [b for b in out if os.path.basename(b) in only]
     return out

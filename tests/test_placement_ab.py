@@ -1138,7 +1138,7 @@ class PileIneligible(AssertionError):
     pinned-neutral row, never silently skipped."""
 
 
-def _pile_inputs(board_path, d):
+def _pile_inputs(board_path, d, require_decaps=True):
     """#1105's basis (`PILE_PREREG`): `board_path` staged as an UNAIDED pile
     under `d/pile/` -- `stage_unaided.stage`, every non-mechanical part at the
     outline's bbox centre at rotation 0, the mechanical refs carried in a
@@ -1158,7 +1158,9 @@ def _pile_inputs(board_path, d):
 
     Raises AssertionError -- never skips -- when the staged board does not
     read as a pile, because that would measure a placed board under a pile's
-    name; `PileIneligible` when the intent arms no decap limit."""
+    name; `PileIneligible` when the intent arms no decap limit, unless
+    `require_decaps` is False -- #1127's stack-mode piles
+    (`tests/1127_stack_ab_prereg.json`) ask nothing of the decap rule."""
     import subprocess
     from kicad_parser import parse_kicad_pcb
     from placement import floorplan
@@ -1191,7 +1193,8 @@ def _pile_inputs(board_path, d):
     if not (doc.get('context') or {}).get('pose_claims_withheld'):
         raise AssertionError(f"{ipath}: the emitter did not treat {pile} as a "
                              f"pile (no context.pose_claims_withheld)")
-    if (doc.get('decaps') or {}).get('max_distance_mm') is None:
+    if require_decaps and (doc.get('decaps') or {}).get(
+            'max_distance_mm') is None:
         raise PileIneligible(
             f"{ipath}: --decaps-from {os.path.basename(board_path)} armed no "
             f"decaps.max_distance_mm ("
