@@ -1102,3 +1102,26 @@ object is recomputed instead of served stale.
 
 GATES RUN: test_cli_postpass_coverage: 14 registered, 22 in active use, 2
 CLI-only, 0 failures.
+
+NOTE 2026-10-05 (#1143, #1142, and #1127 measured; not an audit, so the first
+token above is unchanged).
+
+No new flag, dialog control or settings key. Every change sits inside shared
+engine functions, so both fronts get it. Unlike the previous note, the GUI
+DOES reach the changed code:
+- ai_plan.py's group step calls groups.derive_groups, whose _centroid /
+  _chip_list now skip aperture-only pads (#1143). measure_1143 shows block
+  membership moves on no corpus board or demo.
+- The GUI fanout tab calls fanout_clearance in-process: its has-pads gate
+  skips aperture-only parts (#1143), and its decap grade reads the new
+  per-cap decap_ungraded ERROR under a --decaps-from intent (#1142).
+- classify_part, which the QFN fanout auto-pick reads, moves on no corpus
+  board.
+The routing-side readers of the same pads (kicad_parser.detect_package_type,
+detect_bga_pitch, the QFN auto-pick's raw pad count) are deliberately left
+unchanged; changing them would be a routing change.
+
+GATES RUN: test_cli_postpass_coverage: 14 registered, 22 in active use,
+2 CLI-only, 0 failures. test_manifest_plan_parity: OK.
+test_gui_engine_parity was not run: its trigger (routing group membership or
+the QFN pick moving) did not fire on any board.
