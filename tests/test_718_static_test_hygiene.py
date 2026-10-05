@@ -737,6 +737,8 @@ _BASELINE_GATES = {
     'tests/placement_ab_baseline.json': 'tests/test_placement_ab.py',
     # #1105: fixed before any pile number existed; the gate pins its sha256.
     'tests/1105_pile_ab_prereg.json': 'tests/test_1105_pile_prereg.py',
+    # #1127: fixed before the licence census and the stack-mode A/B.
+    'tests/1127_stack_ab_prereg.json': 'tests/test_1127_prereg.py',
     'tests/placement_calibration_recovered.json':
         'tests/test_803_calibration_claims.py',
     'tests/placement_calibration_rows.json':
@@ -800,7 +802,7 @@ _UNGATED_BASELINE_COUNT = 7
 #: verbatim, because the print string has since been reworded and the counts
 #: have moved -- a "measured" line spliced from two versions is exactly what
 #: #879 is about.)
-_DECLARED_BASELINE_COUNT = 23
+_DECLARED_BASELINE_COUNT = 24     # 23 before #1127's pre-registration
 
 #: Committed JSON/JSONL under `tests/` that is an INPUT, not a recorded
 #: measurement. Full-path regexes, each with its reason.
