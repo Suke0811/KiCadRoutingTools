@@ -8,10 +8,13 @@ that decide whether a coupled route pinches its own pair priced the pinch at
 the flat Default clearance, so on a pair whose class is wider than Default
 they passed a P/N approach KiCad flags.
 
-The floor is `GridRouteConfig.pn_clearance`: the pair value, held to the gap
-the coupled run is built at (route_diff does not raise the gap for a layer
-or track rule, so a check above the gap would flag every segment of a clean
-coupled run). The configs here carry the gap route_diff would give them.
+The self-checks price the full pair value -- a .kicad_dru rule above the
+coupling gap included (route_diff does not raise the gap for one): they
+choose between alternatives (the hybrid, single-ended legs) that can route
+off the ruled layer, and cap_chain shows it end to end. Only the meander's
+partner check is held to the built gap (`GridRouteConfig.pn_clearance`,
+tests/test_1136_admission_pairwise.py). The configs here carry the gap
+route_diff would give them.
 
 Rows, each at the flat value (no class: the verdict is unchanged) and under a
 0.35 class on both nets:
@@ -101,11 +104,11 @@ def test_pn_self_overlaps():
     assert not _pn_self_overlaps(wide, 1, 2, _cfg(CLASS))
 
 
-def test_layer_rule_above_the_gap_is_not_a_self_graze():
-    """A clean coupled run sits AT the gap. An F.Cu rule of 0.3 above the
-    0.2 gap route_diff built it at would make every segment of it a
-    self-graze that no reroute can fix, so the floor is held to the gap; a
-    real pinch below the gap still counts."""
+def test_layer_rule_above_the_gap_counts():
+    """A coupled run AT a 0.2 gap on F.Cu, under an F.Cu rule of 0.3: KiCad
+    flags it, so the self-checks count it (that is what sends the pair to the
+    hybrid). Off the ruled layer it does not count, and a RELAXING rule
+    replaces the value as check_drc does."""
     from synth import make_seg
     from diff_pair_loop import _count_pn_overlaps
     from diff_pair_multipoint import _pn_self_overlaps
@@ -114,15 +117,51 @@ def test_layer_rule_above_the_gap_is_not_a_self_graze():
               make_seg(5, 10.4, 15, 10.4, net_id=2)]        # edge gap 0.2
     p = [s for s in at_gap if s.net_id == 1]
     n = [s for s in at_gap if s.net_id == 2]
-    assert _count_pn_overlaps(p, n, ruled) == 0
-    assert not _pn_self_overlaps(at_gap, 1, 2, ruled)
+    assert _count_pn_overlaps(p, n, ruled) == 1
+    assert _pn_self_overlaps(at_gap, 1, 2, ruled)
+    off = [make_seg(5, 10, 15, 10, net_id=1, layer='B.Cu'),
+           make_seg(5, 10.4, 15, 10.4, net_id=2, layer='B.Cu')]
+    assert not _pn_self_overlaps(off, 1, 2, ruled), \
+        'the F.Cu rule does not bind a B.Cu run'
     pinch = [make_seg(5, 10, 15, 10, net_id=1),
              make_seg(5, 10.35, 15, 10.35, net_id=2)]       # edge gap 0.15
-    assert _pn_self_overlaps(pinch, 1, 2, ruled), \
-        'a pinch below the gap must still count'
-    # a RELAXING rule replaces the value as check_drc does
     relaxed = _cfg(layer_clearances={'F.Cu': 0.14})
     assert not _pn_self_overlaps(pinch, 1, 2, relaxed)
+
+
+def test_cap_chain_routes_off_a_ruled_layer():
+    """End to end: cap_chain's pairs with an F.Cu rule of 0.3 above their
+    coupling gap. route_diff builds the coupled run at the gap on F.Cu; the
+    self-check counts it, the hybrid runs its coupled middle on an unruled
+    layer, and check_drc grades the board clean (the flat floor shipped 28
+    F.Cu P/N violations here)."""
+    import contextlib
+    import io
+    import shutil
+    import route_diff
+    from check_drc import run_drc
+    from kicad_parser import parse_kicad_pcb
+    with tempfile.TemporaryDirectory() as td:
+        dst = os.path.join(td, 'cc.kicad_pcb')
+        shutil.copy(os.path.join(ROOT, 'kicad_files', 'cap_chain.kicad_pcb'),
+                    dst)
+        rules = ('(version 1)' + chr(10) + '(rule "tight_f" (layer "F.Cu") '
+                 '(constraint clearance (min 0.3mm)))' + chr(10))
+        for stem in ('cc', 'o'):
+            with open(os.path.join(td, stem + '.kicad_dru'), 'w',
+                      encoding='utf-8') as fh:
+                fh.write(rules)
+        pairs = sorted(nt.name for nt in parse_kicad_pcb(evidence(dst)).nets
+                       .values() if nt.name.startswith('DP'))
+        out = os.path.join(td, 'o.kicad_pcb')
+        with contextlib.redirect_stdout(io.StringIO()):
+            r = route_diff.batch_route_diff_pairs(dst, out, pairs,
+                                                  enable_layer_switch=True)
+        assert r[0] == 2 and r[1] == 0, f'fixture: both pairs must route {r}'
+        viols = run_drc(evidence(out), clearance=0.25, quiet=True,
+                        print_summary=False, check_sizes=False,
+                        clearance_margin=0.0)
+    assert not viols, [(v['type'], v.get('layer')) for v in viols][:6]
 
 
 def test_offset_connector_partner_via():
@@ -184,7 +223,7 @@ def test_collapse_join_intra_floor():
 
 def test_hybrid_pn_overlap_count_prices_the_pair():
     """`_pn_overlap_count` is nested inside the hybrid builder, so it is held
-    statically: its threshold must come from pn_clearance, not the flat
+    statically: its threshold must come from pair_clearance, not the flat
     config.clearance."""
     path = os.path.join(ROOT, 'py_router', 'diff_pair_routing.py')
     tree = ast.parse(open(evidence(path), encoding='utf-8').read())
@@ -192,12 +231,13 @@ def test_hybrid_pn_overlap_count_prices_the_pair():
            and n.name == '_pn_overlap_count']
     assert len(fns) == 1, f'expected one _pn_overlap_count, found {len(fns)}'
     src = ast.unparse(fns[0])
-    assert 'pn_clearance' in src, src
+    assert 'pair_clearance' in src, src
     assert 'config.clearance' not in src, src
 
 
 TESTS = [test_count_pn_overlaps_matches_check_drc, test_pn_self_overlaps,
-         test_layer_rule_above_the_gap_is_not_a_self_graze,
+         test_layer_rule_above_the_gap_counts,
+         test_cap_chain_routes_off_a_ruled_layer,
          test_offset_connector_partner_via, test_collapse_join_intra_floor,
          test_hybrid_pn_overlap_count_prices_the_pair]
 

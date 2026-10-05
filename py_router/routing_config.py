@@ -562,16 +562,18 @@ class GridRouteConfig:
 
     def pn_clearance(self, p_net: int, n_net: int,
                      layer: Optional[str] = None) -> float:
-        """The floor a diff pair's P is checked against its own N at (#1134).
+        """The floor the intra-pair MEANDER keeps from its own partner at
+        (#1134): the pair value (`pair_clearance`), held to the gap the
+        coupled run is BUILT at, `min(pair, max(gap, clearance))`.
 
-        KiCad grades P against N like any two nets (`pair_clearance`), and
         route_diff raises each pair's coupling gap to its class (#530) and to
-        the clearance (#441) -- but not to a .kicad_dru layer or track rule.
-        So the P/N self-checks are held to the pair value only as far as the
-        gap the coupled run is BUILT at: `min(pair, max(gap, clearance))`.
-        Above that, a self-check would flag every coupled segment of a clean
-        run, which no reroute can fix. With nothing declared this is
-        `clearance` (the gap is never below it), as these checks always were."""
+        the clearance (#441), but not to a .kicad_dru layer or track rule. A
+        bump moves AWAY from a partner that sits at the gap by construction,
+        so refusing it at a rule above the gap fixes nothing and loses the
+        skew match. The coupled-run SELF-CHECKS (`_count_pn_overlaps` and
+        kin) price the full pair value instead: they choose between
+        alternatives (the hybrid, single-ended legs) that can route off the
+        ruled layer. With nothing declared this is `clearance`."""
         gap = self.diff_pair_gap if self.diff_pair_gap is not None else 0.0
         cap = gap if gap > self.clearance else self.clearance
         pc = self.pair_clearance(p_net, n_net, layer)

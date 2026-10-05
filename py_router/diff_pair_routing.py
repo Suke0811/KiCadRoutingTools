@@ -3109,13 +3109,13 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
 
         def _pn_overlap_count(all_segs):
             # Intra-pair P/N segments closer than clearance (the #248/#215
-            # self-graze), at the pair's own floor (#1134, pn_clearance).
+            # self-graze), at the pair's own value (#1134).
             ps = [s for s in all_segs if s.net_id == p_net_id]
             ns = [s for s in all_segs if s.net_id == n_net_id]
             return sum(1 for s in ps
                        if _seg_to_seglist_min_edge(s.start_x, s.start_y, s.end_x, s.end_y,
                                                    s.width, s.layer, ns)
-                       < config.pn_clearance(p_net_id, n_net_id, s.layer) - 1e-6)
+                       < config.pair_clearance(p_net_id, n_net_id, s.layer) - 1e-6)
 
         def _assemble(pol):
             """Build the full hybrid (coupled middle + 4 legs) for polarity `pol`.

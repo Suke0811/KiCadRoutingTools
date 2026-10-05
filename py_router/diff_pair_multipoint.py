@@ -113,16 +113,16 @@ def _pn_self_overlaps(new_segments, p_net_id, n_net_id, config, pcb_data=None) -
         return False
     # Only the NEW segments need testing as the moving party -- pre-existing
     # stub-vs-stub spacing was already DRC-valid before this leg. P and N are
-    # graded at the pair's own floor (#1134, `pn_clearance`).
+    # graded at the pair's own value, class and layer rule (#1134).
     for s in new_p:
         if _seg_to_seglist_min_edge(s.start_x, s.start_y, s.end_x, s.end_y,
                                     s.width, s.layer, all_n) \
-                < config.pn_clearance(p_net_id, n_net_id, s.layer) - 1e-6:
+                < config.pair_clearance(p_net_id, n_net_id, s.layer) - 1e-6:
             return True
     for s in new_n:
         if _seg_to_seglist_min_edge(s.start_x, s.start_y, s.end_x, s.end_y,
                                     s.width, s.layer, all_p) \
-                < config.pn_clearance(p_net_id, n_net_id, s.layer) - 1e-6:
+                < config.pair_clearance(p_net_id, n_net_id, s.layer) - 1e-6:
             return True
     return False
 
