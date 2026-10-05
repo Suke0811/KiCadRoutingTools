@@ -511,6 +511,20 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     return record
 
 
+def _escalation_scope(single_ended_nets, pcb_data) -> list:
+    """Terminal escalation's candidates: the run's own (name, id) nets plus
+    every pre-existing net it ripped (`pcb_data._preexisting_rips`, which is
+    {net id: name}). The registry's keys used to be read as names, so no
+    victim ever matched a net and none reached the escalation."""
+    scope = list(single_ended_nets)
+    seen = {i for _n, i in scope}
+    for vid, vname in (getattr(pcb_data, '_preexisting_rips', None) or {}).items():
+        if vid not in seen and vid in pcb_data.nets:
+            scope.append((vname, vid))
+            seen.add(vid)
+    return scope
+
+
 class _BoardCopper:
     """A board read through another copper set: `base` for everything else
     (nets, pads, the project path), `segments` / `vias` as given. The GUI's
@@ -3035,15 +3049,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # reconciliation: it recurses into batch_route, so ITS victims meet
     # ITS escalation the same way (the "opens emerged after the escalation"
     # class from the term_ecp5 study -- victims were invisible, not late).
-    _esc_scope = list(single_ended_nets)
-    _esc_seen = {n for n, _i in _esc_scope}
-    for _vn in (getattr(pcb_data, '_preexisting_rips', None) or {}):
-        if _vn in _esc_seen:
-            continue
-        _vid = next((i for i, nn in pcb_data.nets.items() if nn.name == _vn),
-                    None)
-        if _vid is not None:
-            _esc_scope.append((_vn, _vid))
+    _esc_scope = _escalation_scope(single_ended_nets, pcb_data)
     terminal_escalation_summary = None if _ckpt_stop else \
         terminal_geometry_escalation(
             state, _esc_scope, net_clearances=net_clearances,
