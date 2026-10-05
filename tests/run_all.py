@@ -93,6 +93,43 @@ SKIP_EXIT = 77
 _BUDGET_RE = re.compile(r'^RUN_ALL_TIMEOUT\s*=\s*([0-9.]+)', re.M)
 
 
+#: A test may declare `RUN_ALL_PARTS = N` (read from the source, like
+#: RUN_ALL_TIMEOUT): it then runs as N units, `name.py[i/N]`, each invoked
+#: with `--part i/N` under the test's own budget, and they shard like any
+#: other test. It is for a test of independent rows whose length alone sets
+#: the floor of every fan-out: test_placement_ab ran 2364 s of a 2405 s
+#: slowest shard, against a 194 s mean over 50.
+_PARTS_RE = re.compile(r'^RUN_ALL_PARTS\s*=\s*([0-9]+)', re.M)
+# Joins a file to its part in a unit; no path contains it.
+_PART_SEP = '::'
+
+
+def _declared_parts(path):
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            m = _PARTS_RE.search(f.read())
+    except OSError:
+        return 1
+    return max(1, int(m.group(1))) if m else 1
+
+
+def unit_file(unit):
+    """The test file a unit runs."""
+    return unit.split(_PART_SEP, 1)[0]
+
+
+def unit_name(unit):
+    """What a unit is called in every line, summary and durations table."""
+    f, _, part = unit.partition(_PART_SEP)
+    return os.path.basename(f) + (f'[{part}]' if part else '')
+
+
+def unit_argv(unit):
+    """The arguments a unit's test is run with."""
+    _, _, part = unit.partition(_PART_SEP)
+    return ['--part', part] if part else []
+
+
 def _declared_budget(path, default):
     try:
         with open(path, encoding='utf-8', errors='replace') as f:
@@ -121,7 +158,9 @@ def discover(filters):
             continue
         if filters and not any(term in os.path.basename(f) for term in filters):
             continue
-        out.append(f)
+        n = _declared_parts(f)
+        out.extend([f] if n == 1 else
+                   [f'{f}{_PART_SEP}{i}/{n}' for i in range(n)])
     return out
 
 
@@ -151,10 +190,10 @@ def estimated_costs(tests, durations, fast=False):
     of its kind (integration or unit), or of all known tests when its kind has
     none. Under --fast an integration test is skipped, so it costs 0 -- pricing
     it would pile the unit tests onto whichever shards drew no heavy ones."""
-    kind = {f: is_integration(f) for f in tests}
+    kind = {f: is_integration(unit_file(f)) for f in tests}
     known = {True: [], False: []}
     for f in tests:
-        name = os.path.basename(f)
+        name = unit_name(f)
         if name in durations:
             known[kind[f]].append(durations[name])
 
@@ -163,7 +202,7 @@ def estimated_costs(tests, durations, fast=False):
         return xs[len(xs) // 2] if xs else 1.0
     fallback = {k: median(v or known[True] + known[False]) for k, v in known.items()}
     return {f: (0.0 if fast and kind[f] else
-                durations.get(os.path.basename(f), fallback[kind[f]]))
+                durations.get(unit_name(f), fallback[kind[f]]))
             for f in tests}
 
 
@@ -200,7 +239,7 @@ def shard(tests, index, count, durations=None, fast=False):
     cost = estimated_costs(tests, durations, fast)
     loads = [0.0] * count
     mine = []
-    for f in sorted(tests, key=lambda f: (-cost[f], os.path.basename(f))):
+    for f in sorted(tests, key=lambda f: (-cost[f], unit_name(f))):
         j = min(range(count), key=lambda k: (loads[k], k))
         loads[j] += cost[f]
         if j == index:
@@ -281,17 +320,17 @@ def main():
 
     if args.list:
         for f in tests:
-            kind = 'integration' if is_integration(f) else 'unit'
-            print(f'{kind:12s} {os.path.basename(f)}')
+            kind = 'integration' if is_integration(unit_file(f)) else 'unit'
+            print(f'{kind:12s} {unit_name(f)}')
         print(f'\n{len(tests)} tests '
-              f'({sum(is_integration(f) for f in tests)} integration).')
+              f'({sum(is_integration(unit_file(f)) for f in tests)} integration).')
         return 0
 
     passed, failed, skipped = [], [], []
     to_run = []
     for f in tests:
-        name = os.path.basename(f)
-        if args.fast and is_integration(f):
+        name = unit_name(f)
+        if args.fast and is_integration(unit_file(f)):
             skipped.append(name)
             print(f'SKIP  {name}  (integration; --fast)')
             continue
@@ -318,8 +357,8 @@ def main():
     durations = {}
 
     def run_one(f):
-        name = os.path.basename(f)
-        budget = _declared_budget(f, args.timeout)
+        name = unit_name(f)
+        budget = _declared_budget(unit_file(f), args.timeout)
         tdir = tempfile.mkdtemp(prefix='t', dir=scratch_root)
         env = dict(os.environ, TMPDIR=tdir, TEMP=tdir, TMP=tdir)
         t_start = time.time()
@@ -344,7 +383,8 @@ def main():
             # threading traceback and NO summary, which reads as "the tests
             # crashed" rather than "the runner cannot read them". Every other
             # subprocess call in this repo already pins utf-8 + replace.
-            r = subprocess.run([sys.executable, '-X', 'utf8', f], cwd=ROOT,
+            r = subprocess.run([sys.executable, '-X', 'utf8', unit_file(f)]
+                               + unit_argv(f), cwd=ROOT,
                                capture_output=True, text=True,
                                encoding='utf-8', errors='replace',
                                timeout=budget, env=env)

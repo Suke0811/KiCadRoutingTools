@@ -40,6 +40,7 @@ only per-key evidence can, and prose cannot be re-run at all.
 Usage:
     python3 -X utf8 tests/test_placement_ab.py            # the default table
     python3 -X utf8 tests/test_placement_ab.py --row corridor-ulx3s
+    python3 -X utf8 tests/test_placement_ab.py --part 2/8   # every 8th row from the 3rd
     python3 -X utf8 tests/test_placement_ab.py --list
     python3 -X utf8 tests/test_placement_ab.py --self-test   # gate logic only
     python3 -X utf8 tests/test_placement_ab.py --write-baseline
@@ -69,6 +70,9 @@ BOARDS = os.path.join(ROOT, 'kicad_files')
 # with four more measured 36.5 min on a box also running a second full
 # table and three place_seed arms (8 cores).
 RUN_ALL_TIMEOUT = 5400
+# run_all runs the table as this many `--part i/N` units, so one shard does
+# not carry every row (the whole table is ~40 min of one core).
+RUN_ALL_PARTS = 8
 
 DEFAULT_BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 'placement_ab_baseline.json')
@@ -2327,12 +2331,27 @@ def _self_test_live():
     assert not bad, '\n'.join(bad)
 
 
+def _part(text):
+    """'I/N' -> (I, N), 0 <= I < N."""
+    try:
+        i, n = (int(x) for x in text.split('/'))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--part wants I/N, got {text!r}")
+    if not 0 <= i < n:
+        raise argparse.ArgumentTypeError(f"--part {text}: need 0 <= I < N")
+    return i, n
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--row', action='append',
                    help='Run only these table rows (repeatable)')
     p.add_argument('--list', action='store_true', help='List rows and exit')
+    p.add_argument('--part', type=_part, default=None, metavar='I/N',
+                   help='Run every N-th row from the I-th (0-based), after '
+                        '--row: one of N disjoint slices of the table '
+                        '(run_all splits the table this way)')
     p.add_argument('--workdir', default=None,
                    help='Where to write boards (default: a temp dir)')
     p.add_argument('--json', '--json-out', dest='json', default=None,
@@ -2391,6 +2410,15 @@ def main(argv=None):
     if not rows:
         print("no such row; try --list", file=sys.stderr)
         return 2
+    if args.part:
+        _pi, _pn = args.part
+        rows = rows[_pi::_pn]
+        print(f"part {_pi}/{_pn}: {len(rows)} row(s): "
+              f"{', '.join(r['name'] for r in rows) or 'none'}")
+        if not rows:
+            # More parts than rows is a legitimate split, not an error.
+            print("part is EMPTY -- nothing to run, asserting nothing")
+            return 0
     if not 0.0 <= args.float_tol < 1.0:
         # Negative flagged identical values as DRIFT; large silenced real
         # reversals. Neither is a tolerance.

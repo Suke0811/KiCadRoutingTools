@@ -15,6 +15,8 @@ Rows:
     kind has none;
   - under --fast an integration test costs 0, since it will be skipped;
   - without a table the split is exactly the old strided one;
+  - a test declaring RUN_ALL_PARTS = N runs as N units, `name.py[i/N]` with
+    `--part i/N`, each priced and sharded on its own;
   - a table that is not a {name: seconds} object reads as no table;
   - the committed table, when there is one, parses into seconds.
 
@@ -119,6 +121,42 @@ def test_no_table_is_the_strided_split():
             assert run_all.shard(PATHS, i, count, {}) == PATHS[i::count]
 
 
+def test_a_declared_split_runs_as_parts():
+    """`RUN_ALL_PARTS = N` makes one test file N units, named and argued
+    apart, classified by their file, priced by their own name, and sharded
+    like any other test."""
+    d = tempfile.mkdtemp(prefix='shard_parts_')
+    try:
+        whole = os.path.join(d, 'test_whole.py')
+        split = os.path.join(d, 'test_split.py')
+        with open(whole, 'w') as f:
+            f.write('x = 1\n')
+        with open(split, 'w') as f:
+            f.write('import subprocess\nRUN_ALL_PARTS = 3\n')
+        old = run_all.TESTS_DIR
+        run_all.TESTS_DIR = d
+        try:
+            units = run_all.discover([])
+        finally:
+            run_all.TESTS_DIR = old
+        assert [run_all.unit_name(u) for u in units] == [
+            'test_split.py[0/3]', 'test_split.py[1/3]', 'test_split.py[2/3]',
+            'test_whole.py'], units
+        assert all(run_all.unit_file(u) == split for u in units[:3])
+        assert run_all.unit_argv(units[1]) == ['--part', '1/3']
+        assert run_all.unit_file(whole) == whole and run_all.unit_argv(whole) == []
+        cost = run_all.estimated_costs(units, {'test_split.py[1/3]': 50.0,
+                                               'test_whole.py': 2.0})
+        assert cost[units[1]] == 50.0 and cost[units[3]] == 2.0, cost
+        table = {'test_split.py[0/3]': 1.0, 'test_split.py[1/3]': 50.0,
+                 'test_split.py[2/3]': 1.0, 'test_whole.py': 1.0}
+        slices = [run_all.shard(units, i, 2, table) for i in range(2)]
+        assert sorted(u for s in slices for u in s) == sorted(units)
+        assert any(units[1] in s and len(s) == 1 for s in slices), slices
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_unusable_table_reads_as_none():
     d = tempfile.mkdtemp(prefix='shard_table_')
     try:
@@ -146,6 +184,7 @@ def test_committed_table_parses():
 TESTS_LIST = [test_slices_cover_exactly_once, test_balanced_beats_strided,
               test_unknown_tests_get_their_kinds_median,
               test_no_table_is_the_strided_split,
+              test_a_declared_split_runs_as_parts,
               test_unusable_table_reads_as_none, test_committed_table_parses]
 
 
