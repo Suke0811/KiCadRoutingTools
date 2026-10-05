@@ -58,7 +58,7 @@ import math
 import os
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from kicad_parser import local_to_global, parse_kicad_pcb
+from kicad_parser import local_to_global, non_aperture_pads, parse_kicad_pcb
 
 Pose = Tuple[float, float, float]
 
@@ -79,7 +79,8 @@ def board_poses(pcb_data) -> Dict[str, Pose]:
     a board's silkscreen dilute its displacement RMS.
     """
     return {ref: (fp.x, fp.y, (fp.rotation or 0.0) % 360.0)
-            for ref, fp in (pcb_data.footprints or {}).items() if fp.pads}
+            for ref, fp in (pcb_data.footprints or {}).items()
+            if non_aperture_pads(fp)}     # apertures are not pads (#1143)
 
 
 def part_displacement(fp, pose_a: Pose, pose_b: Pose) -> float:

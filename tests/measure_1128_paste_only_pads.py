@@ -21,6 +21,10 @@ apertures sit inside copper or courtyard), so this script shows the fix moves
 no real board; that the fix landed is pinned by
 tests/test_1128_paste_only_not_copper.py's synthetic cases, not here.
 
+#1143 extended the same rule to every other placement measure, through
+`kicad_parser.pad_is_aperture_only` (which keeps NPTH and drilled pads); its
+own per-site measurement is tests/measure_1143_paste_only_sites.py.
+
 Per board: the paste-only pad population, the courtyard census (every
 courtyard pair from `grade_body_overlap`: count and area), the census's
 blocking count, and `grade_pad_legality`'s per-part

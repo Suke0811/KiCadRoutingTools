@@ -357,7 +357,7 @@ python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --intent floorplan.
 | `pin_order_crossings` | part pairs whose pad order CROSSES, so a router must pay a via or a detour |
 | `cluster_to_pin` | worst distance from a passive to the pin it serves, mm — declared `proximity` claims first, the decap election for the rest |
 | `plane_cut_proxy` | length of each net's chord lying INSIDE a locked part's body, summed. Two-layer boards only; ground and rails excluded |
-| `balance` | pad-area first moment along the board's long axis, as a fraction of span |
+| `balance` | pad-area first moment along the board's long axis, as a fraction of span. Copper pads only: NPTH and paste/mask-aperture pads are excluded, and the term names that population as its `basis` (#1143), so a lap scored before #1143 is reported `not-comparable` against one scored after it rather than as a move |
 
 **There is no aggregate and no weight.** Laps are compared by `compare_terms`,
 which is PARETO: `better` only when no measured term regressed, `mixed` naming

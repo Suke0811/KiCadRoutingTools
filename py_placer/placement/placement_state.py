@@ -118,7 +118,10 @@ def assess_placement(pcb_data, pcb_file: Optional[str] = None,
     th.update(thresholds or {})
     st = PlacementState()
 
-    fps = [fp for fp in (pcb_data.footprints or {}).values() if fp.pads]
+    from kicad_parser import non_aperture_pads
+    # Aperture-only pads are not pads (#1143).
+    fps = [fp for fp in (pcb_data.footprints or {}).values()
+           if non_aperture_pads(fp)]
     st.n_footprints = len(fps)
     # ROUTED copper only (#908). A footprint's own drawn copper -- a SOT89
     # tab, a PCB antenna -- now parses as `graphic=True` Segments, and it is

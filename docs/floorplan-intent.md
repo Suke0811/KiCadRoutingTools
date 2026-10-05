@@ -440,7 +440,11 @@ TP2, once TP2 is placed or declared) is still refused.
 phase and measure an overlapping pair on the DRAWN outlines (courtyard united
 pad by pad with the copper -- a custom pad's parsed primitives, not its box,
 since #1123; a pad on no copper layer, such as a paste-only aperture, is not
-copper and is not united, since #1128), which is what KiCad measures: KiCad's StickHub
+copper and is not united, since #1128 -- and since #1143 it is not a pad to any
+placement measure either: not to the occupancy rect, the pads rung, the
+assembly census, `pad_area_balance`, the escape pitch or the chip bounds the
+decap election measures to, through `kicad_parser.pad_is_aperture_only`, which
+keeps NPTH and drilled pads), which is what KiCad measures: KiCad's StickHub
 demo, 39 parts at +-45/+-135 degrees, went from 74 phantom courtyard-blocking
 pairs and 6 phantom containments to 0. The fixed-pose seat above calls the
 same measure. A board whose own `.kicad_pro` sets `courtyards_overlap` to
@@ -828,7 +832,7 @@ status from this list:
 | `envelope` | the declared envelope is not the board's outline | `board_bounds` |
 | `zone_containment` | a member's courtyard leaves its block's zone | `GradedPart.rect`. **Enforced, not only graded, since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702)** — the quench refuses such a MOVE, through the same `zone_escape` this rule calls |
 | `zone_side` | a member is on the other face | `legality.footprint_side` |
-| `assembly_side` | a part sits on a face the board's declared assembly policy does not populate. **warn** by default (#837): nothing in the engine can move a part between faces, so an error would be a red mark no run could clear | `legality.assembly_census`, body face — the pad-bearing population, so a zero-pad graphic on the back is not a part |
+| `assembly_side` | a part sits on a face the board's declared assembly policy does not populate. **warn** by default (#837): nothing in the engine can move a part between faces, so an error would be a red mark no run could clear | `legality.assembly_census`, body face — the pad-bearing population, so a zero-pad graphic on the back is not a part (and since #1143 a part whose only pads are paste/mask apertures is zero-pad too) |
 | `zone_exclusive` | a non-member intrudes on a reserved zone | `rect_overlap_area`, **courtyard only** — a through-hole stranger's leads may cross a reserved zone, unlike a keep-out's. **Enforced since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702)**, same way — and since [#797](https://github.com/drandyhaas/KiCadRoutingTools/issues/797) the seat search refuses such a pose too, with the verdict `zone_exclusive_blocks` |
 | `keepout` | any part enters a keep-out, unless in `allow` | courtyard **and** through-hole rect. **Enforced, not only graded, since [#701](https://github.com/drandyhaas/KiCadRoutingTools/issues/701)** — the seat search refuses such a pose through the same `keepout_hit` this rule calls — and since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702) the quench refuses such a MOVE through it too |
 | `edge_connector` | overhang outside `[min,max]`; the wrong edge; on the body path, pad copper past the OUTLINE (castellated pads excepted); a `connector_affinity` entry seated more than 3 mm from every edge fires at **warn** whatever the configured severity | the band: the drawn body's overhang past the outline, summed over the sides it crosses (`body_outside_mm`, `connector_geometry`, #961), else `BoardOutlineGate.rect_outside_amount`; the seat: `edge_clearance` |

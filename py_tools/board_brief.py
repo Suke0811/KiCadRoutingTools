@@ -365,8 +365,9 @@ def parts_section(pcb, pcb_file, skipped):
 
     bodies = _safe('parts.bodies', board_bodies, skipped, pcb, pcb_file) or {}
     out = {}
+    from kicad_parser import non_aperture_pads
     for ref, fp in sorted(pcb.footprints.items()):
-        pads = fp.pads or []
+        pads = non_aperture_pads(fp)    # apertures are not pads (#1143)
         geom = bodies.get(ref)
         # OCCUPANCY, not the bare body: this extent is fed to `--fit WxH` and
         # to grow_board's utilisation, both of which ask what the part takes

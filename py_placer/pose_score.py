@@ -201,8 +201,9 @@ def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
             raise PoseUnrankable(
                 f"{ref} is not a footprint block on this board", code=2,
                 why='it is not a footprint block on this board')
+        from kicad_parser import non_aperture_pads
         why = ('it has no pads and no courtyard, so the placement state '
-               'carries no geometry for it' if not fp.pads else
+               'carries no geometry for it' if not non_aperture_pads(fp) else
                'the placement state does not carry it as a movable part')
         raise PoseUnrankable(
             f"{ref} cannot be ranked: {why}. Place it with `place_pose set` "

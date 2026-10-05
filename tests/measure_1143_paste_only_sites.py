@@ -20,9 +20,12 @@ fix rather than repeat it. NPTH and drilled pads are KEPT: a mounting hole is
 physical extent, and dropping it moves splitflap H6/H7 and test_837's census.
 
 Before the #1143 fix the arm difference is the fix's impact. After it, every
-site must agree in both arms on every board (the as-parsed arm then equals
-the stripped one), and `--check-predicate` asserts the code's predicate
-matches this script's on every pad.
+PLACEMENT site must agree in both arms on every board (the as-parsed arm then
+equals the stripped one), and `--check-predicate` asserts the code's predicate
+matches this script's on every pad. The three ROUTING readers (`ROUTING_SITES`:
+the package detector, the BGA pitch and the raw pad count the QFN auto-pick
+ranks by) are measured and printed but not changed by #1143 -- a change there
+moves routing and needs a corpus routing A/B -- so they keep moving after it.
 
 The KiCad 10 RoyalBlue54L-Feather demo is NOT evidence: its file carries 349
 copies of `(curved_edges no)filter_ratio 0.9)`, which close brackets early, so
@@ -51,6 +54,9 @@ sys.path.insert(0, TESTS_DIR)
 
 CLEARANCE = 0.2
 TOL = 1e-6
+#: The ROUTING side's readers (py_router). Measured and disclosed, NOT changed
+#: by #1143: a change there is a routing change and needs a corpus routing A/B.
+ROUTING_SITES = ('package_type', 'bga_pitch', 'pad_count')
 #: A board whose file is known not to parse as KiCad reads it (see docstring).
 SUSPECT = {'RoyalBlue54L-Feather.kicad_pcb':
            "349 x '(curved_edges no)filter_ratio 0.9)' close brackets early"}
@@ -273,7 +279,7 @@ def main(argv=None):
             boards += [os.path.join(dp, f) for f in sorted(fns)
                        if f.endswith('.kicad_pcb')]
     rows = {}
-    n_moved = 0
+    n_moved = n_routing = 0
     for b in boards:
         name = os.path.basename(b)
         try:
@@ -288,16 +294,22 @@ def main(argv=None):
             continue
         flag = f"   [SUSPECT FILE: {SUSPECT[name]}]" if name in SUSPECT else ''
         moved = r.get('moved') or {}
-        if moved and name not in SUSPECT:
-            n_moved += 1
+        placement = [k for k in moved if k not in ROUTING_SITES]
+        if name not in SUSPECT:
+            n_moved += bool(placement)
+            n_routing += any(k in ROUTING_SITES for k in moved)
         print(f"{name}: {r['aperture_pads']} aperture-only pad(s) on "
               f"{r['parts']} part(s), {r['netted_aperture_pads']} netted; "
               f"aperture-only parts {r['aperture_only_parts'] or 'none'}; "
-              f"{len(moved)} site(s) moved{flag}", flush=True)
+              f"{len(placement)} placement site(s) moved, "
+              f"{len(moved) - len(placement)} routing{flag}", flush=True)
         for k in sorted(moved):
-            print(_diff_line(k, moved[k]), flush=True)
-    print(f"\n{n_moved} board(s) where aperture-only pads move a site "
-          f"(suspect files excluded)")
+            print(_diff_line(k, moved[k])
+                  + ('   [routing: disclosed, not changed]'
+                     if k in ROUTING_SITES else ''), flush=True)
+    print(f"\n{n_moved} board(s) where aperture-only pads move a PLACEMENT "
+          f"site; {n_routing} where they move a routing reader "
+          f"({', '.join(ROUTING_SITES)}) (suspect files excluded)")
     if args.json_out:
         with open(args.json_out, 'w', encoding='utf-8') as f:
             json.dump(rows, f, indent=1, sort_keys=True, default=str)

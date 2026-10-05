@@ -772,12 +772,13 @@ def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
     # rot)` the grader's own rects come from -- not the frozen-pose records
     # `graded_parts()` returns.
     parts = state.parts
+    from kicad_parser import non_aperture_pads
     for ref, p in sorted((mechanical.get('poses') or {}).items()):
         fp = pcb.footprints.get(ref)
         if fp is None:
             skipped[ref] = 'not on this board'
             continue
-        if not fp.pads:
+        if not non_aperture_pads(fp):   # apertures are not pads (#1143)
             skipped[ref] = ('pad-less: the seeder never places it, so it is '
                             'reconciled rather than anchored')
             continue

@@ -78,10 +78,13 @@ ROWS = [
     # THE reason the census exists. esp_prog and watchy are the witnesses: 3
     # and 1 zero-pad blocks on the back, and counting them makes a
     # single-sided board report a second reflow pass for silkscreen logos.
+    # RE-ANCHORED for #1143: the census binds `pads = non_aperture_pads(fp)`
+    # once, so this row and the two below read `pads` where they read
+    # `fp.pads`; the mutations are unchanged.
     ('zero-pad-blocks-count-as-parts', 'le',
-     "        if not (fp.pads or ()):\n            zero_pad[side].append(ref)\n"
+     "        if not pads:\n            zero_pad[side].append(ref)\n"
      "            continue\n",
-     "        if not (fp.pads or ()):\n            zero_pad[side].append(ref)\n",
+     "        if not pads:\n            zero_pad[side].append(ref)\n",
      (CEN,), 'KILLED'),
 
     # The other half: the verdict must come from the PAD-BEARING census. On 20
@@ -97,15 +100,15 @@ ROWS = [
     # with unplated alignment posts, and the text then tells the reader they
     # need wave soldering.
     ('the-through-hole-rule-is-bare-drill', 'le',
-     "        if any(pad_is_plated_through(p) for p in fp.pads):\n",
-     "        if any((getattr(p, 'drill', 0) or 0) > 0 for p in fp.pads):\n",
+     "        if any(pad_is_plated_through(p) for p in pads):\n",
+     "        if any((getattr(p, 'drill', 0) or 0) > 0 for p in pads):\n",
      (CEN,), 'KILLED'),
 
     # flat_hierarchy: 58 through-hole parts and 6 NPTH mounting holes. Folding
     # the holes into SMD reports 1 reflow pass for a board that gets none.
     ('npth-only-parts-are-counted-as-smd', 'le',
      "        elif any(getattr(p, 'pad_type', '') != 'np_thru_hole' "
-     "for p in fp.pads):\n",
+     "for p in pads):\n",
      "        elif True:\n",
      (CEN,), 'KILLED'),
 

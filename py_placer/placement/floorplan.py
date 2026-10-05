@@ -48,6 +48,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
+from kicad_parser import non_aperture_pads
 from . import legality
 from . import groups as groups_mod
 
@@ -1525,7 +1526,7 @@ def mechanical_drift(intent: Intent, pcb_data, mechanical: Dict, *,
         # ERROR where nothing else can see it -- a TURN (a symmetric body
         # sits inside its anchor turned 180: 68 of 97 anchored corpus refs)
         # and ANY drift of a pad-less ref, which is never anchored.
-        default = ERROR if (turned or not fp.pads) else WARN
+        default = ERROR if (turned or not non_aperture_pads(fp)) else WARN
         # The plan may PROMOTE the move-only WARN, never demote the ERROR:
         # the pose is a recorded fact, and a plan's severity map overruling
         # it at grade and P-close is exactly what the anchor's fixed ERROR
@@ -2187,8 +2188,10 @@ DECAPS_FROM_MIN_MATCH = 0.9
 
 
 def _copper_pads(fp):
-    return [p for p in (fp.pads or ())
-            if getattr(p, 'pad_type', '') != 'np_thru_hole']
+    """The pads that carry copper: NPTH holes and aperture-only pads (paste or
+    mask windows, #1143) skipped."""
+    from paste_apertures import pad_has_copper
+    return [p for p in (fp.pads or ()) if pad_has_copper(p)]
 
 
 def _plug_seat_rect(ref, fp, crt, gate):
@@ -6019,7 +6022,7 @@ def _applicability(rule: str, intent: Intent, pcb_data, ctx, census,
     if rule == 'zone_side':
         faces = sorted({legality.footprint_side(fp)
                         for fp in (pcb_data.footprints or {}).values()
-                        if fp.pads})
+                        if non_aperture_pads(fp)})
         if len(faces) < 2:
             return False, (f"every part with pads is on "
                            f"{faces[0] if faces else 'no'} face, so no block "
@@ -7232,7 +7235,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
         for c in intent.edge_claims():
             ref, edge = str(c.get('ref')), c.get('edge')
             fp = (pcb_data.footprints or {}).get(ref)
-            if fp is None or edge not in blen or not fp.pads:
+            if fp is None or edge not in blen or not non_aperture_pads(fp):
                 continue
             # In the footprint's OWN frame, so the answer is the part's and
             # not its current pose's: board-frame extents of a part at 45
@@ -8351,7 +8354,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
         # small board of generic passives is not a placement of a large one.
         def _parts(pcb):
             return {(r, f.footprint_name) for r, f in
-                    (pcb.footprints or {}).items() if f.pads}
+                    (pcb.footprints or {}).items() if non_aperture_pads(f)}
         _theirs, _ours = _parts(_ref_pcb), _parts(pcb_data)
         _common = len(_theirs & _ours)
         _match = (min(_common / len(_theirs), _common / len(_ours))

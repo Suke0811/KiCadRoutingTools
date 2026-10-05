@@ -167,8 +167,9 @@ ROWS = [
      (T_CONN,), 'KILLED'),
 
     # ---- #1001: mechanical.json -----------------------------------------------
+    # RE-ANCHORED for #1143: a pad-less ref is one with no non-aperture pad.
     ('a-turn-is-only-a-warning', 'fp',
-     "        default = ERROR if (turned or not fp.pads) else WARN",
+     "        default = ERROR if (turned or not non_aperture_pads(fp)) else WARN",
      "        default = WARN",
      (T_RECON,), 'KILLED'),
     ('a-brief-the-run-wrote-is-declared', 'rc',

@@ -288,8 +288,9 @@ def advise_locks(pcb_data, pcb_file: Optional[str] = None, *,
     except Exception:                                          # noqa: BLE001
         orbit_seat = {}
 
+    from kicad_parser import non_aperture_pads
     for ref, fp in sorted((pcb_data.footprints or {}).items()):
-        if not fp.pads:
+        if not non_aperture_pads(fp):   # apertures are not pads (#1143)
             continue
         rules: List[str] = []
         reasons: List[str] = []

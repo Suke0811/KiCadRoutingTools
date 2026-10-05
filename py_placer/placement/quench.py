@@ -40,7 +40,8 @@ from typing import Dict, List, NamedTuple, Sequence, Tuple, Set, Optional
 
 import numpy as np
 
-from kicad_parser import PCBData, local_to_global
+from kicad_parser import PCBData, local_to_global, non_aperture_pads
+from paste_apertures import pad_has_copper as _pad_has_copper
 from connectivity import compute_mst_edges
 from placement.parser import (courtyard_for_side, extract_courtyard_sides,
                               extract_locked_refs, warn_missing_courtyards)
@@ -743,7 +744,7 @@ class _Part:
         # courtyard rule -- the seat then spaces pads, not courtyards. None
         # for a pad-less footprint (a logo occupies no copper).
         self.padbox_local = (compute_footprint_bbox_local(fp)
-                             if fp.pads else None)
+                             if non_aperture_pads(fp) else None)
         self.padbox_by_rot: Dict[float, Tuple[float, float, float, float]] = {}
         tlb = through_pad_bounds_local(fp) if self.has_tht else None
         self.tht_by_rot = ({r: _rotate_local_bounds(*tlb, r) for r in ROTATIONS}
@@ -995,7 +996,9 @@ class QuenchState:
         no_courtyard = []
         outline_locked = []   # #829, reported below
         for ref, fp in pcb_data.footprints.items():
-            if not fp.pads:
+            # An aperture-only pad (a paste/mask window) is not a pad (#1143),
+            # so a part whose only pads are apertures is a zero-pad footprint.
+            if not non_aperture_pads(fp):
                 # Zero-pad footprints (graphics-only mechanical parts, logos
                 # with a courtyard) used to be dropped entirely -- neither
                 # movable NOR an obstacle, so the optimizer walked parts onto
@@ -3002,8 +3005,7 @@ class QuenchState:
             for r in self.parts:
                 fp = fps.get(r)
                 if fp is None or not any(
-                        getattr(p, 'pad_type', '') != 'np_thru_hole'
-                        for p in fp.pads or ()):
+                        _pad_has_copper(p) for p in fp.pads or ()):
                     continue
                 if bodies is None:
                     drawn = self.fab_rect(r)
