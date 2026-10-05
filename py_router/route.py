@@ -98,6 +98,8 @@ from routing_common import (
     get_common_config_kwargs, warn_targets_outside_board
 )
 import routing_defaults as defaults
+from keep_away import keep_away_entries   # #1146
+from pcb_modification import bump_copper_epoch
 import re
 from terminal_colors import RED, RESET, YELLOW
 from routing_constants import DEFAULT_4_LAYER_STACK, POWER_NET_EXCLUSION_PATTERNS
@@ -249,6 +251,35 @@ def _dump_engine_config(engine, cfg):
         pass
 
 
+# batch_route kwargs the in-run plane finalize hands its nested reroute
+# sub-runs (repair_planes route_knobs): how this step searches and what it
+# prices or forbids -- never geometry or scope, which the finalize sets itself.
+_FINALIZE_ROUTE_KNOBS = (
+    'via_cost', 'ordering_strategy', 'direction_order', 'max_iterations',
+    'max_probe_iterations', 'heuristic_weight', 'turn_cost',
+    'direction_preference_cost', 'proximity_heuristic_factor',
+    'stub_proximity_radius', 'stub_proximity_cost', 'via_proximity_cost',
+    'bga_proximity_radius', 'bga_proximity_cost', 'bga_exclusion_zones',
+    'disable_bga_zones', 'track_proximity_distance', 'track_proximity_cost',
+    'vertical_attraction_radius', 'vertical_attraction_cost',
+    'ripped_route_avoidance_radius', 'ripped_route_avoidance_cost',
+    'crossing_penalty', 'crossing_layer_check', 'routing_clearance_margin',
+    'max_rip_up_count', 'ripup_abandon_metric', 'ripup_blocker_select',
+    'enable_layer_switch', 'can_swap_to_top_layer', 'smoothing',
+    'mps_unroll', 'mps_reverse_rounds', 'mps_layer_swap',
+    'mps_segment_intersection', 'keepout_enabled', 'keepout_layer',
+    'guide_corridor_enabled', 'guide_corridor_layer', 'guide_corridor_spacing',
+    'bus_enabled', 'bus_detection_radius', 'bus_attraction_radius',
+    'bus_attraction_bonus', 'bus_min_nets',
+    'keep_away', 'keep_away_free', 'keep_away_cost',
+)
+
+
+def _finalize_route_knobs(call_kwargs: dict) -> dict:
+    """This batch_route call's own values of _FINALIZE_ROUTE_KNOBS."""
+    return {k: call_kwargs[k] for k in _FINALIZE_ROUTE_KNOBS if k in call_kwargs}
+
+
 def _empty_results_data() -> dict:
     """The return_results contract with every field empty (#382 E5).
 
@@ -273,6 +304,7 @@ def _empty_results_data() -> dict:
         'boxed_in': [],
         'fanout_dropped': [],
         'pad_pairs_open': [],
+        'keep_away': [],
     }
 
 
@@ -479,7 +511,36 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     return record
 
 
-def _write_summary_min_file(json_out: Optional[str], status: str) -> None:
+def _escalation_scope(single_ended_nets, pcb_data) -> list:
+    """Terminal escalation's candidates: the run's own (name, id) nets plus
+    every pre-existing net it ripped (`pcb_data._preexisting_rips`, which is
+    {net id: name}). The registry's keys used to be read as names, so no
+    victim ever matched a net and none reached the escalation."""
+    scope = list(single_ended_nets)
+    seen = {i for _n, i in scope}
+    for vid, vname in (getattr(pcb_data, '_preexisting_rips', None) or {}).items():
+        if vid not in seen and vid in pcb_data.nets:
+            scope.append((vname, vid))
+            seen.add(vid)
+    return scope
+
+
+class _BoardCopper:
+    """A board read through another copper set: `base` for everything else
+    (nets, pads, the project path), `segments` / `vias` as given. The GUI's
+    shipped copper is its write model, not pcb_data (#1146's re-measure)."""
+
+    def __init__(self, base, segments, vias):
+        self._base = base
+        self.segments = segments
+        self.vias = vias
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+
+def _write_summary_min_file(json_out: Optional[str], status: str,
+                            extra: Optional[dict] = None) -> None:
     """Write the --json-out file for a run that legitimately did nothing.
 
     The console contract above ("exactly one JSON_SUMMARY_MIN per outermost
@@ -492,7 +553,8 @@ def _write_summary_min_file(json_out: Optional[str], status: str) -> None:
 
     The document carries the same empty tally the console line prints, the
     `status` naming WHY it is empty, and the env-knob echo the normal
-    end-of-run summary carries. Deliberately NO min_clearance_used: a run
+    end-of-run summary carries, plus any measurement of the board as it stands
+    (`extra`: the keep-away report). Deliberately NO min_clearance_used: a run
     that routed nothing applied no clearance, and inventing a number here
     would defeat a reader's floor check.
     """
@@ -500,7 +562,8 @@ def _write_summary_min_file(json_out: Optional[str], status: str) -> None:
         return
     try:
         from route_summary import write_summary_file
-        document = {'successful': 0, 'failed': 0, 'status': status}
+        document = {'successful': 0, 'failed': 0, 'status': status,
+                    **(extra or {})}
         try:
             import env_knobs as _ek653
             document['env_knobs'] = _ek653.active_env_knobs()
@@ -647,6 +710,7 @@ def _late_strict_collapse1063(pcb_data, output_file, return_results, results_dat
                 v for v in dropped if id(v) in in_ids)
             pcb_data.segments = [s for s in pcb_data.segments if id(s) not in gone]
             pcb_data.vias = [v for v in pcb_data.vias if id(v) not in gone]
+            bump_copper_epoch(pcb_data)
         else:
             from kicad_parser import is_kicad_10 as _k10_1063
             from kicad_writer import (remove_segments_from_content as _rsc1063,
@@ -771,7 +835,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 via_from_class: bool = False,
                 bga_exclusion_zones: Optional[List[Tuple[float, float, float, float]]] = None,
                 direction_order: str = None,
-                ordering_strategy: str = "inside_out",
+                ordering_strategy: str = defaults.DEFAULT_ORDERING_STRATEGY,
                 disable_bga_zones: Optional[List[str]] = None,
                 track_width: float = defaults.TRACK_WIDTH,
                 track_width_from_class: bool = False,
@@ -788,7 +852,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 via_size: float = defaults.VIA_SIZE,
                 via_drill: float = defaults.VIA_DRILL,
                 grid_step: float = 0.1,
-                via_cost: int = 50,
+                via_cost: int = defaults.VIA_COST,
                 max_iterations: int = 200000,
                 max_probe_iterations: int = 5000,
                 heuristic_weight: float = defaults.HEURISTIC_WEIGHT,
@@ -812,6 +876,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 bga_proximity_cost: float = 0.2,
                 track_proximity_distance: float = 2.0,
                 track_proximity_cost: float = defaults.TRACK_PROXIMITY_COST,
+                # #1146: 'AGGRESSOR:VICTIM:GAP' rules (keep_away.py). None/[]
+                # = off. Cost 0 still measures and reports.
+                keep_away: Optional[List[str]] = None,
+                keep_away_free: float = defaults.KEEP_AWAY_FREE,
+                keep_away_cost: float = defaults.KEEP_AWAY_COST,
                 debug_lines: bool = False,
                 verbose: bool = False,
                 max_rip_up_count: int = defaults.MAX_RIPUP,
@@ -953,7 +1022,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         via_size: Via outer diameter in mm (default: defaults.VIA_SIZE, 0.5)
         via_drill: Via drill size in mm (default: defaults.VIA_DRILL, 0.3)
         grid_step: Grid resolution in mm (default: 0.1)
-        via_cost: Penalty for placing a via in 0.1mm grid steps (default: 50 = 5mm; mm-equivalent at any grid_step)
+        via_cost: Penalty for placing a via in 0.1mm grid steps (default: defaults.VIA_COST, 75 = 7.5mm; mm-equivalent at any grid_step)
         max_iterations: Max A* iterations before giving up (default: 200000)
         heuristic_weight: A* heuristic weight, higher=faster but less optimal (default: routing_defaults.HEURISTIC_WEIGHT)
         stub_proximity_radius: Radius around stubs to penalize in mm (default: 2.0)
@@ -1089,6 +1158,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if debug_memory:
         print(format_memory_stats("Initial memory", mem_start))
 
+    # Handed an in-memory board (a reconcile lap, a plane-finalize sub-run,
+    # the GUI): its copper may be newer than any fill of the file.
+    _pcb_in_memory = pcb_data is not None
     if pcb_data is None:
         print(f"Loading {input_file}...")
         pcb_data = parse_kicad_pcb(input_file, guide_layer=guide_corridor_layer,
@@ -1521,6 +1593,17 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         debug_memory=debug_memory, layer_costs=layer_costs
     )
     config_kwargs['power_tap_neckdown'] = power_tap_neckdown
+    if keep_away:
+        from keep_away import normalize_keep_away_specs
+        config_kwargs['keep_away'] = normalize_keep_away_specs(keep_away)
+        config_kwargs['keep_away_free'] = keep_away_free
+        config_kwargs['keep_away_cost'] = keep_away_cost
+        # Resolve the rules against THIS run's board: the GUI keeps one
+        # PCBData across runs and may re-sync its nets and classes. Nested
+        # sub-runs (finalize, reconcile laps) share the outer run's board and
+        # keep its bands, which are keyed by geometry.
+        if final_reconcile:
+            pcb_data._keep_away_state = {}
     config_kwargs['neckdown_length'] = neckdown_length
     config_kwargs['neckdown_taper_length'] = neckdown_taper_length
     if direction_order is not None:
@@ -1785,6 +1868,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                  if s.net_id not in force_ripped]
             pcb_data.vias = [v for v in pcb_data.vias
                              if v.net_id not in force_ripped]
+            bump_copper_epoch(pcb_data)
             sweep_scope_ids |= set(force_ripped)
             print(f"--force-reroute: stripped "
                   f"{sum(len(s) for s, _ in force_ripped.values())} segment(s) / "
@@ -1856,9 +1940,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
               f"{', ...' if len(_finalize_zone_nets1112) > 6 else ''} (#1112)")
     elif not net_ids:
         print("All nets are already fully connected - nothing to route!")
+        # #1146: a routed board graded against keep-away rules lands here
+        # (`--keep-away-cost 0` on an already-routed board), so the report is
+        # emitted on this path too, measured on the board as it stands.
+        from keep_away import disclose_keep_away
+        _ka_done = disclose_keep_away(pcb_data, config)
         if final_reconcile:
             _emit_summary_min(status='already_connected')
-        _write_summary_min_file(json_out, 'already_connected')
+        _write_summary_min_file(json_out, 'already_connected',
+                                {'keep_away': _ka_done} if _ka_done else None)
         # The sweep runs HERE too (#659). The fragment gate diverts a net whose
         # extra fragments are all pad-less to this sweep instead of the router,
         # so a step whose WHOLE scope is diverted lands on this early return --
@@ -1868,6 +1958,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # because the sweep only ran at the normal end of a run.
         if return_results:
             _rd659 = _empty_results_data()
+            _rd659['keep_away'] = keep_away_entries(_ka_done)
             _late_orphan_sweep659(pcb_data, output_file, True, _rd659,
                                   None, keep_input_copper, skip_routing)
             return 0, 0, 0.0, _rd659
@@ -2641,6 +2732,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # with no zones.
     from plane_fragility import register_plane_fragility
     register_plane_fragility(pcb_data, config, track_proximity_cache)
+    if _pcb_in_memory:
+        # The field was rasterized from the FILE's fill (or the live board
+        # as the GUI filled it); this run's in-memory copper is newer. Carve
+        # it once, so a sub-run prices the necks its parent already made --
+        # the CLI's reconcile laps re-read the written board and got this for
+        # free, the GUI's were priced on the input fill.
+        from plane_fragility import carve_in_memory_copper
+        carve_in_memory_copper(config, pcb_data)
 
     # Congestion v2 (#424): demand/capacity bins + owner terminals; per-net
     # stamping happens at prepare (routing_context.stamp_congestion2).
@@ -2950,15 +3049,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # reconciliation: it recurses into batch_route, so ITS victims meet
     # ITS escalation the same way (the "opens emerged after the escalation"
     # class from the term_ecp5 study -- victims were invisible, not late).
-    _esc_scope = list(single_ended_nets)
-    _esc_seen = {n for n, _i in _esc_scope}
-    for _vn in (getattr(pcb_data, '_preexisting_rips', None) or {}):
-        if _vn in _esc_seen:
-            continue
-        _vid = next((i for i, nn in pcb_data.nets.items() if nn.name == _vn),
-                    None)
-        if _vid is not None:
-            _esc_scope.append((_vn, _vid))
+    _esc_scope = _escalation_scope(single_ended_nets, pcb_data)
     terminal_escalation_summary = None if _ckpt_stop else \
         terminal_geometry_escalation(
             state, _esc_scope, net_clearances=net_clearances,
@@ -3536,6 +3627,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     _stale_via_ids = {id(v) for v in stale_input_vias}
     if _stale_via_ids:
         pcb_data.vias = [v for v in pcb_data.vias if id(v) not in _stale_via_ids]
+    if _stale_ids or _stale_via_ids:
+        bump_copper_epoch(pcb_data)
 
     # Board-vs-file ledger (KICAD_BOARD_LEDGER=1): audit the pipeline contract
     # now that every strip is known -- per in-scope net, pcb_data must equal
@@ -3655,6 +3748,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         if _drop_obj_ids:
             pcb_data.vias = [v for v in pcb_data.vias
                              if id(v) not in _drop_obj_ids]
+            bump_copper_epoch(pcb_data)
         print(f"Via dedup: dropped {len(_via_dup_dropped)} duplicate stacked "
               f"via(s) already present at the same position/span for the "
               f"same net")
@@ -4622,6 +4716,17 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 for _n, _r in sorted(_amp.items())]
     except Exception:
         pass
+    # #1146: per net, the track length that ended up inside a keep-away band
+    # (the cost is soft, so a band the router could not avoid is routed
+    # through, and this is where that is said). Measured on the whole board,
+    # on the run's FIRST summary only: a nested sub-run's reading would be
+    # superseded anyway, by the outermost run's measurement of the board it
+    # ships (below, at the end of the run).
+    if not _SUMMARY_SINK:
+        from keep_away import disclose_keep_away
+        _ka = disclose_keep_away(pcb_data, config)
+        if _ka is not None:
+            summary['keep_away'] = _ka
     # WHICH SUMMARY IS THIS? A run that fires the reconciliation sub-pass emits
     # a SECOND JSON_SUMMARY, scoped to that subset, and the only thing saying so
     # was a prose "Note:" printed after it. Anything that scrapes the last
@@ -4641,7 +4746,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # a reader merging tallies must not add them twice.
         summary['board_scoped_keys'] = [k for k in ('stacked_copper',
                                                     'power_trace_ampacity',
-                                                    'min_clearance_used')
+                                                    'min_clearance_used',
+                                                    'keep_away')
                                         if k in summary]
     try:                       # #653: env knobs into the machine-readable
         import env_knobs as _ek653   # summary, so a harness can detect a
@@ -4680,6 +4786,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # #409 follow-up: same data as JSON_SUMMARY['pad_pairs_open']
             # (may be empty).
             'pad_pairs_open': pad_pairs_open_report,
+            # #1146: the nets JSON_SUMMARY['keep_away'] lists as left inside
+            # a band, one dict per net (empty without a rule).
+            'keep_away': keep_away_entries(summary.get('keep_away')),
         }
     else:
         # Write output file using extracted output_writer module
@@ -5250,6 +5359,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         # CLI leg below cannot auto-read them; both legs
                         # forward the same map).
                         track_clearances=dict(config.track_clearances or {}),
+                        # The finalize's reroute sub-runs route by THIS
+                        # step's knobs, not batch_route's defaults.
+                        route_knobs=_finalize_route_knobs(_reconcile_kwargs),
                         # #338 (review DRC-1): forward THIS run's RESOLVED
                         # copper-to-edge floor. The engine's own re-resolve
                         # cannot work here: its PLANE_EDGE_CLEARANCE default
@@ -5281,6 +5393,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         layer_costs=list(config.layer_costs or []) or None,
                         pcb_data=pcb_data, return_results=True,
                         progress_callback=_pcb9)
+                    # The engine edits pcb_data's copper in place after its
+                    # last sub-run too; nothing cached against the old copper
+                    # may answer for the reconcile laps that follow.
+                    bump_copper_epoch(pcb_data)
                     _cursid9 = {id(s) for s in pcb_data.segments}
                     _curvid9 = {id(v) for v in pcb_data.vias}
                     _new_s9 = [s for s in pcb_data.segments
@@ -5341,6 +5457,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         layer_clearances=dict(config.layer_clearances or {}),
                         # #1135: same reason for the track-to-track rules.
                         track_clearances=dict(config.track_clearances or {}),
+                        # The finalize's reroute sub-runs route by THIS
+                        # step's knobs, not batch_route's defaults.
+                        route_knobs=_finalize_route_knobs(_reconcile_kwargs),
                         # #338 (review DRC-1): same reason for the edge floor
                         # -- output_file has no sibling .kicad_pro yet, and
                         # the engine default 0.5 masks the project read.
@@ -5689,6 +5808,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         pcb_data.vias[:] = [
                             v for v in pcb_data.vias
                             if _vkey9(v) not in _rm_vkeys9]
+                        bump_copper_epoch(pcb_data)
                     # Channel 2: only removals NOT matched to this-run copper
                     # ride the remove channels (the applier removes them from
                     # the live board before adding).
@@ -5711,6 +5831,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         # sees the nets it just completed.
                         pcb_data.segments.extend(_os9)
                         pcb_data.vias.extend(_ov9)
+                        bump_copper_epoch(pcb_data)
                     print(f"  Plane finalize oracle (GUI): +{len(_os9)} "
                           f"seg(s) +{len(_ov9)} via(s), -{len(_ors9)} seg(s) "
                           f"-{len(_orv9)} via(s) merged into results "
@@ -6698,6 +6819,39 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                   f"({type(_rge).__name__}: {_rge}); the tally falls back to "
                   f"the summaries alone")
 
+    # #1146: the keep-away report again, on the board this run SHIPS. The
+    # printed JSON_SUMMARY measured the first pass, before the plane finalize
+    # and the reconciliation laid copper (taps, joins, welds, re-routes) that
+    # can enter a band. --json-out and the GUI's results carry this reading;
+    # it is printed when it differs from the first.
+    _ka_shipped = None
+    if final_reconcile and not _ckpt_stop and getattr(config, 'keep_away', None):
+        from keep_away import disclose_keep_away
+        _rd_ka = locals().get('results_data')
+        _ka_board = _ka_on = None
+        if return_results and _rd_ka is not None:
+            _ka_s, _ka_v = _gui_write_model(_rd_ka)
+            _ka_board = _BoardCopper(pcb_data,
+                                     [s for _l in _ka_s.values() for s in _l],
+                                     [v for _l in _ka_v.values() for v in _l])
+            _ka_on = 'change-set (write model)'
+        elif output_file and os.path.isfile(output_file):
+            from kicad_parser import parse_kicad_pcb as _pk_ka
+            _ka_board = _pk_ka(output_file)
+            _ka_on = 'written board'
+        if _ka_board is not None:
+            _ka_shipped = disclose_keep_away(_ka_board, config, quiet=True)
+        if _ka_shipped is not None and 'rules' in _ka_shipped:
+            _ka_shipped['measured_on'] = _ka_on
+            _ka_first = (locals().get('summary') or {}).get('keep_away') or {}
+            if ((_ka_first.get('in_band_mm'), _ka_first.get('nets_in_band'))
+                    != (_ka_shipped['in_band_mm'], _ka_shipped['nets_in_band'])):
+                from keep_away import print_keep_away_report
+                print_keep_away_report(_ka_shipped,
+                                       title='Keep-away on the shipped board')
+        if return_results and _rd_ka is not None and _ka_shipped is not None:
+            _rd_ka['keep_away'] = keep_away_entries(_ka_shipped)
+
     # Per-net story dump (KICAD_NET_STORY=1): the complete journey of every
     # net -- bus membership, ordering, failures with named blockers, rips,
     # rescues, Phase-3 tap order, costs -- assembled from state.
@@ -6710,6 +6864,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # predates the finalize, so it cannot carry this.
             if _merged is not None and _via_in_pad962 is not None:
                 _merged['via_in_pad'] = _via_in_pad962
+            # #1146: likewise the keep-away reading of the shipped board.
+            if _merged is not None and _ka_shipped is not None:
+                _merged['keep_away'] = _ka_shipped
             # ALL-OR-NOTHING (#830). This was `open(json_out,'w')` +
             # `json.dump`, which truncates the destination before the first
             # chunk is encoded and then STREAMS into it -- so a failure partway
@@ -7165,7 +7322,7 @@ For differential pair routing, use route_diff.py:
     parser.add_argument("--grid-step", type=float, default=defaults.GRID_STEP,
                         help=f"Grid resolution in mm (default: {defaults.GRID_STEP})")
     parser.add_argument("--via-cost", type=int, default=defaults.VIA_COST,
-                        help=f"Penalty for placing a via, in 0.1mm grid steps (default: {defaults.VIA_COST} = 5mm of path; mm-equivalent at any --grid-step)")
+                        help=f"Penalty for placing a via, in 0.1mm grid steps (default: {defaults.VIA_COST} = {defaults.VIA_COST * 0.1:g}mm of path; mm-equivalent at any --grid-step)")
     parser.add_argument("--via-proximity-cost", type=int, default=defaults.VIA_PROXIMITY_COST,
                         help=f"Via cost multiplier in stub/BGA proximity zones (default: {defaults.VIA_PROXIMITY_COST}, 0=no extra cost)")
     parser.add_argument("--max-iterations", type=int, default=defaults.MAX_ITERATIONS,
@@ -7220,6 +7377,28 @@ For differential pair routing, use route_diff.py:
                         help=f"Radius around routed tracks in mm, same layer only (0 = disabled, default: {defaults.TRACK_PROXIMITY_DISTANCE})")
     parser.add_argument("--track-proximity-cost", type=float, default=defaults.TRACK_PROXIMITY_COST,
                         help=f"Cost penalty near routed tracks (0 = disabled, default: {defaults.TRACK_PROXIMITY_COST})")
+
+    # Pairwise keep-away between net groups (#1146)
+    parser.add_argument("--keep-away", nargs="+", action="extend", metavar="AGG:VICTIM:GAP",
+                        help="Soft keep-away between two net groups, repeatable: while a net "
+                             "of one side routes, its track costs --keep-away-cost per cell "
+                             "where it would sit closer than GAP mm (edge to edge, same layer) "
+                             "to copper of the other side. Each side is comma-separated net "
+                             "patterns as in --nets and/or net classes as class=NAME, e.g. "
+                             "'CLK*,/I2C_*:/AUDIO_*:0.5' or 'class=Digital:class=Audio:0.5'. "
+                             "Nets of one side route against each other at the normal "
+                             "clearance. GAP is at most 10 mm; rules are split on spaces, "
+                             "so write a space inside a name as '?'. The "
+                             "run reports per net the length left inside a band "
+                             "(JSON_SUMMARY keep_away).")
+    parser.add_argument("--keep-away-free", type=float, default=defaults.KEEP_AWAY_FREE,
+                        help=f"Within this many mm of the routed net's own pads the keep-away "
+                             f"band is not priced, so a pin can leave a package whose other "
+                             f"pins belong to the other group (default: {defaults.KEEP_AWAY_FREE})")
+    parser.add_argument("--keep-away-cost", type=float, default=defaults.KEEP_AWAY_COST,
+                        help=f"Cost per cell inside a keep-away band, mm equivalent like the "
+                             f"other proximity costs (0 = measure and report only, "
+                             f"default: {defaults.KEEP_AWAY_COST})")
 
     # Layer swap and target swap options
     parser.add_argument("--no-stub-layer-swap", action="store_true",
@@ -7328,7 +7507,7 @@ For differential pair routing, use route_diff.py:
     parser.add_argument("--ripped-route-avoidance-radius", type=float, default=defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS,
                         help=f"Radius in mm around ripped route segments/vias for soft penalty (default: {defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS})")
     parser.add_argument("--ripped-route-avoidance-cost", type=float, default=defaults.RIPPED_ROUTE_AVOIDANCE_COST,
-                        help=f"Soft penalty cost for routing through ripped corridors (0 = disabled, default: {defaults.RIPPED_ROUTE_AVOIDANCE_COST})")
+                        help=f"Soft penalty other nets pay to route through a ripped net's former corridor, reserving it for that net's reroute (the ripped net itself never pays it; 0 = disabled, default: {defaults.RIPPED_ROUTE_AVOIDANCE_COST})")
 
     # Layer preference options
     parser.add_argument("--layer-costs", nargs="+", type=float, default=[],
@@ -7560,6 +7739,17 @@ For differential pair routing, use route_diff.py:
     # single one behaves exactly as before, so recorded redo_commands.sh
     # manifests and .claude/skills/* keep replaying unchanged.
     component_patterns = list(args.component or [])
+
+    if args.keep_away:
+        from keep_away import parse_keep_away_rules
+        try:
+            parse_keep_away_rules(args.keep_away)
+        except ValueError as _kae:
+            parser.error(f"--keep-away: {_kae}")
+    from keep_away import keep_away_knob_error
+    _kae = keep_away_knob_error(args.keep_away_free, args.keep_away_cost)
+    if _kae:
+        parser.error(_kae)
 
     if args.force_reroute and not all_patterns and not component_patterns:
         parser.error("--force-reroute requires an explicit net scope "
@@ -7869,6 +8059,9 @@ For differential pair routing, use route_diff.py:
                 bga_proximity_cost=args.bga_proximity_cost,
                 track_proximity_distance=args.track_proximity_distance,
                 track_proximity_cost=args.track_proximity_cost,
+                keep_away=args.keep_away,
+                keep_away_free=args.keep_away_free,
+                keep_away_cost=args.keep_away_cost,
                 debug_lines=args.debug_lines,
                 verbose=args.verbose,
                 max_rip_up_count=args.max_ripup,

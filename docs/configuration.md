@@ -273,7 +273,7 @@ See [Power Net Analysis](power-nets.md) for automatic detection, AI-powered anal
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--via-cost` | 75 | Via penalty in 0.1mm grid steps, i.e. 50 = 5mm of path; mm-equivalent at any `--grid-step` (effectively doubled for diff pairs since two vias are placed) |
+| `--via-cost` | 75 | Via penalty in 0.1mm grid steps, i.e. 75 = 7.5mm of path; mm-equivalent at any `--grid-step` (effectively doubled for diff pairs since two vias are placed) |
 | `--max-iterations` | 200000 | A* iteration limit per route |
 | `--max-probe-iterations` | 5000 | Quick probe per direction to detect stuck routes |
 | `--heuristic-weight` | 2.3 | A* greediness (>1 = faster, <1 = more optimal). 2.3 is the corpus dose-response peak (#586); 1.9 was the default before it |
@@ -285,7 +285,7 @@ See [Power Net Analysis](power-nets.md) for automatic detection, AI-powered anal
 | `--board-edge-clearance` | board's `min_copper_edge_clearance` (else 0.0) | Clearance from board edge in mm. Omitted → the board's own constraint minimum (#439) |
 | `--proximity-heuristic-factor` | 0.02 | Factor for proximity-aware A* heuristic (higher = faster but may find suboptimal paths, 0 = disabled) |
 | `--ripped-route-avoidance-radius` | 1.0 | Radius around ripped route corridors to apply soft penalty (mm) |
-| `--ripped-route-avoidance-cost` | 0.1 | Cost penalty for routing through ripped corridors (0 = disabled) |
+| `--ripped-route-avoidance-cost` | 0.1 | Cost for other nets routing through a ripped net's former corridor, reserving it for that net's reroute (0 = disabled) |
 
 See [Rip-Up and Reroute](rip-up-reroute.md) for how failed routes trigger rip-up, how blockers are identified and ranked, and how ripped nets are rerouted.
 
@@ -310,6 +310,9 @@ See [Rip-Up and Reroute](rip-up-reroute.md) for how failed routes trigger rip-up
 | `--bga-proximity-cost` | 0.2 | Cost penalty at BGA edge (mm equivalent) |
 | `--track-proximity-distance` | 2.0 | Radius around routed tracks to penalize on same layer (mm) |
 | `--track-proximity-cost` | 0.0 | Cost penalty near routed tracks (0 = disabled) |
+| `--keep-away AGG:VICTIM:GAP` | (off) | Soft keep-away between two net groups (#1146), repeatable. While a net of one side routes, cells where its track would sit closer than GAP mm (edge to edge, same layer) to the other side's copper cost `--keep-away-cost`. Each side is comma-separated net patterns as in `--nets` and/or net classes as `class=NAME` (`!class=NAME` takes one out), e.g. `class=Digital:class=Audio:0.5`. `route.py` and `route_diff.py`. See [Keep-away](api-routing-config.md#pairwise-keep-away-keep_away--keep_away_free--keep_away_cost) |
+| `--keep-away-free` | 1.5 | Within this distance of the routed net's own pads the keep-away band is not priced (mm) |
+| `--keep-away-cost` | 0.5 | Cost per cell inside a keep-away band (mm equivalent; 0 = measure and report only) |
 | `--vertical-attraction-radius` | 1.0 | Radius for cross-layer track attraction (mm) |
 | `--vertical-attraction-cost` | 0.0 | Cost bonus for aligning with tracks on other layers (0 = disabled) |
 
@@ -579,7 +582,7 @@ class GridRouteConfig:
     grid_step: float = 0.1        # mm grid resolution
 
     # A* algorithm
-    via_cost: int = 75            # via penalty in 0.1mm grid steps = 5mm of path (diff pairs place 2 vias)
+    via_cost: int = 75            # via penalty in 0.1mm grid steps = 7.5mm of path (diff pairs place 2 vias)
     max_iterations: int = 200000
     max_probe_iterations: int = 5000  # quick probe per direction to detect stuck routes
     heuristic_weight: float = 2.3
@@ -613,6 +616,11 @@ class GridRouteConfig:
     # Track proximity (same layer)
     track_proximity_distance: float = 2.0  # mm
     track_proximity_cost: float = 0.0      # mm equivalent (0 = disabled)
+
+    # Pairwise keep-away between net groups (#1146)
+    keep_away: Tuple[str, ...] = ()        # 'AGG:VICTIM:GAP' rules
+    keep_away_free: float = 1.5            # mm around the routed net's own pads
+    keep_away_cost: float = 0.5            # mm equivalent per cell (0 = report only)
 
     # Vertical track alignment (cross-layer attraction)
     vertical_attraction_radius: float = 1.0  # mm
@@ -657,10 +665,13 @@ The `via_cost` parameter controls how much the router penalizes layer changes:
 | Value | Effect |
 |-------|--------|
 | 0-25 | Many vias, shorter paths |
-| 50 (default) | Balanced, discourages unnecessary vias |
-| 75-100 | Few vias, longer paths |
+| 75 (default) | Balanced, discourages unnecessary vias |
+| 100+ | Few vias, longer paths |
 
-For BGA escape routing, lower values (10-25) work well since vias are necessary.
+75 is the corpus-measured default (#586: against the old 50 it took the
+disconnection verdict down 8 and DRC down 13, and it composes with heuristic
+weight 2.3). 25 and 100 both measured worse. Do not lower it for BGA escape
+routing: 25 lost on a corpus that includes BGA escape boards.
 
 All cost knobs (via cost, proximity costs, attraction bonuses) are calibrated at a 0.1mm
 reference grid and scale internally so the cost per mm of path is the same at any
@@ -742,21 +753,24 @@ This encourages routes to avoid blocking future routing paths.
 
 ```bash
 python py_router/route.py input.kicad_pcb output.kicad_pcb --nets "Net-(*)" \
-    --ordering inside_out \
-    --via-cost 10 \
-    --heuristic-weight 1.2 \
-    --stub-proximity-radius 2.0 \
-    --stub-proximity-cost 5.0
+    --ordering inside_out
 ```
+
+Leave the via cost, heuristic weight and stub proximity at their defaults
+(75, 2.3, 0.2): a lower via cost or heuristic weight measured worse across
+the corpus (#586), and the stub penalty is near-optimal as shipped (#584).
 
 ### Long Routes (Few Vias)
 
 ```bash
 python py_router/route.py input.kicad_pcb output.kicad_pcb --nets "Net-(*)" \
-    --ordering mps \
-    --via-cost 50 \
-    --heuristic-weight 2.0
+    --ordering mps
 ```
+
+`--via-cost` is the knob that trades path length for vias: raising it above
+the default 75 buys fewer vias with longer routes, lowering it the reverse.
+The default is the corpus-measured setting, so compare a changed value
+against a default run on the same board before keeping it.
 
 ### Differential Pairs (LVDS)
 
@@ -772,10 +786,12 @@ python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*" 
 
 ```bash
 python py_router/route.py input.kicad_pcb output.kicad_pcb --nets "Net-(*)" \
-    --grid-step 0.2 \
-    --heuristic-weight 2.0 \
-    --max-iterations 50000
+    --grid-step 0.2
 ```
+
+A coarser grid is the speed lever. Keep `--heuristic-weight` at 2.3 (lower
+is slower, not faster) and `--max-iterations` at its default: a smaller
+budget fails long routes instead of finishing them sooner.
 
 ### Fine-Pitch BGA
 

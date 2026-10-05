@@ -32,6 +32,7 @@ for _sib in ('py_placer', 'py_tools'):
 import routing_defaults as defaults
 from kicad_parser import POSITION_DECIMALS
 from kicad_parser import mm_to_iu
+from keep_away import split_keep_away_specs
 
 # What a failed startup check can look like coming out of `import route`.
 # SystemExit is the historical form; StartupCheckError is what the checks raise
@@ -339,6 +340,11 @@ class RoutingDialog(wx.Dialog):
             # Replace pcb_data segments and vias with what's in pcbnew
             self.pcb_data.segments = new_segments
             self.pcb_data.vias = new_vias
+            # The same PCBData object lives across routing runs; work cached
+            # against its old copper (rescue maps, escape memos) must not
+            # answer for the board the user has edited since.
+            from pcb_modification import bump_copper_epoch
+            bump_copper_epoch(self.pcb_data)
 
             # Also sync zones - the connectivity check uses pcb_data.zones to
             # determine which nets are connected via copper pours. Without
@@ -1069,13 +1075,32 @@ class RoutingDialog(wx.Dialog):
             ('via_proximity_cost', 'Via Prox. Multiplier:', defaults.VIA_PROXIMITY_COST, "Via cost multiplier in stub/BGA proximity zones (0 = no extra cost)"),
             ('track_proximity_distance', 'Track Prox. (mm):', defaults.TRACK_PROXIMITY_DISTANCE, "Distance to detect parallel tracks for bunching avoidance"),
             ('track_proximity_cost', 'Track Prox. Cost:', defaults.TRACK_PROXIMITY_COST, "Cost for routing parallel to existing tracks"),
+            ('keep_away_free', 'Keep-away Free (mm):', defaults.KEEP_AWAY_FREE, "#1146: within this distance of the routed net's own pads the keep-away band is not priced, so a pin can leave a package whose other pins belong to the other group"),
+            ('keep_away_cost', 'Keep-away Cost:', defaults.KEEP_AWAY_COST, "#1146: cost per cell inside a keep-away band, mm equivalent like the other proximity costs (0 = measure and report only)"),
             ('vertical_attraction_radius', 'Vert. Attract (mm):', defaults.VERTICAL_ATTRACTION_RADIUS, "Radius for cross-layer track stacking: attracts the route toward ANY net's tracks on other layers (net-agnostic)"),
             ('vertical_attraction_cost', 'Vert. Attract Cost:', defaults.VERTICAL_ATTRACTION_COST, "Bonus for routing in the vertical shadow of other layers' tracks (0 = off; net-agnostic corridor stacking)"),
-            ('ripped_route_avoidance_radius', 'Rip Avoid (mm):', defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS, "Radius to avoid area where previous route failed"),
-            ('ripped_route_avoidance_cost', 'Rip Avoid Cost:', defaults.RIPPED_ROUTE_AVOIDANCE_COST, "Cost for routing through previously ripped area"),
+            ('ripped_route_avoidance_radius', 'Rip Avoid (mm):', defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS, "Radius of the corridor a ripped net's former route reserves for its reroute"),
+            ('ripped_route_avoidance_cost', 'Rip Avoid Cost:', defaults.RIPPED_ROUTE_AVOIDANCE_COST, "Cost other nets pay to cross a ripped net's former corridor, reserving it for that net's reroute (the ripped net itself never pays it)"),
             ('routing_clearance_margin', 'Clearance Margin:', defaults.ROUTING_CLEARANCE_MARGIN, "Extra clearance margin multiplier for safety"),
         ]
         for name, label, default, tooltip in float_params:
+            if name == 'keep_away_free':
+                # #1146: the keep-away rules themselves (route.py --keep-away),
+                # one line, ahead of their free radius and cost.
+                grid.Add(wx.StaticText(parent, label="Keep-away:"), 0, wx.ALIGN_CENTER_VERTICAL)
+                self.keep_away = wx.TextCtrl(parent)
+                self.keep_away.SetToolTip(
+                    "#1146: soft keep-away between two net groups, rules "
+                    "AGGRESSOR:VICTIM:GAP separated by spaces, e.g. "
+                    "'CLK*,/I2C_*:/AUDIO_*:0.5 class=Digital:class=Audio:0.3'. Each "
+                    "side is comma-separated net patterns as in the net filter and/or "
+                    "net classes as class=NAME. Applies to the Route and Differential "
+                    "tabs. While a net "
+                    "of one side routes, cells closer than GAP mm (edge to edge, same "
+                    "layer) to the other side's copper cost Keep-away Cost. Nets of "
+                    "one side route against each other at the normal clearance. The "
+                    "log reports per net the length left inside a band. Empty = off.")
+                grid.Add(self.keep_away, 0, wx.EXPAND)
             r = defaults.PARAM_RANGES[name]
             grid.Add(wx.StaticText(parent, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
             ctrl = wx.SpinCtrlDouble(parent, min=r['min'], max=r['max'], initial=default, inc=r['inc'])
@@ -2764,6 +2789,9 @@ class RoutingDialog(wx.Dialog):
         self.via_proximity_cost.SetValue(defaults.VIA_PROXIMITY_COST)
         self.track_proximity_distance.SetValue(defaults.TRACK_PROXIMITY_DISTANCE)
         self.track_proximity_cost.SetValue(defaults.TRACK_PROXIMITY_COST)
+        self.keep_away.SetValue("")
+        self.keep_away_free.SetValue(defaults.KEEP_AWAY_FREE)
+        self.keep_away_cost.SetValue(defaults.KEEP_AWAY_COST)
         self.vertical_attraction_radius.SetValue(defaults.VERTICAL_ATTRACTION_RADIUS)
         self.vertical_attraction_cost.SetValue(defaults.VERTICAL_ATTRACTION_COST)
         self.ripped_route_avoidance_radius.SetValue(defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS)
@@ -3043,6 +3071,16 @@ class RoutingDialog(wx.Dialog):
             )
             return None, None
 
+        # #1146: refuse a malformed keep-away rule before routing starts
+        # (route.py refuses it at argparse time).
+        try:
+            from keep_away import parse_keep_away_rules
+            parse_keep_away_rules(self.keep_away.GetValue())
+        except ValueError as e:
+            wx.MessageBox(str(e), "Invalid Keep-away Rule",
+                          wx.OK | wx.ICON_WARNING)
+            return None, None
+
         return selected_nets, selected_layers
 
     @staticmethod
@@ -3106,6 +3144,9 @@ class RoutingDialog(wx.Dialog):
             'via_proximity_cost': self.via_proximity_cost.GetValue(),
             'track_proximity_distance': self.track_proximity_distance.GetValue(),
             'track_proximity_cost': self.track_proximity_cost.GetValue(),
+            'keep_away': self.keep_away.GetValue().strip(),
+            'keep_away_free': self.keep_away_free.GetValue(),
+            'keep_away_cost': self.keep_away_cost.GetValue(),
             'bga_proximity_radius': self.bga_proximity_radius.GetValue(),
             'bga_proximity_cost': self.bga_proximity_cost.GetValue(),
             'vertical_attraction_radius': self.vertical_attraction_radius.GetValue(),
@@ -3649,6 +3690,9 @@ class RoutingDialog(wx.Dialog):
                     via_proximity_cost=config['via_proximity_cost'],
                     track_proximity_distance=config['track_proximity_distance'],
                     track_proximity_cost=config['track_proximity_cost'],
+                    keep_away=split_keep_away_specs(config.get('keep_away')) or None,
+                    keep_away_free=config.get('keep_away_free', defaults.KEEP_AWAY_FREE),
+                    keep_away_cost=config.get('keep_away_cost', defaults.KEEP_AWAY_COST),
                     bga_proximity_radius=config.get('bga_proximity_radius', 7.0),
                     bga_proximity_cost=config.get('bga_proximity_cost', 0.2),
                     vertical_attraction_radius=config.get('vertical_attraction_radius', 1.0),

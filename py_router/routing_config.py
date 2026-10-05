@@ -164,6 +164,13 @@ class GridRouteConfig:
     track_proximity_distance: float = 2.0  # mm - radius around routed tracks to penalize (same layer)
     stub_layer_swap: bool = True  # Enable stub layer switching optimization
     track_proximity_cost: float = 0.0  # mm equivalent cost (0 = disabled)
+    # #1146 pairwise keep-away (keep_away.py): canonical 'AGG:VICTIM:GAP'
+    # rules. While a net of one side routes, cells within GAP (edge to edge,
+    # same layer) of the other side's copper cost keep_away_cost per cell,
+    # except within keep_away_free mm of the routed net's own pads.
+    keep_away: Tuple[str, ...] = ()
+    keep_away_free: float = 1.5  # mm (routing_defaults.KEEP_AWAY_FREE)
+    keep_away_cost: float = 0.5  # mm equivalent per cell (0 = report only)
     target_swap_crossing_penalty: float = 1000.0  # Penalty for crossing assignments in target swap
     crossing_layer_check: bool = True  # Only count crossings when routes share a layer
     routing_clearance_margin: float = 1.0  # Multiplier on track-via clearance (1.0 = minimum DRC)
@@ -285,7 +292,7 @@ class GridRouteConfig:
     # Debug options
     collect_stats: bool = False  # Collect A* search statistics for debugging
     # Heuristic tuning
-    proximity_heuristic_factor: float = 0.0  # proximity add-on to the A* heuristic (0 since the hw-2.3 default; the base greediness covers it)
+    proximity_heuristic_factor: float = 0.0  # proximity add-on to the A* heuristic. The CLIs and batch_route pass routing_defaults.PROXIMITY_HEURISTIC_FACTOR (0.02, restored in e9523f23 after 0 regressed 5 boards); this dataclass default is only what a direct GridRouteConfig() gets
     # Layer direction preference - alternates H/V starting with horizontal on top
     # Matches routing_defaults.DIRECTION_PREFERENCE_COST, which is back at 250
     # after the #663 revert. route.py/route_diff.py always pass the caller's
@@ -559,25 +566,6 @@ class GridRouteConfig:
             self.pad_pair_clearance_before_override(
                 pad, other_net, layer, other_pad=other_pad, base=base),
             pad, other_pad)
-
-    def pn_clearance(self, p_net: int, n_net: int,
-                     layer: Optional[str] = None) -> float:
-        """The floor the intra-pair MEANDER keeps from its own partner at
-        (#1134): the pair value (`pair_clearance`), held to the gap the
-        coupled run is BUILT at, `min(pair, max(gap, clearance))`.
-
-        route_diff raises each pair's coupling gap to its class (#530) and to
-        the clearance (#441), but not to a .kicad_dru layer or track rule. A
-        bump moves AWAY from a partner that sits at the gap by construction,
-        so refusing it at a rule above the gap fixes nothing and loses the
-        skew match. The coupled-run SELF-CHECKS (`_count_pn_overlaps` and
-        kin) price the full pair value instead: they choose between
-        alternatives (the hybrid, single-ended legs) that can route off the
-        ruled layer. With nothing declared this is `clearance`."""
-        gap = self.diff_pair_gap if self.diff_pair_gap is not None else 0.0
-        cap = gap if gap > self.clearance else self.clearance
-        pc = self.pair_clearance(p_net, n_net, layer)
-        return pc if pc < cap else cap
 
     def max_pair_clearance(self, base: Optional[float] = None) -> float:
         """An upper bound of `pair_clearance` over every pair and kind: the
@@ -869,9 +857,9 @@ class GridRouteConfig:
     def via_cost_units(self) -> int:
         """Per-via penalty in cost units.
 
-        The via_cost knob is in grid steps at REFERENCE_GRID_STEP (default 50
-        = 5mm of path); the value scales with 1/grid_step so a via costs the
-        same mm-equivalent detour at any --grid-step.
+        The via_cost knob is in grid steps at REFERENCE_GRID_STEP (default 75
+        = 7.5mm of path, #586); the value scales with 1/grid_step so a via
+        costs the same mm-equivalent detour at any --grid-step.
         """
         return int(self.via_cost * 1000 * (REFERENCE_GRID_STEP / self.grid_step))
 

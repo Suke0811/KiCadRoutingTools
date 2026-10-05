@@ -77,6 +77,41 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:   esp_prog:portfolio-1         segs 293 -> 223, copper 362.65 -> 347.37
 #:   splitflap_driver:authored    segs 1154 -> 832, copper 2913.88 -> 2831.72
 #:
+#: RE-RECORDED 2026-10-05, again (a tap edge's source/target overrides last
+#: for that edge only, 971b41f5; and no builder prices a net's OWN ripped-route
+#: ghost -- a ghost reserves the victim's corridor for its reroute).
+#: `truth.quality` only; `truth.blocking` and the headline did not mismatch.
+#: ATTRIBUTED by running 971b41f5 alone: the override scoping moves ONLY
+#: authored (35 -> 32 vias, 311.92 -> 303.36 mm, 194 -> 198 segs -- its
+#: retries no longer pass through a failed edge's leftover via); the rest is
+#: the self-exclusion: authored +0.10 mm / +3 segs, portfolio-1 back to the
+#: exact values it had before the Phase 3 ghosts (33 / 347.97 / 225), and
+#: splitflap -3 vias / +29.15 mm (+1.0%) / +18 segs -- the first move on
+#: splitflap in this file since 2026-09-28. Per-board soft-cost movement in
+#: both directions; the corpus A/B judges it.
+#:
+#:   esp_prog:authored            vias 35 -> 32, segs 194 -> 201, copper 311.92 -> 303.46
+#:   esp_prog:perturb-scatter-d1  unmoved
+#:   esp_prog:portfolio-1         vias 30 -> 33, segs 215 -> 225, copper 349.86 -> 347.97
+#:   splitflap_driver:authored    vias 168 -> 165, segs 827 -> 845, copper 2835.82 -> 2864.97
+#:
+#: RE-RECORDED 2026-10-05 (Phase 3's fast builder prices the ripped-route
+#: ghosts, as the slow builder always did; an own-tree seam re-ask records no
+#: ghost; net_rescue withdraws a #666 escape the closing route did not use).
+#: `truth.quality` only; `truth.blocking` and the headline did not mismatch on
+#: any row, and splitflap did not move. ATTRIBUTED, not assumed, by running
+#: the escape withdrawal alone on the ghost-free code: it moves ONLY
+#: perturb-scatter-d1, 38 -> 36 vias at identical copper and segments -- two
+#: dangling escape vias (KiCad via_dangling) the old row shipped. The other
+#: two rows are the ghosts, and they split: authored +3 vias / -7.46 mm,
+#: portfolio-1 -3 vias / +1.89 mm / -10 segments -- per-board movement of a
+#: soft cost, which the corpus A/B judges, not this detector.
+#:
+#:   esp_prog:authored            vias 32 -> 35, segs 189 -> 194, copper 319.38 -> 311.92
+#:   esp_prog:perturb-scatter-d1  vias 38 -> 36, segs 235 -> 235, copper 348.89 -> 348.89
+#:   esp_prog:portfolio-1         vias 33 -> 30, segs 225 -> 215, copper 347.97 -> 349.86
+#:   splitflap_driver:authored    unmoved
+#:
 #: RE-RECORDED 2026-09-28 (#1063 follow-up: route.py runs the strict collapse
 #: ONCE at the end of the run instead of inside the in-run cleanup, so the
 #: plane finalize and the reconciliation route around the copper the router
@@ -316,7 +351,7 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 286 -> 254; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 34/344.06/254 -> 34/336.58/250
                # 2026-09-16 (#958 fine-pitch tie guard): segs 250 -> 260
-               'quality': {'vias': 32, 'copper_mm': 319.38, 'segments': 189}},
+               'quality': {'vias': 32, 'copper_mm': 303.46, 'segments': 201}},
         predictors={
             'crossings': 53, 'hpwl': 253.98092000000003,
             'halo': 127.48707486477095, 'overlap_area': 1.1400451712000104,
@@ -335,7 +370,7 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 311 -> 292; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 37/363.0/292 -> 38/361.26/296
                # 2026-09-16 (#958 fine-pitch tie guard): segs 296 -> 302
-               'quality': {'vias': 38, 'copper_mm': 348.89, 'segments': 235}},
+               'quality': {'vias': 36, 'copper_mm': 348.89, 'segments': 235}},
         predictors={
             'crossings': 50, 'hpwl': 252.34828000000005,
             'halo': 130.46454030971682, 'overlap_area': 1.1400451712000104,
@@ -418,8 +453,8 @@ EXPECTED = {
                # 168/2913.82/1155 -> 168/2913.88/1154. Attributed by a
                # single-file revert; the fanout and plane-fill roundings of
                # the same change leave this row alone.
-               'quality': {'vias': 168, 'copper_mm': 2835.82,
-                           'segments': 827}},
+               'quality': {'vias': 165, 'copper_mm': 2864.97,
+                           'segments': 845}},
         predictors={
             'crossings': 300, 'hpwl': 2504.4400000000014,
             'halo': 297.4273114820511, 'overlap_area': 1.7621459846850488e-13,

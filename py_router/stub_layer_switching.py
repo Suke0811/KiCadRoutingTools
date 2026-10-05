@@ -204,6 +204,10 @@ def apply_stub_layer_switch(pcb_data: PCBData, stub: StubInfo, new_layer: str,
         - new_vias: List of new vias created (pad vias if switching from F.Cu)
         - segment_modifications: List of dicts with segment layer changes for writing to file
     """
+    # Moves segments to another layer in place and may add a pad via:
+    # invalidate what was cached against the old copper.
+    from pcb_modification import bump_copper_epoch
+    bump_copper_epoch(pcb_data)
     new_vias = []
     segment_mods = []
 
@@ -441,6 +445,8 @@ def revert_stub_layer_switch(pcb_data: 'PCBData', segment_mods: List[Dict], new_
         segment_mods: List of segment modifications from apply_stub_layer_switch
         new_vias: List of vias that were added (to be removed)
     """
+    from pcb_modification import bump_copper_epoch
+    bump_copper_epoch(pcb_data)
     # Remove reuse-connector segments (#340) before layer restoration
     for mod in segment_mods:
         c = mod.get('added_seg')

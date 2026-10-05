@@ -7124,6 +7124,19 @@ def swap_pad_nets_in_pcb_data(pcb_data: PCBData, pad_a, pad_b) -> None:
             new_net_obj.pads.append(pad)
 
 
+def bump_copper_epoch(pcb_data) -> None:
+    """Mark pcb_data's copper as changed.
+
+    Memos that cache work derived from the copper key on this counter:
+    net_rescue's pristine rescue maps, the chip-pad escape memo
+    (net_queries._attach_pts_memo), the block-id geometry and via-placement
+    failure memos. add/remove_route_to_pcb_data bump it; a pass that edits
+    pcb_data.segments / .vias any other way -- in place, or by replacing the
+    lists -- must call this, or a later lookup serves work derived from copper
+    that no longer exists."""
+    pcb_data._copper_epoch = getattr(pcb_data, '_copper_epoch', 0) + 1
+
+
 def add_route_to_pcb_data(pcb_data: PCBData, result: dict, debug_lines: bool = False,
                           trace_event: str = 'route') -> None:
     """Add routed segments and vias to PCB data for subsequent routes to see.

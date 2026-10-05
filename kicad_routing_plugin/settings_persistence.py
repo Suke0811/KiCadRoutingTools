@@ -81,6 +81,9 @@ def get_dialog_settings(dialog):
         'via_proximity_cost': dialog.via_proximity_cost.GetValue(),
         'track_proximity_distance': dialog.track_proximity_distance.GetValue(),
         'track_proximity_cost': dialog.track_proximity_cost.GetValue(),
+        'keep_away': dialog.keep_away.GetValue(),
+        'keep_away_free': dialog.keep_away_free.GetValue(),
+        'keep_away_cost': dialog.keep_away_cost.GetValue(),
         'vertical_attraction_radius': dialog.vertical_attraction_radius.GetValue(),
         'vertical_attraction_cost': dialog.vertical_attraction_cost.GetValue(),
         'ripped_route_avoidance_radius': dialog.ripped_route_avoidance_radius.GetValue(),
@@ -413,6 +416,12 @@ def restore_dialog_settings(dialog, settings):
         dialog.track_proximity_distance.SetValue(settings['track_proximity_distance'])
     if 'track_proximity_cost' in settings:
         dialog.track_proximity_cost.SetValue(settings['track_proximity_cost'])
+    if 'keep_away' in settings:
+        dialog.keep_away.SetValue(settings['keep_away'])
+    if 'keep_away_free' in settings:
+        dialog.keep_away_free.SetValue(settings['keep_away_free'])
+    if 'keep_away_cost' in settings:
+        dialog.keep_away_cost.SetValue(settings['keep_away_cost'])
     if 'vertical_attraction_radius' in settings:
         dialog.vertical_attraction_radius.SetValue(settings['vertical_attraction_radius'])
     if 'vertical_attraction_cost' in settings:

@@ -881,6 +881,147 @@ step it is tied to — this is a coupled choice they may want to override. If th
 board has no outer-layer pour planned, say so explicitly and note that the
 impedance nets are being routed as plain microstrip.
 
+### Step 4c: Keep noisy nets away from sensitive ones — ONLY when the signal types demand it (#1146)
+
+`--keep-away AGG:VICTIM:GAP` (`route.py` and `route_diff.py`) makes the router
+prefer to keep one group's copper GAP mm (edge to edge, same layer) from the
+other group's. It is a SOFT cost above the clearance, which stays the hard floor:
+while a net of either group routes, every cell inside the band around the other
+group's tracks, vias and pads costs extra. Nets of one group still route against
+each other at the normal clearance. It exists for crosstalk on mixed-signal
+boards. It is NOT a spreading knob (that is `--track-proximity-cost`), and it
+costs search time and some wirelength, so **add a rule only when you are sure,
+from what the nets carry, that one group would couple noise into the other.**
+Most boards get none.
+
+**Add a rule only when ALL of these hold:**
+
+1. **An aggressor group exists, by function:** clocks (MCLK/BCLK/LRCLK, crystal
+   or oscillator outputs, SPI/QSPI SCK, DAC/ADC sample clocks), switching nodes
+   (buck/boost SW/LX/PH, gate drives), relay / solenoid / motor coil drives, PWM
+   outputs, fast single-ended buses.
+2. **A victim group exists, by function:** analog audio paths (codec/DAC/ADC
+   analog I/O, mic and line inputs, headphone and line outputs), ADC and sensor
+   inputs (especially high-impedance ones), voltage references (VREF), op-amp
+   inputs, PLL loop filters, regulator feedback (FB) nodes, RF feeds, and the
+   crystal pins themselves (XTAL in/out are victims of digital neighbours).
+3. **You confirmed each net's role from the parts it connects**: the codec,
+   ADC, op-amp, crystal, regulator or relay its pads belong to, and the pin
+   function (`pad.pinfunction`, or the datasheet when that is empty). A net
+   name alone is not evidence, and a generic `Net-(R12-Pad2)` is no evidence
+   at all.
+4. **Both groups are routed copper.** A group that lives only on a plane is not
+   a keep-away subject.
+
+**Do NOT add one when:**
+- the board is purely digital;
+- the "victim" is a power or ground net (planes, widths and return vias handle those);
+- the two groups sit in separate regions with no shared corridor;
+- the only motive is to spread routes;
+- you cannot name both signal types with confidence. Say so in the plan and ask
+  the user rather than guess.
+
+The two halves of a differential pair belong on the SAME side of a rule, never
+on opposite sides.
+
+**Writing it.** Each side is comma-separated net patterns, resolved exactly as
+`--nets` resolves them (`*`/`?`, `!` excludes), and/or net classes as
+`class=NAME`. Use classes when the board's project already sorts the nets that
+way: `class=Digital:class=Audio:0.5` is KiCad's
+`A.NetClass == 'Digital' && B.NetClass == 'Audio'` as a soft rule. The class
+list is printed by `list_nets.py --design-rules` (Step 4). `!class=NAME`
+removes a class, and `class=Default` means every net no class claims. Write one
+rule per gap, and repeat the flag. Rules are split on spaces, so a space inside
+a net or class name is written `?` (`class=High?Speed`).
+
+**Never use a catch-all side.** `class=Default`, `!class=Audio` or a bare `*`
+on the aggressor side pulls in GND and the power nets, so every ground via, pad
+and pour-tap track grows a band and the victims have nowhere to go. Name the
+aggressor signals (or their own class) instead.
+
+**Choosing the gap** (edge to edge), from the coupling being guarded against:
+- **0.3 mm:** slow or static digital (LED, GPIO enables) near analog.
+- **0.5 mm:** ordinary digital (I²C, SPI data, UART) near audio or ADC inputs.
+- **1.0 mm:** clocks, switching nodes and coil drives near sensitive analog.
+
+These are the values the issue's own audio board used. A wider band eats
+corridor capacity on every layer the groups share, so do not go wider without
+a reason.
+
+**What it buys, measured** (2026-10-05, four in-repo boards, each run graded
+against its own no-rule route by the same report):
+- **Dense, interleaved groups** (a 4-layer MCU board, its PWM/QSPI/clock/debug
+  lines against its ADC inputs, 0.1 mm clearance): in-band length fell 68-79% at
+  every gap from 0.3 to 2.0 mm (at 1 mm: 539 → 135 mm). Completion, vias,
+  wirelength and DRC stayed flat, at 3-15% more wall time.
+- **Crowded corridors** (a 4-layer USB debug-adapter board): 32-41% less
+  in-band length, for 3-5% more wirelength. Costs 1 and 2 left exactly the
+  same 40 mm, so that residue is forced: it is the capacity answer.
+- **Groups already apart** (two boards whose groups sit in separate regions):
+  identical routes. A rule costs nothing where there is nothing to avoid.
+- **Cost:** 0.25 was clearly weaker (203 vs 135 mm on the dense board at
+  1 mm), and 1-2 bought little more than the 0.5 default.
+
+**Keep both knobs at their defaults:**
+- `--keep-away-free` (default 1.5) is the radius around a net's OWN pads where
+  the band is not priced. It lets a relay coil pin leave the relay beside its
+  contact pins, and a codec clock pin leave the codec beside its analog pins.
+  At 0 those pins pay the band from their first step, and the detour shows up
+  as in-band length on nets that had no other way out.
+- `--keep-away-cost` (default 0.5) is the cost per cell inside a band, in the
+  same unit as the other proximity costs.
+
+Put the SAME rules on every routing step that routes either group: the signal
+route (Step 2), and the diff-pair step (Step 2a) and the impedance step (Step 2b)
+when one of their nets is in a group:
+
+```bash
+python3 py_router/route.py board.kicad_pcb --nets "*" \
+    --keep-away 'MCLK,BCLK,LRCLK:/AIN_*,/AOUT_*:1' \
+    --keep-away '/LED_*:/AIN_*,/AOUT_*:0.3' \
+    --output board_routed.kicad_pcb
+python3 py_router/route_diff.py board_routed.kicad_pcb --nets "/USB_D*" \
+    --keep-away 'class=Digital:class=Audio:0.5' \
+    --output board_routed2.kicad_pcb
+```
+
+In a GUI plan the rules ride the step's `keep_away` param, which is the Advanced
+tab's one-line Keep-away field: rules separated by spaces, used by both the Route
+and the Differential tabs.
+
+**Grade it, and report it.** A run with rules prints a `Keep-away (...)` line and
+writes `keep_away` into JSON_SUMMARY: `in_band_mm` and `nets_in_band`, plus
+per-net `in_band_mm`, `min_spacing_mm` and `closest_net`. The cost is soft, so
+in-band length that remains means the router found no other way through. That is
+a capacity answer (a corridor too narrow for the gap, or placement putting the
+groups side by side), and you must report it rather than hide it. Then suggest a
+placement change, a user-drawn guide corridor, or a `User.2` keepout around the
+analog block if it matters. `--keep-away-cost 0` measures a board against the
+rules without changing a single route.
+
+**Keep the better run.** Route the step once more with the same rules at
+`--keep-away-cost 0` and compare the two the way every retry is compared:
+`check_connected` and `check_drc` at the routed clearance first, then in-band
+length. Keep the rule only when completion and DRC are no worse and in-band
+length fell; a rule that buys separation with a new open net or a new DRC
+violation is not kept.
+
+**Other soft costs can quietly weaken it.** The band shares the per-layer cost
+map with track proximity, ripped-route ghosts, plane fragility and history,
+and in the default max composition a cell pays the LARGEST of them, not their
+sum (`KICAD_PROXIMITY_SUM` adds them instead). So a retry at
+`--track-proximity-cost 2` prices the cells beside a routed track at up to 4x
+the 0.5 band, and near those tracks the rule stops telling the two groups
+apart. Bus attraction and the global-plan attraction discount the whole step,
+band included. After any soft-cost retry, or with the Step 2c env stack, re-read
+`keep_away` in JSON_SUMMARY and reject a result whose in-band length grew.
+
+**Presenting:**
+- When added: "**Keep-away:** `MCLK,BCLK:/AIN_*:1` — U4's I2S clocks share the
+  corridor with U7's analog inputs (codec analog pins, datasheet section N)."
+- When not added: "**Keep-away:** none — no clock/switching-node and analog mix
+  found (all-digital board)."
+
 ## Step 5: Review Power and Ground Net Strategy (delegate to /recommend-plane-mappings)
 
 Which nets deserve planes and on which copper layers is the
@@ -1416,15 +1557,17 @@ route from `board_step2b.kicad_pcb`.)
 This produces the **canonical final board** — the finalize's `JSON_ORACLE`
 line reports the KiCad-verified plane-completion verdict for the run.
 
-### Step 2c: Tuned route parameters (the measured-optimal set)
+### Step 2c: Tuned route parameters (a screened bundle)
 
-A 15-board screen (2026-08-17) measured the following parameter set as
-STRICTLY DOMINANT over each board's naive parameters — total KiCad
+A 15-board screen (2026-08-17) measured a bundle of these parameters as
+dominant over each board's naive parameters — total KiCad
 post-refill unconnected 62 → 23 across the corpus at **equal total wall
 time** (better first-pass arrangement repays the extra search in saved
 rip/retry churn). Apply it whenever the board is dense enough that any
 fanout or escape is contested; on trivially-open boards the defaults are
-fine.
+fine. That 62 → 23 is the BUNDLE's figure, not any one item's, and the
+bundle as screened also carried `--direction-preference-cost 5`, which has
+since been reverted (item 2).
 
 1. **Strict small features** (the single biggest lever on packed boards —
    lane pitch is quantized by track+clearance, and a 0.1 grid cannot
@@ -1442,13 +1585,15 @@ fine.
    routes real, graded drill-pair violations (verified in code by two
    independent plan audits). Pass the BOARD's own `min_hole_to_hole`
    (from `--design-rules`), or omit the flag and let route.py derive it.
-2. **Direction preference**: this is now the DEFAULT (5), so passing
-   `--direction-preference-cost 5` is optional — keep it if you want the
-   manifest self-documenting. #663's corpus screen took the old 250 default
-   to 5 on the strength of sets 1-5, 75 boards per arm at one commit: −22
-   incomplete nets (−19.6%), W15/L6, real DRC flat. A weak nudge organizes
-   layers; 250 priced every off-axis move above 3 vias and forced detours,
-   while 0 loses the organization entirely.
+2. **Direction preference: leave it at the default and do not pass 5**
+   (`--direction-preference-cost`, default: 250). #663 moved the default to 5
+   on a corpus screen whose image had no KiCad, so every oracle leg was a
+   no-op. Re-screened with KiCad live (sets 1-5, 75 boards per arm, one
+   commit), incomplete nets / real DRC were 5 → 95/58, 25 → 116/57,
+   50 → 117/62 and 250 → 89/43, and the default went back to 250
+   (aaa60331). 25 and 50 are worse than either end, so do not split the
+   difference. Much higher (5000) gives strict H/V lanes but starves dense
+   boards.
 3. **Layer pricing** (order matches `--layers`): GND solid-plane layer
    **6.0**; rail/split pour layers **2.5**; F/B and free routing layers
    **1.0**; and leave the board's **bus-highway layer at 1.0 even if it
@@ -1466,14 +1611,20 @@ fine.
    finalize re-audit. These are env knobs today, so they ride the
    redo-manifest form of the plan but NOT the GUI plan JSON — see the
    promotion note in Step 9.)
-   **On DENSE-tier boards (Step 5a-tuned gate), ALSO prepend**
+   **This stack is bundle-measured only.** Its evidence is the 62 → 23
+   bundle above (which also carried direction preference 5, the small
+   features and the layer pricing) and #589's merge gate, which replayed the 15 skill plans
+   12 identical / 3 better / 0 worse. That gate checks the merge did no
+   harm; it does not measure any one knob.
+   **On DENSE-tier boards (Step 5a-tuned gate), you MAY also prepend**
    `KICAD_GLOBAL_PLAN_LAYER_MODE=clique KICAD_GLOBAL_PLAN_LAYER=pref` —
    clique-negotiated layer assignment with preference-directed layers.
-   These were the knobs that unlocked the orangecrab hand-ladder's 22→15
-   descent; on the skill's own plan they measured 17 vs 18 unconnected at
-   equal wall time (within single-board wobble by itself, but
-   directionally consistent and free). Leave them OFF for STANDARD
-   boards — unmeasured there, and standard boards already hit 0.
+   The evidence is ONE board: they unlocked a dense FPGA board's 22 → 15
+   hand-ladder descent, and measured 17 vs 18 unconnected on the skill's
+   own plan for it at equal wall time, which is within single-board wobble
+   and below the two-board bar. Treat it as retry-and-compare, not a
+   default. Leave them OFF for STANDARD boards — unmeasured there, and
+   standard boards already hit 0.
 
 ### Step 2d: Guided iteration + endgame (dense boards)
 
@@ -1746,6 +1897,10 @@ For high-speed signals with impedance requirements:
 For parallel data/address buses with clustered endpoints:
 - `--bus` enables automatic bus detection and parallel routing
 - Routes are attracted to neighbors, creating clean parallel traces
+- **Optional, retry-and-compare only.** `--bus` has no corpus A/B on
+  record, and its single-board results are mixed: it helped one board's
+  signal step and hurt another's under the default blocker selection
+  (9ea1a18a, ec8e21a0). Keep whichever result grades better.
 
 ## Step 8: Handle Special Cases
 
@@ -2067,9 +2222,10 @@ eliminate same-layer crossings before routing begins.
 
 ### Vertical Track Alignment
 
-On 4+ layer boards where through-hole components need via space, `--vertical-attraction-radius`
-/ `--vertical-attraction-cost` attract tracks on different layers to stack vertically,
-consolidating routing corridors.
+Leave it off: `--vertical-attraction-cost` stays at its default 0, on any
+layer count. The #584 campaign kept it at 0 deliberately, because turning it on
+cost 2.3× CPU for worse routing. It is also net-agnostic: it pulls a track
+toward ANY other net's copper on another layer, not toward its own net.
 
 ### Plane Via Placement Options (route_planes.py)
 
@@ -2084,6 +2240,7 @@ consolidating routing corridors.
 | MPS (default) | `--ordering mps` | General routing, minimizes crossings |
 | Inside-Out | `--ordering inside_out` | BGA escape routing |
 | Original | `--ordering original` | Manual control |
+| Bus | `--ordering bus` | Detected bus groups first (members middle-out), rest by MPS. Ordering only; `--bus` implies it and adds the attraction |
 
 ### Useful Utility Scripts
 
@@ -2136,8 +2293,13 @@ bound, not a plan.)
 | `--max-ripup 3` | 3 | Max blocking nets to rip up and retry |
 | `--no-smoothing` | (smoothing is ON) | Disables #536 octolinear smoothing. A/B only — OFF measured ~20 nets worse across 147 boards |
 | `--heuristic-weight 2.3` | 2.3 | >1 = faster but may miss tight routes, 1.0 = optimal. 2.3 = the corpus dose-response peak (#586: 1.7 and 3.0 both worse; do not "tune it down for quality" -- measured, not intuitive) |
-| `--via-cost 75` | 75 | Higher = fewer vias, longer paths; lower (25) for BGA escape. 75 = corpus-measured default (#586); 25 measured WORSE overall |
+| `--via-cost 75` | 75 | Higher = fewer vias, longer paths. 75 = corpus-measured default (#586); 25 and 100 both measured WORSE |
 | `--grid-step 0.1` | 0.1 | Smaller = finer routing but slower; 0.05 for fine-pitch |
+
+Leave these at their defaults: `--direction-preference-cost` (default: 250)
+and `--turn-cost` (default: 1000) were measured on the corpus and no other
+value held up; `--proximity-heuristic-factor` (default: 0.02) beat 0, 0.01
+and 0.04 on a five-board probe and has had no corpus A/B since.
 
 Manufacturing constraints (set to match your fab's requirements):
 
@@ -2150,15 +2312,18 @@ Manufacturing constraints (set to match your fab's requirements):
 
 ### Proximity Penalties
 
-For dense boards, use proximity penalties to spread out routes:
+Do not set proximity penalties on a first pass, dense board or not. The shipped
+values (stub proximity 0.2 within 2 mm, BGA proximity 0.2 within 7 mm, via
+proximity 10, track proximity 0, ripped-route avoidance 0.1) were dose-tested
+in the #584 corpus campaign and kept as near-optimal on the corpus. Spreading
+routes apart is a retry-tier lever: see "Diagnose and Retry". Never combine
+track proximity with `KICAD_PROXIMITY_SUM`: sum composition with
+`--track-proximity-cost 0.5` measured +419 DRC at the shipped heuristic weight
+2.3 (#586).
 
-```bash
-python3 py_router/route.py board.kicad_pcb --nets "*" \
-    --stub-proximity-radius 2.0 --stub-proximity-cost 0.2 \
-    --bga-proximity-radius 7.0 --bga-proximity-cost 0.2 \
-    --track-proximity-distance 2.0 --track-proximity-cost 0.1 \
-    --output board_routed.kicad_pcb
-```
+The proximity costs spread routes from ALL other nets alike. Keeping one group
+of signals away from ANOTHER (clocks from analog inputs) is `--keep-away`,
+decided by signal type in Step 4c, never as a spreading knob.
 
 ## Important Notes
 
@@ -2556,30 +2721,31 @@ tells you that, and the grid alone is not a lever (see below).
 
 ### Diagnose and Retry
 
-**Soft-cost retry levers (measured on 12-board challenging-chain A/B; these
-are RETRY settings — the defaults stay mild on purpose):**
+**Soft-cost retry levers (these are RETRY settings — the defaults stay mild on
+purpose):**
 
 - **First-choice retry on any struggling board:** re-run the failing signal
   step (or chain) with `--ripped-route-avoidance-cost 3
   --track-proximity-cost 2` and **KEEP WHICHEVER RESULT GRADES BETTER** —
-  routing is deterministic and the comparison is cheap. Across 12 hard
-  boards this improved 8 (top gains +6.1 and +4.1 pts, connectivity down on
-  nearly every win), regressed 2, and timed out 2 (expect up to 2× runtime).
-  Board-type prediction is IMPERFECT — a 6-layer RAM board regressed −5.0 —
-  so never blind-apply: always retry-and-compare.
-- **Thrash-class variant:** on boards whose logs show heavy rip-up churn,
-  ALSO try `--via-proximity-cost 100` on top (rescued one thrash board
-  +2.4 pts where the base combo timed out) — but it fails more often than
-  it helps elsewhere (3 wins / 5 losses / 3 timeouts); strictly a
-  second-attempt lever, same keep-better rule.
+  routing is deterministic and the comparison is cheap. "Better" means
+  `check_connected` AND `check_drc` at the routed clearance: never accept a
+  retry that trades new DRC for completion. Both levers add DRC on the
+  corpus (#584: track proximity 2 measured +119 to +244 DRC across the dose
+  grid, ripped-route avoidance 3 +50 DRC). The completion evidence is a
+  12-board challenging-chain A/B from 2026-08-03, at heuristic weight 1.9 and
+  via cost 50 and before history congestion was on: it improved 8 (top
+  gains +6.1 and +4.1 pts, connectivity down on nearly every win), regressed
+  2, and timed out 2 (expect up to 2× runtime). Board-type prediction is
+  IMPERFECT — a 6-layer RAM board regressed −5.0 — so never blind-apply:
+  always retry-and-compare.
 - **Do not stack these with `--bga-proximity-cost` or a lower `--max-ripup`**
-  — both combinations measured WORSE than either alone (they remove exactly
-  the freedom the corridor pricing needs).
+  — on a single-board combination lattice both measured WORSE than either
+  alone (they remove exactly the freedom the corridor pricing needs).
 - **Boards routing fine at defaults:** leave everything alone.
-- `--via-proximity-cost 0` now simply means "no extra via cost from
-  proximity" (Rust 0.20.1 removed the old 0 = hard-via-ban mode, which was a
-  measured ~200x CPU explosion) — safe, but rarely useful: the default 10 is
-  what keeps vias out of escape fields. Leave
+- Leave `--via-proximity-cost` at its default 10, up or down: 100 measured
+  +15 on the corpus disconnection verdict, and 3 wins / 5 losses / 3
+  timeouts on top of the first-choice retry on the 12 hard boards; 1
+  measured +63 at the shipped core (#584). Leave
   `--ripped-route-avoidance-radius` at its default (widening it measured
   worse).
 
@@ -2611,7 +2777,6 @@ python3 -X utf8 py_router/route.py board_prev.kicad_pcb board_routed.kicad_pcb \
    - `--no-bga-zone` - **Critical**: Allows router to enter BGA area for alternative paths
    - `--max-ripup 5` (default 3) - More rip-up attempts to resolve conflicts (measured optimum 3-5; deeper loses, see note 15)
    - Do NOT pass `--max-iterations` — self-budgeting (#529) extends hard searches to a 1e7 ceiling automatically; a post-extension failure is a capacity problem, not a budget one
-   - `--stub-proximity-radius 10 --stub-proximity-cost 3.0` - Spread out fanout stubs (optional, for aesthetics)
 
 #### Dense 2-layer boards: rebalance layer costs (issue #178)
 

@@ -62,6 +62,7 @@ from plane_component_oracle import PlaneComponentOracle
 from plane_blocker_detection import find_route_blocker_from_frontier, find_via_position_blocker
 from terminal_colors import GREEN, RED, YELLOW, RESET
 import routing_defaults as defaults
+from pcb_modification import bump_copper_epoch
 import re
 
 # Outcome of the end-of-run self-reconnect of rip-blocker-nets casualties
@@ -362,6 +363,23 @@ try:
         'KICAD_PLANE_RECONNECT_GHOST_RADIUS', '1.0') or 1.0)
 except ValueError:
     _RECONNECT_GHOST_RADIUS = 1.0
+
+
+def _sub_run_kwargs(route_knobs, no_bga_zone, max_iterations, ghost_kwargs):
+    """batch_route kwargs a nested reroute sub-run takes from its parent.
+
+    The route step's own knobs (search, soft costs, keepouts, BGA zones, rip-up
+    policy, keep-away), so a casualty the finalize reconnects is routed by the
+    rules the step it belongs to routed by -- the sub-runs used to fall back to
+    batch_route's defaults, a different via cost, net order and BGA policy.
+    Without a parent (the standalone CLI) the engine's own BGA and iteration
+    settings stand in. The ghost kwargs win: they carry their own avoidance
+    cost for the pending casualties' corridors."""
+    kw = dict(route_knobs or {})
+    kw.setdefault('disable_bga_zones', [] if no_bga_zone else None)
+    kw.setdefault('max_iterations', max_iterations)
+    kw.update(ghost_kwargs)
+    return kw
 
 
 def _ghost_kwargs(corridor_ghosts, batch_net_ids):
@@ -783,6 +801,12 @@ def repair_planes(
     # #562 finalize forwards its run's, as it does layer_clearances, because
     # the output's .kicad_dru sibling does not exist yet mid-run.
     track_clearances: Optional[dict] = None,
+    # The route step's own search / soft-cost / keepout / keep-away knobs
+    # ({batch_route kwarg: value}), forwarded into the nested batch_route
+    # sub-runs that reconnect rip casualties and join regions, under each
+    # sub-run's own explicit settings. The #562 finalize passes its run's;
+    # None (the standalone CLI) = batch_route's defaults.
+    route_knobs: Optional[dict] = None,
 ) -> Tuple[int, int]:
     """
     Route between disconnected regions in power plane zones.
@@ -1280,15 +1304,17 @@ def repair_planes(
                         continue
                     _pn.append(_cn)
                     _pw.append(_cw)
+            # The repair edited pcb_data's copper in place: invalidate what was
+            # cached against it before the sub-run looks anything up (#1146 audit).
+            bump_copper_epoch(pcb_data)
             _ok, _fail, _t, _rdata = batch_route(
                 input_file, "", _names,
                 layers=routing_layers,
                 track_width=track_width, clearance=clearance,
                 via_size=via_size, via_drill=via_drill,
-                grid_step=grid_step, max_iterations=max_iterations,
+                grid_step=grid_step,
                 power_nets=_pn or None, power_nets_widths=_pw or None,
                 board_edge_clearance=_edge,
-                disable_bga_zones=([] if no_bga_zone else None),
                 net_clearances=net_clearances,
                 layer_costs=(list(layer_costs) if layer_costs else None),  # #658 finalize sub-runs honor chain layer economics
                 hole_to_hole_clearance=hole_to_hole_clearance,
@@ -1301,7 +1327,8 @@ def repair_planes(
                 # 57 levels on schoko, ~7 GB before the cap killed it). This
                 # sub-run is a repair DETAIL, not a chain step -- never finalize.
                 final_reconcile=False,
-                **_ghost_kwargs(corridor_ghosts, _rip_ids))
+                **_sub_run_kwargs(route_knobs, no_bga_zone, max_iterations,
+                                  _ghost_kwargs(corridor_ghosts, _rip_ids)))
 
             for _r in _rdata.get('results', []):
                 for _s in (_r.get('new_segments') or []):
@@ -1886,15 +1913,17 @@ def repair_planes(
                         print(f"  Preserving routed width {_cw}mm for ripped "
                               f"net {_cn} across the reconnect (this run's "
                               f"default is {track_width}mm)")
+                # The repair edited pcb_data's copper in place: invalidate what was
+                # cached against it before the sub-run looks anything up (#1146 audit).
+                bump_copper_epoch(pcb_data)
                 _ok, _fail, _t, _rdata = batch_route(
                     input_file, "", _cnames,
                     layers=routing_layers,
                     track_width=track_width, clearance=clearance,
                     via_size=via_size, via_drill=via_drill,
-                    grid_step=grid_step, max_iterations=max_iterations,
+                    grid_step=grid_step,
                     power_nets=_pn or None, power_nets_widths=_pw or None,
                     board_edge_clearance=_edge,
-                    disable_bga_zones=([] if no_bga_zone else None),
                     # #434: forward the map resolved from the ORIGINAL input's
                     # project (batch_route's own auto-read would find no
                     # netclasses next to a not-yet-written output).
@@ -1918,7 +1947,8 @@ def repair_planes(
                     # 57 levels on schoko, ~7 GB before the cap killed it). This
                     # sub-run is a repair DETAIL, not a chain step -- never finalize.
                     final_reconcile=False,
-                    **_ghost_kwargs(corridor_ghosts, _casualties))
+                    **_sub_run_kwargs(route_knobs, no_bga_zone, max_iterations,
+                                      _ghost_kwargs(corridor_ghosts, _casualties)))
 
                 def _sd(_s):
                     return {'start': (_s.start_x, _s.start_y),
@@ -2500,14 +2530,24 @@ def repair_planes(
                 progress_callback(0, 0, f"{_nname}: joining remaining gaps...")
             try:
                 from route import batch_route
+                try:
+                    from fix_kicad_drc_settings import effective_board_edge_clearance
+                    _edge3 = effective_board_edge_clearance(input_file, 0.0)
+                except Exception:
+                    _edge3 = 0.0
+                # The repair edited pcb_data's copper in place: invalidate what was
+                # cached against it before the sub-run looks anything up (#1146 audit).
+                bump_copper_epoch(pcb_data)
                 _ok3, _fail3, _t3, _rdata3 = batch_route(
                     input_file, "", [_nname],
                     layers=routing_layers,
                     track_width=track_width, clearance=clearance,
                     via_size=via_size, via_drill=via_drill,
-                    grid_step=grid_step, max_iterations=max_iterations,
+                    grid_step=grid_step,
                     power_nets=power_nets, power_nets_widths=power_nets_widths,
-                    disable_bga_zones=([] if no_bga_zone else None),
+                    # The board's copper-to-edge floor, as the two reconnect
+                    # sub-runs above pass it (this one used to route at 0).
+                    board_edge_clearance=_edge3,
                     net_clearances=net_clearances,
                     layer_costs=(list(layer_costs) if layer_costs else None),  # #658 finalize sub-runs honor chain layer economics
                     # #539: without this the gate's plane-net vias were placed
@@ -2531,7 +2571,8 @@ def repair_planes(
                     # 57 levels on schoko, ~7 GB before the cap killed it). This
                     # sub-run is a repair DETAIL, not a chain step -- never finalize.
                     final_reconcile=False,
-                    **_ghost_kwargs(corridor_ghosts, {_nid}))
+                    **_sub_run_kwargs(route_knobs, no_bga_zone, max_iterations,
+                                      _ghost_kwargs(corridor_ghosts, {_nid})))
                 for _r in _rdata3.get('results', []):
                     all_new_segments.extend(
                         {'start': (_s.start_x, _s.start_y),

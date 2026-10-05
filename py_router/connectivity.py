@@ -1751,11 +1751,22 @@ def get_stub_endpoints(pcb_data: PCBData, net_ids: List[int]) -> List[Tuple[floa
     Returns list of (x, y, layer) tuples - includes layer for same-layer filtering.
     """
     stubs = []
+    # One pass over the board's copper, not one per net: a builder asks for
+    # every unrouted net on every prepare.
+    wanted = set(net_ids)
+    segs_by_net: Dict[int, list] = {}
+    vias_by_net: Dict[int, list] = {}
+    for s in pcb_data.segments:
+        if s.net_id in wanted:
+            segs_by_net.setdefault(s.net_id, []).append(s)
+    for v in pcb_data.vias:
+        if v.net_id in wanted:
+            vias_by_net.setdefault(v.net_id, []).append(v)
     for net_id in net_ids:
-        net_segments = [s for s in pcb_data.segments if s.net_id == net_id]
+        net_segments = segs_by_net.get(net_id, [])
         if len(net_segments) < 2:
             continue
-        net_vias = [v for v in pcb_data.vias if v.net_id == net_id]
+        net_vias = vias_by_net.get(net_id, [])
         groups = find_connected_groups(net_segments, vias=net_vias)
         if len(groups) < 2:
             continue

@@ -1271,27 +1271,26 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
     floor = _fab_track_floor(pcb_data)
     necked = 0
 
-    # P and N are DIFFERENT NETS, so the clearance between them is KiCad's
-    # pairwise max(classP, classN) -- the same rule the obstacle map prices
-    # foreign copper at (#530/#326, `config.obstacle_clearance`). This used to
-    # test the bare global `config.clearance`, which is one-directionally
-    # wrong: net classes only ever WIDEN (see `get_net_clearance`), so a pair
-    # whose class is wider than the run's floor was measured too leniently and
-    # could ship copper KiCad then flags. It cannot reject anything the old
-    # test accepted on a board that declares no netclass -- `obstacle_clearance`
-    # documents itself as byte-identical to `config.clearance` when the map is
-    # empty -- so this is a tightening exactly where a class asks for one.
-    _oc = getattr(config, 'obstacle_clearance', None)
+    # P and N are DIFFERENT NETS, so KiCad grades them at the pair's own
+    # value on the layer they meet on (#1134, `config.pair_clearance`):
+    # max(clearance, class P, class N), then the .kicad_dru layer rule. The
+    # coupled run is built at a gap raised to that value (#1145), so on a
+    # ruled layer only the attach regions and a diagonal's nanometre
+    # rounding neck. This used to price the obstacle STAMP value,
+    # max(obstacle_clearance(P), obstacle_clearance(N)), which sees no layer
+    # rule and is floored at the widest class routed anywhere in the call
+    # (#1136). On a board that declares no class and no rule both are
+    # `config.clearance`.
+    _pcf = getattr(config, 'pair_clearance', None)
     _pc_memo = {}
 
-    def _pair_clearance(a_nid, b_nid):
-        if _oc is None:
+    def _pair_clearance(a_nid, b_nid, layer):
+        if _pcf is None:
             return config.clearance
-        key = (a_nid, b_nid)
+        key = (a_nid, b_nid, layer)
         hit = _pc_memo.get(key)
         if hit is None:
-            hit = max(_oc(a_nid), _oc(b_nid))
-            _pc_memo[key] = hit
+            hit = _pc_memo[key] = _pcf(a_nid, b_nid, layer)
         return hit
 
     def neck_side(own, partner):
@@ -1303,7 +1302,7 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
                 d = _seg_seg_min_dist(s.start_x, s.start_y, s.end_x, s.end_y,
                                       o.start_x, o.start_y, o.end_x, o.end_y)
                 allowed_half = (d - o.width / 2.0
-                                - _pair_clearance(s.net_id, o.net_id) - 2e-4)
+                                - _pair_clearance(s.net_id, o.net_id, s.layer) - 2e-4)
                 if allowed_half < s.width / 2.0 - 1e-9:
                     new_w = max(floor, 2.0 * allowed_half)
                     if new_w < s.width - 1e-9:
@@ -1334,7 +1333,7 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
             d = _seg_seg_min_dist(s.start_x, s.start_y, s.end_x, s.end_y,
                                   o.start_x, o.start_y, o.end_x, o.end_y)
             gap = d - s.width / 2.0 - o.width / 2.0
-            if gap < _pair_clearance(s.net_id, o.net_id) - 1e-6:
+            if gap < _pair_clearance(s.net_id, o.net_id, s.layer) - 1e-6:
                 hard.append((s, o, gap))
     return necked, hard
 
