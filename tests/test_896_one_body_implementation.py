@@ -142,10 +142,19 @@ _DECLARED = {
      'beautify_labels'): (1, 'reads the courtyard map _world_courtyard '
                           'consumes; same argument'),
     (os.path.join('py_placer', 'placement', 'fanout_clearance.py'),
-     '_Repair.__init__'): (3, 'the #313 via-nudge cap model, which prices its '
+     '_Repair.__init__'): (2, 'the #313 via-nudge cap model, which prices its '
                            'own clearance ceiling (#768/#769) and is the one '
                            'PLACEMENT step that lays copper; a separate '
                            'question from what a part body is'),
+    (os.path.join('py_placer', 'placement', 'fanout_clearance.py'),
+     'ball_field_box'): (1, "the same cap model's BGA ball field, factored out "
+                         'of _Repair.__init__ so the joint fanout '
+                         '(awx/joint_escape.movable_refs) asks the cap step '
+                         'its own question'),
+    (os.path.join('py_placer', 'placement', 'fanout_clearance.py'),
+     'movable_cap_refs'): (2, 'the same cap model: which caps the cap step '
+                           'may move (near a ball field, unlocked), factored '
+                           'out of _Repair.__init__ with ball_field_box'),
 
     # -- convertible, and simply not in this PR. Each is a candidate for the
     #    follow-up, and saying so is the point: a reader can tell a decision

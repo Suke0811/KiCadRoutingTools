@@ -241,14 +241,16 @@ def handoff_marks(geo):
     return gap, turn
 
 
-def one(tag, K, args, outdir, timeout):
+def one(tag, K, args, outdir, timeout, copper=2, fanout_layers=None):
     d = os.path.join(outdir, tag)
+    args = list(args) + (['--copper', str(copper)] if copper != 2 else [])
     os.makedirs(d, exist_ok=True)
     raw, bench = os.path.join(d, 'raw.kicad_pcb'), os.path.join(d, 'bench.kicad_pcb')
     row = {'tag': tag, 'k': K, 'args': ' '.join(args)}
     if run([PY, 'synth_bus.py', raw, '--k', str(K)] + args, os.path.join(d, 'gen.log')):
         return dict(row, verdict='GEN FAILED')
-    if run([PY, 'make_bench.py', raw, 'SU1', 'SD1', bench], os.path.join(d, 'bench.log')) or not os.path.isfile(bench):
+    if run([PY, 'make_bench.py', raw, 'SU1', 'SD1', bench] + (['--fanout-layers', fanout_layers] if fanout_layers else []),
+           os.path.join(d, 'bench.log')) or not os.path.isfile(bench):
         return dict(row, verdict='BENCH FAILED')
     t0 = time.time()
     rc = run([PY, 'whole_route.py', str(K), os.path.join(d, 'run')], os.path.join(d, 'run.log'),
@@ -335,6 +337,10 @@ def main(argv=None):
     ap.add_argument('--outdir', default=os.path.join(HERE, 'tmp', 'synth_handoff'))
     ap.add_argument('--timeout', type=int, default=1800, help='each whole route, s')
     ap.add_argument('--list', action='store_true', help='print the cases and stop')
+    ap.add_argument('--fanout-layers', help='the bench\'s source fanout layers (make_bench --fanout-layers; default '
+                    'the routing layers)')
+    ap.add_argument('--copper', type=int, default=2, choices=(2, 4), help='each board\'s copper layers (synth_bus '
+                    '--copper): 4 for the routing layers ROUTE_LAYERS names from the environment, as F.Cu,B.Cu,In2.Cu')
     ap.add_argument('--modal', metavar='APP', help='run each case in its own container on Modal (up to 50 at once), '
                     'on the app deployed from this tree (modal deploy --name APP awx/modal_whole.py); the calls are '
                     'kept in OUTDIR/calls.json')
@@ -349,6 +355,8 @@ def main(argv=None):
             print(f'{tag:10s} K={K:2d} {" ".join(args)}')
         return 0
     os.makedirs(a.outdir, exist_ok=True)
+    if (a.copper != 2 or a.fanout_layers) and (a.modal or a.collect):
+        raise SystemExit('synth_handoff: --copper runs here only (the Modal app builds its boards with two)')
     if a.modal or a.collect:
         rows = modal_rows(a, cases)
         if rows is None:
@@ -356,7 +364,8 @@ def main(argv=None):
     else:
         rows = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as ex:
-            futs = {ex.submit(one, tag, K, args, os.path.abspath(a.outdir), a.timeout): tag for tag, K, args in cases}
+            futs = {ex.submit(one, tag, K, args, os.path.abspath(a.outdir), a.timeout, a.copper,
+                                a.fanout_layers): tag for tag, K, args in cases}
             for f in concurrent.futures.as_completed(futs):
                 r = f.result()
                 rows.append(r)

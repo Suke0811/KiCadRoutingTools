@@ -271,7 +271,7 @@ def check_pitch(ctx, corridors, png=None):
                         hits.append((d_, nm, om, L, (float(x), float(y)), S, where, ln_, c.idx, need_))
     hits.sort()
     for (d, a, b, L, xy, S, where, ln, ci, need) in hits:
-        print(f'PITCH {a:7s} {b:7s} {L[0]} min {d:.3f}  over {ln:4.2f} mm  at ({xy[0]:.2f},{xy[1]:.2f})  '
+        print(f'PITCH {a:7s} {b:7s} {lay_tag(L)} min {d:.3f}  over {ln:4.2f} mm  at ({xy[0]:.2f},{xy[1]:.2f})  '
               f'corridor {ci} s {S:6.2f} {where}  (bar {need:.4f})')
     print(f'PITCH {len(hits)} pair(s) short of their bar on one layer (track + clearance {TW + CL:.3f}, + half a '
           f'grid step per piece off the grid, less half a step where any is): '
@@ -551,7 +551,7 @@ def check_dives(ctx, corridors, show_all=False):
                     st = min([(_pad_edge(x, y, pd, 0.0 if nm in pairs else g), need_static, f'pad {ref}.{pd.pad_number} {name(pd.net_id)}')
                               for ref, pd in pads if pd.net_id not in own[nm] and near(pd.global_x, pd.global_y)]
                              + [(dseg(x, y, (s_.start_x, s_.start_y), (s_.end_x, s_.end_y)) - s_.width / 2,
-                                 need_static, f'{s_.layer[0]} copper {name(s_.net_id)}')
+                                 need_static, f'{lay_tag(s_.layer)} copper {name(s_.net_id)}')
                                 for s_ in ctx.base_segments if s_.net_id not in own[nm]]     # a stub by its length
                              + [(math.hypot(v.x - x, v.y - y),
                                  max(VR + v.size / 2 + CL, cfg.via_drill / 2 + v.drill / 2 + h2h) + g2 * vo,
@@ -579,7 +579,7 @@ def check_dives(ctx, corridors, show_all=False):
                                 for om in leg_lines if om != nm for (p, q, L) in leg_lines[om]],
                              key=lambda r: r[0] - r[1], default=(9, 0, '', ''))
                     if ln[0] < ln[1] - 1e-6:
-                        hits.append(f'lane {ln[0]:.3f}/{ln[1]:.3f} ({ln[2]} {ln[3][0]})')
+                        hits.append(f'lane {ln[0]:.3f}/{ln[1]:.3f} ({ln[2]} {lay_tag(ln[3])})')
                         fail['lane'] += 1
                     vv = min(((math.hypot(px - x, py - y), c2c + g2 * (vo + boff(om, px, py)), om) for om in M if om != nm
                               for bs in barrels[om].values() for (px, py) in bs),
@@ -597,7 +597,7 @@ def check_dives(ctx, corridors, show_all=False):
                     u8 = _arriving(centre([nm]), s)
                     if u8 is not None:
                         o_ = (-u8[1] * cell_n * g, u8[0] * cell_n * g)
-                        cl_ = min([(dseg(cx_, cy_, p, q), r_line + g2 * (0 if _on_grid(p, q, g) else 1), f'{om} {L[0]}')
+                        cl_ = min([(dseg(cx_, cy_, p, q), r_line + g2 * (0 if _on_grid(p, q, g) else 1), f'{om} {lay_tag(L)}')
                                    for (cx_, cy_) in ((s[0], s[1]), (s[0] + o_[0], s[1] + o_[1]), (s[0] - o_[0], s[1] - o_[1]))
                                    for om in M if om != nm for (p, q, L) in lines[om]]
                                   + [(math.hypot(sv[0] - cx_, sv[1] - cy_), r_via + g2 * (0 if _pt_on_grid(sv[0], sv[1], g) else 1),
@@ -698,11 +698,11 @@ def check_static(ctx, corridors, only=None):
         for pd in fp.pads:
             drilled = bool(pd.drill and pd.drill > 0)
             if pd.pad_type == 'np_thru_hole':
-                pads.append((fp.reference, pd, {'F.Cu', 'B.Cu'}, 'hole'))
-            elif drilled or any(L.startswith('*') for L in pd.layers):
-                pads.append((fp.reference, pd, {'F.Cu', 'B.Cu'}, 'pad'))
+                pads.append((fp.reference, pd, set(ctx.cfg.layers), 'hole'))
+            elif drilled or '*.Cu' in pd.layers:
+                pads.append((fp.reference, pd, set(ctx.cfg.layers), 'pad'))
             else:
-                Ls = {L for L in pd.layers if L in ('F.Cu', 'B.Cu')}
+                Ls = {L for L in pd.layers if L in ctx.cfg.layers}
                 if Ls:
                     pads.append((fp.reference, pd, Ls, 'pad'))
     name = lambda i: (ctx.pcb.nets[i].name.split('/')[-1] if i in ctx.pcb.nets else str(i))
@@ -716,7 +716,7 @@ def check_static(ctx, corridors, only=None):
             exact_ = {(tuple(map(float, p)), tuple(map(float, q)), L_) for (p, q, L_) in
                       (c.end_legs_of(nm) if hasattr(c, 'end_legs_of') else [])}
             is_on = lambda s_: _on_grid(s_[0], s_[1], g) or (tuple(map(float, s_[0])), tuple(map(float, s_[1])), s_[2]) in exact_
-            for L in ('F.Cu', 'B.Cu'):
+            for L in ctx.cfg.layers:
                 RR = [(np.array(p, float), np.array(q, float), L_) for p, q, L_ in R]
                 on_ = [s for s in RR if is_on(s)]
                 off_ = [s for s in RR if not is_on(s)]
@@ -760,7 +760,7 @@ def check_static(ctx, corridors, only=None):
                             hits[key] = (float(d[k]), tuple(P[k]), float(NEED[k]))
     rows = sorted((v[0], k[0], k[1], k[2], v[1], v[2]) for k, v in hits.items())
     for d, nm, L, what, xy, nd in rows:
-        print(f'STATIC {nm:7s} {L[0]} {d:+.3f}/{nd:.3f} {what} at ({xy[0]:.2f},{xy[1]:.2f})')
+        print(f'STATIC {nm:7s} {lay_tag(L)} {d:+.3f}/{nd:.3f} {what} at ({xy[0]:.2f},{xy[1]:.2f})')
     print(f'STATIC {len(rows)} lane/object pair(s) short of their bar (track/2 + clearance {TW / 2 + CL:.3f}, + half a '
           f'grid step off the grid): {dict(collections.Counter(r[3].split()[0] for r in rows))}')
     return rows
@@ -772,6 +772,12 @@ def router_band(c, nm):
     if c.sched_cur.page.get(nm) is None:
         return 'free', None
     return 'page', c.band_of(nm)
+
+
+def lay_tag(L):
+    """a layer as the findings print it: F or B, an inner routing layer by its name (whole_gate and whole_route read
+    either)"""
+    return L[0] if L in ('F.Cu', 'B.Cu') else L
 
 
 def _flood(ok, xs, ys, layers, a, aL, b, bL, G):
@@ -802,7 +808,8 @@ def _flood(ok, xs, ys, layers, a, aL, b, bL, G):
         if c_ == t:
             return 'connected'
         i, j, L = c_
-        for n in [(i + di, j + dj, L) for di in (-1, 0, 1) for dj in (-1, 0, 1) if di or dj] + [(i, j, 1 - L)]:
+        for n in [(i + di, j + dj, L) for di in (-1, 0, 1) for dj in (-1, 0, 1) if di or dj] + \
+                [(i, j, L2) for L2 in range(len(layers)) if L2 != L]:
             if n not in seen and open_at(n):
                 seen.add(n)
                 q.append(n)
@@ -971,7 +978,7 @@ def check_shape(ctx, corridors, only=None):
             if only and nm not in only:
                 continue
             R = c.virtual_of([nm])
-            for L in ('F.Cu', 'B.Cu'):
+            for L in ctx.cfg.layers:
                 for run in bd._chain_runs(R, L):
                     tr = _turns(run)
                     for i, (v, t, _l) in enumerate(tr):
@@ -989,7 +996,7 @@ def check_shape(ctx, corridors, only=None):
         if key in seen:
             continue
         seen.add(key)
-        print(f'SHAPE {nm:7s} {L[0]} {kind:5s} at ({v[0]:.2f},{v[1]:.2f}) {how}')
+        print(f'SHAPE {nm:7s} {lay_tag(L)} {kind:5s} at ({v[0]:.2f},{v[1]:.2f}) {how}')
     print(f'SHAPE {len(seen)} place(s): {dict(collections.Counter(k[2] for k in seen))} '
           f'in {len({k[0] for k in seen})} lane(s)')
     return hits

@@ -48,7 +48,6 @@ import json
 import math
 import os
 import awx_settings
-import shutil
 import sys
 
 import numpy as np
@@ -395,12 +394,14 @@ def write(ctx, board, out, base_s, base_v):
     add_tracks_and_vias_to_pcb(board, out,
                                [dict(start=M(s_.start_x, s_.start_y), end=M(s_.end_x, s_.end_y), width=s_.width,
                                      layer=OL(s_.layer), net_id=s_.net_id) for s_ in segs],
+                               # (every via a lane lays is a THROUGH via: written F.Cu to B.Cu whatever layers it
+                               # joins -- KiCad's via names its span's two ends, and one written with every routing
+                               # layer was a barrel kicad_parser, and so every check here, could not read)
                                [dict(x=M(v_.x, v_.y)[0], y=M(v_.x, v_.y)[1], size=v_.size, drill=v_.drill,
-                                     layers=[OL(L_) for L_ in v_.layers], net_id=v_.net_id) for v_ in vias],
+                                     layers=['F.Cu', 'B.Cu'], net_id=v_.net_id) for v_ in vias],
                                net_id_to_name={i: n.name for i, n in ctx.pcb.nets.items()})
-    pro = os.path.splitext(board)[0] + '.kicad_pro'
-    if os.path.exists(pro):
-        shutil.copy(pro, os.path.splitext(out)[0] + '.kicad_pro')
+    from copy_board import copy_siblings
+    copy_siblings(board, out)           # (the project and the .kicad_dru's per-layer rules with it)
     fix_project_for_output(out, board, clearance=cfg.clearance, track_width=cfg.track_width,
                            via_diameter=cfg.via_size, via_drill=cfg.via_drill, verbose=False)
     print(f'wrote {out}: {len(segs)} segment(s), {len(vias)} via(s) added, routed at clearance {cfg.clearance}')

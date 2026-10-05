@@ -584,6 +584,58 @@ def _seg_to_rect_dist(x1, y1, x2, y2, rect):
     return best
 
 
+DEFAULT_NEAR_MARGIN = 1.0       # (mm) the CLI's --near-margin, the GUI's cap_near_margin
+DEFAULT_CAP_PREFIX = 'C,R,FB'   # the CLI's --cap-prefix, the GUI's cap_prefix
+
+
+def ball_field_box(fp) -> Tuple[float, float, float, float]:
+    """A BGA's ball field, the region a cap is NEAR: its ball grid's box
+    (analyze_bga_grid), else the footprint's own box."""
+    grid = analyze_bga_grid(fp)
+    if grid is not None:
+        return (grid.min_x, grid.min_y, grid.max_x, grid.max_y)
+    lb = compute_footprint_bbox_local(fp)
+    b = _rotate_local_bounds(*lb, fp.rotation)
+    return (fp.x + b[0], fp.y + b[1], fp.x + b[2], fp.y + b[3])
+
+
+def is_near_bga_cap(ref, fp, local_bounds, cap_prefixes, locked, bga_boxes,
+                    near_margin) -> bool:
+    """THE MOVABLE-CAP RULE: the parts this step moves. An unlocked part with
+    one of `cap_prefixes` and at most two COPPER pads (paste-only apertures --
+    split-paste 0201s -- do not count, #130), drawing none of the board's own
+    outline (#829), whose courtyard (`local_bounds`, footprint-local, at the
+    part's pose) lies within `near_margin` of a BGA's ball field. Every other
+    part is a static obstacle here, and nothing else in the chain moves it."""
+    n_copper = sum(1 for p in fp.pads
+                   if any(str(l).endswith('.Cu') for l in p.layers))
+    if not (ref.startswith(cap_prefixes) and n_copper <= 2 and ref not in locked
+            and not getattr(fp, 'owns_board_outline', False)):
+        return False
+    b = _rotate_local_bounds(*local_bounds, fp.rotation % 360)
+    rect = (fp.x + b[0], fp.y + b[1], fp.x + b[2], fp.y + b[3])
+    return any(_rect_gap(rect, bb) <= near_margin for bb in bga_boxes)
+
+
+def movable_cap_refs(pcb_data, pcb_file, cap_prefix=DEFAULT_CAP_PREFIX,
+                     near_margin=DEFAULT_NEAR_MARGIN, extra_locked=()) -> Set[str]:
+    """The refs this step would move on `pcb_data` (is_near_bga_cap, at the
+    step's defaults): what a step BEFORE it -- the fanout's joint planning
+    (awx joint_escape.movable_refs) -- may treat as not there. `pcb_file`
+    supplies the courtyards and the locks, as the step reads them; without one
+    each part's own box and lock flag stand in."""
+    prefixes = tuple(p.strip() for p in str(cap_prefix).split(',')
+                     if p.strip()) or ('C',)
+    courtyards = extract_courtyard_bboxes(pcb_file) if pcb_file else {}
+    locked = (set(extract_locked_refs(pcb_file)) if pcb_file else
+              {r for r, f in pcb_data.footprints.items() if getattr(f, 'locked', False)})
+    locked |= set(extra_locked)
+    boxes = [ball_field_box(fp) for fp in find_components_by_type(pcb_data, 'BGA')]
+    return {ref for ref, fp in pcb_data.footprints.items()
+            if fp.pads and is_near_bga_cap(ref, fp, courtyards.get(ref) or compute_footprint_bbox_local(fp),
+                                           prefixes, locked, boxes, near_margin)}
+
+
 class _Cap:
     """A movable cap: pad offsets + courtyard bbox, in a seed-relative frame.
 
@@ -1100,14 +1152,7 @@ class _Repair:
         self.bga_refs: List[str] = []
         for fp in find_components_by_type(pcb_data, 'BGA'):
             self.bga_refs.append(fp.reference)
-            grid = analyze_bga_grid(fp)
-            if grid is not None:
-                bga_bboxes.append((grid.min_x, grid.min_y, grid.max_x, grid.max_y))
-            else:
-                lb = compute_footprint_bbox_local(fp)
-                b = _rotate_local_bounds(*lb, fp.rotation)
-                bga_bboxes.append((fp.x + b[0], fp.y + b[1],
-                                   fp.x + b[2], fp.y + b[3]))
+            bga_bboxes.append(ball_field_box(fp))
             for p in fp.pads:
                 if p.net_id > 0:
                     self.attract.setdefault(p.net_id, []).append(
@@ -1174,25 +1219,16 @@ class _Repair:
             if not fp.pads:
                 continue
             lb = courtyards.get(ref) or compute_footprint_bbox_local(fp)
-            # Count COPPER pads only: paste-only apertures (split-paste 0201
-            # footprints) would otherwise push a 2-terminal cap past the 2-pad
-            # test and wrongly exclude it from placement (#130).
-            n_copper = sum(1 for p in fp.pads
-                           if any(str(l).endswith('.Cu') for l in p.layers))
-            # #829: a cap that draws the board's own outline is not movable
-            # either. This gate is INDEPENDENT of free_refs and QuenchState --
-            # it is its own movable set, and its moves reach disk through
+            # the movable caps (is_near_bga_cap: copper pads only, #130; not a
+            # part drawing the board's own outline, #829 -- a gate INDEPENDENT
+            # of free_refs and QuenchState, its moves reaching disk through
             # place_fanout_clearance.py and the live board through
-            # fanout_gui.py -- so the rule has to be repeated here or it does
-            # not apply on this path at all.
-            is_cap = (ref.startswith(self._cap_prefixes) and n_copper <= 2
-                      and ref not in locked
-                      and not getattr(fp, 'owns_board_outline', False))
-            if is_cap:
-                cap = _Cap(fp, lb, self._floors, self._all_cu_ordered)
-                if self._near_any(cap.rect(), bga_bboxes, near_margin):
-                    self.caps[ref] = cap
-                    continue
+            # fanout_gui.py, so it has to be applied here or it does not apply
+            # on this path at all)
+            if is_near_bga_cap(ref, fp, lb, self._cap_prefixes, locked,
+                               bga_bboxes, near_margin):
+                self.caps[ref] = _Cap(fp, lb, self._floors, self._all_cu_ordered)
+                continue
             # everything else is a static obstacle
             side = footprint_side(fp)
             b = _rotate_local_bounds(*lb, fp.rotation)
@@ -1447,13 +1483,6 @@ class _Repair:
                     self.base_cap_pad[key] = _pad_pair_shortfall(
                         seed_pads, self.caps[oref].pad_rects(), self.clearance,
                         self._pair_effs(ref, cap, oref, self.caps[oref]))
-
-    @staticmethod
-    def _near_any(rect, bboxes, margin):
-        for b in bboxes:
-            if _rect_gap(rect, b) <= margin:
-                return True
-        return False
 
     def _cap_may_reach_edge(self, ref, cap):
         """Cached prune for the real-outline gate (#370 B2): a cap moves at

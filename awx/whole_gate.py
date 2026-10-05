@@ -32,7 +32,7 @@ if '--hot' in sys.argv:
             if k == 'STATIC' and 'copper' in w:
                 ln = ln + w[w.index('copper') + 1:w.index('copper') + 2]
             if k == 'DIVE':
-                ln = ln + re.findall(r'\(([^\s,()]+)(?: [FB])?\)', line)     # '(LANE F)' a line, '(LANE)' a via
+                ln = ln + re.findall(r'\(([^\s,()]+)(?: (?:[FB]|In\d+\.Cu))?\)', line)   # '(LANE F)' a line, '(LANE)' a via
             hot.append([float(m.group(1)), float(m.group(2)), k, ln])
     for c_ in geo.get('conflicts', ()):
         if c_.get('frame') == 'snap':
@@ -67,7 +67,7 @@ missing = sorted((members - lanes) | unplanned)
 NUM = r'(-?[\d.]+)'
 plan = []
 for line in aud:
-    m = re.match(rf'^PITCH (\S+)\s+(\S+)\s+\S min {NUM}\s+over [\d.]+ mm\s+at \({NUM},\s*{NUM}\)', line)
+    m = re.match(rf'^PITCH (\S+)\s+(\S+)\s+(?:[FB]|In\d+\.Cu) min {NUM}\s+over [\d.]+ mm\s+at \({NUM},\s*{NUM}\)', line)
     if m:
         plan.append(f'{m.group(1)}/{m.group(2)} {float(m.group(3)):.3f}')
 unread = int(found['PITCH']) - len(plan)

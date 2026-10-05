@@ -83,6 +83,15 @@ def cut(ys, lo, hi):
     return (pts[i] + pts[i + 1]) / 2
 
 
+def cuts_tied(ys, lo, hi, tol):
+    """the cut's candidates on a far face: the middle of the widest gap (cut's), then of every other gap within `tol`
+    of it -- a TIE, which the ends model decides by its own score (whole_ends: its best of them)"""
+    pts = [lo] + sorted(ys) + [hi]
+    gaps = [(pts[i + 1] - pts[i], (pts[i] + pts[i + 1]) / 2) for i in range(len(pts) - 1)]
+    i0 = max(range(len(gaps)), key=lambda i: gaps[i][0])
+    return [gaps[i0][1]] + [g[1] for i, g in enumerate(gaps) if i != i0 and g[0] > gaps[i0][0] - tol]
+
+
 def in_frame(spine, path):
     """a path as (s, o) on the spine, s rising (a point that does not advance is dropped)"""
     out = []
@@ -228,6 +237,24 @@ def build(ctx, dest, _trunk=frozenset()):
     prs = getattr(ctx, 'pairs', None) or {}
     split = []
     splits = []                                         # (pair, 'tooth' | 'berth', the lanes between its tips)
+    import route_layers
+    _nl = len(route_layers.layers())
+
+    def via_end(n_, k_):
+        """(more routing layers than two) each leg's stub at end k_ carries a via inside its array: the lane's layer
+        there is the solve's (whole_solve's via ends)"""
+        if _nl == 2:
+            return False
+        box = F.SB if k_ == 0 else F.DB
+        for leg in (prs[n_] if n_ in prs else (n_,)):
+            nid = ctx.byname[leg][0]
+            if not any(v.net_id == nid and box[0] - 1e-6 <= v.x <= box[2] + 1e-6 and box[1] - 1e-6 <= v.y <= box[3] + 1e-6
+                       for v in ctx.base_vias):
+                return False
+        return True
+    # every lane with an end between a pair's two tips, whatever its layer there: a solve that chooses ends' layers
+    # (whole_solve's via ends, on more routing layers than two) keeps each off the pair's
+    F.tip_between = {}
     for k_, perim, whole in ((0, perim_src, 2 * (sW + sH)), (1, perim_dst, 2 * (W_ + H_))):
         lay_ = ctx.tooth_layer if k_ == 0 else ctx.dest_layer
         at = []                                         # (position round the box, lane, its layer there)
@@ -238,7 +265,9 @@ def build(ctx, dest, _trunk=frozenset()):
             vs = sorted(v for v, o, _L in at if o == n)
             if n not in F.M or len(vs) < 2:
                 continue
-            inside = sorted({o for v, o, L in at if o != n and L == lay_[n] and between(vs[0], vs[-1], v, whole)})
+            F.tip_between[(n, k_)] = sorted({o for v, o, _L in at if o != n and between(vs[0], vs[-1], v, whole)})
+            inside = sorted({o for v, o, L in at if o != n and L == lay_[n] and between(vs[0], vs[-1], v, whole)
+                             and not (via_end(n, k_) or via_end(o, k_))})
             if inside:
                 split.append(f'{n} at its {("tooth", "berth")[k_]} (round {", ".join(inside)})')
                 splits.append((n, ('tooth', 'berth')[k_], inside))
@@ -302,7 +331,7 @@ def build(ctx, dest, _trunk=frozenset()):
         if ref_ in (src, dest):
             continue
         for p_ in fp_.pads:
-            if _inside((p_.global_x, p_.global_y), base, bd.LPITCH + 2 * bd.LANE_MIN):
+            if _rings_round(p_) and _inside((p_.global_x, p_.global_y), base, bd.LPITCH + 2 * bd.LANE_MIN):
                 hx, hy = (p_.size_x or 0.0) / 2, (p_.size_y or 0.0) / 2
                 tails += [(p_.global_x + sx * hx, p_.global_y + sy * hy) for sx in (-1, 1) for sy in (-1, 1)]
     # a part ON a ring's stack -- the handoff line from the ring's start to its outermost lane, its copper within a
@@ -338,6 +367,16 @@ def build(ctx, dest, _trunk=frozenset()):
     if short:
         return build(ctx, dest, _trunk | frozenset(short))
     return F
+
+
+def _rings_round(p_):
+    """a pad the rings go round: on two routing layers any; on more, one standing on every routing layer (drilled,
+    or copper on every one) -- a part's pads on one face the lanes on the other layers pass under"""
+    import route_layers
+    RL = route_layers.layers()
+    if len(RL) == 2:
+        return True
+    return bool((p_.drill or 0) > 0 or '*.Cu' in p_.layers or set(RL) <= set(p_.layers))
 
 
 def _stack_rings(F, ctx, pcb, src, dest, dpads, near, tails, north, width, cen, in_hull, packed):
@@ -401,7 +440,8 @@ def _stack_rings(F, ctx, pcb, src, dest, dpads, near, tails, north, width, cen, 
             if ref_ in (src, dest) or ref_ in in_hull:
                 continue
             rects = [(p_.global_x - (p_.size_x or 0.0) / 2, p_.global_y - (p_.size_y or 0.0) / 2,
-                      p_.global_x + (p_.size_x or 0.0) / 2, p_.global_y + (p_.size_y or 0.0) / 2) for p_ in fp_.pads]
+                      p_.global_x + (p_.size_x or 0.0) / 2, p_.global_y + (p_.size_y or 0.0) / 2) for p_ in fp_.pads
+                     if _rings_round(p_)]
             if any(_seg_rect(a, b, r_) < reach - 1e-9 for r_ in rects):
                 inner = min(o_of(c_) for r_ in rects for c_ in ((r_[0], r_[1]), (r_[0], r_[3]), (r_[2], r_[1]),
                                                                   (r_[2], r_[3])))

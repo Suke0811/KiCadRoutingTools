@@ -93,7 +93,9 @@ for n in M:
     pts = [(pcs[0][0], pcs[0][1])] + [(p[2], p[3]) for p in pcs]
     lays = [p[4] for p in pcs]
     vias = [(pcs[i][0], pcs[i][1]) for i in range(1, len(pcs)) if pcs[i][4] != pcs[i - 1][4]]
-    LANE[n] = dict(pts=np.array(pts, float), lays=lays, vias=vias, L0=lays[0])
+    # (each run's layer, the plan's own: on more routing layers than two a change goes to any other)
+    runs = [lays[0]] + [pcs[i][4] for i in range(1, len(pcs)) if pcs[i][4] != pcs[i - 1][4]]
+    LANE[n] = dict(pts=np.array(pts, float), lays=lays, vias=vias, L0=lays[0], runs=runs)
     cl = [((p[0], p[1]), (p[2], p[3]), p[4]) for p in pcs]
     LANE[n]['barrels'] = [b_ for v in vias for b_ in (_pairs.dive_barrels(v, cl, VX[n]) if n in prs else [v])]
 
@@ -130,7 +132,7 @@ def static_masks(n, i0, j0, band):
         if len(keep):
             obs.add_blocked_vias_batch(keep)
     real = obs.unwrap() if hasattr(obs, 'unwrap') else obs
-    trk = {L: np.ones((NI, NJ), bool) for L in ('F.Cu', 'B.Cu')}
+    trk = {L: np.ones((NI, NJ), bool) for L in cfg.layers}
     for L, arr in trk.items():
         arr[band] = read_cells(real, np.argwhere(band) + (i0, j0), LIDX[L])
     # via cells: the band, grown by the barrels' reach for a pair
@@ -249,11 +251,11 @@ def static_around(m, R):
             if not near(pd.global_x, pd.global_y):
                 continue
             if pd.pad_type == 'np_thru_hole':
-                pads.append((pd, {'F.Cu', 'B.Cu'}, 'hole'))
-            elif (pd.drill and pd.drill > 0) or any(L_.startswith('*') for L_ in pd.layers):
-                pads.append((pd, {'F.Cu', 'B.Cu'}, 'pad'))
+                pads.append((pd, set(cfg.layers), 'hole'))
+            elif (pd.drill and pd.drill > 0) or '*.Cu' in pd.layers:
+                pads.append((pd, set(cfg.layers), 'pad'))
             else:
-                pads.append((pd, {L_ for L_ in pd.layers if L_ in ('F.Cu', 'B.Cu')}, 'pad'))
+                pads.append((pd, {L_ for L_ in pd.layers if L_ in cfg.layers}, 'pad'))
     segs = [s_ for s_ in ctx.base_segments if near(s_.start_x, s_.start_y) or near(s_.end_x, s_.end_y)]
     vias = [v_ for v_ in ctx.base_vias if near(v_.x, v_.y)]
     STATIC_NEAR[key] = (pads, segs, vias)
@@ -471,7 +473,7 @@ def build(n):
             tol[better] = _pairs.stair_spread(cfg, b_[0] - a_[0], b_[1] - a_[1]) / 2 + g
         s0 += L_
     band = dist <= BAND
-    bad = {L: np.zeros(X.shape, bool) for L in ('F.Cu', 'B.Cu')}
+    bad = {L: np.zeros(X.shape, bool) for L in cfg.layers}
     lo_x, lo_y = xs[0], ys[0]
 
     def window(bb, rch, ox=0.0, oy=0.0):
@@ -758,9 +760,7 @@ def route(n, strict=True):
     si, sj = rS if n not in prs and fS(*rS) else term_cell(tuple(P[0]), a_out, w0, True, n, L_s, fS)
     ei, ej = rE if n not in prs and fE(*rE) else term_cell(tuple(P[-1]), a_in, w1, False, n, L_e, fE)
     d0, dN = dir_index(a_out), dir_index(a_in)
-    lays = [LANE[n]['L0']]
-    for _v in LANE[n]['vias']:
-        lays.append('B.Cu' if lays[-1] == 'F.Cu' else 'F.Cu')
+    lays = list(LANE[n]['runs'])
     K = len(LANE[n]['vias'])
     varc, total = via_arcs(n)
     gate = [(-math.inf if k == 0 else varc[k - 1] - 3 * bd.LANE_MIN,

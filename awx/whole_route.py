@@ -228,12 +228,28 @@ class NotConverging(Exception):
 SNAP_ISLAND_REACH = 2.0
 
 
+def _layer_index(tag):
+    """a routing layer's index from its tag in a finding: F or B (the audits' letter), else the layer's name
+    (route_layers: F.Cu 0, B.Cu 1, the inner ones after)"""
+    if tag in ('F', 'F.Cu'):
+        return 0
+    if tag in ('B', 'B.Cu'):
+        return 1
+    import route_layers
+    return route_layers.index(tag)
+
+
 def layer_cut(lane, island, box, layer):
-    """the loop's LAYER cut: `lane` held on the other layer than `layer` across `island` (its box, whole_geo's
-    island_boxes) -- none where the island stands on both layers, which no change answers"""
-    if not box or list(box[4]) != [layer]:
+    """the loop's LAYER cut: `lane` held off the island's layers across `island` (its box, whole_geo's island_boxes;
+    `blocked` the island's layers, `layer` -- on two -- the one the lane is held on) -- none where the island stands on
+    every routing layer, which no change answers (on two: where it stands on both)"""
+    import route_layers
+    if not box or layer not in box[4] or len(box[4]) >= len(route_layers.layers()):
         return None
-    return {'lane': lane, 'island': island, 'layer': 1 - layer, 'box': list(box[:4])}
+    c = {'lane': lane, 'island': island, 'layer': 1 - layer, 'box': list(box[:4])}
+    if len(route_layers.layers()) > 2:
+        c['blocked'] = sorted(box[4])
+    return c
 
 
 def audit_layer_cuts(audit, geo):
@@ -241,9 +257,9 @@ def audit_layer_cuts(audit, geo):
     'REF.PAD' -> island) on one layer, the layer it was found on"""
     out, isl, bxs = [], geo.get('islands') or {}, geo.get('island_boxes') or {}
     for ln in lines_of(audit):
-        m = re.match(r'STATIC (\S+)\s+([FB]) \S+ (?:pad|hole) (\S+) ', ln)
+        m = re.match(r'STATIC (\S+)\s+([FB]|In\d+\.Cu) \S+ (?:pad|hole) (\S+) ', ln)
         if m and m.group(3) in isl:
-            c = layer_cut(m.group(1), isl[m.group(3)], bxs.get(isl[m.group(3)]), 'FB'.index(m.group(2)))
+            c = layer_cut(m.group(1), isl[m.group(3)], bxs.get(isl[m.group(3)]), _layer_index(m.group(2)))
             if c and c not in out:
                 out.append(c)
     return out
@@ -254,10 +270,10 @@ def snap_layer_cuts(snap_log, geo):
     island on one layer, the layer it was on there -- the nearest such island"""
     out, bxs = [], geo.get('island_boxes') or {}
     for ln in lines_of(snap_log):
-        m = re.match(r'\s*(\S+)\s+FAILED:.* at \(([-\d.]+), ([-\d.]+)\) on ([FB])\.Cu', ln)
+        m = re.match(r'\s*(\S+)\s+FAILED:.* at \(([-\d.]+), ([-\d.]+)\) on ((?:F|B|In\d+)\.Cu)', ln)
         if not m:
             continue
-        x, y, L = float(m.group(2)), float(m.group(3)), 'FB'.index(m.group(4))
+        x, y, L = float(m.group(2)), float(m.group(3)), _layer_index(m.group(4))
         d = lambda b: math.hypot(max(b[0] - x, 0.0, x - b[2]), max(b[1] - y, 0.0, y - b[3]))
         near = sorted((d(b), k) for k, b in bxs.items() if list(b[4]) == [L] and d(b) <= SNAP_ISLAND_REACH)
         if near:
@@ -281,6 +297,13 @@ def loop(solve, out, rounds, env, log):
     solve = os.path.abspath(solve)
     st = dict(flips=env.get('SEED_FLIPS', ''), cuts=env.get('SEED_CUTS', ''), hist=env.get('SEED_HIST', ''),
               best=-1, best_i=0, stall=0, solve=solve)
+    # (more routing layers than two, a relayed bench: each solve's plan on its own relayed bench -- the bench each
+    # round's plans stand on, for the lay: plan_bench)
+    benches = {}
+
+    def bench_is(key):
+        benches[key] = env['BENCH']
+        json.dump(benches, open(O('benches.json'), 'w'), indent=1)
     # what a command inside the loop leaves unredirected: the round's loop.log in the chain, the terminal on its own
     err = log.f if log.f is not None else sys.stderr
     unredirected = log.f if log.f is not None else INHERIT
@@ -356,7 +379,7 @@ def loop(solve, out, rounds, env, log):
         except Exception:
             traceback.print_exc(file=err)
         soft = {'SOFT_CUTS': st['soft']} if st.get('soft') else {}
-        if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log',
+        if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log', BENCH=env.get('BENCH0') or env['BENCH'],
                  HINT=st['solve'], CUTS=cuts_out, HIST=st['hist'], **soft) != 0:
             # the CUTS left no plan: they are absolute, and together they can ask more than any plan gives -- a net
             # over two vias proved necessary, no plan proved (K41 with the stub check per layer: each of round 1's
@@ -371,13 +394,13 @@ def loop(solve, out, rounds, env, log):
                 # than ending on the plan it held (a plan for every lane before fewer vias)
                 log(f"  no proved plan ({', '.join(tail(s2[:-5] + '.log', 1))[:120]}) -- the solve again, keeping one "
                     f"it cannot prove")
-                if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log',
+                if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log', BENCH=env.get('BENCH0') or env['BENCH'],
                          HINT=st['solve'], CUTS=cuts_out if os.path.isfile(cuts_out) else none, HIST=st['hist'],
                          SOLVE_UNPROVED='1', **soft) != 0:
                     return failed(s2[:-5] + '.log')
                 for ln in grep(s2[:-5] + '.log', r'whole_solve|vias|check|history'):
                     log('  ' + ln)
-                st['solve'] = s2
+                took(s2, i)
                 return None
             st['soft'] = (st['soft'] + ',' if st.get('soft') else '') + cuts_out
             log(f"  the cuts left no plan ({', '.join(tail(s2[:-5] + '.log', 1))[:120]}) -- the solve again with "
@@ -385,20 +408,28 @@ def loop(solve, out, rounds, env, log):
             soft = {'SOFT_CUTS': st['soft']}
             # (that re-solve keeps a plan it cannot prove: refused, K41's -- the cuts soft, best 52 vias against a
             # bound of 45 -- ended the loop on its held plan, 5 nets open)
-            if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log',
+            if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log', BENCH=env.get('BENCH0') or env['BENCH'],
                      HINT=st['solve'], CUTS=none, HIST=st['hist'], SOLVE_UNPROVED='1', **soft) != 0:
                 return failed(s2[:-5] + '.log')
             st['cuts'] = ''
         for ln in grep(s2[:-5] + '.log', r'whole_solve|vias|check|history'):
             log('  ' + ln)
-        st['solve'] = s2
+        took(s2, i)
         return None
+
+    def took(s2, i):
+        """the re-solve s2 the loop's plan from here: on a relayed bench (BENCH0), the fanout's own bench relayed
+        afresh for its via ends' layers, the bench the stages after it read"""
+        st['solve'] = s2
+        if env.get('BENCH0'):
+            env['BENCH'] = relay_ends(out, env['BENCH0'], json.load(open(s2)), log, name=f'bench{i + 1}')
 
     def body():
         for i in range(1, rounds + 1):
             if os.path.exists(O(f'hp{i}.json')):
                 os.remove(O(f'hp{i}.json'))    # (a round that passes writes none: an earlier run's must not stand in)
             flips = st['flips']
+            bench_is(str(i))
             log(f"=== round {i}: geometry of {os.path.basename(st['solve'])}"
                 + (f" (flips from {os.path.basename(flips.split(',')[-1])})" if flips else ''))
             g, p = O(f'g{i}.json'), O(f'p{i}.json')
@@ -420,8 +451,13 @@ def loop(solve, out, rounds, env, log):
             new = {tuple(x) for x in pj.get('flips', [])} - old
             cuts = [c for c in gj.get('cuts', []) if (c['lane'], c['island']) not in new]
             vcuts = gj.get('vcuts', []) + pj.get('vcuts', [])
-            # ...and the LAYER cuts the audit's findings give: a lane found against an island on one layer
-            lcuts = [c for c in audit_layer_cuts(O(f'p{i}.audit'), gj) if (c['lane'], c['island']) not in new]
+            # ...and the LAYER cuts: the audit's findings (a lane found against an island not on every layer), and on
+            # more routing layers than two the geometry's and the polish's own -- there a layer cut, not a flip, is the
+            # answer to such an island, and it stands whatever flip names the lane and island
+            import route_layers
+            nl_ = len(route_layers.layers())
+            lcuts = [c for c in audit_layer_cuts(O(f'p{i}.audit'), gj) if nl_ > 2 or (c['lane'], c['island']) not in new]
+            lcuts += [c for c in gj.get('lcuts', []) + pj.get('lcuts', []) if c not in lcuts]
             if lcuts:
                 log(f"  layer cuts: {', '.join(c_['lane'] + ' under ' + c_['island'] for c_ in lcuts)}")
             json.dump({'cuts': cuts, 'vcuts': vcuts, 'lcuts': lcuts}, open(O(f'c{i}.json'), 'w'))
@@ -435,13 +471,16 @@ def loop(solve, out, rounds, env, log):
             sidecar = env['BENCH'][:-len('.kicad_pcb')] + '.plan.json' if env['BENCH'].endswith('.kicad_pcb') \
                 else env['BENCH'] + '.plan.json'
             newflips = after > before
+            # (more routing layers than two: the round's LAYER cuts are its own answer, as a side flip is -- a round with
+            # them is not one whose findings at the ends no solve moves)
+            answered = newflips or (nl_ > 2 and bool(lcuts))
             hp, hp0 = O(f'hp{i}.json'), O(f'hp{i - 1}.json')
-            if (not passes and not newflips and os.path.isfile(hp) and os.path.isfile(sidecar)
+            if (not passes and not answered and os.path.isfile(hp) and os.path.isfile(sidecar)
                     and run(['whole_feedback.py', '--now', sidecar, hp], env, to=unredirected)[0] == 0):
                 # ...and at once, when a finding there is one no solve moves (a pitch or a static clearance at the ends)
                 log(f"=== round {i}: ENDS CROWDED -- findings at the ends no solve moves: the fanout's to change")
                 return 4
-            if (not passes and not newflips and i > 1 and os.path.isfile(hp0) and os.path.isfile(hp)
+            if (not passes and not answered and i > 1 and os.path.isfile(hp0) and os.path.isfile(hp)
                     and os.path.isfile(sidecar)
                     and run(['whole_feedback.py', '--repeat', sidecar, hp0, hp], env, to=unredirected)[0] == 0):
                 log(f"=== round {i}: ENDS CROWDED -- the same findings at the ends two rounds running: "
@@ -555,6 +594,7 @@ def loop(solve, out, rounds, env, log):
         # (a single the snap cannot lay leaves the plan without it -- the gate fails it -- and where it got stuck goes
         # to the solve with the audit's findings below; any other failure stops)
         plan, sl = O('plan.json'), O('snap.log')
+        bench_is('plan')
         if stage([plan], 'whole_snap.py', [chosen, plan], sl) != 0 and not grep(sl, r'^SNAP FAILED'):
             return failed(sl)
         for ln in grep(sl, r'^snap:|FAILED'):
@@ -635,6 +675,70 @@ def open_nets(conn_log):
         elif mode == 'c' and '(net ' in s and s.endswith(':'):
             out.add(s.split(' (net')[0].split('/')[-1])
     return out
+
+
+def relay_ends(d, bench, J, say, name='fo_layers'):
+    """(more routing layers than two) the bench with every via end on the layer the round's solve chose for it
+    (J['layers'], each lane's first and last run; a pair's every leg) -- relayer.py moving each stub's run from its via
+    out, where it stands on another -- written as d/fo_layers.kicad_pcb; `bench` itself when none moves"""
+    import pairs as _pairs
+    sc_ = os.path.splitext(bench)[0] + '.plan.json'
+    if not os.path.isfile(sc_):
+        say(f"  (no plan sidecar beside {os.path.basename(bench)}: the via ends stay as laid)")
+        return bench
+    sc = json.load(open(sc_))
+    nets = list(sc.get('ends', {}))
+    legs = {b_: list(pr_) for b_, pr_ in _pairs.pair_names(nets).items()}
+    if PYR not in sys.path:
+        sys.path.insert(0, PYR)          # (the relayer reads and writes boards: called inside the loop's own process too)
+    # (the solve's layers are the board's as the braid's setup reads it: a board of the other chirality turned over,
+    # F and B swapped -- read back into the sidecar's own frame, or a run kept on the board's B moves onto its F)
+    from bga_fanout.flip_frame import other_layer
+    OL = other_layer if int(sc.get('chi') or 1) < 0 else (lambda L: L)
+    moves = []
+    for lane, ls in sorted(J['layers'].items()):
+        for k_, L1 in ((0, OL(ls[0])), (1, OL(ls[-1]))):
+            for leg in legs.get(lane, [lane]):
+                L0 = sc['tooth_layer' if k_ == 0 else 'dest_layer'].get(leg)
+                if L0 and L1 != L0 and leg in sc['ends']:
+                    moves.append((leg, tuple(sc['ends'][leg][k_]), L0, L1, (lane, k_)))     # (a pair end: one group)
+    if not moves:
+        return bench
+    import relayer
+    out = os.path.join(d, name + '.kicad_pcb')
+    moved, left = relayer.relayer(bench, out, moves, log=lambda s: say('  ' + s))
+    if left:
+        say(f"  the plan's layers for {', '.join(sorted(set(left)))} could not be laid: their stubs run to no via")
+    return out
+
+
+def relayed(d, bench, J, env, say):
+    """(more routing layers than two) the bench a solve's plan `J` is laid on: its VIA ENDS moved onto the layers the
+    solve chose for them (relay_ends), `env` pointed at it (BENCH: the geometry, the polish, the snap, the audits and
+    the lay read its copper) and at the fanout's own bench (BENCH0: every RE-SOLVE of the loop is the round's solve
+    again, its via ends free -- the same model, so the round's proof floors it and its plan warms it, and a re-solve may
+    choose an end's layer anew; loop relays its plan in turn). `bench` itself when none moves. Held on the relayed bench
+    instead (VIA_ENDS 0), a re-solve was another model: no floor, no warm start, every lane a tooth via, and the first
+    solve's end layers stood for the whole loop"""
+    if J.get('layers'):
+        b2 = relay_ends(d, bench, J, say)
+        if b2 != bench:
+            env.update(BENCH=b2, BENCH0=bench)
+            return b2
+    return bench
+
+
+def plan_bench(loopd, plan, default):
+    """the bench a loop's plan stands on (its round's relayed bench, loop's benches.json), else `default`"""
+    try:
+        b = json.load(open(os.path.join(loopd, 'benches.json')))
+    except (OSError, ValueError):
+        return default
+    nm = os.path.basename(plan or '')
+    if nm == 'plan.json':
+        return b.get('plan', default)
+    m = re.match(r'^[a-z]+(\d+)', nm)
+    return b.get(m.group(1), default) if m else default
 
 
 def held_plan(loopd, env):
@@ -826,12 +930,15 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             if not os.path.isfile(solve):
                 say("  no plan from the solve")
                 continue
+            # (its via ends onto the solve's layers, as a round's: laid on the fanout's own bench, the plan met stubs
+            # still on the layers it had moved them off)
+            bench_l = relayed(dj, bench, json.load(open(solve)), env_, say)
             loopd = os.path.join(dj, 'loop')
             with open(os.path.join(dj, 'loop.log'), 'w') as lf:
                 rc_ = loop(solve, loopd, 6, env_, Log(lf))
             say(f"  loop exit {rc_} at {secs()} s")
             plan = os.path.join(loopd, 'plan.json') if rc_ == 0 else held_plan(loopd, env_)
-            res = lay(f'partial{j}', dj, plan, bench, sub) if plan else None
+            res = lay(f'partial{j}', dj, plan, plan_bench(loopd, plan, bench_l), sub) if plan else None
             if res is not None:
                 return res
             say("  nothing laid")
@@ -926,6 +1033,7 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
         else:
             J = json.load(open(solve))
             proved = J.get('proved', True)
+            bench = relayed(d, bench, J, env, say)
             if not proved:
                 u = J.get('unproved') or {}
                 say(f"  the solve's plan is UNPROVED ({u.get('over')} over two vias against a bound of "
@@ -941,10 +1049,12 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             if rc != 0:
                 say(f"  the loop did not pass -- laid from the plan it held: "
                     f"{os.path.relpath(plan, d) if plan else 'none'}")
-            res = lay(r, d, plan, bench) if plan else None
+            res = lay(r, d, plan, plan_bench(loopd, plan, bench)) if plan else None
             if plan and res is None:
                 say("  no board laid from the plan (route_seq.log)")
         del env['BENCH']
+        env.pop('VIA_ENDS', None)
+        env.pop('BENCH0', None)
         if res is not None and (best is None or res['key'] < best['key']):
             best = res
         # done: a plan that passed, PROVED, laid connected and clean -- no later round would better it

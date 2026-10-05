@@ -80,6 +80,56 @@ def seg_x(a, b, c, e, lo=0.0, hi=1.0):
     return None
 
 
+class _Overlay:
+    """A cell dict of a DERIVED model (Obstacles.exclude): the cells its
+    excluded items touch, rewritten (None: the cell left empty), in front
+    of the base model's dict -- read as the copy of the base with those
+    cells rewritten would be. A copy per derived model was three
+    whole-board dicts, ~1.5 MB each on the zynq: a joint plan of U1's 297
+    balls on three layers derives 538 models and held 800 MB in them."""
+    __slots__ = ('base', 'over')
+
+    def __init__(self, base, over):
+        if isinstance(base, _Overlay):       # a model derived from a derived one: one level over the root
+            base, over = base.base, {**base.over, **over}
+        self.base, self.over = base, over
+
+    def get(self, k, d=None):
+        if k in self.over:
+            v = self.over[k]
+            return d if v is None else v
+        return self.base.get(k, d)
+
+    def items(self):
+        over = self.over
+        for k, v in self.base.items():
+            if k not in over:
+                yield k, v
+        for k, v in over.items():
+            if v is not None:
+                yield k, v
+
+    def values(self):
+        return (v for _k, v in self.items())
+
+    def keys(self):
+        return (k for k, _v in self.items())
+
+    __iter__ = keys
+
+    def __contains__(self, k):
+        return self.get(k) is not None
+
+    def __getitem__(self, k):
+        v = self.get(k)
+        if v is None:
+            raise KeyError(k)
+        return v
+
+    def __len__(self):
+        return sum(1 for _k in self.keys())
+
+
 class Obstacles:
     """Discs [(x,y,r,name)] + capsules [(a,b,r,name)] with a coarse
     spatial hash for point queries."""
@@ -150,8 +200,10 @@ class Obstacles:
             cc.append((ax, ay, dx, dy, dx * dx + dy * dy, r))
         return (dd, tuple(cc))
 
-    def exclude(self, nets):
-        """This model without the items of `nets`, as a DERIVED model
+    def exclude(self, nets, where=None):
+        """This model without the items of `nets` (those of them
+        `where(item)` names, when given: an item is a disc (x, y, r, name)
+        or a capsule (a, b, r, name)), as a DERIVED model
         that shares the built index and rewrites only the cells those
         items touch. A plan judges 35 nets against the same board and
         each net's model differs from the next's by that net's own few
@@ -159,17 +211,19 @@ class Obstacles:
         K35 fanout stage (2026-09-06 profile). The candidate order in
         every cell is the base's order with the excluded items removed,
         which is the order a build without them would produce, so
-        point_violation and seg_clear answer bit-identically."""
+        point_violation and seg_clear answer bit-identically. The
+        rewritten cells stand in front of the base's own (_Overlay): the
+        derived model holds those cells alone. A model derived from a
+        derived one is without both's items."""
         nets = set(nets)
         out = Obstacles.__new__(Obstacles)
         out.discs, out.caps = self.discs, self.caps
         out.dnets, out.cnets = self.dnets, self.cnets
         out._grid, out._cgrid, out.cell = self._grid, self._cgrid, self.cell
-        out._near_d = dict(self._near_d)
-        out._near_c = dict(self._near_c)
-        out._pack = dict(self._pack)
-        xd = {i for i, n in enumerate(self.dnets) if n is not None and n in nets}
-        xc = {i for i, n in enumerate(self.cnets) if n is not None and n in nets}
+        xd = {i for i, n in enumerate(self.dnets) if n is not None and n in nets
+              and (where is None or where(self.discs[i]))}
+        xc = {i for i, n in enumerate(self.cnets) if n is not None and n in nets
+              and (where is None or where(self.caps[i]))}
         touched = set()
         for i in xd:
             for (gx, gy) in self._cells_of_disc(i):
@@ -181,22 +235,15 @@ class Obstacles:
                 for dx_ in (-1, 0, 1):
                     for dy_ in (-1, 0, 1):
                         touched.add((gx + dx_, gy + dy_))
+        od, oc = {}, {}
         for k in touched:
-            dd = tuple(i for i in self._near_d.get(k, ()) if i not in xd)
-            cc = tuple(i for i in self._near_c.get(k, ()) if i not in xc)
-            if dd:
-                out._near_d[k] = dd
-            else:
-                out._near_d.pop(k, None)
-            if cc:
-                out._near_c[k] = cc
-            else:
-                out._near_c.pop(k, None)
-            if dd or cc:
-                out._pack[k] = out._pack_cell(k)
-            else:
-                out._pack.pop(k, None)
-        out._xd, out._xc = xd, xc
+            od[k] = tuple(i for i in self._near_d.get(k, ()) if i not in xd) or None
+            oc[k] = tuple(i for i in self._near_c.get(k, ()) if i not in xc) or None
+        out._near_d = _Overlay(self._near_d, od)
+        out._near_c = _Overlay(self._near_c, oc)
+        out._pack = _Overlay(self._pack, {k: out._pack_cell(k) if (od[k] or oc[k]) else None for k in touched})
+        out._xd = set(getattr(self, '_xd', ())) | xd
+        out._xc = set(getattr(self, '_xc', ())) | xc
         return out
 
     def build(self):

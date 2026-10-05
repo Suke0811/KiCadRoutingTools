@@ -404,7 +404,7 @@ def crossover(V, u, s_in: int, half: float, via_size: float, via_half: float, tr
     ids = {'P': p_id, 'N': n_id}
     segs = [Segment(a[0], a[1], b[0], b[1], track, L, ids[k]) for k, v in legs.items() for pts, L in v
             for a, b in zip(pts, pts[1:]) if math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-9]
-    vs = [Via(x, y, via_size, via_size / 2, [L1, L2], ids[k]) for x, y, k in vias]
+    vs = [Via(x, y, via_size, via_size / 2, ['F.Cu', 'B.Cu'], ids[k]) for x, y, k in vias]    # (a THROUGH via)
     if intra_ok(segs, vs, p_id, n_id, track, via_size, clearance) is not None:
         return None
     return dict(entry={'P': to_xy(x_in, yP0), 'N': to_xy(x_in, -yP0)},
@@ -592,6 +592,13 @@ def _chain(segs, start: Pt, tol: float = 0.01):
     return runs, left
 
 
+
+def thru(layers):
+    """a THROUGH via's layers as a board file writes them: its span's two ends, F.Cu and B.Cu -- never every routing
+    layer, which KiCad's via syntax has no room for (kicad_parser reads a via of exactly two, and a four-layer board's
+    pair dives written with all four were barrels our own checkers could not see)"""
+    return [layers[0], layers[-1]]
+
 def split_envelope(segs, vias, p_tip: Pt, n_tip: Pt, p_end: Pt, n_end: Pt,
                    a_pt: Pt, b_pt: Pt, half: float, via_half: float,
                    track: float, via_size: float, via_drill: float,
@@ -665,9 +672,9 @@ def split_envelope(segs, vias, p_tip: Pt, n_tip: Pt, p_end: Pt, n_end: Pt,
     tip_layer = {p_id: (tl[0], tl[2]), n_id: (tl[1], tl[3])}
     for sign, nid, tip, end in ((s_p, p_id, p_tip, p_end), (-s_p, n_id, n_tip, n_end)):
         if tip_layer[nid][0] != runs[0][0] and not (crossing and nid == p_id):
-            out_vias.append(Via(tip[0], tip[1], via_size, via_drill, list(layers), nid))
+            out_vias.append(Via(tip[0], tip[1], via_size, via_drill, thru(layers), nid))
         if tip_layer[nid][1] != runs[-1][0]:
-            out_vias.append(Via(end[0], end[1], via_size, via_drill, list(layers), nid))
+            out_vias.append(Via(end[0], end[1], via_size, via_drill, thru(layers), nid))
         for k, (layer, pts) in enumerate(runs):
             run_len = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
             jog_k = min(jog, run_len / 4.0)
@@ -700,7 +707,7 @@ def split_envelope(segs, vias, p_tip: Pt, n_tip: Pt, p_end: Pt, n_end: Pt,
                 V, n = pts[-1], n_via[k]
                 vp = (V[0] + sign * n[0] * via_half, V[1] + sign * n[1] * via_half)
                 poly.append(vp)
-                out_vias.append(Via(vp[0], vp[1], via_size, via_drill, list(layers), nid))
+                out_vias.append(Via(vp[0], vp[1], via_size, via_drill, thru(layers), nid))
             if k == 0:
                 if crossing and not cross_end and nid == p_id:
                     p_start = poly[0]
@@ -814,7 +821,8 @@ def hand(direction, p_pt, n_pt, arriving: bool = False) -> int:
 def wired(pcb, pad, tol: float = 0.005) -> bool:
     """Does copper of the pad's own net already touch this pad -- a track end
     or a via barrel overlapping its copper on a layer it has?"""
-    layers = {'F.Cu', 'B.Cu'} if (pad.drill and pad.drill > 0) or any('*' in L for L in pad.layers) \
+    import route_layers
+    layers = set(route_layers.layers()) if (pad.drill and pad.drill > 0) or any('*' in L for L in pad.layers) \
         else {L for L in pad.layers if L.endswith('.Cu')}
     reach = max(pad.size_x, pad.size_y) / 2
     for s in pcb.segments:

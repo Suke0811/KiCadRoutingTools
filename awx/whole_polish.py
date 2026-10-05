@@ -264,13 +264,14 @@ def drop_faults():
 
 # ------------------------------------------------------------------ static copper of other nets, per layer
 STATIC = []          # (kind, layers, net, data): pads ('rect' cx cy hx hy cr), holes and vias ('circ' cx cy r), segs (x0 y0 x1 y1 hw)
+RL = set(cfg.layers)  # the routing layers (connect.make_config): a hole's, a drilled pad's and a via's copper on every one
 for ref_, fp in ctx.pcb.footprints.items():            # (labelled by the board's key: a repeated reference has its own)
     for pd in fp.pads:
         if pd.pad_type == 'np_thru_hole':
-            STATIC.append(('circ', {'F.Cu', 'B.Cu'}, pd.net_id, (pd.global_x, pd.global_y, (pd.drill or 0) / 2), f'hole {ref_}.{pd.pad_number}'))
+            STATIC.append(('circ', set(RL), pd.net_id, (pd.global_x, pd.global_y, (pd.drill or 0) / 2), f'hole {ref_}.{pd.pad_number}'))
             continue
-        Ls = {'F.Cu', 'B.Cu'} if (pd.drill and pd.drill > 0) or any(L.startswith('*') for L in pd.layers) \
-            else {L for L in pd.layers if L in ('F.Cu', 'B.Cu')}
+        Ls = set(RL) if (pd.drill and pd.drill > 0) or '*.Cu' in pd.layers \
+            else {L for L in pd.layers if L in RL}
         if not Ls:
             continue
         # a pad as KiCad draws its copper: a rectangle with its corners rounded (a circle's and an oval's by half its
@@ -280,7 +281,7 @@ for ref_, fp in ctx.pcb.footprints.items():            # (labelled by the board'
 for s in ctx.base_segments:
     STATIC.append(('seg', {s.layer}, s.net_id, (s.start_x, s.start_y, s.end_x, s.end_y, s.width / 2), 'copper'))
 for v in ctx.base_vias:
-    STATIC.append(('circ', {'F.Cu', 'B.Cu'}, v.net_id, (v.x, v.y, v.size / 2), 'via'))
+    STATIC.append(('circ', set(RL), v.net_id, (v.x, v.y, v.size / 2), 'via'))
 # a held pair's END LEGS are laid where they are drawn: copper the singles are fitted round -- and a crossed pair's
 # crossover, its legs and its two barrels (in name order: a set's would follow the hash seed, and this order is the
 # static list's and so the LP's rows')
@@ -299,7 +300,7 @@ for n in sorted(HELD):
                     STATIC.append(('seg', {L_}, ctx.byname[legs_[k_]][0], (a_[0], a_[1], b_[0], b_[1], TW / 2),
                                    f'{n} crossover leg'))
         for vx_, vy_, k_ in xo['vias']:
-            STATIC.append(('circ', {'F.Cu', 'B.Cu'}, ctx.byname[legs_[k_]][0], (vx_, vy_, VR), f'{n} crossover via'))
+            STATIC.append(('circ', set(RL), ctx.byname[legs_[k_]][0], (vx_, vy_, VR), f'{n} crossover via'))
 OWN = {n: {ctx.byname[n][0]} | {ctx.byname[leg][0] for leg in prs.get(n, ()) if leg in ctx.byname} for n in LANES}
 # static objects binned by bounding box; a query looks SREACH round its point: the widest bar to static copper
 SCELL = 2 * _pairs.pitch(TW)
@@ -1122,12 +1123,23 @@ def island_of(lab):
 
 
 flips = {tuple(x) for x in geo.get('flips', [])}
+LCUT = []
+_NL, _ibx = len(cfg.layers), geo.get('island_boxes') or {}
 for r in bad:
     if r[2] != 'static':
         continue
     lane_, _, what = r[3].replace(' inside ', '~').partition('~')
-    if island_of(what):
-        flips.add((lane_, island_of(what)))
+    isl_ = island_of(what)
+    if isl_ and _NL > 2 and isl_ in _ibx and len(_ibx[isl_][4]) < _NL:
+        # (more routing layers than two: an island not on every one is answered under it -- the lane held off its
+        # layers there, a LAYER cut -- not by sending the lane round it)
+        c_ = {'lane': lane_, 'island': isl_, 'layer': 1 - min(_ibx[isl_][4]), 'blocked': list(_ibx[isl_][4]),
+              'box': list(_ibx[isl_][:4])}
+        if c_ not in LCUT:
+            LCUT.append(c_)
+        continue
+    if isl_:
+        flips.add((lane_, isl_))
 # ...and a stub join the polish could not meet: the pad island nearest the lane's end stretch holds its approach off
 # the stub on this side (SCAS ran north of C6 and could only descend into its berth; south of it, up through the
 # pads' gap, it arrives the stub's way)
@@ -1150,10 +1162,14 @@ if flips - {tuple(x) for x in geo.get('flips', [])}:
 # ...and every change the rounds could not give its room (a via or a pair's dive against a lane, a via against a via):
 # a via cut on its own change, a via's room wide (as the geometry cuts the via rows it had to pay)
 for r in bad:
-    if r[2] in ('via-lane', 'dive-lane', 'via-via'):
+    # (a via against static copper too, where the row names its change: one inside the copper names none)
+    if r[2] in ('via-lane', 'dive-lane', 'via-via') or (r[2] == 'via-static' and r[0]):
         n_, i_ = r[0][0][0], r[0][0][1]
         via_cut(n_, i_, VR + (HALF if n_ in prs else 0.0))
 res['vcuts'] = VCUT
+res['lcuts'] = LCUT
+if LCUT:
+    log(f'layer cuts for the solve: {[(c_["lane"], c_["island"]) for c_ in LCUT]}')
 if VCUT:
     log(f'via cuts for the solve: {[(c_["lane"], round(c_["u"], 2), round(c_["w"], 3)) for c_ in VCUT]}')
 json.dump(res, open(OUT, 'w'))

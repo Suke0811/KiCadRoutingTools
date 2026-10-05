@@ -50,15 +50,25 @@ def make_config(pcb: PCBData, track: float, clearance: float,
                 via_size: float, via_drill: float, grid_step: float = 0.05,
                 **kw) -> GridRouteConfig:
     """A routing config for connections: the caller's geometry, the
-    board's OUTER copper layers, a fine grid (the trunk is drawn at
-    arbitrary angles, so the exit points are not on any coarse grid).
-    A board with inner layers routes on F and B too: its lanes are
-    planned on the two pages, and a via is a through via that passes
-    the inner layers."""
-    layers = [L for L in (pcb.board_info.copper_layers or ['F.Cu', 'B.Cu']) if L in ('F.Cu', 'B.Cu')]
-    return GridRouteConfig(track_width=track, clearance=clearance,
-                           via_size=via_size, via_drill=via_drill,
-                           grid_step=grid_step, layers=layers, **kw)
+    board's ROUTING LAYERS (route_layers: F.Cu and B.Cu, and the inner
+    ones ROUTE_LAYERS adds) in the board's own order, a fine grid (the
+    trunk is drawn at arbitrary angles, so the exit points are not on any
+    coarse grid). A via is a through via that passes the other inner
+    layers."""
+    import route_layers
+    rl = route_layers.layers()
+    layers = [L for L in (pcb.board_info.copper_layers or ['F.Cu', 'B.Cu']) if L in rl]
+    cfg = GridRouteConfig(track_width=track, clearance=clearance,
+                          via_size=via_size, via_drill=via_drill,
+                          grid_step=grid_step, layers=layers, **kw)
+    # the board's per-layer rules (its sibling .kicad_dru, #498 -- an inner layer's clearance, most often), as every
+    # routing step installs them: they replace the clearance on their layers
+    import contextlib
+    import io
+    from kicad_dru import install_layer_clearances
+    with contextlib.redirect_stdout(io.StringIO()):
+        install_layer_clearances(cfg, None, None, pcb)
+    return cfg
 
 
 def _band_cells(coord: GridCoord, window: PCBData, band,
@@ -662,7 +672,7 @@ def _connect_pair_cross(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
                         continue
                     add = [Segment(T[0], T[1], Va[0], Va[1], cfg.track_width, L1, nid),
                            Segment(Va[0], Va[1], Sa[0], Sa[1], cfg.track_width, L2, nid)]
-                    via = Via(Va[0], Va[1], cfg.via_size, cfg.via_drill, list(cfg.layers), nid)
+                    via = Via(Va[0], Va[1], cfg.via_size, cfg.via_drill, _pairs.thru(cfg.layers), nid)
                     why = foreign(add, [via])
                     if why is None:
                         opts.append((u + e_, f'u {u:.2f} e {e_:.2f}', t2 + add, via))
@@ -684,7 +694,7 @@ def _connect_pair_cross(pcb, p_id, n_id, a_p, a_n, a_layer, b_p, b_n, b_layer,
                     Vb = out_pt(T, d_out, sgn_out[nid])
                     add = [Segment(Q[0], Q[1], Vb[0], Vb[1], cfg.track_width, L1, nid),
                            Segment(Vb[0], Vb[1], T[0], T[1], cfg.track_width, L2, nid)]
-                    via = Via(Vb[0], Vb[1], cfg.via_size, cfg.via_drill, list(cfg.layers), nid)
+                    via = Via(Vb[0], Vb[1], cfg.via_size, cfg.via_drill, _pairs.thru(cfg.layers), nid)
                     why = foreign(add, [via])
                     if why is None:
                         opts.append((u2 + w, f'u2 {u2:.2f} w {w:.2f}', t2 + add, via))

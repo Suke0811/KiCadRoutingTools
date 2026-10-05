@@ -866,6 +866,15 @@ def _obs_remember(bkey):
             del _OBS_MEMO[k]
 
 
+def forget_obstacles():
+    """Drop every memoised obstacle model (build_obstacles). A model is a
+    pure function of its key, so one asked for again is rebuilt; a step
+    that is done with its models and goes on to a large solve frees their
+    memory for it (joint_escape.plan_array: ~70 MB of zynq U1's)."""
+    _OBS_MEMO.clear()
+    del _OBS_BOARDS[:]
+
+
 def unthreadable(fp, track=None, clear=None):
     """True when no lane can pass between two of the part's pads: the
     smallest edge-to-edge gap between any two pads is below a track
@@ -919,6 +928,19 @@ def build_obstacles(pcb, nid, kids, layer, margin=None, skip_refs=frozenset()):
         if hit is not None:
             return hit
     base = _OBS_MEMO.get(bkey) if bkey is not None else None
+    if base is None and bkey is not None and base_kids:
+        # a base without some nets' segments is the base without none, less those segments (the same items in the
+        # same order): DERIVED from it, not built -- a full build per excluded set was a whole board per diff pair
+        # per layer (pair_exit_clear's {leg, partner}: zynq U1's joint plan, 19 pairs on three layers, 57 bases,
+        # 550 MB)
+        rkey = bkey[:3] + (frozenset(),) + bkey[4:]
+        root = _OBS_MEMO.get(rkey)
+        if root is None:
+            root = _build_obstacles(pcb, frozenset(), layer, margin=margin, skip_refs=skip_refs)
+            _obs_remember(rkey)
+            _OBS_MEMO[rkey] = root
+        base = root.exclude(base_kids, where=lambda it: str(it[3]).startswith('seg:'))
+        _OBS_MEMO[bkey] = base
     if base is None:
         base = _build_obstacles(pcb, base_kids, layer, margin=margin, skip_refs=skip_refs)
         if bkey is not None:
@@ -946,7 +968,7 @@ def _build_obstacles(pcb, kids, layer, margin=None, skip_refs=frozenset()):
         if ref in skip_refs:
             continue
         for p in fp.pads:
-            on_layer = any(L == layer or '*' in L for L in p.layers)
+            on_layer = any(L == layer or L == '*.Cu' for L in p.layers)     # (*.Mask, *.Paste: no copper)
             if p.drill and p.drill > 0:
                 on_layer = True
             if not on_layer:
@@ -1104,9 +1126,10 @@ def _pair_legs(pieces, half):
     """A pair's two conductors about its reserved centreline: each layer's
     pieces chained into runs, each run cleared of its sub-20 um segments and
     offset to either side as ONE mitred polyline. Offset piece by piece, the
-    legs broke at every bend (a gap outside, an overlap inside)."""
+    legs broke at every bend (a gap outside, an overlap inside). Every layer
+    its pieces are on: F.Cu and B.Cu, then an inner routing layer's."""
     out = []
-    for L in ('F.Cu', 'B.Cu'):
+    for L in ('F.Cu', 'B.Cu') + tuple(sorted({L_ for _p, _q, L_ in pieces} - {'F.Cu', 'B.Cu'})):
         for run in _chain_runs(pieces, L):
             run = _pairs._simplify(run)
             if len(run) < 2:
@@ -7640,6 +7663,8 @@ def write_out(a, ctx, corridors, names, log):
     with open(out_board, 'w') as f:
         f.write(txt[:k] + ''.join(add) + txt[k:])
     ship_vias.stamp(out_board, 'braid', log)     # a via in a pad declares Type VII (#962)
+    from copy_board import copy_siblings
+    copy_siblings(a.board, out_board)   # (the project and the .kicad_dru's per-layer rules with it)
     pro = os.path.splitext(a.board)[0] + '.kicad_pro'
     if os.path.exists(pro):
         shutil.copy(pro, a.out + '.kicad_pro')

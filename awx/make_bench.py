@@ -66,6 +66,7 @@ import braid as te  # noqa: E402
 import fanout_from_plan as fp  # noqa: E402
 import source_realize as sr  # noqa: E402  FAN_TRACK / FAN_CLEAR
 import rules as _rules  # noqa: E402  ONE source for every design rule
+import route_layers  # noqa: E402  the routing layers: the first comb's escapes may take any of them
 sys.path.insert(0, os.path.join(HERE, '..', 'py_placer'))
 from placement.writer import write_placed_output  # noqa: E402
 
@@ -129,8 +130,8 @@ def fanout_source(board, out, src, names, layers=None, diff_pairs=None, escape_m
     pair-blind: on the H3 bench SA6's stub ran BETWEEN SCKP's and SCKN's,
     which no plan could route as a pair (K51, 2026-09-21).
 
-    `layers` (the `--fanout-layers` flag; default `fp.LAYERS` = F + B) is the
-    escape layer set. Restricting it to ONE layer is what the synthetic
+    `layers` (the `--fanout-layers` flag; default the routing layers, route_layers: F + B unless ROUTE_LAYERS adds
+    inner ones) is the escape layer set. Restricting it to ONE layer is what the synthetic
     harness (`synth_bus.py`) wants and nothing else does: with two layers the
     engine's post-resolution `rebalance_layers` spreads the escapes evenly
     over both -- measured, 4 of 8 straight-out EDGE escapes were pushed onto
@@ -152,7 +153,7 @@ def fanout_source(board, out, src, names, layers=None, diff_pairs=None, escape_m
                      diff_pair_gap=_pairs.GAP)
     tracks, vias_add, vias_rm, failed = generate_bga_fanout(
         pcb.footprints[src], pcb, net_filter=names,
-        layers=list(layers) if layers else list(fp.LAYERS),
+        layers=list(layers) if layers else route_layers.stacked(pcb.board_info.copper_layers),
         track_width=sr.FAN_TRACK, clearance=sr.FAN_CLEAR, via_size=te.VIA_SIZE,
         via_drill=te.VIA_DRILL, exit_margin=0.5, escape_method=escape_method,
         plane_drop='off', **extra)

@@ -28,6 +28,7 @@ import sys, os, re, itertools, collections, json, math, hashlib
 import awx_settings
 import whole_ctx
 import whole_frame
+import route_layers
 from ortools.sat.python import cp_model
 import braid as bd
 import pairs as _pairs
@@ -73,6 +74,79 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     F = lambda x: 1 if x == 'B.Cu' else 0
     tl = {n: F(ctx.tooth_layer[n]) for n in M}
     dl = {n: F(ctx.dest_layer[n]) for n in M}
+    # the ROUTING LAYERS (route_layers: F.Cu and B.Cu, and the inner ones ROUTE_LAYERS adds). On two a lane's layer is
+    # one bit, flipped by each change; on more each run between changes has a layer of its own (YL, below), a change
+    # going to any other, the end runs on the stubs' layers
+    LAYN = route_layers.layers()
+    NL = len(LAYN)
+    tli = {n: LAYN.index(ctx.tooth_layer[n]) for n in M} if NL > 2 else tl
+    dli = {n: LAYN.index(ctx.dest_layer[n]) for n in M} if NL > 2 else dl
+    YL = {}
+    # ...and VIA ENDS (more layers than two, VIA_ENDS=1, the default there): an end whose stub carries a via inside its
+    # array -- a dog-bone's, a via in its pad, each leg of a pair -- can run its last stretch, from that via out to the
+    # array's edge, on any routing layer its run fits on (below), and the relayer moves it there (whole_route): that
+    # end's layer is the solve's to choose. So the human runs the AD9364's LVDS bus: a dog-bone at both arrays, each
+    # net on one of two inner pages from its via out. On its neck's own layer (F.Cu) the via joins nothing, and the
+    # relayer drops it: a synth bus whose crossings have no 2-colouring on the inner pages and no room for a change in
+    # its 3 mm channel (shuffle seed 4) had no plan while F.Cu was refused there
+    import relayer as _relayer
+
+    def via_end(n, k_):
+        """each leg's stub at end k_ (0 the tooth, 1 the berth) carries a via inside its array, and its end stands on
+        that via or runs to it on one layer -- what the relayer can move (relayer.run_to_via): a via of the net in the
+        box its stub does not reach would be an end the plan moves and the copper leaves where it was"""
+        box = (Fr.SB, Fr.DB)[k_]
+        if n in prs:
+            (sp_, sn_), (tp_, tn_) = ctx.pair_ends[n]
+            legs_ = ((prs[n][0], (sp_, tp_)[k_], (ctx.tooth_layer, ctx.dest_layer)[k_][n]),
+                     (prs[n][1], (sn_, tn_)[k_], ctx.pair_layers[n][k_]))
+        else:
+            legs_ = ((n, ctx.ends[n][k_], (ctx.tooth_layer, ctx.dest_layer)[k_][n]),)
+        for leg, pt_, L0_ in legs_:
+            nid = ctx.byname[leg][0]
+            vs_ = [v for v in ctx.base_vias if v.net_id == nid and box[0] - 1e-6 <= v.x <= box[2] + 1e-6
+                   and box[1] - 1e-6 <= v.y <= box[3] + 1e-6]
+            if not vs_:
+                return False
+            if not any(math.hypot(v.x - pt_[0], v.y - pt_[1]) < v.size / 2 for v in vs_) \
+                    and not _relayer.run_to_via(ctx.pcb, nid, pt_, L0_):
+                return False
+        return True
+    VEND = {}
+    if NL > 2 and (awx_settings.get('VIA_ENDS') or '1') == '1':
+        VEND = {(n, k_): True for n in M for k_ in (0, 1) if via_end(n, k_)}
+        print(f'   {NL} routing layers {",".join(LAYN)}; via ends, their layers the solve\'s: '
+              f'{sum(1 for k_ in VEND if k_[1] == 0)} teeth, {sum(1 for k_ in VEND if k_[1] == 1)} berths of {len(M)} lanes')
+    # ...where their runs can lie: a via end's run (its stub from the via out, as the relayer moves it) on another
+    # layer lies beside the copper there -- another net's stub or pad within the rule bans that layer, and two runs
+    # within the rule of each other (crossing, laid on two layers) end on different layers (the ns3_rev synth: two
+    # berths' runs crossing on In2.Cu and B.Cu, both moved onto In2.Cu, shorted)
+    VBAN, VSEP = {}, []
+    if VEND:
+        import rules as _rules
+        runs_ = {}
+        for (n, k_) in sorted(VEND):
+            if n in prs:
+                (sp_, sn_), (tp_, tn_) = ctx.pair_ends[n]
+                legs_ = ((prs[n][0], (sp_, tp_)[k_], (ctx.tooth_layer, ctx.dest_layer)[k_][n]),
+                         (prs[n][1], (sn_, tn_)[k_], ctx.pair_layers[n][k_]))
+            else:
+                legs_ = ((n, ctx.ends[n][k_], (ctx.tooth_layer, ctx.dest_layer)[k_][n]),)
+            segs_, nids_ = [], set()
+            for leg, pt_, L0_ in legs_:
+                nid = ctx.byname[leg][0]
+                nids_.add(nid)
+                segs_ += _relayer.run_to_via(ctx.pcb, nid, pt_, L0_) or []
+            if segs_:
+                runs_[(n, k_)] = (nids_, segs_)
+        VBAN, VSEP = _relayer.clashes(ctx.pcb, runs_, LAYN, _rules.active().fan_clear)
+        # (never the layer a run is laid on, nor two already laid on one: the fanout's own, as it stands)
+        on_ = lambda key: (ctx.tooth_layer, ctx.dest_layer)[key[1]][key[0]]
+        VBAN = {k_: v_ - {on_(k_)} for k_, v_ in VBAN.items() if v_ - {on_(k_)}}
+        VSEP = [(a_, b_) for a_, b_ in VSEP if on_(a_) != on_(b_)]
+        if VBAN or VSEP:
+            print(f'   via ends\' runs: {sum(len(v_) for v_ in VBAN.values())} layer(s) banned by the copper there, '
+                  f'{len(VSEP)} pair(s) of runs on different layers')
     Dv = {n: 2 * VNEED + (_pairs.pitch(TRK) if n in prs else 0.0) for n in M}     # a change's room along its lane
     Q = lambda s: int(round(s / G))
     QU = lambda s: int(math.ceil(s / G - 1e-9))
@@ -150,30 +224,56 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     # beside it (whole_route's LAYER cuts, `lcuts` in the cut files: a wall the lanes cannot go round): on the other layer
     # across the island's box on the trunk, a track's clearance either side, its changes a via's clearance off it
     CHAN_CUTS, CHAN_T0 = set(), set()
+    CHAN_BLK = {}             # (lane, 'chan ISLAND') -> the island's layers (more than two: the run held off each)
+    # (each cut once: one the cut files carry twice -- a hard round's in CUTS and again in SOFT_CUTS -- read a second
+    # time after the first had waived its lane's end room, found no window, and the two sorted None against a number)
+    _seen_lc = set()
     for fn_ in list(cuts) + list(soft_cuts):
         for c_ in json.load(open(fn_)).get('lcuts', []):
-            n_ = c_['lane']
-            if n_ not in M or n_ in prs:
+            k_lc = (c_['lane'], c_['island'], int(c_['layer']), tuple(round(float(v_), 6) for v_ in c_['box']))
+            if k_lc in _seen_lc:
                 continue
+            _seen_lc.add(k_lc)
+            n_ = c_['lane']
+            # (a pair's lane too on more layers than two: its legs on one layer, held off the island's as a single's)
+            if n_ not in M or (n_ in prs and NL == 2):
+                continue
+            L_ = int(c_['layer'])
+            blk_ = sorted(int(b_) for b_ in c_.get('blocked', [1 - L_])) if NL > 2 else None
             x0_, y0_, x1_, y1_ = c_['box']
-            ss_ = [float(spine.project_pt(q_)[0]) for q_ in ((x0_, y0_), (x0_, y1_), (x1_, y0_), (x1_, y1_))]
-            s0_, s1_ = min(ss_), max(ss_)
-            if s1_ < entry[n_] or s0_ > tend[n_]:
-                continue                              # (off the lane's trunk)
-            t_, v_, L_ = TRK / 2 + CLR, VIA / 2 + CLR, int(c_['layer'])
-            lo_c, hi_c, w0_, w1_ = s0_ - v_, s1_ + v_, None, None
-            # (an island so near the lane's tooth -- or a trunk lane's berth -- that its end room leaves no change
-            # before it -- after it: the change from the stub's end to the island, its end room and the face band
-            # waived and no stagger there, its neighbours still a ball pitch apart, as at a blocked front)
-            if tl[n_] != L_ and lo_c < entry[n_] + VIN0[n_] + G:
-                w0_, w1_ = entry[n_], lo_c
-                VIN0[n_] = 0.0
-                CHAN_T0.add(n_)
-            elif n_ not in bname and dl[n_] != L_ and hi_c > end[n_] - VIN1[n_] - G:
-                w0_, w1_ = hi_c, end[n_]
-                VIN1[n_] = 0.0
-            CHAN_CUTS.add((n_, 'chan ' + c_['island'], L_, round(s0_ - t_, 4), round(s1_ + t_, 4), round(lo_c, 4),
-                           round(hi_c, 4), w0_, w1_))
+            cnr_ = ((x0_, y0_), (x0_, y1_), (x1_, y0_), (x1_, y1_))
+            ss_ = [float(spine.project_pt(q_)[0]) for q_ in cnr_]
+            spans_ = []
+            if not (max(ss_) < entry[n_] or min(ss_) > tend[n_]):
+                spans_.append((min(ss_), max(ss_)))              # (on the lane's trunk)
+            if NL > 2 and n_ in bname:
+                # (...and on its ring, past its handoff: the island's span along the ring's spine, in the lane's u)
+                us_ = [u_ring(n_, float(ring_of[bname[n_]].project_pt(q_)[0])) for q_ in cnr_]
+                if max(us_) > Hn[n_] and min(us_) < end[n_]:
+                    spans_.append((max(min(us_), Hn[n_]), max(us_)))
+            for s0_, s1_ in spans_:
+                t_, v_ = TRK / 2 + CLR, VIA / 2 + CLR
+                lo_c, hi_c, w0_, w1_ = s0_ - v_, s1_ + v_, None, None
+                # (an island so near the lane's tooth -- or a trunk lane's berth -- that its end room leaves no change
+                # before it -- after it: the change from the stub's end to the island, its end room and the face band
+                # waived and no stagger there, its neighbours still a ball pitch apart, as at a blocked front. On more
+                # layers than two: a single lane whose end there is fixed -- no via end -- on one of the island's layers)
+                if NL == 2:
+                    off0, off1 = tl[n_] != L_, dl[n_] != L_
+                else:
+                    off0 = n_ not in prs and (n_, 0) not in VEND and tli[n_] in blk_
+                    off1 = n_ not in prs and (n_, 1) not in VEND and dli[n_] in blk_
+                if off0 and lo_c < entry[n_] + VIN0[n_] + G:
+                    w0_, w1_ = entry[n_], lo_c
+                    VIN0[n_] = 0.0
+                    CHAN_T0.add(n_)
+                elif n_ not in bname and off1 and hi_c > end[n_] - VIN1[n_] - G:
+                    w0_, w1_ = hi_c, end[n_]
+                    VIN1[n_] = 0.0
+                CHAN_CUTS.add((n_, 'chan ' + c_['island'], L_, round(s0_ - t_, 4), round(s1_ + t_, 4), round(lo_c, 4),
+                               round(hi_c, 4), w0_, w1_))
+                if blk_ is not None:
+                    CHAN_BLK[(n_, 'chan ' + c_['island'])] = blk_
     CHAN_CUTS = sorted(CHAN_CUTS)
     XO = {n for n in prs if n in M and _pairs.opposite_hands(ctx, n)}
     for n in XO:
@@ -221,6 +321,38 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
                     VIN0[n] += 2 * turn_room(th) + LD(n)
                 else:
                     VIN1[n] += 2 * turn_room(th) + LD(n)
+    # ...and TOOTH VIAS (more routing layers than two): a lane whose tooth is no via end -- its stub laid on the surface
+    # by the source's own fanout -- may change layer right at its tooth, a via at its stub's end on the array's edge, as
+    # at a blocked front: no end room (a pair keeps its dive room), the face band waived, and in its window no stagger
+    # (its neighbours a ball pitch across along the face) and no built-in via cut -- at a via's cost, as any change. So
+    # the lanes leave the source's surface escapes for whichever layer the plan gives them where the gap between the
+    # arrays has no room for their changes (the zynq's U1 to U5)
+    TVIA = {n for n in M if not via_end(n, 0)} if NL > 2 else set()     # (the bench's own: VIA_ENDS holds no tooth)
+    for n in TVIA:
+        if n not in prs:
+            VIN0[n] = 0.0
+
+    def site_clear(n, k_):
+        """a through via at single lane n's stub end k_ (0 its tooth, 1 its berth) clear of every other net's copper on
+        every layer by a via's room -- measured, as the ends model measures a blocked front's"""
+        pt_ = ctx.ends[n][k_]
+        nid = ctx.byname[n][0]
+        r_ = bd.VIA_SIZE / 2 + bd.CLEAR
+        if any(s_.net_id != nid and _pairs._pt_seg(pt_, (s_.start_x, s_.start_y), (s_.end_x, s_.end_y))
+               < r_ + s_.width / 2 for s_ in ctx.base_segments):
+            return False
+        if any(v_.net_id != nid and math.hypot(v_.x - pt_[0], v_.y - pt_[1]) < r_ + v_.size / 2 for v_ in ctx.base_vias):
+            return False
+        from routing_utils import point_to_pad_rect_dist
+        return not any(p_.net_id != nid and point_to_pad_rect_dist(pt_[0], pt_[1], p_) < r_
+                       for fp_ in ctx.pcb.footprints.values() for p_ in fp_.pads
+                       if abs(p_.global_x - pt_[0]) < 3 and abs(p_.global_y - pt_[1]) < 3)
+    # ...and BERTH VIAS, the same at the destination: a single lane whose berth is a surface escape may change layer
+    # right at it, where a via at its stub's end is measured clear -- no end room, and in its window no stagger and no
+    # built-in via cut (a surface berth kept its whole end room, and its lane's last change stood that far back)
+    BVIA = {n for n in M if n not in prs and not via_end(n, 1) and site_clear(n, 1)} if NL > 2 else set()
+    for n in BVIA:
+        VIN1[n] = 0.0
     print('classes:', dict(collections.Counter(bname.get(n, 'W') for n in M)), 'W ends', sorted(round(end[n], 2) for n in M if n not in bname))
     Ln, Fn = list(Fr.launch), list(Fr.final)                  # both north to south (whole_frame)
     li = {n: i for i, n in enumerate(Ln)}; fi = {n: i for i, n in enumerate(Fn)}
@@ -235,12 +367,22 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     S_FACE = float(spine.project_pt((Fr.SB[2], (Fr.SB[1] + Fr.SB[3]) / 2))[0])
     BAND = S_FACE + FACE_ROOM
     win = {}
+    # (more routing layers than two: two lanes cross on different layers, always -- a crossing in the band is one run
+    # over another, which the geometry orders and spaces per layer; the band holds the CHANGES, whose vias stand on
+    # every layer, alone. The band's evidence is two-layer: a pitch folded on one layer, K28/K35)
+    BAND_X = BAND if NL == 2 else 0.0
+    n_empty = 0
     for a, b in pairs:
-        lo = max(entry[a] + max(MARG, RIN0[a]), entry[b] + max(MARG, RIN0[b]), BAND)
+        lo = max(entry[a] + max(MARG, RIN0[a]), entry[b] + max(MARG, RIN0[b]), BAND_X)
         # a crossing on the ring leaves the earlier lane's leg LEGROOM to reach its berth after it
         hi = min(end[a] - max(LEGROOM, RIN1[a]), end[b] - max(LEGROOM, RIN1[b])) if same(a, b) else \
             min(tend[a] - (max(MARG, RIN1[a]) if a not in bname else MARG), tend[b] - (max(MARG, RIN1[b]) if b not in bname else MARG))
+        n_empty += hi < lo + G
         win[(a, b)] = (lo, max(hi, lo + G))
+    if n_empty:
+        # (an inverted pair with no room to cross is given a grid step at its window's start: a plan the geometry then
+        # pays for -- the frame's rings started at the source on zynq's U1 to U5)
+        print(f'   crossing windows EMPTY, held open a grid step: {n_empty} of {len(win)}')
     m = cp_model.CpModel()
     t = {k: m.NewIntVar(Q(lo), Q(hi), f't_{k[0]}_{k[1]}') for k, (lo, hi) in win.items()}
     # ---- geometry cuts (whole_geo.py's islands a lane could not be kept off): none of that lane's crossings in the span
@@ -329,6 +471,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
         a, b = key
         mv = m.NewBoolVar('')                           # True: a moves, b stays
         MV[key] = mv
+        if NL > 2:
+            continue                    # (spaced per the crosser's layer, below, where the runs' layers are known)
         ivs_of[a].append(m.NewOptionalFixedSizeIntervalVar(t[key], w_move, mv, ''))
         ivs_of[a].append(m.NewOptionalFixedSizeIntervalVar(t[key], w_stay, mv.Not(), ''))
         ivs_of[b].append(m.NewOptionalFixedSizeIntervalVar(t[key], w_move, mv.Not(), ''))
@@ -352,7 +496,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     # ---- layer changes
     cost = []
     chg, tot = {}, {}
-    T0 = {c_[0] for c_ in LAYER_CUTS if c_[1] == 0} | CHAN_T0   # (a blocked tooth's change may stand in the face's band)
+    T0 = {c_[0] for c_ in LAYER_CUTS if c_[1] == 0} | CHAN_T0 | TVIA   # (a blocked tooth's change may stand in the face's band)
     for n in M:
         lo_n, hi_n = Q(max(entry[n] + VIN0[n], BAND if n not in T0 else entry[n] + VIN0[n])), Q(end[n] - VIN1[n])
         cs_ = [m.NewIntVar(lo_n, hi_n + 1, f'c_{n}_{k}') for k in range(KMAX)]
@@ -378,15 +522,33 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
                     m.Add(cs_[k] - h_ >= t[key]).OnlyEnforceIf([bb.Not(), act[k], lit])
                 m.AddImplication(bb, act[k]); bits.append(bb)
             before[key] = bits
-        m.AddBoolXOr(act + ([m.NewConstant(1)] if tl[n] == dl[n] else []))
+        if NL > 2:
+            # (more layers than two: run k's layer y[k], after the lane's k-th change -- a change goes to another
+            # layer, an unused one keeps it; the first run on its tooth's layer, the last on its berth's -- a via
+            # end's on any its run fits on)
+            y_ = [m.NewIntVar(0, NL - 1, f'y_{n}_{k}') for k in range(KMAX + 1)]
+            for y_e, L_e, k_e in ((y_[0], tli[n], 0), (y_[KMAX], dli[n], 1)):
+                if (n, k_e) in VEND:
+                    for L_b in sorted(VBAN.get((n, k_e), ())):
+                        m.Add(y_e != LAYN.index(L_b))
+                else:
+                    m.Add(y_e == L_e)
+            for k in range(KMAX):
+                m.Add(y_[k + 1] != y_[k]).OnlyEnforceIf(act[k])
+                m.Add(y_[k + 1] == y_[k]).OnlyEnforceIf(act[k].Not())
+            YL[n] = y_
+        else:
+            m.AddBoolXOr(act + ([m.NewConstant(1)] if tl[n] == dl[n] else []))
         tot[n] = sum(act); chg[n] = (cs_, act)
         ev[n] = before
     # an OPPOSITE-HANDS pair (pairs.opposite_hands) swaps its legs at a dive, a crossover: it changes layer at least once.
-    # Where its tooth and berth are on different layers the berth rule's parity already asks an odd number; only where they
-    # share one could it plan none (and be laid uncrossed) -- the rule is added there alone, since an added constraint that
-    # binds nothing still moves the solver to another of its equal optima
+    # On two layers, where its tooth and berth are on different layers the berth rule's parity already asks an odd
+    # number; only where they share one could it plan none (and be laid uncrossed) -- the rule is added there alone, since
+    # an added constraint that binds nothing still moves the solver to another of its equal optima. On more, a via end's
+    # layer is the solve's: a pair from an F tooth to a via berth could end on F with no change at all, and no crossover
+    # would be laid (whole_geo's XO_AT) -- the rule for every one
     for n in M:
-        if n in prs and tl[n] == dl[n] and _pairs.opposite_hands(ctx, n):
+        if n in prs and (NL > 2 or tl[n] == dl[n]) and _pairs.opposite_hands(ctx, n):
             m.Add(chg[n][1][0] == 1)
     # two lanes' changes apart along one frame far enough that two on NEIGHBOURING lanes -- a lane pitch across -- clear
     # the via-to-via rule as the geometry plans it (a grid step over it): a via apart along left them 0.36 where the rule
@@ -401,11 +563,20 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     STAGGER = max(VIA, math.sqrt(max(_VV * _VV - PITCH * PITCH, 0.0)))
     fr_ivs = collections.defaultdict(lambda: collections.defaultdict(list))      # frame -> lane -> its changes there
     w_s = max(1, Q(STAGGER))
+    # (more layers than two: two CROSSING lanes stand stacked where they cross, not a lane pitch across -- their
+    # changes apart by the whole via-to-via rule)
+    fr_vv = collections.defaultdict(lambda: collections.defaultdict(list))
+    w_v = max(1, QU(_VV))
     # (a change in its blocked end's window, between the stub and the copper, is a dog-bone's via at the array's edge,
     # its neighbours' a ball pitch across: no stagger along)
     DOG = collections.defaultdict(list)
     for (n_, k_, _L, lo_u, hi_u, lo_c, hi_c, w0, w1) in LAYER_CUTS + [c_ for c_ in CHAN_CUTS if c_[7] is not None]:
         DOG[n_].append((Q(w0), Q(w1)))
+    for n in sorted(TVIA):
+        DOG[n].append((Q(entry[n] + VIN0[n]), Q(entry[n] + VIN0[n] + VNEED)))
+    # (a berth via's window, the same at its end -- for a single lane whose site is measured clear, site_clear)
+    for n in sorted(BVIA):
+        DOG[n].append((Q(end[n] - VIN1[n] - VNEED), Q(end[n] - VIN1[n])))
     INWIN = {}                                          # (lane, change) -> it stands in its blocked end's window
     for n in M:
         cs_, act = chg[n]
@@ -433,21 +604,97 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
                 m.Add(inT + inR == 1).OnlyEnforceIf(a_); m.Add(inT + inR == 0).OnlyEnforceIf(a_.Not())
                 fr_ivs['T'][n].append(m.NewOptionalFixedSizeIntervalVar(x, w_s, inT, ''))
                 fr_ivs[bname[n]][n].append(m.NewOptionalFixedSizeIntervalVar(x, w_s, inR, ''))
+                if NL > 2:
+                    fr_vv['T'][n].append(m.NewOptionalFixedSizeIntervalVar(x, w_v, inT, ''))
+                    fr_vv[bname[n]][n].append(m.NewOptionalFixedSizeIntervalVar(x, w_v, inR, ''))
             else:
                 fr_ivs['T'][n].append(m.NewOptionalFixedSizeIntervalVar(x, w_s, a_, ''))
+                if NL > 2:
+                    fr_vv['T'][n].append(m.NewOptionalFixedSizeIntervalVar(x, w_v, a_, ''))
     nbr = {frozenset(p_) for p_ in zip(Ln, Ln[1:])} | {frozenset(p_) for p_ in zip(Fn, Fn[1:])} | \
         {frozenset(k) for k in t}
+    crossing_ = {frozenset(k) for k in t}
     for f_, by_lane in fr_ivs.items():
         for p_ in sorted(nbr, key=lambda p_: sorted(p_)):
             a_, b_ = sorted(p_)
-            if by_lane.get(a_) and by_lane.get(b_):
-                m.AddNoOverlap(by_lane[a_] + by_lane[b_])
+            src_ = fr_vv[f_] if NL > 2 and p_ in crossing_ else by_lane
+            if src_.get(a_) and src_.get(b_):
+                m.AddNoOverlap(src_[a_] + src_[b_])
+    # a PAIR's tips stand together (whole_frame: no other lane's end between them on the pair's layer): where the solve
+    # chooses the ends' layers (more routing layers than two, via ends), every lane with an end between a pair's two
+    # tips is on another layer than the pair at that end -- the relayer then lays them so (on the zynq's U1 the solve
+    # put SPI_DI's tooth on RX_D4's layer between its tips, and the frame refused the pair split)
+    if NL > 2:
+        end_y = lambda n, k_: YL[n][0] if k_ == 0 else YL[n][KMAX]
+        for (n, k1_), (o_, k2_) in VSEP:
+            m.Add(end_y(n, k1_) != end_y(o_, k2_))
+        for (n, k_), between_ in sorted(Fr.tip_between.items()):
+            for o_ in between_:
+                if n in YL and o_ in YL:
+                    m.Add(end_y(n, k_) != end_y(o_, k_))
+
+    def run_at(n, before):
+        """(more layers than two) the layer of lane n's run where `before` -- its changes before a point, in order --
+        says it is: the run after the last of them"""
+        i_ = m.NewIntVar(0, KMAX, '')
+        m.Add(i_ == sum(before))
+        L_ = m.NewIntVar(0, NL - 1, '')
+        m.AddElement(i_, YL[n], L_)
+        return L_
+    # (more layers than two) a lane's crossings are spaced along it only among the crossers ON ONE LAYER: two lanes on
+    # two other layers cross it at one point, stacked, as a human's families on B and In1 run over one another. Spaced
+    # whatever the crossers' layers, as two layers need it (every crosser on the other one), the zynq LVDS bus's round 1
+    # (215 crossings, U5 3.7 mm from U1) was infeasible on three layers and on four; spaced per layer, four layers
+    # planned it at 28 vias. A change is a via, through every layer: its room from each crossing stands as before
+    LS = collections.defaultdict(list)              # (lane, the crosser's layer) -> its crossings' rooms there
+    # ...and STACKED crossers clear of each other's vias: a crosser's change is a through via, its room kept from its own
+    # lane's crossings only -- a crosser on another layer stacked at the same point stood over it. A crosser with an
+    # active change within two via rooms of its crossing takes the lane's whole stacking room there (a cumulative per
+    # crossed lane, capacity NL - 1: a via-free crosser one unit, so up to NL - 1 stack; one with a via near, all)
+    CU = collections.defaultdict(lambda: ([], []))   # crossed lane -> (its crossings' rooms, their demands)
+    DQ = QU(2 * VNEED)
+
+    def via_near(c_, key):
+        nears = []
+        for x_, a_ in zip(*chg[c_]):
+            lo_b, hi_b, nb = m.NewBoolVar(''), m.NewBoolVar(''), m.NewBoolVar('')
+            m.Add(x_ - t[key] <= DQ).OnlyEnforceIf(lo_b); m.Add(x_ - t[key] > DQ).OnlyEnforceIf(lo_b.Not())
+            m.Add(t[key] - x_ <= DQ).OnlyEnforceIf(hi_b); m.Add(t[key] - x_ > DQ).OnlyEnforceIf(hi_b.Not())
+            m.AddBoolAnd([a_, lo_b, hi_b]).OnlyEnforceIf(nb); m.AddBoolOr([a_.Not(), lo_b.Not(), hi_b.Not(), nb])
+            nears.append(nb)
+        vb = m.NewBoolVar('')
+        m.AddMaxEquality(vb, nears)
+        return vb
     for key in t:
         a, b = key
+        if NL > 2:
+            # crossing lanes DIFFER: the run each is on there (its changes before the crossing: they stand in order)
+            La_, Lb_ = run_at(a, ev[a][key]), run_at(b, ev[b][key])
+            m.Add(La_ != Lb_)
+            for lane_, c_, mv_ in ((a, b, MV[key]), (b, a, MV[key].Not())):
+                vb = via_near(c_, key)
+                for w_, pres_ in ((w_move, mv_), (w_stay, mv_.Not())):
+                    CU[lane_][0].append(m.NewOptionalFixedSizeIntervalVar(t[key], w_, pres_, ''))
+                    CU[lane_][1].append(1 + (NL - 2) * vb)
+            for l_ in range(NL):
+                for lane_, Lx_, mv_ in ((a, Lb_, MV[key]), (b, La_, MV[key].Not())):
+                    on_l = m.NewBoolVar('')
+                    m.Add(Lx_ == l_).OnlyEnforceIf(on_l); m.Add(Lx_ != l_).OnlyEnforceIf(on_l.Not())
+                    for w_, pres_ in ((w_move, mv_), (w_stay, mv_.Not())):
+                        p_ = m.NewBoolVar('')
+                        m.AddBoolAnd([pres_, on_l]).OnlyEnforceIf(p_); m.AddBoolOr([pres_.Not(), on_l.Not(), p_])
+                        LS[(lane_, l_)].append(m.NewOptionalFixedSizeIntervalVar(t[key], w_, p_, ''))
+            continue
         # crossing lanes DIFFER: tl_a ^ tl_b ^ Ca ^ Cb == 1, i.e. XOR(parity bits [+ 1 when the teeth differ]) == 1
         lits = ev[a][key] + ev[b][key]
         if tl[a] ^ tl[b] == 1: lits = lits + [m.NewConstant(1)]
         m.AddBoolXOr(lits)
+    for _k in sorted(LS):
+        if len(LS[_k]) > 1:
+            m.AddNoOverlap(LS[_k])
+    for _k in sorted(CU):
+        if len(CU[_k][0]) > 1:
+            m.AddCumulative(CU[_k][0], CU[_k][1], NL - 1)
     # ---- via cuts (whole_geo.py: a change the geometry could not give its room): that lane's changes stay out of the window
     # (a BUILT-IN cut gives way in a lane's blocked end's window: the ends model measured a via there clear of every
     # copper on every layer, where the built-in cut only reads a pad within reach of the lane's reference path)
@@ -510,17 +757,30 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
             m.AddBoolOr([lo_b, hi_b, a_.Not(), br_])
             m.Add(x_ <= Q(lo_u)).OnlyEnforceIf(b_); m.Add(x_ > Q(lo_u)).OnlyEnforceIf(b_.Not())
             bef.append(b_)
+        if NL > 2:
+            # (more layers than two: off the BLOCKED layers across the span -- a front's, its end's own; an island's,
+            # every layer it stands on -- on any other)
+            blks_ = [(tli[n_] if k_ == 0 else dli[n_])] if k_ in (0, 1) else CHAN_BLK.get((n_, k_), [1 - L_])
+            run_ = run_at(n_, bef)
+            for blk_ in blks_:
+                m.Add(run_ != blk_).OnlyEnforceIf(br_.Not())
+            soft_broken[('layer', n_, str(k_), round(lo_u, 3))] = br_     # (k_ a front's end, or an island's name)
+            continue
         par = m.NewBoolVar('')
         m.AddBoolXOr(bef + [par.Not()])                        # par: an odd number of changes before the span
         m.Add(par == (tl[n_] ^ L_)).OnlyEnforceIf(br_.Not())
-        soft_broken[('layer', n_, k_, round(lo_u, 3))] = br_
+        soft_broken[('layer', n_, str(k_), round(lo_u, 3))] = br_
+    # (a cut's layer as the model holds it: on two layers the one the lane is held ON; on more, the one it is held OFF)
+    held = lambda c_: (f'on {"FB"[c_[2]]}' if NL == 2 else
+                       'off ' + ','.join(LAYN[b_] for b_ in ([tli[c_[0]] if c_[1] == 0 else dli[c_[0]]] if c_[1] in (0, 1)
+                                                            else CHAN_BLK.get((c_[0], c_[1]), [1 - c_[2]]))))
     if LAYER_CUTS:
         print(f'   layer cuts (blocked fronts): {len(LAYER_CUTS)} -- ' + ', '.join(
-            f'{c_[0]} {"tooth" if c_[1] == 0 else "berth"} on {"FB"[c_[2]]} over {c_[3]:.2f}..{c_[4]:.2f}'
+            f'{c_[0]} {"tooth" if c_[1] == 0 else "berth"} {held(c_)} over {c_[3]:.2f}..{c_[4]:.2f}'
             for c_ in LAYER_CUTS))
     if CHAN_CUTS:
         print(f'   layer cuts (islands in the way): {len(CHAN_CUTS)} -- ' + ', '.join(
-            f'{c_[0]} on {"FB"[c_[2]]} under {c_[1][5:]} over {c_[3]:.2f}..{c_[4]:.2f}' for c_ in CHAN_CUTS))
+            f'{c_[0]} {held(c_)} under {c_[1][5:]} over {c_[3]:.2f}..{c_[4]:.2f}' for c_ in CHAN_CUTS))
     # ---- HISTORY congestion (negotiated, as PathFinder prices a resource that was overused before): HIST=HOT.json,.. are
     # the audits' findings of earlier rounds (whole_gate --hot: where a plan was short -- a dive, a pitch, a static, a
     # shape), one file per audit. A finding marks the bins of route within a via's room of it, on the frame whose spine is
@@ -535,10 +795,15 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     origin = lambda fr: H0 if fr == 'T' else Hk[fr]
     kof = lambda fr, u: int(math.floor((u - origin(fr)) / LB + 1e-9))
     HOT = collections.Counter()
+    # (more layers than two: the lanes each bin's findings named -- every finding's, and a DIVE's, whose vias stand on
+    # every layer -- for the terms below: two lanes stacked on other layers are not the ones a finding was about)
+    HLANE, HDIVE = collections.defaultdict(set), collections.defaultdict(set)
     HFILES = list(hist)
     for fn_ in HFILES:
         marked = set()
         for x_, y_, *_k in json.load(open(fn_)).get('hot', []):
+            kind_ = _k[0] if _k else ''
+            lanes_ = set(_k[1]) if len(_k) > 1 and isinstance(_k[1], list) else set()
             # the frame whose spine the finding stands nearest -- a ring's only past where its lanes leave the trunk (a
             # ring's spine runs back along the trunk before that, and a finding at the source's face, nearer it than the
             # trunk's, was priced on the ring before any of its lanes is on it: nothing, K41's SDQS0 dive)
@@ -546,7 +811,12 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
             fr_u += [e_ for k_ in ring_of for e_ in [(lambda so: (k_, Hk[k_] + so[0] - rs[k_], so[1]))(
                 ring_of[k_].project_pt((x_, y_)))] if e_[1] >= Hk[k_]]
             fr, u, _o = min(fr_u, key=lambda e_: abs(e_[2]))
-            marked |= {(fr, k) for k in range(kof(fr, u - R_HOT), kof(fr, u + R_HOT) + 1)}
+            bins_ = {(fr, k) for k in range(kof(fr, u - R_HOT), kof(fr, u + R_HOT) + 1)}
+            marked |= bins_
+            for b_ in bins_:
+                HLANE[b_] |= lanes_
+                if kind_ == 'DIVE':
+                    HDIVE[b_] |= lanes_
         HOT.update(marked)
 
 
@@ -571,25 +841,43 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
         return (lo_, hi_) if lo_ < hi_ else None
 
     nh_x = nh_v = 0
-    for (fr, k), h_ in sorted(HOT.items(), key=lambda e_: (str(e_[0][0]), e_[0][1])):
-        u0, u1 = origin(fr) + k * LB, origin(fr) + (k + 1) * LB
+    # (more routing layers than two) a RUN of neighbouring bins of one price priced ONCE: a crossing or a change lies in
+    # one bin at most, so the run's one term is the same price wherever in it it lies -- the same objective. Bin by bin,
+    # a finding marking every bin within a via's room of it, zynq's LVDS bus on four layers had 5053 terms, the model
+    # 28986 variables against 12588 without them, and its plan-finding workers past 1.5 GB; on two the bins are priced
+    # one by one, as every ladder was measured
+    runs = [((fr, k), h_, 1) for (fr, k), h_ in sorted(HOT.items(), key=lambda e_: (str(e_[0][0]), e_[0][1]))]
+    if NL > 2:
+        # (one price AND the same lanes named: the run's one term the bins' own)
+        merged = []
+        for (fr, k), h_, w_ in runs:
+            p_ = merged[-1] if merged else None
+            if p_ and p_[0][0] == fr and p_[1] == h_ and p_[0][1] + p_[2] == k \
+                    and HLANE[(fr, k)] == HLANE[p_[0]] and HDIVE[(fr, k)] == HDIVE[p_[0]]:
+                merged[-1] = (p_[0], h_, p_[2] + 1)
+            else:
+                merged.append(((fr, k), h_, w_))
+        runs = merged
+    for (fr, k), h_, w_ in runs:
+        u0, u1 = origin(fr) + k * LB, origin(fr) + (k + w_) * LB
+        named, dived = (HLANE[(fr, k)], HDIVE[(fr, k)]) if NL > 2 else (set(), set())
         for key, (lo, hi) in win.items():
             a, b = key
             # (a crossing is on a ring only between two lanes of that ring)
             sp_ = in_frame(fr, a, u0, u1) if same(a, b) else ((u0, u1) if fr == 'T' else None)
-            if sp_ is None or hi < sp_[0] or lo >= sp_[1]:
+            if sp_ is None or hi < sp_[0] or lo >= sp_[1] or (named and not ({a, b} & named)):
                 continue
             cost.append(int(round(SC * A_X * h_)) * in_bin(t[key], *sp_)); nh_x += 1
         for n in M:
             sp_ = in_frame(fr, n, u0, u1)
-            if sp_ is None or end[n] < sp_[0] or entry[n] >= sp_[1]:
+            if sp_ is None or end[n] < sp_[0] or entry[n] >= sp_[1] or (named and n not in (dived or named)):
                 continue
             cs_, act = chg[n]
             for cv_, a_ in zip(cs_, act):
                 cost.append(int(round(SC * A_V * (2 if n in prs else 1) * h_)) * in_bin(cv_, *sp_, a_)); nh_v += 1
     if HFILES:
-        print(f'   history: {len(HFILES)} audit(s), {len(HOT)} hot bin(s) (hottest {max(HOT.values(), default=0)}), '
-              f'{nh_x} crossing and {nh_v} change terms')
+        print(f'   history: {len(HFILES)} audit(s), {len(HOT)} hot bin(s) (hottest {max(HOT.values(), default=0)})'
+              + (f' in {len(runs)} run(s)' if len(runs) != len(HOT) else '') + f', {nh_x} crossing and {nh_v} change terms')
     if hint:
         Hj = json.load(open(hint))
         nh = 0
@@ -605,6 +893,10 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
                     m.AddHint(cs_h[i_], int(round(chs_[i_] / G))); m.AddHint(act_h[i_], 1)
                 else:
                     m.AddHint(act_h[i_], 0)
+        for n_, ls_ in (Hj.get('layers') or {}).items():
+            if n_ in YL and all(L_ in LAYN for L_ in ls_):
+                for i_ in range(KMAX + 1):
+                    m.AddHint(YL[n_][i_], LAYN.index(ls_[min(i_, len(ls_) - 1)]))
         print(f'   warm start from {os.path.basename(hint)}: {nh} crossing hints')
     # ---- no more than TWO VIAS on a net where that can be had (Andy, 2026-09-25): a net's vias on the board are its stubs'
     # own (the bench's copper) and its lane's changes -- a pair's leg a barrel at each dive. Each via past two costs
@@ -625,9 +917,28 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     SV = {n: max(LV[leg][0] for leg in (prs[n] if n in prs else (n,))) for n in M}
     if any(t_ for _v, t_ in LV.values()):
         print(f"   tie vias, not counted toward two: {sorted(leg for leg, (_v, t_) in LV.items() if t_)}")
+    # ...less the via the relayer DROPS (more layers than two): a via end planned on its NECK's own layer -- the layer of
+    # the ball's pad its via joins, a dog-bone's neck or the pad a via-in-pad stands in -- has all its copper at the via
+    # on one layer, and the via joins nothing (relayer.relayer). The solve chose it: a via saved, on the board and
+    # toward the two
+    DROP = collections.defaultdict(list)
+    for (n, k_) in sorted(VEND):
+        necks = set()
+        for leg in (prs[n] if n in prs else (n,)):
+            ref_ = ctx.src_ref.get(leg) if k_ == 0 else dest
+            cu_ = {L for p_ in ctx.pcb.nets[ctx.byname[leg][0]].pads if p_.component_ref == ref_
+                   for L in p_.layers if L in LAYN}
+            necks |= cu_ if len(cu_) == 1 else {None}
+        if len(necks) == 1 and None not in necks:
+            y_e, Ln_ = (YL[n][0] if k_ == 0 else YL[n][KMAX]), LAYN.index(next(iter(necks)))
+            d_ = m.NewBoolVar('')
+            m.Add(y_e == Ln_).OnlyEnforceIf(d_); m.Add(y_e != Ln_).OnlyEnforceIf(d_.Not())
+            DROP[n].append(d_)
+    dr = {n: sum(DROP[n]) for n in M}
     over = {n: m.NewIntVar(0, KMAX + SV[n], f'over_{n}') for n in M}
     for n in M:
-        m.Add(over[n] >= SV[n] + tot[n] - VIA_PREF)
+        m.Add(over[n] >= SV[n] - dr[n] + tot[n] - VIA_PREF)
+    VIAS = sum(tot.values()) - sum(dr.values()) if DROP else sum(tot.values())   # the route's vias, less those dropped
     W_OVER = W_V * W_OVER_X
     # ---- the ROOT's proof, a floor for every re-solve of the bench: the first solve (no geometry cuts) proved the least
     # nets over two and vias there are; a re-solve only adds cuts to it (a flip drops only an island cut a re-solve
@@ -637,16 +948,21 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     # the warm start's, and taken only for the same model: its lanes, their orders, end layers, stub vias, KMAX and the
     # built-in cuts (the bench's own), by a signature
     sig = hashlib.sha1(json.dumps([sorted(M), list(Ln), list(Fn), [(n, tl[n], dl[n], SV[n]) for n in sorted(M)], KMAX,
-                                   VIA_PREF, [(c_['lane'], round(c_['u'], 4), round(c_['w'], 4)) for c_ in VCUTS[NVC0:]]],
+                                   VIA_PREF, [(c_['lane'], round(c_['u'], 4), round(c_['w'], 4)) for c_ in VCUTS[NVC0:]]]
+                                  + ([list(LAYN), [(n, tli[n], dli[n]) for n in sorted(M)],
+                                      # (the via ends' model: which ends, their banned layers, the runs kept apart, the
+                                      # tooth vias -- a floor proved on another is none here)
+                                      sorted(VEND), sorted((list(k_), sorted(v_)) for k_, v_ in VBAN.items()),
+                                      sorted(list(map(list, p_)) for p_ in VSEP), sorted(TVIA), sorted(BVIA)] if NL > 2 else []),
                                   sort_keys=True).encode()).hexdigest()
     root = None
     if hint:
         r_ = json.load(open(hint)).get('root')
         if r_ and r_.get('sig') == sig:
             root = r_
-            m.Add(W_OVER * sum(over.values()) + W_V * sum(tot.values()) >= W_OVER * r_['over'] + W_V * r_['vias'])
+            m.Add(W_OVER * sum(over.values()) + W_V * VIAS >= W_OVER * r_['over'] + W_V * r_['vias'])
             print(f"   the root's proof as a floor: {r_['over']} via(s) over two, {r_['vias']} vias")
-    OBJ = W_OVER * sum(over.values()) + W_V * sum(tot.values()) + W_SOFT * sum(soft_broken.values()) + sum(cost)
+    OBJ = W_OVER * sum(over.values()) + W_V * VIAS + W_SOFT * sum(soft_broken.values()) + sum(cost)
     m.Minimize(OBJ)
     # ...and STOPPED when it STALLS: once it has a plan, SOLVE_STALL of the search's own model reductions in a row with
     # no better plan and no better bound (its log's '#Model' against '#n' and '#Bound' lines, events of the
@@ -749,12 +1065,16 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
         print(f'(not proved optimal: best {sv.ObjectiveValue():.0f}, bound {sv.BestObjectiveBound():.0f} -- kept UNPROVED) ',
               end='')
     per = {n: int(sv.Value(tot[n])) for n in M}
-    ov = [n for n in M if SV[n] + per[n] > VIA_PREF]
-    print(f'vias {sum(per.values())}, nets over {VIA_PREF} vias on the board: {len(ov)} {ov}, changes per lane {dict(sorted(collections.Counter(per.values()).items()))}, obj {sv.ObjectiveValue():.0f} bound {sv.BestObjectiveBound():.0f}')
+    drp = {n: int(sum(sv.Value(d_) for d_ in DROP[n])) for n in M}
+    ov = [n for n in M if SV[n] - drp[n] + per[n] > VIA_PREF]
+    print(f'vias {sum(per.values())}' + (f' (and {sum(drp.values())} via end(s) dropped)' if any(drp.values()) else '')
+          + f', nets over {VIA_PREF} vias on the board: {len(ov)} {ov}, changes per lane {dict(sorted(collections.Counter(per.values()).items()))}, obj {sv.ObjectiveValue():.0f} bound {sv.BestObjectiveBound():.0f}')
     # verify: every crossing on two layers, every lane on its berth layer
     lay = lambda n, u: tl[n] ^ (sum(1 for x, a_ in zip(*chg[n]) if sv.Value(a_) and sv.Value(x) * G < u) & 1)
+    if NL > 2:
+        lay = lambda n, u: sv.Value(YL[n][sum(1 for x, a_ in zip(*chg[n]) if sv.Value(a_) and sv.Value(x) * G < u)])
     bad = [(a, b) for (a, b), v in t.items() if lay(a, sv.Value(v) * G) == lay(b, sv.Value(v) * G)]
-    badb = [n for n in M if lay(n, 1e9) != dl[n]]
+    badb = [n for n in M if lay(n, 1e9) != dli[n] and (n, 1) not in VEND]
     print(f'   check: crossings on one layer {len(bad)}, lanes off their berth layer {len(badb)}')
     J = {'H0': H0, 'Hk': Hk, 'rs': rs, 'cross': {}, 'changes': {}, 'entry': entry, 'end': end, 'tend': tend, 'branch': bname,
          'final': Fn, 'launch': Ln}
@@ -763,17 +1083,21 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     for n in M:
         cs_, act = chg[n]
         J['changes'][n] = [sv.Value(x) * G for x, a_ in zip(cs_, act) if sv.Value(a_)]
+        if NL > 2:
+            # (more layers than two: each run's layer, one more than its changes -- on two they alternate from its
+            # tooth's)
+            J.setdefault('layers', {})[n] = [LAYN[sv.Value(YL[n][k])] for k in range(len(J['changes'][n]) + 1)]
     # (the root: this solve's own proof when it has no geometry cuts, else the one it was floored by -- never an
     # unproved plan's, which proves nothing)
     J['root'] = root if root is not None else \
-        ({'over': int(sum(sv.Value(over[n]) for n in M)), 'vias': int(sum(per.values())), 'sig': sig}
+        ({'over': int(sum(sv.Value(over[n]) for n in M)), 'vias': int(sum(per.values()) - sum(drp.values())), 'sig': sig}
          if not CUTS and not SOFT and NVC0 == 0 and proved else None)
     J['proved'] = bool(proved)
     if soft_broken:
         J['soft_broken'] = [list(s_) for s_, b_ in sorted(soft_broken.items()) if sv.Value(b_)]
         print(f"   soft cuts broken: {len(J['soft_broken'])} of {len(soft_broken)}")
     # each lane over two vias on the board, by how many: an unproved plan's go back to the ends (whole_route)
-    J['over_nets'] = {n: SV[n] + per[n] - VIA_PREF for n in ov}
+    J['over_nets'] = {n: SV[n] - drp[n] + per[n] - VIA_PREF for n in ov}
     if not proved:
         J['unproved'] = {'best': sv.ObjectiveValue(), 'bound': sv.BestObjectiveBound(),
                          'over': int(sum(sv.Value(over[n]) for n in M)),

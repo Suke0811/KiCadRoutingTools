@@ -94,6 +94,16 @@ Reading the tables:
   in front of the teeth and the berths and across the channel, the lanes
   going round their ends or, where there is no room, under them -- and grades
   each on the route and on the handoff. All 117 pass.
+- **More routing layers.** `synth_layers.py` routes generated buses on two to
+  six routing layers and grades each against its optimum on that many layers
+  (`synth_bus.truth_layers`): reversed, blocked, interleaved, riffled and
+  shuffled orders with the arrays' interiors closed, short 3 mm channels, and
+  every escape a via (`ESCAPE_VIAS=both`); with them, open interiors, walls
+  in the channel, rings, pairs, and lanes ending on the destination's far
+  face (`truth_wind`). On three, four and six layers all 48 graded runs are at
+  the optimum, and all 81 runs connected and DRC-clean. The short channels and
+  the all-via cases are what more layers buy: on two layers they leave nets
+  open or lay up to 34 vias where 14 is the optimum (see the TODO).
 
 <img src="img/k51_own_ends.png" alt="K51 routed on our own ends, beside the human's" width="900">
 
@@ -165,6 +175,14 @@ modal deploy --name APP awx/modal_whole.py                            # from the
 python3 synth_handoff.py --modal APP --outdir DIR
 ```
 
+The generated buses on more routing layers (see [more routing layers than
+two](#more-routing-layers-than-two-route_layerspy-relayerpy)), each case drawn
+layer by layer, `--sheet` every case on one image per layer count:
+
+```bash
+python3 synth_layers.py --layers 3,4,6 --sheet [--only TAG,..] [--outdir DIR]   # in awx/; 2 the two-layer reference
+```
+
 When two runs part -- two machines, or a run before and after a change --
 two tools find where:
 
@@ -229,7 +247,14 @@ as the chain hands it on and two arrays, and writes the board back with the
 bus laid, in the board's own frame:
 
 - the bus is every net between the two arrays that the ladder admits, and
-  their copper, if any, is stripped;
+  their copper, if any, is stripped. Refused and named, for the rest of the
+  chain: a pair through a termination part between the arrays (the zynq's CK
+  through R20: the whole route lays no waypoint yet); a net whose name's last
+  part is another net's too (the zynq's `ENABLE` and `TEST/ENABLE`: the whole
+  route names a net by it, and the router's net patterns would take both);
+  and a pair leg whose partner is refused or is no lane between the arrays
+  (the zynq's `FB_CLK_P`, its `FB_CLK_N` pulled to RFGND by RX22) -- a pair
+  is laid whole or not at all;
 - the source array is fanned out for them, and the board is turned into the
   flow frame;
 - the whole route runs on the ladder's nets (`--k K` for its first K);
@@ -249,9 +274,24 @@ the summary's `refused`, for the rest of the chain to route. Only a failure
 no bus net is named in refuses the whole bus.
 
 A board with inner copper layers is taken as it is. The lanes run on F.Cu
-and B.Cu, and the inner layers' copper meets the through vias only. A pair
-that passes through a termination part (the zynq's CK through R20) is
-refused and named: the whole route lays no waypoint yet.
+and B.Cu, and the inner layers' copper meets the through vias only. The nets
+handed on are protected in the board's project (#521), with those it came
+with protected -- an earlier bus's among them.
+
+Without `--src` and `--dest` it finds the board's buses itself
+(`find_buses`): every pair of parts sharing eight nets or more that the
+ladder admits, taken where both are ball arrays (`is_array`: balls past the
+outer two rings, on two nets or more -- a QFN's interior is its exposed pad),
+the larger array the source, the largest bus first, each routed in turn on the
+board the one before handed on. A pair with a row part at one end (a QFN, a
+TSOP, a connector) is named and not taken, and so is every net on both parts
+the ladder does not admit, with why (another part on it, more than one pad on
+a part). `--find` names them and stops.
+
+Every stage runs under the chain's own policy (`step_policy`), the step's own
+imports of the chain's modules included: a module reads its policy when it is
+first imported, and the in-process stages run on the modules the step
+imported (`tests/test_622_route_bus_policy.py`).
 
 It routes at the chain's sizes, given as the routing CLIs take them
 (`--clearance`, `--track-width`, `--via-size`, `--via-drill`, ... and
@@ -508,7 +548,12 @@ corridor, branch or path:
 - a **ring** round the destination for each of its north and south faces,
   the far face split between them at the ends model's cut (the sidecar's
   `dest_cut`, mirrored with a board turned over; without one, the middle of
-  the widest gap). It goes round the destination's **hull** -- its pads, the
+  the widest gap between the far face's berths). The ends model takes the
+  widest gap too, except where another gap is within a lane pitch of it: a
+  difference that small is no evidence, so it scores the ends at each of the
+  tied cuts and keeps the best (`whole_frame.cuts_tied`): on the generated
+  `wind_rot_e2` the two gaps beside its far-face berths tie, and the cuts give
+  32 crossings and 36 -- 8 vias against 12. It goes round the destination's **hull** -- its pads, the
   berths, and other parts' pads within a lane pitch and two lanes' room of
   them -- its lanes stacked across the trunk's handoff line outside it, the
   ring starting a lane pitch inside the first. A part on that **stack** is
@@ -944,6 +989,39 @@ destination, every lane in its band, post-passes off.
   and the run exits 1.
 - The copper is written back in the board's own frame.
 
+#### More routing layers than two (`route_layers.py`, `relayer.py`)
+
+`ROUTE_LAYERS` names the layers the whole route lays its lanes on: F.Cu and
+B.Cu first, then the inner layers it may use (`F.Cu,B.Cu,In1.Cu`). Unset, it
+is F.Cu and B.Cu and the route is the two-layer one, unchanged: every piece
+below is taken only with more routing layers than two. Every via is a through
+via.
+
+- **Escapes on the outer layers.** The fanout plans and lays a bus's escapes
+  on F.Cu and B.Cu (`route_layers.escape_layers`): a surface escape on F.Cu, a
+  via's run on B.Cu. A via stands through every layer, so a run on an inner
+  layer needs no other via.
+- **Via ends.** An end whose stub carries a via -- a dog-bone, or a via in
+  its pad -- is a via end, and its lane may leave it on any layer its run can
+  lie on: the solve chooses which (`VIA_ENDS`, on with more routing layers
+  than two). Another net's copper within the rule of the run bans a layer, and
+  two runs within the rule of each other end on different layers.
+- **The solve.** A lane's runs between its changes each lie on one layer, two
+  lanes cross only on different layers, and a crossing's room is shared only
+  by the lanes crossing on one layer.
+- **The relayer.** Before the geometry each via end's run is moved onto the
+  layer the solve chose for it, and a via left with its net's copper on its
+  pad's layer alone is dropped (`relayer.py`).
+- **The ends model** prices the same route: a surface escape's end fixed on
+  its layer, a via end free on the layers its run fits -- less one already
+  taken there by another end's copper -- and its via dropped on its pad's
+  layer; the crossing graph coloured on the layers for the estimate, the
+  solve's own model for the exact route.
+- **Layer cuts.** A lane the audit finds against a part on one layer is held
+  on another across it -- the first answer, before a side flip.
+- **`ESCAPE_VIAS`** (`0`, `dest` or `both`; `0` by default): every escape at
+  those arrays through a via, so a lane chooses its layer at its ends too.
+
 ### Each machine, the same answer
 
 **The standard:** every rung routes on every machine, no solve hangs, and a
@@ -1070,13 +1148,15 @@ With nothing supplied, as on the benches:
 
 | | |
 |---|---|
-| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`) |
+| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`); the buses found on a board (`tests/test_622_find_buses.py`) |
 | `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape; the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`) |
 | `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the loop's layer cuts from the audit and the snap (`tests/test_622_layer_cuts.py`); the ladder in the cloud, one container per rung |
 | `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`); the frame of a bench (a part on a ring's stack: `tests/test_622_ring_room.py`); what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP (a part seen from several frames: `tests/test_622_part_frames.py`; islands made of pads: `tests/test_622_pad_islands.py`), the polish, the snap onto the router's grid |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a plan installed and audited, gated, linted, drawn; the bench they share |
 | `whole_ladder.py` | the ladders on this machine: rungs side by side, each stopped at a cap with every stage it started, one grade line each |
+| `route_layers.py`, `relayer.py` | the routing layers (`ROUTE_LAYERS`), the escapes' layers and `ESCAPE_VIAS`; a via end's run moved onto the layer the solve chose, its via dropped where it is left on its pad's layer |
+| `synth_layers.py` | the whole route on generated buses on two to six routing layers, each graded against its optimum on that many layers (`synth_bus.truth_layers`, `truth_wind`) and drawn layer by layer, `--sheet` every case on one image |
 | `synth_handoff.py` | the whole route on generated buses (`synth_bus.py --ring-n/--ring-s`, parts anywhere round the bus with `--part KIND@ANCHOR:U:V`, turned with `:rDEG`): ring faces, parts beside the facing column and in the ring's path on either layer, parts in front of every kind of stub, walls, the bus arriving at an angle, crossings, pairs -- each routed whole and graded on the route and on the handoff (every join drawn, no lane stepping back, nothing paid holding a trunk end); `--modal APP` one container a case (`modal_whole.py run_synth`) |
 | `resolve_round.py`, `fanout_logdiff.py` | a round's first solve again on its own board; the first decision two fanout logs made differently -- where two runs part |
 | `whole_compare.py`, `whole_movie.py` | a rung beside the human's board, the run's nets alone (the renders above); a film of one run, the fanout to the copper |
@@ -1108,7 +1188,7 @@ With nothing supplied, as on the benches:
 | `coherent_nets.py`, `k_ladder_coherent.txt` | the coherent K-ladder |
 | `flow_frame.py`, `pose_gate.sh`, `make_bench.py`, `rotate_board.py`, `mirror_board.py` | the canonical frame, the poses, articles from any board |
 | `human_at_k.py`, `census_vs_human.py`, `cmp_copper.py` | the human's count at a K, per-net comparisons, copper diffs |
-| `joint_floor.py`, `synth_bus.py`, `synth_ladder.py` | the via floor over a board's own paths; the synthetic channel with a known optimum |
+| `joint_floor.py`, `synth_bus.py`, `synth_ladder.py` | the via floor over a board's own paths; the synthetic channel with a known optimum (on two to six layers: `truth_layers`; with lanes free to go round the destination either way: `truth_wind`, with `--ring-e` berths on its far face, `--pattern rotate`, and `--closed` arrays no lane can pass under) |
 
 ### What this adds to `py_router`
 
@@ -1182,11 +1262,10 @@ channels first, and the other escapes leave round it.
    audit.
 4. **The router's rules:** a bus net class that differs from the Default
    class, `.kicad_dru` layer rules, and `--fab-tier` / `--escalation`.
-5. **Finding the buses.** A detector names every pair of parts that share
-   enough point-to-point nets with an array on at least one side; the step
-   takes the whole bus, not a ladder prefix. Pairs found by their name
-   suffixes, and termination parts as waypoints. Fly-by and multi-drop nets
-   stay with A*, reported by name.
+5. **Termination parts as waypoints.** A pair through a termination part
+   between the arrays (the zynq's CK through R20) is refused, and so are the
+   nets `find_buses` leaves (fly-by, multi-drop, a pull-down); a pair could be
+   laid through its part.
 6. **The handoff.** The laid nets go into the project's `protected_nets`;
    a refused lane is left with no partial copper, unprotected, and listed in
    a JSON summary for `route.py`; the bus's own pairs stop going to
@@ -1235,6 +1314,40 @@ channels first, and the other escapes leave round it.
 
 ### Next, the whole route (`whole_*.py`)
 
+- **The zynq's LVDS bus (U1 to U5), and winding.** On four layers, with via
+  ends and lanes on every layer (see [more routing layers than
+  two](#more-routing-layers-than-two-route_layerspy-relayerpy)), the whole
+  route does not yet route it. The human runs every net from
+  a dog-bone via at each array on one layer end to end, each layer's nets a
+  family that crosses nothing on it and loops round U5 to enter it from every
+  side; our ends cross about three times as many pairs of lanes. The frame
+  fixes one way round the destination for every lane on every layer. To try:
+  each lane's way round the destination as a decision of the ends model and
+  the solve, priced in vias and length like the rest -- first on the generated
+  winding cases (`synth_layers.py --only wind_rot_e2,wind_shuf_e2,wind_sorted_e2`),
+  graded against `synth_bus.truth_wind`, then on the zynq.
+- **Via ends on two layers.** On more than two routing layers a lane ending
+  at a via (a dog-bone, or a via in its pad) takes whichever layer the solve
+  gives it there, and the via is dropped where the lane leaves on the ball's
+  own layer (`whole_solve`'s via ends, the ends model's `end_domain`, the
+  relayer). On two layers that is off: each such end is held on the layer the
+  fanout laid its run, so its lane pays the escape via and a change besides.
+  With every escape a via (`ESCAPE_VIAS=both`), two layers lay 18 vias where
+  10 is the optimum (`vias_rev_k6`) and 34 for 14 (`vias_shuf_k12s3`), and the
+  3 mm channel (`vias_shuf_k10s4_g3`) finds no plan at all; three layers meet
+  the optimum on all three (`python3 synth_layers.py --layers 2,3 --only
+  vias_rev_k6,vias_shuf_k12s3,vias_shuf_k10s4_g3`). To try: the same via ends
+  on two layers, the relayer moving a run between F.Cu and B.Cu. It changes
+  default two-layer routing -- the two-layer fanout lays some of its teeth as
+  dog-bones on B.Cu -- so it is judged on the two-layer synth suite and both
+  ladders before it ships.
+- **The buses of one array fanned out together.** `route_buses` routes a
+  board's buses in turn; an array two of them share (the zynq's U1: the DDR's
+  and the AD9364's) should have every bus's escapes there planned and laid in
+  one engine call each round, every bus's ends model judging the result.
+- **Nets by their full names.** The whole route names a net by its name's
+  last path part, so the step refuses a bus net whose last part is another
+  net's too.
 - **Parts in the solve.** The solve knows of a part in the lanes' way only
   where a lane was found blocked by it -- an end's planned change, the loop's
   layer cut; the geometry fits the lanes round every other part afterwards,
@@ -1275,14 +1388,12 @@ channels first, and the other escapes leave round it.
   round re-chooses the teeth on the board it laid, where real teeth score as
   they stand, but a round runs only when a move is refused. Re-choosing on
   the laid board on purpose, once the first realize stands, is untried.
-- **The far-face cut chosen by cost.** The model could price every gap along
-  the far face -- `X_TRUNK` per crossing plus each far-face lane's ride round
-  its corner -- and take the cheapest, all candidates at once (moving the
-  cut past a berth flips that berth's crossings with every other lane). It
-  needs a price on the crossings between lanes on one layer first: the
-  model's exact route ranks the orders without their lengths, and ends with
-  fewer crossings in all but more on one layer can look cheaper to it and be
-  far harder for the solve. Further, the cut a solve variable.
+- **The far-face cut chosen by cost.** The ends model scores a state at each
+  cut that ties with the widest gap; it could score every gap along the far
+  face, on its own objective, and take the best -- a score per gap, so the
+  search would need it cheaply (moving the cut past a berth flips only that
+  berth's crossings with every other lane). Further, the cut a solve
+  variable.
 - **`EXACT_MARGIN` against the estimate's error:** the margin (4 vias) is
   below what the estimate can be off, so a state just outside it is never
   ranked on the exact route.
@@ -1380,6 +1491,15 @@ channels first, and the other escapes leave round it.
 - **The `.kicad_dru` read with real layer names inside the turned frame:** a
   per-layer rule lands on the opposite face for a back-side part. Shipped
   `py_router` code, so it blocks the merge.
+- **`bga_fanout` keeps an escape only the routing clearance off an
+  unplated hole.** Its escape and jog checks (`bga_fanout/__init__.py`)
+  price an NPTH drill's edge at `clearance`, where `check_drc` grades copper
+  to it at the NPTH-to-track floor (`NPTH_TO_TRACK_CLEARANCE`, 0.2 mm, or the
+  project's `min_hole_clearance`). `synth_bus.py OUT --k 12 --dst-cols 8
+  --ring-s 4 --w-align south --part npth@sf:1.425:0.4:d1.0`, then
+  `make_bench.py OUT SU1 SD1 BENCH`: an F.Cu escape ends 0.11 mm from the
+  1 mm hole, one TRACK-HOLE violation, and the bench is refused. The same
+  code is on main.
 - **The braid chain, if it is picked up again:** one placement of every
   layer change (`place_dives`); speculative probes inside a descent; stop the
   evolution when it stalls; the evolution on the cloud; group moves for

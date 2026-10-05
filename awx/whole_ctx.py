@@ -25,6 +25,7 @@ import marshal
 import math
 import os
 import awx_settings
+import route_layers
 import pickle
 import sys
 import types
@@ -65,6 +66,7 @@ def part_islands(ctx, skip=(), split=None):
     g = cfg.grid_step
     need = cfg.track_width + 2 * cfg.clearance + 2 * _pairs.corner_buffer(g) + g
     boxes = []
+    RL = route_layers.layers()          # (a hole's copper, or a drilled pad's, on every routing layer)
     for ref, fp in ctx.pcb.footprints.items():
         if ref in skip:
             continue
@@ -72,10 +74,10 @@ def part_islands(ctx, skip=(), split=None):
             drilled = bool(p.drill and p.drill > 0)
             if p.pad_type == 'np_thru_hole':
                 hx = hy = (p.drill or 0) / 2
-                Ls = {'F.Cu', 'B.Cu'}
+                Ls = set(RL)
             else:
                 hx, hy = p.size_x / 2, p.size_y / 2
-                Ls = {'F.Cu', 'B.Cu'} if drilled else {L for L in ('F.Cu', 'B.Cu') if L in p.layers}
+                Ls = set(RL) if drilled else {L for L in RL if L in p.layers}
             if Ls:
                 boxes.append(((ref, i), p.global_x - hx, p.global_y - hy, p.global_x + hx, p.global_y + hy, Ls))
     up = {b[0]: b[0] for b in boxes}
@@ -197,8 +199,9 @@ def plan(quiet=True):
 def _guard(out, nets, dest):
     """the plan, on a bench the whole route is written for -- else a stop that says why: the CANONICAL FRAME (the run's
     source-to-destination direction along +x, so the trunk arrives at the destination's west face and the rings run
-    north and south of it: flow_frame.py turns a board into it) and the two OUTER copper layers (a lane's layer is one
-    bit: it runs on F.Cu or B.Cu; inner layers, where a board has them, are passed by the through vias)"""
+    north and south of it: flow_frame.py turns a board into it) and its ROUTING LAYERS (route_layers: F.Cu and B.Cu,
+    and the inner ones ROUTE_LAYERS adds; the other inner layers, where a board has them, are passed by the through
+    vias)"""
     ctx, _cs = out
     import flow_frame
     k, _cx, _cy = flow_frame.quarter_of(ctx.pcb, dest, set(nets))
@@ -206,8 +209,10 @@ def _guard(out, nets, dest):
         raise SystemExit(f'whole route: the bench is not in the canonical frame (its source-to-destination direction '
                          f'is a quarter turn {k} from +x) -- turn it with flow_frame.py first')
     cu = list(ctx.pcb.board_info.copper_layers)
-    if not {'F.Cu', 'B.Cu'} <= set(cu):
-        raise SystemExit(f'whole route: the bench has copper layers {cu} -- the whole route plans on F.Cu and B.Cu')
+    rl = route_layers.layers()
+    if not set(rl) <= set(cu):
+        raise SystemExit(f'whole route: the bench has copper layers {cu} -- the whole route plans on {", ".join(rl)} '
+                         f'(ROUTE_LAYERS)')
     return out
 
 

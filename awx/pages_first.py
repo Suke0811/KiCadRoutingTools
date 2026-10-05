@@ -53,6 +53,7 @@ import awx_settings
 import time
 from typing import Dict, List, Optional, Tuple
 
+import route_layers
 import select_moves as sm
 import source_realize as sr
 from escape_moves import Move, DIRS
@@ -197,7 +198,9 @@ def current_tooth(st, nm) -> Optional[Move]:
     if p is None or p.component_ref != st['sref']:
         return None
     g = sr.measure_tooth(st['pcb'], nm, p, st['byname'])
-    if not g or g.get('direction') not in DIRS or g.get('layer') not in ('F.Cu', 'B.Cu'):
+    # (any routing layer: on three, a tooth laid on In2.Cu read as no tooth at all -- 17 of the zynq LVDS bus's
+    # 47, each then re-chosen off the menu every pass and its copper outside the ends' conflicts)
+    if not g or g.get('direction') not in DIRS or g.get('layer') not in route_layers.layers():
         return None
     return Move(net=nm, kind=g['kind'], direction=g['direction'], layer=g['layer'],
                 exit_pt=tuple(g['tooth']), vias=g['vias'], legs=[],
@@ -250,10 +253,10 @@ def _conflicts(cands: Dict[str, List[Move]], strict: bool, stack: bool = False,
                 for axis, v in (('row', m.site[1]), ('col', m.site[0])):
                     cells = q(v) if strict else (round(v, 3),)
                     for c in cells:
-                        for L in ('F.Cu', 'B.Cu'):
+                        for L in route_layers.layers():
                             keys.add(('lane', axis, c, L))
                     for c in (q(v, sm._VIA_REACH) if reach else ()):
-                        for L in ('F.Cu', 'B.Cu'):
+                        for L in route_layers.layers():
                             keys.add(('reach', axis, c, L))
             etol = max(sm._EXIT_TOL, sm._STACK_PITCH) if stack else sm._EXIT_TOL
             for cx in q(m.exit_pt[0], etol):

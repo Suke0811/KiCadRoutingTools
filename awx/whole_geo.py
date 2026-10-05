@@ -30,6 +30,7 @@ from types import SimpleNamespace
 import detmath
 import whole_ctx
 import whole_frame
+import route_layers
 import corridor as _cor
 import braid as bd
 import pairs as _pairs
@@ -54,8 +55,12 @@ LEN_T = [0.5, -0.5, 1.0, -1.0, 2.0, -2.0, 4.0, -4.0]   # the slopes a column's a
 # worst ratio (the flat cut stays exact, so a flat pair is not over-held)
 _kk = np.linspace(0.0, K_MAX, 4001)
 TSCALE = float(1.0 / min(np.max([(1 + t_ * _kk) / math.sqrt(1 + t_ * t_) for t_ in TANG], axis=0) / np.sqrt(1 + _kk * _kk)))
-F = lambda x: 1 if x == 'B.Cu' else 0
-LNAME = ('F.Cu', 'B.Cu')
+# the ROUTING LAYERS (route_layers): a layer is its index among them -- F.Cu 0, B.Cu 1, the inner ones after -- and a
+# through via's or a hole's copper stands on every one (ALL)
+LNAME = route_layers.layers()
+NL = len(LNAME)
+F = (lambda x: 1 if x == 'B.Cu' else 0) if NL == 2 else LNAME.index
+ALL = lambda: set(range(NL))
 log = lambda *a: print(*a, flush=True)
 
 J = json.load(open(sys.argv[1]))
@@ -121,13 +126,29 @@ def below(a, b, u):
     return (li[a] < li[b]) ^ (x in cross and cross[x] <= u + 1e-9)
 
 
+# each lane's runs' layers, where the solve gives them (more routing layers than two: whole_solve's 'layers'); on two
+# a lane's layer flips at each change from its tooth's
+RUNS = {n: [F(L_) for L_ in ls_] for n, ls_ in (J.get('layers') or {}).items()}
+if NL > 2 and set(M) - set(RUNS):
+    # (a solve that gives no lane's layers -- a two-layer solve, or a stale one -- read on more: each lane's layer would
+    # flip between F and B at its changes, onto layers the solve never chose)
+    raise SystemExit(f'whole_geo: {NL} routing layers, and the solve gives no layers for {sorted(set(M) - set(RUNS))}')
+
+
 def layer_of(n, u):
+    if n in RUNS:
+        return RUNS[n][sum(1 for cu in chg[n] if cu < u)]
     return tl[n] ^ (sum(1 for cu in chg[n] if cu < u) & 1)
 
 
 def layers_at(n, u):
-    if any(abs(u - cu) <= VS[n] for cu in chg[n]):
-        return {0, 1}
+    near = [cu for cu in chg[n] if abs(u - cu) <= VS[n]]
+    if near:
+        if NL == 2:
+            return ALL()
+        # (more routing layers than two: near a change the lane's track is on the two layers it joins -- its barrel
+        # stands on every layer, and the via rows hold every layer's lanes off it, the via-via rows the other vias)
+        return {layer_of(n, cu - 1e-6) for cu in near} | {layer_of(n, cu + 1e-6) for cu in near}
     return {layer_of(n, u)}
 
 
@@ -202,10 +223,10 @@ for ref, fp in ctx.pcb.footprints.items():
     for i_, p in enumerate(fp.pads):
         drilled = bool(p.drill and p.drill > 0)
         if p.pad_type == 'np_thru_hole':
-            hx = hy = (p.drill or 0) / 2; Ls = {0, 1}
+            hx = hy = (p.drill or 0) / 2; Ls = ALL()
         else:
             hx, hy = p.size_x / 2, p.size_y / 2
-            Ls = {0, 1} if drilled else {F(L) for L in ('F.Cu', 'B.Cu') if L in p.layers}
+            Ls = ALL() if drilled else {F(L) for L in LNAME if L in p.layers}
         if Ls and BX0 < p.global_x < BX1 and BY0 < p.global_y < BY1:
             # (a round pad or hole: the cross that covers it, not its box's square -- corridor.round_cover)
             ISL.setdefault((ISLAND[(ref, i_)], frozenset(Ls)), []).extend(
@@ -215,13 +236,13 @@ for ref, fp in ctx.pcb.footprints.items():
 for (ref, Ls), bxs in ISL.items():
     STATIC.append((min(b[0] for b in bxs), min(b[1] for b in bxs), max(b[2] for b in bxs), max(b[3] for b in bxs),
                    set(Ls), ref))
-OUTER = ('F.Cu', 'B.Cu')                     # the pages; copper on an inner layer meets a via's barrel, never a lane
+OUTER = LNAME                                # the pages; copper on another inner layer meets a via's barrel, never a lane
 VIA_ONLY = []                                # a tooth on an inner layer: a via's piece, on both pages (VSTUB, below)
 for (x, y, r, L, nm) in whole_ctx.foreign_teeth(ctx, M, BOX):      # the teeth of the nets outside the bus
     if L in OUTER:
         STATIC.append((x - r, y - r, x + r, y + r, {F(L)}, 'tooth ' + nm))
     else:
-        VIA_ONLY.append((x - r, y - r, x + r, y + r, {0, 1}, 'tooth ' + nm, None))
+        VIA_ONLY.append((x - r, y - r, x + r, y + r, ALL(), 'tooth ' + nm, None))
 
 
 # every other lane's tooth and berth END on the box line, on its stub's layer (a pair: both legs' ends)
@@ -276,7 +297,7 @@ def stub_pieces(reach, lanes=False):
             cx, cy = ax + (bx_ - ax) * f_, ay + (by_ - ay) * f_
             r = s_.width / 2
             out.append((min(ax, cx) - r, min(ay, cy) - r, max(ax, cx) + r, max(ay, cy) + r,
-                        {0, 1} if inner else {F(s_.layer)},
+                        ALL() if inner else {F(s_.layer)},
                         'stub ' + (own_ or ctx.pcb.nets[s_.net_id].name.split('/')[-1]), own_))
     return out
 
@@ -291,7 +312,7 @@ for v_ in ctx.base_vias:
     own_ = NET_LANE.get(v_.net_id)
     if any(b[0] - REACH <= v_.x <= b[2] + REACH and b[1] - REACH <= v_.y <= b[3] + REACH for b in BOX):
         r = v_.size / 2
-        VSTUB.append((v_.x - r, v_.y - r, v_.x + r, v_.y + r, {0, 1}, 'svia ' + (own_ or ctx.pcb.nets[v_.net_id].name.split('/')[-1]), own_))
+        VSTUB.append((v_.x - r, v_.y - r, v_.x + r, v_.y + r, ALL(), 'svia ' + (own_ or ctx.pcb.nets[v_.net_id].name.split('/')[-1]), own_))
 # ... and the LANES keep off the stub copper within a clearance block of the line, and off the stub vias
 for st_ in LSTUB + [v for v in VSTUB if v[5].startswith('svia ')]:
     STATIC.append(st_)
@@ -520,7 +541,7 @@ def build_and_solve(sides, prev=None):
                 if v['k1'] - k < v['ex1'] and v['o1'] is not None:
                     return ('end', v['o1'])
                 return None
-            for Ly in (0, 1):
+            for Ly in range(NL):
                 seq = [n for n in od if Ly in lay[n]]
                 for a, b in zip(seq, seq[1:]):
                     sep = P_MIN + hw[a] + hw[b]
@@ -612,7 +633,7 @@ def build_and_solve(sides, prev=None):
                 # a via asks 0.3235)
                 uk = FR[f]['u'](k * G)
                 for side_ in (range(i + 1, len(od)), range(i - 1, -1, -1)):
-                    for Ly in (0, 1):
+                    for Ly in range(NL):
                         nb_ = next((od[j] for j in side_ if Ly in layers_at(od[j], uk)), None)
                         if nb_ is not None and nb_ not in nbs:
                             nbs.append(nb_)
@@ -1005,7 +1026,7 @@ def static_sides(sol):
                 # face: four F lanes and a pair kept inside it, the pair pressed onto the face and folded to its landing)
                 room[-int(_out_of(FR[f]['sp'], (oa + ob) / 2))] -= RING_STANDOFF
             SPLIT.add((f, ii))
-            for Ly in (0, 1):
+            for Ly in range(NL):
                 if Ly not in Ls:
                     continue
                 # only the lanes that share the island's free interval can reach it; one in another interval is
@@ -1025,6 +1046,10 @@ def static_sides(sol):
                     for kt_, ot_ in ((v['k0'], v['o0']), (v['k1'], v['o1'])):
                         if ot_ is not None and sa - g <= kt_ * G <= sb + g:
                             p_ = -1 if ot_ < (oa + ob) / 2 else 1
+                    if NL > 2 and (f, n, ii) in SIDE:
+                        # (more routing layers than two: a lane near its change is on two layers' lists -- the side an
+                        # earlier layer's split gave it stands in this one, one side of the island for the lane)
+                        p_ = SIDE[(f, n, ii)]
                     pin.append(p_)
 
                 def spare(side, ls):
@@ -1076,7 +1101,7 @@ def static_sides(sol):
             prev_ = n
         return used + (LANE_ST + hw[ls[-1]] if ls else 0.0)
     for f, bl in boxes.items():
-        for Ly in (0, 1):
+        for Ly in range(NL):
             idx = [ii for ii in range(len(bl)) if (f, ii, Ly) in SPLITS]
             gaps = []
             for a in idx:
@@ -1375,6 +1400,13 @@ for f in FR:
         if lab in bxs[f]:           # a part with pads on one layer and on both is two islands of one label: both spans
             lo_, hi_ = min(lo_, bxs[f][lab][0]), max(hi_, bxs[f][lab][1])
         bxs[f][lab] = (lo_, hi_)
+# each island's box and layers (every static label's: a lane the geometry, the audit or the snap found blocked by an
+# island not on every routing layer is held off its layers -- whole_route's LAYER cuts)
+_ib = {}
+for st_ in STATIC:
+    x0_, y0_, x1_, y1_, L_ = _ib.get(st_[5], (math.inf, math.inf, -math.inf, -math.inf, set()))
+    _ib[st_[5]] = (min(x0_, st_[0]), min(y0_, st_[1]), max(x1_, st_[2]), max(y1_, st_[3]), L_ | set(st_[4]))
+lcuts_g, lseen = [], set()
 vcuts, vseen = [], set()
 for q in sol['paid'].get('static', []):
     _v, f, k, n, what = q[:5]
@@ -1389,19 +1421,21 @@ for q in sol['paid'].get('static', []):
     if lab.startswith(('end ', 'stub ', 'svia ')) or lab not in bxs[f] or (n, f, lab) in seen:
         continue
     seen.add((n, f, lab))
+    if NL > 2 and lab in _ib and set(_ib[lab][4]) != ALL():
+        # (more layers than two: an island NOT on every routing layer -- a part's pads on one face -- is answered under
+        # it: the lane held off its layers there, a LAYER cut, rather than kept from crossing in its span and sent round)
+        if (n, lab) not in lseen:
+            lseen.add((n, lab))
+            lcuts_g.append({'lane': n, 'island': lab, 'layer': 1 - min(_ib[lab][4]), 'blocked': sorted(_ib[lab][4]),
+                            'box': [round(v_, 4) for v_ in _ib[lab][:4]]})
+        continue
     sa, sb = bxs[f][lab]
     g = LANE_ST + hw[n] + P_MIN
     cuts.append({'lane': n, 'island': lab, 'u_lo': FR[f]['u'](sa - g), 'u_hi': FR[f]['u'](sb + g)})
 res['cuts'] = cuts
-# each island's box and layers (whole_route's LAYER cuts: a lane the audit or the snap found blocked by an island on one
-# layer, held on the other across it)
-_ib = {}
-for st_ in STATIC:
-    if st_[5] in set(ISLAND.values()):
-        x0_, y0_, x1_, y1_, L_ = _ib.get(st_[5], (math.inf, math.inf, -math.inf, -math.inf, set()))
-        _ib[st_[5]] = (min(x0_, st_[0]), min(y0_, st_[1]), max(x1_, st_[2]), max(y1_, st_[3]), L_ | set(st_[4]))
+res['lcuts'] = lcuts_g
 res['island_boxes'] = {k_: [round(v_[0], 4), round(v_[1], 4), round(v_[2], 4), round(v_[3], 4), sorted(v_[4])]
-                       for k_, v_ in _ib.items()}
+                       for k_, v_ in _ib.items() if k_ in set(ISLAND.values())}
 # each pad's island, for the polish's flips to name the islands this geometry held lanes to (whole_polish.island_of)
 res['islands'] = {f'{r_}.{ctx.pcb.footprints[r_].pads[i_].pad_number}': lab_ for (r_, i_), lab_ in ISLAND.items()}
 for q in sol['paid'].get('via', []):
@@ -1422,7 +1456,8 @@ res['flips'] = sorted(FLIP)
 res['changes'] = {n: list(chg.get(n, [])) for n in res['lanes']}    # each lane's changes in route u, in order
 res['rules'] = {'grid': ctx.cfg.grid_step, 'track': TW, 'clear': CL, 'lane_min': bd.LANE_MIN}
 json.dump(res, open(OUT, 'w'))
-log(f'cuts for the solve: {[(c_["lane"], c_["island"], round(c_["u_lo"], 2), round(c_["u_hi"], 2)) for c_ in cuts]}; via cuts {[(c_["lane"], round(c_["u"], 2)) for c_ in vcuts]}')
+log(f'cuts for the solve: {[(c_["lane"], c_["island"], round(c_["u_lo"], 2), round(c_["u_hi"], 2)) for c_ in cuts]}; via cuts {[(c_["lane"], round(c_["u"], 2)) for c_ in vcuts]}'
+    + (f'; layer cuts {[(c_["lane"], c_["island"], [LNAME[b_] for b_ in c_["blocked"]]) for c_ in lcuts_g]}' if lcuts_g else ''))
 log(f'wrote {OUT}: {len(res["lanes"])} lanes, {len(res["vias"])} vias')
 for kind, v in sol['paid'].items():
     log(f'  PAID {kind} {len(v)}: ' + '; '.join(f'{q[0]:.3f} {q[1:]}' for q in sorted(v, reverse=True)[:6]))
