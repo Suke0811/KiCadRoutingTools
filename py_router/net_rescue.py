@@ -49,6 +49,7 @@ import routing_defaults as defaults
 from geometry_utils import UnionFind
 from routing_state import record_net_event
 from terminal_colors import RED, GREEN, YELLOW, RESET
+from keep_away import stamp_keep_away   # #1146
 
 
 # ---------------------------------------------------------------------------
@@ -681,6 +682,9 @@ def _attempt_edge(pcb_data, net_id, gap, config, net_clearances,
                 # window can honestly route. Do not weld a random pair.
                 continue
             src_over = tgt_over = None
+        # #1146: the keep-away band, measured on the whole board (the
+        # clone is per attempt, so nothing needs clearing).
+        stamp_keep_away(obstacles, cfg, pcb_data, net_id)
         result = route_net_with_obstacles(window, net_id, cfg, obstacles, bounds=bounds,
                                           sources_override=src_over,
                                           targets_override=tgt_over)
@@ -1602,6 +1606,8 @@ def _attempt_net_at_geometry(pcb_data, net_id, cfg, net_clearances,
     _add_free_via_positions(obstacles, pcb_data, [net_id], cfg)
     add_same_net_via_clearance(obstacles, pcb_data, net_id, cfg)
     add_same_net_pad_drill_via_clearance(obstacles, pcb_data, net_id, cfg)
+    # #1146: the keep-away band (a per-call clone; nothing to clear).
+    stamp_keep_away(obstacles, cfg, pcb_data, net_id)
 
     edge_results = []
     failed_gaps = set()

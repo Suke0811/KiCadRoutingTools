@@ -881,6 +881,132 @@ step it is tied to — this is a coupled choice they may want to override. If th
 board has no outer-layer pour planned, say so explicitly and note that the
 impedance nets are being routed as plain microstrip.
 
+### Step 4c: Keep noisy nets away from sensitive ones — ONLY when the signal types demand it (#1146)
+
+`--keep-away AGG:VICTIM:GAP` (`route.py` and `route_diff.py`) makes the router
+prefer to keep one group's copper GAP mm (edge to edge, same layer) from the
+other group's. It is a SOFT cost above the clearance, which stays the hard floor:
+while a net of either group routes, every cell inside the band around the other
+group's tracks, vias and pads costs extra. Nets of one group still route against
+each other at the normal clearance. It exists for crosstalk on mixed-signal
+boards. It is NOT a spreading knob (that is `--track-proximity-cost`), and it
+costs search time and some wirelength, so **add a rule only when you are sure,
+from what the nets carry, that one group would couple noise into the other.**
+Most boards get none.
+
+**Add a rule only when ALL of these hold:**
+
+1. **An aggressor group exists, by function:** clocks (MCLK/BCLK/LRCLK, crystal
+   or oscillator outputs, SPI/QSPI SCK, DAC/ADC sample clocks), switching nodes
+   (buck/boost SW/LX/PH, gate drives), relay / solenoid / motor coil drives, PWM
+   outputs, fast single-ended buses.
+2. **A victim group exists, by function:** analog audio paths (codec/DAC/ADC
+   analog I/O, mic and line inputs, headphone and line outputs), ADC and sensor
+   inputs (especially high-impedance ones), voltage references (VREF), op-amp
+   inputs, PLL loop filters, regulator feedback (FB) nodes, RF feeds, and the
+   crystal pins themselves (XTAL in/out are victims of digital neighbours).
+3. **You confirmed each net's role from the parts it connects**: the codec,
+   ADC, op-amp, crystal, regulator or relay its pads belong to, and the pin
+   function (`pad.pinfunction`, or the datasheet when that is empty). A net
+   name alone is not evidence, and a generic `Net-(R12-Pad2)` is no evidence
+   at all.
+4. **Both groups are routed copper.** A group that lives only on a plane is not
+   a keep-away subject.
+
+**Do NOT add one when:**
+- the board is purely digital;
+- the "victim" is a power or ground net (planes, widths and return vias handle those);
+- the two groups sit in separate regions with no shared corridor;
+- the only motive is to spread routes;
+- you cannot name both signal types with confidence. Say so in the plan and ask
+  the user rather than guess.
+
+The two halves of a differential pair belong on the SAME side of a rule, never
+on opposite sides.
+
+**Writing it.** Each side is comma-separated net patterns, resolved exactly as
+`--nets` resolves them (`*`/`?`, `!` excludes), and/or net classes as
+`class=NAME`. Use classes when the board's project already sorts the nets that
+way: `class=Digital:class=Audio:0.5` is KiCad's
+`A.NetClass == 'Digital' && B.NetClass == 'Audio'` as a soft rule. The class
+list is printed by `list_nets.py --design-rules` (Step 4). `!class=NAME`
+removes a class, and `class=Default` means every net no class claims. Write one
+rule per gap, and repeat the flag.
+
+**Choosing the gap** (edge to edge), from the coupling being guarded against:
+- **0.3 mm:** slow or static digital (LED, GPIO enables) near analog.
+- **0.5 mm:** ordinary digital (I²C, SPI data, UART) near audio or ADC inputs.
+- **1.0 mm:** clocks, switching nodes and coil drives near sensitive analog.
+
+These are the values the issue's own audio board used. A wider band eats
+corridor capacity on every layer the groups share, so do not go wider without
+a reason.
+
+**What it buys, measured** (2026-10-05, four in-repo boards, each run graded
+against its own no-rule route by the same report):
+- **Dense, interleaved groups** (a 4-layer MCU board, its PWM/QSPI/clock/debug
+  lines against its ADC inputs, 0.1 mm clearance): in-band length fell 68-79% at
+  every gap from 0.3 to 2.0 mm (at 1 mm: 539 → 135 mm). Completion, vias,
+  wirelength and DRC stayed flat, at 3-15% more wall time.
+- **Crowded corridors** (a 4-layer USB debug-adapter board): 32-41% less
+  in-band length, for 3-5% more wirelength. Costs 1 and 2 left exactly the
+  same 40 mm, so that residue is forced: it is the capacity answer.
+- **Groups already apart** (two boards whose groups sit in separate regions):
+  identical routes. A rule costs nothing where there is nothing to avoid.
+- **Cost:** 0.25 was clearly weaker (203 vs 135 mm on the dense board at
+  1 mm), and 1-2 bought little more than the 0.5 default.
+
+**Keep both knobs at their defaults:**
+- `--keep-away-free` (default 1.5) is the radius around a net's OWN pads where
+  the band is not priced. It lets a relay coil pin leave the relay beside its
+  contact pins, and a codec clock pin leave the codec beside its analog pins.
+  With 0 such pins are sealed in.
+- `--keep-away-cost` (default 0.5) is the cost per cell inside a band, in the
+  same unit as the other proximity costs.
+
+Put the SAME rules on every routing step that routes either group: the signal
+route (Step 2), and the diff-pair step (Step 2a) and the impedance step (Step 2b)
+when one of their nets is in a group:
+
+```bash
+python3 py_router/route.py board.kicad_pcb --nets "*" \
+    --keep-away 'MCLK,BCLK,LRCLK:/AIN_*,/AOUT_*:1' \
+    --keep-away '/LED_*:/AIN_*,/AOUT_*:0.3' \
+    --output board_routed.kicad_pcb
+python3 py_router/route_diff.py board_routed.kicad_pcb --nets "/USB_D*" \
+    --keep-away 'class=Digital:class=Audio:0.5' \
+    --output board_routed2.kicad_pcb
+```
+
+In a GUI plan the rules ride the step's `keep_away` param, which is the Advanced
+tab's one-line Keep-away field: rules separated by spaces, used by both the Route
+and the Differential tabs.
+
+**Grade it, and report it.** A run with rules prints a `Keep-away (...)` line and
+writes `keep_away` into JSON_SUMMARY: `in_band_mm` and `nets_in_band`, plus
+per-net `in_band_mm`, `min_spacing_mm` and `closest_net`. The cost is soft, so
+in-band length that remains means the router found no other way through. That is
+a capacity answer (a corridor too narrow for the gap, or placement putting the
+groups side by side), and you must report it rather than hide it. Then suggest a
+placement change, a user-drawn guide corridor, or a `User.2` keepout around the
+analog block if it matters. `--keep-away-cost 0` measures a board against the
+rules without changing a single route.
+
+**Other soft costs can quietly weaken it.** The band shares the per-layer cost
+map with track proximity, ripped-route ghosts, plane fragility and history,
+and a cell pays the LARGEST of them, not their sum. So a retry at
+`--track-proximity-cost 2` makes every cell near a routed track as expensive
+as the band, and near those tracks the rule stops telling the two groups
+apart. Bus attraction and the global-plan attraction discount the whole step,
+band included. After any soft-cost retry, or with the Step 2c env stack, re-read
+`keep_away` in JSON_SUMMARY and reject a result whose in-band length grew.
+
+**Presenting:**
+- When added: "**Keep-away:** `MCLK,BCLK:/AIN_*:1` — U4's I2S clocks share the
+  corridor with U7's analog inputs (codec analog pins, datasheet section N)."
+- When not added: "**Keep-away:** none — no clock/switching-node and analog mix
+  found (all-digital board)."
+
 ## Step 5: Review Power and Ground Net Strategy (delegate to /recommend-plane-mappings)
 
 Which nets deserve planes and on which copper layers is the
@@ -2159,6 +2285,10 @@ python3 py_router/route.py board.kicad_pcb --nets "*" \
     --track-proximity-distance 2.0 --track-proximity-cost 0.1 \
     --output board_routed.kicad_pcb
 ```
+
+These spread routes from ALL other nets alike. Keeping one group of signals away
+from ANOTHER (clocks from analog inputs) is `--keep-away`, decided by signal
+type in Step 4c, never as a spreading knob.
 
 ## Important Notes
 

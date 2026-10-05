@@ -86,6 +86,7 @@ from rip_up_reroute import rip_up_net, restore_net
 from leg_rip import LEG_RIP_ENABLED, select_blocking_branch  # #510
 from rip_defer import queue_reroute  # #510 churn
 from diff_pair_custody import record_casualty
+from keep_away import stamp_keep_away   # #1146
 from polarity_swap import get_canonical_net_id, rip_combo_already_tried
 from routing_context import (
     build_single_ended_obstacles, build_incremental_obstacles,
@@ -158,8 +159,13 @@ def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
                              state.net_obstacles_cache, via)
         if token is None:
             continue
+        # #1146: this route runs on the restored working map, which carries
+        # no per-net soft costs; give it the net's keep-away band at least.
+        _ka = stamp_keep_away(state.working_obstacles, config, pcb_data, net_id)
         result = route_net_with_obstacles(pcb_data, net_id, config,
                                           state.working_obstacles)
+        if _ka:
+            state.working_obstacles.clear_layer_proximity()
         if result and not result.get('failed'):
             from tap_relocation import retap_pad
             _retap = retap_pad(pcb_data, config, state.working_obstacles,
@@ -328,8 +334,14 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                 continue
             new_vias, seg_mods = apply_stub_layer_switch(
                 pcb_data, stub, dest, config, debug=False)
+            # #1146: the restored working map carries no per-net soft
+            # costs; give this route the net's keep-away band at least.
+            _ka = stamp_keep_away(state.working_obstacles, config, pcb_data,
+                                  net_id)
             result = route_net_with_obstacles(pcb_data, net_id, config,
                                               state.working_obstacles)
+            if _ka:
+                state.working_obstacles.clear_layer_proximity()
             if result and not result.get('failed'):
                 net = pcb_data.nets.get(net_id)
                 nname = net.name if net else str(net_id)

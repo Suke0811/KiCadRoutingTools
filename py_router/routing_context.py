@@ -162,11 +162,16 @@ def build_diff_pair_obstacles(
     # diff-pair path (it never stamped here -- its owner exemption is
     # single-net).
     from history_congestion import add_history_source
+    from keep_away import add_keepaway_source
     merge_track_proximity_costs(
         obstacles, track_proximity_cache,
-        ghost_costs=add_history_source(
+        ghost_costs=add_keepaway_source(add_history_source(
             {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
              **(_stub_surplus or {})}, config),
+            config, pcb_data, (p_net_id, n_net_id),
+            # No extra clearance = build_diff_pair_leg_obstacles: the hybrid
+            # pair's one-track legs, not the coupled centreline.
+            single_track=not extra_clearance),
         config=config)
 
     # Add cross-layer track data
@@ -347,16 +352,17 @@ def build_single_ended_obstacles(
     from congestion_field import congestion2_rows
     from history_congestion import add_history_source
     from global_plan import add_plan_source
+    from keep_away import add_keepaway_source
     _c2 = congestion2_rows(config, net_id, routed_net_ids)
     merge_track_proximity_costs(
         obstacles,
         ({k: v for k, v in track_proximity_cache.items() if k not in _sibs}
          if _sibs else track_proximity_cache),
-        ghost_costs=add_plan_source(add_history_source(
+        ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
             {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
              **(_stub_surplus or {}),
              **({('congestion2',): _c2} if _c2 is not None else {})}, config),
-            config, net_id, routed_net_ids),
+            config, net_id, routed_net_ids), config, pcb_data, net_id),
         config=config)
     # Congestion v2 (#424): demand/capacity field, owner-exempt (no-op
     # unless KICAD_CONGESTION2_COST > 0 and the field was built).
@@ -445,13 +451,14 @@ def build_incremental_obstacles(
     # Add track proximity costs (+ layer-aware stub surplus, #590 history)
     from history_congestion import add_history_source
     from global_plan import add_plan_source
+    from keep_away import add_keepaway_source
     merge_track_proximity_costs(
         obstacles,
         ({k: v for k, v in track_proximity_cache.items() if k not in _sibs}
          if _sibs else track_proximity_cache),
-        ghost_costs=add_plan_source(
+        ghost_costs=add_keepaway_source(add_plan_source(
             add_history_source(_stub_surplus or None, config),
-            config, net_id, routed_net_ids) or None,
+            config, net_id, routed_net_ids), config, pcb_data, net_id) or None,
         config=config)
 
     # Add cross-layer track data
@@ -613,16 +620,17 @@ def prepare_obstacles_inplace(
     from congestion_field import congestion2_rows
     from history_congestion import add_history_source
     from global_plan import add_plan_source
+    from keep_away import add_keepaway_source
     _c2 = congestion2_rows(config, net_id, routed_net_ids)
     merge_track_proximity_costs(
         working_obstacles,
         ({k: v for k, v in track_proximity_cache.items() if k not in _sibs}
          if _sibs else track_proximity_cache),
-        ghost_costs=add_plan_source(add_history_source(
+        ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
             {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
              **(_stub_surplus or {}),
              **({('congestion2',): _c2} if _c2 is not None else {})}, config),
-            config, net_id, routed_net_ids),
+            config, net_id, routed_net_ids), config, pcb_data, net_id),
         config=config)
 
 

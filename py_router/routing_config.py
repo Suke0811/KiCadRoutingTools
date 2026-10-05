@@ -164,6 +164,13 @@ class GridRouteConfig:
     track_proximity_distance: float = 2.0  # mm - radius around routed tracks to penalize (same layer)
     stub_layer_swap: bool = True  # Enable stub layer switching optimization
     track_proximity_cost: float = 0.0  # mm equivalent cost (0 = disabled)
+    # #1146 pairwise keep-away (keep_away.py): canonical 'AGG:VICTIM:GAP'
+    # rules. While a net of one side routes, cells within GAP (edge to edge,
+    # same layer) of the other side's copper cost keep_away_cost per cell,
+    # except within keep_away_free mm of the routed net's own pads.
+    keep_away: Tuple[str, ...] = ()
+    keep_away_free: float = 1.5  # mm (routing_defaults.KEEP_AWAY_FREE)
+    keep_away_cost: float = 0.5  # mm equivalent per cell (0 = report only)
     target_swap_crossing_penalty: float = 1000.0  # Penalty for crossing assignments in target swap
     crossing_layer_check: bool = True  # Only count crossings when routes share a layer
     routing_clearance_margin: float = 1.0  # Multiplier on track-via clearance (1.0 = minimum DRC)

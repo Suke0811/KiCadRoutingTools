@@ -50,6 +50,7 @@ from schematic_updater import apply_swaps_to_schematics
 # Import from refactored modules
 from routing_config import GridRouteConfig, GridCoord, DiffPairNet
 import routing_defaults as defaults
+from keep_away import keep_away_entries   # #1146
 from routing_utils import pos_key
 from connectivity import (
     get_stub_endpoints, find_stub_free_ends, find_connected_groups,
@@ -269,6 +270,11 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 bga_proximity_cost: float = defaults.BGA_PROXIMITY_COST,
                 track_proximity_distance: float = defaults.TRACK_PROXIMITY_DISTANCE,
                 track_proximity_cost: float = defaults.TRACK_PROXIMITY_COST,
+                # #1146: 'AGGRESSOR:VICTIM:GAP' rules (keep_away.py), the
+                # same as route.py's. None/[] = off; cost 0 = report only.
+                keep_away: Optional[List[str]] = None,
+                keep_away_free: float = defaults.KEEP_AWAY_FREE,
+                keep_away_cost: float = defaults.KEEP_AWAY_COST,
                 diff_pair_gap: float = defaults.DIFF_PAIR_GAP,
                 diff_pair_width_from_class: bool = False,
                 diff_pair_gap_from_class: bool = False,
@@ -726,6 +732,14 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         config_kwargs['layer_widths'] = layer_widths
         config_kwargs['impedance_target'] = impedance
     config_kwargs['layer_costs'] = layer_costs  # per-layer bias for coupled diff routing (#193)
+    if keep_away:
+        from keep_away import normalize_keep_away_specs
+        config_kwargs['keep_away'] = normalize_keep_away_specs(keep_away)
+        config_kwargs['keep_away_free'] = keep_away_free
+        config_kwargs['keep_away_cost'] = keep_away_cost
+        # Resolve the rules and cache the bands against THIS run's board (the
+        # GUI keeps one PCBData across runs), as route.py does.
+        pcb_data._keep_away_state = {}
     # #156: the diff engine keeps the mm-exact obstacle maps (per-layer
     # impedance width baked into every stamp) -- the pose router has no
     # track_margin channel to ride instead. Margin helpers computed against
@@ -1795,6 +1809,17 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         # width floor, {layer: [solved_mm, floor_mm]} -- those layers will NOT
         # meet the impedance request. Key absent when no clamp fired.
         summary['impedance_width_clamped'] = impedance_width_clamped
+    # #1146: per net, the track length left inside a keep-away band, measured
+    # on the whole board (route.py reports the same key).
+    if getattr(config, 'keep_away', None):
+        try:
+            from keep_away import keep_away_report, print_keep_away_report
+            _ka = keep_away_report(pcb_data, config)
+            if _ka is not None:
+                print_keep_away_report(_ka)
+                summary['keep_away'] = _ka
+        except Exception as _kae:                              # noqa: BLE001
+            summary['keep_away'] = {'error': str(_kae)}
     try:                       # #653: env knobs into the machine-readable
         import env_knobs as _ek653   # summary, so a harness can detect a
         summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
@@ -1826,6 +1851,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             # #508 finding 11: removed input vias, same contract as
             # segments_to_remove (route.py parity; differential_gui applies).
             'vias_to_remove': cleanup_input_strip_vias,
+            # #1146: the nets JSON_SUMMARY['keep_away'] lists as left inside
+            # a band, one dict per net (empty without a rule).
+            'keep_away': keep_away_entries(summary.get('keep_away')),
             # successful/failed only count pairs that were coupled-routed or
             # outright failed -- electrically-short pairs deferred to the
             # single-ended pass, and pairs skipped for self-overlapping fanout,
@@ -2128,6 +2156,23 @@ Examples:
     parser.add_argument("--track-proximity-cost", type=float, default=defaults.TRACK_PROXIMITY_COST,
                         help="Cost penalty near routed tracks (0 = disabled, default: 0.0)")
 
+    # Pairwise keep-away between net groups (#1146), as route.py's
+    parser.add_argument("--keep-away", nargs="+", action="extend", metavar="AGG:VICTIM:GAP",
+                        help="Soft keep-away between two net groups, repeatable: while a pair "
+                             "with a net on one side routes, cells where it would sit closer "
+                             "than GAP mm (edge to edge, same layer) to copper of the other "
+                             "side cost --keep-away-cost. Each side is comma-separated net "
+                             "patterns as in --nets and/or net classes as class=NAME, e.g. "
+                             "'class=Clocks:/AUDIO_*:0.5'. Nets of one side route against "
+                             "each other at the normal clearance. The run reports per net the "
+                             "length left inside a band (JSON_SUMMARY keep_away).")
+    parser.add_argument("--keep-away-free", type=float, default=defaults.KEEP_AWAY_FREE,
+                        help=f"Within this many mm of the routed pair's own pads the keep-away "
+                             f"band is not priced (default: {defaults.KEEP_AWAY_FREE})")
+    parser.add_argument("--keep-away-cost", type=float, default=defaults.KEEP_AWAY_COST,
+                        help=f"Cost per cell inside a keep-away band, mm equivalent (0 = measure "
+                             f"and report only, default: {defaults.KEEP_AWAY_COST})")
+
     # Differential pair routing options
     parser.add_argument("--diff-pair-gap", type=float, default=None,
                         help="Gap between P and N traces of differential pairs in mm "
@@ -2269,6 +2314,12 @@ Examples:
     # the resolved default pair width.
     _dp_width_explicit = args.track_width is not None
     _dp_gap_explicit = args.diff_pair_gap is not None
+    if args.keep_away:
+        from keep_away import parse_keep_away_rules
+        try:
+            parse_keep_away_rules(args.keep_away)
+        except ValueError as _kae:
+            parser.error(f"--keep-away: {_kae}")
     # --track-width IS the diff-pair LEG WIDTH here: when omitted, default to the
     # board's OWN Default net-class diff_pair_width (else routing_defaults), so a
     # bare diff route uses the board's own differential geometry -- parity with the
@@ -2483,6 +2534,9 @@ Examples:
                 bga_proximity_cost=args.bga_proximity_cost,
                 track_proximity_distance=args.track_proximity_distance,
                 track_proximity_cost=args.track_proximity_cost,
+                keep_away=args.keep_away,
+                keep_away_free=args.keep_away_free,
+                keep_away_cost=args.keep_away_cost,
                 diff_pair_gap=args.diff_pair_gap,
                 diff_pair_width_from_class=not _dp_width_explicit,
                 diff_pair_gap_from_class=not _dp_gap_explicit,

@@ -96,6 +96,10 @@ FLAG_PARAMS = {
     # the generic fallthrough carried it as 'ordering', which matches no
     # dialog control, so a replayed plan silently routed in default order.
     '--ordering': 'ordering_strategy',
+    # #1146: the keep-away free radius and cost (Advanced-tab spin controls of
+    # the same names).
+    '--keep-away-free': 'keep_away_free',
+    '--keep-away-cost': 'keep_away_cost',
     # route_planes' --zone-clearance is type=float (a value, NOT a toggle); it
     # must consume its argument here. It briefly lived in BOOL_FLAGS, which
     # dropped the value and set zone_clearance=True -> the plan executor's
@@ -189,10 +193,17 @@ LIST_FLAGS = {
     # side accepts the same raw spec strings (fanout_gui parses them like
     # the CLI main does).
     '--plane-net-layers': 'plane_net_layers',
+    # #1146: route.py's keep-away rules (AGG:VICTIM:GAP strings). The plan
+    # executor space-joins the list into the Advanced tab's one-line
+    # `keep_away` text control, whose parser splits on whitespace again.
+    '--keep-away': 'keep_away',
     '--nets': None,  # handled per action
     '--pairs': None,
     '--plane-layers': None,
 }
+# LIST_FLAGS whose argparse action is 'extend': every occurrence ADDS to the
+# list, where a plain nargs='+' flag repeated keeps only its last value.
+EXTEND_LIST_FLAGS = {'--keep-away'}
 BOOL_FLAGS = {
     '--rip-blocker-nets': 'rip_blocker_nets',
     '--smoothing': 'smoothing',      # #536 octolinear smoothing (default ON)
@@ -473,7 +484,10 @@ def parse_command(argv):
             while i < len(argv) and not argv[i].startswith('--'):
                 vals.append(_num(argv[i]))
                 i += 1
-            lists[a] = vals
+            if a in EXTEND_LIST_FLAGS:
+                lists.setdefault(a, []).extend(vals)
+            else:
+                lists[a] = vals
         elif a in ('--group', '--group-scope', '--group-by'):
             # #459 placement blocks: these must land as TOP-LEVEL step keys,
             # not in params. ai_plan's route action reads step["group"] /
@@ -589,7 +603,7 @@ def parse_command(argv):
     # it still did (26 kept bga_fanout steps on 18 corpus boards).
     for k in ('--power-nets', '--power-nets-widths', '--layer-costs',
               '--layers', '--polarity-swap-nets', '--coplanar-nets',
-              '--rip-existing-nets', '--plane-net-layers'):
+              '--rip-existing-nets', '--plane-net-layers', '--keep-away'):
         if k in lists:
             step['params'][LIST_FLAGS[k]] = lists[k]
     return step

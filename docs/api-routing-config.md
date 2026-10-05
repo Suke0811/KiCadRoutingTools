@@ -67,6 +67,9 @@ source to zero at the radius.
 | `package_proximity_zones` | `None` | Per-package proximity rects `(min_x, min_y, max_x, max_y, radius_mm)` for BGA/QFN/QFP, filled by the batch engines under the opt-in `KICAD_PACKAGE_PROXIMITY`. `None` = legacy (the hard BGA zones at the flat radius) |
 | `track_proximity_distance` | `2.0` | Radius around routed tracks (same layer) |
 | `track_proximity_cost` | `0.0` | Cost near routed tracks (**0 = off by default**) |
+| `keep_away` | `()` | Pairwise keep-away rules `'AGG:VICTIM:GAP'` (#1146); empty = off |
+| `keep_away_free` | `1.5` | Radius around the routed net's own pads where the keep-away band is not priced |
+| `keep_away_cost` | `0.5` | Cost per cell inside a keep-away band (0 = measure and report only) |
 | `plan_probe` | `False` | Marks a config as the global plan's (#589) rough-route PROBE, whose relaxed legality lets probe terminals overlap future nets' copper. Set only on the plan's `replace()` clone — never on a config that emits copper |
 | `ripped_route_avoidance_radius` | `1.0` | Radius around just-ripped routes |
 | `ripped_route_avoidance_cost` | `0.1` | Cost near just-ripped routes (helps reroutes diverge) |
@@ -196,6 +199,62 @@ Definition review flags: **pre-existing input-board copper never emits** —
 nets registered as rippable-pre-existing skip the cache, so corridors of
 already-routed boards exert no spreading pressure on new routes. No width
 awareness (a 2 mm power trunk and a 0.1 mm signal emit the same field).
+
+#### Pairwise keep-away: `keep_away` / `keep_away_free` / `keep_away_cost`
+
+A user-declared spacing between two net groups above the clearance (#1146) --
+clocks, I2C, relay coils and switch nodes kept a few tenths of a millimetre
+further from analog nets than the netclass asks. Each rule `AGG:VICTIM:GAP`
+names two sides as comma-separated net patterns (resolved like `--nets`)
+and/or net classes as `class=NAME` (a glob; `!class=NAME` takes one out,
+`class=Default` is every net no class claims), and a GAP in mm, edge to edge
+on the same layer. `class=Digital:class=Audio:0.5` is KiCad's
+`A.NetClass == 'Digital' && B.NetClass == 'Audio'` as a soft rule; classes
+are read from the board's project by the resolver the router and `check_drc`
+share. While a net of either side is
+routed, every cell where its track would sit closer than GAP to the other
+side's copper (pads, tracks, vias -- pre-existing copper and copper routed
+earlier in the run alike) costs `keep_away_cost` on the **layer map**.
+Nets of one side route against each other at the normal clearance, and a net
+matching both sides keeps away from both. The clearance stays the hard floor;
+the keep-away is soft, so a band the router cannot avoid is still routed
+through.
+
+Within `keep_away_free` of the routed net's OWN pads the band is not priced,
+so a pin can leave a package whose neighbouring pins belong to the other group
+(a relay's coil pin beside its contact pins). A diff pair is priced as one
+object, its band widened by the pair's half-extent (a hybrid pair's
+single-ended legs as one track each).
+
+The band is a flat cost per cell. It is composed on the layer map like every
+other source, so in the default MAX composition a cell inside the band costs
+`max(keep_away_cost, other sources)`, and a via landing there pays it times
+`via_proximity_cost`. The field is built in `keep_away.py` from each opposite
+net's copper, cached per net until that net's copper changes, and folded into
+every single-ended and diff-pair obstacle builder as the `('keepaway',)`
+ghost source.
+
+The band is rebuilt from the copper as it is at each prepare, so it follows
+rip-up and restore: a ripped net takes its tracks' band with it (its pads keep
+theirs) and a restored one brings the same band back. It is read from the
+geometry itself rather than from the copper epoch, because many passes edit
+tracks in place without bumping it. Who routes first matters: a net is priced
+against the other side's tracks routed before it and against all of its pads.
+Paths that route on a map no builder prepared stamp the band themselves (the
+stub-swap and tap-relocation rescues, `net_rescue`, terminal escalation), and
+the plane finalize's reroute sub-runs inherit the rules. The finalize's own
+pad taps, region joins and oracle welds do not price it; the report covers
+whatever they ship.
+
+Because it is soft, the route step measures what shipped:
+`JSON_SUMMARY['keep_away']` gives, per net of either group left inside a
+band, the track length inside it beyond the free radius, the closest
+spacing and the net it came closest to, with board totals (the GUI's
+`results_data['keep_away']` carries the same per-net entries as a list,
+and the report prints to its log). It reads the
+whole board, so `--keep-away-cost 0` grades a board without changing the
+route. `route.py` and `route_diff.py` take the rules; in the GUI they are the
+Advanced tab's Keep-away field, used by the Route and Differential tabs.
 
 #### Via proximity multiplier: `via_proximity_cost`
 

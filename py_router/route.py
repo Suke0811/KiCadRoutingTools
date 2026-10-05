@@ -98,6 +98,7 @@ from routing_common import (
     get_common_config_kwargs, warn_targets_outside_board
 )
 import routing_defaults as defaults
+from keep_away import keep_away_entries   # #1146
 import re
 from terminal_colors import RED, RESET, YELLOW
 from routing_constants import DEFAULT_4_LAYER_STACK, POWER_NET_EXCLUSION_PATTERNS
@@ -273,6 +274,7 @@ def _empty_results_data() -> dict:
         'boxed_in': [],
         'fanout_dropped': [],
         'pad_pairs_open': [],
+        'keep_away': [],
     }
 
 
@@ -812,6 +814,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 bga_proximity_cost: float = 0.2,
                 track_proximity_distance: float = 2.0,
                 track_proximity_cost: float = defaults.TRACK_PROXIMITY_COST,
+                # #1146: 'AGGRESSOR:VICTIM:GAP' rules (keep_away.py). None/[]
+                # = off. Cost 0 still measures and reports.
+                keep_away: Optional[List[str]] = None,
+                keep_away_free: float = defaults.KEEP_AWAY_FREE,
+                keep_away_cost: float = defaults.KEEP_AWAY_COST,
                 debug_lines: bool = False,
                 verbose: bool = False,
                 max_rip_up_count: int = defaults.MAX_RIPUP,
@@ -1521,6 +1528,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         debug_memory=debug_memory, layer_costs=layer_costs
     )
     config_kwargs['power_tap_neckdown'] = power_tap_neckdown
+    if keep_away:
+        from keep_away import normalize_keep_away_specs
+        config_kwargs['keep_away'] = normalize_keep_away_specs(keep_away)
+        config_kwargs['keep_away_free'] = keep_away_free
+        config_kwargs['keep_away_cost'] = keep_away_cost
+        # Resolve the rules and cache the bands against THIS run's board: the
+        # GUI keeps one PCBData across runs and re-syncs its copper and pads.
+        pcb_data._keep_away_state = {}
     config_kwargs['neckdown_length'] = neckdown_length
     config_kwargs['neckdown_taper_length'] = neckdown_taper_length
     if direction_order is not None:
@@ -4622,6 +4637,18 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 for _n, _r in sorted(_amp.items())]
     except Exception:
         pass
+    # #1146: per net, the track length that ended up inside a keep-away band
+    # (the cost is soft, so a band the router could not avoid is routed
+    # through, and this is where that is said). Measured on the whole board.
+    if getattr(config, 'keep_away', None):
+        try:
+            from keep_away import keep_away_report, print_keep_away_report
+            _ka = keep_away_report(pcb_data, config)
+            if _ka is not None:
+                print_keep_away_report(_ka)
+                summary['keep_away'] = _ka
+        except Exception as _kae:                              # noqa: BLE001
+            summary['keep_away'] = {'error': str(_kae)}
     # WHICH SUMMARY IS THIS? A run that fires the reconciliation sub-pass emits
     # a SECOND JSON_SUMMARY, scoped to that subset, and the only thing saying so
     # was a prose "Note:" printed after it. Anything that scrapes the last
@@ -4641,7 +4668,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # a reader merging tallies must not add them twice.
         summary['board_scoped_keys'] = [k for k in ('stacked_copper',
                                                     'power_trace_ampacity',
-                                                    'min_clearance_used')
+                                                    'min_clearance_used',
+                                                    'keep_away')
                                         if k in summary]
     try:                       # #653: env knobs into the machine-readable
         import env_knobs as _ek653   # summary, so a harness can detect a
@@ -4680,6 +4708,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # #409 follow-up: same data as JSON_SUMMARY['pad_pairs_open']
             # (may be empty).
             'pad_pairs_open': pad_pairs_open_report,
+            # #1146: the nets JSON_SUMMARY['keep_away'] lists as left inside
+            # a band, one dict per net (empty without a rule).
+            'keep_away': keep_away_entries(summary.get('keep_away')),
         }
     else:
         # Write output file using extracted output_writer module
@@ -5250,6 +5281,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         # CLI leg below cannot auto-read them; both legs
                         # forward the same map).
                         track_clearances=dict(config.track_clearances or {}),
+                        # #1146: casualties rerouted by the finalize's
+                        # sub-runs keep this run's keep-away rules.
+                        keep_away=list(config.keep_away) or None,
+                        keep_away_free=config.keep_away_free,
+                        keep_away_cost=config.keep_away_cost,
                         # #338 (review DRC-1): forward THIS run's RESOLVED
                         # copper-to-edge floor. The engine's own re-resolve
                         # cannot work here: its PLANE_EDGE_CLEARANCE default
@@ -5341,6 +5377,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         layer_clearances=dict(config.layer_clearances or {}),
                         # #1135: same reason for the track-to-track rules.
                         track_clearances=dict(config.track_clearances or {}),
+                        # #1146: casualties rerouted by the finalize's
+                        # sub-runs keep this run's keep-away rules.
+                        keep_away=list(config.keep_away) or None,
+                        keep_away_free=config.keep_away_free,
+                        keep_away_cost=config.keep_away_cost,
                         # #338 (review DRC-1): same reason for the edge floor
                         # -- output_file has no sibling .kicad_pro yet, and
                         # the engine default 0.5 masks the project read.
@@ -7221,6 +7262,27 @@ For differential pair routing, use route_diff.py:
     parser.add_argument("--track-proximity-cost", type=float, default=defaults.TRACK_PROXIMITY_COST,
                         help=f"Cost penalty near routed tracks (0 = disabled, default: {defaults.TRACK_PROXIMITY_COST})")
 
+    # Pairwise keep-away between net groups (#1146)
+    parser.add_argument("--keep-away", nargs="+", action="extend", metavar="AGG:VICTIM:GAP",
+                        help="Soft keep-away between two net groups, repeatable: while a net "
+                             "of one side routes, its track costs --keep-away-cost per cell "
+                             "where it would sit closer than GAP mm (edge to edge, same layer) "
+                             "to copper of the other side. Each side is comma-separated net "
+                             "patterns as in --nets and/or net classes as class=NAME, e.g. "
+                             "'CLK*,/I2C_*:/AUDIO_*:0.5' or 'class=Digital:class=Audio:0.5'. "
+                             "Nets of one side route against each other at the normal "
+                             "clearance. The "
+                             "run reports per net the length left inside a band "
+                             "(JSON_SUMMARY keep_away).")
+    parser.add_argument("--keep-away-free", type=float, default=defaults.KEEP_AWAY_FREE,
+                        help=f"Within this many mm of the routed net's own pads the keep-away "
+                             f"band is not priced, so a pin can leave a package whose other "
+                             f"pins belong to the other group (default: {defaults.KEEP_AWAY_FREE})")
+    parser.add_argument("--keep-away-cost", type=float, default=defaults.KEEP_AWAY_COST,
+                        help=f"Cost per cell inside a keep-away band, mm equivalent like the "
+                             f"other proximity costs (0 = measure and report only, "
+                             f"default: {defaults.KEEP_AWAY_COST})")
+
     # Layer swap and target swap options
     parser.add_argument("--no-stub-layer-swap", action="store_true",
                         help="Disable stub layer switching optimization (enabled by default)")
@@ -7561,6 +7623,13 @@ For differential pair routing, use route_diff.py:
     # manifests and .claude/skills/* keep replaying unchanged.
     component_patterns = list(args.component or [])
 
+    if args.keep_away:
+        from keep_away import parse_keep_away_rules
+        try:
+            parse_keep_away_rules(args.keep_away)
+        except ValueError as _kae:
+            parser.error(f"--keep-away: {_kae}")
+
     if args.force_reroute and not all_patterns and not component_patterns:
         parser.error("--force-reroute requires an explicit net scope "
                      "(--nets, positional patterns, or --component): it rips "
@@ -7869,6 +7938,9 @@ For differential pair routing, use route_diff.py:
                 bga_proximity_cost=args.bga_proximity_cost,
                 track_proximity_distance=args.track_proximity_distance,
                 track_proximity_cost=args.track_proximity_cost,
+                keep_away=args.keep_away,
+                keep_away_free=args.keep_away_free,
+                keep_away_cost=args.keep_away_cost,
                 debug_lines=args.debug_lines,
                 verbose=args.verbose,
                 max_rip_up_count=args.max_ripup,

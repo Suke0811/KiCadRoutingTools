@@ -783,6 +783,11 @@ def repair_planes(
     # #562 finalize forwards its run's, as it does layer_clearances, because
     # the output's .kicad_dru sibling does not exist yet mid-run.
     track_clearances: Optional[dict] = None,
+    # #1146: the route step's keep-away rules, forwarded to the nested
+    # batch_route sub-runs that reroute rip casualties. None = off.
+    keep_away: Optional[List[str]] = None,
+    keep_away_free: float = defaults.KEEP_AWAY_FREE,
+    keep_away_cost: float = defaults.KEEP_AWAY_COST,
 ) -> Tuple[int, int]:
     """
     Route between disconnected regions in power plane zones.
@@ -1291,6 +1296,10 @@ def repair_planes(
                 disable_bga_zones=([] if no_bga_zone else None),
                 net_clearances=net_clearances,
                 layer_costs=(list(layer_costs) if layer_costs else None),  # #658 finalize sub-runs honor chain layer economics
+                # #1146: a casualty this sub-run reroutes keeps the run's
+                # keep-away rules.
+                keep_away=keep_away, keep_away_free=keep_away_free,
+                keep_away_cost=keep_away_cost,
                 hole_to_hole_clearance=hole_to_hole_clearance,
                 return_results=True, pcb_data=pcb_data,
                 # #540 item 2: price the OTHER pending casualties' corridors
@@ -1900,6 +1909,10 @@ def repair_planes(
                     # netclasses next to a not-yet-written output).
                     net_clearances=net_clearances,
                     layer_costs=(list(layer_costs) if layer_costs else None),  # #658 finalize sub-runs honor chain layer economics
+                    # #1146: a casualty this sub-run reroutes keeps the run's
+                    # keep-away rules.
+                    keep_away=keep_away, keep_away_free=keep_away_free,
+                    keep_away_cost=keep_away_cost,
                     hole_to_hole_clearance=hole_to_hole_clearance,
                     # #527: forward progress/cancel -- a multi-net reconnect
                     # used to run minutes behind one static message.
@@ -2510,6 +2523,10 @@ def repair_planes(
                     disable_bga_zones=([] if no_bga_zone else None),
                     net_clearances=net_clearances,
                     layer_costs=(list(layer_costs) if layer_costs else None),  # #658 finalize sub-runs honor chain layer economics
+                    # #1146: a casualty this sub-run reroutes keeps the run's
+                    # keep-away rules.
+                    keep_away=keep_away, keep_away_free=keep_away_free,
+                    keep_away_cost=keep_away_cost,
                     # #539: without this the gate's plane-net vias were placed
                     # at batch_route's 0.2 default on a 0.25-h2h board (muzy_
                     # zynq2's residual drill grazes -- same forwarding-gap

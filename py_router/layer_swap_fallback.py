@@ -25,6 +25,7 @@ from obstacle_costs import (
 )
 from blocking_analysis import analyze_frontier_blocking
 from history_congestion import add_history_source, record_rip   # #590
+from keep_away import add_keepaway_source   # #1146
 from polarity_swap import get_canonical_net_id
 from obstacle_cache import refresh_net_obstacles as _refresh_map   # #806
 
@@ -395,8 +396,10 @@ def try_fallback_layer_swap(pcb_data, pair, pair_name: str, config,
                                                  layer_map=layer_map)
             merge_track_proximity_costs(
                 retry_obstacles, track_proximity_cache,
-                ghost_costs=add_history_source(_stub_surplus or None, config)
-                or None, config=config)
+                ghost_costs=add_keepaway_source(
+                    add_history_source(_stub_surplus or None, config), config,
+                    pcb_data, (pair.p_net_id, pair.n_net_id)) or None,
+                config=config)
             add_same_net_via_clearance(retry_obstacles, pcb_data, pair.p_net_id, config)
             add_same_net_via_clearance(retry_obstacles, pcb_data, pair.n_net_id, config)
             add_same_net_pad_drill_via_clearance(retry_obstacles, pcb_data, pair.p_net_id, config)
@@ -522,8 +525,9 @@ def try_fallback_layer_swap(pcb_data, pair, pair_name: str, config,
                                 layer_map=layer_map)
                             merge_track_proximity_costs(
                                 rip_obstacles, track_proximity_cache,
-                                ghost_costs=add_history_source(
-                                    _stub_surplus or None, config) or None,
+                                ghost_costs=add_keepaway_source(add_history_source(
+                                    _stub_surplus or None, config), config,
+                                    pcb_data, (pair.p_net_id, pair.n_net_id)) or None,
                                 config=config)
                             add_same_net_via_clearance(rip_obstacles, pcb_data, pair.p_net_id, config)
                             add_same_net_via_clearance(rip_obstacles, pcb_data, pair.n_net_id, config)
@@ -575,8 +579,10 @@ def try_fallback_layer_swap(pcb_data, pair, pair_name: str, config,
                                             layer_map=layer_map)
                                         merge_track_proximity_costs(
                                             reroute_obstacles, track_proximity_cache,
-                                            ghost_costs=add_history_source(
-                                                _stub_surplus or None, config) or None,
+                                            ghost_costs=add_keepaway_source(add_history_source(
+                                                _stub_surplus or None, config), config,
+                                                pcb_data, (ripped_pair.p_net_id,
+                                                           ripped_pair.n_net_id)) or None,
                                             config=config)
 
                                         reroute_result = route_diff_pair_with_obstacles(pcb_data, ripped_pair, config, reroute_obstacles, base_obstacles, reroute_stubs)
