@@ -26,6 +26,9 @@ Rows:
     0, and the gap line names the rule;
   - a rule on a forbidden layer, and a relaxing rule, raise nothing;
   - the per-pair floor survives a net-class gap below the rule;
+  - the per-pair floor keeps the clearance too (#441, found here): with no
+    rules file a class gap below the clearance was built as is, and the
+    #318 neck shaved P and N to different widths to clear it;
   - a track rule raises the gap; its `other_only` form does not;
   - the --impedance solve sees the raised gap.
 
@@ -67,10 +70,11 @@ def _pro(gap=0.25, hs=False):
     return {"net_settings": ns}
 
 
-def _route(dru, pro=None, hybrid=False, **kw):
-    """Route cap_chain's two pairs under `dru` (and `pro`); returns (log,
-    routed, failed, {margin: violations}). The #215 hybrid swap is off
-    unless asked for, so the coupled run is what ships."""
+def _route(dru, pro=None, hybrid=False, widths=None, **kw):
+    """Route cap_chain's two pairs under `dru` (None: no rules file) and
+    `pro`; returns (log, routed, failed, {margin: violations}), and fills
+    `widths` with {net name: [segment widths]} when given. The #215 hybrid
+    swap is off unless asked for, so the coupled run is what ships."""
     import diff_pair_loop
     import route_diff
     from check_drc import run_drc
@@ -84,9 +88,10 @@ def _route(dru, pro=None, hybrid=False, **kw):
             shutil.copy(os.path.join(ROOT, 'kicad_files', 'cap_chain.kicad_pcb'),
                         dst)
             for stem in ('cc', 'o'):
-                with open(os.path.join(td, stem + '.kicad_dru'), 'w',
-                          encoding='utf-8') as fh:
-                    fh.write(dru)
+                if dru is not None:
+                    with open(os.path.join(td, stem + '.kicad_dru'), 'w',
+                              encoding='utf-8') as fh:
+                        fh.write(dru)
                 if pro is not None:
                     with open(os.path.join(td, stem + '.kicad_pro'), 'w',
                               encoding='utf-8') as fh:
@@ -99,6 +104,13 @@ def _route(dru, pro=None, hybrid=False, **kw):
                 r = route_diff.batch_route_diff_pairs(
                     dst, out, pairs, enable_layer_switch=True, **kw)
             evidence(out)
+            if widths is not None:
+                pcb = parse_kicad_pcb(out)
+                names = {n.net_id: n.name for n in pcb.nets.values()}
+                for s in pcb.segments:
+                    nm = names.get(s.net_id, '')
+                    if nm.startswith('DP'):
+                        widths.setdefault(nm, []).append(s.width)
             with contextlib.redirect_stdout(io.StringIO()):
                 viols = {m: run_drc(out, clearance=0.25, quiet=True,
                                     print_summary=False, check_sizes=False,
@@ -167,13 +179,37 @@ def test_rule_off_the_routed_layers_raises_nothing():
 def test_per_pair_floor_survives_a_class_gap():
     """With --diff-pair-gap omitted (the CLI default) each pair takes its
     net class's gap, which replaces the call's raised one (#435); the pair
-    is floored at the rule again there."""
-    log, ok, bad, viols = _route(LAYER_RULE, pro=_pro(gap=0.15),
+    is floored at the rule again there. 0.27 sits between the 0.25
+    clearance and the 0.3 rule, so the #441 floor does not move it first."""
+    log, ok, bad, viols = _route(LAYER_RULE, pro=_pro(gap=0.27),
                                  diff_pair_gap_from_class=True)
     per_pair = _lines(log, '#1145: DP')
-    assert len(per_pair) == 2 and all('0.15 mm raised' in ln and 'F.Cu' in ln
+    assert len(per_pair) == 2 and all('0.27 mm raised' in ln and 'F.Cu' in ln
                                       for ln in per_pair), per_pair
+    assert not _lines(log, '#441: DP'), _lines(log, '#441: DP')
     assert (ok, bad) == (2, 0) and not viols[0.0], _kinds(viols[0.0])
+
+
+def test_per_pair_floor_keeps_the_clearance():
+    """#441 on the per-pair path: a net-class gap of 0.15 under a 0.25
+    clearance, no rules file. The class gap replaced the call's floored one
+    and the pair was built inside clearance; the #318 neck then cleared it by
+    narrowing P and N, to different widths. Now the gap is floored and both
+    members keep their width (a diagonal's 1 nm rounding may still neck one
+    by a few hundred nm, hence the tolerance)."""
+    from routing_defaults import TRACK_WIDTH
+    widths = {}
+    log, ok, bad, viols = _route(None, pro=_pro(gap=0.15),
+                                 diff_pair_gap_from_class=True, widths=widths)
+    floored = _lines(log, '#441: DP')
+    assert len(floored) == 2 and all('0.15 mm raised to clearance 0.25'
+                                     in ln for ln in floored), floored
+    assert (ok, bad) == (2, 0) and not viols[0.0], _kinds(viols[0.0])
+    assert sorted(widths) == ['DPA_N', 'DPA_P', 'DPB_N', 'DPB_P'], \
+        f'fixture: all four members must carry copper {sorted(widths)}'
+    necked = {nm: min(ws) for nm, ws in widths.items()
+              if min(ws) < TRACK_WIDTH - 1e-3}
+    assert not necked, f'members necked below {TRACK_WIDTH}: {necked}'
 
 
 def test_track_rule_raises_the_coupled_gap():
@@ -243,6 +279,7 @@ def test_impedance_solves_at_the_raised_gap():
 TESTS = [test_pair_gap_rule_floor, test_layer_rule_raises_the_coupled_gap,
          test_rule_off_the_routed_layers_raises_nothing,
          test_per_pair_floor_survives_a_class_gap,
+         test_per_pair_floor_keeps_the_clearance,
          test_track_rule_raises_the_coupled_gap,
          test_impedance_solves_at_the_raised_gap]
 

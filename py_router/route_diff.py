@@ -1154,6 +1154,16 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 _g = _c.get('diff_pair_gap') if diff_pair_gap_from_class else None
                 _ew = max(_w if _w is not None else config.track_width, _wfloor)
                 _eg = max(_g if _g is not None else config.diff_pair_gap, _gfloor)
+                # #441 again: a class gap REPLACES the call's floored one, so
+                # floor it at the clearance here too. Below it the pair was
+                # built inside clearance and the #318 neck shaved P and N to
+                # different widths to clear it (cap_chain, class gap 0.15
+                # under 0.2: P 0.127, N 0.1726).
+                if config.clearance and _eg < config.clearance - 1e-9:
+                    print(f"  #441: {_pn}: net-class coupling gap {_eg:.4g} mm raised "
+                          f"to clearance {config.clearance:.4g} mm (KiCad grades "
+                          f"P<->N coupling as clearance).")
+                    _eg = config.clearance
                 _pclr = max((net_clearances or {}).get(_pair.p_net_id) or 0.0,
                             (net_clearances or {}).get(_pair.n_net_id) or 0.0)
                 if _pclr > _eg + 1e-9:
