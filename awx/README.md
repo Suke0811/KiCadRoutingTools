@@ -101,7 +101,11 @@ Reading the tables:
   every escape a via (`ESCAPE_VIAS=both`); with them, open interiors, walls
   in the channel, rings, pairs, and lanes ending on the destination's far
   face (`truth_wind`). On three, four and six layers all 48 graded runs are at
-  the optimum, and all 81 runs connected and DRC-clean. The short channels and
+  the optimum, and all 87 runs connected and DRC-clean. Two cases wind lanes
+  round the destination (`wind_rot16_g3`, and with every escape a via): one
+  cut on its south face reaches every berth with no via, a cut on its far face
+  pays four, and [the winding cut](#the-ends-whole_endspy) routes both in two
+  on three, four and six layers. The short channels and
   the all-via cases are what more layers buy: on two layers they leave nets
   open or lay up to 34 vias where 14 is the optimum (see the TODO).
 
@@ -554,6 +558,18 @@ The model takes that cut from its own exits and it rides the plan sidecar
 solve share one order: recomputed from the laid stubs, which stand a hair off
 the menu's exits, two near-equal gaps could split the face differently, and
 the solve then faced crossings the model never priced.
+
+**The winding cut** (`WIND_CUT`: on with more routing layers than two, off
+on two). The cut may stand anywhere round the destination but its facing
+face, and the berths past it go round the other way: lanes wind round the
+destination to enter it from every side, as the human's zynq LVDS lanes wind
+round U5. The model scores a cut at the middle of each gap between berths,
+clear of every menu exit, on the far cut's best ends, searches the best few
+again, and takes one only when its ends predict fewer vias than the far
+cut's and beat its objective by a via (`WIND_GAIN`). A wound lane's ride
+round the destination is priced a ring's distance out, with the room its
+turns stack up. The cut rides the sidecar as the far-face cut does, and the
+frame's two rings meet at it.
 
 **Laid as asked, or not kept.** The destination is chosen, fanned out and
 audited in passes (`DST_ITERS`, 8):
@@ -1081,7 +1097,10 @@ via.
   layer; the crossing graph coloured on the layers for the estimate, the
   solve's own model for the exact route.
 - **Layer cuts.** A lane the audit finds against a part on one layer is held
-  on another across it -- the first answer, before a side flip.
+  on another across it -- the first answer, before a side flip. A lane found
+  against an array's own pad is held off that layer round the place
+  (`ARRAY_CUT_R`): the lanes beside it pushed it there, and another layer has
+  room. A drilled ball stands on every layer, so it is no island's cut.
 - **`ESCAPE_VIAS`** (`0`, `dest` or `both`; `0` by default): every escape at
   those arrays through a via, so a lane chooses its layer at its ends too.
 
@@ -1380,18 +1399,20 @@ channels first, and the other escapes leave round it.
 
 ### Next, the whole route (`whole_*.py`)
 
-- **The zynq's LVDS bus (U1 to U5), and winding.** On four layers, with via
-  ends and lanes on every layer (see [more routing layers than
-  two](#more-routing-layers-than-two-route_layerspy-relayerpy)), the whole
-  route does not yet route it. The human runs every net from
-  a dog-bone via at each array on one layer end to end, each layer's nets a
-  family that crosses nothing on it and loops round U5 to enter it from every
-  side; our ends cross about three times as many pairs of lanes. The frame
-  fixes one way round the destination for every lane on every layer. To try:
-  each lane's way round the destination as a decision of the ends model and
-  the solve, priced in vias and length like the rest -- first on the generated
-  winding cases (`synth_layers.py --only wind_rot_e2,wind_shuf_e2,wind_sorted_e2`),
-  graded against `synth_bus.truth_wind`, then on the zynq.
+- **The zynq's LVDS bus (U1 to U5).** On four layers, with via ends, lanes on
+  every layer and [the winding cut](#the-ends-whole_endspy) (see [more routing
+  layers than two](#more-routing-layers-than-two-route_layerspy-relayerpy)),
+  the whole route plans it but does not yet route it: the loop does not
+  settle. The human runs every net from a dog-bone via at each array on one
+  layer end to end, each layer's nets a family that crosses nothing on it and
+  loops round U5 to enter it from every side. The trunk runs from U1's centre
+  to U5's, the way the lanes for U5's south side go; the lanes for its north
+  side leave U1's east face across it, a millimetre of their route advancing
+  route u by a quarter to a sixth of that, so every room and window the solve
+  measures in u is that much too short for them, and the geometry finds them
+  crowded where the solve saw room. To try: each lane's own route coordinate
+  in the solve -- each crossing and change at a place on each of its lanes,
+  its rooms in that lane's millimetres.
 - **Via ends on two layers.** On more than two routing layers a lane ending
   at a via (a dog-bone, or a via in its pad) takes whichever layer the solve
   gives it there, and the via is dropped where the lane leaves on the ball's

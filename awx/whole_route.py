@@ -226,6 +226,8 @@ class NotConverging(Exception):
 
 # a lane the snap could not lay is held under an island on one layer when its search stuck within this much of it, mm
 SNAP_ISLAND_REACH = 2.0
+# a lane the audit found against an array's own pad is held off that layer this far round the place at least, mm
+ARRAY_CUT_R = 0.5
 
 
 def _layer_index(tag):
@@ -254,14 +256,29 @@ def layer_cut(lane, island, box, layer):
 
 def audit_layer_cuts(audit, geo):
     """the LAYER cuts an audit's STATIC findings give: a lane found against a pad of an island (a geometry's 'islands',
-    'REF.PAD' -> island) on one layer, the layer it was found on"""
+    'REF.PAD' -> island) on one layer, the layer it was found on -- and, on more routing layers than two, a lane found
+    against an ARRAY's own pad (no island), off the layer it was found on round that place (ARRAY_CUT_R): it was pushed
+    into the pad by the lanes beside it on its layer -- a ring's lanes crowding the channel beside the destination
+    (synth wind_rot16_g3_vias: nine lanes up a 2 mm channel on one layer, the innermost into the destination's corner
+    ball every round) -- and on another layer it has room. A drilled ball stands on every layer, so this is no island's
+    cut, which no change answers"""
+    import route_layers
+    nl = len(route_layers.layers())
     out, isl, bxs = [], geo.get('islands') or {}, geo.get('island_boxes') or {}
     for ln in lines_of(audit):
-        m = re.match(r'STATIC (\S+)\s+([FB]|In\d+\.Cu) \S+ (?:pad|hole) (\S+) ', ln)
-        if m and m.group(3) in isl:
-            c = layer_cut(m.group(1), isl[m.group(3)], bxs.get(isl[m.group(3)]), _layer_index(m.group(2)))
-            if c and c not in out:
-                out.append(c)
+        m = re.match(r'STATIC (\S+)\s+([FB]|In\d+\.Cu) ([-+]?[\d.]+)/([\d.]+) (?:pad|hole) (\S+) ', ln)
+        if not m:
+            continue
+        lane, L, bar, pad = m.group(1), _layer_index(m.group(2)), float(m.group(4)), m.group(5)
+        if pad in isl:
+            c = layer_cut(lane, isl[pad], bxs.get(isl[pad]), L)
+        elif nl > 2 and (at := re.search(r' at \(([-\d.]+),\s*([-\d.]+)\)', ln)):
+            x, y, r = float(at.group(1)), float(at.group(2)), max(ARRAY_CUT_R, 3 * bar)
+            c = {'lane': lane, 'island': pad, 'layer': 0, 'box': [x - r, y - r, x + r, y + r], 'blocked': [L]}
+        else:
+            c = None
+        if c and c not in out:
+            out.append(c)
     return out
 
 

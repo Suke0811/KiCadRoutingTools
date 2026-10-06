@@ -51,6 +51,7 @@ import math
 import os
 import awx_settings
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -81,6 +82,10 @@ _PARTS_KEEP = 256          # score: the states whose parts are kept (the search'
 EXACT_TOP = 6             # the search's best distinct ends re-ranked on the exact route (best_exact) ...
 EXACT_MARGIN = 4.0        # ... those within this much of the best by the estimate
 EXACT_KMAX = 3            # a lane's changes at most in the exact route (the whole solve's KMAX)
+WIND_TRY = 3              # WINDING (WIND_CUT): the cuts off the far face searched again, the best few by the estimate
+WIND_GAIN = 1.0           # ...a cut taken only when its ends lay fewer vias and beat the far face's by this much: within
+#                           it, the model's own error on a wound plan (its rides, the stubs the fanout lays) -- h3 K28
+#                           took two cuts at 1.2 and 0.18 and laid 30 vias and 584 mm against the far cut's 32 and 544
 EXACT_WORK = 60.0         # CP-SAT's deterministic work limit for one exact route (a machine's deterministic time is
 #                           its own: H3 K51's best ends proved at 17 on a Mac and stopped unproved at 20 on Linux)
 LOAD_OK = 0.5             # a lane's congestion on the trunk (score) the solve takes freely ...
@@ -341,6 +346,14 @@ class Ends:
                             hit.update((ln, j) for ln, j in where.get((ol, oid, end), ()) if ln != lane)
                     self.oconf[(lane, end, i)] = hit
         self._ride = {}
+        # ...and the RING's standoff round the destination's ball box, for a WOUND lane's ride (wound_ride): its berths'
+        # exits stand outside the box by their stubs (the median, whole_frame.grown's measure), and the ring a lane pitch
+        # past them (whole_frame: braid.ring_spine round the hull of the pads and the stubs). Priced at the box's own 0.3
+        # mm, as around_box prices the short way, a lane wound round three faces came 5 to 12 mm longer laid (s4_bulgeW)
+        bx_ = st['dboxes']
+        out_ = sorted(v for lane, _lg in self.lanes for o in self.B[lane]
+                      if (v := max(bx_[0] - o[1][0], o[1][0] - bx_[2], bx_[1] - o[1][1], o[1][1] - bx_[3])) > 0)
+        self.ring_d0 = (out_[len(out_) // 2] if out_ else 0.0) + _bd.LPITCH
         # ---- the whole route's FEEDBACK (whole_feedback: ends its audits found crowded, FEEDBACK= to the fanout): an
         # end to avoid costs FB_AVOID vias when chosen, a pair of ends FB_PAIR when both are -- each option weighed by
         # its lane, its layer and ANY leg's exit's distance to the end's points as laid (fb_weights), so a pair cannot
@@ -367,22 +380,25 @@ class Ends:
         # ends at 78 with SCK over; the solve held SCK over and 51 route vias, proved nothing, and laid nothing)
         self.fb_over = {ln: int(k) for ln, k in (fb.get('over') or {}).items() if ln in self.legs_of and int(k) > 0}
         self._xroute = {}          # the exact route per state (exact_route)
+        self.wcut = None           # the destination's cut when WINDING moved it off the far face (choose: cut_phase)
         self.pool = {}             # every search's result: its state -> its objective by the estimate
         self._memo = {}            # every state scored: its objective -- the search asks a third of them again
         self._parts = collections.OrderedDict()     # the last _PARTS_KEEP states' parts (score), the oldest dropped
         self._perim = {}           # a point's place round a grown box: one lane's move rarely moves the box
 
-    def ride(self, lane, npair, ti, bi):
+    def ride(self, lane, npair, ti, bi, side=None):
         """a lane's ride in mm, each leg's: round the destination and the source from its tooth to its berth
         (select_moves.ride_mm's own measure), and its STUBS -- each leg's straight run from its ball to its tooth's
         and its berth's exit (a laid tooth has no legs of its own to measure; the straight run measures every option
         alike). Without them a tooth that ran 5 mm inside the source's balls to leave by another face cost nothing
-        (K15 SDQS1, via-in-pad on B from the east rows out through the north face)"""
-        k = (lane, ti, bi)
+        (K15 SDQS1, via-in-pad on B from the east rows out through the north face). `side`: a WOUND lane's ('N' or
+        'S', _wound_sides) -- round the destination the long way, that side (wound_ride)"""
+        k = (lane, ti, bi, side)
         if k not in self._ride:
             import plan_ends as pe
             a, b = self.T[lane][ti][1], self.B[lane][bi][1]
-            d = pe.sm.around_box(a, b, self.st['dboxes'])
+            d = pe.sm.around_box(a, b, self.st['dboxes']) if side is None else \
+                wound_ride(a, b, self.st['dboxes'], side, pad=self.ring_d0)
             d += pe.sm.around_box(a, b, self.st['sgrid'].bbox) - math.hypot(b[0] - a[0], b[1] - a[1])
             lg = dict(self.lanes)[lane]
             stubs = 0.0
@@ -393,13 +409,42 @@ class Ends:
             self._ride[k] = npair * d + stubs
         return self._ride[k]
 
+    def _wound_sides(self, lanes, bo, DB, cut):
+        """{lane: 'N' | 'S'} of the lanes WOUND in a state: its winding cut (cut_phase; `cut`) sends a lane's berth round
+        another ring than the far face's own cut (the widest gap, whole_frame.cut) would -- read on the state's grown box
+        DB as the frame reads it (whole_frame.ring_side). Read on the pad box with the short way's side, a berth on the
+        box's south-west corner tied with the facing face, and s4_bulgeW's three lanes the frame laid wound (40 mm each)
+        were priced the short way (16 to 18 mm). Empty with no winding cut"""
+        if self.wcut is None:
+            return {}
+        import whole_frame
+        far = whole_frame.cut([bo[l_][1][1] for l_ in lanes if whole_frame.face(bo[l_][1], DB) == 'E'], DB[1], DB[3])
+        out = {}
+        for l_ in lanes:
+            s_w = whole_frame.ring_side(bo[l_][1], DB, cut)
+            if s_w is not None and s_w != whole_frame.ring_side(bo[l_][1], DB, far):
+                out[l_] = s_w
+        return out
+
+    def _wind_stack(self, lanes, to, bo, kd, dcls, npair, wound):
+        """the ride each WOUND lane (`wound`, _wound_sides) adds by riding OUTSIDE its ring's other lanes (wound_ride
+        prices it at the ring's own standoff): round each corner it turns, a quarter turn, half the ring's lanes inside
+        it -- those its ring reaches before it, which peel off as it goes -- a lane pitch apart"""
+        extra = 0.0
+        for l_, side in wound.items():
+            _d, nturn = wound_ride(to[l_][1], bo[l_][1], self.st['dboxes'], side, pad=self.ring_d0, turns=True)
+            inside = sum(1 for o in lanes if o != l_ and dcls[o] == side
+                         and (kd[o] > kd[l_] if side == 'N' else kd[o] < kd[l_]))
+            extra += npair[l_] * nturn * (math.pi / 2) * (inside / 2) * _LANE_PITCH
+        return extra
+
     # ---- the objective
     def score(self, state, exact=False):
         """(objective, parts) of a state {lane: (tooth option index, berth option index)}: each state's objective kept
         (objective), its parts for the last _PARTS_KEEP states asked -- an older state's computed again, the same (the
         search reads the parts of the states it keeps, not of the ones it tries: kept for every state, at ~4.6 KB a
         state at K41, a 200 000-state search held 0.9 GB of them)"""
-        key = (tuple(state[l_] for l_, _lg in self.lanes), exact)
+        key = (tuple(state[l_] for l_, _lg in self.lanes), exact, self.wcut)
         p = self._parts.get(key)
         if p is not None:
             self._parts.move_to_end(key)
@@ -412,7 +457,7 @@ class Ends:
     def objective(self, state, exact=False):
         """a state's objective alone (score's first): each state scored once (the local search asks a third of its
         states again -- an ejection's winner is scored in the min and then again, a sweep revisits the kicks' states)"""
-        key = (tuple(state[l_] for l_, _lg in self.lanes), exact)
+        key = (tuple(state[l_] for l_, _lg in self.lanes), exact, self.wcut)
         v = self._memo.get(key)
         if v is None:
             v, p = self._score(state, exact)
@@ -432,6 +477,8 @@ class Ends:
         gap a hair wider is no evidence: the synth wind_rot_e2 split its face one way on two layers and the other on
         three, 32 crossings against 36, 8 vias against 12"""
         import whole_frame
+        if self.wcut is not None:
+            return self._score_at(state, exact, self.wcut)      # (winding's cut, choose: cut_phase)
         pts = [self.B[l_][state[l_][1]][1] for l_, _lg in self.lanes]
         DB = whole_frame.grown(self.dbox, pts)
         cuts = whole_frame.cuts_tied([p[1] for p in pts if whole_frame.face(p, DB) == 'E'], DB[1], DB[3], _bd.LPITCH)
@@ -445,7 +492,8 @@ class Ends:
         return best
 
     def _score_at(self, state, exact=False, cut_at=None):
-        """_score's at one far-face cut (`cut_at`; None the widest gap)"""
+        """_score's at one cut (`cut_at`: a far-face y, None its widest gap -- or anywhere round the destination,
+        whole_frame.cut_point's, WINDING the berths past it round the other side)"""
         import whole_frame
         T, B = self.T, self.B
         lanes = [l_ for l_, _lg in self.lanes]
@@ -476,6 +524,8 @@ class Ends:
         # (the far face's cut, from the model's own exits: it rides the plan sidecar to the solve's frame, dest_cut)
         cut = cut_at if cut_at is not None else \
             whole_frame.cut([bo[l_][1][1] for l_ in lanes if dface(bo[l_][1]) == 'E'], DB[1], DB[3])
+        if isinstance(cut, (tuple, list)) and cut[0] == 'E':
+            cut = float(cut[1])                 # (a far-face cut is its y, as the sidecar has always carried it)
 
         def psrc(p):
             k = (p, SB)
@@ -486,7 +536,7 @@ class Ends:
         def pdst(p):
             k = (p, DB, cut)
             if k not in pc:
-                pc[k] = whole_frame.perim_d(p, DB, cut)
+                pc[k] = whole_frame.perim_c(p, DB, cut)
             return pc[k]
         ps = {l_: psrc(to[l_][1]) for l_ in lanes}
         pd = {l_: pdst(bo[l_][1]) for l_ in lanes}
@@ -639,7 +689,8 @@ class Ends:
         dcls = {}
         for l_ in lanes:
             f_ = dface(bo[l_][1])
-            dcls[l_] = ('N' if bo[l_][1][1] < cut else 'S') if f_ == 'E' else f_
+            dcls[l_] = (('N' if bo[l_][1][1] < cut else 'S') if f_ == 'E' else f_) if whole_frame.far_cut(cut) \
+                else (whole_frame.ring_side(bo[l_][1], DB, cut) or 'W')
         gT = max(DB[0] - SB[2], _LANE_PITCH)
         xT = collections.Counter()
         for a, b in inv:
@@ -665,7 +716,9 @@ class Ends:
                 exact_failed = True
         if self.fb_over:
             over = sum(max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)) for l_ in lanes)
-        ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1]) for l_ in lanes)
+        wound = self._wound_sides(lanes, bo, DB, cut)
+        ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1], wound.get(l_)) for l_ in lanes) + \
+            self._wind_stack(lanes, to, bo, kd, dcls, npair, wound)
         stacks = _stacks(self.lanes, to, bo, chg)
         fbk = (FB_AVOID * sum(ix.get(state[l_][k_], 0.0) for (l_, k_), ix in self.fb_avoid.items())
                + FB_PAIR * sum(ia.get(state[a_][k_], 0.0) * ib.get(state[b_][k_], 0.0)
@@ -833,6 +886,7 @@ class Ends:
         its dive; the dropped vias off the fanout's count; the trunk's load shared among the layers. Two lanes that cross
         cost nothing where they can stand on two layers -- the two-layer arithmetic (parity, a single chain of lanes on
         one layer, settling) charged a via end its via and the crossings both, and steered to surface escapes"""
+        import whole_frame
         ends = {}
         for l_, lg in self.lanes:
             ends[l_] = (self.end_domain(to[l_], 0, lg), self.end_domain(bo[l_], 1, lg))
@@ -860,7 +914,8 @@ class Ends:
         dcls = {}
         for l_ in lanes:
             f_ = dface(bo[l_][1])
-            dcls[l_] = ('N' if bo[l_][1][1] < cut else 'S') if f_ == 'E' else f_
+            dcls[l_] = (('N' if bo[l_][1][1] < cut else 'S') if f_ == 'E' else f_) if whole_frame.far_cut(cut) \
+                else (whole_frame.ring_side(bo[l_][1], DB, cut) or 'W')
         gT = max(DB[0] - SB[2], _LANE_PITCH)
         xT = collections.Counter()
         for a, b in inv:
@@ -883,7 +938,9 @@ class Ends:
                 exact_failed = True
         if self.fb_over:
             over = sum(max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)) for l_ in lanes)
-        ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1]) for l_ in lanes)
+        wound = self._wound_sides(lanes, bo, DB, cut)
+        ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1], wound.get(l_)) for l_ in lanes) + \
+            self._wind_stack(lanes, to, bo, kd, dcls, npair, wound)
         stacks = _stacks(self.lanes, to, bo, chg)
         fbk = (FB_AVOID * sum(ix.get(state[l_][k_], 0.0) for (l_, k_), ix in self.fb_avoid.items())
                + FB_PAIR * sum(ia.get(state[a_][k_], 0.0) * ib.get(state[b_][k_], 0.0)
@@ -924,7 +981,7 @@ class Ends:
         an opposite-hands pair a change at least, two via ends whose runs meet (`sep`, end_clashes) on two layers --
         CP-SAT on the solve's objective (nets over two first, then vias).
         One worker, a deterministic work limit; None when it finds no plan in that work"""
-        key = ('nl',) + tuple(sorted(state.items()))
+        key = ('nl', self.wcut) + tuple(sorted(state.items()))
         if key in self._xroute:
             return self._xroute[key]
         from ortools.sat.python import cp_model
@@ -1025,7 +1082,7 @@ class Ends:
         its optimum, or the best plan it finds within its work limit. Two lanes at one place round a box (an F end stacked over a B one) are taken in the order
         that does not cross them there. One worker and a deterministic work limit: the same answer on every machine;
         None when it finds no plan in that work (the estimate stands)"""
-        key = tuple(sorted(state.items()))
+        key = (self.wcut,) + tuple(sorted(state.items()))
         if key in self._xroute:
             return self._xroute[key]
         from ortools.sat.python import cp_model
@@ -1314,6 +1371,105 @@ class Ends:
         return dst, src
 
 
+def wound_ride(a, b, box, side, pad=0.3, turns=False):
+    """the ride from a to b round `box` grown by `pad` the long way, round its `side` ('N' or 'S') from the facing face:
+    to that side's near corner, then corner to corner round the box until the face b stands on -- a WOUND lane's
+    (cut_phase), which around_box, the shorter way past at most two corners, cannot price. `turns`: (the ride, the
+    corners it turns)"""
+    x0, y0, x1, y1 = box
+    x0, y0, x1, y1 = x0 - pad, y0 - pad, x1 + pad, y1 + pad
+    seq = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)] if side == 'N' else [(x0, y1), (x1, y1), (x1, y0), (x0, y0)]
+    # (the faces reached after each corner, round that side: north / far / south, or south / far / north)
+    faces = ['N', 'E', 'S', 'W'] if side == 'N' else ['S', 'E', 'N', 'W']
+    d = {'E': abs(b[0] - x1), 'N': abs(b[1] - y0), 'W': abs(b[0] - x0), 'S': abs(b[1] - y1)}
+    fb = min(d, key=d.get)
+    path = [a]
+    for c, f in zip(seq, faces):
+        path.append(c)
+        if f == fb:
+            break
+    path.append(b)
+    d_ = sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in zip(path, path[1:]))
+    return (d_, len(path) - 2) if turns else d_
+
+
+def wind_on():
+    """WIND_CUT: the destination's cut anywhere round it (cut_phase), '1', or on its far face alone, '0'. Unset: on with
+    more routing layers than two (route_layers), where a wound family takes its own layer through the channel beside
+    the destination (synth wind_rot16_g3); off on two"""
+    import route_layers
+    v = awx_settings.get('WIND_CUT') or ('1' if len(route_layers.layers()) > 2 else '0')
+    if v not in ('0', '1'):
+        raise SystemExit(f'WIND_CUT={v!r}: expected 0 or 1')
+    return v == '1'
+
+
+WIND_SEEN = []      # the cuts off the far face the cut phase chose in this process, for judge to price a choice at
+
+
+def cut_phase(E, state, vp, log=print):
+    """WINDING: the destination's cut moved off its far face. A lane's way round the destination is fixed by where the
+    cut stands: a berth past it is reached round the other side, so a cut on the destination's south face sends the
+    lanes ending on the south face beyond it, and on the far face, round the north (a human's lanes from the source's
+    northern rows looping round the destination to enter it from the south: zynq's U1 to U5). One cut for every lane:
+    measured on the human's own route there, one cut leaves as few lanes out of order on a layer as a cut per layer.
+    Each gap between the berths of `state` (the best ends on the far face's cut, `vp` their (objective, parts)) off the
+    far face is a cut to try -- one a gap (the far face's own gaps are _score's tied cuts); each scored on those ends
+    by the estimate, the best WIND_TRY searched again from them with the cut held (search, iterate) and ranked on the
+    exact route; a cut is taken only when its ends beat the far cut's by WIND_GAIN. Returns (state, (objective,
+    parts)) and leaves E.wcut at the cut taken (None: the far face's)"""
+    import whole_frame
+    quiet = lambda *a: None
+    v0, p0 = vp
+    pts = [E.B[l_][state[l_][1]][1] for l_, _lg in E.lanes]
+    DB = whole_frame.grown(E.dbox, pts)
+    seen = {whole_frame.cut_sig(pts, DB, p0.get('cut'))}
+    cands = []
+    E.wcut = None
+    exits = [o[1] for l_, _lg in E.lanes for o in E.B[l_]] + [m.exit_pt for l_, _lg in E.lanes for o in E.B[l_]
+                                                               for m in o[0]]
+    for c in whole_frame.cut_gaps(pts, DB, avoid=exits):
+        if whole_frame.far_cut(c):
+            continue                    # (the far face's own gaps are _score's tied cuts: winding is a cut OFF it)
+        sg = whole_frame.cut_sig(pts, DB, c)
+        if sg in seen:
+            continue
+        seen.add(sg)
+        E.wcut = c
+        cands.append((E.objective(state), c))
+    E.wcut = None
+    best = (state, (v0, p0), None)
+    rank = lambda vp_: (bool(vp_[1].get('exact_failed')), vp_[0])
+    for v_est, c in sorted(cands, key=lambda t: (t[0], str(t[1])))[:WIND_TRY]:
+        t_c = time.time()
+        E.wcut = c
+        E.pool = {}
+        s_ = E.iterate(E.search(state, log=quiet), log=quiet)
+        t_s = time.time() - t_c
+        s_, vp_ = E.best_exact(s_, log=quiet)
+        pv = lambda p_: (f'{p_["fan"] + p_["route"]} v, ride {p_["ride"]}, cong {p_.get("cong", 0)}, '
+                         f'{p_["crossings"]} x')
+        log(f'  whole ends: winding, the cut at {c[0]} {c[1]:.3f} (estimate {v_est:.2f} on the far cut\'s ends): '
+            f'objective {vp_[0]:.2f} ({pv(vp_[1])}) against the far cut\'s {v0:.2f} ({pv(p0)}); '
+            f'searched in {t_s:.0f} s, routed exact in {time.time() - t_c - t_s:.0f} s')
+        # (taken when it lays FEWER vias than the far cut's ends (the fanout's and the route's, predicted) and beats
+        # their objective by WIND_GAIN -- winding trades length for vias; a cut that saves none won on the estimate's
+        # other terms alone, which its own search, held at another cut, had one more chance to move: shuf_k12s3_g3,
+        # four layers, its ends wound for 16 vias against the far cut's 14, chosen for the far ends' two stacked ends
+        # (10 in the objective) -- the far plan laid 14, the wound one 16. Where the far ends' exact route found no plan,
+        # a wound one that has one is taken)
+        vias_ = lambda p_: p_['fan'] + p_['route']
+        better_ = rank(vp_) < (rank(best[1])[0], rank(best[1])[1] - (WIND_GAIN if best[2] is None else 1e-9))
+        saves_ = vias_(vp_[1]) < vias_(p0) or (bool(p0.get('exact_failed')) and not vp_[1].get('exact_failed'))
+        if better_ and saves_:
+            best = (s_, vp_, c)
+    E.wcut = best[2]
+    if best[2] is not None:
+        WIND_SEEN.append(best[2])
+        log(f'  whole ends: WOUND -- the destination cut at {best[2][0]} {best[2][1]:.3f}: {_fmt(best[1][1])}')
+    return best[0], best[1]
+
+
 def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, free_teeth=None):
     """the whole route's ends on a plan state: (berths {net: Move}, teeth to move {net: Move}). The berths are first
     searched against the teeth AS LAID (the laid objective, `choose.last['laid']`: what a realized board is judged
@@ -1324,6 +1480,8 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
     E = Ends(st, src_free=False, fixed=fixed, learned=learned)
     sL = E.ban_kicks(E.iterate(E.search(E.start(seed), log=quiet), log=quiet), log=log)
     sL, (vL, pL) = E.best_exact(sL, log=log)
+    if wind_on():
+        sL, (vL, pL) = cut_phase(E, sL, (vL, pL), log=log)
     out, vF, pF = E.choice(sL), None, None
     log(f'  whole ends: on the teeth as laid: {_fmt(pL)}')
     if src_free:
@@ -1331,6 +1489,10 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
         # a local search from the berths just chosen on the teeth as laid, iterated
         sF = E2.ban_kicks(E2.iterate(E2.search(E2.start(out[0]), log=quiet), log=quiet), log=log)
         sF, (vF, pF) = E2.best_exact(sF, log=log)
+        if wind_on():
+            # (the teeth searched on the far face's cut first, then its own winding: held at the berths' cut, the teeth
+            # missed the moves the far cut's ends wanted -- s4_bulge's five teeth, 12 vias to 8)
+            sF, (vF, pF) = cut_phase(E2, sF, (vF, pF), log=log)
         if vF < vL - TOOTH_GAIN:
             out = E2.choice(sF)
             log(f'  whole ends: teeth moved ({len(out[1])}): {_fmt(pF)}')
@@ -1338,7 +1500,8 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
             log('  whole ends: no tooth move is better')
     # (`st`: the plan state it chose on, and whether it asked tooth moves -- asked none, its berths ARE the choice on
     # that board's teeth as laid, and fanout_from_plan need not ask again)
-    choose.last = dict(laid=vL, laid_parts=pL, free=vF, free_parts=pF, moved=bool(out[1]), st=id(st))
+    choose.last = dict(laid=vL, laid_parts=pL, free=vF, free_parts=pF, moved=bool(out[1]), st=id(st),
+                       cut=(E2.wcut if out[1] else E.wcut))
     return out
 
 
@@ -1505,7 +1668,16 @@ def judge(st, choice):
     its greedy berth"""
     import source_realize as sr
     E = Ends(st, src_free=False, fixed={nm: sr.move_sig(m) for nm, m in choice.items()})
-    return E.score(E.start(), exact=True)
+    s0 = E.start()
+    best = E.score(s0, exact=True)
+    # (WINDING: at the best of the far face's cut and the cuts the cut phase took in this process -- the model's own
+    # best cut, which the plan sidecar then carries to the whole route's frame)
+    for c in dict.fromkeys(WIND_SEEN):
+        E.wcut = c
+        got = E.score(s0, exact=True)
+        if (bool(got[1].get('exact_failed')), got[0]) < (bool(best[1].get('exact_failed')), best[0] - 1e-9):
+            best = got
+    return best
 
 
 def _fmt(p):

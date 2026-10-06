@@ -400,12 +400,12 @@ def sweep_round(path, cen):
     return sum((v - u + math.pi) % (2 * math.pi) - math.pi for u, v in zip(a, a[1:]))
 
 
-def ring_spine(dpads, handoffs, stubs, start, ccw, arrive, tails):
+def ring_spine(dpads, handoffs, stubs, start, ccw, arrive, tails, wrap_side=False):
     """(core, spine) of a RING: the wrap spine round the destination's pads `dpads` from `start` on the trunk's
     handoff line, `ccw` its direction, through the lanes' berth `stubs` and outside `tails` (the head-on lanes' copper
     it must pass), `arrive` the trunk's direction at its end -- extended back past the lanes' `handoffs` and on past
     their stubs. The braid's branches ride it, and the whole route's rings where the braid made none (whole_ctx)"""
-    spn = cr.build_wrap_spine(dpads, list(stubs), [start], ccw, arrive, LPITCH, hull_extra=tails)
+    spn = cr.build_wrap_spine(dpads, list(stubs), [start], ccw, arrive, LPITCH, hull_extra=tails, wrap_side=wrap_side)
     P0, d0 = spn.P[0], spn.d[0]
     Pn, dn_ = spn.P[-1], spn.d[-1]
     back = max([0.3] + [-((t[0] - P0[0]) * d0[0] + (t[1] - P0[1]) * d0[1]) + 0.3 for t in handoffs])
@@ -6729,7 +6729,15 @@ def setup(board, names, dest, log, plan=None, pairs=False):
     # the whole route's frame to take (whole_frame.build) -- mirrored with the board when it is turned over
     ctx.dest_cut = None
     if plan and plan.get('dest_cut') is not None:
-        ctx.dest_cut = (2.0 * CY - float(plan['dest_cut'])) if chi < 0 else float(plan['dest_cut'])
+        dc_ = plan['dest_cut']
+        if isinstance(dc_, (list, tuple)):
+            # (a cut off the far face, whole_ends' winding: (face, its coordinate) -- turned over, north and south swap)
+            f_, v_ = dc_[0], float(dc_[1])
+            if chi < 0:
+                f_, v_ = {'N': 'S', 'S': 'N'}.get(f_, f_), (2.0 * CY - v_ if f_ == 'E' else v_)
+            ctx.dest_cut = (f_, v_)
+        else:
+            ctx.dest_cut = (2.0 * CY - float(dc_)) if chi < 0 else float(dc_)
     if ctx.pages_first and EXACT_PAGES_ENV != '0':
         # a PAGES-FIRST plan (fanout_from_plan PLAN_PAGES): its two chains
         # were chosen to cover every lane, so the schedule pages it exactly

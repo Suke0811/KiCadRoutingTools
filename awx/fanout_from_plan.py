@@ -1341,7 +1341,9 @@ def explain_plan(choice, st, names, out_path=None, board=None, achieved=None):
             pe_ = judge_by_braid.ends
             plan['ends_model'] = {k: pe_.get('lane_' + k, {}) for k in ('over', 'load', 'x', 'front')}
             if pe_.get('cut') is not None:
-                plan['dest_cut'] = float(pe_['cut'])
+                c_ = pe_['cut']
+                # (a far-face cut its y, as it always was; one off the far face -- winding -- its face and coordinate)
+                plan['dest_cut'] = [c_[0], float(c_[1])] if isinstance(c_, (list, tuple)) else float(c_)
         with open(side, 'w', encoding='utf-8') as f:
             json.dump(plan, f, indent=1, sort_keys=True)
         print(f'  plan written to {os.path.basename(side)}')

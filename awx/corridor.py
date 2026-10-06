@@ -1141,7 +1141,7 @@ def octo_hull(pts: Sequence[Pt], margin: float) -> List[Pt]:
 def build_wrap_spine(dest_pts: Sequence[Pt], stubs: Sequence[Pt],
                      teeth: Sequence[Pt], ccw: bool, arrive: Pt,
                      margin: float, reach_deg: float = 8.0,
-                     per_edge: int = 40, hull_extra: Sequence[Pt] = ()) -> Spine:
+                     per_edge: int = 40, hull_extra: Sequence[Pt] = (), wrap_side: bool = False) -> Spine:
     """A WRAP corridor's spine: the bundle comes in from its teeth, meets
     the destination array at the corner where the face the incoming
     bundle meets ends (the straight corridor's face), and runs round the
@@ -1196,7 +1196,10 @@ def build_wrap_spine(dest_pts: Sequence[Pt], stubs: Sequence[Pt],
         # signed angle at the teeth between the array's centre and q
         qx, qy = q[0] - Ct[0], q[1] - Ct[1]
         return math.atan2(cx_ * qy - cy_ * qx, cx_ * qx + cy_ * qy)
-    side = sum(bearing(s) for s in stubs)
+    # (`wrap_side`: the tangent on the side the ring wraps -- a ring wrapping with the angle rising grazes the hull at
+    # the least bearing -- not the stubs' side: a WOUND ring's stubs lie past the array's far side, and their bearings
+    # pointed the lead-in at the facing face, a hook back down it, whole_frame's winding cut)
+    side = (-1.0 if ccw else 1.0) if wrap_side else sum(bearing(s) for s in stubs)
     i_t = (max(ahead, key=lambda i: bearing(ring[i])) if side > 0
            else min(ahead, key=lambda i: bearing(ring[i])))
     path = [Ct]

@@ -417,24 +417,43 @@ def wind_length(w, n, k):
     return math.dist(t, w['SW']) + (u - w['Wd'] - w['H'])
 
 
+def wind_cut_k(w, n, c):
+    """lane n's winding (-1, 0, 1) with ONE cut round the destination at c (a place round it, as q; not on the facing
+    face): its place taken in the turn of the perimeter between the cut and itself that holds the facing face"""
+    q, P, Wd, H = w['q'][n], w['P'], w['Wd'], w['H']
+    if c > Wd + H:                       # (on the south or the far face: past it, round the north)
+        return -1 if q > c else 0
+    return 1 if q < c else 0             # (on the north face: short of it, round the south)
+
+
 def truth_wind(w, NL, via_mm=7.5, work=60.0):
     """The WINDING optimum on NL routing layers: each lane on ONE layer end to end and going round the destination
-    one of three ways (its unrolled place round it q + k P, k = -1, 0, 1; `w` the sidecar's 'wind'), two lanes on one
-    layer keeping their source order in that place (on one layer they cannot cross), a lane off F.Cu paying a via
-    at each end; its length the box-hugging path its winding takes (wind_length). By CP-SAT, one worker, a
-    deterministic work limit:
+    one of three ways (its unrolled place round it u = q + k P, k = -1, 0, 1; `w` the sidecar's 'wind') -- the turn
+    of the perimeter from its tooth's side round to its berth, never past the facing face again -- two lanes a before
+    b on one layer keeping their source order in that place and not wound past each other's berths, 0 < u_b - u_a < P
+    (on one layer they cannot cross; a lane wound past another's berth crosses it, its order kept or not), a lane off
+    F.Cu paying a via at each end; its length the box-hugging path its winding takes (wind_length). By CP-SAT, one
+    worker, a deterministic work limit:
       'lb'     -- 2 x (K - the most lanes planar on F.Cu with their windings free): a lane off F.Cu anywhere pays two,
                   mid-channel changes or not, so no routing has fewer;
       'vias'   -- the fewest vias of the whole-lane plans, 'vias_len' the least length at them;
       'opt' / 'opt_len' -- the plan the router's own price ranks first (via_mm a via plus its length), and how many
                   of its lanes wind past the cut ('wound');
-    each with whether it was proved ('*_proved')"""
+    each with whether it was proved ('*_proved') -- every lane's way round FREE. And the same with ONE CUT round the
+    destination for every lane, the best cut (wind_cut_k: 'cut_vias', 'cut_opt', 'cut_len', 'cut_at'), and with
+    that cut on the FAR face (the whole frame's: 'far_vias', 'far_opt', 'far_len', 'far_at')"""
     from ortools.sat.python import cp_model
     K = len(w['q'])
     S = 100                                             # (0.01 mm)
     KS = (-1, 0, 1)
+    PS = round(w['P'] * S)
+    # (a lane's place round the destination: from the facing face's far corner on the north to its far corner on the
+    # south the long way, a turn of the perimeter -- wound further, it would pass its own tooth's side again)
+    lo_, hi_ = (w['Wd'] + w['H'] - w['P']) * S, (w['Wd'] + w['P']) * S
     U = {(n, k): round((w['q'][n] + k * w['P']) * S) for n in range(K) for k in KS}
+    ok = {(n, k) for (n, k), u in U.items() if lo_ < u < hi_}
     LN = {(n, k): round(wind_length(w, n, k) * S) for n in range(K) for k in KS}
+    planar = lambda a, ka, b, kb: 0 < U[(b, kb)] - U[(a, ka)] < PS
 
     def solve(m, obj, maximize=False):
         (m.Maximize if maximize else m.Minimize)(obj)
@@ -450,27 +469,35 @@ def truth_wind(w, NL, via_mm=7.5, work=60.0):
     z = {(n, k): m.NewBoolVar('') for n in range(K) for k in KS}
     for n in range(K):
         m.AddExactlyOne(z[(n, k)] for k in KS)
+        for k in KS:
+            if (n, k) not in ok:
+                m.Add(z[(n, k)] == 0)
     for a in range(K):
         for b in range(a + 1, K):
             for ka in KS:
                 for kb in KS:
-                    if U[(a, ka)] >= U[(b, kb)]:
+                    if not planar(a, ka, b, kb):
                         m.AddBoolOr([on[a].Not(), on[b].Not(), z[(a, ka)].Not(), z[(b, kb)].Not()])
     sv, st = solve(m, sum(on), maximize=True)
     lb = 2 * (K - round(sv.BestObjectiveBound())) if st in (cp_model.OPTIMAL, cp_model.FEASIBLE) else None
 
-    def whole(price_via):
+    def whole(price_via, fixed=None):
+        """(vias, length, wound, proved) of the best whole-lane plan at price_via a via (in 0.01 mm), every lane's
+        winding free or `fixed` {lane: k}"""
         m = cp_model.CpModel()
         x = {(n, p): m.NewBoolVar('') for n in range(K) for p in range(NL)}
         z = {(n, k): m.NewBoolVar('') for n in range(K) for k in KS}
         for n in range(K):
             m.AddExactlyOne(x[(n, p)] for p in range(NL))
             m.AddExactlyOne(z[(n, k)] for k in KS)
+            for k in KS:
+                if (n, k) not in ok or (fixed is not None and fixed[n] != k):
+                    m.Add(z[(n, k)] == 0)
         for a in range(K):
             for b in range(a + 1, K):
                 for ka in KS:
                     for kb in KS:
-                        if U[(a, ka)] >= U[(b, kb)]:
+                        if not planar(a, ka, b, kb):
                             for p in range(NL):
                                 m.AddBoolOr([x[(a, p)].Not(), x[(b, p)].Not(), z[(a, ka)].Not(), z[(b, kb)].Not()])
         vias = sum(2 * x[(n, p)] for n in range(K) for p in range(1, NL))
@@ -488,6 +515,29 @@ def truth_wind(w, NL, via_mm=7.5, work=60.0):
     out = {'lb': lb, 'vias': lex and lex[0], 'vias_len': lex and lex[1], 'vias_proved': bool(lex and lex[3]),
            'opt': own and own[0], 'opt_len': own and own[1], 'wound': own and own[2],
            'opt_proved': bool(own and own[3]), 'via_mm': via_mm}
+    # ONE cut for every lane: at the middle of each gap between two berths round the destination (a face's corner
+    # counted as a gap's end), anywhere but the facing face -- and on the far face alone, the whole frame's
+    P, Wd, H = w['P'], w['Wd'], w['H']
+    cuts = {}
+    for a_, b_ in ((0.0, Wd), (Wd + H, P)):
+        pts = [a_] + sorted(v for v in w['q'] if a_ <= v <= b_) + [b_]
+        for i in range(len(pts) - 1):
+            if pts[i + 1] - pts[i] > 1e-6:
+                c = (pts[i] + pts[i + 1]) / 2
+                cuts[round(c, 4)] = c
+    for key, sel in (('cut', lambda c: True), ('far', lambda c: c >= 2 * Wd + H)):
+        best_lex = best_own = None
+        for c in sorted(v for v in cuts.values() if sel(v)):
+            fx = {n: wind_cut_k(w, n, c) for n in range(K)}
+            if any((n, k) not in ok for n, k in fx.items()):
+                continue
+            a1, a2 = whole(10 ** 7, fx), whole(round(via_mm * S), fx)
+            if a1 and (best_lex is None or (a1[0], a1[1]) < (best_lex[0][0], best_lex[0][1])):
+                best_lex = (a1, c)
+            if a2 and (best_own is None or via_mm * a2[0] + a2[1] < via_mm * best_own[0][0] + best_own[0][1]):
+                best_own = (a2, c)
+        out.update({f'{key}_vias': best_lex and best_lex[0][0], f'{key}_opt': best_own and best_own[0][0],
+                    f'{key}_len': best_own and best_own[0][1], f'{key}_at': best_own and round(best_own[1], 3)})
     return out
 
 

@@ -54,6 +54,7 @@ sys.path.insert(0, HERE)
 B8 = ['--dst-cols', '8']
 CL = ['--pad-inner', '0.6']
 WC = B8 + ['--closed', '--ring-n', '3', '--ring-s', '3', '--ring-e', '2']      # (the winding cases' arrays and faces)
+WC16 = B8 + ['--closed', '--ring-n', '4', '--ring-s', '4', '--ring-e', '3']    # (...with sixteen lanes)
 CASES = [
     ('sorted_k8', 8, CL + ['--pattern', 'sorted'], True),
     ('rev_k4', 4, CL + ['--pattern', 'reversed'], True),
@@ -96,6 +97,13 @@ CASES = [
     ('wind_sorted_e2', 12, WC, False),
     ('wind_rot_e2', 12, WC + ['--pattern', 'rotate', '--shift', '4'], False),
     ('wind_shuf_e2', 12, WC + ['--pattern', 'shuffle', '--seed', '3'], False),
+    # ...and the destination close beside the source (a 3 mm channel), the planted order a rotation round it: the
+    # source's southern lanes end on the destination's south face east of the middle and on its far face, which a cut
+    # on its south face reaches round the north with no crossing at all (truth_wind: 0 vias, five lanes wound, where
+    # a cut on the far face pays 4) -- and the same with every escape a via, a dog-bone at each end as a human lays
+    ('wind_rot16_g3', 16, WC16 + ['--pattern', 'rotate', '--shift', '11', '--gap', '3'], False),
+    ('wind_rot16_g3_vias', 16, WC16 + ['--pattern', 'rotate', '--shift', '11', '--gap', '3'], False,
+     {'ESCAPE_VIAS': 'both'}),
 ]
 
 
@@ -202,7 +210,8 @@ def truth_of(raw, NL):
         # (a winding case: its lanes' ways round the destination free -- the lower bound, the whole-lane plan the
         # router's own price ranks first, its length and how many of its lanes wind past the cut)
         w = sb.truth_wind(t['wind'], NL)
-        return {'lb': w['lb'], 'whole': w['vias'], 'opt': w['opt'], 'opt_len': w['opt_len'], 'wound': w['wound']}
+        return {'lb': w['lb'], 'whole': w['vias'], 'opt': w['opt'], 'opt_len': w['opt_len'], 'wound': w['wound'],
+                'cut_opt': w['cut_opt'], 'cut_len': w['cut_len'], 'far_opt': w['far_opt'], 'far_len': w['far_len']}
     src = list(range(len(t['perm'])))
     dst = sorted(src, key=lambda i: t['perm'][i])
     return sb.truth_layers(src, dst, NL)
@@ -223,7 +232,8 @@ def one(tag, K, args, graded, NL, outdir, timeout, sets=None):
         return dict(row, verdict='GEN FAILED')
     tr = truth_of(raw, NL)
     row.update(lb=tr['lb'], whole=tr['whole'], opt=tr['opt'] if graded else None,
-               opt_vias=tr['opt'] if 'opt_len' in tr else None, opt_len=tr.get('opt_len'), wound=tr.get('wound'))
+               opt_vias=tr['opt'] if 'opt_len' in tr else None, opt_len=tr.get('opt_len'), wound=tr.get('wound'),
+               **{k_: tr.get(k_) for k_ in ('cut_opt', 'cut_len', 'far_opt', 'far_len')})
     if run([PY, 'make_bench.py', raw, 'SU1', 'SD1', bench], os.path.join(d, 'bench.log'), env=env) \
             or not os.path.isfile(bench):
         return dict(row, verdict='BENCH FAILED')
@@ -259,7 +269,7 @@ def one(tag, K, args, graded, NL, outdir, timeout, sets=None):
 
 
 COLS = ('tag', 'layers', 'k', 'verdict', 'opt', 'vias', 'excess', 'lb', 'whole', 'round', 'copper', 'connected', 'drc',
-        'open', 'secs', 'opt_vias', 'opt_len', 'wound', 'args')
+        'open', 'secs', 'opt_vias', 'opt_len', 'wound', 'cut_opt', 'cut_len', 'far_opt', 'far_len', 'args')
 
 
 def main(argv=None):

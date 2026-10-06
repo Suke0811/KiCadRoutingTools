@@ -128,6 +128,84 @@ def perim_d(p, DB, ycut):
     return (ycut - y0) + 2 * W_ + H_ + (y1 - y)
 
 
+def far_cut(cut):
+    """whether `cut` stands on the far face: a far face's y (the whole frame's own), or ('E', y)"""
+    return not isinstance(cut, (tuple, list)) or cut[0] == 'E'
+
+
+def cut_point(cut, DB):
+    """the point round box DB a cut stands at: a far-face y, or (face, its coordinate along that face -- x on the north
+    and south faces, y on the far one)"""
+    x0, y0, x1, y1 = DB
+    if not isinstance(cut, (tuple, list)):
+        return (x1, float(cut))
+    f, v = cut[0], float(cut[1])
+    return {'E': (x1, v), 'N': (v, y0), 'S': (v, y1)}[f]
+
+
+def perim_c(p, DB, cut):
+    """where p lies round the destination's box DB unrolled from a cut ANYWHERE round it but its facing face (a far-face
+    y as perim_d takes it, or (face, coordinate): cut_point), north first -- perim_d's own arithmetic on the far face"""
+    if far_cut(cut):
+        return perim_d(p, DB, float(cut[1]) if isinstance(cut, (tuple, list)) else cut)
+    W_, H_ = DB[2] - DB[0], DB[3] - DB[1]
+    return (perim_d(p, DB, DB[1]) - perim_d(cut_point(cut, DB), DB, DB[1])) % (2 * (W_ + H_))
+
+
+def ring_side(p, DB, cut):
+    """the ring a berth at p is reached by with the destination's cut at `cut`: 'N' (round the north, before the
+    facing face in the unrolling), 'S' (round the south, after it), or None on the facing face (the trunk's). With
+    the cut on the far face, the far face's berths north of it go round the north, as they always have"""
+    f_ = face(p, DB)
+    if f_ == 'W':
+        return None
+    if far_cut(cut):
+        if f_ == 'E':
+            return 'N' if p[1] <= float(cut[1] if isinstance(cut, (tuple, list)) else cut) else 'S'
+        return f_
+    return 'N' if perim_c(p, DB, cut) < perim_c((DB[0], DB[1]), DB, cut) else 'S'
+
+
+def cut_gaps(pts, DB, avoid=()):
+    """the cuts to try round the destination's box DB: one in each gap between two neighbouring berths `pts` round it
+    (a gap may turn a corner), but the facing face's -- each as cut_point takes it. A cut anywhere in one gap makes the
+    same orders; a cut ANYWHERE is a lane's way round the destination for every lane past it (WINDING: a berth past the
+    far face reached round the other side). Within its gap a cut stands in the middle of the widest stretch clear of
+    the points `avoid` (every exit a berth could be laid at): at the gap's middle, another exit of a lane's menu stood
+    there, the fanout laid that lane's berth on it, and the frame's orders were no longer the ones the ends model
+    priced (s4_bulgeW: 16 crossings planned for 13)"""
+    x0, y0, x1, y1 = DB
+    W_, H_ = x1 - x0, y1 - y0
+    P = 2 * (W_ + H_)
+    us = sorted({round(perim_d(p, DB, y0), 6) for p in pts})
+    av = sorted({round(perim_d(p, DB, y0), 6) for p in avoid})
+    out = []
+    for i, a in enumerate(us):
+        b = us[(i + 1) % len(us)] + (P if i == len(us) - 1 else 0.0)
+        if b - a < 1e-6:
+            continue
+        inner = sorted(v + (P if v < a else 0.0) for v in av if a < v < b or a < v + P < b)
+        stops = [a] + inner + [b]
+        j = max(range(len(stops) - 1), key=lambda j: stops[j + 1] - stops[j])
+        m = ((stops[j] + stops[j + 1]) / 2) % P
+        # (back to a face: unrolled from the north-east corner, north face west, facing face south, south face east,
+        # far face north)
+        if m < W_:
+            out.append(('N', x1 - m))
+        elif m < W_ + H_:
+            continue                    # (the facing face: its berths are the trunk's)
+        elif m < 2 * W_ + H_:
+            out.append(('S', x0 + (m - W_ - H_)))
+        else:
+            out.append(('E', y1 - (m - 2 * W_ - H_)))
+    return out
+
+
+def cut_sig(pts, DB, cut):
+    """the berths `pts` (indices) in the order a cut unrolls them: two cuts with one signature make the same orders"""
+    return tuple(sorted(range(len(pts)), key=lambda i: (perim_c(pts[i], DB, cut), i)))
+
+
 def perim_s(p, SB):
     """where p lies round the source's box SB, unrolled from the middle of its far (west) face -- no tooth stands
     there: north first"""
@@ -190,17 +268,17 @@ def build(ctx, dest, _trunk=frozenset()):
     # ---- the destination side: classes, the far face's cut, the berths' order
     x0, y0, x1, y1 = DB
     bf = {n: face(F.bend[n], DB) for n in F.M}
-    ycut = cut([F.bend[n][1] for n in F.M if bf[n] == 'E'], y0, y1)
+    dcut = cut([F.bend[n][1] for n in F.M if bf[n] == 'E'], y0, y1)
     if getattr(ctx, 'dest_cut', None) is not None:
         # the ends model's own cut (braid.setup, from the plan sidecar): recomputed here from the laid stubs, which
         # stand a hair off the menu's exits, two near-equal gaps could split the far face the other way, and the solve
-        # would face crossings the model never priced (zynq K44: 176 crossings planned, 344 solved, no plan proved)
-        ycut = float(ctx.dest_cut)
+        # would face crossings the model never priced (zynq K44: 176 crossings planned, 344 solved, no plan proved).
+        # A cut off the far face (whole_ends' WINDING) sends the berths past it round the other side
+        dcut = ctx.dest_cut
+    F.dcut = dcut
     F.cls = {}
     for n in F.M:
-        f_ = bf[n]
-        if f_ == 'E':
-            f_ = 'N' if F.bend[n][1] <= ycut else 'S'
+        f_ = ring_side(F.bend[n], DB, dcut) or 'W'
         if f_ in ('N', 'S') and n not in _trunk:
             F.cls[n] = f_
     near = [n for n in F.M if n not in F.cls]
@@ -229,7 +307,7 @@ def build(ctx, dest, _trunk=frozenset()):
     F.H0 = (min(F.se[n][0] for n in near) if near else float(F.spine.project_pt((x0, (y0 + y1) / 2))[0]))
     W_, H_ = x1 - x0, y1 - y0
     sW, sH = SB[2] - SB[0], SB[3] - SB[1]
-    perim_dst = lambda p: perim_d(p, DB, ycut)
+    perim_dst = lambda p: perim_c(p, DB, dcut)
     perim_src = lambda p: perim_s(p, SB)
     # a PAIR is one lane here: its two tips must stand together at both ends, no other lane's end between them ON
     # THE PAIR'S LAYER there (a lane ending on the other layer runs under the pair's end legs: K41's SCKE1 berths on
@@ -419,10 +497,16 @@ def _stack_rings(F, ctx, pcb, src, dest, dpads, near, tails, north, width, cen, 
         while _inside(F.spine.xy(s_start, o_start), hull, 2 * bd.LPITCH) and s_start > 0:
             s_start -= bd.LANE_MIN / 5
         ccw = sum(bd.sweep_round(ctx.paths[n], cen) for n in mem) > 0
+        if not far_cut(F.dcut):
+            # (a cut off the far face: a ring's lanes past the far face are WOUND round it, their taut paths the short
+            # way round the other side -- the ring runs the way its class goes, from the facing face round its side)
+            DB_ = F.DB
+            wn = ((DB_[0], (DB_[1] + DB_[3]) / 2), ((DB_[0] + DB_[2]) / 2, DB_[1]), (DB_[2], (DB_[1] + DB_[3]) / 2))
+            ccw = (bd.sweep_round(list(wn), cen) > 0) == (k == 'N')
         F.Hk[k] = float(s_start)                         # this ring's lanes leave the trunk here
         _core, F.rings[k] = bd.ring_spine(dpads, [F.spine.xy(s_start, F.o_h[n]) for n in mem], stubs,
                                           F.spine.xy(s_start, o_start), ccw, tuple(float(v) for v in F.spine.d[-1]),
-                                          tails)
+                                          tails, wrap_side=not far_cut(F.dcut))
     hits, room = {}, {}
     for k in F.rings:
         mem = [n for n in F.M if F.cls.get(n) == k]
