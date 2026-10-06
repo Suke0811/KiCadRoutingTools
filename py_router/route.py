@@ -1167,6 +1167,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                    keepout_layer=keepout_layer)
     else:
         print("Using provided PCB data...")
+    if final_reconcile:
+        from rip_up_reroute import reset_run_ledgers
+        reset_run_ledgers(pcb_data)
 
     # KICAD_DUP_TRAP=1: report the call site that re-appends the SAME copper
     # object to pcb_data. Inert otherwise. Armed here so it covers the whole

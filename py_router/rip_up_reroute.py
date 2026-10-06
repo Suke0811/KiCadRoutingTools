@@ -29,6 +29,25 @@ if TYPE_CHECKING:
     from obstacle_cache import NetObstacleData
 
 
+# Run-scoped ledgers kept on pcb_data: rip victims and their saved copper,
+# #134 refusals, #666 queued cap moves, exact-name rip overrides, via-unblock
+# blame and #189 shrunk-via sizes. The CLI parses a fresh board per step, so
+# they start empty; the GUI keeps ONE PCBData across runs, where an earlier
+# run's entries would be read as this run's (a stale victim pulled into the
+# escalation and stale-strip scope, a shrunk via size emitted at a cell where
+# a full via now fits). Nested sub-runs share the outer run's ledgers.
+RUN_LEDGERS = ('_preexisting_rips', '_rip_saved', '_refused_saved_134',
+               '_pending_cap_moves', '_rip_override_names',
+               '_via_unblock_blame', '_unblock_via_sizes')
+
+
+def reset_run_ledgers(pcb_data) -> None:
+    """Start a top-level run with empty ledgers, as a fresh parse does."""
+    for attr in RUN_LEDGERS:
+        if attr in vars(pcb_data):
+            delattr(pcb_data, attr)
+
+
 def rip_up_net(net_id: int, pcb_data: PCBData, routed_net_ids: List[int],
                routed_net_paths: Dict[int, List], routed_results: Dict[int, dict],
                diff_pair_by_net_id: Dict[int, Tuple[str, DiffPairNet]],
