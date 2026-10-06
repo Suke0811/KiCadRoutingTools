@@ -65,22 +65,30 @@ def _windows(vals, tol):
     return out
 
 
-def conflict_groups(menu, stack=True, stack_pitch=None, via_r=None, reach_extra=None, xing=None):
+def conflict_groups(menu, stack=True, stack_pitch=None, via_r=None, reach_extra=None, xing=None, tags=None):
     """(cliques [frozenset of (ball, i)], bicliques [(frozenset, frozenset)], pairs [((ball, i), (ball, i))]).
     At the whole route's own sizes by default; a caller at REAL sizes gives the stacking pitch (track + clearance +
     the hug allowance) and, per move, its via's radius (via_r(move)) plus what a run needs beside it (reach_extra:
     clearance + half a track), so a site reaches a lane as far as ITS via does. `xing` the crossing rule
     (select_moves.SEL_XING by default -- 1, a crossing counts when one of the two climbs; 2, every crossing, what a
     plan that lays every ball of an array needs, where two plain escapes out of the interior do cross). A caller that
-    means a rule passes it."""
+    means a rule passes it. `tags` (a dict): filled with the parts that stated each clique and biclique -- a set of
+    ('lane', layer), ('crossing', layer), ('exit', layer), ('site',), ('reach',) -- for a caller that states a part
+    otherwise (joint_escape: a run on no one layer yet, its lane, crossing and exit conflicts K layers' capacity)."""
     xing = sm.SEL_XING if xing is None else xing
     moves = [(k, i, m) for k in sorted(menu) for i, m in enumerate(menu[k])]
     cliques, bicliques, pairs = set(), set(), set()
 
-    def bi(a, b):
+    def tag(g, kind):
+        if tags is not None:
+            tags.setdefault(g, set()).add(kind)
+
+    def bi(a, b, kind):
         a, b = frozenset(a), frozenset(b)
         if a and b and (len(a | b) > 1):
-            bicliques.add((a, b) if sorted(a) <= sorted(b) else (b, a))
+            g = (a, b) if sorted(a) <= sorted(b) else (b, a)
+            bicliques.add(g)
+            tag(g, kind)
 
     # the spans: (axis, layer, coord, a, b, member, climbs)
     spans = []
@@ -98,6 +106,7 @@ def conflict_groups(menu, stack=True, stack_pitch=None, via_r=None, reach_extra=
             ss = [s for c in w for s in at[c]]
             for g in _interval_cliques([(s[3], s[4], s[5]) for s in ss]):
                 cliques.add(g)
+                tag(g, ('lane', al[1]))
 
     # crossing: per layer, per row coordinate and column coordinate (the relation's own test, pair by coordinate)
     if xing:
@@ -117,10 +126,10 @@ def conflict_groups(menu, stack=True, stack_pitch=None, via_r=None, reach_extra=
                     if not C:
                         continue
                     if xing >= 2:
-                        bi({s[5] for s in R}, {s[5] for s in C})
+                        bi({s[5] for s in R}, {s[5] for s in C}, ('crossing', L))
                     else:
-                        bi({s[5] for s in R}, {s[5] for s in C if s[6]})
-                        bi({s[5] for s in R if s[6]}, {s[5] for s in C})
+                        bi({s[5] for s in R}, {s[5] for s in C if s[6]}, ('crossing', L))
+                        bi({s[5] for s in R if s[6]}, {s[5] for s in C}, ('crossing', L))
 
     # site
     by_site = collections.defaultdict(list)
@@ -130,7 +139,9 @@ def conflict_groups(menu, stack=True, stack_pitch=None, via_r=None, reach_extra=
             by_site[sk].append((k, i, m))
     for sk, mem in by_site.items():
         if len(mem) > 1:
-            cliques.add(frozenset((k, i) for k, i, _m in mem))
+            g = frozenset((k, i) for k, i, _m in mem)
+            cliques.add(g)
+            tag(g, ('site',))
 
     # reach: select_moves._site_in_lane of each site move against each run, grouped by exactly which of the site's
     # moves a run reaches (the site's moves stand within a micron of each other, so nearly always all or none)
@@ -167,7 +178,7 @@ def conflict_groups(menu, stack=True, stack_pitch=None, via_r=None, reach_extra=
                     if who:
                         reached[frozenset(who)].add(s[5])
                 for who, runs in reached.items():
-                    bi(who, runs)
+                    bi(who, runs, ('reach',))
 
     # exit: per layer and face, points along the face (the stacking pitch, or the exit tolerance box)
     by_face = collections.defaultdict(list)
@@ -175,9 +186,10 @@ def conflict_groups(menu, stack=True, stack_pitch=None, via_r=None, reach_extra=
         ax = 1 if m.direction in ('left', 'right') else 0
         by_face[(m.layer, m.direction) if stack else (m.direction,)].append((m.exit_pt[ax], (k, i)))
     r = max(sm._STACK_PITCH if stack_pitch is None else stack_pitch, sm._EXIT_TOL) if stack else sm._EXIT_TOL
-    for pts in by_face.values():
+    for fk, pts in by_face.items():
         for g in _interval_cliques([(v - r / 2, v + r / 2 - sm._TOUCH, mbr) for v, mbr in pts]):
             cliques.add(g)
+            tag(g, ('exit', fk[0] if stack else None))
     return cliques, bicliques, pairs
 
 

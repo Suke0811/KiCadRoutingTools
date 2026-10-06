@@ -2371,12 +2371,13 @@ def generate_underpad_escape(footprint: Footprint,
         db_path[id(p)] = pts
 
 
-    def _dogbone_site_valid(p, site):
+    def _dogbone_site_valid(p, site, edge_ok=False):
         """A CALLER-chosen dog-bone gap site for p (a planned move), checked
         exactly as _choose_dogbone_site checks its own k=0 candidates: a
         legal via site clear of every registered copper and reservation,
         and a clear pad->site stub on the top layer. Returns (site, stub
-        polyline) or None."""
+        polyline) or None. `edge_ok`: a gap half a pitch off the array's
+        edge too (a plane ball's planned drop: the via is its end)."""
         gx, gy = p.global_x, p.global_y
         vx, vy = site
         hx, hy = grid.pitch_x / 2.0, grid.pitch_y / 2.0
@@ -2384,8 +2385,8 @@ def generate_underpad_escape(footprint: Footprint,
             return None                      # not an adjacent gap of this ball
         # strictly an INTER-ball gap: a site on the boundary line leaves a
         # run of a few microns from the via to the exit, no tooth at all
-        if not (grid.min_x + hx * 0.5 < vx < grid.max_x - hx * 0.5
-                and grid.min_y + hy * 0.5 < vy < grid.max_y - hy * 0.5):
+        if not edge_ok and not (grid.min_x + hx * 0.5 < vx < grid.max_x - hx * 0.5
+                                and grid.min_y + hy * 0.5 < vy < grid.max_y - hy * 0.5):
             return None
         ctx = _via_ctx(p.net_id, gx, gy, extra=max(hx, hy))
         if locked_smd_pads and not via_site_ok(vx, vy, via_size / 2.0):
@@ -2399,6 +2400,25 @@ def generate_underpad_escape(footprint: Footprint,
         if not occ.seg_clear(top_idx, (gx, gy), (vx, vy), exempt=ex_cells):
             return None
         return (vx, vy), [(gx, gy), (vx, vy)]
+
+    def _shared_stub_valid(p, site):
+        """A planned drop's stub to a gap site where a via of p's OWN net
+        already stands (the joint escape's SHARED drop: two or more plane
+        balls round one barrel): the stub checked as _dogbone_site_valid
+        checks one, the via's own disk exempted on the raster. Returns the
+        stub polyline or None."""
+        gx, gy = p.global_x, p.global_y
+        vx, vy = site
+        hx, hy = grid.pitch_x / 2.0, grid.pitch_y / 2.0
+        if math.hypot(vx - gx, vy - gy) > 1.2 * math.hypot(hx, hy):
+            return None
+        ctx = _via_ctx(p.net_id, gx, gy, extra=max(hx, hy))
+        if _stub_conflict(p, vx, vy, ctx):
+            return None
+        ex_cells = occ.disk_cells(gx, gy, max(pad_keep, via_keep)) | occ.disk_cells(vx, vy, via_keep)
+        if not occ.seg_clear(top_idx, (gx, gy), (vx, vy), exempt=ex_cells):
+            return None
+        return [(gx, gy), (vx, vy)]
 
     def _dogbone_path_valid(p, site, path):
         """A CALLER-chosen dog-bone site reached by a WALKED stub (#622, the
@@ -2452,12 +2472,36 @@ def generate_underpad_escape(footprint: Footprint,
     # already carrying its net's copper.
     _drop_balls = sorted((p for p in plane_pads if joint and (_move_of(p) or {}).get('kind') == 'drop'),
                          key=depth, reverse=True)
+    _drop_laid = set()          # id() of the planned plane balls part 0 dropped (a plane strap's partner, part 3)
     if _drop_balls:
-        _nd = {'gap': 0, 'in_pad': 0}
+        _nd = {'gap': 0, 'in_pad': 0, 'shared': 0}
         _left = []
+        _gap_via = []       # (net id, site) of each gap via this part laid
         for p in _drop_balls:
             _dmv = _move_of(p)
             gx, gy = p.global_x, p.global_y
+            if not _dmv.get('inpad'):
+                # a SHARED drop: the plan put this ball's drop at a gap site
+                # where a ball of its net already dropped -- its stub to that
+                # one barrel, no via of its own. (Within a micron: one gap
+                # computed from two of its balls differs by the array's own
+                # pitch error, zynq U5's 0.8001 mm balls by 0.1 um)
+                _sv = next((_s for _n, _s in _gap_via if _n == p.net_id
+                            and math.hypot(_s[0] - _dmv['site'][0], _s[1] - _dmv['site'][1]) < 1e-3), None)
+                if _sv is not None:
+                    _dbp = _shared_stub_valid(p, _sv)
+                    if _dbp is not None:
+                        for (_ax, _ay), (_bx, _by) in zip(_dbp, _dbp[1:]):
+                            occ.block_segment(top_idx, (_ax, _ay), (_bx, _by), trk_keep)
+                            exact_segs.append((_ax, _ay, _bx, _by, track_width / 2.0, p.net_id, top_idx))
+                            tracks.append({'start': (_ax, _ay), 'end': (_bx, _by), 'width': track_width,
+                                           'layer': layers[top_idx], 'net_id': p.net_id})
+                        for t in [t for t in reserved_sites
+                                  if t[4] == p.net_id and abs(t[0] - gx) < 1e-6 and abs(t[1] - gy) < 1e-6]:
+                            reserved_sites.remove(t)
+                        _nd['shared'] += 1
+                        _drop_laid.add(id(p))
+                        continue
             # the ball's centre tap reservation is what the drop replaces (as
             # in the drop pass): voided, restored if the drop cannot be laid
             _own = [t for t in reserved_sites
@@ -2465,7 +2509,7 @@ def generate_underpad_escape(footprint: Footprint,
             for t in _own:
                 reserved_sites.remove(t)
             if not _dmv.get('inpad'):
-                _ok = _dogbone_site_valid(p, tuple(_dmv['site']))
+                _ok = _dogbone_site_valid(p, tuple(_dmv['site']), edge_ok=True)
                 if _ok is not None:
                     _site, _dbp = _ok
                     _reserve_dogbone(p, _site, _dbp)
@@ -2474,7 +2518,9 @@ def generate_underpad_escape(footprint: Footprint,
                                        'layer': layers[top_idx], 'net_id': p.net_id})
                     vias_to_add.append({'x': _site[0], 'y': _site[1], 'size': via_size, 'drill': via_drill,
                                         'layers': [layers[0], layers[-1]], 'net_id': p.net_id})
+                    _gap_via.append((p.net_id, _site))
                     _nd['gap'] += 1
+                    _drop_laid.add(id(p))
                     continue
             else:
                 cs, cd, ckeep = via_for_pad(p)
@@ -2488,12 +2534,14 @@ def generate_underpad_escape(footprint: Footprint,
                     vias_to_add.append({'x': gx, 'y': gy, 'size': cs, 'drill': cd,
                                         'layers': [layers[0], layers[-1]], 'net_id': p.net_id})
                     _nd['in_pad'] += 1
+                    _drop_laid.add(id(p))
                     continue
             reserved_sites.extend(_own)
             _left.append(p)
         if verbose:
-            print(f"  Plan drops: {_nd['gap'] + _nd['in_pad']}/{len(_drop_balls)} laid ({_nd['gap']} gap, "
-                  f"{_nd['in_pad']} in pad)"
+            print(f"  Plan drops: {_nd['gap'] + _nd['in_pad'] + _nd['shared']}/{len(_drop_balls)} laid "
+                  f"({_nd['gap']} gap, {_nd['in_pad']} in pad"
+                  + (f", {_nd['shared']} sharing a gap via" if _nd['shared'] else '') + ")"
                   + (f"; {len(_left)} left to the drop pass: "
                      + ', '.join(f"{q.net_name.split('/')[-1]} {q.pad_number}" for q in _left) if _left else ''))
 
@@ -3302,12 +3350,16 @@ def generate_underpad_escape(footprint: Footprint,
     # raster with the two balls' own disks exempted (the raster carries no
     # nets; the plan keeps a strap off its own net's copper outside those
     # disks). A strap that cannot be laid, or whose partner is never served,
-    # leaves its ball to the generic phases.
-    if _strap_balls:
-        _served = set(_plan_laid)
+    # leaves its ball to the generic phases. A PLANE ball's strap joins a
+    # ball of its net that part 0 dropped (or one strapped on); one that
+    # cannot be laid leaves its ball to the drop pass.
+    _plane_straps = [p for p in plane_pads if joint and (_move_of(p) or {}).get('kind') == 'strap']
+    if _strap_balls or _plane_straps:
+        _served = set(_plan_laid) | _drop_laid
         _by_pos = {(round(_q.global_x, 3), round(_q.global_y, 3)): _q
-                   for _q in list(_planned) + list(_strap_balls)}
-        _todo = sorted(_strap_balls, key=lambda _q: (depth(_q), str(_q.net_name), str(_q.pad_number)))
+                   for _q in list(_planned) + list(_strap_balls) + list(_drop_balls) + list(_plane_straps)}
+        _todo = sorted(list(_strap_balls) + list(_plane_straps),
+                       key=lambda _q: (depth(_q), str(_q.net_name), str(_q.pad_number)))
         _back, _laid = [], 0
         _hw = track_width / 2.0
         _moved = True
@@ -3360,10 +3412,11 @@ def generate_underpad_escape(footprint: Footprint,
                 _served.add(id(_sp))
                 _laid += 1
         _back += _todo
-        single_pads = list(single_pads) + _back
+        _pids = {id(_q) for _q in _plane_straps}
+        single_pads = list(single_pads) + [_q for _q in _back if id(_q) not in _pids]
         if verbose:
-            print(f"  Plan straps: {_laid}/{len(_strap_balls)} laid"
-                  + (f"; {len(_back)} left to the generic phases: "
+            print(f"  Plan straps: {_laid}/{len(_strap_balls) + len(_plane_straps)} laid"
+                  + (f"; {len(_back)} left to the generic phases (a plane ball's to the drop pass): "
                      + ', '.join(f"{_q.net_name.split('/')[-1]} {_q.pad_number}" for _q in _back) if _back else ''))
 
     if joint:

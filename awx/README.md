@@ -311,6 +311,69 @@ stepped down the fab ladder together only while a ball is left. A later round
 holds them as it holds its own teeth: only a ball whose copper the round's
 moved bus stubs now meet is planned again (`joint_escape.carry`).
 
+A plane ball goes down to its plane as the human's do, sharing vias:
+
+- **A shared gap via:** the balls round one diagonal gap may all drop there
+  on one via, which the plan prices once.
+- **Off the array:** an edge ball may drop half a pitch off the array, or
+  straight out from it where no ball stands beside it.
+- **A strap:** a ball may strap to a neighbour of its net that has a way
+  down. The strap is priced as the via it saves, so a ball takes one only
+  when it has no way down of its own.
+
+On the zynq's U5 the human's RFGND balls stand four round one via, two at a via
+off the edge, and three strapped down a column; there the plan's plane balls
+went from 42 of 49 dropped, on 42 vias, to all 49 on 26, and on U1 from 92 of
+98 on 92 vias to all 98 on 79. The served question is asked in tiers (the bus
+and the pairs, the other nets, the plane balls), each held before the next; a
+tier left undecided in its time is asked instead for the most of it served,
+and that is held (U1's 98 plane balls, undecided at four times the time).
+
+**On more routing layers than two the fanout plans every routing layer**, the
+other nets included where the run routes on a poured inner layer
+(`route_bus.signal_layers`). A via escape's run (its stretch from the via to
+the array's edge) is planned on no one layer:
+
+- **One move per escape shape**, with the layers its run is clear on. Offered
+  layer by layer, zynq U1's array was 41,977 moves and 1.6 million
+  constraints, past 1.5 GB at its first solve; one move a shape keeps its
+  two-layer 14,955.
+- **K layers' capacity**: at most K runs in one lane at a point, at one exit
+  cluster, and through one crossing, where two layers said at most one. A
+  lane's runs are intervals, so K of them overlapping take K layers and need
+  no more. Two legs of a pair are never in one such group, as they leave on one
+  layer. A bus run stands ALONE in its group, as on two layers: its layer is
+  the solve's, at its via end, and every layer must stay free for it. The
+  extra layers are the other nets'. Two bus runs sharing a lane on two layers
+  held the zynq's solve to 16 pairs of runs kept apart; other nets' runs beside
+  the bus's on the inner layers banned its via ends 51 layers. Each time the
+  whole solve proved no plan; without those bans it found one.
+- **An exclusion in one row**: an option that excludes several members of a
+  group (a via reaching runs, a plane drop or strap against escapes) says so
+  as `cap x it + those <= cap`, not a clause a member. Those clauses were most
+  of the model's memory.
+- **The layers after**: each chosen run gets its layer from a small exact solve
+  (`colour_runs`): the outer layer first, the inner ones kept for the bus, and
+  a bus lane on the layer its preferred tooth leaves by.
+
+Phase 2 runs the quick-restart worker alone there; the LP worker held a
+quarter of the plan's memory for half a percent of its cost. On the zynq at
+four layers, U1's plan serves all 297 balls in 767 MB (its two-layer plan
+peaks at 1.2 GB), and U5 all 134 in 454 MB; the runs stand about two thirds on
+B.Cu, the rest on In1 and In2. Two layers plan exactly as before.
+
+**Each bus its own stretch of the array's edge.** Where an array has other
+buses (`route_bus.find_buses`: eight nets or more with one other part, whether
+the whole route or the router takes them), no exit of one bus stands between
+two exits of another on the same face and layer. Otherwise the bus routed first
+walls in the teeth of the next. Runs on no one layer yet count as one layer
+here. Before the rule, zynq U1's plan at four layers split six buses' stretches
+(the LVDS bus and the U4 group alternating on the bottom face); with it, none.
+
+Each round the passives the joint fanout lays through are moved off its copper
+(the chain's cap nudge, `place_fanout_clearance.py`) before the solve, and the
+route holds them fixed where they are left.
+
 `zynq_ad9364` from GitHub, its planes poured as the stress run poured them,
 and the whole bus at the stress run's sizes -- its fanouts' 0.12 mm track at
 0.09 mm, its routes' 0.15 mm track and 0.45/0.3 mm vias:
@@ -1198,7 +1261,10 @@ py_router/` is the exact list):
 - **The under-pad engine** (`bga_fanout/underpad.py`):
   - the **joint escape** (`joint=True`): a whole array's planned moves --
     escapes, straps, plane drops -- laid together, stepped down the fab
-    ladder only while a ball is left;
+    ladder only while a ball is left. A plane drop planned at a gap where
+    its net's via already stands lays its stub alone, one planned off the
+    array's edge is laid there, and a plane ball's planned strap is laid
+    to a neighbour that dropped;
   - a stub is checked against other nets' tracks **on its own layer only**
     (`stub_track_conflict`; its via against every via as before), for every
     caller;

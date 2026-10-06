@@ -382,8 +382,9 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         cc = wr.run([checker('check_connected.py'), routed_pcb, '--nets'] + pats, dict(os.environ),
                     log_path=os.path.join(work, 'conn.log'), own_process=True)[0]
         d_bus, d_out = drc(routed_pcb, 'bus', '--nets', *pats), drc(routed_pcb, 'board')
-        # (joint: the step laid the arrays' whole fanout, whose own pad-to-via hits the cap nudge that follows
-        # resolves; the bus's nets are held clean, the board's count is reported)
+        # (joint: the step laid the arrays' whole fanout and moved the passives off it each round -- the chain's cap
+        # nudge, whole_route -- whose own pad-to-via hits the nudge could not clear are the board's to report; the
+        # bus's nets are held clean)
         ok_drc = d_bus == 0 and None not in (d_out, d_in) and (joint_fanout or d_out <= d_in)
         if cc == 0 and ok_drc:
             break
@@ -471,9 +472,12 @@ def array_others(pcb, ref, names):
 
 def signal_layers(pcb):
     """the copper layers a signal may escape on: every layer but an INNER one carrying a pour (a plane layer --
-    zynq's In1 GND/RFGND and In2 VCC_1V8); an outer layer always, its pour refilled round the copper"""
+    zynq's In1 GND/RFGND and In2 VCC_1V8), unless the run routes on it (ROUTE_LAYERS: the bus's lanes cut that pour,
+    and the arrays' other nets escape on it as the human's do); an outer layer always, its pour refilled round the
+    copper"""
+    import route_layers
     planes = {z.layer for z in (pcb.zones or []) if z.net_id and z.layer not in ('F.Cu', 'B.Cu')}
-    return [L for L in pcb.board_info.copper_layers if L not in planes]
+    return [L for L in pcb.board_info.copper_layers if L not in planes or L in route_layers.layers()]
 
 
 def put_back(path, board, pcb, back):

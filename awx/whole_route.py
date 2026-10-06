@@ -1020,6 +1020,19 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
                 r -= 1
                 break
         bench = os.path.join(d, 'fo.kicad_pcb')
+        if env.get('FANOUT_JOINT'):
+            # the parts the joint fanout lays through -- the movable passives under the arrays, as the chain's own
+            # fanout does -- move off its copper now, as the chain's cap nudge moves them after its fanout
+            # (place_fanout_clearance), and the route holds them fixed where they are left: routed round them where
+            # they stood, the zynq's bus on four layers met them under its lanes and its loop's layer cuts left no plan
+            import rules as _rules
+            rcn = run([os.path.join('..', 'py_router', 'place_fanout_clearance.py'), bench, bench,
+                       '--clearance', str(_rules.active().clearance)], env,
+                      log_path=os.path.join(d, 'caps.log'), own_process=True)[0]
+            for ln in grep(os.path.join(d, 'caps.log'), r'^(Moved|Stuck|  Unresolved)'):
+                say('  caps: ' + ln.strip()[:200])
+            if rcn != 0:
+                say(f"  caps: the nudge exited {rcn} -- the round goes on with them where the fanout left them")
         env.update(BENCH=bench, NETS=NETS, DEST=dest)
         solve = os.path.join(d, 'solve.json')
         # (a round never ends with nothing: its solve keeps a plan it cannot prove -- whole_solve SOLVE_UNPROVED -- and
