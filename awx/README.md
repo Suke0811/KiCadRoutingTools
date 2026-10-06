@@ -1101,6 +1101,22 @@ via.
   against an array's own pad is held off that layer round the place
   (`ARRAY_CUT_R`): the lanes beside it pushed it there, and another layer has
   room. A drilled ball stands on every layer, so it is no island's cut.
+- **Cuts on the lane's own route.** A cut is written in route u, and a place
+  in u is a line across the frame. Where a lane runs steeply across the trunk,
+  a few millimetres of it advance u by a fraction of that, so an island's
+  whole box, or a via's whole room, in u lands millimetres from where the
+  lane met it. Each cut is held instead to the stretch of the lane's own laid
+  route that met what cut it (`whole_route.own_spans`, from the geometry's
+  map of each lane's route u to the board, `uxy`).
+- **Firm cuts, one solve.** A re-solve holds every cut it can, and breaks one
+  only where no plan holds them all, at a hundred vias each (`CUTS_FIRM`): one
+  solve, where two layers solve with the cuts hard and again with them soft.
+- **A pair's turn, a grid step wider** (`GEO_PAIR_TURN_ROOM`, in router grid
+  steps; 1 here, 0 on two layers). From a pair's end through its end run and
+  its two 45-degree turns onto its lane, the lanes beside it on its layer
+  stand that much further off. The snap lays that turn on the grid, and at
+  the bare bar the single beside it was refitted a few hundredths short there
+  every round, round the pairs the snap had laid.
 - **`ESCAPE_VIAS`** (`0`, `dest` or `both`; `0` by default): every escape at
   those arrays through a via, so a lane chooses its layer at its ends too.
 

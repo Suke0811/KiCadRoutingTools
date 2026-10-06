@@ -57,6 +57,9 @@ FALLBACK = ['quick_restart', 'no_lp', 'core']
 FACE_ROOM = 2 * VNEED                  # the band along the source's near face: a change's room along its lane
 SOLVE_STALL = 3                        # the search's model reductions in a row with no progress: stalled
 WARM_WORK = 30.0                       # deterministic work to lay a re-solve's warm start out whole (one worker)
+W_FIRM = 100 * W_V                     # a broken FIRM cut (CUTS_FIRM=1, more layers than two): above everything else a
+#                                        plan can buy -- the solve holds every cut it can and breaks one only where no
+#                                        plan holds them all, in ONE solve (whole_route's loop: no hard pass first)
 W_SOFT = 3 * W_V                       # a broken SOFT cut: above a dive's two vias, below a net over two -- whole vias,
 #                                        as the search's proof reads them (at two and a half, a plan holding a cut two
 #                                        vias dearer than one breaking it floored to the same whole number, proved)
@@ -230,7 +233,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     _seen_lc = set()
     for fn_ in list(cuts) + list(soft_cuts):
         for c_ in json.load(open(fn_)).get('lcuts', []):
-            k_lc = (c_['lane'], c_['island'], int(c_['layer']), tuple(round(float(v_), 6) for v_ in c_['box']))
+            k_lc = (c_['lane'], c_['island'], int(c_['layer']), tuple(round(float(v_), 6) for v_ in c_['box']),
+                    tuple(c_.get('span') or ()))
             if k_lc in _seen_lc:
                 continue
             _seen_lc.add(k_lc)
@@ -244,9 +248,14 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
             cnr_ = ((x0_, y0_), (x0_, y1_), (x1_, y0_), (x1_, y1_))
             ss_ = [float(spine.project_pt(q_)[0]) for q_ in cnr_]
             spans_ = []
-            if not (max(ss_) < entry[n_] or min(ss_) > tend[n_]):
+            if c_.get('span'):
+                # (the stretch of the lane's own route that met the island, in route u: whole_route.own_spans)
+                lo_s, hi_s = (float(v_) for v_ in c_['span'])
+                if hi_s >= entry[n_] and lo_s <= end[n_]:
+                    spans_.append((max(lo_s, entry[n_]), min(hi_s, end[n_])))
+            elif not (max(ss_) < entry[n_] or min(ss_) > tend[n_]):
                 spans_.append((min(ss_), max(ss_)))              # (on the lane's trunk)
-            if NL > 2 and n_ in bname:
+            if NL > 2 and n_ in bname and not c_.get('span'):
                 # (...and on its ring, past its handoff: the island's span along the ring's spine, in the lane's u)
                 us_ = [u_ring(n_, float(ring_of[bname[n_]].project_pt(q_)[0])) for q_ in cnr_]
                 if max(us_) > Hn[n_] and min(us_) < end[n_]:
@@ -390,13 +399,22 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     for fn_ in cuts:
         CUTS += json.load(open(fn_)).get('cuts', [])
     ncut = 0
+    # (CUTS_FIRM=1: each of the CUTS files' cuts held unless its BROKEN flag, priced W_FIRM -- held wherever a plan
+    # holds them all, broken only where none does)
+    FIRM = awx_settings.get('CUTS_FIRM') == '1'
+    firm_broken = {}
     for cu_ in sorted({(c_['lane'], round(c_['u_lo'], 3), round(c_['u_hi'], 3)) for c_ in CUTS}):
         n_, lo_, hi_ = cu_
+        brk_ = []
+        if FIRM:
+            firm_broken[('island',) + cu_] = m.NewBoolVar('')
+            brk_ = [firm_broken[('island',) + cu_].Not()]
         for key in t:
             if n_ not in key:
                 continue
             a_ = m.NewBoolVar('')
-            m.Add(t[key] <= Q(lo_)).OnlyEnforceIf(a_); m.Add(t[key] >= Q(hi_) + 1).OnlyEnforceIf(a_.Not())
+            m.Add(t[key] <= Q(lo_)).OnlyEnforceIf([a_] + brk_)
+            m.Add(t[key] >= Q(hi_) + 1).OnlyEnforceIf([a_.Not()] + brk_)
             ncut += 1
     if CUTS:
         print(f'   geometry cuts: {len(CUTS)} island spans, {ncut} crossing constraints')
@@ -498,7 +516,13 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     chg, tot = {}, {}
     T0 = {c_[0] for c_ in LAYER_CUTS if c_[1] == 0} | CHAN_T0 | TVIA   # (a blocked tooth's change may stand in the face's band)
     for n in M:
-        lo_n, hi_n = Q(max(entry[n] + VIN0[n], BAND if n not in T0 else entry[n] + VIN0[n])), Q(end[n] - VIN1[n])
+        # (more layers than two: never before the lane's own entry -- a tooth via's window starts AT the tooth, no end
+        # room, and rounded to the nearest step it opened half a step before it: the change laid ahead of the tooth,
+        # the band TOOTH-OUT)
+        lo_n = Q(max(entry[n] + VIN0[n], BAND if n not in T0 else entry[n] + VIN0[n]))
+        if NL > 2:
+            lo_n = max(lo_n, QU(entry[n]))
+        hi_n = Q(end[n] - VIN1[n])
         cs_ = [m.NewIntVar(lo_n, hi_n + 1, f'c_{n}_{k}') for k in range(KMAX)]
         act = [m.NewBoolVar('') for _ in range(KMAX)]
         for k in range(KMAX):
@@ -698,15 +722,20 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     # ---- via cuts (whole_geo.py: a change the geometry could not give its room): that lane's changes stay out of the window
     # (a BUILT-IN cut gives way in a lane's blocked end's window: the ends model measured a via there clear of every
     # copper on every layer, where the built-in cut only reads a pad within reach of the lane's reference path)
+    filed = {(c_['lane'], round(c_['u'], 3), round(c_['w'], 3)) for c_ in VCUTS[:NVC0]}     # (the cut files')
     for vc_ in sorted({(c_['lane'], round(c_['u'], 3), round(c_['w'], 3), c_.get('built', 0)) for c_ in VCUTS}):
         n_, u_, w_, bi_ = vc_
         if n_ not in chg:
             continue
+        brk_ = []
+        if FIRM and not bi_ and vc_[:3] in filed:
+            firm_broken[('via',) + vc_[:3]] = m.NewBoolVar('')
+            brk_ = [firm_broken[('via',) + vc_[:3]]]
         cs_v, act_v = chg[n_]
         for i_x, (x_, a_) in enumerate(zip(cs_v, act_v)):
             lo_b, hi_b = m.NewBoolVar(''), m.NewBoolVar('')
             m.Add(x_ <= Q(u_ - w_)).OnlyEnforceIf(lo_b); m.Add(x_ >= Q(u_ + w_)).OnlyEnforceIf(hi_b)
-            m.AddBoolOr([lo_b, hi_b, a_.Not()] + (INWIN.get((n_, i_x), []) if bi_ else []))
+            m.AddBoolOr([lo_b, hi_b, a_.Not()] + (INWIN.get((n_, i_x), []) if bi_ else []) + brk_)
     if VCUTS:
         print(f'   via cuts: {len(VCUTS)}')
     # ---- SOFT cuts (SOFT_CUTS=GEO.json,..: the geometry's cuts, as CUTS reads them, that left no plan as hard ones --
@@ -962,7 +991,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
             root = r_
             m.Add(W_OVER * sum(over.values()) + W_V * VIAS >= W_OVER * r_['over'] + W_V * r_['vias'])
             print(f"   the root's proof as a floor: {r_['over']} via(s) over two, {r_['vias']} vias")
-    OBJ = W_OVER * sum(over.values()) + W_V * VIAS + W_SOFT * sum(soft_broken.values()) + sum(cost)
+    OBJ = W_OVER * sum(over.values()) + W_V * VIAS + W_SOFT * sum(soft_broken.values()) + sum(cost) \
+        + W_FIRM * sum(firm_broken.values())
     m.Minimize(OBJ)
     # ...and STOPPED when it STALLS: once it has a plan, SOLVE_STALL of the search's own model reductions in a row with
     # no better plan and no better bound (its log's '#Model' against '#n' and '#Bound' lines, events of the
@@ -1093,6 +1123,10 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
         ({'over': int(sum(sv.Value(over[n]) for n in M)), 'vias': int(sum(per.values()) - sum(drp.values())), 'sig': sig}
          if not CUTS and not SOFT and NVC0 == 0 and proved else None)
     J['proved'] = bool(proved)
+    if firm_broken:
+        J['firm_broken'] = [list(s_) for s_, b_ in sorted(firm_broken.items()) if sv.Value(b_)]
+        print(f"   firm cuts broken: {len(J['firm_broken'])} of {len(firm_broken)}"
+              + (f" -- {', '.join(f'{s_[1]} {s_[0]} {s_[2]}' for s_ in J['firm_broken'])}" if J['firm_broken'] else ''))
     if soft_broken:
         J['soft_broken'] = [list(s_) for s_, b_ in sorted(soft_broken.items()) if sv.Value(b_)]
         print(f"   soft cuts broken: {len(J['soft_broken'])} of {len(soft_broken)}")

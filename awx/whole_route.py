@@ -282,6 +282,89 @@ def audit_layer_cuts(audit, geo):
     return out
 
 
+def _dense(pts, step):
+    """a polyline's points `pts` ((u,) x, y rows) with points added every `step` mm of board between them, the leading
+    values interpolated too"""
+    out = []
+    for a, b in zip(pts, pts[1:]):
+        d = math.hypot(b[-2] - a[-2], b[-1] - a[-1])
+        m = max(1, int(math.ceil(d / step)))
+        out += [[a[j] + (b[j] - a[j]) * i / m for j in range(len(a))] for i in range(m)]
+    return out + [list(pts[-1])] if pts else out
+
+
+def own_spans(cf, geo, plan=None):
+    """(more routing layers than two) the cuts of a cut file `cf` held to the stretch of each lane's OWN route that met
+    what cut it, read off the geometry's map of its laid lanes (`geo`'s uxy: each lane's columns as route u, x, y). A
+    cut is written in route u, and a place in u is a line across the frame: where lanes run steeply across the trunk --
+    the zynq's LVDS bus from U1's east face to U5's north ring, the trunk from centre to centre -- a few mm of the lane
+    advance it a fraction of that, and a cut over the island's whole box or a via's whole room in u lands on stretches of
+    the lane millimetres from the place (a layer cut across five lanes' own teeth, held off their layer from before they
+    start; RX_D0's via cut 7 mm from the tooth via window it closed: the solve proved no plan). A VIA cut is held to the
+    lane's route within its room of the site (the lane's place at the cut's u), inside the cut it was; a LAYER cut
+    carries the `span` of the lane's route where its laid path (`plan`'s, else the geometry's) meets the island's box
+    grown by a lane's clearance -- the solve reads it in place of the box's projection. A cut whose lane the map does not
+    reach stands as it was"""
+    import route_layers
+    tab = geo.get('uxy') or {}
+    if len(route_layers.layers()) <= 2 or not tab:
+        return cf
+    import rules as _rules
+    R = _rules.active()
+    reach = R.track / 2 + R.clearance + R.grid
+
+    def at_u(rows, u):
+        for a, b in zip(rows, rows[1:]):
+            if a[0] <= u <= b[0]:
+                t = (u - a[0]) / (b[0] - a[0]) if b[0] > a[0] else 0.0
+                return a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t
+        return None
+    dense = {}
+
+    def rows_of(n):
+        if n not in dense:
+            dense[n] = _dense(tab[n], R.grid / 2) if n in tab else []
+        return dense[n]
+    out = dict(cf)
+    vc = []
+    for c in cf.get('vcuts', []):
+        rows = rows_of(c['lane'])
+        site = at_u(rows, c['u']) if rows else None
+        if site is None:
+            vc.append(c)
+            continue
+        i0 = min(range(len(rows)), key=lambda i: abs(rows[i][0] - c['u']))
+        lo = hi = i0                    # the run of the lane's route within the via's room of the site, round it
+        near = lambda i: math.hypot(rows[i][1] - site[0], rows[i][2] - site[1]) <= c['w']
+        while lo > 0 and near(lo - 1):
+            lo -= 1
+        while hi < len(rows) - 1 and near(hi + 1):
+            hi += 1
+        a, b = max(rows[lo][0], c['u'] - c['w']), min(rows[hi][0], c['u'] + c['w'])
+        vc.append(dict(c, u=round((a + b) / 2, 4), w=round((b - a) / 2, 4)))
+    if 'vcuts' in cf:
+        out['vcuts'] = vc
+    lanes = (plan or geo).get('lanes') or {}
+    lc = []
+    for c in cf.get('lcuts', []):
+        rows, path = rows_of(c['lane']), (lanes.get(c['lane']) or {}).get('xy')
+        if not rows or not path or 'box' not in c:
+            lc.append(c)
+            continue
+        x0, y0, x1, y1 = c['box'][:4]
+        us = []
+        for p in _dense([list(q) for q in path], R.grid / 2):
+            if x0 - reach <= p[0] <= x1 + reach and y0 - reach <= p[1] <= y1 + reach:
+                # (the laid path's place on the lane's route: its nearest column, the polish having moved it little)
+                d, u = min((math.hypot(r_[1] - p[0], r_[2] - p[1]), r_[0]) for r_ in rows)
+                if d <= 2 * reach:
+                    us.append(u)
+        lc.append(dict(c, span=[round(min(us), 4), round(max(us), 4)]) if us else c)
+    if 'lcuts' in cf:
+        out['lcuts'] = lc
+    return out
+
+
 def snap_layer_cuts(snap_log, geo):
     """the LAYER cuts a snap's failures give: a lane it could not lay, its search stuck within SNAP_ISLAND_REACH of an
     island on one layer, the layer it was on there -- the nearest such island"""
@@ -396,6 +479,21 @@ def loop(solve, out, rounds, env, log):
         except Exception:
             traceback.print_exc(file=err)
         soft = {'SOFT_CUTS': st['soft']} if st.get('soft') else {}
+        import route_layers
+        if len(route_layers.layers()) > 2:
+            # (more routing layers than two: ONE solve, the cuts FIRM -- each held unless broken at a price above
+            # anything a plan can buy, so every cut that can hold does and only those no plan holds break -- keeping
+            # a plan it cannot prove, as such a solve almost never proves one. The hard pass first spent four minutes
+            # of the zynq's LVDS round proving no plan, for two via cuts of 34 that could not hold together, before
+            # the soft pass the loop then ran anyway)
+            if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log', BENCH=env.get('BENCH0') or env['BENCH'],
+                     HINT=st['solve'], CUTS=cuts_out if os.path.isfile(cuts_out) else '', HIST=st['hist'],
+                     CUTS_FIRM='1', SOLVE_UNPROVED='1', **soft) != 0:
+                return failed(s2[:-5] + '.log')
+            for ln in grep(s2[:-5] + '.log', r'whole_solve|vias|check|history|firm cuts'):
+                log('  ' + ln)
+            took(s2, i)
+            return None
         if stage([s2], 'whole_solve.py', [s2], s2[:-5] + '.log', BENCH=env.get('BENCH0') or env['BENCH'],
                  HINT=st['solve'], CUTS=cuts_out, HIST=st['hist'], **soft) != 0:
             # the CUTS left no plan: they are absolute, and together they can ask more than any plan gives -- a net
@@ -477,7 +575,7 @@ def loop(solve, out, rounds, env, log):
             lcuts += [c for c in gj.get('lcuts', []) + pj.get('lcuts', []) if c not in lcuts]
             if lcuts:
                 log(f"  layer cuts: {', '.join(c_['lane'] + ' under ' + c_['island'] for c_ in lcuts)}")
-            json.dump({'cuts': cuts, 'vcuts': vcuts, 'lcuts': lcuts}, open(O(f'c{i}.json'), 'w'))
+            json.dump(own_spans({'cuts': cuts, 'vcuts': vcuts, 'lcuts': lcuts}, gj, pj), open(O(f'c{i}.json'), 'w'))
             n = len(cuts) + len(vcuts) + len(lcuts)
             passes = gate(p, O(f'p{i}.audit'))[0] == 0
             if not passes and addhot(p, O(f'p{i}.audit'), O(f'hp{i}.json')):
@@ -550,7 +648,7 @@ def loop(solve, out, rounds, env, log):
             nd = None
             try:
                 d = json.load(open(pairs)).get('dive_cuts', [])
-                json.dump({'vcuts': d}, open(O(f'dc{i}.json'), 'w'))
+                json.dump(own_spans({'vcuts': d}, json.load(open(O(f'g{i}.json')))), open(O(f'dc{i}.json'), 'w'))
                 nd = len(d)
             except Exception:
                 traceback.print_exc(file=err)
@@ -639,7 +737,8 @@ def loop(solve, out, rounds, env, log):
         # ...and a lane the snap could not lay beside an island on one layer: held under it (a LAYER cut)
         lc = snap_layer_cuts(sl, json.load(open(O(f'g{i}.json'))))
         if lc:
-            json.dump({'lcuts': lc}, open(O(f'lc{i}.json'), 'w'))
+            json.dump(own_spans({'lcuts': lc}, json.load(open(O(f'g{i}.json'))), json.load(open(chosen))),
+                      open(O(f'lc{i}.json'), 'w'))
             st['cuts'] = (st['cuts'] + ',' if st['cuts'] else '') + O(f'lc{i}.json')
             log(f"  layer cuts: {', '.join(c_['lane'] + ' under ' + c_['island'] for c_ in lc)}")
         log(f"=== round {i}: the snapped plan does not pass -> the solve again, its places priced")

@@ -92,6 +92,12 @@ W_COMF_TIGHT = 3 * W_COMF
 # GEO_PAIR_ROOM=1 (opt-in; off by default): an island split that leaves a side holding a PAIR with less than a lane's
 # pitch to spare is taken only when every split that fits does the same (static_sides)
 PAIR_ROOM = awx_settings.get('GEO_PAIR_ROOM', '0') not in ('', '0')
+# GEO_PAIR_TURN_ROOM=N (router grid steps; default 1 on more routing layers than two, 0 on two): a PAIR's neighbours on
+# its layer stand N grid steps further off it from its end through its turn onto the lane -- its end run, then two
+# 45-degree bends a turning run apart. The snap lays that turn as the pair router turns, on the grid, and a plan at the
+# bare bar there left the lane beside it a grid step short (synth w0P: SYN02 0.214 / 0.218 against 0.257 beside SYP0
+# turning south off its tooth -- in every order the snap tried, whichever of the two was laid second failed)
+PAIR_TURN_ROOM = float(awx_settings.get('GEO_PAIR_TURN_ROOM', '1' if NL > 2 else '0')) * ctx.cfg.grid_step
 from fab_tiers import min_via_center_distance
 VIA_VV = min_via_center_distance(bd.VIA_SIZE, CL, ctx.cfg.via_drill, getattr(ctx.cfg, 'hole_to_hole_clearance', 0.0) or 0.0)
 VIA_VV += 2 * GRID2; VIA_ST += GRID2; LANE_ST += GRID2     # planned vs planned a whole step, vs static half
@@ -330,6 +336,7 @@ FR = {'T': dict(sp=Fr.spine, u=lambda s: s, s=lambda u: u)}
 for k_, sp in ring_sp.items():
     FR[k_] = dict(sp=sp, u=(lambda s, k_=k_: HK[k_] + (s - RS[k_])), s=(lambda u, k_=k_: RS[k_] + (u - HK[k_])))
 TURN_RUN = _pairs.turn_straight_steps(ctx.cfg) * ctx.cfg.grid_step     # a pair's 45-degree turn: its diagonal's run
+NTURN = int(math.ceil((2 * TURN_RUN + _pairs.pitch(TW)) / G))    # a pair's turn onto its lane (two 45s), in columns
 
 
 def _chamfer(pieces, xy_all, t):
@@ -541,10 +548,16 @@ def build_and_solve(sides, prev=None):
                 if v['k1'] - k < v['ex1'] and v['o1'] is not None:
                     return ('end', v['o1'])
                 return None
+            def turning(n):
+                """column k within pair n's end run and its turn onto the lane, at an end this piece holds"""
+                v = pcs[n]
+                return n in prs and PAIR_TURN_ROOM > 0 and (
+                    (v['o0'] is not None and k - v['k0'] <= v['hold0'] + NTURN)
+                    or (v['o1'] is not None and v['k1'] - k <= v['hold1'] + NTURN))
             for Ly in range(NL):
                 seq = [n for n in od if Ly in lay[n]]
                 for a, b in zip(seq, seq[1:]):
-                    sep = P_MIN + hw[a] + hw[b]
+                    sep = P_MIN + hw[a] + hw[b] + (PAIR_TURN_ROOM if turning(a) or turning(b) else 0.0)
                     ta, tb = term_o(a), term_o(b)
                     if ta and tb and ta[0] == tb[0]:
                         sep = min(sep, max(0.0, abs(tb[1] - ta[1]) - G / 20))
@@ -1452,6 +1465,15 @@ for q in sol['paid'].get('pdive', []):
             vseen.add((n, round(cu, 3)))
             vcuts.append({'lane': n, 'u': cu, 'w': (max(W_XB, W_XA) if is_xo(n, cu) else W_DIVE) * G})
 res['vcuts'] = vcuts
+# (more routing layers than two) each lane's laid columns as (route u, x, y): where along its route a place on the board
+# is, read by the loop to hold each cut to the stretch of the lane's own route that met it (whole_route.own_spans)
+if NL > 2:
+    res['uxy'] = {}
+    for (f, n, k), o_ in sorted(sol['o'].items(), key=lambda kv: (kv[0][1], kv[0][0], kv[0][2])):
+        x_, y_ = FR[f]['sp'].xy(k * G, o_)
+        res['uxy'].setdefault(n, []).append([round(FR[f]['u'](k * G), 4), round(float(x_), 4), round(float(y_), 4)])
+    for n in res['uxy']:
+        res['uxy'][n].sort()
 res['flips'] = sorted(FLIP)
 res['changes'] = {n: list(chg.get(n, [])) for n in res['lanes']}    # each lane's changes in route u, in order
 res['rules'] = {'grid': ctx.cfg.grid_step, 'track': TW, 'clear': CL, 'lane_min': bd.LANE_MIN}
