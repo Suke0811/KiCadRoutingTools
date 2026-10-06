@@ -810,6 +810,125 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
     if CHAN_CUTS:
         print(f'   layer cuts (islands in the way): {len(CHAN_CUTS)} -- ' + ', '.join(
             f'{c_[0]} {held(c_)} under {c_[1][5:]} over {c_[3]:.2f}..{c_[4]:.2f}' for c_ in CHAN_CUTS))
+    # ---- PART GATES (more routing layers than two, SOLVE_GATES, on there): a part whose pads stand on some routing
+    # layers only is no wall the frame goes round (whole_frame._rings_round) -- the lanes pass it on the others -- so
+    # across it the lanes ON its layers must fit in what those layers have free. Each such ISLAND (whole_ctx.part_islands:
+    # pads no lane passes between, one box, as the geometry holds it), in each frame it stands in: the frame's columns at
+    # its two edges and its middle, board edge to board edge (a ring's on its own side of the destination), less every
+    # island and the arrays' boxes on the layer, each grown by a lane's bar, read as lane pitches; every lane of that
+    # frame there, on that layer there, counts its pitch (a pair's, its legs' too). A lane over it is priced W_FIRM: the
+    # geometry has nowhere to lay it. The frame lays its rings over such a part and the solve, blind to it, put every lane
+    # on its layer there -- synth wwP's twelve lanes all on B under two walls of 0402s on B, a plan no geometry lays,
+    # left to the loop to undo a cut at a time
+    GATE_OVER = []
+    if NL > 2 and (awx_settings.get('SOLVE_GATES') or '1') == '1':
+        import numpy as np
+        g2_ = ctx.cfg.grid_step / 2
+        BAR_ = TRK / 2 + CLR + g2_                     # a lane's centreline off copper (whole_geo's LANE_ST)
+        PMIN_ = max(PITCH, TRK + CLR + 2 * g2_)        # two lanes' centrelines apart (whole_geo's P_MIN)
+        wid_ = {n: PMIN_ + (_pairs.pitch(TRK) if n in prs else 0.0) for n in M}
+        LIDX_ = {L_: i_ for i_, L_ in enumerate(LAYN)}
+        ALL_ = frozenset(range(NL))
+        ISLB = {}                                      # (island, its layers) -> its box
+        for (ref_, i_), lab_ in whole_ctx.part_islands(ctx, skip=(Fr.src, Fr.dst)).items():
+            p_ = ctx.pcb.footprints[ref_].pads[i_]
+            if p_.pad_type == 'np_thru_hole':
+                hx_ = hy_ = (p_.drill or 0) / 2
+                ls_ = ALL_
+            else:
+                hx_, hy_ = p_.size_x / 2, p_.size_y / 2
+                ls_ = ALL_ if ((p_.drill or 0) > 0 or '*.Cu' in p_.layers) else \
+                    frozenset(LIDX_[L_] for L_ in p_.layers if L_ in LIDX_)
+            if not ls_:
+                continue
+            b_ = ISLB.setdefault((lab_, ls_), [math.inf, math.inf, -math.inf, -math.inf])
+            b_[0], b_[1] = min(b_[0], p_.global_x - hx_), min(b_[1], p_.global_y - hy_)
+            b_[2], b_[3] = max(b_[2], p_.global_x + hx_), max(b_[3], p_.global_y + hy_)
+        BX0_, BY0_, BX1_, BY1_ = ctx.pcb.board_info.board_bounds
+        EDGE_ = (float(getattr(ctx.cfg, 'board_edge_clearance', 0.0) or 0.0) or ctx.cfg.clearance) + TRK / 2
+        SPAN_ = max(BX1_ - BX0_, BY1_ - BY0_)
+        OS_ = np.arange(-SPAN_, SPAN_, PMIN_ / 8)
+        dcen_ = ((Fr.DB[0] + Fr.DB[2]) / 2, (Fr.DB[1] + Fr.DB[3]) / 2)
+
+        def column(sp_, s_):
+            k_ = sp_.seg_of(s_)
+            t_ = s_ - sp_.S[k_]
+            return (sp_.P[k_, 0] + t_ * sp_.d[k_, 0] + OS_ * sp_.nrm[k_, 0],
+                    sp_.P[k_, 1] + t_ * sp_.d[k_, 1] + OS_ * sp_.nrm[k_, 1])
+
+        def free_room(sp_, s_, L_, ring_):
+            """lane pitches layer L_ has free across frame sp_'s column at s_ (a ring's: outside the destination)"""
+            X_, Y_ = column(sp_, s_)
+            ok_ = (X_ >= BX0_ + EDGE_) & (X_ <= BX1_ - EDGE_) & (Y_ >= BY0_ + EDGE_) & (Y_ <= BY1_ - EDGE_)
+            for b_ in [Fr.SB, Fr.DB] + [b2_ for (_l, ls2_), b2_ in ISLB.items() if L_ in ls2_]:
+                ok_ &= ~((X_ > b_[0] - BAR_) & (X_ < b_[2] + BAR_) & (Y_ > b_[1] - BAR_) & (Y_ < b_[3] + BAR_))
+            oc_ = float(sp_.project_pt(dcen_)[1]) if ring_ else None
+            room_, i_ = 0.0, 0
+            while i_ < len(OS_):
+                if not ok_[i_]:
+                    i_ += 1
+                    continue
+                j_ = i_
+                while j_ + 1 < len(OS_) and ok_[j_ + 1]:
+                    j_ += 1
+                a_, b_ = float(OS_[i_]), float(OS_[j_])
+                if not ring_ or ((a_ + b_) / 2 - oc_) * (0.0 - oc_) > 0:
+                    room_ += b_ - a_ + PMIN_                  # (centrelines a pitch apart from a_ to b_)
+                i_ = j_ + 1
+            return room_
+        frames_ = [('T', spine, None)] + [(k_, sp_, k_) for k_, sp_ in sorted(ring_of.items())]
+        # (a lane held off the layer from a VIA'S ROOM before the island to one past it: its change is a via, standing
+        # on every layer -- held only across the island's own span, a lane came back to B 0.03 mm past synth wwP's
+        # wall of 0402s, its via and its track inside the wall's clearance, and the audit found it under the wall)
+        VROOM_ = bd.VIA_SIZE / 2 + CLR + g2_
+        seen_ = set()
+        for (lab_, ls_), b_ in sorted(ISLB.items(), key=lambda kv: (kv[0][0], sorted(kv[0][1]))):
+            if ls_ == ALL_:
+                continue                                    # (a wall on every layer: the frame goes round it)
+            cnr_ = ((b_[0], b_[1]), (b_[0], b_[3]), (b_[2], b_[1]), (b_[2], b_[3]))
+            for fk_, sp_, ring_ in frames_:
+                ss_ = [float(sp_.project_pt(q_)[0]) for q_ in cnr_]
+                s0_, s1_ = max(min(ss_), 0.0), min(max(ss_), sp_.L)
+                if s1_ < s0_:
+                    continue
+                # the island's room on each of its layers: the least across its span
+                rooms_ = {L_: min(free_room(sp_, s_, L_, ring_) for s_ in (s0_, (s0_ + s1_) / 2, s1_)) for L_ in ls_}
+                for s_ in sorted({round(max(s0_ - VROOM_, 0.0), 3), round((s0_ + s1_) / 2, 3),
+                                  round(min(s1_ + VROOM_, sp_.L), 3)}):
+                    if ring_ is None:
+                        pres_ = [(n, s_) for n in M if entry[n] < s_ < tend[n]]
+                    else:
+                        pres_ = [(n, u_ring(n, s_)) for n in M if bname.get(n) == ring_
+                                 and Hn[n] < u_ring(n, s_) < end[n]]
+                    if not pres_:
+                        continue
+                    need_ = sum(wid_[n] for n, _u in pres_)
+                    for L_ in sorted(ls_):
+                        if (fk_, lab_, L_, s_) in seen_:
+                            continue
+                        seen_.add((fk_, lab_, L_, s_))
+                        room_ = rooms_[L_]
+                        if need_ <= room_:
+                            continue                        # (it cannot bind: no row)
+                        terms_ = []
+                        for n, u_ in pres_:
+                            bef_ = []
+                            for x_, a_ in zip(*chg[n]):
+                                c_ = m.NewBoolVar('')
+                                m.Add(x_ <= Q(u_)).OnlyEnforceIf(c_); m.Add(x_ > Q(u_)).OnlyEnforceIf(c_.Not())
+                                bef_.append(c_)
+                            on_ = m.NewBoolVar('')
+                            r_ = run_at(n, bef_)
+                            m.Add(r_ == L_).OnlyEnforceIf(on_); m.Add(r_ != L_).OnlyEnforceIf(on_.Not())
+                            terms_.append((int(round(wid_[n] * 1000)), on_))
+                        ov_ = m.NewIntVar(0, 4 * len(pres_), '')
+                        m.Add(sum(c_ * v_ for c_, v_ in terms_) <= int(round(room_ * 1000)) + int(round(PMIN_ * 1000)) * ov_)
+                        GATE_OVER.append(((fk_, lab_, LAYN[L_], round(s_, 2), round(room_ / PMIN_, 1),
+                                           [n for n, _u in pres_]), ov_))
+        if GATE_OVER:
+            print(f'   part gates: {len(GATE_OVER)} -- ' + ', '.join(
+                f'{k_[1][:28]} {k_[2]} {k_[0]} s {k_[3]:.2f}: room {k_[4]:.1f} for {len(k_[5])}' for k_, _v in GATE_OVER[:10])
+                + (' ...' if len(GATE_OVER) > 10 else ''))
     # ---- HISTORY congestion (negotiated, as PathFinder prices a resource that was overused before): HIST=HOT.json,.. are
     # the audits' findings of earlier rounds (whole_gate --hot: where a plan was short -- a dive, a pitch, a static, a
     # shape), one file per audit. A finding marks the bins of route within a via's room of it, on the frame whose spine is
@@ -992,7 +1111,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
             m.Add(W_OVER * sum(over.values()) + W_V * VIAS >= W_OVER * r_['over'] + W_V * r_['vias'])
             print(f"   the root's proof as a floor: {r_['over']} via(s) over two, {r_['vias']} vias")
     OBJ = W_OVER * sum(over.values()) + W_V * VIAS + W_SOFT * sum(soft_broken.values()) + sum(cost) \
-        + W_FIRM * sum(firm_broken.values())
+        + W_FIRM * sum(firm_broken.values()) + W_FIRM * sum(v_ for _k, v_ in GATE_OVER)
     m.Minimize(OBJ)
     # ...and STOPPED when it STALLS: once it has a plan, SOLVE_STALL of the search's own model reductions in a row with
     # no better plan and no better bound (its log's '#Model' against '#n' and '#Bound' lines, events of the
@@ -1123,6 +1242,11 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
         ({'over': int(sum(sv.Value(over[n]) for n in M)), 'vias': int(sum(per.values()) - sum(drp.values())), 'sig': sig}
          if not CUTS and not SOFT and NVC0 == 0 and proved else None)
     J['proved'] = bool(proved)
+    if GATE_OVER:
+        J['gate_over'] = [[k_[0], k_[1], k_[2], k_[3], int(sv.Value(v_))] for k_, v_ in GATE_OVER if sv.Value(v_)]
+        print(f"   part gates over: {len(J['gate_over'])} of {len(GATE_OVER)}"
+              + (f" -- {', '.join(f'{g_[1][:28]} {g_[2]} {g_[0]} s {g_[3]} +{g_[4]}' for g_ in J['gate_over'])}"
+                 if J['gate_over'] else ''))
     if firm_broken:
         J['firm_broken'] = [list(s_) for s_, b_ in sorted(firm_broken.items()) if sv.Value(b_)]
         print(f"   firm cuts broken: {len(J['firm_broken'])} of {len(firm_broken)}"

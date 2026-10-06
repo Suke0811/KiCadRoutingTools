@@ -1117,6 +1117,19 @@ via.
   stand that much further off. The snap lays that turn on the grid, and at
   the bare bar the single beside it was refitted a few hundredths short there
   every round, round the pairs the snap had laid.
+- **Part gates** (`SOLVE_GATES`, on here). A part whose pads stand on one
+  face is a gate on that layer. Across the frame at the part, the lanes the
+  solve puts on its layer must fit the width left beside it, counted in lane
+  pitches: the free width along the whole column, less every such part's box
+  grown by its clearance, at the narrowest column across the part's span and
+  a via's room either side. A lane over is priced at a hundred vias. The solve
+  used to learn a wall a round at a time, from the geometry's layer cuts.
+- **A pair's dive, in millimetres along its lane.** Whether a pair's dive is
+  at its end, and how long its straight run is, the geometry counts along the
+  lane's laid copper, not in the frame's columns. A lane running down a
+  channel the spine crosses covers several millimetres a column; counted in
+  columns, a pair millimetres down the channel was still at its tooth, held
+  at its tooth's offset through its dive, and crowded the lanes beside it.
 - **`ESCAPE_VIAS`** (`0`, `dest` or `both`; `0` by default): every escape at
   those arrays through a via, so a lane chooses its layer at its ends too.
 
@@ -1428,7 +1441,11 @@ channels first, and the other escapes leave round it.
   measures in u is that much too short for them, and the geometry finds them
   crowded where the solve saw room. To try: each lane's own route coordinate
   in the solve -- each crossing and change at a place on each of its lanes,
-  its rooms in that lane's millimetres.
+  its rooms in that lane's millimetres. And the part gates count a layer's
+  room along the whole column, board edge to board edge: here the lanes pass
+  the caps, T1 and X4 beside U5 in the corridor between the arrays, with room
+  to spare elsewhere on that column, so no gate binds. To try: the room in
+  the corridor the lanes cross.
 - **Via ends on two layers.** On more than two routing layers a lane ending
   at a via (a dog-bone, or a via in its pad) takes whichever layer the solve
   gives it there, and the via is dropped where the lane leaves on the ball's

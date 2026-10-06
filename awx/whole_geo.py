@@ -476,6 +476,22 @@ for f in S0C:                                               # ... and the ring's
 TERM = {n: (Fr.tooth[n], bend_xy[n]) for n in M}
 
 
+def lane_mm(f, n, ka, kb, prev):
+    """millimetres along lane n's piece in frame f from column ka to kb: its offsets in the pass before (`prev`), else
+    its reference path's"""
+    v = PIECE[(f, n)]
+    ka, kb = max(min(ka, kb), v['k0']), min(max(ka, kb), v['k1'])
+    o = lambda k: prev[(f, n, k)] if prev is not None and (f, n, k) in prev else v['ref'](k * G)
+    return sum(math.hypot(G, o(k + 1) - o(k)) for k in range(ka, kb))
+
+
+def lane_lam(f, n, kc, prev, w=3):
+    """lane n's millimetres per column's G about column kc (1 running along the spine)"""
+    v = PIECE[(f, n)]
+    ka, kb = max(kc - w, v['k0']), min(kc + w, v['k1'])
+    return max(1.0, lane_mm(f, n, ka, kb, prev) / ((kb - ka) * G)) if kb > ka else 1.0
+
+
 def build_and_solve(sides, prev=None):
     t0 = time.time()
     var = {}
@@ -778,11 +794,23 @@ def build_and_solve(sides, prev=None):
         v = PIECE[(f, n)]
         tag = ('pdive', f, kc, n)
         wb, wa = (W_XB, W_XA) if is_xo(n, cu) else (W_DIVE, W_DIVE)     # (a crossover's runs are its own)
-        if v['o1'] is not None and v['k1'] - kc <= v['hold1'] + wa + W_TURN:
+        if NL > 2:
+            # (more routing layers than two: the runs and the end's reach in millimetres ALONG THE LANE, not in columns --
+            # a lane running along the columns, down a channel the spine crosses, covers several millimetres a column:
+            # counted in columns, synth wwP's SYP2 was still 'at its tooth' millimetres down the channel, held at its
+            # tooth's offset through its dive, and its dive's straight run paid a millimetre)
+            lam_ = lane_lam(f, n, kc, prev)
+            near1 = v['o1'] is not None and lane_mm(f, n, kc, v['k1'], prev) <= (v['hold1'] + wa + W_TURN) * G
+            near0 = v['o0'] is not None and lane_mm(f, n, v['k0'], kc, prev) <= (v['hold0'] + wb + W_TURN) * G
+            wb, wa = max(1, int(math.ceil(wb / lam_ - 1e-9))), max(1, int(math.ceil(wa / lam_ - 1e-9)))
+        else:
+            near1 = v['o1'] is not None and v['k1'] - kc <= v['hold1'] + wa + W_TURN
+            near0 = v['o0'] is not None and kc - v['k0'] <= v['hold0'] + wb + W_TURN
+        if near1:
             for k in range(max(v['k0'], kc - wb), v['k1'] - v['hold1']):
                 le([(var[(f, n, k)], 1.0)], v['o1'], tag); le([(var[(f, n, k)], -1.0)], -v['o1'], tag)
             continue
-        if v['o0'] is not None and kc - v['k0'] <= v['hold0'] + wb + W_TURN:
+        if near0:
             for k in range(v['k0'] + v['hold0'] + 1, min(v['k1'], kc + wa) + 1):
                 le([(var[(f, n, k)], 1.0)], v['o0'], tag); le([(var[(f, n, k)], -1.0)], -v['o0'], tag)
             continue
@@ -1463,7 +1491,9 @@ for q in sol['paid'].get('pdive', []):
     for (f2, n2, cu, kc2) in sol['vias']:
         if f2 == f and n2 == n and kc2 == kc and (n, round(cu, 3)) not in vseen:
             vseen.add((n, round(cu, 3)))
-            vcuts.append({'lane': n, 'u': cu, 'w': (max(W_XB, W_XA) if is_xo(n, cu) else W_DIVE) * G})
+            # (its straight run along the lane, in u by its millimetres a column there -- more layers than two)
+            vcuts.append({'lane': n, 'u': cu, 'w': (max(W_XB, W_XA) if is_xo(n, cu) else W_DIVE) * G
+                          / (lane_lam(f, n, kc, sol['o']) if NL > 2 else 1.0)})
 res['vcuts'] = vcuts
 # (more routing layers than two) each lane's laid columns as (route u, x, y): where along its route a place on the board
 # is, read by the loop to hold each cut to the stretch of the lane's own route that met it (whole_route.own_spans)
