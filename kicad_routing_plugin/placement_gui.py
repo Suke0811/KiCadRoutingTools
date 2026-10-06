@@ -1117,6 +1117,12 @@ class PlacementTab(wx.Panel):
             board.RemoveNative(track)
         tracks_added = vias_added = 0
         for seg in result_pcb.segments:
+            # Copper GRAPHICS parse into segments too (#337 board gr_*, #908
+            # footprint fp_*): they are drawings, not tracks. The live board
+            # keeps its own (a footprint's travel with its pose), and as a
+            # PCB_TRACK each would be a net-0 track over its own pads.
+            if getattr(seg, "graphic", False):
+                continue
             track = pcbnew.PCB_TRACK(board)
             # mm_to_iu, never FromMM(round(...)) (#493 item 5 / #362).
             track.SetStart(pcbnew.VECTOR2I(mm_to_iu(seg.start_x),
