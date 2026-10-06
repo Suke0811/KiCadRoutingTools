@@ -19,7 +19,8 @@ test_gui_engine_parity.py under KiCad's python.
 
 Example-driven checks only see a flag that a manifest uses AND a table here
 names. check_flag_coverage closes that for each FLAG_COVERAGE tool (route.py,
-route_diff.py, route_planes.py, bga_fanout.py): it enumerates EVERY flag the
+route_diff.py, route_planes.py, bga_fanout.py, qfn_fanout.py): it enumerates
+EVERY flag the
 real parser accepts and requires each to reach the GUI, or to be listed
 CLI-only or as a known gap with the reason. Its run_all half, with the
 negative controls, is tests/test_route_flag_plan_coverage.py.
@@ -842,7 +843,9 @@ PLANES_KNOWN_GAPS = {
     '--voronoi-seed-interval': "no control; planes_gui passes 2.0",
 }
 
-BGA_CLI_ONLY = {'--output': ROUTE_CLI_ONLY['--output']}
+BGA_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers',
+                                               '--keep-thermal', '--output',
+                                               '--strict-sizes')}
 # KNOWN GAPS, PENDING ANDY'S DECISION (bga_fanout.py). (--diff-pairs and
 # --diff-pair-gap left when the BGA panel got its Coupled pairs field and its
 # own coupled-pair gap: 51 kept corpus steps on 36 boards carry both.)
@@ -853,6 +856,15 @@ BGA_KNOWN_GAPS = {
         "SetValue) and reset_params_to_defaults does not restore. Needs a "
         "special handler + reset line. 0 recorded uses"),
 }
+
+QFN_CLI_ONLY = dict(
+    {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers', '--keep-thermal',
+                                    '--output', '--strict-sizes')},
+    **{'--layer': "overrides the escape layer, default the part's MOUNTED "
+                  "layer -- which is what the QFN panel always routes on "
+                  "(the tab passes component_layer). Any other value floats "
+                  "the stubs off the SMD pads (#96; the CLI warns). 0 of "
+                  "1018 recorded qfn_fanout calls use it"})
 
 # The tools whose EVERY flag is held to account: the plan action a recorded
 # command converts to, and the probe -- a command that already names its
@@ -880,6 +892,11 @@ FLAG_COVERAGE = {
         probe=['python3', 'py_router/bga_fanout.py', 'in.kicad_pcb',
                'out.kicad_pcb', '--component', 'U1', '--nets', 'PROBE_NET'],
         cli_only=BGA_CLI_ONLY, known_gaps=BGA_KNOWN_GAPS, reset_gaps={}),
+    'qfn_fanout.py': dict(
+        action='fanout',
+        probe=['python3', 'py_router/qfn_fanout.py', 'in.kicad_pcb',
+               'out.kicad_pcb', '--component', 'U1', '--nets', 'PROBE_NET'],
+        cli_only=QFN_CLI_ONLY, known_gaps={}, reset_gaps={}),
 }
 
 # The widget classes the executor's _set_control can SET: its explicit
