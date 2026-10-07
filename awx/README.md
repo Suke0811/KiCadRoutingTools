@@ -336,6 +336,17 @@ A plane ball goes down to its plane as the human's do, sharing vias:
   none of its plane under it or its gaps is left to the route step. A via off
   the array stays clear of the straight continuation of the bus's laid lanes,
   and one beyond a face they leave by pays more than a via in the pad.
+- **A finer via where the rung's does not fit:** a gap or a site off the edge
+  the rung's via does not fit takes the largest of the fab ladder's vias
+  that does, laid at that size and disclosed as a narrowing, as a pad too
+  small for the rung's via takes a clamped one. Between two of the zynq
+  DDR's U2 berths a 0.45 mm via left each lane 0.075 mm, a 0.30 mm one 0.15,
+  and four plane balls had no other way down.
+
+Nothing of another net goes into a laid bus pair's **pocket**, between its two
+teeth out to where its legs close (`joint_escape.laid_pockets`): an escape
+there is walled in once the pair closes, and a via stands in its way. The
+zynq DDR's NetR3_2 escaped on B.Cu between DDR3_DQS1's teeth, 0.77 mm apart.
 
 On the zynq's U5 the human's RFGND balls stand four round one via, two at a via
 off the edge, and three strapped down a column; there the plan's plane balls
@@ -1280,7 +1291,7 @@ With nothing supplied, as on the benches:
 | | |
 |---|---|
 | `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`); the buses found on a board (`tests/test_622_find_buses.py`) |
-| `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape; the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`) |
+| `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape (a drop at a finer rung's via: `tests/test_622_drop_fine_via.py`; nothing in a laid pair's pocket: `test_622_pair_teeth.py`); the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`) |
 | `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the loop's layer cuts from the audit and the snap (`tests/test_622_layer_cuts.py`); the ladder in the cloud, one container per rung |
 | `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`); the frame of a bench (a part on a ring's stack: `tests/test_622_ring_room.py`); what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP (a part seen from several frames: `tests/test_622_part_frames.py`; islands made of pads: `tests/test_622_pad_islands.py`), the polish, the snap onto the router's grid |
@@ -1332,8 +1343,9 @@ py_router/` is the exact list):
     escapes, straps, plane drops -- laid together, stepped down the fab
     ladder only while a ball is left. A plane drop planned at a gap where
     its net's via already stands lays its stub alone, one planned off the
-    array's edge is laid there, and a plane ball's planned strap is laid
-    to a neighbour that dropped;
+    array's edge is laid there, one planned with a finer rung's via is laid
+    at that size, and a plane ball's planned strap is laid to a neighbour
+    that dropped;
   - a stub is checked against other nets' tracks **on its own layer only**
     (`stub_track_conflict`; its via against every via as before), for every
     caller;

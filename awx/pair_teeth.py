@@ -57,10 +57,10 @@ def _inside(q, quad):
     return all(x >= 0 for x in s) or all(x <= 0 for x in s)
 
 
-def between(pairs, tooth, segments, vias, name_of, half_pitch, reach=REACH):
-    """{pair: (layer, face, [the other nets between its teeth]) or 'apart'}: `pairs` {base: (P leg, N leg)}, `tooth`
-    teeth(); `segments` [(a, b, layer, net)], `vias` [(at, net)]; the quad from `half_pitch` inside the two teeth to
-    `reach` out. A pair with a leg that has no tooth is left out"""
+def pockets(pairs, tooth, half_pitch, reach=REACH):
+    """{pair: (layer, face, quad) or 'apart'}: `pairs` {base: (P leg, N leg)}, `tooth` teeth(); each pair's POCKET,
+    the quad from `half_pitch` inside its two teeth to `reach` out -- where its legs close past their teeth, so a
+    track that enters it is walled in. A pair with a leg that has no tooth is left out"""
     out = {}
     for base, (pn, nn) in sorted(pairs.items()):
         if pn not in tooth or nn not in tooth:
@@ -69,18 +69,34 @@ def between(pairs, tooth, segments, vias, name_of, half_pitch, reach=REACH):
         if u != un or lp != ln_:
             out[base] = 'apart'
             continue
-        quad = [(qp[0] - u[0] * half_pitch, qp[1] - u[1] * half_pitch),
-                (qn[0] - u[0] * half_pitch, qn[1] - u[1] * half_pitch),
-                (qn[0] + u[0] * reach, qn[1] + u[1] * reach), (qp[0] + u[0] * reach, qp[1] + u[1] * reach)]
-        hit = set()
-        for a, b, layer, net in segments:
-            nm = name_of.get(net)
-            if layer != lp or nm in (pn, nn) or nm is None:
-                continue
-            if _inside(a, quad) or _inside(b, quad) or any(_cross(a, b, quad[i], quad[(i + 1) % 4])
-                                                           for i in range(4)):
-                hit.add(nm)
-        hit |= {name_of[net] for at, net in vias if name_of.get(net) not in (None, pn, nn) and _inside(at, quad)}
+        out[base] = (lp, u, [(qp[0] - u[0] * half_pitch, qp[1] - u[1] * half_pitch),
+                             (qn[0] - u[0] * half_pitch, qn[1] - u[1] * half_pitch),
+                             (qn[0] + u[0] * reach, qn[1] + u[1] * reach),
+                             (qp[0] + u[0] * reach, qp[1] + u[1] * reach)])
+    return out
+
+
+def in_pocket(quad, a, b=None):
+    """a point `a`, or the segment a-b, inside the quad `quad` or crossing its edge"""
+    if b is None:
+        return _inside(a, quad)
+    return _inside(a, quad) or _inside(b, quad) or any(_cross(a, b, quad[i], quad[(i + 1) % 4]) for i in range(4))
+
+
+def between(pairs, tooth, segments, vias, name_of, half_pitch, reach=REACH):
+    """{pair: (layer, face, [the other nets between its teeth]) or 'apart'}: `pairs` {base: (P leg, N leg)}, `tooth`
+    teeth(); `segments` [(a, b, layer, net)], `vias` [(at, net)]; another net's track on the pair's layer, or via,
+    in its pocket (pockets). A pair with a leg that has no tooth is left out"""
+    out = {}
+    for base, pk in pockets(pairs, tooth, half_pitch, reach).items():
+        if pk == 'apart':
+            out[base] = pk
+            continue
+        lp, u, quad = pk
+        pn, nn = pairs[base]
+        hit = {name_of[net] for a, b, layer, net in segments
+               if layer == lp and name_of.get(net) not in (None, pn, nn) and in_pocket(quad, a, b)}
+        hit |= {name_of[net] for at, net in vias if name_of.get(net) not in (None, pn, nn) and in_pocket(quad, at)}
         out[base] = (lp, u, sorted(hit))
     return out
 

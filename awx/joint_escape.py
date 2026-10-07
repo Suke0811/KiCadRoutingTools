@@ -63,6 +63,7 @@ C_DEV_MM = 1000            # a millimetre between a bus ball's exit and its pref
 C_DEV_KIND = 3000          # ...another face, layer or kind than its preferred tooth's
 W_DROP = 10_000            # a plane ball dropped to its plane
 C_VIP = 300                # a drop's via in the pad rather than a gap (filled and capped at the fab)
+C_FINE_VIA = 300           # a drop's via a finer rung of the fab ladder's than the rung's own (_sizes: drop_vias)
 C_LANE_FACE = 400          # a drop's via off the array beyond a face the bus's laid lanes leave by: dearer than one
 #                            in the pad -- that is the lanes' room, as the human keeps it (zynq U2's R9 and T9, dropped
 #                            half a pitch off its west face where A3, A6 and BA2 turn in to their berths, and the
@@ -187,7 +188,12 @@ def _sizes(pcb, foot):
             memo[id(p)] = (cs / 2.0, (cd or 0.0) / 2.0)
         return memo[id(p)]
     pad_r = max((max(q.size_x, q.size_y) for q in foot.pads), default=0.4) / 2
+    # a drop's via where the rung's does not fit: the fab ladder's own vias below it, largest first (radius, drill
+    # radius) -- the sizes the ladder steps the whole array's vias down to, here one drop's
+    drop_vias = sorted({(f['via_diameter'] / 2.0, f['via_drill'] / 2.0) for f in floors
+                        if f['via_diameter'] < te.VIA_SIZE - 1e-9}, reverse=True)
     return dict(tw=tw, cl=cl, h2h=h2h, d_seg=tw + cl, vr=te.VIA_SIZE / 2.0, vdr=te.VIA_DRILL / 2.0, inpad=inpad,
+                drop_vias=drop_vias,
                 grow=te.VIA_SIZE + cl, stack=tw + cl + _rules.HUG_OVER,
                 r_home=max(pad_r + tw / 2 + cl, te.VIA_SIZE / 2 + tw / 2 + cl))
 
@@ -334,6 +340,32 @@ def on_own_plane(regions, nid, q):
     return False
 
 
+def laid_pockets(pcb, grid, nets):
+    """[(layer, quad)]: the POCKET of each pair among `nets` (short names; the bus's, laid before the array's other
+    balls are planned) whose two teeth leave the array by one face on one layer (pair_teeth.pockets): between them,
+    from half a pitch inside to where the legs close past them. Copper of another net there is walled in once the
+    pair closes"""
+    import pair_teeth as pt
+    import pairs as _pairs
+    prs = _pairs.pair_names(sorted(nets), admit_all=True)
+    legs = {leg for pr in prs.values() for leg in pr}
+    if not legs:
+        return []
+    name_of = {i: short_name(n.name) for i, n in pcb.nets.items() if n.name}
+    segs = [((s.start_x, s.start_y), (s.end_x, s.end_y), s.layer, s.net_id) for s in pcb.segments
+            if name_of.get(s.net_id) in legs]
+    tooth = pt.teeth(segs, name_of, legs, grid.bbox)
+    return [(pk[0], pk[2]) for pk in pt.pockets(prs, tooth, max(grid.pitch_x, grid.pitch_y) / 2.0).values()
+            if pk != 'apart']
+
+
+def in_pockets(pockets, legs, vias):
+    """does copper -- `legs` [(a, b, layer)], `vias` [points] (every layer) -- enter one of `pockets` (laid_pockets)"""
+    import pair_teeth as pt
+    return any(any(L == pl and pt.in_pocket(q, a, b) for a, b, L in legs) or any(pt.in_pocket(q, v) for v in vias)
+               for pl, q in pockets)
+
+
 def lane_faces(rays):
     """{(ux, uy)}: the faces the laid lanes `rays` (lane_rays) leave the array by, as their outward unit vectors"""
     out = set()
@@ -361,7 +393,9 @@ def _drops(pcb, grid, p, obs, sz, foot=None, rays=(), regions=None):
     gap is: on the ball's own row or column, between the two gap lanes beside it (the human's U1 A8 and U5 M5, every
     gap beside them a lane) -- each leaving the lanes laid there (`rays`, lane_rays) their bar: at the zynq DDR's U2,
     0.45 mm vias straight out between the bus's berths at 0.8 mm left each lane 0.15 mm, and the whole route found its
-    ends crowded at 20 of them -- and each in the ball's own plane (`regions`, zone_regions: on_own_plane)"""
+    ends crowded at 20 of them -- and each in the ball's own plane (`regions`, zone_regions: on_own_plane). A gap or
+    straight-out site the rung's via does not fit takes the largest via of the fab ladder's that does (sz['drop_vias'],
+    laid at that size: the hint's 'via'), as a pad too small for the rung's takes a clamped via"""
     home = next((L for L in pcb.board_info.copper_layers if L in p.layers), 'F.Cu')
     hx, hy = grid.pitch_x / 2.0, grid.pitch_y / 2.0
     pad = (p.global_x, p.global_y)
@@ -374,9 +408,15 @@ def _drops(pcb, grid, p, obs, sz, foot=None, rays=(), regions=None):
                 sites.append((pad[0] + reach * ux, pad[1] + reach * uy))
     out = []
     for site in sites:
-        if obs(p.net_id, home).seg_clear(pad, site) and _via_clear(pcb, obs, p.net_id, site, sz['vr'], sz) \
-                and _lanes_clear(site, sz['vr'], rays) and (regions is None or on_own_plane(regions, p.net_id, site)):
-            out.append(Drop(site, (pad, site), home, False, sz['vr'], sz['vdr']))
+        if not obs(p.net_id, home).seg_clear(pad, site) or \
+                (regions is not None and not on_own_plane(regions, p.net_id, site)):
+            continue
+        # the rung's via, else the largest of the fab ladder's that fits (sz['drop_vias']): at the zynq DDR's U2 a
+        # 0.45 mm via straight out between two berths' lanes left each 0.075 mm, a 0.30 one 0.15
+        r = next(((r_, dr_) for r_, dr_ in [(sz['vr'], sz['vdr'])] + sz['drop_vias']
+                  if _via_clear(pcb, obs, p.net_id, site, r_, sz) and _lanes_clear(site, r_, rays)), None)
+        if r is not None:
+            out.append(Drop(site, (pad, site), home, False, r[0], r[1]))
     r, dr = sz['inpad'](p)
     if _via_clear(pcb, obs, p.net_id, pad, r, sz) and (regions is None or on_own_plane(regions, p.net_id, pad)):
         out.append(Drop(pad, None, home, True, r, dr))
@@ -680,10 +720,24 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
             moves = [m for m, _r in keep] or moves
         menu[key] = moves
         dmenu[key] = []
+    # (no option into a laid pair's POCKET (laid_pockets), the pair's own room to close past its teeth: an escape there
+    # is walled in once it closes -- the zynq DDR's U1 NetR3_2 escaped on B.Cu between DDR3_DQS1's B teeth, 0.77 mm
+    # apart, A14 over its end -- and a drop's via there stands in the pair's way -- U2's GND B9 dropped between
+    # DDR3_DQS1's berths, the whole route's audit found the pair 0.03 mm into it)
+    pockets = laid_pockets(pcb, grid, {short_name(p.net_name) for p in foot.pads if p.net_id and p.net_name}
+                           - bus_s - oth_s - drop_s)
+    if pockets:
+        for key in menu:
+            menu[key] = [m for m in menu[key]
+                         if not in_pockets(pockets, m.legs or [], [m.site] if m.site is not None else [])]
+            dmenu[key] = [d for d in dmenu[key]
+                          if not in_pockets(pockets, [d.stub + (d.layer,)] if d.stub else [], [d.site])]
     t_menu = time.time() - t0
     # (a plane ball's straps too: the human's U5 A4 joins A5 down its column, A5 and A6 sharing one via off the
     # array's edge, the bus's lanes in every gap beside them)
     straps = _straps(pcb, grid, items, obs)
+    if pockets:
+        straps = {k: [s for s in v if not in_pockets(pockets, [(s.a, s.b, s.layer)], [])] for k, v in straps.items()}
     # every ball's options, escapes first (their conflicts are the whole route's own, by index); each with its copper
     # at its real size: a via in the ball's own pad the engine's clamped one, any other the rung's
     opts, via_r = {}, {}
@@ -816,7 +870,8 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
             if o.inpad:
                 return C_VIA + C_VIP
             return int(round(C_MM * math.hypot(o.site[0] - p.global_x, o.site[1] - p.global_y)
-                             + (C_LANE_FACE if beyond_faces(bm.grid, o.site) & bm.lane_faces else 0)))
+                             + (C_LANE_FACE if beyond_faces(bm.grid, o.site) & bm.lane_faces else 0)
+                             + (C_FINE_VIA if o.r < sz['vr'] - 1e-9 else 0)))
         ln = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b, _L in (o.legs or [])) or \
             math.hypot(o.exit_pt[0] - p.global_x, o.exit_pt[1] - p.global_y)
         c = C_VIA * o.vias + C_MM * ln
@@ -1303,6 +1358,8 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
             h = {'kind': 'strap', 'to': tuple(o.b), 'layer': o.layer}
         else:
             h = {'kind': 'drop', 'site': tuple(o.site), 'layer': o.layer, 'inpad': bool(o.inpad)}
+            if not o.inpad and o.r < sz['vr'] - 1e-9:
+                h['via'] = (round(2 * o.r, 4), round(2 * o.dr, 4))     # (a finer rung's: the engine lays it so)
         h['strict'] = True
         if key in pair_of and kind == 'escape':
             h['pair'] = pair_of[key]           # (lay keeps the pair's gate)

@@ -17,6 +17,8 @@ second a run.
    nothing, and the test says so rather than passing.
 2. PART 0: a plan asking K10's drop in another diagonal gap gets it there,
    the via exactly at the site and its stub on F.Cu from the ball.
+   FINE: the plan's own via for that drop (a finer rung of the fab ladder's,
+   where the plan found the call's too big for the site) is laid at its size.
    SHARED: a plan dropping K10 and its GND neighbour L10 at one gap site
    (the site as L10 computes it, a hair off K10's) lays ONE via there and
    each ball's stub to it; the old part 0 laid K10's and refused L10's
@@ -124,6 +126,15 @@ def main():
                == {(round(pln.global_x, 6), round(pln.global_y, 6)), site} for t in t1)
     checks.append(('part 0: the planned drop is laid at its site', at(got, site)))
     checks.append(('part 0: its stub runs on F.Cu from the ball to the site', stub))
+
+    # FINE: the plan's own via for the drop, where it found the call's too big for the site (a finer rung of the fab
+    # ladder's: joint_escape._drops) -- laid at that size; the same drop without one, at the call's
+    _s, _p, _t7, v7, _f = run(hints={key: dict(plan[key], via=(0.25, 0.15))})
+    sized = lambda vs: [(v['size'], v['drill']) for v in vs
+                        if v['net_id'] == pln.net_id and math.hypot(v['x'] - site[0], v['y'] - site[1]) < 1e-6]
+    checks.append(('fine: a planned drop with the plan\'s own via is laid at that size, without one at the call\'s',
+                   sized(v7) == [(0.25, 0.15)] and sized(v1) == [(0.35, 0.2)]))
+    print(f'    fine: the drop with the plan\'s via laid {sized(v7)}, without {sized(v1)}')
 
     # SHARED: the plan drops K10 and its GND neighbour NEXT at ONE gap site (the joint escape's shared drop: plane
     # balls round one barrel, as a human lays ground balls) -- the site as NEXT computes it, a hair off K10's (an

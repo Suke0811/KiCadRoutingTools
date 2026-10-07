@@ -2352,12 +2352,16 @@ def generate_underpad_escape(footprint: Footprint,
                         return (vx, vy), [(gx, gy), (ex_, ey_), (vx, vy)]
         return None
 
-    def _reserve_dogbone(p, site, path=None):
+    def _reserve_dogbone(p, site, path=None, via=None):
+        # `via` (size, drill): a planned drop's own, a finer fab rung's than
+        # the call's (_dogbone_site_valid)
         vx, vy = site
-        occ.block_all(vx, vy, via_keep)
-        reserved_sites.append((vx, vy, via_size / 2.0,
-                               (via_drill or 0.0) / 2.0, p.net_id))
-        carve_disks.append((vx, vy, via_keep, None, p.net_id))
+        vs, vd = via or (via_size, via_drill)
+        keep = vs / 2 + track_width / 2 + clearance + margin
+        occ.block_all(vx, vy, keep)
+        reserved_sites.append((vx, vy, vs / 2.0,
+                               (vd or 0.0) / 2.0, p.net_id))
+        carve_disks.append((vx, vy, keep, None, p.net_id))
         # Reserve the pad->via stub corridor too: it is emitted only when the
         # ball finally escapes, but a route committed in between must not
         # claim it (the cells sit outside every other ball's home disk, so
@@ -2371,16 +2375,21 @@ def generate_underpad_escape(footprint: Footprint,
         db_path[id(p)] = pts
 
 
-    def _dogbone_site_valid(p, site, edge_ok=False):
+    def _dogbone_site_valid(p, site, edge_ok=False, via=None):
         """A CALLER-chosen dog-bone gap site for p (a planned move), checked
         exactly as _choose_dogbone_site checks its own k=0 candidates: a
         legal via site clear of every registered copper and reservation,
         and a clear pad->site stub on the top layer. Returns (site, stub
         polyline) or None. `edge_ok`: a gap half a pitch off the array's
-        edge too (a plane ball's planned drop: the via is its end)."""
+        edge too (a plane ball's planned drop: the via is its end). `via`
+        (size, drill): the via checked there, a planned drop's own where its
+        plan found the call's too big for the site (a finer rung of the fab
+        ladder: awx joint_escape's drops); the call's by default."""
         gx, gy = p.global_x, p.global_y
         vx, vy = site
         hx, hy = grid.pitch_x / 2.0, grid.pitch_y / 2.0
+        vs, vd = via or (via_size, via_drill)
+        keep = vs / 2 + track_width / 2 + clearance + margin
         if math.hypot(vx - gx, vy - gy) > 1.2 * math.hypot(hx, hy):
             return None                      # not an adjacent gap of this ball
         # strictly an INTER-ball gap: a site on the boundary line leaves a
@@ -2389,14 +2398,14 @@ def generate_underpad_escape(footprint: Footprint,
                                 and grid.min_y + hy * 0.5 < vy < grid.max_y - hy * 0.5):
             return None
         ctx = _via_ctx(p.net_id, gx, gy, extra=max(hx, hy))
-        if locked_smd_pads and not via_site_ok(vx, vy, via_size / 2.0):
+        if locked_smd_pads and not via_site_ok(vx, vy, vs / 2.0):
             return None
-        if _via_site_conflict(vx, vy, p.net_id, ctx) is not None:
+        if _via_site_conflict(vx, vy, p.net_id, ctx, vr=vs / 2.0, vdr=(vd or 0.0) / 2.0) is not None:
             return None
         if _stub_conflict(p, vx, vy, ctx):
             return None
         pad_ex = occ.disk_cells(gx, gy, max(pad_keep, via_keep))
-        ex_cells = pad_ex | occ.disk_cells(vx, vy, via_keep)
+        ex_cells = pad_ex | occ.disk_cells(vx, vy, keep)
         if not occ.seg_clear(top_idx, (gx, gy), (vx, vy), exempt=ex_cells):
             return None
         return (vx, vy), [(gx, gy), (vx, vy)]
@@ -2474,7 +2483,7 @@ def generate_underpad_escape(footprint: Footprint,
                          key=depth, reverse=True)
     _drop_laid = set()          # id() of the planned plane balls part 0 dropped (a plane strap's partner, part 3)
     if _drop_balls:
-        _nd = {'gap': 0, 'in_pad': 0, 'shared': 0}
+        _nd = {'gap': 0, 'in_pad': 0, 'shared': 0, 'fine': 0}
         _left = []
         _gap_via = []       # (net id, site) of each gap via this part laid
         for p in _drop_balls:
@@ -2509,15 +2518,23 @@ def generate_underpad_escape(footprint: Footprint,
             for t in _own:
                 reserved_sites.remove(t)
             if not _dmv.get('inpad'):
-                _ok = _dogbone_site_valid(p, tuple(_dmv['site']), edge_ok=True)
+                # (the plan's own via where it found the call's too big for
+                # the site: a finer rung of the fab ladder, disclosed)
+                _dv = tuple(_dmv['via']) if _dmv.get('via') else None
+                _ok = _dogbone_site_valid(p, tuple(_dmv['site']), edge_ok=True, via=_dv)
                 if _ok is not None:
                     _site, _dbp = _ok
-                    _reserve_dogbone(p, _site, _dbp)
+                    _reserve_dogbone(p, _site, _dbp, via=_dv)
                     for (_ax, _ay), (_bx, _by) in zip(_dbp, _dbp[1:]):
                         tracks.append({'start': (_ax, _ay), 'end': (_bx, _by), 'width': track_width,
                                        'layer': layers[top_idx], 'net_id': p.net_id})
-                    vias_to_add.append({'x': _site[0], 'y': _site[1], 'size': via_size, 'drill': via_drill,
+                    _vs, _vd = _dv or (via_size, via_drill)
+                    vias_to_add.append({'x': _site[0], 'y': _site[1], 'size': _vs, 'drill': _vd,
                                         'layers': [layers[0], layers[-1]], 'net_id': p.net_id})
+                    if _dv:
+                        from fab_tiers import note_narrowing
+                        note_narrowing(p.net_id, 'via_diameter', via_size, _vs, 'planned plane drop')
+                        _nd['fine'] += 1
                     _gap_via.append((p.net_id, _site))
                     _nd['gap'] += 1
                     _drop_laid.add(id(p))
@@ -2540,7 +2557,8 @@ def generate_underpad_escape(footprint: Footprint,
             _left.append(p)
         if verbose:
             print(f"  Plan drops: {_nd['gap'] + _nd['in_pad'] + _nd['shared']}/{len(_drop_balls)} laid "
-                  f"({_nd['gap']} gap, {_nd['in_pad']} in pad"
+                  f"({_nd['gap']} gap" + (f" ({_nd['fine']} at a finer fab rung's via)" if _nd['fine'] else '')
+                  + f", {_nd['in_pad']} in pad"
                   + (f", {_nd['shared']} sharing a gap via" if _nd['shared'] else '') + ")"
                   + (f"; {len(_left)} left to the drop pass: "
                      + ', '.join(f"{q.net_name.split('/')[-1]} {q.pad_number}" for q in _left) if _left else ''))
