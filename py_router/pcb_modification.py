@@ -12,6 +12,7 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from kicad_parser import PCBData, Segment, Via
 from routing_utils import pos_key, POSITION_DECIMALS, into_pad_frame_point
+from geometry_utils import point_to_segment_distance
 
 # Read once at import: both are checked inside per-segment cleanup loops (hot).
 _COLLAPSE_DEBUG = os.environ.get('KICAD_COLLAPSE_DEBUG')
@@ -854,11 +855,24 @@ def terminal_pad_web_shortfall(nlx, nly, elx, ely, hx, hy, r, e,
     return True, (tlx, tly)
 
 
+#: The exact web test's window: copper farther than this from the endpoint is
+#: not in its union, so removing it cannot change the verdict there.
+TERMINAL_WEB_RADIUS = 3.0
+
+
 def _pad_web_polygon(pad):
     """Shapely polygon of a pad's copper for the connection_width erosion test
-    (mirrors tests/stress/classify_connection_width.py). None for no-copper
-    NPTH pads or degenerate sizes."""
-    from shapely.geometry import Point, box
+    (tests/stress/classify_connection_width.py calls this). None for no-copper
+    NPTH pads or degenerate sizes.
+
+    Rounded shapes are built OUTWARD from their core, never by eroding the
+    box (#1161): an oval is the segment between its foci (a point when the
+    axes are equal) grown by half its short axis, and a roundrect is its box
+    shrunk by the corner radius and grown back. ``box.buffer(-r)`` with r the
+    half short axis collapsed every oval to an EMPTY polygon, so the exact
+    test never saw a pin-header pad. The roundrect radius is KiCad's:
+    rratio x the FULL short side, not the half side."""
+    from shapely.geometry import LineString, Point, box
     import shapely.affinity as aff
     if getattr(pad, 'pad_type', None) == 'np_thru_hole':
         return None
@@ -866,14 +880,27 @@ def _pad_web_polygon(pad):
     h = (pad.size_y or 0) / 2.0
     if w <= 0 or h <= 0:
         return None
+    cx, cy = pad.global_x, pad.global_y
     if pad.shape == 'circle':
-        return Point(pad.global_x, pad.global_y).buffer(w, quad_segs=32)
-    shp = box(pad.global_x - w, pad.global_y - h, pad.global_x + w, pad.global_y + h)
-    if pad.shape in ('oval', 'roundrect'):
-        rr = min(w, h) * (1.0 if pad.shape == 'oval'
-                          else (getattr(pad, 'roundrect_rratio', 0.25) or 0.25))
-        if rr > 1e-6:
-            shp = shp.buffer(-rr).buffer(rr, quad_segs=16)
+        return Point(cx, cy).buffer(w, quad_segs=32)
+    if pad.shape == 'oval':
+        rr = min(w, h)
+    elif pad.shape == 'roundrect':
+        rr = 2.0 * min(w, h) * (getattr(pad, 'roundrect_rratio', 0.25) or 0.25)
+    else:
+        rr = 0.0
+    rr = min(rr, w, h)
+    if rr <= 1e-6:
+        shp = box(cx - w, cy - h, cx + w, cy + h)
+    else:
+        ix, iy = w - rr, h - rr
+        if ix <= 1e-9 and iy <= 1e-9:
+            core = Point(cx, cy)
+        elif ix <= 1e-9 or iy <= 1e-9:
+            core = LineString([(cx - ix, cy - iy), (cx + ix, cy + iy)])
+        else:
+            core = box(cx - ix, cy - iy, cx + ix, cy + iy)
+        shp = core.buffer(rr, quad_segs=32)
     rot = getattr(pad, 'rect_rotation', 0) or 0
     if rot:
         shp = aff.rotate(shp, rot, origin=(pad.global_x, pad.global_y))
@@ -928,7 +955,7 @@ def circular_pad_web_shortfall(elx, ely, R, r, e, target_margin=0.0):
 
 
 def terminal_web_neck_exact(pcb_data, net_id, layer, ex, ey, floor,
-                            radius=3.0):
+                            radius=TERMINAL_WEB_RADIUS):
     """EXACT connection_width neck test at a terminal endpoint (ex, ey), by
     KiCad's own method: union the net's LOCAL copper on ``layer`` (same-net
     round-capped segments + pads within ``radius`` mm), erode by floor/2, and
@@ -2438,6 +2465,27 @@ class StrictRemovalModel:
                 return False
             if self._narrow_terminal(n, E) and not self._narrow_terminal(n, prev_E):
                 return False
+        # #1161: removed copper narrows a terminal's web wherever it sat in
+        # the exact test's window, not only at its own ends -- an in-pad
+        # wiggle widening a neighbouring end's joint is a different unit.
+        # Re-test every terminal end on a removed segment's layer within
+        # TERMINAL_WEB_RADIUS of it (vias are not in the web union).
+        if self._web_floor > 0:
+            gone = [self.segs[i] for i in E if i not in prev_E]
+            for i, s in enumerate(self.segs):
+                if i in E or getattr(s, 'graphic', False):
+                    continue
+                for (x, y), n in zip(((s.start_x, s.start_y), (s.end_x, s.end_y)),
+                                     self._seg_nodes[i]):
+                    if n in nodes or not any(
+                            g.layer == s.layer and point_to_segment_distance(
+                                x, y, g.start_x, g.start_y, g.end_x, g.end_y)
+                            < TERMINAL_WEB_RADIUS for g in gone):
+                        continue
+                    nodes.add(n)
+                    if self._narrow_terminal(n, E) and \
+                            not self._narrow_terminal(n, prev_E):
+                        return False
         return True
 
     # ---- the predicate ------------------------------------------------------
