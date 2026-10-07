@@ -249,7 +249,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   steps of a chain, pass `--clearance-ceiling`, not `--clearance`.
 - **Hand-written copper:** stage each join with `py_tools/check_join.py` before
   committing it, and stamp it `(locked yes)`. Pad-edge arithmetic once made 42
-  shorts, and the plane repair rips unlocked hand joins.
+  shorts, and the plane repair rips unlocked hand joins. A lock freezes the
+  WHOLE net: one locked segment takes it out of every later rip and
+  `--force-reroute`, with no override. Lock a join once its net is done, and
+  unlock it in the board before re-routing that net.
 
 ## 5. Rules
 
