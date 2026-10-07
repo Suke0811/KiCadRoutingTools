@@ -1,5 +1,5 @@
 """
-Raster finishing of a multi-net plane split (route_planes, spine_split): the split's regions on one label grid,
+Raster finishing of a multi-net plane split (route_planes' spine split): the split's regions on one label grid,
 each net's fill modelled the way KiCad pours it, the pieces nothing feeds given to a neighbour that can feed them,
 and every region drawn back as an octilinear polygon.
 

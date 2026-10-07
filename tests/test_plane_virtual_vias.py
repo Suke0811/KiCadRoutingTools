@@ -14,7 +14,8 @@ On kicad_files/ulx3s.kicad_pcb, GND and +3V3 sharing In1.Cu (create_plane, the
 GUI's path: dry run, results returned):
 
 1. every deferred pad is recorded as a virtual via (the deferral's count), and
-   the split takes them ("virtual via(s) seed the split");
+   the split takes every one as a point of its net's spines ("N virtual via(s)
+   and M pad(s) on In1.Cu join its spines", summed over the nets);
 2. each net's pads lie inside its own zone outlines -- +3V3, the island net, at
    least COVER of them (with only the under-BGA balls seeded, 28 of its 71 did);
 3. a second call on the same pcb_data starts from no seeds: the GUI may pour
@@ -74,14 +75,14 @@ def main():
     deferred += len(re.findall(r'thermal array did not fit', log))
     seeds = {nid: list(v) for nid, v in (getattr(pcb, '_deferred_pad_seeds', None) or {}).items()}
     nseeds = sum(len(v) for v in seeds.values())
-    m = re.search(r'(\d+) virtual via\(s\) seed the split', log)
-    print(f'  deferred pads {deferred}, virtual vias recorded {nseeds}, taken by the split {m.group(1) if m else 0}')
+    taken = sum(int(n) for n in re.findall(r'(\d+) virtual via\(s\) and \d+ pad\(s\) on \S+ join its spines', log))
+    print(f'  deferred pads {deferred}, virtual vias recorded {nseeds}, taken by the split {taken}')
     if deferred == 0:
         fails.append('no pad was deferred -- the arms below test nothing')
     if nseeds != deferred:
         fails.append(f'{deferred} pads deferred but {nseeds} virtual vias recorded: each deferred pad is one')
-    if not m or int(m.group(1)) == 0:
-        fails.append('the split took no virtual via')
+    if taken != len({(nid, p) for nid, v in seeds.items() for p in v}):
+        fails.append(f'{nseeds} virtual vias recorded but the split took {taken}: each joins its net\'s spines')
     for nm in NETS:
         nid = next(i for i, n in pcb.nets.items() if n.name == nm)
         polys = [z['polygon_points'] for z in zones if z.get('net_id') == nid]

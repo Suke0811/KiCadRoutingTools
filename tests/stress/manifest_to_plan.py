@@ -212,9 +212,6 @@ BOOL_FLAGS = {
     # spokes (found by the ef4c19a..4db8c18 parity audit).
     '--thermal-relief': 'thermal_relief',
     '--thermal-vias': 'thermal_vias',
-    # The spine split (route_planes --spine-split): the planes tab's same-named checkbox, reset per plan step
-    # (absent means off) by ai_plan
-    '--spine-split': 'spine_split',
     # #515 / PR #533: rip+re-route the selected nets from scratch. Same-named
     # basic-tab checkbox; applied by the plan executor's generic loop.
     '--force-reroute': 'force_reroute',

@@ -48,7 +48,7 @@ Fast, grid-based A\* routing with a native Rust core (~10× faster than pure Pyt
 
 **Power & planes** — see [Plane Routing](docs/route-plane.md) and [Power Nets](docs/power-nets.md)
 - [Wider power-net routing](docs/power-nets.md) with automatic neck-down at fine-pitch pads
-- Plane pours (pads are welded by the route step, #562) and multi-net Voronoi plane layers with resistance / max-current reporting
+- Plane pours (pads are welded by the route step, #562) and plane layers several nets share (split round spines routed on the layer) with resistance / max-current reporting
 - Disconnected-plane-region repair (region joins + pad taps) and GND return-via placement
 
 **Signal integrity**
@@ -433,7 +433,7 @@ python py_router/route_planes.py kicad_files/input.kicad_pcb --nets VCC --plane-
 # Pour planes (the pour places no taps: the route step welds plane pads)
 python py_router/route_planes.py kicad_files/input.kicad_pcb --nets GND +3.3V --plane-layers In1.Cu In2.Cu
 
-# Multiple nets sharing same layer via Voronoi partitioning (use | separator)
+# Multiple nets sharing one layer, split round spines routed on it (use | separator)
 python py_router/route_planes.py kicad_files/input.kicad_pcb --nets GND "VA19|VA11" --plane-layers In4.Cu In5.Cu
 
 # Dry run to see what would be placed
@@ -639,7 +639,8 @@ KiCadRoutingTools/
 │   ├── plane_io.py               # Plane I/O utilities (zone extraction, output writing)
 │   ├── plane_obstacle_builder.py # Obstacle map building for plane via placement
 │   ├── plane_blocker_detection.py # Blocker detection and rip-up for plane vias
-│   ├── plane_zone_geometry.py    # Voronoi zone computation for multi-net layers
+│   ├── plane_zone_geometry.py    # Voronoi cells for a shared plane layer's split
+│   ├── plane_split_raster.py     # Raster finishing of a shared plane layer's split
 │   ├── plane_resistance.py       # Plane resistance and current capacity calculations
 │   ├── plane_region_connector.py # Detect and route between disconnected plane regions
 │   ├── routing_config.py         # GridRouteConfig, GridCoord, DiffPair classes

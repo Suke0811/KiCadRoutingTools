@@ -2574,8 +2574,6 @@ class RoutingDialog(wx.Dialog):
             _po = self.planes_tab.create_options
             if hasattr(_po, 'thermal_relief'):
                 _po.thermal_relief.SetValue(False)
-            if hasattr(_po, 'spine_split'):
-                _po.spine_split.SetValue(False)
             if hasattr(_po, 'thermal_vias'):
                 import routing_defaults as _rd
                 _po.thermal_vias.SetValue(_rd.THERMAL_VIAS)

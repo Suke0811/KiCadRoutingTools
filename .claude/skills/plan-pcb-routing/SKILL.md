@@ -940,15 +940,15 @@ with the aggressive map → 0 opens/115 s inner-only; orangecrab and daisho,
 **STANDARD boards (the measured-optimal default — most boards):**
 
 - **Inner-only pours**: GND solid on the first inner layer (price 6.0);
-  the ONE dominant rail (most pads) solid or split on the second inner
-  (price 2.5). **NO outer-layer floods** — on a small board the outer
+  the dominant rail (most pads) on the second inner (price 2.5), solid or
+  split with other rails — **up to six rails share a split layer**.
+  **NO outer-layer floods** — on a small board the outer
   layers ARE the routing surface, and a flood there becomes island debt,
   sub-60 µm gap debt, and board-edge DRC (all three measured).
-- **Every other rail rides `--power-nets` as a wide trace.** Do not
-  Voronoi many rails onto one layer: **never more than 2–3 rails share a
-  split layer** (measured: six rails Voronoi'd onto one 4-layer board's In2
-  fragmented +3V3 into 8 pad-anchored islands → 7 opens; the 2-rail map
-  → 0).
+- **Rails past six ride `--power-nets` as wide traces.** Six measured:
+  six rails sharing one 4-layer BGA board's In2 poured as one fill island
+  per rail (plus a single 0.6 mm² sliver holding no ball), every one of
+  the BGA's 97 supply balls on its own rail's main island.
 - 2-layer boards: GND flood(s) per Step 8's 2-layer flow (pour LAST on
   dense 2-layer); rails as traces.
 - No per-zone fragility overrides — the default fragility field protects
@@ -975,15 +975,16 @@ property; derive, don't copy):**
    cost completions every time it was measured.
 4. **A rail whose pads live overwhelmingly on one outer layer shares
    that layer's flood.** ≥~80% of the rail's pads SMD on outer layer L
-   (termination arrays, e.g. VTT on B.Cu) → co-pour on L by Voronoi/
-   grammar partition; the pads connect by fill contact and the rail needs
+   (termination arrays, e.g. VTT on B.Cu) → co-pour on L (the shared
+   layer's split); the pads connect by fill contact and the rail needs
    no inner-layer real estate at all.
 5. **Remaining rails: split across the remaining inner layers, grouped
-   by pad geography — capped at 2–3 rails per layer.** Cluster rails
-   geographically (the grammar-pour clustering) and assign clusters per
+   by pad geography — up to six rails per layer.** Cluster rails
+   geographically (5 mm clusters of each rail's pads, as the split groups
+   them) and assign clusters per
    layer so each partition stays compact (#662 shape targets: sheet
-   compactness ≥0.6, islands ≥0.5). Price rail layers 2.5. Rails that
-   don't fit under the cap (or whose region would be a sliver) ride
+   compactness ≥0.6, islands ≥0.5). Price rail layers 2.5. Rails past
+   six on a layer (or whose region would be a sliver) ride
    `--power-nets` as wide traces instead — a fragmented pour is worse
    than no pour.
 6. **Carry the SAME `--layer-costs` vector into `route_diff`** — the
@@ -1063,7 +1064,7 @@ mechanically — do not eyeball it:
 3. **Secondary grounds / split rails** (`AGND`, `GNDA`, `DGND`, `VREF`, or any rail
    tied to its parent through a single 0Ω resistor or ferrite bead — find the tie
    with `list_nets.py`: the part with one pad on each net). These are real,
-   separate nets. Pour each as **its own local region** (Voronoi-sharing an inner
+   separate nets. Pour each as **its own local region** (sharing an inner
    layer with the main ground is fine) and let the single tie component join it to
    the parent. **Never** merge it into the parent plane (that shorts the split and
    defeats its purpose — a green connectivity check then hides an electrical error)
@@ -2059,7 +2060,7 @@ consolidating routing corridors.
 
 ### Plane Via Placement Options (route_planes.py)
 
-- Multiple nets can share one plane layer (Voronoi partitioning): `--nets GND VCC --plane-layers In2.Cu In2.Cu`
+- Multiple nets can share one plane layer (split round spines routed on it): `--nets GND VCC --plane-layers In2.Cu In2.Cu`
 - `--same-net-pad-clearance <mm>` forces plane vias outside same-net pads with that edge-to-edge clearance (default places at pad center when possible)
 - The pour places NO tap vias and draws NO traces (#562), so it has no via-search or blocker-rip knobs: `--max-search-radius`, `--max-via-reuse-radius`, `--close-via-radius`, `--rip-blocker-nets`, `--max-rip-nets` and `--reroute-ripped-nets` are REMOVED. Do not emit them. Plane pads are welded by the route step's pour-launch and its in-run plane finalize.
 
@@ -2930,9 +2931,9 @@ Lessons from a dry-run audit (an agent following this skill end-to-end):
    as wide traces, no matter how many pads a rail has (measured: the four
    flood-regressed wave boards all went to 0 opens and 3–5× faster on the
    inner-only map).
-9. **Never split more than 2–3 rails onto one Voronoi layer** — prefer
-   wide traces for the overflow (measured: six rails on In2 → +3V3 in 8
-   islands, 7 opens).
+9. **Never split more than six rails onto one plane layer** — prefer
+   wide traces for the overflow (six measured: one fill island per rail,
+   every BGA supply ball on its own rail's main island).
 10. **Stitch/GND-via tail only at high speed tier or above** (from
    `/find-high-speed-nets`) — and when it runs, the chain still ends on
    `route.py`. Low-speed boards end at the Step 2 route (plus Step 2d

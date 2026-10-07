@@ -3326,9 +3326,7 @@ Examples:
                         help="Trace-to-trace clearance of the DEFAULT net class for this run, in mm; other classes are honoured (pairwise max). When OMITTED, the board's Default class, else 0.25. --clearance-ceiling caps every class (the old #439 behaviour) and the writeback clamps.")
     parser.add_argument("--zone-clearance", type=float, default=defaults.PLANE_ZONE_CLEARANCE,
                         help="Zone fill clearance around obstacles in mm (default: 0.2)")
-    # #381 D9: accept route_planes.py's --plane-track-via-clearance spelling too
-    # (same constant; dest stays track_via_clearance).
-    parser.add_argument("--track-via-clearance", "--plane-track-via-clearance",
+    parser.add_argument("--track-via-clearance",
                         type=float, default=defaults.PLANE_TRACK_VIA_CLEARANCE,
                         help="Clearance from tracks to other nets' vias in mm (default: 0.8)")
     parser.add_argument("--board-edge-clearance", type=float, default=None,

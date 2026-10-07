@@ -676,7 +676,7 @@ def _polygons_overlap(pa, pb, eps: float = 0.02,
 
     Two things must not count as overlap, and each bit us in turn:
 
-    * ADJACENCY. route_planes' Voronoi cells tile the board, so neighbours
+    * ADJACENCY. route_planes' split regions tile the layer, so neighbours
       share a boundary and their vertices lie exactly ON each other's edges --
       where the even-odd rule is undefined, so a plain point-in-polygon test
       calls adjacent pairs "overlapping".

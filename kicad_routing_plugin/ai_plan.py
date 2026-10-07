@@ -799,8 +799,6 @@ def apply_step_params(step, dialog):
         opts.add_gnd_vias_check.SetValue(bool(params.get("add_gnd_vias")))
         if hasattr(opts, "thermal_relief"):
             opts.thermal_relief.SetValue(bool(params.get("thermal_relief")))
-        if hasattr(opts, "spine_split"):
-            opts.spine_split.SetValue(bool(params.get("spine_split")))
         if hasattr(opts, "thermal_vias"):
             # Default-ON param: absent means the DEFAULT (True), unlike the
             # absent-means-off feature toggles above. A recorded

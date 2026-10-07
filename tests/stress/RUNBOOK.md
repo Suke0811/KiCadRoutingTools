@@ -319,7 +319,7 @@ harmless.
    failure is a poured net MISSING from the route step, which strands every
    one of its pads because nothing welds them to the pour. Secondary grounds (AGND/GNDA/
    DGND tied to GND through one 0Ω/ferrite — find the tie in the power listing)
-   get their OWN pour region (Voronoi-share an inner layer is fine), NOT merged
+   get their OWN pour region (sharing an inner layer is fine), NOT merged
    into GND and NOT left out. COVERAGE GATE at the end: `check_connected.py`'s
    "Unrouted net with N pads" list must be empty except for justified single-pad/
    NC nets — any multi-pad net there is a coverage defect to fix, not a stat to report.

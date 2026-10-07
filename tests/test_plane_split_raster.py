@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""plane_split_raster: the spine split's raster finishing (route_planes --spine-split).
+"""plane_split_raster: the spine split's raster finishing (route_planes, a layer several nets share).
 
 Pins, wx-free and board-file-free:
 

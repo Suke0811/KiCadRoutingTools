@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The spine split (route_planes --spine-split): a plane layer several nets share, split round spines routed on it.
+"""The spine split (route_planes): a plane layer several nets share, split round spines routed on it.
 
 Pins the route_planes side (the raster finishing is tests/test_plane_split_raster.py), wx-free:
 
@@ -15,7 +15,9 @@ Pins the route_planes side (the raster finishing is tests/test_plane_split_raste
      anchor; the background the whole sheet. A corridor that would cut the background into two pieces that both
      hold its anchors is REFUSED (#662 invariant 3b). Two parallel corridors a little apart run together into one
      band. A background anchor inside another net's region keeps a pocket of its own.
-  7. end to end: route_planes.py --spine-split on an in-repo board pours a shared layer (KiCad-free).
+  7. voronoi_cells: every seed's cell by its net, clipped to the bounds; fewer than two seeds is an error (the
+     caller then pours the full outline for its first net).
+  8. end to end: route_planes.py on an in-repo board pours a shared layer through the split (KiCad-free).
 """
 import math
 import os
@@ -31,7 +33,7 @@ from shapely.geometry import Point, box  # noqa: E402
 from scipy.spatial import cKDTree  # noqa: E402
 
 import route_planes as rp  # noqa: E402
-from plane_zone_geometry import compute_zone_boundaries  # noqa: E402
+from plane_zone_geometry import voronoi_cells  # noqa: E402
 from routing_config import GridCoord  # noqa: E402
 
 ZC, EDGE, MT = 0.2, 0.5, 0.2
@@ -115,7 +117,7 @@ def split(minor_anchors, routes, extra_dom=(), extra_dom_seeds=(), geom=None):
     seeds = {DOM: list(dom_pts) + list(extra_dom_seeds), 2: list(minor_anchors)}
     for path in routes:
         seeds[2] += rp.sample_route_for_voronoi(path, sample_interval=0.25)
-    _, raw, _ = compute_zone_boundaries(seeds, (0, 0, 100, 60), return_raw_polygons=True, merge=False)
+    raw = voronoi_cells(seeds, (0, 0, 100, 60))
     out = rp._reach_and_sheet(DOM, raw, {DOM: dom_pts, 2: list(minor_anchors)}, [(2, p) for p in routes],
                               ZONE, MT, {DOM: 'BG', 2: 'N2'}, geom or GEOM)
     return out, [rp_poly(p) for p in out.get(2, [])]
@@ -173,21 +175,40 @@ def test_background_pocket():
     print("  background pocket: kept round its own pad, none without one")
 
 
+def test_voronoi_cells():
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    seeds = {1: [(10.0, 10.0), (30.0, 10.0)], 2: [(20.0, 30.0)]}
+    cells = voronoi_cells(seeds, (0, 0, 40, 40), board_edge_clearance=1.0)
+    assert [len(cells[1]), len(cells[2])] == [2, 1], "one cell per seed, by its net"
+    for nid, pts in seeds.items():
+        for (x, y), c in zip(pts, cells[nid]):
+            assert Polygon(c).contains(Point(x, y)), f"net {nid}'s cell holds its seed ({x}, {y})"
+    whole = unary_union([Polygon(c) for cs in cells.values() for c in cs])
+    assert abs(whole.area - 38.0 * 38.0) < 1e-6, f"the cells tile the inset bounds: {whole.area:.3f}"
+    for few in ({1: [(5.0, 5.0)]}, {1: []}):
+        try:
+            voronoi_cells(few, (0, 0, 40, 40))
+        except ValueError:
+            continue
+        raise AssertionError(f"fewer than two seeds must raise: {few}")
+    print("  voronoi_cells: a cell per seed, tiling the inset bounds; one seed refused")
+
+
 def test_end_to_end():
     board = os.path.join(_ROOT, 'kicad_files', 'rp2350_fpga_eensy_prePlane.kicad_pcb')
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, 'split.kicad_pcb')
         p = subprocess.run([sys.executable, '-X', 'utf8', os.path.join(_ROOT, 'py_router', 'route_planes.py'),
                             board, out, '--nets', 'GND', '+3V3', '+1V1', '--plane-layers', 'In1.Cu', 'In2.Cu',
-                            'In2.Cu', '--spine-split'], capture_output=True, text=True, cwd=d)
+                            'In2.Cu'], capture_output=True, text=True, cwd=d)
         assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
         assert 'Spine split:' in p.stdout, "the shared layer went through the spine split"
-        assert 'Grammar pour' not in p.stdout, "the spine split replaces the grammar pour, never both"
         txt = open(out, encoding='utf-8').read()
         for net in ('+3V3', '+1V1'):
             assert f'(net "{net}")' in txt or f'(net_name "{net}")' in txt
         assert txt.count('(layer "In2.Cu")') >= 2, "both nets' zones on the shared layer"
-    print("  end to end: route_planes.py --spine-split pours the shared layer")
+    print("  end to end: route_planes.py pours the shared layer through the spine split")
 
 
 def main():
@@ -198,6 +219,7 @@ def main():
     test_severing_corridor_refused()
     test_parallel_corridors_merge()
     test_background_pocket()
+    test_voronoi_cells()
     test_end_to_end()
     print("PASS: spine split")
     return 0

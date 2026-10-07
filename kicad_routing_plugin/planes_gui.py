@@ -330,16 +330,6 @@ class CreatePlanesOptionsPanel(wx.Panel):
             "copper (easier hand soldering/rework; solid = lowest impedance)")
         zone_sizer.Add(self.thermal_relief, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 
-        # The spine split (route_planes --spine-split): a layer several nets share split round spines routed on
-        # it, instead of the grammar pour. Control named after the engine param so AI plans can set it.
-        self.spine_split = wx.CheckBox(self, label="Spine split for shared layers")
-        self.spine_split.SetValue(False)
-        self.spine_split.SetToolTip(
-            "On a layer several nets share: join each net's pads by spines routed on the layer, give the "
-            "background net the whole sheet and every other net compact octagons and corridors round its "
-            "parts (instead of the grammar pour's hulls)")
-        zone_sizer.Add(self.spine_split, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
-
         self.thermal_vias = wx.CheckBox(self, label="Thermal via arrays under exposed pads")
         self.thermal_vias.SetValue(defaults.THERMAL_VIAS)
         self.thermal_vias.SetToolTip(
@@ -484,7 +474,6 @@ class CreatePlanesOptionsPanel(wx.Panel):
             'gnd_via_distance': self.gnd_via_distance.GetValue(),
             'gnd_via_net': self.gnd_via_net.GetValue(),
             'thermal_relief': self.thermal_relief.GetValue(),
-            'spine_split': self.spine_split.GetValue(),
             'thermal_vias': self.thermal_vias.GetValue(),
             'stitch_vias': self.stitch_vias.GetValue(),
             'stitch_pitch': self.stitch_pitch.GetValue(),
@@ -893,7 +882,7 @@ class PlanesTab(wx.Panel):
         # Expand assignments: each net goes on each layer in the assignment
         # e.g., nets=['+3.3V'] layers=['F.Cu', 'In2.Cu'] becomes:
         #   expanded_nets=['+3.3V', '+3.3V'], expanded_layers=['F.Cu', 'In2.Cu']
-        # Also build layer_nets dict for multi-net layer handling (Voronoi boundaries)
+        # Also build layer_nets dict for multi-net layer handling (the spine split)
         expanded_nets = []
         expanded_layers = []
         layer_nets = {}  # layer -> list of nets on that layer
@@ -1000,13 +989,8 @@ class PlanesTab(wx.Panel):
                 # config-driven, defaulting to the same value route_planes.py's
                 # argparse uses so current GUI behavior is unchanged unless a
                 # plan/control sets them.
-                plane_proximity_radius=config.get('plane_proximity_radius', 3.0),
-                plane_proximity_cost=config.get('plane_proximity_cost', 2.0),
-                plane_track_via_clearance=config.get('plane_track_via_clearance',
-                                                     defaults.PLANE_TRACK_VIA_CLEARANCE),
                 voronoi_seed_interval=config.get('voronoi_seed_interval', 2.0),
                 plane_max_iterations=config.get('plane_max_iterations', defaults.MAX_ITERATIONS),
-                spine_split=config.get('spine_split', False),
                 debug_lines=config.get('debug_lines', False),
                 add_teardrops=config.get('add_teardrops', False),
                 verbose=config.get('verbose', False),

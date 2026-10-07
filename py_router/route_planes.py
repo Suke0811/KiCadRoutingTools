@@ -64,7 +64,7 @@ from plane_obstacle_builder import (
     _add_board_edge_track_obstacles
 )
 from plane_zone_geometry import (
-    compute_zone_boundaries,
+    voronoi_cells,
     sample_route_for_voronoi
 )
 from plane_pad_tap import clamp_tap_via_to_edge
@@ -842,20 +842,18 @@ def build_plane_base_obstacles(
     other_nets_vias: Dict[int, List[Tuple[float, float]]],
     config: GridRouteConfig,
     pcb_data: PCBData,
-    proximity_radius: float = 3.0,
-    proximity_cost: float = 2.0,
-    track_via_clearance: float = defaults.PLANE_TRACK_VIA_CLEARANCE,
-    previous_routes: Optional[List[List[Tuple[float, float]]]] = None,
-    pad_cells: Optional[Tuple[np.ndarray, np.ndarray]] = None
+    track_via_clearance: float,
+    pad_cells: Tuple[np.ndarray, np.ndarray],
+    previous_routes: Optional[List[List[Tuple[float, float]]]] = None
 ) -> GridObstacleMap:
     """
-    Build base obstacle map for plane routing (reusable across multiple MST edges).
+    Build base obstacle map for routing a net's spines on a plane layer (reusable across its MST edges).
 
-    Includes: other nets' via blocking + proximity, segment blocking, previous route
-    blocking, and board edge blocking. Does NOT include source/target cells.
-    With pad_cells (_plane_pad_cells: (cells, net of each)), every cell that is not
-    this net's is blocked too -- other nets' pads and vias, and holes: the fill
-    cannot cross them either.
+    Includes: other nets' via blocking (track_via_clearance from each centre), segment blocking, previous
+    route blocking, and board edge blocking. Does NOT include source/target cells. Every pad_cells cell
+    (_plane_pad_cells: (cells, net of each)) that is not this net's is blocked too -- other nets' pads and
+    vias, and holes: the fill cannot cross them either. No proximity cost: a spine IS the plane (the cost
+    keeps tracks from breaking a plane up).
     """
     coord = GridCoord(config.grid_step)
     layer_idx = 0
@@ -889,23 +887,6 @@ def build_plane_base_obstacles(
         all_cells_3 = np.hstack([all_cells, layer_col])
         obstacles.add_blocked_cells_batch(all_cells_3)
 
-    # Add proximity costs around other nets' vias
-    proximity_radius_grid = coord.to_grid_dist(proximity_radius)
-    proximity_cost_grid = config.cell_cost(proximity_cost)
-
-    all_other_vias_grid = []
-    for via_positions in other_nets_vias.values():
-        for vx, vy in via_positions:
-            gx, gy = coord.to_grid(vx, vy)
-            all_other_vias_grid.append((gx, gy))
-
-    if all_other_vias_grid:
-        obstacles.add_stub_proximity_costs_batch(
-            all_other_vias_grid,
-            proximity_radius_grid,
-            proximity_cost_grid
-        )
-
     # Block existing segments on this layer from other nets
     for seg in pcb_data.segments:
         if seg.net_id == net_id:
@@ -923,13 +904,12 @@ def build_plane_base_obstacles(
         for route_path in previous_routes:
             _block_route_as_obstacle(obstacles, route_path, coord, layer_idx, route_expansion_grid)
 
-    if pad_cells is not None:
-        # (every pad's, via's and hole's cells, built once per layer call by _plane_pad_cells: this net leaves out
-        # its own copper)
-        allc, alln = pad_cells
-        sel = allc[(alln != net_id) | (alln == 0)]
-        if len(sel):
-            obstacles.add_blocked_cells_batch(np.hstack([sel, np.zeros((len(sel), 1), dtype=np.int32)]))
+    # (every pad's, via's and hole's cells, built once per layer call by _plane_pad_cells: this net leaves out its
+    # own copper)
+    allc, alln = pad_cells
+    sel = allc[(alln != net_id) | (alln == 0)]
+    if len(sel):
+        obstacles.add_blocked_cells_batch(np.hstack([sel, np.zeros((len(sel), 1), dtype=np.int32)]))
 
     # Block board edges
     _add_board_edge_track_obstacles(obstacles, pcb_data, config, layer_idx)
@@ -959,45 +939,27 @@ def _plane_pad_cells(geom, extra, coord):
 def route_plane_connection(
     via_a: Tuple[float, float],
     via_b: Tuple[float, float],
-    plane_layer: str,
-    net_id: int,
-    other_nets_vias: Dict[int, List[Tuple[float, float]]],
+    base_obstacles: GridObstacleMap,
+    router: GridRouter,
     config: GridRouteConfig,
-    pcb_data: PCBData,
-    proximity_radius: float = 3.0,
-    proximity_cost: float = 2.0,
-    track_via_clearance: float = defaults.PLANE_TRACK_VIA_CLEARANCE,
     max_iterations: int = 200000,
     verbose: bool = False,
-    previous_routes: Optional[List[List[Tuple[float, float]]]] = None,
-    base_obstacles: Optional[GridObstacleMap] = None,
-    router: Optional[GridRouter] = None,
     a_box: Optional[Tuple[float, float, float, float]] = None,
     b_box: Optional[Tuple[float, float, float, float]] = None
 ) -> Optional[List[Tuple[float, float]]]:
     """
-    Route a trace on the plane layer between two vias, avoiding other nets' vias.
+    Route a spine on the plane layer between two of a net's points (vias, virtual vias, pads).
     a_box / b_box: the (x0, y0, x1, y1) box of the pad an end sits on, when it is one
     of this layer's pads -- the route may then start or end anywhere on its edge.
 
     Args:
-        via_a: (x, y) position of first via
-        via_b: (x, y) position of second via
-        plane_layer: Layer to route on (e.g., 'In5.Cu')
-        net_id: Net ID for this connection
-        other_nets_vias: Dict mapping other net_id -> list of (x, y) via positions
+        via_a: (x, y) position of the first point
+        via_b: (x, y) position of the second point
+        base_obstacles: the net's obstacle map (build_plane_base_obstacles), cloned for this route
+        router: the GridRouter to route with
         config: Routing configuration
-        pcb_data: PCB data for obstacle building
-        proximity_radius: Radius around other vias to add proximity cost (mm)
-        proximity_cost: Maximum proximity cost (mm equivalent)
-        track_via_clearance: Clearance from track center to other nets' via centers (mm).
-            This should be large enough to leave room for polygon fill.
         max_iterations: Maximum A* iterations
         verbose: Print debug info
-        previous_routes: List of previously routed paths from other nets to avoid (each is a list of (x,y) points)
-        base_obstacles: Optional pre-built obstacle map (cloned for this route).
-            If None, builds from scratch (backward compatible).
-        router: Optional pre-built GridRouter instance to reuse.
 
     Returns:
         List of (x, y) points along the route, or None if routing fails
@@ -1005,14 +967,7 @@ def route_plane_connection(
     coord = GridCoord(config.grid_step)
     layer_idx = 0
 
-    if base_obstacles is not None:
-        obstacles = base_obstacles.clone_fresh()
-    else:
-        # Backward-compatible: build from scratch
-        obstacles = build_plane_base_obstacles(
-            plane_layer, net_id, other_nets_vias, config, pcb_data,
-            proximity_radius, proximity_cost, track_via_clearance, previous_routes
-        )
+    obstacles = base_obstacles.clone_fresh()
 
     # Set up source and target
     via_a_gx, via_a_gy = coord.to_grid(via_a[0], via_a[1])
@@ -1038,17 +993,6 @@ def route_plane_connection(
             if (gx, gy, layer_idx) not in have:
                 obstacles.add_source_target_cell(gx, gy, layer_idx)
                 ends.append((gx, gy, layer_idx))
-
-    # Create or reuse router
-    if router is None:
-        router = GridRouter(
-            via_cost=config.via_cost_units(),
-            h_weight=config.heuristic_weight,
-            turn_cost=config.turn_cost,
-            via_proximity_cost=0,
-            layer_costs=config.get_layer_costs(),
-            proximity_heuristic_cost=config.get_proximity_heuristic_cost()
-        )
 
     path, iterations, _ = router.route_with_frontier(
         obstacles, sources, targets, max_iterations,
@@ -1076,8 +1020,11 @@ def route_plane_connection(
     return route_points
 
 
+SPLIT_INFLATE_MM = 2.0   # a cluster's octagon grown by this (and its corridors 1.5x it wide) ...
+SPLIT_LINK_MM = 5.0      # ... a cluster: a net's anchors within this of one another
 
-def _grammar_cluster(points, link=5.0):
+
+def _clusters(points, link=SPLIT_LINK_MM):
     """Single-linkage clusters of 2D points (union-find, O(N^2))."""
     n = len(points)
     parent = list(range(n))
@@ -1103,366 +1050,6 @@ def _grammar_cluster(points, link=5.0):
     return list(groups.values())
 
 
-def _grammar_hull(points):
-    """Convex hull (monotone chain); returns CCW polygon or None."""
-    pts = sorted(set(points))
-    if len(pts) < 3:
-        return None
-    def cross(o, a, b):
-        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
-    lower = []
-    for pt in pts:
-        while len(lower) >= 2 and cross(lower[-2], lower[-1], pt) <= 0:
-            lower.pop()
-        lower.append(pt)
-    upper = []
-    for pt in reversed(pts):
-        while len(upper) >= 2 and cross(upper[-2], upper[-1], pt) <= 0:
-            upper.pop()
-        upper.append(pt)
-    hull = lower[:-1] + upper[:-1]
-    return hull if len(hull) >= 3 else None
-
-
-def _grammar_inflate(hull, r):
-    """Offset a CCW convex polygon outward by r (edge-normal offset +
-    consecutive-line intersection)."""
-    import math as _m
-    n = len(hull)
-    lines = []
-    for i in range(n):
-        x1, y1 = hull[i]
-        x2, y2 = hull[(i + 1) % n]
-        ex, ey = x2 - x1, y2 - y1
-        L = _m.hypot(ex, ey) or 1e-9
-        # CCW polygon: outward normal is (ey, -ex)/L
-        nx, ny = ey / L, -ex / L
-        lines.append((x1 + nx * r, y1 + ny * r, x2 + nx * r, y2 + ny * r))
-    out = []
-    for i in range(n):
-        x1, y1, x2, y2 = lines[i - 1]
-        x3, y3, x4, y4 = lines[i]
-        d = (x2 - x1) * (y4 - y3) - (y2 - y1) * (x4 - x3)
-        if abs(d) < 1e-12:
-            out.append((x3, y3))
-            continue
-        t = ((x3 - x1) * (y4 - y3) - (y3 - y1) * (x4 - x3)) / d
-        out.append((x1 + t * (x2 - x1), y1 + t * (y2 - y1)))
-    return out
-
-
-def _grammar_point_in_poly(x, y, poly):
-    """Even-odd ray cast; robust for the slightly non-convex polygons that
-    per-vertex board-bounds clamping can produce."""
-    inside = False
-    j = len(poly) - 1
-    for i in range(len(poly)):
-        xi, yi = poly[i]
-        xj, yj = poly[j]
-        if (yi > y) != (yj > y) and \
-                x < (xj - xi) * (y - yi) / (yj - yi) + xi:
-            inside = not inside
-        j = i
-    return inside
-
-
-def _grammar_seg_dist2(px, py, x1, y1, x2, y2):
-    dx, dy = x2 - x1, y2 - y1
-    L2 = dx * dx + dy * dy
-    if L2 <= 0:
-        ex, ey = px - x1, py - y1
-        return ex * ex + ey * ey
-    t = ((px - x1) * dx + (py - y1) * dy) / L2
-    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
-    ex, ey = px - (x1 + t * dx), py - (y1 + t * dy)
-    return ex * ex + ey * ey
-
-
-def _grammar_sheet_raster(sheet_polygon):
-    """Coarse raster of the background sheet for the #662 invariant-3b
-    check. Returns (x0, y0, sx, sy, nx, ny, free) with free a bytearray
-    (1 = sheet cell)."""
-    import math as _m
-    xs = [p[0] for p in sheet_polygon]
-    ys = [p[1] for p in sheet_polygon]
-    x0, x1 = min(xs), max(xs)
-    y0, y1 = min(ys), max(ys)
-    diag = _m.hypot(x1 - x0, y1 - y0) or 1.0
-    step = max(0.6, min(3.0, diag / 100.0))
-    nx = max(2, int(round((x1 - x0) / step)))
-    ny = max(2, int(round((y1 - y0) / step)))
-    sx = (x1 - x0) / nx
-    sy = (y1 - y0) / ny
-    free = bytearray(nx * ny)
-    for i in range(nx):
-        cx = x0 + (i + 0.5) * sx
-        for j in range(ny):
-            if _grammar_point_in_poly(cx, y0 + (j + 0.5) * sy, sheet_polygon):
-                free[i * ny + j] = 1
-    return (x0, y0, sx, sy, nx, ny, free)
-
-
-def _grammar_sheet_ok(raster, islands, carve_mm, dom_pts):
-    """#662 invariant 3b: True when the background sheet minus the islands
-    (each widened by carve_mm, the fill's clearance band) is still ONE
-    usable connected region. A detached piece counts as a severing only
-    when it holds a dominant-net pad/seed (its copper would ship as an
-    open or a weld obligation) or >=25% of the sheet; a source-less sliver
-    is culled by fill island removal and is not a severing."""
-    from collections import deque
-    x0, y0, sx, sy, nx, ny, base = raster
-    free = bytearray(base)
-    # Half a raster cell rides on the carve: a neck narrower than a cell is
-    # sampled unreliably, and a sub-millimetre neck is the confetti
-    # anti-pattern this invariant exists to reject, not connectivity.
-    carve_mm = carve_mm + 0.5 * max(sx, sy)
-    c2 = carve_mm * carve_mm
-    for poly in islands:
-        pxs = [p[0] for p in poly]
-        pys = [p[1] for p in poly]
-        i0 = max(0, int((min(pxs) - carve_mm - x0) / sx) - 1)
-        i1 = min(nx - 1, int((max(pxs) + carve_mm - x0) / sx) + 1)
-        j0 = max(0, int((min(pys) - carve_mm - y0) / sy) - 1)
-        j1 = min(ny - 1, int((max(pys) + carve_mm - y0) / sy) + 1)
-        n = len(poly)
-        for i in range(i0, i1 + 1):
-            cx = x0 + (i + 0.5) * sx
-            for j in range(j0, j1 + 1):
-                k = i * ny + j
-                if not free[k]:
-                    continue
-                cy = y0 + (j + 0.5) * sy
-                if _grammar_point_in_poly(cx, cy, poly):
-                    free[k] = 0
-                    continue
-                for e in range(n):
-                    ax, ay = poly[e]
-                    bx, by = poly[(e + 1) % n]
-                    if _grammar_seg_dist2(cx, cy, ax, ay, bx, by) <= c2:
-                        free[k] = 0
-                        break
-    total_free = sum(free)
-    if total_free == 0:
-        return False
-    # label connected components (4-neighbour flood fill)
-    comp = [0] * (nx * ny)
-    sizes = {}
-    ncomp = 0
-    for start in range(nx * ny):
-        if not free[start] or comp[start]:
-            continue
-        ncomp += 1
-        comp[start] = ncomp
-        size = 1
-        q = deque([start])
-        while q:
-            k = q.popleft()
-            i, j = divmod(k, ny)
-            for kk in ((k - ny) if i > 0 else -1,
-                       (k + ny) if i < nx - 1 else -1,
-                       (k - 1) if j > 0 else -1,
-                       (k + 1) if j < ny - 1 else -1):
-                if kk >= 0 and free[kk] and not comp[kk]:
-                    comp[kk] = ncomp
-                    size += 1
-                    q.append(kk)
-        sizes[ncomp] = size
-    if ncomp <= 1:
-        return True
-    meaningful = set()
-    for c, size in sizes.items():
-        if size >= 0.25 * total_free:
-            meaningful.add(c)
-    for px, py in dom_pts:
-        i = int((px - x0) / sx)
-        j = int((py - y0) / sy)
-        if 0 <= i < nx and 0 <= j < ny and comp[i * ny + j]:
-            meaningful.add(comp[i * ny + j])
-    return len(meaningful) <= 1
-
-
-def _grammar_corridor(p, q, w, board_bounds):
-    """A straight corridor w wide from p to q, its ends carried w/2 past them,
-    clamped to the board bounds (as the hulls are)."""
-    import math as _m
-    (x1, y1), (x2, y2) = p, q
-    L = _m.hypot(x2 - x1, y2 - y1) or 1e-9
-    ux, uy = (x2 - x1) / L, (y2 - y1) / L
-    nx_, ny_ = -uy * w / 2.0, ux * w / 2.0
-    ax, ay = x1 - ux * w / 2.0, y1 - uy * w / 2.0
-    bx, by = x2 + ux * w / 2.0, y2 + uy * w / 2.0
-    bx0, by0, bx1, by1 = board_bounds
-    return [(min(max(x, bx0 + 0.3), bx1 - 0.3), min(max(y, by0 + 0.3), by1 - 0.3))
-            for x, y in ((ax + nx_, ay + ny_), (bx + nx_, by + ny_), (bx - nx_, by - ny_), (ax - nx_, ay - ny_))]
-
-
-def _grammar_join(parts, out, dom, committed, raster, carve_mm, dom_pts,
-                  board_bounds, name_of, join_w):
-    """V2: each non-dominant net's islands JOINED into one region. Per net,
-    a minimum spanning tree over its islands (an edge: the two islands'
-    nearest seeds); each edge a corridor join_w wide (else half that) from
-    one seed to the other, kept only where it overlaps no other net's region
-    (by the fill's clearance band) and leaves the background sheet one
-    region (invariant 3b) -- else that pair stays apart and the route step
-    joins them as before. `parts` {net: [(cluster points, island)]};
-    `out` {net: [polygons]} gains the corridors. (joined, refused) counts."""
-    import math as _m
-    from shapely.geometry import Polygon as _P
-    joined = refused = 0
-    region = {nid: [_P(pl).buffer(0) for pl in pls] for nid, pls in out.items() if nid != dom}
-    for nid in sorted(parts, key=lambda n: -len(parts[n])):
-        isl = parts[nid]
-        if len(isl) < 2:
-            continue
-        # Prim over the islands; an edge's weight its nearest seed pair
-        def near(a, b):
-            return min(((_m.hypot(p[0] - q[0], p[1] - q[1]), p, q) for p in isl[a][0] for q in isl[b][0]),
-                       key=lambda t_: t_[0])
-        inside, edges = {0}, []
-        best = {j: near(0, j) + (0,) for j in range(1, len(isl))}
-        while best:
-            j = min(best, key=lambda k: best[k][0])
-            d_, p_, q_, i_ = best.pop(j)
-            edges.append((d_, p_, q_))
-            inside.add(j)
-            for k in list(best):
-                c_ = near(j, k)
-                if c_[0] < best[k][0]:
-                    best[k] = c_ + (j,)
-        others = [g for onid, gs in region.items() if onid != nid for g in gs]
-        for d_, p_, q_ in sorted(edges, key=lambda e: e[0]):
-            placed = None
-            for w in (join_w, join_w / 2.0):
-                cor = _grammar_corridor(p_, q_, w, board_bounds)
-                cg = _P(cor).buffer(carve_mm)
-                if any(cg.intersects(g) for g in others):
-                    break                           # narrower does not clear another net's region
-                if _grammar_sheet_ok(raster, committed + [cor], carve_mm, dom_pts):
-                    placed = cor
-                    break
-            if placed is None:
-                refused += 1
-                continue
-            committed.append(placed)
-            out[nid].append(placed)
-            region.setdefault(nid, []).append(_P(placed))
-            joined += 1
-    # each joined net's islands and corridors as the regions they now make
-    from shapely.ops import unary_union as _uu
-    for nid in parts:
-        if nid == dom or nid not in out or len(out[nid]) < 2:
-            continue
-        u = _uu([_P(pl).buffer(0) for pl in out[nid]])
-        geoms = list(getattr(u, 'geoms', [u]))
-        out[nid] = [[(round(x, 4), round(y, 4)) for x, y in list(g.exterior.coords)[:-1]]
-                    for g in geoms if not g.is_empty and g.area > 1e-6]
-    return joined, refused
-
-
-GRAMMAR_INFLATE_MM = 2.0   # a cluster's hull grown by this (and its corridors 1.5x it wide) ...
-GRAMMAR_LINK_MM = 5.0      # ... a cluster: a net's seeds within this of one another (#662)
-
-
-def _grammar_zone_polygons(seeds_by_net, zone_polygon, board_bounds,
-                           name_of, verbose=False,
-                           inflate_mm=GRAMMAR_INFLATE_MM, link_mm=GRAMMAR_LINK_MM, pads_by_net=None,
-                           carve_mm=0.8):
-    """#662: build {net_id: [polygons]} as background sheet + hull islands.
-    Returns None when degenerate (a single seeded net, or the dominant net
-    cannot be identified) so the caller falls back to Voronoi."""
-    import math as _m
-    seeded = {nid: pts for nid, pts in seeds_by_net.items() if pts}
-    if len(seeded) < 2:
-        return None
-    bx0, by0, bx1, by1 = board_bounds
-    bdiag = _m.hypot(bx1 - bx0, by1 - by0) or 1.0
-    # dominant = largest spread (board-wide rail), tiebreak seed count
-    def spread(pts):
-        xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
-        return _m.hypot(max(xs) - min(xs), max(ys) - min(ys))
-    # dominance = board-wide reach x consumer count (the human gives the
-    # layer to the rail with the most board-wide service to deliver, not
-    # merely the widest bbox -- spread-only picked P1.35V over the 39-pad
-    # P3.3V on orangecrab).
-    # Score on PADS (consumers), not augmented seeds -- seed lists carry
-    # MST route samples that scale with route length, not importance.
-    def score_pts(nid):
-        pts = (pads_by_net or {}).get(nid) or seeded[nid]
-        return spread(pts) / bdiag * len(pts), len(pts)
-    scored = sorted(((score_pts(nid)[0], score_pts(nid)[1], nid)
-                     for nid in seeded), reverse=True)
-    dom = scored[0][2]
-    out = {dom: [list(zone_polygon)]}
-    # Invariant 3b: the background sheet must remain ONE connected region
-    # after every carve. Checked on a coarse raster against the islands
-    # committed so far; a severing island first shrinks its inflation,
-    # then demotes to tracks (the route step carries every plane net in
-    # its --nets, #562, so a demoted cluster is served by copper, just
-    # not by a zone).
-    raster = _grammar_sheet_raster(zone_polygon)
-    dom_pts = list((pads_by_net or {}).get(dom) or []) + list(seeded[dom])
-    committed = []
-    parts = {}                 # net -> [(its cluster's points, its island)]: what the join (V2) links
-    n_islands = 0
-    n_shrunk = 0
-    n_demoted = 0
-    for nid, pts in seeded.items():
-        if nid == dom:
-            continue
-        polys = []
-        for cl in _grammar_cluster(pts, link=link_mm):
-            placed = None
-            for r in (inflate_mm, inflate_mm / 2.0, 0.0):
-                hull = _grammar_hull(cl)
-                if hull is None:
-                    # 1-2 points (or collinear): a small box around them
-                    xs = [p[0] for p in cl]; ys = [p[1] for p in cl]
-                    m = max(r, 0.5)
-                    hull = [(min(xs) - m, min(ys) - m), (max(xs) + m, min(ys) - m),
-                            (max(xs) + m, max(ys) + m), (min(xs) - m, max(ys) + m)]
-                elif r > 0:
-                    hull = _grammar_inflate(hull, r)
-                # clamp to board bounds (also keeps hulls off the edge band)
-                hull = [(min(max(x, bx0 + 0.3), bx1 - 0.3),
-                         min(max(y, by0 + 0.3), by1 - 0.3)) for x, y in hull]
-                if _grammar_sheet_ok(raster, committed + [hull], carve_mm,
-                                     dom_pts):
-                    placed = hull
-                    if r != inflate_mm:
-                        n_shrunk += 1
-                        print(f"  Grammar pour: '{name_of.get(nid, nid)}' "
-                              f"island shrunk (inflate {inflate_mm} -> {r}) "
-                              f"to keep the background sheet connected")
-                    break
-            if placed is None:
-                n_demoted += 1
-                print(f"  Grammar pour: '{name_of.get(nid, nid)}' cluster of "
-                      f"{len(cl)} point(s) demoted to tracks -- its island "
-                      f"severs the background sheet (#662 invariant 3b)")
-                continue
-            committed.append(placed)
-            polys.append(placed)
-            parts.setdefault(nid, []).append((cl, placed))
-        if polys:  # a fully-demoted net gets NO zone entry (tracks serve it)
-            out[nid] = polys
-        n_islands += len(polys)
-    # ...each net's islands then JOINED by corridors into one region where the
-    # sheet allows (_grammar_join): an island is a weld the route step
-    # otherwise makes one by one
-    n_joined, n_refused = _grammar_join(parts, out, dom, committed, raster, carve_mm, dom_pts,
-                                        board_bounds, name_of, join_w=1.5 * inflate_mm)
-    print(f"  Grammar pour (#662): '{name_of.get(dom, dom)}' = background "
-          f"sheet; {n_islands} hull island(s) across "
-          f"{len(seeded) - 1} net(s)"
-          + (f"; {n_shrunk} shrunk" if n_shrunk else "")
-          + (f"; {n_demoted} demoted to tracks" if n_demoted else "")
-          + (f"; {n_joined} corridor(s) join them into "
-             f"{sum(len(v) for k, v in out.items() if k != dom)} region(s)" if n_joined else "")
-          + (f", {n_refused} join(s) refused (another net, or the sheet)" if n_refused else "")
-          + " (KICAD_GRAMMAR_POUR=0 reverts to Voronoi)")
-    return out
-
-
 def _spine_samples(route_path, other_tree, interval, floor):
     """A spine's seeds, each a quarter of the distance to another net's nearest seed past the last (at most
     `interval`, at least `floor`): a point of the spine is then nearer one of its own seeds than any other net's, so
@@ -1486,7 +1073,8 @@ def _spine_samples(route_path, other_tree, interval, floor):
 
 
 def _background_net(seeds_by_net, pads_by_net, board_bounds):
-    """The layer's background rail, as the grammar picks it (#662): board-wide reach x consumers, on its pads"""
+    """The layer's background rail (#662): the net whose pads span the most of the board times how many there are --
+    the rail a human pours as the layer's sheet. Scored on its pads_by_net points, else its seeds_by_net ones"""
     import math as _m
     bx0, by0, bx1, by1 = board_bounds
     bdiag = _m.hypot(bx1 - bx0, by1 - by0) or 1.0
@@ -1612,16 +1200,15 @@ def _shape_grid_cells(kind, shp, coord):
 
 def _reach_and_sheet(dom, raw_cells, anchors_by_net, routes, zone_polygon, min_thickness, name_of, geom,
                      must_hold=True):
-    """The background rail (the grammar's choice: board-wide reach x consumers) becomes the whole layer's sheet;
-    every other net keeps its Voronoi share only within its REACH -- the grammar's own islands round its anchors
-    (vias, virtual vias, pads: clusters GRAMMAR_LINK_MM apart, each the chamfered octagon round them grown
-    GRAMMAR_INFLATE_MM) joined by its spines as the grammar's corridors (1.5x the inflation wide) -- the rest going
-    to the sheet beneath it: nearest-seed Voronoi otherwise hands a reference net a plane. Every piece is held to
-    the grammar's invariant 3b (#662): the sheet, less the pieces each widened by the fill's clearance band
-    (carve_mm), stays one region -- an island that would sever it shrinks as the grammar's does (half its inflation,
-    then none) and else is left to the route step, a corridor that would is refused. The background's own cells
-    inside another net's reach stay its pockets, so its balls there keep their plane (a background out of the split
-    has none). The sheet is judged as the fill will pour it, on the layer model `geom` (_layer_geometry): inside the
+    """The background rail (_background_net: board-wide reach x consumers) becomes the whole layer's sheet; every
+    other net keeps its Voronoi share only within its REACH -- islands round its anchors (vias, virtual vias, pads:
+    clusters SPLIT_LINK_MM apart, each the chamfered octagon round them grown SPLIT_INFLATE_MM) joined by its spines
+    as corridors (1.5x the inflation wide) -- the rest going to the sheet beneath it: nearest-seed Voronoi otherwise
+    hands a reference net a plane. Every piece is held to invariant 3b (#662): the sheet, less the pieces each
+    widened by the fill's clearance band (carve_mm), stays one region -- an island that would sever it shrinks (half
+    its inflation, then none) and else is left to the route step, a corridor that would is refused. The
+    background's own cells inside another net's reach stay its pockets, so its balls there keep their plane (a
+    background out of the split has none). The sheet is judged as the fill will pour it, on the layer model `geom` (_layer_geometry): inside the
     board's real shape -- its cutouts out -- less the edge clearance, and round what no fill crosses (other nets'
     pads and vias, holes and slots): a gap only the bare outline leaves is no connection"""
     from shapely.geometry import LineString, Point as _Pt, Polygon as _P
@@ -1629,7 +1216,7 @@ def _reach_and_sheet(dom, raw_cells, anchors_by_net, routes, zone_polygon, min_t
     from shapely.prepared import prep
     zone_clearance, edge_clearance = geom['zc'], max(geom['edge'], 0.0)
     share = {nid: unary_union([_P(c).buffer(0) for c in cells]) for nid, cells in raw_cells.items() if cells}
-    carve_mm = zone_clearance + min_thickness / 2.0          # the fill's clearance band, as the grammar carves it
+    carve_mm = zone_clearance + min_thickness / 2.0          # the fill's clearance band
     dom_pts = list(dict.fromkeys(anchors_by_net.get(dom, ())))
 
     def parts(g):
@@ -1674,19 +1261,19 @@ def _reach_and_sheet(dom, raw_cells, anchors_by_net, routes, zone_polygon, min_t
     shrunk = demoted = refused = 0
     import plane_split_raster as _psr
     for nid in others:
-        for cl in _grammar_cluster(list(dict.fromkeys(anchors_by_net.get(nid, ()))), link=GRAMMAR_LINK_MM):
-            for r in (GRAMMAR_INFLATE_MM, GRAMMAR_INFLATE_MM / 2.0, 0.0):
-                # (the cluster's octagon -- the chamfered rectangle a human draws round a group of parts -- where
-                # the grammar draws its convex hull; never thinner than a minimum-width neck either side)
+        for cl in _clusters(list(dict.fromkeys(anchors_by_net.get(nid, ()))), link=SPLIT_LINK_MM):
+            for r in (SPLIT_INFLATE_MM, SPLIT_INFLATE_MM / 2.0, 0.0):
+                # (the cluster's octagon -- the chamfered rectangle a human draws round a group of parts; never
+                # thinner than a minimum-width neck either side)
                 isl = _psr.octagon(cl, max(r, min_thickness))
                 piece = share[nid].intersection(isl)
                 if piece.is_empty or admit(piece):
                     region[nid].append(piece)
-                    shrunk += r != GRAMMAR_INFLATE_MM
+                    shrunk += r != SPLIT_INFLATE_MM
                     break
             else:
                 demoted += 1
-    half = 1.5 * GRAMMAR_INFLATE_MM / 2.0
+    half = 1.5 * SPLIT_INFLATE_MM / 2.0
     bands = {nid: [] for nid in others}
     for nid, path in sorted(((n, p) for n, p in routes if n in region and len(p) >= 2),
                             key=lambda t: LineString(t[1]).length):
@@ -1762,9 +1349,6 @@ def _generate_multinet_layer_zones(
     config: GridRouteConfig,
     zone_clearance: float,
     min_thickness: float,
-    plane_proximity_radius: float,
-    plane_proximity_cost: float,
-    plane_track_via_clearance: float,
     plane_max_iterations: int,
     voronoi_seed_interval: float,
     board_edge_clearance: float,
@@ -1772,11 +1356,14 @@ def _generate_multinet_layer_zones(
     verbose: bool,
     thermal_relief: bool = False,
     priority_offset: int = 0,
-    served_elsewhere: frozenset = frozenset(),
-    spine_split: bool = False
+    served_elsewhere: frozenset = frozenset()
 ) -> Tuple[List[str], List[str], List[Dict]]:
     """
-    Generate Voronoi-based zone boundaries for a multi-net layer.
+    Split a plane layer several nets share: the SPINE SPLIT. Every net's vias, virtual vias (the pads
+    whose drop the route step lays) and pads on the layer are joined by spines routed on the layer, the
+    layer is partitioned round them (Voronoi), the background net is the whole sheet and every other net
+    keeps its share within octagons round its groups and corridors along its spines (_reach_and_sheet),
+    finished on a raster (plane_split_raster). See docs/route-plane.md.
 
     Args:
         layer: Layer name (e.g., 'In1.Cu')
@@ -1788,11 +1375,8 @@ def _generate_multinet_layer_zones(
         config: Routing configuration
         zone_clearance: Zone clearance
         min_thickness: Minimum zone thickness
-        plane_proximity_radius: Proximity radius for routing
-        plane_proximity_cost: Proximity cost for routing
-        plane_track_via_clearance: Track-to-via clearance
         plane_max_iterations: Max A* iterations
-        voronoi_seed_interval: Sample interval for Voronoi seeds
+        voronoi_seed_interval: Longest gap between a spine's Voronoi seeds (mm)
         board_edge_clearance: Edge clearance for zones
         debug_lines: Whether to generate debug lines
         verbose: Verbose output
@@ -1852,7 +1436,7 @@ def _generate_multinet_layer_zones(
     # A pad outside the Edge.Cuts outline can never reach the fill (it is
     # clipped to the outline) -- point-seeding it plants a Voronoi cell in dead
     # space (#291 class). Used by the projected-pad seeding just below and by
-    # the #107 corridor pass further down.
+    # the spines' points further down.
     from check_drc import make_off_board_test
     _off_board_test = make_off_board_test(pcb_data.board_info)
 
@@ -1937,50 +1521,46 @@ def _generate_multinet_layer_zones(
             })
         return zone_sexprs, debug_line_sexprs, zone_data_list
 
-    # THE SPINE SPLIT (spine_split): every net's vias, virtual vias and pads on this layer joined by spines routed on
-    # the layer, the layer partitioned round them, the background the whole sheet and every other net its share
-    # within the grammar's own islands and corridors (_reach_and_sheet), finished on a raster (plane_split_raster)
-    _virtual_mst = spine_split
+    # ONE model of what a fill keeps clear of, for the spines, the background check and the finishing
+    _geom = _layer_geometry(pcb_data, layer, zone_clearance, board_edge_clearance)
+    _pad_cells = _plane_pad_cells(_geom, min_thickness / 2.0, GridCoord(config.grid_step))
     _pad_box: Dict[Tuple[float, float], Tuple[float, float, float, float]] = {}   # a spine end on this layer's pad
-    _geom = _pad_cells = _bg = None
-    if _virtual_mst:
-        # (ONE model of what a fill keeps clear of, for the spines, the background check and the finishing)
-        _geom = _layer_geometry(pcb_data, layer, zone_clearance, board_edge_clearance)
-        _pad_cells = _plane_pad_cells(_geom, min_thickness / 2.0, GridCoord(config.grid_step))
-        for net_name in nets_with_seeds:
-            for pad in pcb_data.pads_by_net.get(net_name_to_id[net_name], []):
-                if pad_is_plated_through(pad) or layer in pad.layers:
-                    kind, shp = _pad_copper_shape(pad)
-                    _pad_box[(pad.global_x, pad.global_y)] = (
-                        shp if kind == 'box' else (shp[0] - shp[2], shp[1] - shp[2], shp[0] + shp[2], shp[1] + shp[2]))
-        # the background, chosen once (the grammar's rule, on each net's pads) for the spines' order and the split
-        _bg = _background_net(
-            {net_name_to_id[n]: list(pads_on_layer_by_net.get(net_name_to_id[n], ())) for n in nets_with_seeds},
-            {net_name_to_id[n]: [(pd.global_x, pd.global_y) for pd in pcb_data.pads_by_net.get(net_name_to_id[n], [])]
-             for n in nets_with_seeds}, board_bounds)
-    if _virtual_mst:     # virtual vias -- and pads with copper on this layer -- join the spine
-        _dv = getattr(pcb_data, '_deferred_pad_seeds', None) or {}
-        for net_name in nets_with_seeds:
-            _nid = net_name_to_id[net_name]
-            _have = vias_by_net_set.setdefault(_nid, set())
-            _add = [p for p in list(_dv.get(_nid, ())) + list(pads_on_layer_by_net.get(_nid, ())) if p not in _have
-                    and not (_off_board_test is not None and _off_board_test(*p))]
-            _add = list(dict.fromkeys(_add))
-            if _add:
-                vias_by_net.setdefault(_nid, []).extend(_add)
-                _have.update(_add)
-                if net_name not in nets_with_vias:
-                    nets_with_vias.append(net_name)
-                print(f"  Net '{net_name}': {len(_add)} virtual via(s) join its spine")
-        # a spine is the middle of a plane neck: it passes another net's via at the via's radius, the fill's
-        # clearance and half the fill's minimum width -- no closer (the neck would not fill), no farther (a ball
-        # field's every gap would be shut)
-        plane_track_via_clearance = config.via_size / 2.0 + zone_clearance + min_thickness / 2.0
-        # (the proximity cost keeps TRACKS from breaking a plane up; a spine or corridor IS the plane, and the
-        # keep-out above already leaves its fill room -- priced, it only wanders)
-        plane_proximity_cost = 0.0
-        print(f"  Spines keep {plane_track_via_clearance:.3f} mm from another net's via (via radius + zone "
-              f"clearance + half the minimum width), no proximity cost")
+    for net_name in nets_with_seeds:
+        for pad in pcb_data.pads_by_net.get(net_name_to_id[net_name], []):
+            if pad_is_plated_through(pad) or layer in pad.layers:
+                kind, shp = _pad_copper_shape(pad)
+                _pad_box[(pad.global_x, pad.global_y)] = (
+                    shp if kind == 'box' else (shp[0] - shp[2], shp[1] - shp[2], shp[0] + shp[2], shp[1] + shp[2]))
+    # the background, chosen once (on each net's pads) for the spines' order and the split
+    _bg = _background_net(
+        {net_name_to_id[n]: list(pads_on_layer_by_net.get(net_name_to_id[n], ())) for n in nets_with_seeds},
+        {net_name_to_id[n]: [(pd.global_x, pd.global_y) for pd in pcb_data.pads_by_net.get(net_name_to_id[n], [])]
+         for n in nets_with_seeds}, board_bounds)
+    # virtual vias -- the pads whose drop the route step lays (create_plane) -- and pads with copper on this layer
+    # join the spine
+    _dv = getattr(pcb_data, '_deferred_pad_seeds', None) or {}
+    for net_name in nets_with_seeds:
+        _nid = net_name_to_id[net_name]
+        _have = vias_by_net_set.setdefault(_nid, set())
+        _add = [p for p in list(_dv.get(_nid, ())) + list(pads_on_layer_by_net.get(_nid, ())) if p not in _have
+                and not (_off_board_test is not None and _off_board_test(*p))]
+        _add = list(dict.fromkeys(_add))
+        if _add:
+            vias_by_net.setdefault(_nid, []).extend(_add)
+            _have.update(_add)
+            if net_name not in nets_with_vias:
+                nets_with_vias.append(net_name)
+            _virt = set(_dv.get(_nid, ()))
+            _nv = sum(1 for p in _add if p in _virt)
+            print(f"  Net '{net_name}': {_nv} virtual via(s) and {len(_add) - _nv} pad(s) on {layer} join its "
+                  f"spines")
+    # a spine is the middle of a plane neck: it passes another net's via at the via's radius, the fill's clearance and
+    # half the fill's minimum width -- no closer (the neck would not fill), no farther (a ball field's every gap would
+    # be shut). No proximity cost: that keeps TRACKS from breaking a plane up; a spine IS the plane, and the keep-out
+    # already leaves its fill room -- priced, it only wanders
+    track_via_clearance = config.via_size / 2.0 + zone_clearance + min_thickness / 2.0
+    print(f"  Spines keep {track_via_clearance:.3f} mm from another net's via (via radius + zone "
+          f"clearance + half the minimum width), no proximity cost")
 
     # Compute MST edges for each net
     net_mst_edges: Dict[int, List[Tuple[Tuple[float, float], Tuple[float, float]]]] = {}
@@ -1997,17 +1577,16 @@ def _generate_multinet_layer_zones(
 
     # Iteratively route all nets, reordering to put failed nets first
     max_mst_iterations = 5
-    # (the spine split: the background is poured as the whole layer and kept one region by its own rule, so its
-    # spines matter least -- they route LAST every time, and a try is judged first by the others' failures)
-    _bg_spine = _bg
-    net_order = sorted(net_mst_edges.keys(), key=lambda nid: nid == _bg_spine)
+    # (the background is poured as the whole layer and kept one region by its own rule, so its spines matter least --
+    # they route LAST every time, and a try is judged first by the others' failures)
+    net_order = sorted(net_mst_edges.keys(), key=lambda nid: nid == _bg)
     failed_nets: Set[int] = set()
     best_result = None
     best_rank = None
 
     for mst_iteration in range(max_mst_iterations):
         if mst_iteration > 0:
-            net_order = sorted(net_order, key=lambda nid: (nid == _bg_spine, 0 if nid in failed_nets else 1))
+            net_order = sorted(net_order, key=lambda nid: (nid == _bg, 0 if nid in failed_nets else 1))
             failed_net_names = [pcb_data.nets[nid].name for nid in failed_nets if nid in pcb_data.nets]
             print(f"  Retry {mst_iteration + 1}: reordering with failed nets first: {', '.join(failed_net_names)}")
 
@@ -2027,8 +1606,7 @@ def _generate_multinet_layer_zones(
             h_weight=config.heuristic_weight,
             # (a spine is a corridor's middle: a bend costs about the corridor's own width of path, the outline a
             # bend adds to a band that wide, so corridors run in long straight 0/45/90 stretches as a human's do)
-            turn_cost=(int(1.5 * GRAMMAR_INFLATE_MM * 1000 / config.grid_step) if _virtual_mst
-                       else config.turn_cost),
+            turn_cost=int(1.5 * SPLIT_INFLATE_MM * 1000 / config.grid_step),
             via_proximity_cost=0,
             layer_costs=config.get_layer_costs(),
             proximity_heuristic_cost=config.get_proximity_heuristic_cost()
@@ -2045,11 +1623,10 @@ def _generate_multinet_layer_zones(
                 if other_net_id != net_id:
                     other_nets_vias[other_net_id] = other_vias
             _other_tree = None
-            if _virtual_mst:
-                _opts = [p for v in other_nets_vias.values() for p in v]
-                if _opts:
-                    from scipy.spatial import cKDTree
-                    _other_tree = cKDTree(_opts)
+            _opts = [p for v in other_nets_vias.values() for p in v]
+            if _opts:
+                from scipy.spatial import cKDTree
+                _other_tree = cKDTree(_opts)
 
             # Compute other_nets_routes once per net (only contains routes from OTHER nets,
             # so it doesn't change within this net's MST edge loop)
@@ -2066,11 +1643,9 @@ def _generate_multinet_layer_zones(
                 other_nets_vias=other_nets_vias,
                 config=config,
                 pcb_data=pcb_data,
-                proximity_radius=plane_proximity_radius,
-                proximity_cost=plane_proximity_cost,
-                track_via_clearance=plane_track_via_clearance,
-                previous_routes=other_nets_routes,
-                pad_cells=_pad_cells
+                track_via_clearance=track_via_clearance,
+                pad_cells=_pad_cells,
+                previous_routes=other_nets_routes
             )
 
             routed_count = 0
@@ -2080,19 +1655,11 @@ def _generate_multinet_layer_zones(
                 route_path = route_plane_connection(
                     via_a=via_a,
                     via_b=via_b,
-                    plane_layer=layer,
-                    net_id=net_id,
-                    other_nets_vias=other_nets_vias,
-                    config=config,
-                    pcb_data=pcb_data,
-                    proximity_radius=plane_proximity_radius,
-                    proximity_cost=plane_proximity_cost,
-                    track_via_clearance=plane_track_via_clearance,
-                    max_iterations=plane_max_iterations,
-                    verbose=verbose,
-                    previous_routes=other_nets_routes,
                     base_obstacles=base_obstacles,
                     router=plane_router,
+                    config=config,
+                    max_iterations=plane_max_iterations,
+                    verbose=verbose,
                     a_box=_pad_box.get(via_a),
                     b_box=_pad_box.get(via_b)
                 )
@@ -2109,8 +1676,7 @@ def _generate_multinet_layer_zones(
                                 width=0.1, layer=debug_layer
                             ))
 
-                    samples = (_spine_samples(route_path, _other_tree, voronoi_seed_interval, config.grid_step) if _virtual_mst
-                               else sample_route_for_voronoi(route_path, sample_interval=voronoi_seed_interval))
+                    samples = _spine_samples(route_path, _other_tree, voronoi_seed_interval, config.grid_step)
                     if samples:
                         augmented_vias_by_net[net_id].extend(samples)
                 else:
@@ -2121,7 +1687,7 @@ def _generate_multinet_layer_zones(
             if failed_count > 0:
                 failed_nets.add(net_id)
                 total_failed_edges += failed_count
-                if net_id == _bg_spine:
+                if net_id == _bg:
                     bg_failed_edges += failed_count
                 print(f"    {net_name}: {routed_count}/{len(mst_edges)} MST edges ({failed_count} failed)")
             else:
@@ -2132,7 +1698,7 @@ def _generate_multinet_layer_zones(
             best_result = (total_failed_edges, connection_routes, augmented_vias_by_net, debug_lines_for_layer, routed_paths_by_edge)
             best_rank = rank
 
-        if total_failed_edges == bg_failed_edges and (total_failed_edges == 0 or _bg_spine is not None):
+        if total_failed_edges == bg_failed_edges:
             break
 
     # Use best result
@@ -2142,218 +1708,38 @@ def _generate_multinet_layer_zones(
         if best_result[0] > 0:
             print(f"  Best result: {best_result[0]} failed edge(s)")
 
-    # The deferred pads' VIRTUAL VIAS (create_plane: every pad whose drop the route
-    # step lays) are seeds from here on: the #107 corridors below find a net's
-    # region through them, and the split is drawn round them. ONLY nets assigned
-    # to THIS layer may receive seeds: setdefault() here used to CREATE Voronoi
-    # entries for foreign nets, carving their cells into a layer whose plane they
-    # don't own (dilemma: 17 +3V3 confetti zones on the GND layer).
-    _dseeds = getattr(pcb_data, '_deferred_pad_seeds', None)
-    if _dseeds and augmented_vias_by_net:
-        _seeded_nets = _virtual = 0
-        for _nid, _pts in _dseeds.items():
-            _lst = augmented_vias_by_net.get(_nid)
-            if _lst is None:
-                continue  # net's plane lives on another layer
-            _seen = {(round(x, 3), round(y, 3)) for x, y in _lst}
-            _before = len(_lst)
-            for _x, _y in _pts:
-                _k = (round(_x, 3), round(_y, 3))
-                if _k not in _seen and not (_off_board_test is not None and _off_board_test(_x, _y)):
-                    _lst.append((_x, _y))
-                    _seen.add(_k)
-            if len(_lst) > _before:
-                _seeded_nets += 1
-                _virtual += len(_lst) - _before
-        if _seeded_nets:
-            print(f"  {_virtual} virtual via(s) seed the split for {_seeded_nets} net(s)")
+    # #114: a net with nothing on the spines -- no via, virtual via or on-board pad on this layer -- gets no seeds from
+    # the routing above. Seed it from its pads on this layer, else its pads projected onto it (#598), so it still
+    # receives its share. These are partition seeds ONLY: they never enter vias_by_net, so no MST edge or spine is
+    # invented for them.
+    for net_name in nets_with_seeds:
+        net_id = net_name_to_id.get(net_name)
+        if net_id is None or vias_by_net.get(net_id):
+            continue
+        seeds = augmented_vias_by_net.setdefault(net_id, [])
+        seen = {(round(x, 3), round(y, 3)) for x, y in seeds}
+        for px, py in (pads_on_layer_by_net.get(net_id) or
+                       projected_pads_by_net.get(net_id, [])):
+            k = (round(px, 3), round(py, 3))
+            if k not in seen:
+                seeds.append((px, py))
+                seen.add(k)
 
-    # #107: connect each net's through-hole pads to its plane region. A TH pad ties
-    # into the plane on every layer, but the Voronoi seeds are only vias + routed-MST
-    # samples, and a Voronoi cell is owned by whichever net has the nearest seed. A TH
-    # pad with no nearby same-net seed therefore lands inside ANOTHER net's cell: the
-    # local plane copper is the wrong net and the pad is silently disconnected as an
-    # island. For each such ORPHANED pad we route a corridor on the plane layer to the
-    # nearest same-net seed (avoiding other nets, exactly like the MST routing) and add
-    # the corridor's samples as seeds, so the pad's region becomes contiguous with the
-    # net's main region. (We deliberately do NOT add TH pads to the via MST: that
-    # reorganizes the via-to-via topology and badly regresses large nets like GND.)
-    if augmented_vias_by_net is not None:
-        # Snapshot all seeds for orphan detection (Voronoi owner == nearest seed). Also
-        # snapshot each net's own anchor points (its main region) as corridor targets.
-        all_seed_pts = []  # (x, y, net_id)
-        net_anchor_pts: Dict[int, List[Tuple[float, float]]] = {}
-        for snid, slist in augmented_vias_by_net.items():
-            net_anchor_pts[snid] = list(slist)
-            for sx, sy in slist:
-                all_seed_pts.append((sx, sy, snid))
-
-        def _nearest_seed_net(px: float, py: float) -> Optional[int]:
-            best_net, best_d = None, None
-            for sx, sy, snid in all_seed_pts:
-                d = (sx - px) ** 2 + (sy - py) ** 2
-                if best_d is None or d < best_d:
-                    best_d, best_net = d, snid
-            return best_net
-
-        corridor_router = GridRouter(
-            via_cost=config.via_cost_units(),
-            h_weight=config.heuristic_weight,
-            turn_cost=config.turn_cost,
-            via_proximity_cost=0,
-            layer_costs=config.get_layer_costs(),
-            proximity_heuristic_cost=config.get_proximity_heuristic_cost()
-        )
-
-        th_connected = 0
-        th_fallback = 0
-        th_alone = 0         # the net has no other seed on this layer to route a corridor to
-        th_off_board = 0
-        fallback_pad_refs: List[str] = []
-        # _off_board_test (built above) skips pads outside the outline: the fill
-        # is clipped there, so corridor-routing toward such a pad is wasted and
-        # point-seeding it plants a Voronoi cell in dead space (#291 class).
-        for nm_on_layer in nets_on_layer:
-            nid = net_name_to_id.get(nm_on_layer)
-            if nid is None:
-                continue
-            seeds = augmented_vias_by_net.setdefault(nid, [])
-            seen = {(round(x, 3), round(y, 3)) for x, y in seeds}
-            anchors = net_anchor_pts.get(nid, [])
-            for pad in pcb_data.pads_by_net.get(nid, []):
-                if not pad_is_plated_through(pad):
-                    continue
-                px, py = pad.global_x, pad.global_y
-                if _off_board_test is not None and _off_board_test(px, py):
-                    th_off_board += 1
-                    continue
-                # Already inside its own net's cell? Then the plane already covers it.
-                if _nearest_seed_net(px, py) == nid:
-                    continue
-                # Orphaned: route a corridor to the nearest same-net anchor (main region).
-                route_path = None
-                if anchors:
-                    tx, ty = min(anchors, key=lambda t: (t[0] - px) ** 2 + (t[1] - py) ** 2)
-                    other_nets_vias = {
-                        onid: ov for onid, ov in augmented_vias_by_net.items() if onid != nid
-                    }
-                    route_path = route_plane_connection(
-                        via_a=(px, py), via_b=(tx, ty), plane_layer=layer, net_id=nid,
-                        other_nets_vias=other_nets_vias, config=config, pcb_data=pcb_data,
-                        proximity_radius=plane_proximity_radius, proximity_cost=plane_proximity_cost,
-                        track_via_clearance=plane_track_via_clearance,
-                        max_iterations=plane_max_iterations, verbose=verbose,
-                        previous_routes=None, base_obstacles=None, router=corridor_router
-                    )
-                if route_path:
-                    connection_routes.append((nid, layer, route_path))
-                    for sx, sy in sample_route_for_voronoi(route_path, sample_interval=voronoi_seed_interval):
-                        k = (round(sx, 3), round(sy, 3))
-                        if k not in seen:
-                            seeds.append((sx, sy))
-                            seen.add(k)
-                    th_connected += 1
-                else:
-                    # Corridor routing failed, or there was nothing to route to: at least
-                    # point-seed the pad so its own immediate cell is its net (better than
-                    # landing in another net).
-                    k = (round(px, 3), round(py, 3))
-                    if k not in seen:
-                        seeds.append((px, py))
-                        seen.add(k)
-                    if anchors:
-                        th_fallback += 1
-                        fallback_pad_refs.append(f"{pad.component_ref}.{pad.pad_number}")
-                    else:
-                        th_alone += 1
-        if th_connected or th_fallback or th_alone or th_off_board:
-            msg = f"  #107: routed corridors for {th_connected} orphaned TH pad(s)"
-            if th_fallback:
-                msg += (f"; {th_fallback} could not be reached on the plane layer "
-                        f"and fell back to point-seed ({', '.join(fallback_pad_refs)})")
-            if th_alone:
-                msg += (f"; {th_alone} point-seeded: their net has no other seed on this "
-                        f"layer to route to")
-            if th_off_board:
-                msg += (f"; {th_off_board} off-board pad(s) skipped "
-                        f"(outside the outline, no seed)")
-            print(msg)
-
-    # #114: a net with no stitching vias gets no MST and therefore no Voronoi
-    # seeds from the routing above. Seed it directly from its pads on this layer
-    # (through-hole + SMD-on-layer), or -- with the layer still bare -- from its
-    # pads projected onto it (#598), so it still receives a Voronoi-partitioned
-    # zone. Via-bearing nets are left to the #107 corridor logic above so their
-    # via topology is not perturbed. These are partition seeds ONLY: they never
-    # enter vias_by_net, so no MST edge or plane route is invented for them.
-    if augmented_vias_by_net is not None:
-        for net_name in nets_with_seeds:
-            net_id = net_name_to_id.get(net_name)
-            if net_id is None or vias_by_net.get(net_id):
-                continue
-            seeds = augmented_vias_by_net.setdefault(net_id, [])
-            seen = {(round(x, 3), round(y, 3)) for x, y in seeds}
-            for px, py in (pads_on_layer_by_net.get(net_id) or
-                           projected_pads_by_net.get(net_id, [])):
-                k = (round(px, 3), round(py, 3))
-                if k not in seen:
-                    seeds.append((px, py))
-                    seen.add(k)
-
-    # GRAMMAR POUR (#662, default ON; KICAD_GRAMMAR_POUR=0 reverts to the
-    # pad-Voronoi partition): the dominant net becomes a BACKGROUND SHEET
-    # (the whole layer) and every other net gets compact INFLATED CLUSTER
-    # HULLS. zone_overlap_priorities then ranks the nested hulls above the
-    # sheet (smaller area wins), so KiCad's fill does the subtraction --
-    # no polygon booleans. Rationale (measured, orangecrab vs its human
-    # original): Voronoi cells scored 0.3-2.6mm mean width and split the
-    # dominant rail into 7 crumbs (copper confetti with maximal neck-to-
-    # interior ratio -- every island is a weld obligation); the human's
-    # grammar is one deep sheet (15.8mm mean width) + compact islands
-    # (>=5mm). Connectedness is the binding metric, not pad coverage.
-    if not spine_split and os.environ.get('KICAD_GRAMMAR_POUR', '1') != '0' \
-            and len([n for n, s in augmented_vias_by_net.items() if s]) > 1:
-        _gz = _grammar_zone_polygons(
-            augmented_vias_by_net, zone_polygon, board_bounds,
-            {nid: (pcb_data.nets[nid].name if nid in pcb_data.nets else str(nid))
-             for nid in augmented_vias_by_net}, verbose,
-            pads_by_net={nid: [(pd.global_x, pd.global_y)
-                               for pd in pcb_data.pads_by_net.get(nid, [])]
-                         for nid in augmented_vias_by_net},
-            carve_mm=zone_clearance + min_thickness / 2.0)
-        if _gz is not None:
-            zone_polygons = _gz
-            _skip_voronoi = True
-        else:
-            _skip_voronoi = False
-    else:
-        _skip_voronoi = False
-
-    # Compute final Voronoi zones
     total_seeds = sum(len(vias) for vias in augmented_vias_by_net.values())
-    if not _skip_voronoi:
-        print(f"  Computing final Voronoi zones with {total_seeds} seed points")
+    print(f"  Computing final Voronoi zones with {total_seeds} seed points")
 
-    _vor_seeds, _bg_elsewhere = augmented_vias_by_net, False
-    if _virtual_mst and not _skip_voronoi:
-        _bg_elsewhere = bool(pcb_data.nets.get(_bg)) and pcb_data.nets[_bg].name in served_elsewhere
-        _rest = {nid: s for nid, s in augmented_vias_by_net.items() if nid != _bg and s}
-        # (a background with a plane on another layer too: its pads here are served through that plane -- they
-        # need no cell of this one, and its seeds would only carve the others' regions into crumbs)
-        if _bg_elsewhere and sum(len(s) for s in _rest.values()) >= 2:
-            _vor_seeds = _rest
-            print(f"  '{pcb_data.nets[_bg].name}' has a plane on another layer too: it is this layer's sheet alone, "
-                  f"out of the split")
+    # (a background with a plane on another layer too: its pads here are served through that plane -- they need no
+    # cell of this one, and its seeds would only carve the others' regions into crumbs)
+    _vor_seeds = augmented_vias_by_net
+    _bg_elsewhere = bool(pcb_data.nets.get(_bg)) and pcb_data.nets[_bg].name in served_elsewhere
+    _rest = {nid: s for nid, s in augmented_vias_by_net.items() if nid != _bg and s}
+    if _bg_elsewhere and sum(len(s) for s in _rest.values()) >= 2:
+        _vor_seeds = _rest
+        print(f"  '{pcb_data.nets[_bg].name}' has a plane on another layer too: it is this layer's sheet alone, "
+              f"out of the split")
 
     try:
-        if not _skip_voronoi:
-            zone_polygons, _raw_cells, _ = compute_zone_boundaries(
-                _vor_seeds, board_bounds,
-                return_raw_polygons=True,
-                board_edge_clearance=board_edge_clearance,
-                verbose=verbose,
-                merge=_bg is None      # (the spine split builds its regions from the raw cells)
-            )
+        _raw_cells = voronoi_cells(_vor_seeds, board_bounds, board_edge_clearance=board_edge_clearance)
     except ValueError as e:
         print(f"  Error computing zone boundaries: {e}")
         print(f"  Falling back to full board rectangle for first net")
@@ -2381,15 +1767,14 @@ def _generate_multinet_layer_zones(
         })
         return zone_sexprs, debug_line_sexprs, zone_data_list
 
-    if _virtual_mst and not _skip_voronoi and len(augmented_vias_by_net) > 1:
-        zone_polygons = _reach_and_sheet(
-            _bg, _raw_cells,
-            {nid: list(vias_by_net.get(nid, ())) + list(pads_on_layer_by_net.get(nid, ()))
-             + list(projected_pads_by_net.get(nid, ())) for nid in augmented_vias_by_net},
-            [(nid, path) for nid, lyr, path in connection_routes if lyr == layer],
-            zone_polygon, min_thickness,
-            {nid: (pcb_data.nets[nid].name if nid in pcb_data.nets else str(nid)) for nid in augmented_vias_by_net},
-            _geom, must_hold=not _bg_elsewhere)
+    zone_polygons = _reach_and_sheet(
+        _bg, _raw_cells,
+        {nid: list(vias_by_net.get(nid, ())) + list(pads_on_layer_by_net.get(nid, ()))
+         + list(projected_pads_by_net.get(nid, ())) for nid in augmented_vias_by_net},
+        [(nid, path) for nid, lyr, path in connection_routes if lyr == layer],
+        zone_polygon, min_thickness,
+        {nid: (pcb_data.nets[nid].name if nid in pcb_data.nets else str(nid)) for nid in augmented_vias_by_net},
+        _geom, must_hold=not _bg_elsewhere)
 
     # Voronoi cells are NOT guaranteed disjoint -- usp_obc_v7's In1.Cu came out
     # with the whole Net-(U5-GND) pour nested inside the GND cell. Overlapping
@@ -3648,13 +3033,9 @@ def create_plane(
     verbose: bool = False,
     dry_run: bool = False,
     layer_nets: Dict[str, List[str]] = None,
-    plane_proximity_radius: float = 3.0,
-    plane_proximity_cost: float = 2.0,
-    plane_track_via_clearance: float = defaults.PLANE_TRACK_VIA_CLEARANCE,
     board_edge_clearance: float = defaults.PLANE_EDGE_CLEARANCE,
     voronoi_seed_interval: float = 2.0,
     plane_max_iterations: int = defaults.MAX_ITERATIONS,
-    spine_split: bool = False,
     debug_lines: bool = False,
     layer_costs: Optional[List[float]] = None,
     power_nets: Optional[List[str]] = None,
@@ -3691,19 +3072,10 @@ def create_plane(
     Args:
         net_names: List of net names to process (e.g., ['GND', 'VCC'])
         plane_layers: List of layers for each net (e.g., ['In1.Cu', 'In2.Cu'])
-        plane_proximity_radius: Radius around other nets' vias for proximity cost (mm).
-        plane_proximity_cost: Maximum proximity cost around other nets' vias (mm equivalent).
-        plane_track_via_clearance: Clearance from track center to other nets' via centers (mm).
-            MST routes will avoid regions within this distance of other nets' vias to
-            leave room for polygon fill.
         board_edge_clearance: Clearance from board edge for zone polygons (mm).
-        voronoi_seed_interval: Sample interval for Voronoi seed points along routes (mm).
-        plane_max_iterations: Max A* iterations for routing plane connections.
-        spine_split: Split a layer shared by several nets with the SPINE SPLIT instead of
-            the grammar pour: every net's pads and vias joined by spines routed on the layer,
-            the layer partitioned round them, the background net the whole sheet and every
-            other net its share within octagons round its groups and corridors along its
-            spines, finished on a raster (plane_split_raster). See docs/route-plane.md.
+        voronoi_seed_interval: Longest gap between a spine's Voronoi seeds on a shared
+            layer (mm); see _spine_samples.
+        plane_max_iterations: Max A* iterations for routing a shared layer's spines.
         same_net_pad_clearance: Edge-to-edge clearance (mm) between stitching vias and
             same-net pads. -1 (default) allows via-in-pad placement. Any value >= 0
             forces vias to be placed outside same-net pads with that much clearance.
@@ -4116,8 +3488,9 @@ def create_plane(
             print(f"  {len(_therm)} exposed/thermal pad(s) get a via ARRAY "
                   f"(#487)")
         if _skip:
-            # Every deferred pad is a VIRTUAL VIA for the split: a partition
-            # seed where its drop will come down, never copper. Pours run
+            # Every deferred pad is a VIRTUAL VIA for the split: a point of
+            # its net's spines and a partition seed where its drop will come
+            # down, never copper. Pours run
             # before any fanout or routing (#562), so the pads are the only
             # sign of where each rail is used -- a ball under an array, a
             # decoupling cap, a regulator's output, an RF section's grounds
@@ -4125,10 +3498,10 @@ def create_plane(
             # to seed: zynq_ad9364's RFGND split was a hull round U5's balls
             # while ~60 of its pads stood under GND and were tapped one by
             # one, and its VCC_1V0/1V5/1V8 islands left their regulators'
-            # output caps outside. Seeding every pad once shattered a
+            # output caps outside. Seeding every pad once shattered a plain
             # Voronoi split into per-pad confetti -- dilemma: 70 zones from
-            # 4 nets on 2 layers -- before the grammar pour's clustered
-            # hulls, #662.)
+            # 4 nets on 2 layers; the spine split's reach, octagons round
+            # each net's clusters joined by its spines, bounds that.)
             _dseeds = getattr(pcb_data, '_deferred_pad_seeds', None)
             if _dseeds is None:
                 _dseeds = pcb_data._deferred_pad_seeds = {}
@@ -4422,9 +3795,6 @@ def create_plane(
                     config=config,
                     zone_clearance=zone_clearance,
                     min_thickness=min_thickness,
-                    plane_proximity_radius=plane_proximity_radius,
-                    plane_proximity_cost=plane_proximity_cost,
-                    plane_track_via_clearance=plane_track_via_clearance,
                     plane_max_iterations=plane_max_iterations,
                     voronoi_seed_interval=voronoi_seed_interval,
                     board_edge_clearance=board_edge_clearance,
@@ -4442,8 +3812,7 @@ def create_plane(
                     served_elsewhere=frozenset(
                         n for n in nets_on_layer
                         if any(n in ns for lyr, ns in layer_nets.items() if lyr != layer)
-                        or any(z.net_name == n and z.layer != layer for z in (pcb_data.zones or []))),
-                    spine_split=spine_split
+                        or any(z.net_name == n and z.layer != layer for z in (pcb_data.zones or [])))
                 )
                 all_zone_sexprs.extend(zone_sexprs)
                 all_debug_lines.extend(debug_line_sexprs)
@@ -4812,24 +4181,12 @@ Examples:
     parser.add_argument("--power-nets-widths", nargs="+", type=float, default=None,
                         help="Track widths in mm for each power-net pattern (must match --power-nets length)")
 
-    # Multi-net layer connection options
-    parser.add_argument("--plane-proximity-radius", type=float, default=3.0,
-                        help="Radius around other nets' vias to add proximity cost when routing plane connections (mm, default: 3.0)")
-    parser.add_argument("--plane-proximity-cost", type=float, default=2.0,
-                        help="Maximum proximity cost around other nets' vias when routing plane connections (mm equivalent, default: 2.0)")
-    # #381 D9: --track-via-clearance is the same constant repair_planes
-    # spells that way; accept both here (dest stays plane_track_via_clearance).
-    parser.add_argument("--plane-track-via-clearance", "--track-via-clearance",
-                        type=float, default=defaults.PLANE_TRACK_VIA_CLEARANCE,
-                        help="Clearance from track center to other nets' via centers when routing MST connections (mm, default: 0.8)")
+    # Shared plane layer (the spine split) options
     parser.add_argument("--voronoi-seed-interval", type=float, default=2.0,
-                        help="Sample interval for Voronoi seed points along plane connection routes (mm, default: 2.0)")
-    parser.add_argument("--spine-split", action="store_true",
-                        help="Split a layer shared by several nets with the spine split instead of the grammar pour: "
-                             "every net's pads joined by spines routed on the layer, the background net the whole "
-                             "sheet, every other net compact octagons and corridors (docs/route-plane.md)")
+                        help="Longest gap between a spine's Voronoi seeds on a layer several nets share (mm, "
+                             "default: 2.0)")
     parser.add_argument("--plane-max-iterations", type=int, default=defaults.MAX_ITERATIONS,
-                        help="Max A* iterations for routing plane connections (default: 200000)")
+                        help="Max A* iterations for routing a shared layer's spines (default: 200000)")
 
     # Board edge clearance
     parser.add_argument("--board-edge-clearance", type=float, default=None,
@@ -5066,12 +4423,8 @@ Examples:
         verbose=args.verbose,
         dry_run=args.dry_run,
         layer_nets=layer_nets,
-        plane_proximity_radius=args.plane_proximity_radius,
-        plane_proximity_cost=args.plane_proximity_cost,
-        plane_track_via_clearance=args.plane_track_via_clearance,
         board_edge_clearance=args.board_edge_clearance,
         voronoi_seed_interval=args.voronoi_seed_interval,
-        spine_split=args.spine_split,
         plane_max_iterations=args.plane_max_iterations,
         debug_lines=args.debug_lines,
         layer_costs=args.layer_costs,
