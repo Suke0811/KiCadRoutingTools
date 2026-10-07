@@ -1185,8 +1185,48 @@ def _delete_stranded_link_fragment(pcb_data, net_id, pt_a, pt_b):
     return None
 
 
+def _seed_edge_clearance(config):
+    """The edge keep-out the obstacle map stamps for `config`: its
+    board_edge_clearance, else its clearance (obstacle_map's own fallback)."""
+    bec = getattr(config, 'board_edge_clearance', 0.0) or 0.0
+    return bec if bec > 0 else (getattr(config, 'clearance', 0.0) or 0.0)
+
+
+def seeds_clear_of_edge(seeds, pcb_data, edge_clearance, track_half):
+    """`seeds` ((x, y[, layer]) tuples) without those a strap could not START
+    at: within `edge_clearance + track_half` of the board edge (#1168).
+
+    A source/target cell OVERRIDES the static board-edge keep-out in the
+    obstacle map (it has to: a seed is where the route must be allowed to
+    begin), so a seed inside the band hands the A* a start in copper the
+    run's own edge floor forbids. The exact-fill tier's seeds are fill
+    interior points, and the fill they come from is refilled against the
+    PROJECT's edge rule -- sonde_xilinx declares 0.01 mm, the run pins 0.2,
+    and its GND strap ended 0.0275 mm inside the band. Measured against
+    every Edge.Cuts ring (outlines and cutouts), else the board bounds."""
+    if not seeds or not edge_clearance or edge_clearance <= 0:
+        return list(seeds or ())
+    need = edge_clearance + track_half - 1e-9
+    import numpy as np
+    xy = np.asarray([(p[0], p[1]) for p in seeds], dtype=float)
+    from check_drc import board_edge_geometry
+    rings, _outer, _cuts = board_edge_geometry(pcb_data.board_info)
+    if rings:
+        import shapely
+        from shapely.geometry import LineString, MultiLineString
+        lines = MultiLineString([LineString(list(r) + [r[0]]) for r in rings])
+        d = shapely.distance(lines, shapely.points(xy))
+    else:
+        bb = getattr(pcb_data.board_info, 'board_bounds', None)
+        if not bb:
+            return list(seeds)
+        d = np.minimum.reduce([xy[:, 0] - bb[0], bb[2] - xy[:, 0],
+                               xy[:, 1] - bb[1], bb[3] - xy[:, 1]])
+    return [p for p, dd in zip(seeds, d) if dd >= need]
+
+
 def _exact_fill_endpoints(pcb_data, net_id, net_name, A, B, exact_map,
-                          track_half=0.1):
+                          track_half=0.1, edge_clearance=0.0):
     """Strap endpoints from KiCad's EXACT fill (kicad_exact_fill): the two
     clusters' nearest approach, as (src_seeds, tgt_seeds, pa, pb, layer).
 
@@ -1446,8 +1486,11 @@ def _exact_fill_endpoints(pcb_data, net_id, net_name, A, B, exact_map,
                 if _win[0] <= px <= _win[2]
                 and _win[1] <= py <= _win[3]][:400]
 
-    src = _side_seeds(pa, a_pts)
-    tgt = _side_seeds(pb, b_pts)
+    # #1168: never a seed the run's own edge floor forbids.
+    src = seeds_clear_of_edge(_side_seeds(pa, a_pts), pcb_data,
+                              edge_clearance, track_half)
+    tgt = seeds_clear_of_edge(_side_seeds(pb, b_pts), pcb_data,
+                              edge_clearance, track_half)
     if not src or not tgt:
         return None
     layer = pa[2] if pa[2] else (al or bl)
@@ -2385,7 +2428,8 @@ def oracle_reconnect(board_file: str, net_names, config,
                     _ex = _exact_fill_endpoints(
                         pcb_data, net_id, net_name,
                         (ax, ay, al, akind), (bx, by, bl, bkind),
-                        _ex_map, track_half=config.track_width / 2)
+                        _ex_map, track_half=config.track_width / 2,
+                        edge_clearance=_seed_edge_clearance(config))
                 except Exception as _xe2:
                     if verbose:
                         print(f"    (exact-fill tier error: {_xe2})")
@@ -2608,7 +2652,8 @@ def oracle_reconnect(board_file: str, net_names, config,
                         _cg = _exact_fill_endpoints(
                             pcb_data, net_id, net_name,
                             (ax, ay, al, akind), (bx, by, bl, bkind),
-                            _exm6, track_half=config.track_width / 2)
+                            _exm6, track_half=config.track_width / 2,
+                            edge_clearance=_seed_edge_clearance(config))
                     except Exception as _ce:
                         if verbose:
                             print(f"    (cluster gap derivation failed: "
