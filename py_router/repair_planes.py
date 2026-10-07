@@ -2101,6 +2101,53 @@ def repair_planes(
                           print(f"  {YELLOW}  occupied by: "
                                 f"{'; '.join(_parts)}{RESET}")
                           _cust['refused'] += 1
+                          # #1156 (#468, #655): refused WHOLE, but the escape
+                          # stub that still clears comes back, so the net does
+                          # not ship with less copper than it started with.
+                          # glasgow's /IO_Banks/U5 was ripped whole for one
+                          # +3V3 tap, its reconnect failed, this refusal fired,
+                          # and it shipped with its BGA via-in-pad escape gone.
+                          # Each stub item is tested on its own against the
+                          # board as it is now; the net stays in the exclude
+                          # lists, so the kept stub is written from the write
+                          # lists, its via keeping its protection spec.
+                          from rip_restore import _stub_subset, _copper_conflicts
+                          _ss, _sv = _stub_subset(pcb_data, _cid, _osegs, _ovias)
+                          _have_s = {id(_x) for _x in pcb_data.segments}
+                          _have_v = {id(_x) for _x in pcb_data.vias}
+                          _ks = [_x for _x in _ss if id(_x) not in _have_s
+                                 and not _copper_conflicts(
+                                     pcb_data, config, {_cid}, [_x], [])]
+                          _kv = [_x for _x in _sv if id(_x) not in _have_v
+                                 and not _copper_conflicts(
+                                     pcb_data, config, {_cid}, [], [_x])]
+                          if _ks or _kv:
+                              pcb_data.segments.extend(_ks)
+                              pcb_data.vias.extend(_kv)
+                              for _x in _ks:
+                                  all_new_segments.append(
+                                      {'start': (_x.start_x, _x.start_y),
+                                       'end': (_x.end_x, _x.end_y),
+                                       'width': _x.width, 'layer': _x.layer,
+                                       'net_id': _x.net_id})
+                                  _prov_seg(_x.net_id, _x.layer, _x.start_x,
+                                            _x.start_y, _x.end_x, _x.end_y,
+                                            'custody-stub')
+                              for _x in _kv:
+                                  all_new_vias.append(
+                                      {'x': _x.x, 'y': _x.y, 'size': _x.size,
+                                       'drill': _x.drill, 'layers': _x.layers,
+                                       'net_id': _x.net_id,
+                                       'tenting_attrs': dict(
+                                           getattr(_x, 'tenting_attrs', None)
+                                           or {})})
+                                  _prov_via(_x.net_id, _x.x, _x.y,
+                                            'custody-stub')
+                              _cust['stub'] = _cust.get('stub', 0) + 1
+                              print(f"  {YELLOW}  kept its escape stub "
+                                    f"({len(_ks)} seg(s), {len(_kv)} via(s)) so "
+                                    f"its pads keep their landing sites (#468)"
+                                    f"{RESET}")
                           continue
                       # Corridor still clear: drop the failed reroute and
                       # reinstate the original (in-memory + write-list).
@@ -2149,7 +2196,9 @@ def repair_planes(
                 # like "nothing to do" (#509 part 3).
                 print(f"  custody: {_cust['restored']} restored, "
                       f"{_cust['refused']} refused, {_cust['errored']} errored "
-                      f"of {len(_casualties)} casualty net(s)")
+                      f"of {len(_casualties)} casualty net(s)"
+                      + (f"; {_cust['stub']} refused net(s) kept their escape "
+                         f"stub" if _cust.get('stub') else ""))
                 global LAST_RIPPED_CUSTODY
                 LAST_RIPPED_CUSTODY = dict(_cust,
                                            casualties=len(_casualties))

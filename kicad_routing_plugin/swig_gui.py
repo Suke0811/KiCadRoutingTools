@@ -1432,7 +1432,9 @@ class RoutingDialog(wx.Dialog):
         rip_existing_sizer.Add(wx.StaticText(options_scroll, label="Rip Pre-Existing Nets:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         self.rip_existing_nets_ctrl = wx.TextCtrl(options_scroll, value="")
         self.rip_existing_nets_ctrl.SetToolTip("Let the router rip up tracks committed by a previous run when they block a retry: "
-                                               "net-name patterns (e.g. /DDR* USB+), ALL for every pre-existing net, or leave empty to keep them fixed")
+                                               "net-name patterns (e.g. /DDR* USB+), or ALL for every pre-existing net. "
+                                               "Left empty, only small unprotected nets (<= 30 segments, <= 6 vias) may be "
+                                               "ripped, each rerouted, restored or left its escape stub (#1156)")
         rip_existing_sizer.Add(self.rip_existing_nets_ctrl, 1, wx.EXPAND)
         options_inner.Add(rip_existing_sizer, 0, wx.EXPAND | wx.ALL, 3)
 

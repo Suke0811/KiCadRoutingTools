@@ -167,10 +167,33 @@ def _sink_record(sinks, ripped_ids, saved_result):
     The saved failed list belongs to the first (blocker) id; a diff-pair
     partner ripped alongside it was fully routed."""
     failed = list((saved_result or {}).get('failed_pads_info', []) or [])
+    first = []
     for s in sinks:
         for i, rid in enumerate(ripped_ids):
             if rid not in s:
                 s[rid] = failed if i == 0 else []
+                first.append((s, rid))
+    return first
+
+
+def _sink_unrecord(first_writes, routed_results):
+    """Take a RESTORED net back out of the rip-tree sinks this rip wrote it
+    into first (#1156).
+
+    The #354 abandon re-rips every net in a frame's subtree because a net
+    re-routed inside the cascade never saw the original tap. A net restored
+    to the copper it had at its FIRST rip in a frame's window was never
+    re-routed there: that copper predates the frame and coexisted with the
+    original tap, so ripping it again only strands it. Measured on glasgow:
+    /D5's victim retry ripped and restored /IO_Banks/U5, then /D3's abandon
+    re-ripped the whole subtree, U5 included, and its reroute failed -- the
+    net shipped with 0 segments and 0 vias, its BGA via-in-pad escape gone.
+    Only sinks this rip wrote first, and only when the restore took (a
+    collision-refused restore leaves the net out of routed_results, which the
+    re-rip loop already skips)."""
+    for s, rid in first_writes or ():
+        if rid in routed_results:
+            s.pop(rid, None)
 
 
 def _build_abandon_weight_fn(metric, pcb_data, state):
@@ -901,6 +924,7 @@ def try_phase3_ripup(
     # frame's window (the #85 abandon metrics' before-world snapshot).
     subtree_ripped = {}
     child_sinks = rip_sinks + (subtree_ripped,)
+    ripped_first_writes = []   # #1156: (sink, net) this frame recorded first
 
     # The shared via-placement decline records the micron-exact copper that
     # boxes a pad (find_via_position_blocker) into pcb_data._via_unblock_blame;
@@ -1056,7 +1080,7 @@ def try_phase3_ripup(
 
         ripped_items.append((blocker.net_id, saved_result, ripped_ids, was_in_results))
         ripped_canonical_ids.add(get_canonical_net_id(blocker.net_id, diff_pair_by_net_id))
-        _sink_record(child_sinks, ripped_ids, saved_result)
+        ripped_first_writes.extend(_sink_record(child_sinks, ripped_ids, saved_result))
         # Invalidate obstacle cache for ripped nets and record rip events
         for rid in ripped_ids:
             if obstacle_cache is not None:
@@ -1344,6 +1368,7 @@ def try_phase3_ripup(
                 state.ripped_route_layer_costs, state.ripped_route_via_positions,
                 refused_sink=state.collision_refused_net_ids
             )
+        _sink_unrecord(ripped_first_writes, routed_results)
 
     # #103 hint recording (hint-coverage): phase-3 tap edges were the last
     # failure path that never recorded its pre-existing blockers -- ecp5
@@ -1456,6 +1481,7 @@ def _retry_victim_main_with_ripup(
         return None, []
 
     nested_ripped = []
+    nested_first_writes = []   # #1156: (sink, net) this frame recorded first
     ripped_canonical_ids = set()
     last_blocked = blocked
     for N in range(1, config.max_rip_up_count + 1):
@@ -1504,7 +1530,7 @@ def _retry_victim_main_with_ripup(
             break
         nested_ripped.append((blocker.net_id, saved_result, ripped_ids, was_in_results))
         ripped_canonical_ids.add(get_canonical_net_id(blocker.net_id, diff_pair_by_net_id))
-        _sink_record(rip_sinks, ripped_ids, saved_result)
+        nested_first_writes.extend(_sink_record(rip_sinks, ripped_ids, saved_result))
         for rid in ripped_ids:
             record_net_event(state, rid, "ripped_by", {
                 "ripping_net_id": victim_id,
@@ -1577,6 +1603,7 @@ def _retry_victim_main_with_ripup(
                 state.ripped_route_layer_costs, state.ripped_route_via_positions,
                 refused_sink=state.collision_refused_net_ids
             )
+        _sink_unrecord(nested_first_writes, routed_results)
     return None, []
 
 
@@ -1859,6 +1886,36 @@ def _reroute_phase3_ripped_nets(
         # treating them as strandings vetoes beneficial rip-ups and lowers
         # overall connectivity. Entries are
         # ((net_id, saved_result, ripped_ids, was_in_results), pads_lost).
+        if routed_results.get(ripped_net_id) is None:
+            # #1156 (#468, #655): a victim whose reroute failed must not ship
+            # with LESS copper than it started with. Phase 3 never asked: the
+            # #468 restore lived only in the reroute queue, so glasgow's
+            # /IO_Banks/U5 left this path with 0 segments and 0 vias, its BGA
+            # via-in-pad escape gone. Conflict-free saved copper comes back
+            # whole; otherwise the escape stub that still clears does. The
+            # call is idempotent, so a later abandon re-route of the same
+            # victim finds the stub and routes from it.
+            from rip_restore import try_terminal_restore
+            _tr = try_terminal_restore(
+                pcb_data, config, ripped_net_id,
+                working_obstacles=state.working_obstacles,
+                net_obstacles_cache=state.net_obstacles_cache)
+            if _tr in ('full', 'full_open'):
+                _sv, _rids, _wir = pcb_data._rip_saved[ripped_net_id]
+                restore_net(ripped_net_id, _sv, _rids, _wir,
+                            pcb_data, routed_net_ids, routed_net_paths,
+                            routed_results, diff_pair_by_net_id,
+                            remaining_net_ids, results, config,
+                            track_proximity_cache, layer_map,
+                            state.working_obstacles, state.net_obstacles_cache,
+                            state.ripped_route_layer_costs,
+                            state.ripped_route_via_positions,
+                            refused_sink=state.collision_refused_net_ids)
+                state.terminal_restores[ripped_net_id] = _tr
+                print(f"    RIP-RESTORE (#468): {net_name} back on its pre-rip "
+                      f"copper ({'connected' if _tr == 'full' else 'still OPEN'})")
+            elif _tr == 'stub':
+                state.terminal_restores[ripped_net_id] = 'stub'
         if routed_results.get(ripped_net_id) is None:
             item = (ripped_net_id, saved_result, ripped_ids, was_in_results)
             num_pads = len(pcb_data.pads_by_net.get(ripped_net_id, []))

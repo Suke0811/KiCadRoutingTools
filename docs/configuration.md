@@ -54,15 +54,19 @@ values it consumes the tokens after it, so pass the output via `--output` or put
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--rip-existing-nets` | off (untouched) | Net name patterns of **pre-existing** routed nets that may be ripped up and re-routed when they block a net being routed |
+| `--rip-existing-nets` | off (small nets only) | Net name patterns of **pre-existing** routed nets that may be ripped up and re-routed when they block a net being routed |
 
-By default the router **never** rips committed tracks that were already on the
-input board — only nets it routed *in this run* are candidates for rip-up (see
-[Rip-Up and Reroute](rip-up-reroute.md)). `--rip-existing-nets PATTERN` lifts
-that restriction for the matching pre-existing routed nets, so the router may
-tear them up and re-route them when they block a net it is trying to route (for
-example on a board already routed by a previous run). Use `'*'` to allow any
-non-plane net.
+Without the flag the router may still rip **small** pre-existing nets: an
+unprotected, unlocked, non-zone net with at most 30 segments and 6 vias that is
+not `!`-negated in `--nets`. Such a rip is custody-backed -- the victim is
+rerouted in the same run, restored, or at least keeps its escape stub -- and the
+in-run plane finalize's pad repair may rip a signal net blocking a tap
+(`KICAD_RIP_PREEXISTING=0` / `KICAD_FINALIZE_RIP=0` switch these off; see
+[Rip-Up and Reroute](rip-up-reroute.md)). `--rip-existing-nets PATTERN` extends
+the authority to the matching pre-existing routed nets whatever their size, so
+the router may tear them up and re-route them when they block a net it is trying
+to route (for example on a board already routed by a previous run). Use `'*'` to
+allow any non-plane net.
 
 ```bash
 # Let the router rip and re-route any pre-existing DATA net that gets in the way
