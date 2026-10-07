@@ -7311,14 +7311,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # rejected attempt's. The GUI front gets the same report in results_data.
     if json_out and _json_doc1173 is not None and _gate_report is not None:
         try:
-            from route_summary import write_summary_file
-            _json_doc1173['improvement_gate'] = _gate_report
-            if _gate_report.get('verdict') == 'reject':
-                _json_doc1173['shipped'] = 'input board'
-                _json_doc1173['shipped_note'] = (
-                    'the improvement gate REJECTED this run and the output '
-                    'is the input board; every tally in this file describes '
-                    'the rejected attempt, not the shipped board')
+            from route_summary import write_summary_file, apply_improvement_gate
+            # Through the JSON round trip, as merge_route_summaries reads it
+            # back from the printed JSON_IMPROVEMENT_GATE line.
+            apply_improvement_gate(_json_doc1173,
+                                   json.loads(json.dumps(_gate_report)))
             write_summary_file(json_out, _json_doc1173)
         except Exception as _e:
             print(f"  WARNING: could not add the improvement gate to "

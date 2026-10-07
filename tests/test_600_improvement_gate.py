@@ -275,6 +275,15 @@ if os.path.isfile(_BOARD):
                   and 'rejected attempt' in (_doc.get('shipped_note') or ''))
             check("CLI: ...keeping the attempt's tallies (not an empty file)",
                   'successful' in _doc)
+            # ...and the log says the same (#830's one-document rule).
+            from route_summary import merge_route_summaries as _mrs
+            _log = ('JSON_SUMMARY: ' + _json.dumps({'successful': 1, 'failed': 0})
+                    + '\nJSON_IMPROVEMENT_GATE: '
+                    + _json.dumps(_doc.get('improvement_gate') or {}) + '\n')
+            _m = _mrs(_log) or {}
+            check("log merge: the revert reads the same from the log",
+                  _m.get('shipped') == 'input board'
+                  and _m.get('improvement_gate') == _doc.get('improvement_gate'))
             # GUI front: the applier must be handed nothing to apply.
             _ok, _f, _t, _data = _route.batch_route(
                 _routed, '', _names, track_width=0.2, clearance=0.2,
