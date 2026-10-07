@@ -1172,6 +1172,65 @@ def _pad_perimeter_points(pad: Pad, n_per_side: int = 8) -> List[Tuple[float, fl
     return [(cx + lx, cy + ly) for lx, ly in local]
 
 
+def _pad_copper_core(pad: Pad):
+    """A pad's copper as ``(polygons, radius)``: every point within `radius`
+    of the polygons. A rect/roundrect/circle/oval pad is its inner (rotated)
+    rectangle -- a point for a circle, a segment for a stadium -- grown by its
+    corner radius, the shape point_to_pad_distance measures; a custom pad is
+    its real polygons with radius 0."""
+    pad_polys = getattr(pad, 'polygons', None)
+    if pad_polys:
+        return [list(p) for p in pad_polys if p], 0.0
+    hx, hy = pad.size_x / 2, pad.size_y / 2
+    if pad.shape in ('circle', 'oval'):
+        r = min(hx, hy)
+    elif pad.shape == 'roundrect':
+        r = pad.roundrect_rratio * min(pad.size_x, pad.size_y)
+    else:
+        r = 0.0
+    r = min(r, hx, hy)
+    ix, iy = hx - r, hy - r
+    local = ((-ix, -iy), (ix, -iy), (ix, iy), (-ix, iy))
+    cx, cy = pad.global_x, pad.global_y
+    if pad.rect_rotation:
+        rad = math.radians(pad.rect_rotation)
+        c, s = math.cos(rad), math.sin(rad)
+        return [[(cx + lx * c - ly * s, cy + lx * s + ly * c)
+                 for lx, ly in local]], r
+    return [[(cx + lx, cy + ly) for lx, ly in local]], r
+
+
+def pad_copper_gap(pad_a: Pad, pad_b: Pad) -> float:
+    """EXACT edge-to-edge gap between two pads' copper, 0 where they touch or
+    overlap (#1157). Not sampled: the perimeter cross-sampling the DRC
+    passes use can miss an overlap shallower than an arc's chord sag, or two
+    thin pads crossing between samples, which a join test asked at float
+    epsilon cannot afford. Layers are the caller's business."""
+    core_a, ra = _pad_copper_core(pad_a)
+    core_b, rb = _pad_copper_core(pad_b)
+    best = float('inf')
+    for pa in core_a:
+        for pb in core_b:
+            # One polygon wholly inside the other crosses no edge.
+            if _point_in_poly(pa[0][0], pa[0][1], pb) or \
+                    _point_in_poly(pb[0][0], pb[0][1], pa):
+                return 0.0
+            na, nb = len(pa), len(pb)
+            for i in range(na):
+                ax1, ay1 = pa[i]
+                ax2, ay2 = pa[(i + 1) % na]
+                for j in range(nb):
+                    bx1, by1 = pb[j]
+                    bx2, by2 = pb[(j + 1) % nb]
+                    d = _seg_seg_dist_coords(ax1, ay1, ax2, ay2,
+                                              bx1, by1, bx2, by2)
+                    if d < best:
+                        best = d
+    if best == float('inf'):
+        return best
+    return max(0.0, best - ra - rb)
+
+
 def _pad_has_no_copper(pad: Pad) -> bool:
     """True for pads with no copper to clearance-check: NPTH mechanical holes
     (KiCad lists *.Cu on them for hole keep-out, but an np_thru_hole pad carries
