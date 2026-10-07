@@ -2671,6 +2671,162 @@ def strict_removable_segments(model) -> set:
     return out
 
 
+def sweep_dangling_via_branches(board, net_ids, protected_ids=frozenset(),
+                                max_rounds: int = 32, stats=None):
+    """Remove every via check_weird calls dangling or floating on ``net_ids``,
+    with the dead branch it ends (#1166). Mutates ``board.segments`` /
+    ``board.vias``; returns ``(removed segments, removed vias)``.
+
+    A via reached on one layer only joins nothing (KiCad's ``via_dangling``),
+    and no other pass removes one: prune_dead_end_segments and the sweep
+    count ANY same-net via as an anchor, so a branch ending on one is never a
+    dead end; trim_net_stub_debris skips multipoint nets; the strict collapse
+    never makes an input via worse and its units stop at vertices. StickHub
+    VIN shipped such a via ending a 6.8 mm spur; One-Air-Max shipped dead
+    branches running via to via, so removing one exposes the next.
+
+    Candidates are graded by the checker's own model (check_weird
+    ``via_support_parts``: tracks, pads and zones reaching the barrel). What
+    goes is the via and the chain its one supported layer carries away: from
+    the barrel through every plain vertex (exactly two segment ends meeting,
+    no via, pad or zone there) up to the first junction, tee, pad, via, zone
+    or free end. A via with several segments on its one layer goes alone.
+    Every removal is GATED on the net, before vs after: the pads stay as
+    connected as they were (check_net_connectivity), no dangling end appears
+    where there was none, and no new soft joint and no more dangling or
+    floating vias appear (a via the
+    removal exposes is the next round's candidate, so the pass iterates to a
+    fixed point). A net with a pad still disconnected is left alone: its
+    copper is what the next chain step welds to (#473). A pad is never
+    removed. Locked copper and ``protected_ids``
+    (``id()`` of input copper under --keep-input-copper) are never touched,
+    and a removal that would need one is skipped."""
+    from collections import defaultdict
+    from check_weird import (via_support_parts, _check_dangles,
+                             _check_unsupported_vias)
+    from check_connected import (check_net_connectivity, _point_in_pad,
+                                 point_in_polygon)
+    copper = list(getattr(board.board_info, 'copper_layers', None)
+                  or ['F.Cu', 'B.Cu'])
+    removed_s, removed_v = [], []
+    tol = 1e-3
+
+    def grade(nid, segs, vias, pads, zones):
+        r = check_net_connectivity(nid, segs, vias, pads, zones)
+        f = []
+        _check_dangles(nid, '', segs, vias, pads, zones, set(), f,
+                       copper_layers=copper)
+        _check_unsupported_vias(nid, '', segs, vias, pads, zones, copper, f)
+        return (len(r.get('disconnected_pads') or ()),
+                {(x['layer'], round(x['x'], 3), round(x['y'], 3))
+                 for x in f if x['category'] == 'dangling-end'},
+                sum(1 for x in f if x['category'] in ('dangling-via',
+                                                      'unsupported-via')),
+                _soft_joint_pairs(segs, vias, pads))
+
+    def keep_out(item):
+        return getattr(item, 'locked', False) or id(item) in protected_ids
+
+    def chain_from(v, s0, layer, segs, vias, pads, zones):
+        """The segments a dangling via's one layer carries away, or None."""
+        r = (getattr(v, 'size', 0.6) or 0.6) / 2.0
+        chain, cur = [s0], s0
+        # The far end is the one away from the barrel.
+        da = math.hypot(cur.start_x - v.x, cur.start_y - v.y)
+        db = math.hypot(cur.end_x - v.x, cur.end_y - v.y)
+        q = (cur.end_x, cur.end_y) if da <= db else (cur.start_x, cur.start_y)
+        while True:
+            if any(math.hypot(w.x - q[0], w.y - q[1]) <
+                   (getattr(w, 'size', 0.6) or 0.6) / 2.0 for w in vias
+                   if w is not v):
+                return chain
+            if any(_point_in_pad(q[0], q[1], p, margin=0.0) for p in pads
+                   if layer in (p.layers or ()) or any('*' in L for L in (p.layers or ()))
+                   or (p.drill and p.drill > 0)):
+                return chain
+            if any(z.layer == layer and point_in_polygon(q[0], q[1], z.polygon)
+                   for z in zones):
+                return chain
+            if math.hypot(q[0] - v.x, q[1] - v.y) < r:
+                return None        # the chain came back to its own via
+            ids = {id(c) for c in chain}
+            nxt = [o for o in segs if o.layer == layer and id(o) not in ids
+                   and (math.hypot(o.start_x - q[0], o.start_y - q[1]) < tol
+                        or math.hypot(o.end_x - q[0], o.end_y - q[1]) < tol)]
+            if len(nxt) != 1:
+                return chain       # a free end (0) or a junction (2+)
+            o = nxt[0]
+            if keep_out(o) or getattr(o, 'graphic', False):
+                return chain
+            chain.append(o)
+            q = ((o.end_x, o.end_y)
+                 if math.hypot(o.start_x - q[0], o.start_y - q[1]) < tol
+                 else (o.start_x, o.start_y))
+            if len(chain) > 4096:
+                return None
+
+    for _round in range(max_rounds):
+        progressed = False
+        for nid in sorted(net_ids):
+            segs = [s for s in board.segments if s.net_id == nid]
+            vias = [v for v in board.vias if v.net_id == nid]
+            if not vias:
+                continue
+            pads = board.pads_by_net.get(nid, [])
+            zones = [z for z in (getattr(board, 'zones', None) or [])
+                     if z.net_id == nid]
+            base = None
+            for v in list(vias):
+                if keep_out(v) or not any(w is v for w in vias):
+                    continue
+                span, fixed, by_seg = via_support_parts(v, segs, pads, zones,
+                                                        copper)
+                sup = set(fixed) | set(by_seg.values())
+                if len(sup) >= 2 or (len(sup) == 1 and len(span) <= 1):
+                    continue
+                gone_s = []
+                tsegs = [segs[i] for i in by_seg]
+                if len(sup) == 1 and not fixed and len(tsegs) == 1:
+                    s0 = tsegs[0]
+                    if keep_out(s0) or getattr(s0, 'graphic', False):
+                        continue
+                    gone_s = chain_from(v, s0, next(iter(sup)), segs, vias,
+                                        pads, zones)
+                    if gone_s is None:
+                        continue
+                if base is None:
+                    base = grade(nid, segs, vias, pads, zones)
+                if base[0]:
+                    # An UNFINISHED net keeps its copper (#473): a dangling
+                    # via there may be the landing site the next chain step
+                    # welds to, as the orphan sweep already respects.
+                    break
+                gid = {id(x) for x in gone_s}
+                t_segs = [s for s in segs if id(s) not in gid]
+                t_vias = [w for w in vias if w is not v]
+                after = grade(nid, t_segs, t_vias, pads, zones)
+                # No pad less connected, no dangling end where there was
+                # none (a branch another track tees into would free that
+                # track's end), no more dangling vias, no new soft joint.
+                if (after[0] > base[0] or (after[1] - base[1])
+                        or after[2] > base[2] or (after[3] - base[3])):
+                    continue
+                segs, vias, base = t_segs, t_vias, after
+                removed_s.extend(gone_s)
+                removed_v.append(v)
+                progressed = True
+        if removed_s or removed_v:
+            gs = {id(x) for x in removed_s}
+            gv = {id(x) for x in removed_v}
+            board.segments = [s for s in board.segments if id(s) not in gs]
+            board.vias = [v for v in board.vias if id(v) not in gv]
+        if not progressed:
+            break
+    if stats is not None:
+        stats['nets'] = len({x.net_id for x in removed_s + removed_v})
+    return removed_s, removed_v
+
+
 def collapse_strict_redundant(results, pcb_data: PCBData, scope_net_ids=None,
                               keep_input_copper: bool = False,
                               protect_segment_ids=None,
