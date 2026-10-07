@@ -4064,10 +4064,14 @@ def extract_vias(content: str, name_to_id: Dict[str, int] = None) -> List[Via]:
                 unparsed.append((_start, why))
                 continue
         nm = _VIA_NET_RE.search(block)
+        net_name, numeric = (nm.group(1), nm.group(2)) if nm else (None, None)
         if nm is None:
-            continue
-        net_name, numeric = nm.group(1), nm.group(2)
-        if numeric is not None:
+            # No (net ...) at all: KiCad loads the via on net 0, and so does
+            # the track path. Skipping it made a real barrel invisible -- 152
+            # of RoyalBlue54L-Feather's 183 vias, whose (net) a malformed
+            # teardrop block had cut off (#1149), went that way, silently.
+            net_id = 0
+        elif numeric is not None:
             net_id = int(numeric)
         else:
             # KiCad 10 dialect. Without the name map the id is unknowable, so

@@ -17,7 +17,8 @@ Checks:
   3. KiCad 9's mask-exposed track `(layers "F.Cu" "F.Mask")` is modelled on
      its copper layer, and remove_segments_from_content finds it.
   4. A track/via block that cannot be modelled is REPORTED on stderr with its
-     line; a polygon's (arc ...) vertex is not a track and is not reported.
+     line; a polygon's (arc ...) vertex is not a track and is not reported; a
+     via with no (net ...) is modelled on net 0, as KiCad loads it.
   5. The canonical blocks KiCad writes parse exactly as before (field order
      and every value), on a tracked routed board.
 
@@ -134,6 +135,9 @@ check("segment without width reported with its line",
 check("via without drill reported with its line",
       re.search(r'1 via block.*line 5 \(via without drill\)', err) is not None)
 check("the polygon arc vertex is not a track", 'arc' not in err)
+segs, vias, err = parse(wrap(' (via (at 5 5) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (uuid "nn"))'))
+check("a via with no (net) is a net-0 barrel, as KiCad loads it",
+      [(v.uuid, v.net_id) for v in vias] == [('nn', 0)] and not err)
 
 print("5. canonical blocks parse as before (a tracked routed board)")
 board = os.path.join(ROOT, 'kicad_files', 'routed_output.kicad_pcb')
