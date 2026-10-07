@@ -564,6 +564,15 @@ Linux, and an unproved state ranks last.
   (`fanout_from_plan.pair_exit_clear`);
 - the feedback's prices (`FB_AVOID`, `FB_PAIR`), by place and escalated
   ([feedback](#feedback-whole_feedbackpy));
+- **a plane ball walled in** (under the joint fanout, `plane_ways`): each
+  plane ball of the two arrays has its ways down -- its drops as the joint
+  escape plans them, on the board without the run's copper, and its straps
+  to a neighbour with a drop -- and each end kills those its legs, its via,
+  its lane past its exit or a pair's pocket stand on. A state that leaves a
+  ball none pays `WALLED`, past any via count, yet no refusal. On the zynq
+  DDR the cheapest ends ran the bus over every way down three of U1's
+  VCC_1V5 balls had (a bus track on B.Cu under each pad, bus stubs in every
+  gap round it); priced, the ends keep them a way down for 8 vias more;
 - a conflict, a split pair or a refused move, at a price no via count
   reaches.
 
@@ -1293,7 +1302,7 @@ With nothing supplied, as on the benches:
 | `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`); the buses found on a board (`tests/test_622_find_buses.py`) |
 | `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape (a drop at a finer rung's via: `tests/test_622_drop_fine_via.py`; nothing in a laid pair's pocket: `test_622_pair_teeth.py`); the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`) |
 | `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the loop's layer cuts from the audit and the snap (`tests/test_622_layer_cuts.py`); the ladder in the cloud, one container per rung |
-| `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`); the frame of a bench (a part on a ring's stack: `tests/test_622_ring_room.py`); what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
+| `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`; every plane ball kept a way down: `tests/test_622_walled_balls.py`); the frame of a bench (a part on a ring's stack: `tests/test_622_ring_room.py`); what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP (a part seen from several frames: `tests/test_622_part_frames.py`; islands made of pads: `tests/test_622_pad_islands.py`), the polish, the snap onto the router's grid |
 | `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a plan installed and audited, gated, linted, drawn; the bench they share |
 | `whole_ladder.py` | the ladders on this machine: rungs side by side, each stopped at a cap with every stage it started, one grade line each |
@@ -1454,8 +1463,11 @@ channels first, and the other escapes leave round it.
 - **Which nets get planes, and where:** review the planes the routing skills
   pick (the nets, each one's layer, the pour's extent, rails sharing a layer)
   and measure it in the whole-chain A/B.
-- **The joint fanout, finished:** a bus tooth that walls in another ball is
-  not seen by the ends model; a re-laid pair berth can run through a
+- **The joint fanout, finished:** the ends model keeps each plane ball a way
+  down, but not another net's ball a way out, nor one plane ball's way from
+  another's escape -- the zynq's U1 still leaves eight plane balls of its
+  outer rings, each ringed by other nets' escapes on both layers; a re-laid
+  pair berth can run through a
   reserved via site; the whole route does not see the other nets' copper
   (item 3); the whole-chain A/B with and without it is owed.
 

@@ -103,6 +103,8 @@ FRONT_REACH = 1.2         # a single lane's exit: its straight run out, this far
 FRONT_VIA = 1.0           # ... blocked, with room for a via before the block: the lane changes layer there ...
 FRONT_BLOCKED = 1000.0    # ... blocked with no room for one: past any via count, yet no refusal (a lane with no other end
 #                           keeps it)
+WALLED = 1000.0           # a plane ball of the arrays its ends leave no way down (the joint fanout: plane_ways) -- past
+#                           any via count, yet no refusal
 FAR = {'left': (-1, 0), 'right': (1, 0), 'up': (0, -1), 'down': (0, 1)}
 
 
@@ -283,6 +285,8 @@ class Ends:
                 if any(c_.values()):
                     self.front[(lane, end)] = c_
         self.cur = cur
+        # (the joint fanout's plane balls of the arrays, each kept a way down: plane_ways)
+        self.pw = plane_ways(st, self.lanes, self.T, self.B, cur)
         # a TIE VIA at the ball where a pad of the net's own lies under it on the other layer (fanout_from_plan.
         # tie_vias_under): one more via on that leg whatever its escapes
         self.tie = {l_: int(any(_pairs.under_pad(st['dst_pad'][l_], q, _bd.VIA_SIZE) for q in st['byname'][l_][1].pads))
@@ -738,8 +742,9 @@ class Ends:
                 sp_ = front_span(self.st['pcb'], self.st['byname'][self.legs_of[l_][0]][0], o_[0][0], self.run_ids)
                 if sp_ is not None:
                     lane_front[l_][k_] = sp_
+        walled = walled_balls(self.pw, self.lanes, state)
         obj = (W_OVER * over + fan + route + ride / VIA_MM + cong + fbk + EPS_X * len(inv) + BIG * (nconf + nsplit + nref)
-               + STACK_COST * stacks + front)
+               + STACK_COST * stacks + front + WALLED * len(walled))
         # (each lane's share, for a round the whole route laid nothing on or left nets open -- whole_feedback --name
         # names the lanes to free from these: its nets over two, its load on the trunk, its crossings -- and the lanes
         # still in a conflict, which a destination re-plan frees with their neighbours)
@@ -751,7 +756,7 @@ class Ends:
                          crossings=len(inv), same=len(same), conflicts=nconf, splits=nsplit, refused=nref,
                          lane_over=lane_over, lane_load={l_: round(v_, 3) for l_, v_ in loads.items()},
                          lane_x=dict(xl), stacks=stacks, exact_failed=exact_failed, cut=cut, front=front,
-                         lane_front=dict(lane_front),
+                         lane_front=dict(lane_front), walled=walled,
                          conf_lanes=(sorted({lane_of[c[0]] for c in chosen for o in self.conf.get(c, ())
                                              if o in chosen}) if nconf else []))
 
@@ -957,7 +962,7 @@ class Ends:
                 if sp_ is not None:
                     lane_front[l_][k_] = sp_
         obj = (W_OVER * over + fan + route + ride / VIA_MM + cong + fbk + EPS_X * len(inv) + BIG * (nconf + nsplit + nref)
-               + STACK_COST * stacks + front)
+               + STACK_COST * stacks + front + WALLED * len(walled := walled_balls(self.pw, self.lanes, state)))
         xl = collections.Counter(l_ for e in inv for l_ in e)
         lane_over = {l_: k_ for l_ in lanes if (k_ := max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)))}
         same = sum(1 for a, b in inv if col.get(a) is not None and col.get(a) == col.get(b))
@@ -969,7 +974,7 @@ class Ends:
                          crossings=len(inv), same=same, conflicts=nconf, splits=nsplit, refused=nref,
                          lane_over=lane_over, lane_load={l_: round(v_, 3) for l_, v_ in loads.items()},
                          lane_x=dict(xl), stacks=stacks, exact_failed=exact_failed, cut=cut, front=front,
-                         lane_front=dict(lane_front), dropped=sum(npair[l_] * drp[l_] for l_ in lanes),
+                         lane_front=dict(lane_front), dropped=sum(npair[l_] * drp[l_] for l_ in lanes), walled=walled,
                          conf_lanes=(sorted({lane_of[c[0]] for c in chosen for o in self.conf.get(c, ())
                                              if o in chosen}) if nconf else []))
 
@@ -1478,6 +1483,8 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
     not to be laid together (Ends); `free_teeth` {lane}: with `src_free`, only these lanes' teeth move"""
     quiet = lambda *a: None
     E = Ends(st, src_free=False, fixed=fixed, learned=learned)
+    if E.pw is not None:
+        log(f'  whole ends: {len(E.pw.balls)} plane ball(s) of the arrays kept a way down ({E.pw.n_ways} ways, {E.pw.secs:.0f} s)')
     sL = E.ban_kicks(E.iterate(E.search(E.start(seed), log=quiet), log=quiet), log=log)
     sL, (vL, pL) = E.best_exact(sL, log=log)
     if wind_on():
@@ -1595,6 +1602,200 @@ def _front(pcb, nid, m, kids):
     return out
 
 
+def plane_ways(st, lanes, T, B, cur):
+    """The joint fanout's PLANE balls kept a way down by the ends (FANOUT_JOINT; None without it). Each plane ball of
+    the two arrays (the spec's `drops`) has its WAYS: its drops as the joint escape plans them (joint_escape._drops: a
+    via behind a stub in a diagonal gap or straight off an edge, at the rung's via or a finer rung's, or a via in its
+    pad), measured on the board without the run's copper, and its straps to a neighbouring ball of its net
+    (joint_escape._straps), which serve it while that ball has a way of its own. Each end option KILLS the ways its
+    copper stands on -- its legs at the fan track (a laid tooth's: its net's copper at the array), its via, and its
+    lane's straight run past its exit, held off a drop's via by the joint escape's own bar (joint_escape._lanes_clear).
+    Unmeasured, the ends ran the zynq DDR's lanes over every way down three of U1's VCC_1V5 balls had (a bus track on
+    B.Cu under each pad, bus stubs in every gap round it), and the joint escape found them walled in.
+
+    Returns a namespace: `balls` [(ball, [drop ways], [(strap way, the ball it joins)])] -- only the balls with a way
+    on the board without the run; a ball with none is walled whatever the ends -- `kill` {(lane, end, option
+    index): frozenset of ways}, `ways` (each way by its index: its array `end`, its via's `site`, `r` and `dr`, its
+    `stub` or a strap's on `layer`), and `secs` (its own build time)"""
+    t0 = time.time()
+    path = awx_settings.get('FANOUT_JOINT')
+    if not path:
+        return None
+    import copy
+    import json
+    import types
+    import escape_moves as em
+    import joint_escape as je
+    import pair_teeth as pt
+    import source_realize as sr
+    from escape_moves import DIRS
+    with open(path, encoding='utf-8') as f:
+        spec = json.load(f)
+    pcb = st['pcb']
+    run = {l_ for _l, lg in lanes for l_ in lg}
+    run_ids = {st['byname'][l_][0] for l_ in run}
+    pcb0 = copy.copy(pcb)
+    pcb0.segments = [s for s in pcb.segments if s.net_id not in run_ids]
+    pcb0.vias = [v for v in pcb.vias if v.net_id not in run_ids]
+    ways, balls, at = [], [], {}
+    for end, ref in ((0, st['sref']), (1, st['dref'])):
+        ar = next((a for a in spec.get('arrays', ()) if a['ref'] == ref), None)
+        foot = pcb0.footprints.get(ref)
+        if ar is None or foot is None:
+            continue
+        drop_s = ({je.short_name(n) for n in ar.get('drops', ())} - {je.short_name(n) for n in ar.get('others', ())}
+                  - run)
+        items = {f'{je.short_name(p.net_name)}#{p.pad_number}': (je.short_name(p.net_name), p)
+                 for p in foot.pads if p.net_id and p.net_name and je.short_name(p.net_name) in drop_s}
+        if not items:
+            continue
+        grid = em.grid_of(foot)
+        sz = je._sizes(pcb0, foot)
+        skip = je.movable_refs(pcb0, ref)
+        cache = {}
+
+        def obs(nid, layer, via=False, _c=cache, _sz=sz, _skip=skip):
+            k = (nid, layer, via)
+            if k not in _c:
+                _c[k] = _bd.build_obstacles(pcb0, nid, {nid}, layer, margin=_sz['cl'] + _sz['tw'] / 2,
+                                            skip_refs=_skip if via else ())
+            return _c[k]
+        regions = je.zone_regions(pcb0)
+        dw = {}
+        for key, (_nm, p) in sorted(items.items()):
+            dw[key] = []
+            for d in je._drops(pcb0, grid, p, obs, sz, foot, (), regions):
+                dw[key].append(len(ways))
+                ways.append(dict(end=end, site=tuple(d.site), r=d.r, dr=d.dr, stub=d.stub, layer=d.layer))
+        sw = collections.defaultdict(list)
+        for key, ss in je._straps(pcb0, grid, items, obs).items():
+            for s in ss:
+                sw[key].append((len(ways), (end, s.to)))
+                ways.append(dict(end=end, stub=(tuple(s.a), tuple(s.b)), layer=s.layer))
+        for key in sorted(items):
+            if dw[key] or sw[key]:
+                balls.append(((end, key), dw[key], sw[key]))
+        at[end] = dict(sz=sz, box=grid.bbox, half=max(grid.pitch_x, grid.pitch_y) / 2.0)
+    if not balls:
+        return types.SimpleNamespace(balls=[], kill={}, ways=ways, n_ways=0, secs=time.time() - t0)
+    # the ways by 1 mm cell, per array, for the options' copper to find
+    cells = collections.defaultdict(list)
+    for i, w in enumerate(ways):
+        pts = [w['site']] if 'site' in w else list(w['stub'])
+        for q in pts + (list(w['stub']) if w.get('stub') else []):
+            c = (w['end'], int(math.floor(q[0])), int(math.floor(q[1])))
+            if i not in cells[c]:
+                cells[c].append(i)
+    hw_fan, cl = sr.FAN_TRACK / 2.0, sr.FAN_CLEAR
+    bar = _bd.TRACK / 2 + _bd.CLEAR + _bd.GRID / 2          # (joint_escape._lanes_clear's)
+    by_net = collections.defaultdict(lambda: ([], []))
+    for s in pcb.segments:
+        if s.net_id in run_ids:
+            by_net[s.net_id][0].append(((s.start_x, s.start_y), (s.end_x, s.end_y), s.layer, s.width / 2.0))
+    for v in pcb.vias:
+        if v.net_id in run_ids:
+            by_net[v.net_id][1].append(((v.x, v.y), v.size / 2.0, (v.drill or 0.0) / 2.0))
+
+    def copper(end, leg, m):
+        segs, vias = [], []
+        pad = (st['src_pad'] if end == 0 else st['dst_pad']).get(leg)
+        if m.legs or m is not cur.get(leg):
+            segs = [(tuple(a), tuple(b), L, hw_fan) for a, b, L in (m.legs or [])]
+            if m.site is not None:
+                own = pad is not None and math.hypot(m.site[0] - pad.global_x, m.site[1] - pad.global_y) < 1e-6
+                r, dr = at[end]['sz']['inpad'](pad) if own else (at[end]['sz']['vr'], at[end]['sz']['vdr'])
+                vias = [(tuple(m.site), r, dr)]
+        else:
+            # (a tooth as laid: its net's copper at the array, read off the board)
+            x0, y0, x1, y1 = at[end]['box']
+            near = lambda q: x0 - 2 <= q[0] <= x1 + 2 and y0 - 2 <= q[1] <= y1 + 2
+            sg, vs = by_net[st['byname'][leg][0]]
+            segs = [s for s in sg if near(s[0]) or near(s[1])]
+            vias = [v for v in vs if near(v[0])]
+        d = DIRS.get(getattr(m, 'direction', None))
+        ray = None
+        if d is not None and getattr(m, 'exit_pt', None) is not None:
+            e = tuple(m.exit_pt)
+            ray = (e, (e[0] + d[0] * je.LANE_REACH, e[1] + d[1] * je.LANE_REACH))
+        return segs, vias, ray
+
+    def kills(w, segs, vias, ray, h2h):
+        if 'site' in w:
+            s, r = w['site'], w['r']
+            if any(_seg_d(s, s, a, b) < r + hw + cl - 1e-9 for a, b, _L, hw in segs):
+                return True
+            for c, rv, dv in vias:
+                dd = math.hypot(c[0] - s[0], c[1] - s[1])
+                if dd < r + rv + cl - 1e-9 or dd < w['dr'] + dv + h2h - 1e-9:
+                    return True
+            if ray is not None and _seg_d(s, s, ray[0], ray[1]) - r < bar - 1e-9:
+                return True
+        if w.get('stub'):
+            a0, b0 = w['stub']
+            if any(L == w['layer'] and _seg_d(a0, b0, a, b) < hw_fan + hw + cl - 1e-9 for a, b, L, hw in segs):
+                return True
+            if any(_seg_d(c, c, a0, b0) < rv + hw_fan + cl - 1e-9 for c, rv, _dv in vias):
+                return True
+        return False
+    kill = {}
+    for lane, lg in lanes:
+        for end, opts in ((0, T[lane]), (1, B[lane])):
+            if end not in at:
+                continue
+            for i, o in enumerate(opts):
+                segs, vias, rays = [], [], []
+                for leg, m in zip(lg, o[0]):
+                    s_, v_, r_ = copper(end, leg, m)
+                    segs += s_
+                    vias += v_
+                    if r_ is not None:
+                        rays.append(r_)
+                pts = [q for a, b, _L, _h in segs for q in (a, b)] + [c for c, _r, _d in vias] + \
+                    [q for r_ in rays for q in r_]
+                if not pts:
+                    continue
+                cand = set()
+                for cx in range(int(math.floor(min(q[0] for q in pts))) - 1, int(math.floor(max(q[0] for q in pts))) + 2):
+                    for cy in range(int(math.floor(min(q[1] for q in pts))) - 1,
+                                    int(math.floor(max(q[1] for q in pts))) + 2):
+                        cand.update(cells.get((end, cx, cy), ()))
+                h2h = at[end]['sz']['h2h']
+                # (a pair's two exits by one face on one layer: its POCKET too, the pair's room to close past them,
+                # where the joint escape lays nothing -- joint_escape.laid_pockets)
+                pk = None
+                if len(lg) == 2 and o[0][0].direction == o[0][1].direction and o[0][0].layer == o[0][1].layer \
+                        and DIRS.get(o[0][0].direction) is not None:
+                    pk = pt.pockets({0: (0, 1)}, {0: (o[0][0].exit_pt, DIRS[o[0][0].direction], o[0][0].layer),
+                                                  1: (o[0][1].exit_pt, DIRS[o[0][1].direction], o[0][1].layer)},
+                                    at[end]['half'])[0]
+
+                def in_pk(w):
+                    if pk is None:
+                        return False
+                    if 'site' in w and pt.in_pocket(pk[2], w['site']):
+                        return True
+                    return bool(w.get('stub')) and w['layer'] == pk[0] and pt.in_pocket(pk[2], *w['stub'])
+                k_ = frozenset(wi for wi in cand if kills(ways[wi], segs, vias, None, h2h)
+                               or any(kills(ways[wi], [], [], r_, h2h) for r_ in rays) or in_pk(ways[wi]))
+                if k_:
+                    kill[(lane, end, i)] = k_
+    return types.SimpleNamespace(balls=balls, kill=kill, ways=ways, n_ways=len(ways), secs=time.time() - t0)
+
+
+def walled_balls(pw, lanes, state):
+    """the plane balls `pw` (plane_ways) the ends `state` leave no way down, as (array: 0 source, 1 destination,
+    NET#PAD): every drop of theirs killed by a chosen end, and every strap either killed or to a ball with no drop of
+    its own left"""
+    if not pw or not pw.balls:
+        return []
+    killed = set()
+    for l_, _lg in lanes:
+        killed |= pw.kill.get((l_, 0, state[l_][0]), frozenset())
+        killed |= pw.kill.get((l_, 1, state[l_][1]), frozenset())
+    alive = {b: any(w not in killed for w in dw) for b, dw, _sw in pw.balls}
+    return [b for b, dw, sw in pw.balls if not alive[b] and not any(w not in killed and alive.get(to) for w, to in sw)]
+
+
 def exit_front(pcb, nid, m, kids):
     """the level of what stands in front of a single lane's exit `m` (_front): 0 clear, 1 blocked with room for a via
     before the block, 2 blocked with none"""
@@ -1687,6 +1888,9 @@ def _fmt(p):
             f'ride {p["ride"]} mm, congestion {p.get("cong", 0)}, ' + (f'feedback {p["feedback"]}, ' if p.get('feedback') else '') +
             (f'blocked in front {p["front"]}, ' if p.get('front') else '') +
             f'{p["crossings"]} crossings ({p["same"]} on one layer)' + ''.join(f', {p[k]} {k}' for k in ('conflicts', 'splits', 'refused', 'stacks') if p.get(k))
+            + (f', {len(p["walled"])} plane ball(s) walled in ('
+               + ', '.join(('source ' if e == 0 else 'destination ') + k for e, k in p['walled']) + ')'
+               if p.get('walled') else '')
             + (f' [the route exact on the orders: {p["route"]}, estimated {p["route_est"]}]'
                if p.get('route_est') is not None and p['route_est'] != p['route'] else ''))
 
