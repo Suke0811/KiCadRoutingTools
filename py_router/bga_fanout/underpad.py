@@ -1446,7 +1446,12 @@ def generate_underpad_escape(footprint: Footprint,
                             reach_out.add((nx, ny))
                         continue
                     nidx = nx * _ony + ny
-                    if inwin and _gL[nidx]:
+                    # Every step passes the occupancy test, the exit step and
+                    # a planned goal outside the window included (#1189): the
+                    # margin is stamped so foreign copper there is seen, and
+                    # an exit cell inside a foreign via's keep-out shipped a
+                    # clearance violation counted only in JSON drc_grazes.
+                    if _gL[nidx]:
                         nc = (nx, ny)
                         if not (nc in _home and nc not in cv_all
                                 and not (cvL and nc in cvL)):
