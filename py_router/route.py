@@ -734,6 +734,70 @@ def _late_strict_collapse1063(pcb_data, output_file, return_results, results_dat
         return 0, 0
 
 
+def _late_soft_joint_bridge984(pcb_data, output_file, return_results,
+                               results_data, write_model, scope_names, config):
+    """Bridge the soft joints copper laid AFTER the run's cleanup left (#984).
+
+    close_soft_joints lives in run_post_route_cleanup, which runs before the
+    plane finalize; the finalize's own cleanup leg runs before its oracle
+    leg, and is skipped outright when every zone net is already complete.
+    The oracle legs (the finalize's, the #666 cap re-weld, the opt-in #678
+    weld and #589 re-audit) then lay copper nothing bridges: smartknob_base
+    shipped a GND plane tap 0.111 mm short of the trunk it joins. This runs
+    the SAME pass over the nets those legs touched, on the board the run
+    ships -- the written file on the CLI, the write model on the GUI -- and
+    puts its connectors on that board's channel. Returns connectors added.
+    """
+    import copy as _copy
+    from pcb_modification import close_soft_joints
+    try:
+        if return_results:
+            rd = results_data if results_data is not None else {}
+            segs_by_net, vias_by_net = write_model(rd)
+            board = _copy.copy(pcb_data)
+            board.segments = [s for _l in segs_by_net.values() for s in _l]
+            board.vias = [v for _l in vias_by_net.values() for v in _l]
+        elif output_file and os.path.isfile(output_file):
+            from kicad_parser import parse_kicad_pcb as _pk984
+            board = _pk984(output_file)
+        else:
+            return 0
+        names = set(scope_names)
+        scope = {nid for nid, n in board.nets.items() if n.name in names}
+        if not scope:
+            return 0
+        added = []
+        n = close_soft_joints(added, board, scope, config)
+        conns = [c for r in added for c in (r.get('new_segments') or [])]
+        if not conns:
+            return 0
+        if return_results:
+            rd.setdefault('results', []).extend(added)
+            pcb_data.segments.extend(conns)
+            bump_copper_epoch(pcb_data)
+        else:
+            from kicad_parser import board_uses_name_nets
+            from kicad_writer import generate_segment_sexpr
+            with open(output_file, 'r', encoding='utf-8') as _f:
+                _c = _f.read()
+            n2n = getattr(board, 'net_id_to_name', {}) or {}
+            v10 = board_uses_name_nets(_c)
+            sexprs = [generate_segment_sexpr(
+                (s.start_x, s.start_y), (s.end_x, s.end_y), s.width, s.layer,
+                s.net_id, n2n.get(s.net_id) if v10 else None) for s in conns]
+            lp = _c.rfind(')')
+            _c = _c[:lp] + '\n'.join(sexprs) + '\n' + _c[lp:]
+            with open(output_file, 'w', encoding='utf-8') as _f:
+                _f.write(_c)
+        print(f"  Soft joints after the oracle (#984): {n} connector(s) on "
+              f"{', '.join(sorted(names))}")
+        return n
+    except Exception as _e:                                     # noqa: BLE001
+        print(f"  (post-oracle soft-joint bridge skipped: "
+              f"{type(_e).__name__}: {_e})")
+        return 0
+
+
 def _late_orphan_sweep659(pcb_data, output_file, return_results, results_data,
                           protect_unfinished, keep_input_copper, skip_routing):
     """Sweep pad-less copper islands off the FINAL board (#659).
@@ -4751,6 +4815,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # repair sub-run) is 'reconciliation-subset'; the MERGED document says
     # 'merged' (route_summary.merge_summaries).
     summary['scope'] = 'run' if not _SUMMARY_SINK else 'reconciliation-subset'
+    # #984: nets an ORACLE leg laid copper on -- after the run's cleanup, so
+    # nothing has bridged their soft joints (_late_soft_joint_bridge984).
+    _oracle_nets984 = set()
     if summary['scope'] != 'run':
         # These are recomputed over the WHOLE board even in the subset pass, so
         # a reader merging tallies must not add them twice.
@@ -5055,6 +5122,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                             # printed "0 link(s) welded, -1 remaining" for an
                             # oracle that could not run, indistinguishable
                             # from one that ran and found nothing to do.
+                            if _orc_cap.get('links_routed'):
+                                _oracle_nets984.update(_mvnames)
                             if not _orc_cap.get('available'):
                                 _capwhy = _orc_cap.get(
                                     'why', 'no reason recorded')
@@ -5730,6 +5799,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     k: _orc.get(k) for k in
                     ('available', 'reason', 'why', 'rounds', 'links_routed',
                      'links_failed', 'remaining')}
+                if _orc.get('links_routed'):
+                    _oracle_nets984.update(_zna)
                 if not _gui9:
                     # #589: keep the oracle's net list + config (and its
                     # by-name class and width maps, #1137/#1133) for the
@@ -6553,6 +6624,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                       f"{len(_aud678b['detached'])} still detached at ship "
                       f"-- promise-scoped oracle weld on "
                       f"{', '.join(_nets678)}")
+                _oracle_nets984.update(_nets678)
                 _orc678(_file678, _nets678, _reaudit9[1],
                         track_via_clearance=defaults.PLANE_TRACK_VIA_CLEARANCE,
                         hole_to_hole_clearance=config.hole_to_hole_clearance,
@@ -6622,6 +6694,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 project_from=input_file,
                 net_clearances_by_name=_reaudit9[2],
                 net_widths_by_name=_reaudit9[3])
+            if _orc10.get('links_routed'):
+                _oracle_nets984.update(_scope10)
             try:
                 results_data['post_reconcile_oracle'] = _orc10
             except (NameError, UnboundLocalError):
@@ -6651,6 +6725,18 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         for _v6 in (rd.get('all_swap_vias') or []):
             _av.setdefault(_v6.net_id, []).append(_v6)
         return _as, _av
+
+    # #984: the oracle legs lay copper after the run's only whole-scope
+    # cleanup (and on the finalize's complete-zones path, after its cleanup
+    # leg is skipped), so their soft joints were never bridged. Bridge them
+    # here, after the last pass that lays copper and before the strict
+    # collapse reads the board. Nothing to do when no oracle laid copper.
+    if (final_reconcile and not skip_routing and not _ckpt_stop
+            and _oracle_nets984 and not env_knobs.NO_SOFT_JOINT_BRIDGE):
+        _late_soft_joint_bridge984(
+            pcb_data, output_file, return_results,
+            locals().get('results_data'), _gui_write_model,
+            _oracle_nets984, config)
 
     # #1063: the strict collapse, ONCE, after every pass that lays copper (the
     # finalize, the oracle legs, the reconciliation laps, the #678 weld) and

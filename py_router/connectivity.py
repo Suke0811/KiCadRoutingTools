@@ -346,6 +346,52 @@ def endpoint_reaches_via(x, y, radius, via, layers, copper_layers=None) -> bool:
 
 
 
+def strict_joint_roots(segments, vias=(), pads=(), copper_layers=None) -> Dict[int, object]:
+    """{id(segment): root} for ONE net's segments, joined only where they
+    EXACTLY meet: a shared vertex on one layer (to the micron, as the
+    soft-joint detectors key vertices), or a vertex on the centre of a
+    same-net via spanning that layer or of a pad carrying copper there.
+
+    Cap overlap is deliberately NOT a joint here. A soft joint is a dangling
+    end that reaches the rest of the net ONLY by cap-overlapping another
+    (check_drc's definition); the detectors stated that and never tested it,
+    so two stubs fanning out of ONE vertex whose free ends happen to overlap
+    -- an oracle strap re-tracing a region join from the join's own vertex,
+    sonde_xilinx GND (#984) -- read as a near-open when nothing hangs on the
+    overlap. Two ends whose segments share a root here are already joined.
+
+    Conservative by construction: a segment end merely INSIDE a pad or via,
+    or landing mid-span on another segment, is not joined, so such a pair is
+    still flagged as before."""
+    from collections import defaultdict
+
+    def rk(x, y):
+        return (round(x, 3), round(y, 3))
+
+    uf = UnionFind()
+    vtx = {}
+    for s in segments:
+        node = ('s', id(s))
+        uf.find(node)
+        for x, y in ((s.start_x, s.start_y), (s.end_x, s.end_y)):
+            uf.union(vtx.setdefault((s.layer, rk(x, y)), node), node)
+    via_at = defaultdict(list)
+    for v in vias or ():
+        via_at[rk(v.x, v.y)].append(v)
+    pad_at = defaultdict(list)
+    for p in pads or ():
+        pad_at[rk(p.global_x, p.global_y)].append(p)
+    if via_at or pad_at:
+        for (layer, key), node in vtx.items():
+            for v in via_at.get(key, ()):
+                if layer in via_copper_layers(v, copper_layers):
+                    uf.union(node, ('v', id(v)))
+            for p in pad_at.get(key, ()):
+                if endpoint_reaches_pad(key[0], key[1], 0.0, (layer,), p):
+                    uf.union(node, ('p', id(p)))
+    return {id(s): uf.find(('s', id(s))) for s in segments}
+
+
 _CLUSTER_MEMO: "OrderedDict[tuple, tuple]" = OrderedDict()
 _CLUSTER_MEMO_CAP = 4096
 

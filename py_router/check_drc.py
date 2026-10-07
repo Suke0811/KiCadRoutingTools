@@ -66,6 +66,7 @@ from routing_constants import SOFT_JOINT_MIN_GAP as _SOFT_JOINT_MIN_GAP
 
 # The one endpoint-coincidence radius (same value everywhere: 0.02mm / 20um).
 from connectivity import (COINCIDENCE_TOL, endpoint_reaches_pad,
+                          strict_joint_roots,
                           endpoint_reaches_via)
 
 
@@ -3375,6 +3376,20 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             # TRACK end paired with art (#337, #722).
             _dangles[(s.net_id, s.layer)].append(
                 (x, y, s.width, getattr(s, 'graphic', False), id(s)))
+    # The definition's "ONLY" (#984): two ends whose segments already meet
+    # elsewhere -- strict_joint_roots, exact joints only -- hang nothing on
+    # the overlap. Built per net on the first candidate pair.
+    _strict984 = {}
+
+    def _joined_elsewhere(nid, oa, ob):
+        r = _strict984.get(nid)
+        if r is None:
+            r = _strict984[nid] = strict_joint_roots(
+                [s for s in pcb_data.segments if s.net_id == nid],
+                _vias_by_net.get(nid, ()), pcb_data.pads_by_net.get(nid, ()),
+                _copper)
+        return r.get(oa) == r.get(ob)
+
     for (net_id, layer), ends in _dangles.items():
         for i in range(len(ends)):
             xi, yi, wi, gi, oi = ends[i]
@@ -3389,7 +3404,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                 cap = (wi + wj) / 2.0
                 if gi and gj:
                     continue  # art meets art: nothing anyone can act on
-                if _SOFT_JOINT_MIN_GAP < gap < cap - 1e-6:
+                if _SOFT_JOINT_MIN_GAP < gap < cap - 1e-6 \
+                        and not _joined_elsewhere(net_id, oi, oj):
                     if gi:  # report where the fix goes: the TRACK end
                         xi, yi, xj, yj = xj, yj, xi, yi
                     net_name = pcb_data.nets.get(net_id, None)

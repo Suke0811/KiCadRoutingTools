@@ -1202,7 +1202,8 @@ which that pass does not yet handle.
 
 Read-only scan for **weird copper** a routed board should not have: dangling
 trace ends and tails, near-open **soft joints** (same-net segments that overlap
-by their end caps instead of meeting endpoint-to-endpoint), redundant copper
+by their end caps instead of meeting endpoint-to-endpoint, and meet nowhere
+else -- two stubs leaving one vertex are not one, #984), redundant copper
 **loops/cycles**, **removable** segments (copper that can be deleted without
 disconnecting the net), **stacked** duplicate copper, and **floating** vias
 (vias touching no copper on any layer). It never modifies the board — use it as
