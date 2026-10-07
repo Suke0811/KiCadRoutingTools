@@ -257,12 +257,33 @@ if os.path.isfile(_BOARD):
         try:
             _ig.gate_verdict = lambda cmp: 'reject'
             # CLI front: the output file must come back as the INPUT board.
+            _js = os.path.join(_tmp, 'out.json')
             _route.batch_route(_routed, _out, _names, track_width=0.2,
                                clearance=0.2, grid_step=0.1,
-                               force_reroute=True)
+                               force_reroute=True, json_out=_js)
             check("CLI: a rejected run reverts the output to the input board",
                   os.path.isfile(_out)
                   and open(_out, 'rb').read() == _before)
+            # #1173: --json-out is written before the gate; after a revert it
+            # must say what shipped instead of standing as the attempt's.
+            import json as _json
+            _doc = _json.load(open(_js)) if os.path.isfile(_js) else {}
+            check("CLI: --json-out carries the verdict after a revert",
+                  (_doc.get('improvement_gate') or {}).get('verdict') == 'reject')
+            check("CLI: ...and says the input board shipped",
+                  _doc.get('shipped') == 'input board'
+                  and 'rejected attempt' in (_doc.get('shipped_note') or ''))
+            check("CLI: ...keeping the attempt's tallies (not an empty file)",
+                  'successful' in _doc)
+            # ...and the log says the same (#830's one-document rule).
+            from route_summary import merge_route_summaries as _mrs
+            _log = ('JSON_SUMMARY: ' + _json.dumps({'successful': 1, 'failed': 0})
+                    + '\nJSON_IMPROVEMENT_GATE: '
+                    + _json.dumps(_doc.get('improvement_gate') or {}) + '\n')
+            _m = _mrs(_log) or {}
+            check("log merge: the revert reads the same from the log",
+                  _m.get('shipped') == 'input board'
+                  and _m.get('improvement_gate') == _doc.get('improvement_gate'))
             # GUI front: the applier must be handed nothing to apply.
             _ok, _f, _t, _data = _route.batch_route(
                 _routed, '', _names, track_width=0.2, clearance=0.2,
@@ -276,6 +297,21 @@ if os.path.isfile(_BOARD):
                   (_data.get('improvement_gate') or {}).get('verdict') == 'reject')
             check("GUI: diagnostics survive the rejection",
                   'blockers' in _data and 'pad_pairs_open' in _data)
+        finally:
+            _ig.gate_verdict = _orig_verdict
+        try:
+            # Control: an accepted run's file carries the verdict too, and no
+            # claim that the input shipped.
+            _out2 = os.path.join(_tmp, 'out2.kicad_pcb')
+            _js2 = os.path.join(_tmp, 'out2.json')
+            _ig.gate_verdict = lambda cmp: 'accept'
+            _route.batch_route(_routed, _out2, _names, track_width=0.2,
+                               clearance=0.2, grid_step=0.1,
+                               force_reroute=True, json_out=_js2)
+            _doc2 = _json.load(open(_js2)) if os.path.isfile(_js2) else {}
+            check("CLI: an accepted run's --json-out carries its verdict",
+                  (_doc2.get('improvement_gate') or {}).get('verdict') == 'accept'
+                  and 'shipped' not in _doc2)
         finally:
             _ig.gate_verdict = _orig_verdict
             shutil.rmtree(_tmp, ignore_errors=True)

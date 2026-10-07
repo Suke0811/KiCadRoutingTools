@@ -167,6 +167,11 @@ DISCOVERY_EXEMPT = {'add_drc_fix_args', 'drc_fix_kwargs', 'find_kicad_cli',
                     # routing, no board mutation; the GUI operates on the live board and
                     # never cp's, so no GUI counterpart is needed.
                     'warn_if_missing_project_floor',
+                    # #1160: its sibling. Pre-engine and report-only: SAYS when the
+                    # input project's Default class carries a clearance an earlier
+                    # step's descent lowered (the writeback's class_clearance_relaxed
+                    # record). No board mutation; the GUI writes no project record.
+                    'warn_if_class_clearance_relaxed',
                     # #441: pure RESOLVER (max(cli, project edge rule, fab floor) ->
                     # float) feeding the engine's board_edge_clearance; same VALUE-level
                     # parity story as read_project_edge_clearance above -- the GUI

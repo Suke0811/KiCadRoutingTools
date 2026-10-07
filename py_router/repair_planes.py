@@ -3516,8 +3516,10 @@ Examples:
     _ceiling = getattr(args, 'clearance_ceiling', None)   # None iff omitted
     args._clamp_netclasses = _ceiling is not None
     args._clearance_ceiling = _ceiling
-    from fix_kicad_drc_settings import warn_if_missing_project_floor
+    from fix_kicad_drc_settings import (warn_if_missing_project_floor,
+                                        warn_if_class_clearance_relaxed)
     warn_if_missing_project_floor(args.input_file)  # #441: a dropped sibling .kicad_pro strands the DRC floor
+    warn_if_class_clearance_relaxed(args.input_file)  # #1160
     _dflt_clr = board_default_netclass_clearance(args.input_file)
     if args.clearance is None:
         args.clearance = _dflt_clr if _dflt_clr is not None else defaults.CLEARANCE
@@ -3744,8 +3746,9 @@ Examples:
         try:
             from kicad_parser import parse_kicad_pcb as _parse962
             from fab_notes import via_snapshot, ship_via_protection_file
+            _in962 = _parse962(args.input_file)
             _rec962 = ship_via_protection_file(
-                args.output_file, via_snapshot(_parse962(args.input_file).vias),
+                args.output_file, via_snapshot(_in962.vias, _in962),  # #1171
                 'repair_planes')
             if _rec962 and _rec962.get('count'):
                 import json as _json962

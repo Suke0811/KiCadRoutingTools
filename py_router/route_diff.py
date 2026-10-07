@@ -440,7 +440,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     mark_input_copper(pcb_data)  # #980
     # #962: the input's vias as values, for the ship-time Type VII stamp
     from fab_notes import via_snapshot as _via_snapshot962
-    _input_vias962 = _via_snapshot962(pcb_data.vias)
+    _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)  # #1171: + sites
 
     # Route trace (#482, KICAD_ROUTE_TRACE=1): record diff-pair copper as it is
     # committed/ripped/restored for animating the run. Default-off; gated on a
@@ -2379,8 +2379,10 @@ Examples:
     _ceiling = getattr(args, 'clearance_ceiling', None)   # None iff omitted
     args._clamp_netclasses = _ceiling is not None
     args._clearance_ceiling = _ceiling
-    from fix_kicad_drc_settings import warn_if_missing_project_floor
+    from fix_kicad_drc_settings import (warn_if_missing_project_floor,
+                                        warn_if_class_clearance_relaxed)
     warn_if_missing_project_floor(args.input_file)  # #441: a dropped sibling .kicad_pro strands the DRC floor
+    warn_if_class_clearance_relaxed(args.input_file)  # #1160
     _dflt_clr = board_default_netclass_clearance(args.input_file)
     if args.clearance is None:
         args.clearance = _dflt_clr if _dflt_clr is not None else defaults.CLEARANCE

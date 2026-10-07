@@ -182,15 +182,34 @@ def may_narrow():
     return _ESCALATION != 'off'
 
 
-def board_floors_from_rules(rules):
+def board_floors_from_rules(rules, default_class_clearance=None):
     """Translate a ``rules.min_*`` dict (.kicad_pro) into FLOOR_KEYS vocabulary.
-    Zero / absent keys are UNSET (KiCad writes 0 for 'not configured')."""
+    Zero / absent keys are UNSET (KiCad writes 0 for 'not configured').
+
+    ``default_class_clearance`` (#1160) is the Default net class's clearance:
+    the clearance floor when ``min_clearance`` is unset. A board that leaves
+    Board Setup's minimum at 0 still grades every Default net at its class,
+    so ``--escalation board`` -- "clean against your own project by
+    construction" -- must not descend below it. interf_u (min_clearance 0,
+    class 0.254) rescued 9 gaps down to 0.127 under board."""
     out = {}
     for rk, fk in BOARD_RULE_TO_FLOOR_KEY.items():
         v = (rules or {}).get(rk)
         if isinstance(v, (int, float)) and v > 0:
             out[fk] = float(v)
+    if 'clearance' not in out and isinstance(default_class_clearance, (int, float)) \
+            and default_class_clearance > 0:
+        out['clearance'] = float(default_class_clearance)
     return out
+
+
+def project_default_class_clearance(proj):
+    """The Default net class's clearance in a .kicad_pro dict, or None."""
+    for cls in ((proj or {}).get('net_settings') or {}).get('classes') or ():
+        if cls.get('name') == 'Default':
+            v = cls.get('clearance')
+            return float(v) if isinstance(v, (int, float)) and v > 0 else None
+    return None
 
 
 # Routing request name -> FLOOR_KEYS entry, for drop_stale_board_floors.
@@ -945,7 +964,8 @@ def set_policy_from_args(args, pcb_path=None):
             with open(pro, encoding='utf-8') as f:
                 proj = json.load(f)
             rules = ((proj.get('board') or {}).get('design_settings') or {}).get('rules') or {}
-            floors = board_floors_from_rules(rules)
+            floors = board_floors_from_rules(
+                rules, project_default_class_clearance(proj))
         except (OSError, ValueError, AttributeError):
             floors = {}
     policy = getattr(args, 'escalation', None) or DEFAULT_ESCALATION

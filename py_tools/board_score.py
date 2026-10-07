@@ -88,7 +88,8 @@ RULE_PAIR_TYPES = frozenset({'segment-segment-track-rule'})
 # placement or routing lap can change a fab spec it did not write, so
 # counting them in `blocking` would make 0 unreachable there.
 # Pass --baseline <input board> and check_drc accepts those as
-# `inherited-via-in-paste`; what is left is disclosed here.
+# `inherited-via-in-paste`; what is left is then a site the run created, and
+# counts in `blocking` (#1171).
 VIA_PASTE_TYPES = frozenset({'via-in-paste'})
 
 _DRC_TOTAL = re.compile(r'^FOUND (\d+) DRC VIOLATIONS', re.M)
@@ -1112,7 +1113,9 @@ def build_parser():
                    help='the board this one was derived from (the unrouted '
                         'input). check_drc then accepts the vias it already had '
                         'in a paste opening as inherited, and grades a graze of '
-                        'footprint graphic copper that a part MOVE created (#962)')
+                        'footprint graphic copper that a part MOVE created (#962). '
+                        'A via-in-paste left after that is the run\'s own and '
+                        'counts in BLOCKING (#1171)')
     p.add_argument('--clearance', type=float,
                    help='grade DRC at this clearance. OMIT IT unless you know '
                         'better than the board: check_drc then reads the '
@@ -1235,6 +1238,13 @@ def main():
     advisory = {'drc_rule_pairs': rule_pairs,
                 'drc_via_in_paste': drc.get('via_in_paste')
                 or {'ran': drc.get('ran'), 'count': None, 'by_type': {}}}
+    # #1171: with --baseline, check_drc has already accepted every via the
+    # input had under solder (`inherited-via-in-paste`), so what is left is a
+    # site THIS run made -- a via it laid or re-laid there, or a part it moved
+    # onto one -- and the advisory rationale above ("a via the input already
+    # had") no longer holds. It blocks like any other defect.
+    if args.baseline:
+        parts['drc_via_in_paste'] = advisory.pop('drc_via_in_paste')
 
     # A component that was ASKED for and could not run leaves blocking unknown.
     # Reporting 0 there would let the loop stop on a board nothing graded.

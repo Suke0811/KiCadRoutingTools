@@ -798,6 +798,100 @@ def _late_soft_joint_bridge984(pcb_data, output_file, return_results,
         return 0
 
 
+def _late_dangling_via_sweep1166(pcb_data, output_file, return_results,
+                                 results_data, write_model, input_signature,
+                                 scope_names, keep_input_copper):
+    """#1166: remove the vias check_weird calls dangling (reached on one layer)
+    or floating on the run's nets, with the dead branch each ends, from the
+    board this run SHIPS -- after every pass that lays or removes copper,
+    input copper included (StickHub VIN's via came from an earlier step).
+    The removal and its gate are pcb_modification.sweep_dangling_via_branches.
+
+    Same plumbing as _late_strict_collapse1063: the written file on the CLI,
+    the write model on the GUI (pcb_data itself when the run laid nothing,
+    the "nothing to route" return, where write_model is None). Input copper
+    is told from the run's by VALUE (input_signature), and
+    --keep-input-copper makes it read-only. Returns (segments, vias) removed.
+    """
+    import copy as _copy
+    from collections import Counter
+    from improvement_gate import copper_item_key
+    from pcb_modification import sweep_dangling_via_branches
+    try:
+        rd = None
+        if return_results:
+            rd = results_data if results_data is not None else {}
+            board = _copy.copy(pcb_data)
+            if write_model is not None:
+                segs_by_net, vias_by_net = write_model(rd)
+                board.segments = [x for _l in segs_by_net.values() for x in _l]
+                board.vias = [x for _l in vias_by_net.values() for x in _l]
+            else:
+                board.segments = list(pcb_data.segments)
+                board.vias = list(pcb_data.vias)
+        elif output_file and os.path.isfile(output_file):
+            from kicad_parser import parse_kicad_pcb as _pk1166
+            board = _pk1166(output_file)
+        else:
+            return 0, 0
+        name_of = {nid: n.name for nid, n in board.nets.items()}
+        left = {n: Counter(c) for n, c in (input_signature or {}).items()}
+        owned, protected = set(), set()
+        for item in list(board.segments) + list(board.vias):
+            c = left.get(name_of.get(item.net_id))
+            k = copper_item_key(item)
+            if c and c[k] > 0:
+                c[k] -= 1                   # input copper
+                if keep_input_copper:
+                    protected.add(id(item))
+            else:
+                owned.add(id(item))
+        scope = {nid for nid, nm in name_of.items() if nm in set(scope_names)}
+        _stats = {}
+        removed, dropped = sweep_dangling_via_branches(
+            board, scope, protected_ids=protected, stats=_stats)
+        if not (removed or dropped):
+            return 0, 0
+        gone = {id(x) for x in removed + dropped}
+        if return_results:
+            for r in rd.get('results') or []:
+                for key in ('new_segments', 'new_vias'):
+                    if r.get(key):
+                        r[key] = [x for x in r[key] if id(x) not in gone]
+            for key in ('all_swap_segments', 'all_swap_vias'):
+                if rd.get(key):
+                    rd[key] = [x for x in rd[key] if id(x) not in gone]
+            rd.setdefault('segments_to_remove', []).extend(
+                x for x in removed if id(x) not in owned)
+            rd.setdefault('vias_to_remove', []).extend(
+                x for x in dropped if id(x) not in owned)
+            pcb_data.segments = [x for x in pcb_data.segments if id(x) not in gone]
+            pcb_data.vias = [x for x in pcb_data.vias if id(x) not in gone]
+            bump_copper_epoch(pcb_data)
+        else:
+            from kicad_parser import is_kicad_10 as _k10_1166
+            from kicad_writer import (remove_segments_from_content as _rsc1166,
+                                      remove_vias_from_content as _rvc1166)
+            with open(output_file, 'r', encoding='utf-8') as _f:
+                _c = _f.read()
+            _map = name_of if _k10_1166(_c) else None
+            if removed:
+                _c, _ = _rsc1166(_c, removed, net_id_to_name=_map)
+            if dropped:
+                _c, _ = _rvc1166(_c, dropped, net_id_to_name=_map)
+            with open(output_file, 'w', encoding='utf-8') as _f:
+                _f.write(_c)
+        print(f"  Dangling vias (#1166, end of run): removed {len(dropped)} "
+              f"via(s) joining fewer than two layers and {len(removed)} "
+              f"segment(s) of the branches they ended, on "
+              f"{_stats.get('nets', 0)} net(s)")
+        return len(removed), len(dropped)
+    except Exception as _e:                                     # noqa: BLE001
+        print(f"  (end-of-run dangling-via sweep skipped: "
+              f"{type(_e).__name__}: {_e})")
+        return 0, 0
+
+
 def _late_orphan_sweep659(pcb_data, output_file, return_results, results_data,
                           protect_unfinished, keep_input_copper, skip_routing):
     """Sweep pad-less copper islands off the FINAL board (#659).
@@ -1414,9 +1508,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                           if _nid in pcb_data.nets else None))
     # #962: the input's vias as VALUES (net, x, y, size), not object references
     # (a nudge moves the objects). The ship-time Type VII stamp uses it to tell
-    # a via this run ADDED from one the board already had.
+    # a via this run ADDED from one the board already had. With the board
+    # (#1171) it also records whether each was ALREADY under solder, so a via
+    # re-laid 0.1 mm onto a paste opening is a site this run created rather
+    # than one "kept as the input had it".
     from fab_notes import via_snapshot as _via_snapshot962
-    _input_vias962 = _via_snapshot962(pcb_data.vias)
+    _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)
 
     # Layers must be specified - we can't auto-detect which are ground planes
     if layers is None:
@@ -2028,13 +2125,25 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # untouched. Measured on spartan6_4layer: three diverted nets took the
         # run from 448s to 6s, and every one of their bare vias survived
         # because the sweep only ran at the normal end of a run.
+        # #1166: the dangling-via sweep too -- One-Air-Max's +3V3 step was
+        # "nothing to route" and shipped its dead via-to-via branch.
+        _scope1166 = {pcb_data.nets[_n].name for _n in sweep_scope_ids
+                      if _n in pcb_data.nets}
         if return_results:
             _rd659 = _empty_results_data()
             _rd659['keep_away'] = keep_away_entries(_ka_done)
+            if final_reconcile and not skip_routing:
+                _late_dangling_via_sweep1166(
+                    pcb_data, output_file, True, _rd659, None, _input_sig1069,
+                    _scope1166, keep_input_copper)
             _late_orphan_sweep659(pcb_data, output_file, True, _rd659,
                                   None, keep_input_copper, skip_routing)
             return 0, 0, 0.0, _rd659
         _write_passthrough_output(input_file, output_file)
+        if final_reconcile and not skip_routing:
+            _late_dangling_via_sweep1166(
+                pcb_data, output_file, False, None, None, _input_sig1069,
+                _scope1166, keep_input_copper)
         _late_orphan_sweep659(pcb_data, output_file, False, None,
                               None, keep_input_copper, skip_routing)
         return 0, 0, 0.0
@@ -6749,6 +6858,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             {pcb_data.nets[_n].name for _n in sweep_scope_ids
              if _n in pcb_data.nets},
             keep_input_copper)
+        # #1166: after the collapse, which can itself free a via.
+        _late_dangling_via_sweep1166(
+            pcb_data, output_file, return_results, locals().get('results_data'),
+            _gui_write_model, _input_sig1069,
+            {pcb_data.nets[_n].name for _n in sweep_scope_ids
+             if _n in pcb_data.nets},
+            keep_input_copper)
 
     _late_orphan_sweep659(
         pcb_data, output_file, return_results,
@@ -6951,11 +7067,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # Per-net story dump (KICAD_NET_STORY=1): the complete journey of every
     # net -- bus membership, ordering, failures with named blockers, rips,
     # rescues, Phase-3 tap order, costs -- assembled from state.
+    _json_doc1173 = None
     if json_out:
         try:
             from route_summary import merge_summaries, write_summary_file
             _merged = merge_summaries(list(_SUMMARY_SINK), _RECONCILE_RAISED[0],
                                       _FINAL_REGRADE[0])
+            _json_doc1173 = _merged
             # #962: set on the MERGED document. The printed JSON_SUMMARY
             # predates the finalize, so it cannot carry this.
             if _merged is not None and _via_in_pad962 is not None:
@@ -7185,6 +7303,23 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         except Exception as _ge:
             # A gate that crashes must not take the run's board with it.
             print(f"  (improvement gate skipped: {_ge})")
+
+    # #1173: --json-out was written above, before the gate, so a reverted
+    # run's file described copper that is not on the board (and carried no
+    # verdict at all). Publish it again with the verdict; after a revert it
+    # says the shipped board is the input and that its tallies are the
+    # rejected attempt's. The GUI front gets the same report in results_data.
+    if json_out and _json_doc1173 is not None and _gate_report is not None:
+        try:
+            from route_summary import write_summary_file, apply_improvement_gate
+            # Through the JSON round trip, as merge_route_summaries reads it
+            # back from the printed JSON_IMPROVEMENT_GATE line.
+            apply_improvement_gate(_json_doc1173,
+                                   json.loads(json.dumps(_gate_report)))
+            write_summary_file(json_out, _json_doc1173)
+        except Exception as _e:
+            print(f"  WARNING: could not add the improvement gate to "
+                  f"--json-out {json_out}: {type(_e).__name__}: {_e}")
 
     # ONE compact authoritative line per outermost run, CLI and GUI alike.
     # The big JSON_SUMMARY lines are 6-20KB each with scope semantics the log
@@ -7728,8 +7863,10 @@ For differential pair routing, use route_diff.py:
     _ceiling = getattr(args, 'clearance_ceiling', None)   # None iff omitted
     args._clamp_netclasses = _ceiling is not None
     args._clearance_ceiling = _ceiling
-    from fix_kicad_drc_settings import warn_if_missing_project_floor
+    from fix_kicad_drc_settings import (warn_if_missing_project_floor,
+                                        warn_if_class_clearance_relaxed)
     warn_if_missing_project_floor(args.input_file)  # #441: a dropped sibling .kicad_pro strands the DRC floor
+    warn_if_class_clearance_relaxed(args.input_file)  # #1160
     _dflt_clr = board_default_netclass_clearance(args.input_file)
     if args.clearance is None:
         args.clearance = _dflt_clr if _dflt_clr is not None else defaults.CLEARANCE

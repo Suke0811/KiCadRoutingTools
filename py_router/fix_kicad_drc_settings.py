@@ -1129,6 +1129,102 @@ def drc_fix_kwargs(args):
                 clamp_nondefault_netclasses=clamp)
 
 
+#: The project record of a Default class clearance an AUTOMATIC descent
+#: lowered (#1160), under ``kicad_routing_tools``: ``{from, to, nets}``.
+CLASS_CLEARANCE_RELAXED_KEY = "class_clearance_relaxed"
+
+
+def record_class_clearance_descent(proj: dict, class_before):
+    """``(record, lowered_here)``: did this step's AUTOMATIC clearance descent
+    lower the project's Default class below what the step asked for?
+
+    The writeback stores the run's smallest clearance as the Default CLASS
+    (the ratchet #489 keeps), so one net a rescue reconnected at 0.2567 turns
+    a 0.3 class into 0.2567, and every later step that reads the project
+    routes EVERY Default net there -- complex_hierarchy's step 2 then shipped
+    16 pad-segment grazes at the authored 0.3, while every checker graded the
+    new class and read clean. A class lowered by the step's own request
+    (``--clearance``, ``--clearance-ceiling``) is a decision, not this: the
+    test is against the clearance the descent rows say the step ASKED for
+    (``design_rules`` ``clearance`` rows, fab_tiers.note_narrowing), never
+    against the class the project had.
+
+    Records ``{from, to, nets}`` under ``kicad_routing_tools`` and carries an
+    earlier step's record forward (its ``from`` and nets are kept), so a later
+    step and ``check_complete --authored-from`` still see it."""
+    from fab_tiers import escalation_summary, project_default_class_clearance
+    kr = proj.get("kicad_routing_tools") or {}
+    rec = dict(kr.get(CLASS_CLEARANCE_RELAXED_KEY) or {})
+    after = project_default_class_clearance(proj)
+    try:
+        rows = [r for r in escalation_summary().get("narrowed") or ()
+                if r.get("kind") == "clearance"]
+    except Exception:                                        # noqa: BLE001
+        rows = []
+    if not rows or after is None:
+        return (rec or None), False
+    asked = max(float(r["requested"]) for r in rows)
+    # Only a class THIS step lowered, and only below what it asked for.
+    lowered = class_before is None or after < float(class_before) - _FLOOR_EPS
+    if not lowered or after >= asked - _FLOOR_EPS:
+        return (rec or None), False
+    names = {r.get("net_name") or f"net {r.get('net')}" for r in rows
+             if float(r["delivered"]) < asked - _FLOOR_EPS}
+    # `from` is what the class would read without the descent: the request,
+    # or the class itself when the request sat above it.
+    base = asked if class_before is None else min(asked, float(class_before))
+    rec = {"from": round(max(float(rec.get("from") or 0.0), base), 6),
+           "to": round(after, 6),
+           "nets": sorted(set(rec.get("nets") or ()) | names)}
+    proj.setdefault("kicad_routing_tools", {})[CLASS_CLEARANCE_RELAXED_KEY] = rec
+    return rec, True
+
+
+def class_clearance_disclosure(rec, lowered_here, class_now=None):
+    """The lines that say a Default class clearance was lowered by a descent."""
+    if not rec:
+        return []
+    nets = rec.get("nets") or []
+    who = ", ".join(nets[:6]) + (f" (+{len(nets) - 6} more)" if len(nets) > 6 else "")
+    frm, to = rec.get("from"), rec.get("to")
+    if class_now is not None and class_now >= (frm or 0) - _FLOOR_EPS:
+        return []          # the class was raised back since: nothing to say
+    if lowered_here:
+        head = (f"  DEFAULT CLASS CLEARANCE LOWERED BY A DESCENT -- {frm:g} -> "
+                f"{to:g} mm: an automatic clearance descent on {who} routed at "
+                f"{to:g} mm, and the writeback stores the run's smallest clearance "
+                f"as the Default class.")
+    else:
+        head = (f"  Default class clearance {class_now if class_now is not None else to:g} "
+                f"mm, unchanged by this step but below the {frm:g} mm an earlier "
+                f"step asked for: an automatic descent on {who} lowered it.")
+    return [head,
+            f"    Every later step that reads this project routes EVERY Default "
+            f"net at the lower value, and every checker grades against it, so "
+            f"the copper reads clean. Pass --clearance {frm:g} to route the "
+            f"other nets at {frm:g} again."]
+
+
+def warn_if_class_clearance_relaxed(input_pcb) -> bool:
+    """At the start of a routing step: say so when the input project's Default
+    class carries a clearance an earlier step's descent lowered (#1160), since
+    an omitted --clearance is about to route every Default net at it."""
+    if not input_pcb:
+        return False
+    try:
+        with open(os.path.splitext(input_pcb)[0] + ".kicad_pro", encoding="utf-8") as f:
+            proj = json.load(f)
+        from fab_tiers import project_default_class_clearance
+        rec = (proj.get("kicad_routing_tools") or {}).get(CLASS_CLEARANCE_RELAXED_KEY)
+        lines = class_clearance_disclosure(rec, False,
+                                           project_default_class_clearance(proj))
+    except Exception:                                        # noqa: BLE001
+        return False
+    for line in lines:
+        print(line)
+    return bool(lines)
+
+
 def warn_if_missing_project_floor(input_pcb) -> bool:
     """Complain LOUDLY when an input board arrives WITHOUT its sibling ``.kicad_pro`` (#441).
 
@@ -1359,6 +1455,8 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
     # is exactly how run 14 shipped 10 vias under its declared 0.5 mm with one
     # banner at R1 and none at R4 or R5.
     _origin, _origin_seeded = seed_fab_floor_origin(proj, _rules_before)
+    from fab_tiers import project_default_class_clearance as _pdcc
+    _class_before = _pdcc(proj)     # #1160
     # `minima` lets a caller that ALREADY has the board in memory supply these
     # instead of us re-parsing the file. The GUI does: scan_board_minima ->
     # parse_kicad_pcb allocates thousands of GC-tracked objects, and the GUI
@@ -1417,6 +1515,13 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
         proj.setdefault("kicad_routing_tools", {})["fab_floor_origin"] = _origin
         changes = list(changes) + ["kicad_routing_tools.fab_floor_origin: recorded"]
         LAST_PROJECT_WRITES[:] = list(changes)
+    # #1160: a Default class lowered by an automatic descent, not a request.
+    _ccr, _ccr_here = record_class_clearance_descent(proj, _class_before)
+    if _ccr_here:
+        changes = list(changes) + [
+            f"kicad_routing_tools.{CLASS_CLEARANCE_RELAXED_KEY}: recorded"]
+        LAST_PROJECT_WRITES[:] = list(changes)
+    _ccr_lines = class_clearance_disclosure(_ccr, _ccr_here, _pdcc(proj))
     if not changes:
         if verbose:
             print(f"  DRC settings already consistent ({out_pro})")
@@ -1424,7 +1529,7 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
             # board's original declaration from an earlier step -- and that is
             # still true of the board being shipped. Say so.
             for line in _fab_floor_disclosure(output_pcb, _rules_before, proj,
-                                              _origin):
+                                              _origin) + _ccr_lines:
                 print(line)
         return out_pro
     # Atomic replace (#513 item 12): a kill mid-dump must not leave a
@@ -1451,7 +1556,7 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
         print("PROJECT_WRITES_JSON: " + json.dumps(
             {"project": out_pro, "writes": list(changes)}, sort_keys=True))
     for line in _fab_floor_disclosure(output_pcb, _rules_before, proj,
-                                      _origin):
+                                      _origin) + _ccr_lines:
         print(line)
     return out_pro
 

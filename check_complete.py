@@ -171,6 +171,32 @@ def fab_floor_integrity(board, authored_from):
                 and is_ < was - 1e-9:
             relaxed.append({'key': key, 'label': label, 'authored': was,
                             'on_board': is_})
+    # #1160: the Default CLASS clearance, declared vs declared (no measured
+    # counterpart: clearance is pairwise). Counted only when an automatic
+    # descent lowered it -- the board's project carries the writeback's
+    # class_clearance_relaxed record -- because a class lowered by the
+    # chain's own --clearance / --clearance-ceiling is a decision, not a
+    # relaxation (stock classes are aspirational).
+    try:
+        from fab_tiers import project_default_class_clearance
+        from fix_kicad_drc_settings import CLASS_CLEARANCE_RELAXED_KEY
+        with open(pro, encoding='utf-8') as fh:
+            _cls_was = project_default_class_clearance(json.load(fh))
+        _bpro = find_project(board)
+        with open(_bpro, encoding='utf-8') as fh:
+            _bproj = json.load(fh)
+        _cls_now = project_default_class_clearance(_bproj)
+        _rec = (_bproj.get('kicad_routing_tools') or {}).get(
+            CLASS_CLEARANCE_RELAXED_KEY)
+        if _rec and _cls_was is not None and _cls_now is not None \
+                and _cls_now < _cls_was - 1e-9:
+            relaxed.append({'key': 'net_class.Default.clearance',
+                            'label': 'Default class clearance (lowered by an '
+                                     'automatic descent on '
+                                     + ', '.join(_rec.get('nets') or ['?']) + ')',
+                            'authored': _cls_was, 'on_board': _cls_now})
+    except (OSError, ValueError):
+        pass
     return {'ran': True, 'relaxed': relaxed, 'unmeasured': unmeasured,
             'authored_from': authored_from}
 

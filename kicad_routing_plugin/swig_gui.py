@@ -772,6 +772,14 @@ class RoutingDialog(wx.Dialog):
             v = mins.get(src)
             if isinstance(v, (int, float)) and v > 1e-9:
                 out[key] = float(v)
+        if 'clearance' not in out:
+            # #1160: an unset Board Setup minimum leaves the Default class as
+            # the clearance every Default net is graded at -- the CLI's
+            # fab_tiers.board_floors_from_rules fallback.
+            nc = _get_netclass_parameters('Default') or {}
+            v = nc.get('clearance')
+            if isinstance(v, (int, float)) and v > 1e-9:
+                out['clearance'] = float(v)
         return out
 
     def _on_escalation_changed(self, event):
