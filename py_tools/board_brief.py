@@ -341,6 +341,98 @@ def state_section(pcb, pcb_file, skipped):
             'segments': st.segments, 'vias': st.vias}
 
 
+def pour_census(pcb, pcb_file=None):
+    """The copper pours the board already carries (#1197), by net.
+
+    A pour decides the routing plan -- route.py's finalize treats its net as
+    served and routes no track for it -- yet the brief and board_context
+    printed `copper no` and nothing else on a board with a GND zone over 96 %
+    of it. `state.has_copper` is right for ITS job (an unfilled zone is not
+    detached by moving parts); this is the separate fact that a pour exists.
+
+    Per net: the copper layers its board-level zones are on, whether any is
+    FILLED in the file (an unfilled zone has its outline only), and the
+    largest fraction of the board's copper area one layer's zones cover
+    (zone outline clipped to the board outline). Footprint-owned pours are
+    listed apart; keep-out rule areas are counted, never listed as pours."""
+    import re
+    bi = pcb.board_info
+    zones = [z for z in (getattr(pcb, 'zones', None) or [])
+             if (getattr(z, 'layer', '') or '').endswith('.Cu')
+             and (getattr(z, 'net_name', '') or '').strip()]
+    filled = {}
+    if pcb_file:
+        try:
+            from kicad_parser import _iter_zone_blocks, read_board_text
+            for body, _fp in _iter_zone_blocks(read_board_text(pcb_file,
+                                                               quiet=True)):
+                m = re.search(r'\(uuid\s+"([^"]+)"\)', body)
+                if m:
+                    filled[m.group(1)] = '(filled_polygon' in body
+        except Exception:                        # noqa: BLE001 - unknown
+            filled = {}
+    board = None
+    try:
+        from shapely.geometry import Polygon, box
+        rings = [r for r in (getattr(bi, 'board_outlines', None) or ()) if
+                 len(r) >= 3]
+        if rings:
+            board = Polygon(max(rings, key=lambda r: Polygon(r).area)).buffer(0)
+            for c in (getattr(bi, 'board_cutouts', None) or ()):
+                if len(c) >= 3:
+                    board = board.difference(Polygon(c).buffer(0))
+        elif bi.board_bounds:
+            board = box(*bi.board_bounds)
+    except Exception:                            # noqa: BLE001 - no shapely
+        board = None
+    by_net = {}
+    for z in zones:
+        key = (z.net_name, bool(getattr(z, 'in_footprint', False)))
+        e = by_net.setdefault(key, {'net': z.net_name, 'by_layer': {},
+                                    'filled': None,
+                                    'in_footprint': key[1]})
+        frac = None
+        if board is not None and board.area > 0 and len(z.polygon) >= 3:
+            try:
+                from shapely.geometry import Polygon
+                frac = Polygon(z.polygon).buffer(0).intersection(board).area \
+                    / board.area
+            except Exception:                    # noqa: BLE001
+                frac = None
+        prev = e['by_layer'].get(z.layer)
+        e['by_layer'][z.layer] = (round(min(1.0, (prev or 0.0) + frac), 4)
+                                  if frac is not None else prev)
+        f = filled.get(getattr(z, 'uuid', '') or '')
+        if f is not None:
+            e['filled'] = bool(e['filled']) or f
+    pours = []
+    for e in sorted(by_net.values(), key=lambda e: (e['in_footprint'],
+                                                    e['net'])):
+        fr = [v for v in e['by_layer'].values() if v is not None]
+        e['layers'] = sorted(e['by_layer'])
+        e['area_fraction'] = max(fr) if fr else None
+        pours.append(e)
+    return {'pours': pours,
+            'keepout_areas': len(getattr(bi, 'keepouts', None) or ())}
+
+
+def pours_section(pcb, pcb_file, skipped):
+    return pour_census(pcb, pcb_file)
+
+
+def format_pours(pc) -> str:
+    """`GND on B.Cu (unfilled, 96 % of the board)`, one clause per net."""
+    out = []
+    for e in (pc or {}).get('pours') or ():
+        what = ('filled' if e.get('filled') else
+                'unfilled' if e.get('filled') is False else 'fill unknown')
+        fr = e.get('area_fraction')
+        cov = f", {fr:.0%} of the board" if fr is not None else ''
+        own = ', footprint-owned' if e.get('in_footprint') else ''
+        out.append(f"{e['net']} on {'/'.join(e['layers'])} ({what}{cov}{own})")
+    return '; '.join(out)
+
+
 def parts_section(pcb, pcb_file, skipped):
     """Per part: what an author needs to decide where it goes.
 
@@ -639,6 +731,9 @@ SOURCES_NOTE = {
     'state': 'placement.placement_state.assess_placement '
              '[requires: nothing. This section IS the placement verdict '
              'the others are read against]',
+    'pours': 'board_brief.pour_census (kicad_parser zones, filled_polygon '
+             'blocks; zone outline clipped to the board outline) '
+             '[requires: nothing. Independent of part positions]',
     'parts': 'placement.parser.extract_courtyard_bboxes + '
              'placement.utility.compute_footprint_bbox_local + '
              'placement.legality.rotate_local_bounds + '
@@ -694,6 +789,8 @@ def build_brief(pcb, pcb_file, *, clearance=None, board_edge_clearance=None,
              'clearance': clr, 'board_edge_clearance': edge}
     brief['board'] = board_section(pcb, pcb_file, skipped)
     brief['state'] = _safe('state', state_section, skipped, pcb, pcb_file,
+                           skipped)
+    brief['pours'] = _safe('pours', pours_section, skipped, pcb, pcb_file,
                            skipped)
     brief['parts'] = _safe('parts', parts_section, skipped, pcb, pcb_file,
                            skipped)
@@ -839,10 +936,17 @@ def format_text(b):
                 'partially unplaced' if st.get('partially_unplaced')
                 else 'placed')
         copper = 'yes' if st.get('has_copper') else 'no'
+        _np = len((b.get('pours') or {}).get('pours') or ())
+        _pn = f"; {_np} pour{'s' if _np != 1 else ''}" if _np else ''
         L.append(f"  state: {what}; copper {copper} "
-                 f"({st.get('segments')} segs, {st.get('vias')} vias)")
+                 f"({st.get('segments')} segs, {st.get('vias')} vias{_pn})")
         for r in (st.get('reasons') or ())[:3]:
             L.append(f"    - {r}")
+    pc = b.get('pours') or {}
+    if pc.get('pours'):
+        L.append(f"  pours: {format_pours(pc)}")
+    if pc.get('keepout_areas'):
+        L.append(f"  keep-out rule areas: {pc['keepout_areas']}")
     # BEFORE the numbers, not after them and not only in the JSON. This
     # printed `state: UNPLACED` and then, eleven lines later, an escape
     # deficit and a lock tally measured on the pile, in the same words a
@@ -1070,6 +1174,11 @@ def main(argv=None):
          # `has_copper`; this line carried only the first, so the second was
          # readable only from a --json file the skill's command never wrote.
          'has_copper': (brief.get('state') or {}).get('has_copper'),
+         # #1197: `has_copper` is False on a board whose only copper is a
+         # pour, and the pour decides the plan (its net is served by fill).
+         'poured_nets': sorted({e['net'] for e in
+                                ((brief.get('pours') or {}).get('pours') or ())
+                                if not e.get('in_footprint')}),
          'sections': sorted(k for k, v in brief.items()
                             if isinstance(v, (dict, list))
                             and k not in ('sources', 'skipped')),
