@@ -1367,7 +1367,9 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                 continue
             num = num_after
             if used_cfg.clearance < config.clearance - 1e-9:
-                note_clearance_used(pcb_data, used_cfg.clearance)
+                note_clearance_used(pcb_data, used_cfg.clearance, net_id=net_id,
+                                    requested=config.clearance,
+                                    site='net rescue')
             edge_results.append(result)
             used_widths.append(used_cfg.track_width)
             print(f"    {GREEN}rescued a gap{RESET}: grid {used_cfg.grid_step:g}, "

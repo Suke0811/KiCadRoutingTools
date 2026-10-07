@@ -74,14 +74,27 @@ def pad_is_fine_pitch(pad: Pad, pcb_data: PCBData) -> bool:
     return False
 
 
-def note_clearance_used(pcb_data: PCBData, clearance: float) -> None:
+def note_clearance_used(pcb_data: PCBData, clearance: float, net_id=None,
+                        requested=None, site=None) -> None:
     """Record that a routing step used ``clearance`` mm of copper clearance, so
     the board's running minimum (``board_info.min_clearance_used``) tracks the
     tightest clearance any step actually routed to. Downstream the routers fold
     this into the .kicad_pro DRC floor and JSON_SUMMARY so check_drc grades at
-    the true routed clearance rather than the looser nominal one."""
+    the true routed clearance rather than the looser nominal one.
+
+    A DESCENT site also passes the net, the clearance it was asked for and its
+    own name (#1160): the descent is then a ``clearance`` row in
+    JSON_SUMMARY design_rules like every other narrowing, which is how the
+    writeback tells a Default class lowered by a rescue from one lowered by
+    the step's own request."""
     if clearance is None or clearance <= 0:
         return
+    if net_id is not None and requested is not None:
+        from fab_tiers import note_narrowing
+        _net = (getattr(pcb_data, 'nets', None) or {}).get(net_id)
+        note_narrowing(net_id, 'clearance', requested, clearance,
+                       site or 'clearance descent',
+                       net_name=getattr(_net, 'name', None))
     bi = pcb_data.board_info
     cur = getattr(bi, 'min_clearance_used', None)
     if cur is None or clearance < cur:
@@ -1411,7 +1424,10 @@ def tap_pad_with_escalation(
             if result.success:
                 result.params_label = 'fine'
                 result.clearance_used = fine_config.clearance
-                note_clearance_used(pcb_data, fine_config.clearance)
+                note_clearance_used(pcb_data, fine_config.clearance,
+                                    net_id=getattr(pad, 'net_id', None),
+                                    requested=config.clearance,
+                                    site='fine-pitch plane tap')
                 return result
             last_failure = result
 

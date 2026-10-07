@@ -2419,8 +2419,11 @@ def oracle_reconnect(board_file: str, net_names, config,
                 if _esc2 and not _esc2.get('failed'):
                     _e2segs = _esc2.get('new_segments') or []
                     _e2vias = _esc2.get('new_vias') or []
-                    import clearance_ledger
-                    clearance_ledger.record(_esc2_cfg.clearance)
+                    from plane_pad_tap import note_clearance_used
+                    note_clearance_used(pcb_data, _esc2_cfg.clearance,
+                                        net_id=net_id,
+                                        requested=config.clearance,
+                                        site='oracle rescue')
                     for _s in _e2segs:
                         new_sexprs.append(generate_segment_sexpr(
                             (_s.start_x, _s.start_y), (_s.end_x, _s.end_y),
@@ -2911,8 +2914,11 @@ def oracle_reconnect(board_file: str, net_names, config,
                 if _esc and not _esc.get('failed'):
                     _esegs = _esc.get('new_segments') or []
                     _evias = _esc.get('new_vias') or []
-                    import clearance_ledger
-                    clearance_ledger.record(_esc_cfg.clearance)
+                    from plane_pad_tap import note_clearance_used
+                    note_clearance_used(pcb_data, _esc_cfg.clearance,
+                                        net_id=net_id,
+                                        requested=config.clearance,
+                                        site='oracle rescue')
                     for _s in _esegs:
                         new_sexprs.append(generate_segment_sexpr(
                             (_s.start_x, _s.start_y), (_s.end_x, _s.end_y),
