@@ -751,6 +751,51 @@ def main():
                     not [x for x in check_weird(_rim(0.52), tolerance=0)[0]
                          if x['category'] == 'narrow-pad-joint']))
 
+    # 21. A T near a LONG segment's end (#1186). "Interior" was 2 % of the
+    #     length, so on a 25.8 mm track a solid T 0.2 mm from the end (t =
+    #     0.992) was neither interior nor a coincident endpoint: check_weird
+    #     called it a free end while check_connected called the net
+    #     connected, and removing the "dangling" segment disconnected it.
+    #     Interior is a distance from both ends now (One-Air-Max /SCL). The
+    #     track runs on past its end (degree 2 there), as /SCL does: with a
+    #     bare end the pair reads as a soft joint instead.
+    from pcb_modification import prune_dead_end_segments
+    _tpads = [_pad(0, 0, size=0.6, num='1'),
+              _pad(25.6, -1.5, size=0.6, num='1', ref='U2'),
+              _pad(25.8, 3, size=0.6, num='2', ref='U2')]
+    _tsegs = [_seg(0, 0, 25.8, 0, width=0.25),
+              _seg(25.6, 0, 25.6, -1.5, width=0.25),
+              _seg(25.8, 0, 25.8, 3, width=0.25)]
+    _tc = check_net_connectivity(NET, _tsegs, [], _tpads, [])
+    results.append(("precondition: the near-end T is connected copper",
+                    _tc['num_components'] == 1 and not _tc['disconnected_pads']))
+    results.append(("a T 0.2 mm from a 25.8 mm track's end is no dangling-end",
+                    not [x for x in check_weird(_pcb(_tsegs, pads=_tpads),
+                                                tolerance=0)[0]
+                         if x['category'] == 'dangling-end']))
+    _kept, _removed = prune_dead_end_segments(list(_tsegs), pads=_tpads,
+                                              tol=COINCIDENCE_TOL)
+    results.append(("...and the dead-end pruner keeps both segments",
+                    not _removed))
+    #     Control: the same stub 0.6 mm off the track's centreline does not
+    #     touch it, and is still a dangling end.
+    _tmiss = [_seg(0, 0, 25.8, 0, width=0.25),
+              _seg(25.6, -0.6, 25.6, -1.5, width=0.25),
+              _seg(25.8, 0, 25.8, 3, width=0.25)]
+    results.append(("the stub moved off the track is still a dangling-end",
+                    len([x for x in check_weird(_pcb(_tmiss, pads=_tpads),
+                                                tolerance=0)[0]
+                         if x['category'] == 'dangling-end']) >= 1))
+    #     Control: a short segment keeps the interior the 2 % band gave it.
+    _short = [_seg(0, 0, 0.5, 0, width=0.1),
+              _seg(0.25, 0, 0.25, -1.5, width=0.1)]
+    _spads = [_pad(0, 0, size=0.2, num='1'), _pad(0.5, 0, size=0.2, num='2'),
+              _pad(0.25, -1.5, size=0.2, num='1', ref='U2')]
+    results.append(("a T in a 0.5 mm segment's middle is still anchored",
+                    not [x for x in check_weird(_pcb(_short, pads=_spads),
+                                                tolerance=0)[0]
+                         if x['category'] == 'dangling-end']))
+
     # 11. The reporter, which is what #696 actually broke: a finding whose
     #     category is missing from CATEGORIES counted toward the headline and
     #     the exit code but printed nothing, so the board was blocked by a

@@ -99,7 +99,8 @@ from check_connected import (matches_any_pattern, check_net_connectivity,
                              _point_in_pad)
 from check_drc import point_to_pad_distance
 from connectivity import (COINCIDENCE_TOL, endpoint_reaches_pad, strict_joint_roots,
-                          endpoint_reaches_via, via_copper_layers)
+                          endpoint_reaches_via, lands_on_interior,
+                          via_copper_layers)
 from routing_constants import SOFT_JOINT_MIN_GAP
 from pcb_modification import (_point_anchored, _prune_net_cycles, _pt_seg_dist,
                               _restore_soft_joint_bridges,
@@ -389,7 +390,7 @@ def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
         if L2 >= 1e-9:
             for vx, vy, vsize in via_pts_on(s.layer):
                 t = ((vx - s.start_x) * dx + (vy - s.start_y) * dy) / L2
-                if t <= 0.02 or t >= 0.98:
+                if not lands_on_interior(t, L2, tol):          # #1186
                     continue
                 cx_, cy_ = s.start_x + t * dx, s.start_y + t * dy
                 if math.hypot(vx - cx_, vy - cy_) < (vsize + s.width) / 2 - 1e-6:
@@ -399,7 +400,7 @@ def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
                     continue
                 for ox, oy in ((o.start_x, o.start_y), (o.end_x, o.end_y)):
                     t = ((ox - s.start_x) * dx + (oy - s.start_y) * dy) / L2
-                    if t <= 0.02 or t >= 0.98:
+                    if not lands_on_interior(t, L2, tol):      # #1186
                         continue
                     cx_, cy_ = s.start_x + t * dx, s.start_y + t * dy
                     if math.hypot(ox - cx_, oy - cy_) < (o.width + s.width) / 2 - 1e-6:

@@ -184,6 +184,25 @@ def is_edge_stub(pad_x: float, pad_y: float, bga_zones: List) -> bool:
 COINCIDENCE_TOL = 0.02
 
 
+def lands_on_interior(t: float, seg_len_sq: float,
+                      tol: float = COINCIDENCE_TOL) -> bool:
+    """Whether a landing whose projection onto a segment sits at parameter
+    `t` is on the segment's INTERIOR (a T-junction or a mid-body anchor),
+    rather than at one of its ends (which the endpoint-degree counts own).
+
+    The band at each end is a DISTANCE, `tol`, capped at the old 2 % of the
+    length so a short segment keeps the interior it had (#1186). The band used
+    to be 2 % of the length alone: on One-Air-Max's 25.8 mm /SCL track it was
+    0.52 mm at each end, so a solid T 0.2 mm from the end read as a free end in
+    check_weird while every connectivity grade called the net connected, and
+    removing the "dangling" segment disconnected it."""
+    if not (0.0 < t < 1.0) or seg_len_sq <= 0.0:
+        return False
+    length = math.sqrt(seg_len_sq)
+    band = min(tol, 0.02 * length)
+    return t * length > band and (1.0 - t) * length > band
+
+
 def endpoint_reaches_pad(x, y, radius, layers, pad, unflashed_hole_only=False) -> set:
     """Which of `layers` a disc of copper -- centre (x, y), radius `radius` --
     both SHARES with `pad`'s copper and physically OVERLAPS. Empty set = no

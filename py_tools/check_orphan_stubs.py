@@ -171,10 +171,11 @@ def _reverse_t_anchored(pt, segments, vias, tol) -> bool:
             continue
         for v in (o['start'], o['end']):
             probes.append((v[0], v[1], o.get('width', 0.0)))
+    from connectivity import lands_on_interior
     cands = []
     for ox, oy, osize in probes:
         t = ((ox - sx) * dx + (oy - sy) * dy) / L2
-        if t <= 0.02 or t >= 0.98:
+        if not lands_on_interior(t, L2):                # #1186, as check_weird
             continue
         if math.hypot(ox - (sx + t * dx), oy - (sy + t * dy)) < (osize + w) / 2 - 1e-6:
             cands.append(t)

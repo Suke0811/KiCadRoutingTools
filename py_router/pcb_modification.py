@@ -73,8 +73,9 @@ def _point_anchored(x: float, y: float, layer: str, via_pts, pad_pts,
                     continue
                 t = ((x - s.start_x) * dx + (y - s.start_y) * dy) / seg_len_sq
                 # Strictly interior (endpoints are handled by the degree count) so a
-                # shared endpoint isn't double-counted as a T-junction.
-                if t <= 0.02 or t >= 0.98:
+                # shared endpoint isn't double-counted as a T-junction. Interior is
+                # a distance from both ends, not a fraction of the length (#1186).
+                if not lands_on_interior(t, seg_len_sq, tol):
                     continue
                 cx = s.start_x + t * dx
                 cy = s.start_y + t * dy
@@ -201,7 +202,7 @@ def prune_dead_end_segments(prunable: List[Segment], anchor_segments: List[Segme
 # fragility). See issue #322 (smartknob +5V: mid-chain removals each passed
 # the overlap gate until 5 pads were genuinely disconnected).
 from connectivity import (COINCIDENCE_TOL, endpoint_reaches_pad,
-                          endpoint_reaches_via)
+                          endpoint_reaches_via, lands_on_interior)
 _STRICT_GATE_WIDTH = COINCIDENCE_TOL  # one constant (#320): strict twin gate width
 
 
@@ -2369,7 +2370,7 @@ class StrictRemovalModel:
             if L2 < 1e-9:
                 continue
             t = ((x - o.start_x) * dx + (y - o.start_y) * dy) / L2
-            if t <= 0.02 or t >= 0.98:
+            if not lands_on_interior(t, L2, tol):              # #1186
                 continue
             if math.hypot(x - (o.start_x + t * dx), y - (o.start_y + t * dy)) < \
                     max(tol, (o.width or 0.0) / 2 + 0.025):
