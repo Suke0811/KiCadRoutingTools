@@ -226,7 +226,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   Pour first (`route_planes.py`), then route with the plane nets inside
   `--nets` (`'*'` covers them). Pour-launch welds their pads, and the in-run
   plane finalize taps and joins what the fill cannot reach, at that step's
-  own track and via sizes. A pour alone connects nothing, so if you pour
+  own track and via sizes. A scoped round that names a few nets still lists
+  the plane nets: its copper can cut a pour, the finalize repairs only plane
+  nets in scope, and the improvement gate then reverts the round on the cut
+  plane net (`JSON_IMPROVEMENT_GATE` says
+  `rejected_on_excluded_plane_nets_alone`, #1114). A pour alone connects nothing, so if you pour
   after routing, end the chain on another `route.py --nets '*'` with the same
   size flags; the finalize runs even when that step has nothing else to
   route. Do not end on `repair_planes.py`: it cannot know the sizes you

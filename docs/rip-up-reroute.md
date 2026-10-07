@@ -135,7 +135,9 @@ IMPROVEMENT GATE: this run broke 3 previously-connected net(s) [/BMS.Can_L, /BMS
 
 The verdict is also emitted as a machine-readable `JSON_IMPROVEMENT_GATE:` line
 (`lost`, `gained`, `worsened`,
-`disconnected_pads_before/after`, `nets_compared`, `verdict`), so a chain can
+`disconnected_pads_before/after`, `nets_compared`, `verdict`, and, when a
+poured net outside `--nets` got worse, `excluded_plane_nets` /
+`rejected_on_excluded_plane_nets_alone`), so a chain can
 assert on it instead of grepping prose.
 
 **The head line names every net it judged on (#1032)**, each list at its own
@@ -149,12 +151,18 @@ A pad-count-only rejection used to name nothing.
 finalize does not repair such a net (`finalize_excluded_nets`), so a lap that
 cuts its pour leaves those pads open, and the gate counts them: shipping the
 lap would ship the cut. Put the poured nets in `--nets` when the lap may cross
-their pours, so its finalize repairs what it cuts.
+their pours, so its finalize repairs what it cuts. The gate says so when it
+happens (#1114): such nets are listed as `excluded_plane_nets` in the JSON and
+on a line of their own in the report, and when the verdict would have been
+`accept` without them, `rejected_on_excluded_plane_nets_alone` is true and the
+report says the verdict rests on them ALONE, with that remedy in place of the
+advice below.
 
 **If you see `REVERTED`, the retry did not fail to run — it ran and was
 rejected.** Re-running it with *more* rip authority is the one response
 guaranteed not to help; change the approach instead (thinner, finer grid,
-different layer budget, or accept the open net and report it).
+different layer budget, or accept the open net and report it) -- unless the
+report says the verdict rests on excluded plane nets alone, above.
 
 `KICAD_IMPROVEMENT_GATE=0` disables the gate — for A/B measurement, or when you
 deliberately want the regressed board on disk to inspect it.

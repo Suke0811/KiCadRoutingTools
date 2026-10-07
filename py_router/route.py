@@ -6998,7 +6998,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         try:
             from improvement_gate import (net_connectivity_map,
                                           compare_connectivity, gate_verdict,
-                                          format_report)
+                                          format_report,
+                                          excluded_plane_attribution)
             if return_results:
                 # The board the GUI applier will produce (_gui_write_model):
                 # a broken net must not grade connected on orphan copper.
@@ -7022,13 +7023,35 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                          else f"Net {nid}"))
             _cmp = compare_connectivity(_before_map, _after_map, _name_of)
             _verdict = gate_verdict(_cmp)
-            _why = ("This run did not fail to execute -- it ran and was "
-                    "REJECTED, so re-running it with MORE rip authority "
-                    "cannot help: change the approach (thinner track / finer "
-                    "grid / different layers), or accept the open nets and "
-                    "report them. See docs/rip-up-reroute.md 'Improvement "
-                    "gate'. KICAD_IMPROVEMENT_GATE=0 ships the regression "
-                    "instead.")
+            # #1114: zone nets the finalize excluded BY PLAN (outside
+            # --nets) were never repaired before this grade.
+            try:
+                _xpl = excluded_plane_attribution(
+                    _before_map, _after_map, _name_of,
+                    summary.get('finalize_excluded_nets'))
+            except Exception:              # noqa: BLE001 -- a label, not the gate
+                _xpl = {'nets': [], 'alone': False}
+            if _xpl['nets']:
+                _cmp['excluded_plane_nets'] = _xpl['nets']
+                _cmp['rejected_on_excluded_plane_nets_alone'] = (
+                    _verdict == 'reject' and _xpl['alone'])
+            if _cmp.get('rejected_on_excluded_plane_nets_alone'):
+                _why = ("The verdict rests ALONE on zone net(s) "
+                        f"{', '.join(_xpl['nets'])}: this run's copper cut "
+                        "the pour, and they are outside --nets, so the in-run "
+                        "plane finalize excluded them BY PLAN and nothing "
+                        "repaired the cut. Re-run with them in --nets -- the "
+                        "finalize then repairs the pour before this gate "
+                        "grades it -- or set KICAD_IMPROVEMENT_GATE=0 and "
+                        "repair them in a later route step that carries them.")
+            else:
+                _why = ("This run did not fail to execute -- it ran and was "
+                        "REJECTED, so re-running it with MORE rip authority "
+                        "cannot help: change the approach (thinner track / "
+                        "finer grid / different layers), or accept the open "
+                        "nets and report them. See docs/rip-up-reroute.md "
+                        "'Improvement gate'. KICAD_IMPROVEMENT_GATE=0 ships "
+                        "the regression instead.")
             if _verdict == 'reject' and return_results:
                 # Withhold the change-set: the applier has not touched the
                 # live board yet, so an empty result IS the rollback. Keep
