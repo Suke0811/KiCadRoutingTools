@@ -3876,6 +3876,79 @@ def extract_groups(content: str, footprints: Dict[str, 'Footprint']) -> Dict[str
     return out
 
 
+# Every child KiCad's teardrop reader knows (parseTEARDROP_PARAMETERS).
+_TEARDROP_KEYS = frozenset((
+    'best_length_ratio', 'max_length', 'best_width_ratio', 'max_width',
+    'curved_edges', 'filter_ratio', 'enabled', 'allow_two_segments',
+    'prefer_zone_connections'))
+_TEARDROP_OPEN_RE = re.compile(r'\(teardrops?(?=[\s(])')
+_TOKEN_POS_RE = re.compile(r'"(?:[^"\\]|\\.)*"|[()]|[^\s()"]+')
+
+
+def repair_bare_teardrop_tokens(content: str) -> Tuple[str, int]:
+    """Give a teardrop child written without its ``(`` the paren KiCad reads
+    into it (#1149). Returns ``(content, number of tokens repaired)``.
+
+    KiCad's teardrop reader takes each child's opening paren as OPTIONAL --
+    ``if( token == T_LEFT ) token = NextTok();`` before the keyword switch -- so
+    ``(curved_edges no)filter_ratio 0.9)`` loads as ``(filter_ratio 0.9)``, and
+    the ``)`` that looks surplus is that child's own close. Every paren-counting
+    reader here took it as the pad's close instead: KiCad 10.0.0's
+    RoyalBlue54L-Feather demo carries 349 such blocks, and the text parser ended
+    U2 (QFN-32), U4 and U6 after their first pad (pcbnew: 59/10/21).
+
+    The repair walks each ``(teardrop``/``(teardrops`` block token by token with
+    KiCad's rule: a known key as a BARE word directly inside the block opens a
+    child, which its value's ``)`` then closes. Nothing else is touched, and a
+    file without the defect is returned as the same string.
+    """
+    if '(teardrop' not in content:
+        return content, 0
+    inserts: List[int] = []
+    pos = 0
+    for m in _TEARDROP_OPEN_RE.finditer(content):
+        if m.start() < pos:
+            continue
+        depth = 1
+        pos = m.end()
+        for t in _TOKEN_POS_RE.finditer(content, m.end()):
+            tok = t.group(0)
+            pos = t.end()
+            if tok == '(':
+                depth += 1
+            elif tok == ')':
+                depth -= 1
+                if depth == 0:
+                    break
+            elif depth == 1 and tok in _TEARDROP_KEYS:
+                inserts.append(t.start())
+                depth += 1
+    if not inserts:
+        return content, 0
+    parts = []
+    last = 0
+    for i in inserts:
+        parts.append(content[last:i])
+        parts.append('(')
+        last = i
+    parts.append(content[last:])
+    return ''.join(parts), len(inserts)
+
+
+def read_board_text(path: str, quiet: bool = False) -> str:
+    """A .kicad_pcb's text as KiCad reads it: `repair_bare_teardrop_tokens`
+    applied, with a one-line note when it changed anything (#1149). For every
+    reader that walks footprint or pad blocks by their parens."""
+    with open(path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    content, n = repair_bare_teardrop_tokens(content)
+    if n and not quiet:
+        print(f"NOTE: {n} teardrop token(s) in {os.path.basename(path)} lack their "
+              f"opening paren; read the way KiCad reads them (#1149).",
+              file=sys.stderr)
+    return content
+
+
 def _via_blocks(content: str) -> List[Tuple[int, str]]:
     """``(start offset, paren-balanced text)`` for every ``(via ...)`` in a file.
 
@@ -5519,8 +5592,7 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
     Returns:
         PCBData object containing all parsed data
     """
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+    content = read_board_text(filepath)
 
     kicad_version = detect_kicad_version(content)
 
