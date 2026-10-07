@@ -25,7 +25,7 @@ from kicad_writer import add_tracks_and_vias_to_pcb
 from qfn_fanout.types import QFNLayout, PadInfo, FanoutStub
 from bga_fanout.constants import POSITION_TOLERANCE
 from net_queries import matches_net_filter
-from qfn_fanout.layout import analyze_qfn_layout, analyze_pad
+from qfn_fanout.layout import analyze_qfn_layout, analyze_pad, single_line_reason
 from qfn_fanout.geometry import calculate_fanout_stub
 
 # #621: nets whose escape was never ATTEMPTED because this run's own
@@ -1086,7 +1086,9 @@ def generate_qfn_fanout(footprint: Footprint,
         return False
     layout = analyze_qfn_layout(footprint)
     if layout is None:
-        print(f"Warning: {footprint.reference} doesn't appear to be a QFN/QFP")
+        _why = single_line_reason(footprint)
+        print(f"Warning: {footprint.reference} doesn't appear to be a QFN/QFP"
+              + (f": {_why}" if _why else ""))
         return [], [], []
 
     # #581: an active (> 0) same-net pad via clearance forbids via-in-pad --
@@ -1721,6 +1723,13 @@ def main():
         return 1
 
     footprint = pcb_data.footprints[args.component]
+    _single = single_line_reason(footprint)
+    if _single:
+        # #1195: refused by name, not analysed as a degenerate QFN that
+        # "finds 0 pads", writes the board through and exits 0.
+        print(f"Error: {args.component} ({footprint.footprint_name}) is not a "
+              f"QFN/QFP: {_single}. Nothing was written.")
+        return 1
     print(f"\nFound {args.component}: {footprint.footprint_name}")
     print(f"  Position: ({footprint.x:.2f}, {footprint.y:.2f})")
     print(f"  Rotation: {footprint.rotation}deg")
@@ -1833,7 +1842,21 @@ def main():
     # lowers, never tightens (issue #160).
     import clearance_ledger as _cl
     eff_clearance = _cl.effective(args.clearance)
-    if out_path and os.path.isfile(out_path) \
+    if out_path and os.path.isfile(out_path) and not (tracks or vias):
+        # #1195: a run that changed no copper writes no floors -- the board
+        # went through unchanged, so its project does too (with every other
+        # sibling), never a writeback of sizes nothing was drawn at.
+        try:
+            import shutil as _sh
+            from copy_board import SIBLING_EXTS
+            _ib, _ob = os.path.splitext(args.pcb)[0], os.path.splitext(out_path)[0]
+            if os.path.abspath(_ib) != os.path.abspath(_ob):
+                for _ext in SIBLING_EXTS:
+                    if os.path.isfile(_ib + _ext):
+                        _sh.copyfile(_ib + _ext, _ob + _ext)
+        except Exception as _e:
+            print(f"  (could not carry the project through: {_e})")
+    elif out_path and os.path.isfile(out_path) \
             and not getattr(args, 'no_fix_drc_settings', False):
         try:
             from fix_kicad_drc_settings import fix_project_for_output
@@ -1841,11 +1864,16 @@ def main():
                 out_path, input_pcb=args.pcb,
                 clearance=eff_clearance,
                 track_width=args.width,
-                via_diameter=getattr(args, 'via_size', None),
-                via_drill=getattr(args, 'via_drill', None),
+                # #1195: the via floors only when this run drew a via. Stub
+                # mode never does, and its --via-size/--via-drill defaults
+                # lowered the declared via and hole floors on every run.
+                via_diameter=(getattr(args, 'via_size', None) if vias else None),
+                via_drill=(getattr(args, 'via_drill', None) if vias else None),
                 clamp_nondefault_netclasses=True)  # #439: fanout escapes route to --clearance; always clamp
         except Exception as _e:
             print(f"  (skipped DRC-settings fix: {_e})")
+    if out_path and os.path.isfile(out_path) \
+            and not getattr(args, 'no_fix_drc_settings', False):
         # #581: record an ACTIVE same-net pad via clearance for later steps.
         try:
             from protected_nets import (persist_same_net_pad_clearance,
