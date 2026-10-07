@@ -700,10 +700,8 @@ def build_and_solve(sides, prev=None):
             le([(var[(f, a, ka)], 1.0), (var[(f, b, kb)], -1.0)], -h, ('viavia', f, km, a, b))
     via_at = {(f, n, kc) for (f, n, cu, kc) in vias}
     # bounds: board, pad boxes (a via further off), the interval the reference lies in -- and where it lies in none
-    # (it cuts a box's corner), the interval the lane was in a column before, which it cannot leave across the box
-    # (K41: at the column clipping the source's south-east corner, the interval nearest the south-face lanes'
-    # references was the one NORTH of the box, and six lanes were bounded 2.7 to 3.9 mm off where they ran); the
-    # nearest one only with neither
+    # (it cuts a box's corner), the interval the lane was in a column before, which it cannot leave across the box,
+    # and where that stood on both sides of the box, the side of its nearer terminal (corridor.held_interval)
     held_iv = {}
     # (a lane whose tooth -- or a trunk lane whose berth -- stands inside its array's grown box: bounded by the
     # array's pads on the trunk, where it leaves its tooth or reaches its berth)
@@ -723,16 +721,8 @@ def build_and_solve(sides, prev=None):
         iv = intervals(f, FR[f]['sp'], s_, round(mg, 4), OWN[n] if f == 'T' else (False, False))
         if not iv:
             continue
-        ref = v['ref'](s_)
-        was = held_iv.get((f, n))
-        inside = [q for q in iv if q[0] <= ref <= q[1]]
-        if inside:
-            lo_, hi_ = inside[0]
-        elif was is not None and any(min(q[1], was[1]) > max(q[0], was[0]) for q in iv):
-            lo_, hi_ = max(iv, key=lambda q: min(q[1], was[1]) - max(q[0], was[0]))
-        else:
-            lo_, hi_ = min(iv, key=lambda q: min(abs(ref - q[0]), abs(ref - q[1])))
-        held_iv[(f, n)] = (lo_, hi_)
+        lo_, hi_ = held_iv[(f, n)] = _cor.held_interval(
+            iv, v['ref'](s_), held_iv.get((f, n)), v['o1'] if v['k1'] - k <= k - v['k0'] else v['o0'])
         le([(j, -1.0)], -lo_, ('bound', f, k, n, 'lo'))
         le([(j, 1.0)], hi_, ('bound', f, k, n, 'hi'))
     # terminals, holds, slope cap, travel, bends

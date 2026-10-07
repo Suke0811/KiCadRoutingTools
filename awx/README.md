@@ -1051,6 +1051,9 @@ for some of the lanes exists:
   last ends laid: the lanes the rounds named left out (else the three most
   crossed), then more, to a quarter and to half of the lanes -- never every
   lane;
+- a round whose PROVED plan lays connected and DRC-clean ends the rounds,
+  whether or not its loop passed: a later round could change only the ends
+  its audits named, which the lay already went round;
 - every round is graded, and the best -- the fewest open nets, then the
   fewest vias -- is `OUTDIR/best.kicad_pcb`.
 

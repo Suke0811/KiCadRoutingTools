@@ -417,7 +417,8 @@ class Spine:
 
     def lane_line(self, so: Sequence[Tuple[float, float]], fixed=()) -> List[Tuple[float, float, float]]:
         """Board polyline of a lane given by its COLUMN points so [(s, o)], s increasing: [(x, y, s)], each column on
-        its own leg, and at each corner of the spine the lane's two legs MEET where its own two lines cross -- the line
+        its own leg, and at each corner of the spine the lane's two legs MEET: a lane on the corner's outer side at the
+        mitre of its offset there (every column drawn), a lane inside it where its own two lines cross -- the line
         through its last two points before the corner and the line through its first two after it. A point past that
         crossing is left out: a lane inside a corner lies, near it, beyond where its line meets the other leg's (by
         |o| tan(turn / 2) at a fixed offset, sooner where its offset grows into the corner), and drawn there it
@@ -437,6 +438,23 @@ class Spine:
                 continue
             a = b - 1
             X = None
+            # a lane on the corner's OUTER side (its offset at the corner of the sign away from the turn): its legs meet
+            # at the mitre of that offset, between its last column before the corner and its first after it, and every
+            # column is drawn. Outside a corner the offset lines part, so no column lies past the meeting -- but the
+            # meeting of a lane's OWN two lines does, where its offset changes across the corner: the zynq DDR's RAS,
+            # 3.8 mm outside the north ring's 36-degree corner and moving in 0.07 mm a column, met its other leg 2.3 mm
+            # along it, its three columns there were left out, and the line drawn to that point crossed ODT's, which
+            # stood a pitch inside it at every column. The mitres of two lanes' offsets keep the order of their columns
+            oc = pts[a][1] + (pts[b][1] - pts[a][1]) * (Sj - pts[a][0]) / max(pts[b][0] - pts[a][0], 1e-12)
+            if oc * float(self.turn[j - 1]) < 0:
+                n1, n2 = self.nrm[j - 1], self.nrm[j]
+                m = (n1 + n2) / max(1.0 + float(n1 @ n2), 1e-6)
+                X = (float(self.P[j, 0] + oc * m[0]), float(self.P[j, 1] + oc * m[1]))
+                P1, Q0 = self.xy(*pts[a][:2]), self.xy(*pts[b][:2])
+                gap = math.hypot(Q0[0] - P1[0], Q0[1] - P1[1])
+                if math.hypot(X[0] - P1[0], X[1] - P1[1]) + math.hypot(Q0[0] - X[0], Q0[1] - X[1]) <= 2.0 * gap + 1e-9:
+                    at[pts[a][2]] = (X[0], X[1], Sj)
+                continue                                # (past a turn of 120 degrees: straight across)
             while a >= 1 and b + 1 < len(pts) and self.seg_of(pts[a - 1][0]) == j - 1 and self.seg_of(pts[b + 1][0]) == j:
                 P0, P1 = self.xy(*pts[a - 1][:2]), self.xy(*pts[a][:2])
                 Q0, Q1 = self.xy(*pts[b][:2]), self.xy(*pts[b + 1][:2])
@@ -615,6 +633,29 @@ def decide_sides(meets, home, split_side, box_mid, carry):
                 sd = -1 if float(np.mean(byf[src])) < box_mid[(src, ii)] else 1
         out[(n, ii)] = sd * carry[(ii, src)]
     return out
+
+
+def held_interval(iv, ref: float, was, term):
+    """(lo, hi): the free interval of a column a lane is bounded to (whole_geo's bound rows). `iv` the column's free
+    offset intervals outside the arrays' boxes, `ref` the lane's reference there, `was` the interval it was held to a
+    column before (None at its first), `term` the offset of its NEARER fixed terminal (None: that end is not fixed).
+    The interval the reference lies in; where it lies in none -- it cuts a box's corner -- the one the lane was in a
+    column before, which it cannot leave across the box (K41: at the column clipping the source's south-east corner,
+    the interval nearest the south-face lanes' references was the one NORTH of the box, and six lanes were bounded 2.7
+    to 3.9 mm off where they ran). Where that one stood on both sides of the box here -- the box's corner starts at
+    this column -- the side of its nearer terminal, which it cannot reach across the box: by the most overlap it was
+    the larger side, and zynq U2's top-face berths, which stand on the destination's grown box, had A8 and CKE held
+    SOUTH of the corner they reached them round, their last columns run across the west column's balls (A8 into A6's
+    via in the gap). The nearest one only with neither"""
+    inside = [q for q in iv if q[0] <= ref <= q[1]]
+    if inside:
+        return inside[0]
+    over = [q for q in iv if was is not None and min(q[1], was[1]) > max(q[0], was[0])]
+    if len(over) > 1 and term is not None:
+        return min(over, key=lambda q: max(q[0] - term, term - q[1], 0.0))
+    if over:
+        return max(over, key=lambda q: min(q[1], was[1]) - max(q[0], was[0]))
+    return min(iv, key=lambda q: min(abs(ref - q[0]), abs(ref - q[1])))
 
 
 # ---------------------------------------------------------------- obstacles

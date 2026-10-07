@@ -1186,8 +1186,12 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
         env.pop('BENCH0', None)
         if res is not None and (best is None or res['key'] < best['key']):
             best = res
-        # done: a plan that passed, PROVED, laid connected and clean -- no later round would better it
-        if rc == 0 and proved and res is not None and res['open'] == 0 and res['drc'] == 0:
+        # done: a PROVED plan laid connected and clean -- whether or not its loop passed. A loop that did not pass
+        # names ends its audits found crowded, and the lay went round them; a later round changes those ends and can
+        # better only the vias or the copper, and on the synth handoff bench none did (11 of 117 cases went on after
+        # such a round, each one to the same grade), while the zynq DDR's joint fanout, its second round laid clean,
+        # spent 360 s on a third
+        if proved and res is not None and res['open'] == 0 and res['drc'] == 0:
             break
         # ---- the next round's feedback: the ends its audits found crowded (a loop that did not pass), and the lanes
         # an unproved plan left over two vias, which the ends counted on keeping at two
