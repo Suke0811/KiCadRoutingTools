@@ -951,6 +951,15 @@ def repair_planes(
         max_y - board_edge_clearance
     )
 
+    # Auto-detect routing layers if not specified. Resolved BEFORE the config,
+    # which carries them (#1185): get_layer_costs() iterates config.layers, so
+    # the 2-layer default turned a 4-layer chain's --layer-costs into two
+    # entries and In2's -1 never reached the region joins.
+    if routing_layers is None:
+        routing_layers = pcb_data.board_info.copper_layers
+        if not routing_layers:
+            routing_layers = ['F.Cu', 'B.Cu']  # Fallback
+
     # Build routing config
     config = GridRouteConfig(
         track_width=track_width,
@@ -958,6 +967,7 @@ def repair_planes(
         via_size=via_size,
         via_drill=via_drill,
         grid_step=grid_step,
+        layers=list(routing_layers),
         board_edge_clearance=board_edge_clearance,
         ripup_blocker_select=ripup_blocker_select
     )
@@ -1050,11 +1060,6 @@ def repair_planes(
     from plane_fill_model import set_board_net_clearances
     set_board_net_clearances(pcb_data, net_clearances)
 
-    # Auto-detect routing layers if not specified
-    if routing_layers is None:
-        routing_layers = pcb_data.board_info.copper_layers
-        if not routing_layers:
-            routing_layers = ['F.Cu', 'B.Cu']  # Fallback
     # NOTE: unlike batch_route, routing_layers here directly selects layers
     # region joins may PLACE copper on (not cost-driven), so no full-stack
     # append -- the default above is already the whole board, and the
@@ -3753,12 +3758,22 @@ Examples:
         # this leg's welds can violate the board's own rules on inner layers,
         # and (b) computes the fab floor as fab_floors(2)=0.127 instead of
         # fab_floors(4)=0.1, refusing welds the fab can actually make.
+        # With --layers omitted the engine routed every copper layer, and the
+        # --layer-costs are aligned to that list (#1185): the 2-layer default
+        # here would pair a 4-layer cost list with F.Cu/B.Cu only.
+        _olayers = list(args.layers) if getattr(args, 'layers', None) else None
+        if not _olayers:
+            try:
+                from kicad_parser import extract_layers, read_board_text
+                _olayers = list(extract_layers(read_board_text(
+                    args.input_file, quiet=True)).copper_layers or [])
+            except Exception:                                   # noqa: BLE001
+                _olayers = None
         _ocfg = GridRouteConfig(
             clearance=args.clearance, track_width=args.track_width,
             via_size=args.via_size, via_drill=args.via_drill,
             grid_step=args.grid_step,
-            layers=list(args.layers) if getattr(args, 'layers', None)
-            else ['F.Cu', 'B.Cu'],
+            layers=_olayers or ['F.Cu', 'B.Cu'],
             # #658: without these the weld router here ran at UNIFORM layer
             # economics while the rest of the run priced them, and the
             # forbidden-layer guards inside oracle_reconnect were inert.
