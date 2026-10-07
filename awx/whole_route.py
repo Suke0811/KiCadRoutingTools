@@ -41,6 +41,7 @@ KRT_TOOL = {'scope': [], 'kind': 'actor'}   # #937: a research tool (awx), catal
 
 import argparse
 import atexit
+import collections
 import contextlib
 import glob
 import io
@@ -923,6 +924,33 @@ def stage_env(env):
     return env
 
 
+def footprint_poses(board):
+    """{reference: [x, y, rotation]} of each footprint on `board` whose reference no other carries"""
+    from kicad_parser import parse_kicad_pcb
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        pcb = parse_kicad_pcb(board)
+    seen = collections.Counter(fp.reference for fp in pcb.footprints.values())
+    return {fp.reference: [round(fp.x, 4), round(fp.y, 4), round(fp.rotation or 0.0, 4)]
+            for fp in pcb.footprints.values() if seen[fp.reference] == 1}
+
+
+def place_held(board, out, held):
+    """`board` with the footprints `held` ({reference: [x, y, rotation]}) where it says, written to `out` (its project
+    beside it); `board` itself when every one of them already stands there"""
+    now = footprint_poses(board)
+    moves = [{'reference': r, 'new_x': p[0], 'new_y': p[1], 'new_rotation': p[2]}
+             for r, p in sorted(held.items()) if r in now and now[r] != p]
+    if not moves:
+        return board
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'py_placer'))
+    from placement.writer import write_placed_output
+    import fanout_from_plan as fp_
+    with contextlib.redirect_stdout(io.StringIO()):
+        write_placed_output(board, out, moves)
+    fp_.copy_pro(board, out)
+    return out
+
+
 def chain(K, o, R=3, base=None, dest=None, settings=None):
     """whole_chain.sh K OUTDIR ROUNDS: the exit code, the grade the last line printed. The bench and its destination
     are `base` and `dest` when given (route_bus.py), else BASE and DEST from the environment; `settings` go over the
@@ -945,6 +973,11 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
     FB = os.path.join(o, 'feedback.json')
     if os.path.exists(FB):
         os.remove(FB)
+    # the passives where the joint fanout's cap step left them, after the first round's fanout: nothing moves them
+    # again -- every later round starts from them, fans out round them and routes round them
+    HELD = os.path.join(o, 'held_parts.json')
+    if os.path.exists(HELD):
+        os.remove(HELD)
     prev = ''
     say = Log()
     r = 0
@@ -954,13 +987,18 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
     nets_all = [n for n in NETS.split(',') if n]
 
     def advance(d, base):
-        """the next round's base: this round's realized source board (its fo.log names it), else `base` as it was"""
+        """the next round's base: this round's realized source board (its fo.log names it), else `base` as it was --
+        the passives where the first round's cap step left them (HELD); the source board is written before it moves
+        them, and a base without them had every round move them again, from where they stood, not always the same"""
+        was = base
         sb = [m[len('source board: '):] for ln in lines_of(os.path.join(d, 'fo.log'))
               for m in re.findall(r'source board: [^,]+', ln)]
         if sb and sb[-1] and os.path.isfile(os.path.join(d, sb[-1])):
             base = os.path.join(d, sb[-1])
-            if 'BASE' in env:
-                env['BASE'] = base
+        if os.path.isfile(HELD):
+            base = place_held(base, os.path.join(d, 'base_held.kicad_pcb'), json.load(open(HELD)))
+        if base != was and 'BASE' in env:
+            env['BASE'] = base
         return base
 
     def lay(r, d, plan, bench, nets=None):
@@ -1070,6 +1108,8 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
         # (the run's nets, every round: a fanout never re-picks them off a later round's board -- K51's second round,
         # re-picked, dropped its three pairs while their teeth stood on the board, and the solve found them split)
         fenv['FANOUT_NETS'] = NETS
+        if os.path.isfile(HELD):
+            fenv['FANOUT_PASSIVES_FIXED'] = '1'         # (joint_escape.passives_fixed: the cap step has moved them)
         if os.path.isfile(FB):
             fenv['FEEDBACK'] = FB
         if prev:
@@ -1136,19 +1176,35 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
                 r -= 1
                 break
         bench = os.path.join(d, 'fo.kicad_pcb')
-        if env.get('FANOUT_JOINT'):
+        if env.get('FANOUT_JOINT') and os.path.isfile(HELD):
+            say('  caps: held where the first round\'s cap step left them -- the fanout went round them')
+        elif env.get('FANOUT_JOINT'):
             # the parts the joint fanout lays through -- the movable passives under the arrays, as the chain's own
-            # fanout does -- move off its copper now, as the chain's cap nudge moves them after its fanout
+            # fanout does -- move off its copper now, ONCE, as the chain's cap nudge moves them after its fanout
             # (place_fanout_clearance), and the route holds them fixed where they are left: routed round them where
-            # they stood, the zynq's bus on four layers met them under its lanes and its loop's layer cuts left no plan
+            # they stood, the zynq's bus on four layers met them under its lanes and its loop's layer cuts left no plan.
+            # Where it leaves them is HELD: every later round starts from it and fans out round them
             import rules as _rules
+            before = footprint_poses(bench)
+            # (--beneath-only: a passive is nudged only where it stays beneath its BGA; one beside the array, in the
+            # channel the bus leaves across, stays where it is and the fanout and the route go round it)
             rcn = run([os.path.join('..', 'py_router', 'place_fanout_clearance.py'), bench, bench,
-                       '--clearance', str(_rules.active().clearance)], env,
+                       '--clearance', str(_rules.active().clearance), '--beneath-only'], env,
                       log_path=os.path.join(d, 'caps.log'), own_process=True)[0]
             for ln in grep(os.path.join(d, 'caps.log'), r'^(Moved|Stuck|  Unresolved)'):
                 say('  caps: ' + ln.strip()[:200])
             if rcn != 0:
                 say(f"  caps: the nudge exited {rcn} -- the round goes on with them where the fanout left them")
+            after = footprint_poses(bench)
+            json.dump({r_: p_ for r_, p_ in sorted(after.items()) if before.get(r_) != p_}, open(HELD, 'w'),
+                      indent=1)
+            # and the fanout's own copper held to them where they now stand, as every later round holds it: a part
+            # with nowhere beneath its BGA to go is left on it, and what no longer stands clear is planned again
+            # round the parts (fanout_from_plan --hold)
+            run(['fanout_from_plan.py', bench, '--hold'], {**env, 'FANOUT_PASSIVES_FIXED': '1'},
+                log_path=os.path.join(d, 'hold.log'))
+            for ln in grep(os.path.join(d, 'hold.log'), r'joint fanout of'):
+                say(ln[:220])
         env.update(BENCH=bench, NETS=NETS, DEST=dest)
         solve = os.path.join(d, 'solve.json')
         # (a round never ends with nothing: its solve keeps a plan it cannot prove -- whole_solve SOLVE_UNPROVED -- and

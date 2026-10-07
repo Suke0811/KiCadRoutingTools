@@ -307,13 +307,18 @@ the chain's own fanouts.
 
 `--joint-fanout` (opt-in) also fans out the two arrays' other nets and plane
 balls. The bus is laid as without it, but round a via site kept free in every
-other ball. The rest are planned together round the bus in the first fanout
+ball of the arrays' other nets (a plane ball has other ways down: a gap's via,
+a strap). The rest are planned together round the bus in the first fanout
 round (`joint_escape.plan_array`: every move kind, straps, drops, one CP-SAT
 solve; the conflicts as groups, `conflict_groups.py`) and laid by the
 under-pad engine's joint escape (`bga_fanout/underpad.py`, `joint=True`),
-stepped down the fab ladder together only while a ball is left. A later round
+stepped down the fab ladder together only while a ball is left, and no
+further than a rung that serves no more than the one above it. A later round
 holds them as it holds its own teeth: only a ball whose copper the round's
-moved bus stubs now meet is planned again (`joint_escape.carry`).
+moved bus stubs now meet is planned again (`joint_escape.carry`). On two
+routing layers the bus's ends at both arrays are the chain's own; on more,
+the destination's berths and the source's re-laid teeth come from the array's
+joint plan.
 
 A plane ball goes down to its plane as the human's do, sharing vias:
 
@@ -324,6 +329,11 @@ A plane ball goes down to its plane as the human's do, sharing vias:
 - **A strap:** a ball may strap to a neighbour of its net that has a way
   down. The strap is priced as the via it saves, so a ball takes one only
   when it has no way down of its own.
+- **Onto its own plane, clear of the lanes:** a drop's via lands only where
+  its net's pour fills -- on a split layer, inside its own island; a ball with
+  none of its plane under it or its gaps is left to the route step. A via off
+  the array stays clear of the straight continuation of the bus's laid lanes,
+  and one beyond a face they leave by pays more than a via in the pad.
 
 On the zynq's U5 the human's RFGND balls stand four round one via, two at a via
 off the edge, and three strapped down a column; there the plan's plane balls
@@ -374,9 +384,14 @@ walls in the teeth of the next. Runs on no one layer yet count as one layer
 here. Before the rule, zynq U1's plan at four layers split six buses' stretches
 (the LVDS bus and the U4 group alternating on the bottom face); with it, none.
 
-Each round the passives the joint fanout lays through are moved off its copper
-(the chain's cap nudge, `place_fanout_clearance.py`) before the solve, and the
-route holds them fixed where they are left.
+The passives the joint fanout lays through are moved off its copper once,
+after the first round's fanout (the chain's cap nudge,
+`place_fanout_clearance.py --beneath-only`: a part beneath a BGA moves only
+where it stays beneath it, one beside the array stays where it is). The first
+round's copper is then held to where they stand (`fanout_from_plan.py
+--hold`: what no longer clears them is planned again round them), and every
+later round starts from those poses and fans out round them; the route holds
+them fixed.
 
 `zynq_ad9364` from GitHub, its planes poured as the stress run poured them,
 and the whole bus at the stress run's sizes -- its fanouts' 0.12 mm track at

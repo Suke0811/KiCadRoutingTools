@@ -599,14 +599,51 @@ def ball_field_box(fp) -> Tuple[float, float, float, float]:
     return (fp.x + b[0], fp.y + b[1], fp.x + b[2], fp.y + b[3])
 
 
+def package_box(fp, courtyards) -> Tuple[float, float, float, float]:
+    """A BGA's PACKAGE: its courtyard (`courtyards`, footprint-local boxes by
+    reference; else its own box) at its pose, and never less than its ball
+    field (ball_field_box) -- the region a part is BENEATH. The zynq's U1 and
+    U2 courtyards read as boxes 0.05 mm across at their centres, and held to
+    them the step called 2 of the board's 47 decoupling parts beneath."""
+    lb = courtyards.get(fp.reference) or compute_footprint_bbox_local(fp)
+    b = _rotate_local_bounds(*lb, fp.rotation % 360)
+    f = ball_field_box(fp)
+    return (min(fp.x + b[0], f[0]), min(fp.y + b[1], f[1]), max(fp.x + b[2], f[2]), max(fp.y + b[3], f[3]))
+
+
+def _inside(rect, box, tol=1e-3) -> bool:
+    return (rect[0] >= box[0] - tol and rect[1] >= box[1] - tol
+            and rect[2] <= box[2] + tol and rect[3] <= box[3] + tol)
+
+
+def pads_beneath(fp, boxes):
+    """The package box (of `boxes`) the part's copper pads all lie within --
+    the BGA it is BENEATH -- else None."""
+    rects = [(p.global_x - p.size_x / 2, p.global_y - p.size_y / 2,
+              p.global_x + p.size_x / 2, p.global_y + p.size_y / 2)
+             for p in fp.pads if any(str(l).endswith('.Cu') for l in p.layers)]
+    if not rects:
+        return None
+    u = (min(r[0] for r in rects), min(r[1] for r in rects),
+         max(r[2] for r in rects), max(r[3] for r in rects))
+    return next((bb for bb in boxes if _inside(u, bb)), None)
+
+
 def is_near_bga_cap(ref, fp, local_bounds, cap_prefixes, locked, bga_boxes,
-                    near_margin) -> bool:
+                    near_margin, beneath_boxes=None) -> bool:
     """THE MOVABLE-CAP RULE: the parts this step moves. An unlocked part with
     one of `cap_prefixes` and at most two COPPER pads (paste-only apertures --
     split-paste 0201s -- do not count, #130), drawing none of the board's own
     outline (#829), whose courtyard (`local_bounds`, footprint-local, at the
-    part's pose) lies within `near_margin` of a BGA's ball field. Every other
-    part is a static obstacle here, and nothing else in the chain moves it."""
+    part's pose) lies within `near_margin` of a BGA's ball field. With
+    `beneath_boxes` (the BGAs' packages, package_box: the step's beneath_only,
+    awx's joint fanout) its pads must lie BENEATH one, and the step moves it
+    only where they stay beneath (_Cap.beneath): a part beside the package, in
+    the channel the arrays' escapes run out into, is not moved -- nudged off
+    the fanout, the zynq's C160, C161 and R6 went 1.2 mm under U2's edge
+    column, across the DDR bus's berths, and every route after met them there.
+    Every other part is a static obstacle here, and nothing else in the chain
+    moves it."""
     n_copper = sum(1 for p in fp.pads
                    if any(str(l).endswith('.Cu') for l in p.layers))
     if not (ref.startswith(cap_prefixes) and n_copper <= 2 and ref not in locked
@@ -614,11 +651,13 @@ def is_near_bga_cap(ref, fp, local_bounds, cap_prefixes, locked, bga_boxes,
         return False
     b = _rotate_local_bounds(*local_bounds, fp.rotation % 360)
     rect = (fp.x + b[0], fp.y + b[1], fp.x + b[2], fp.y + b[3])
-    return any(_rect_gap(rect, bb) <= near_margin for bb in bga_boxes)
+    if not any(_rect_gap(rect, bb) <= near_margin for bb in bga_boxes):
+        return False
+    return beneath_boxes is None or pads_beneath(fp, beneath_boxes) is not None
 
 
 def movable_cap_refs(pcb_data, pcb_file, cap_prefix=DEFAULT_CAP_PREFIX,
-                     near_margin=DEFAULT_NEAR_MARGIN, extra_locked=()) -> Set[str]:
+                     near_margin=DEFAULT_NEAR_MARGIN, extra_locked=(), beneath_only=False) -> Set[str]:
     """The refs this step would move on `pcb_data` (is_near_bga_cap, at the
     step's defaults): what a step BEFORE it -- the fanout's joint planning
     (awx joint_escape.movable_refs) -- may treat as not there. `pcb_file`
@@ -630,10 +669,13 @@ def movable_cap_refs(pcb_data, pcb_file, cap_prefix=DEFAULT_CAP_PREFIX,
     locked = (set(extract_locked_refs(pcb_file)) if pcb_file else
               {r for r, f in pcb_data.footprints.items() if getattr(f, 'locked', False)})
     locked |= set(extra_locked)
-    boxes = [ball_field_box(fp) for fp in find_components_by_type(pcb_data, 'BGA')]
+    bgas = find_components_by_type(pcb_data, 'BGA')
+    boxes = [ball_field_box(fp) for fp in bgas]
+    pkgs = [package_box(fp, courtyards) for fp in bgas]
     return {ref for ref, fp in pcb_data.footprints.items()
             if fp.pads and is_near_bga_cap(ref, fp, courtyards.get(ref) or compute_footprint_bbox_local(fp),
-                                           prefixes, locked, boxes, near_margin)}
+                                           prefixes, locked, boxes, near_margin,
+                                           beneath_boxes=pkgs if beneath_only else None)}
 
 
 class _Cap:
@@ -651,6 +693,9 @@ class _Cap:
         self.seed_x, self.seed_y = fp.x, fp.y
         self.seed_rot = fp.rotation % 360
         self.x, self.y, self.rot = fp.x, fp.y, fp.rotation % 360
+        # the BGA package the part is beneath (package_box): every pose it is moved to keeps its pads within it
+        # (stays_beneath); None -- built apart from the step's rule -- moves it anywhere its budget reaches
+        self.beneath = None
         # pads: (off_x, off_y, half_x, half_y, net_id) relative to fp center.
         # Copper pads only -- a footprint may define solder-paste apertures as
         # separate paste-only "pads" (e.g. gkl_misc C_0201_0603Metric), which are
@@ -802,6 +847,10 @@ class _Cap:
         self._pr_key, self._pr_out = pose, out
         return out
 
+    def stays_beneath(self, x, y, rot) -> bool:
+        """the pose keeps the part's pads beneath its BGA's package (beneath), or it is beneath none"""
+        return self.beneath is None or _inside(self.pad_bbox(x, y, rot), self.beneath)
+
     def pad_bbox(self, x=None, y=None, rot=None):
         """Union bbox of pad_rects at a pose -- a containment-conservative
         prescreen: any pad-pair gap is >= the bbox-pair gap, so two caps whose
@@ -862,7 +911,8 @@ class _Repair:
                  capture_radius: float, default_via_size: float,
                  cap_prefix: str, extra_locked: Set[str],
                  max_displacement_cap: float = 3.0,
-                 netclass_ceiling: Optional[float] = None):
+                 netclass_ceiling: Optional[float] = None,
+                 beneath_only: bool = False):
         bounds = pcb_data.board_info.board_bounds
         if bounds is None:
             raise ValueError("No board boundary (Edge.Cuts) found")
@@ -1149,10 +1199,12 @@ class _Repair:
         # real BGA footprints (detect_package_type == 'BGA').
         self.attract: Dict[int, List[Tuple[float, float]]] = {}
         bga_bboxes: List[Tuple[float, float, float, float]] = []
+        bga_pkgs: List[Tuple[float, float, float, float]] = []   # (the packages a part may be beneath)
         self.bga_refs: List[str] = []
         for fp in find_components_by_type(pcb_data, 'BGA'):
             self.bga_refs.append(fp.reference)
             bga_bboxes.append(ball_field_box(fp))
+            bga_pkgs.append(package_box(fp, courtyards))
             for p in fp.pads:
                 if p.net_id > 0:
                     self.attract.setdefault(p.net_id, []).append(
@@ -1226,8 +1278,10 @@ class _Repair:
             # fanout_gui.py, so it has to be applied here or it does not apply
             # on this path at all)
             if is_near_bga_cap(ref, fp, lb, self._cap_prefixes, locked,
-                               bga_bboxes, near_margin):
+                               bga_bboxes, near_margin, beneath_boxes=bga_pkgs if beneath_only else None):
                 self.caps[ref] = _Cap(fp, lb, self._floors, self._all_cu_ordered)
+                if beneath_only:
+                    self.caps[ref].beneath = pads_beneath(fp, bga_pkgs)
                 continue
             # everything else is a static obstacle
             side = footprint_side(fp)
@@ -3023,7 +3077,11 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                             # candidate-position sweep per cap x up to 30
                             # passes is the slow part, so each cap visit
                             # reports (GUI status line). None = silent.
-                            progress_callback=None) -> Dict:
+                            progress_callback=None,
+                            # (--beneath-only) move only the parts BENEATH a BGA's package, and only where they stay
+                            # beneath it (is_near_bga_cap, _Cap.stays_beneath): awx's joint fanout, whose bus leaves
+                            # the arrays across the channel a nudged part beside them would land in
+                            beneath_only: bool = False) -> Dict:
     """Nudge near-BGA decoupling caps off foreign-net fanout copper (vias
     #130, escape tracks #278, component pads #275) and toward same-net balls.
     Run AFTER bga_fanout.py.
@@ -3138,7 +3196,8 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                  board_edge_clearance, near_margin, capture_radius,
                  default_via_size, cap_prefix, extra_locked,
                  max_displacement_cap=max_displacement_cap,
-                 netclass_ceiling=netclass_ceiling)
+                 netclass_ceiling=netclass_ceiling,
+                 beneath_only=beneath_only)
 
     print(f"BGAs: {', '.join(st.bga_refs) or '(none)'}  "
           f"fanout vias: {len(st.vias)}  "
@@ -3265,7 +3324,7 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                 for cx, cy in _candidate_positions(cap, budget[ref], step,
                                                    grid_step):
                     for rot in rots:
-                        if (cx, cy, rot) == (cap.x, cap.y, cap.rot):
+                        if (cx, cy, rot) == (cap.x, cap.y, cap.rot) or not cap.stays_beneath(cx, cy, rot):
                             continue
                         c = st.cost(ref, cap, cx, cy, rot)
                         if c < best[0] - EPS:
@@ -3337,7 +3396,7 @@ def repair_fanout_clearance(pcb_data: PCBData, pcb_file: str,
                 for cx, cy in _candidate_positions(cap, max_displacement_cap,
                                                    step, grid_step):
                     for rot in rots:
-                        if st.graze_penalty(ref, cap, cx, cy, rot) > EPS:
+                        if not cap.stays_beneath(cx, cy, rot) or st.graze_penalty(ref, cap, cx, cy, rot) > EPS:
                             continue
                         c = st.cost(ref, cap, cx, cy, rot)  # inf if blocked
                         if c == float('inf'):

@@ -118,6 +118,10 @@ Examples:
                              "(default: 1.5)")
     parser.add_argument("--no-rotate", action="store_true",
                         help="Disable 90-degree rotation moves")
+    parser.add_argument("--beneath-only", action="store_true",
+                        help="Move only the passives BENEATH a BGA's package, and only to poses "
+                             "that keep them beneath it (a part beside the package, in the channel "
+                             "the escapes run out into, stays where it is)")
     parser.add_argument("--cap-prefix", default="C,R,FB",
                         help="Comma-separated reference prefix(es) treated as "
                              "movable passives near a BGA (default: C,R,FB = caps, "
@@ -176,6 +180,7 @@ Examples:
         lock_refs=args.lock,
         max_passes=args.max_passes,
         verbose=args.verbose,
+        beneath_only=args.beneath_only,
     )
 
     def _write_drc_floors():

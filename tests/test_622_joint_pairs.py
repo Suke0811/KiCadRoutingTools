@@ -12,7 +12,8 @@ escape, every net a bus net:
    no other planned exit of that face and layer between them -- planned leg by leg, the first bus had two of its
    three pairs split (one by another net's escape, one by a whole pair's), the second one of its four split and the
    other three with their legs on two faces or two layers;
-3. laid, each pair's two teeth stand side by side the same way on the board.
+3. laid, each pair's two teeth stand side by side the same way on the board;
+5. a round planning again only balls that are not there (no option among them) gets an empty plan, not a crash.
 """
 import contextlib
 import io
@@ -140,6 +141,18 @@ def case(tag, args, n_pairs, tmp):
               f'{tag} {b_}: asked hand {-h0[pn]:+d} (free {h0[pn]:+d}), planned {h2:+d} out of {a.direction}/'
               f'{a.layer} and {c.direction}/{c.layer}, exits {d:.2f} mm apart')
     check(turned > 0, f'{tag}: the hands asked turned {turned} pair(s) (none: the check above checked nothing)')
+
+    # 5. a round planning again balls with no option among them -- here none of the array's -- asks phase 1 nothing:
+    # an empty plan, not a crash (zynq U2's third round, its four plane balls held round the passives with no drop
+    # left, raised CP-SAT's "solve() has not been called" from the report, and the round's fanout exited 1 four times)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            h3, rep3 = je.plan_array(pcb, 'SU1', names, [], je.signal_layers(pcb), far=far, log=lambda *a: None,
+                                     only={'NO_SUCH_NET#Z99'})
+        check(not h3 and rep3['unplanned'] == [] and rep3['phase1'] == 'nothing to ask',
+              f'{tag}: nothing to plan again -> an empty plan ({len(h3)} hints, phase 1 {rep3["phase1"]})')
+    except Exception as e:      # noqa: BLE001
+        check(False, f'{tag}: nothing to plan again raised {type(e).__name__}: {e}')
 
     # 3. laid so
     out = os.path.join(tmp, f'{tag}.laid.kicad_pcb')

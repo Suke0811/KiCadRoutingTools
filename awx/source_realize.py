@@ -536,10 +536,19 @@ def realize(board, src_choice, src_pad, byname, sref, out_path, log=print,
     # moves the unlocked two-pad passives off the fanout: its realize plans and
     # lays round them as the comb and the other nets' fanout do
     # (joint_escape.movable_refs) -- marked immovable here alone, the realize's
-    # plan and engine read RX10's pad under zynq U1 two ways
-    if jspec is None:
+    # plan and engine read RX10's pad under zynq U1 two ways. Once the cap step
+    # has moved them (the whole route's later rounds, joint_escape.
+    # passives_fixed), nothing moves them again: immovable here too.
+    # The JOINT realize with more routing layers than two alone; on two the
+    # asked teeth are laid as the chain lays them, the array's other balls
+    # planned round them after (fanout_from_plan.joint_others): the joint plan
+    # of the whole array, run for every re-fan, moved the asked teeth for every
+    # ball's sake -- the zynq DDR's ends crossed 260 times to the chain's 202,
+    # and its four realizes of round 1 took 400 s
+    joint_ = jspec is not None and len(route_layers.layers()) > 2
+    if not joint_ or _je.passives_fixed():
         pcb._fanout_all_foreign_immovable = True
-    if jspec is not None:
+    if joint_:
         # THE JOINT FANOUT (FANOUT_JOINT): the asked teeth from the source array's JOINT plan -- the stripped nets
         # preferring their asks, the array's other nets and plane balls planned with them so the teeth leave them
         # room, a pair's legs held together -- and the stripped nets laid exactly as planned (the other nets are laid

@@ -268,19 +268,14 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         for ar in spec['arrays']:
             log(f'  joint fanout of {ar["ref"]} each round: {len(ar["others"])} other nets on '
                 + '/'.join(spec['layers']) + f', the plane balls of {len(ar["drops"])} nets dropped')
-    if joint_fanout:
-        # the bus's comb from the source array's JOINT plan (joint_escape.bus_comb): every ball of the array planned
-        # with it, a pair's legs as a pair, laid for the bus alone -- the rounds plan the others round it
-        import joint_escape as _je
-        ar_ = next(a for a in spec['arrays'] if a['ref'] == src)
-        with contextlib.redirect_stdout(sys.stderr):
-            n_t, n_v, failed, crep = _je.bus_comb(base, fanned, src, dest, names, ar_['others'], spec['layers'],
-                                                  drops=ar_['drops'])
-        log(f'  {src} comb from its joint plan: {crep["status"]}, bus {crep["bus_escaped"]}/{crep["bus_balls"]}, '
-            f'pairs {crep["pairs_escaped"]}/{crep["pairs"]}')
-    else:
-        with contextlib.redirect_stdout(sys.stderr):
-            n_t, n_v, failed = mb.fanout_source(base, fanned, src, names, reserve=spec)
+    # (with the joint fanout too, the bus's source teeth are the chain's -- its own source fanout, the other balls' via
+    # sites kept free (reserve) -- and the rounds plan the array's other balls and plane balls round them. A comb from
+    # the array's joint plan chose the teeth for every ball's sake and the bus's order toward the destination lost: the
+    # zynq DDR's, laid, the ends model's 86 vias with six nets over two and two ends blocked in front against the
+    # chain's teeth's 70, its solve 264 crossings to the chain's 202; round the chain's teeth the joint plan still
+    # serves every other net of U1 and 131 of its 132 plane balls)
+    with contextlib.redirect_stdout(sys.stderr):
+        n_t, n_v, failed = mb.fanout_source(base, fanned, src, names, reserve=spec)
     with contextlib.redirect_stdout(sys.stderr):
         fix_project_for_output(fanned, clearance=te.SPEC_CLEARANCE, track_width=sr.FAN_TRACK,
                                via_diameter=te.VIA_SIZE, via_drill=te.VIA_DRILL, verbose=False)

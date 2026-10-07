@@ -880,6 +880,8 @@ class BGAOptionsPanel(wx.ScrolledWindow):
         # Basic tab's via_size (0.5 out of the box) -- see the control.
         ('cap_default_via_size', CAP_DEFAULT_VIA_SIZE),
         ('cap_allow_rotation', True),
+        # --beneath-only: move only the passives beneath a BGA, only where they stay beneath it
+        ('cap_beneath_only', False),
     )
 
     def __init__(self, parent, on_differential_changed=None):
@@ -1116,6 +1118,13 @@ class BGAOptionsPanel(wx.ScrolledWindow):
         self.cap_allow_rotation.SetValue(True)
         self.cap_allow_rotation.SetToolTip("Allow 90-degree cap rotation to fit (off = --no-rotate)")
         cap_sizer.Add(self.cap_allow_rotation, 0, wx.LEFT | wx.BOTTOM, 5)
+        self.cap_beneath_only = wx.CheckBox(self, label="Keep caps beneath the BGA")
+        self.cap_beneath_only.SetValue(False)
+        self.cap_beneath_only.SetToolTip(
+            "Move only the passives beneath a BGA's package, and only to poses that keep them "
+            "beneath it; a part beside the package, in the channel the escapes run out into, "
+            "stays where it is (--beneath-only)")
+        cap_sizer.Add(self.cap_beneath_only, 0, wx.LEFT | wx.BOTTOM, 5)
 
         main_sizer.Add(cap_sizer, 0, wx.EXPAND | wx.TOP, 5)
 
@@ -1180,6 +1189,7 @@ class BGAOptionsPanel(wx.ScrolledWindow):
             'cap_default_via_size': self.cap_default_via_size.GetValue(),
             'cap_prefix': self.cap_prefix.GetValue().strip() or 'C,R,FB',
             'cap_allow_rotation': self.cap_allow_rotation.GetValue(),
+            'cap_beneath_only': self.cap_beneath_only.GetValue(),
         }
 
 
@@ -2224,6 +2234,7 @@ class FanoutTab(wx.Panel):
                 # would have silently stopped moving ferrite beads.
                 cap_prefix=fanout_config.get('cap_prefix', 'C,R,FB'),
                 allow_rotations=fanout_config.get('cap_allow_rotation', True),
+                beneath_only=bool(fanout_config.get('cap_beneath_only', False)),
                 # Runs ON the UI thread; _fanout_status forces the repaint so
                 # the label moves per cap visit instead of freezing (#130).
                 # x/N lines only (see the fanout call sites).

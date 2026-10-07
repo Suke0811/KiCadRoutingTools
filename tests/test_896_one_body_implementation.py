@@ -155,6 +155,10 @@ _DECLARED = {
      'movable_cap_refs'): (2, 'the same cap model: which caps the cap step '
                            'may move (near a ball field, unlocked), factored '
                            'out of _Repair.__init__ with ball_field_box'),
+    (os.path.join('py_placer', 'placement', 'fanout_clearance.py'),
+     'package_box'): (1, "the same cap model: the BGA's package a part must "
+                      'stay beneath under --beneath-only (the courtyard of '
+                      'the BGA itself, not a part body question)'),
 
     # -- convertible, and simply not in this PR. Each is a candidate for the
     #    follow-up, and saying so is the point: a reader can tell a decision
