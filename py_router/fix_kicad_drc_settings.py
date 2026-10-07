@@ -1428,16 +1428,23 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                            "meta": {"filename": os.path.basename(out_pro), "version": 1},
                            "net_settings": {"classes": [], "meta": {"version": 0}}},
                           f, indent=2)
-    # #498: carry the input's custom-rules file to the output the same way --
-    # the router routed to its per-layer clearances, and every grader
-    # (check_drc, staged kicad-cli, the next chain step) resolves them from the
-    # OUTPUT board's sibling. Never overwrite an existing output dru.
+    # Carry the input's other siblings (copy_board.SIBLING_EXTS) the same way:
+    # the .kicad_dru (#498: the router routed to its per-layer clearances, and
+    # every grader resolves them from the OUTPUT board's sibling), the
+    # .design-brief.json (#711: the declared intent, without which the next
+    # grade infers every edge from the current pose, #1190) and the .kicad_prl.
+    # Never overwrite an existing output sibling.
     if input_pcb:
-        in_dru = os.path.splitext(input_pcb)[0] + ".kicad_dru"
-        out_dru = os.path.splitext(output_pcb)[0] + ".kicad_dru"
-        if os.path.isfile(in_dru) and not os.path.isfile(out_dru) \
-                and os.path.abspath(in_dru) != os.path.abspath(out_dru):
-            shutil.copyfile(in_dru, out_dru)
+        from copy_board import SIBLING_EXTS
+        in_base = os.path.splitext(input_pcb)[0]
+        out_base = os.path.splitext(output_pcb)[0]
+        for ext in SIBLING_EXTS:
+            if ext == ".kicad_pro":
+                continue                                  # handled above
+            src, dst = in_base + ext, out_base + ext
+            if os.path.isfile(src) and not os.path.isfile(dst) \
+                    and os.path.abspath(src) != os.path.abspath(dst):
+                shutil.copyfile(src, dst)
 
     with open(out_pro) as f:
         proj = json.load(f)
