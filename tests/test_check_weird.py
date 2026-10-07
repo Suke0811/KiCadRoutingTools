@@ -796,6 +796,58 @@ def main():
                                                 tolerance=0)[0]
                          if x['category'] == 'dangling-end']))
 
+    # 22. The narrow-pad-joint floor is the PROJECT's (#1187). It was the
+    #     thinnest track on the board, so re-routing complex_hierarchy's one
+    #     0.2032 mm rescue at 0.4 flipped two unrelated pad joints to
+    #     narrow-pad-joint while the project -- and the KiCad grade, staged
+    #     from it -- still said 0.2032. A 0.8 mm track meets a 1.6 mm round
+    #     pad through a ~0.40 mm lens here.
+    import json as _json
+    import tempfile as _tempfile
+
+    def _webpcb(pro=None, rescue=False):
+        _p = _pcb([_seg(6, 0, 1.12, 0, width=0.8)]
+                  + ([_seg(-9, -9, -8, -9, width=0.2032)] if rescue else []),
+                  pads=[_pad(0, 0, size=1.6, num='1'),
+                        _pad(6, 0, size=1.6, num='2', ref='U2')])
+        if pro is not None:
+            _td = _tempfile.mkdtemp(prefix='t1187_')
+            _bp = os.path.join(_td, 'b.kicad_pcb')
+            open(_bp, 'w').close()
+            with open(os.path.join(_td, 'b.kicad_pro'), 'w') as _f:
+                _json.dump({'board': {'design_settings': {'rules': pro}}}, _f)
+            _p.source_path = _bp
+        return _p
+
+    def _web(pro=None, rescue=False):
+        return len([x for x in check_weird(_webpcb(pro, rescue), tolerance=0)[0]
+                    if x['category'] == 'narrow-pad-joint'])
+
+    _p0203 = {'min_track_width': 0.2032}
+    results.append(("under a 0.2032 project floor the 0.40 mm web is clean, "
+                    "with the thin rescue track and without it",
+                    _web(_p0203, rescue=True) == 0 and _web(_p0203) == 0))
+    results.append(("the author's min_connection outranks min_track_width",
+                    _web({'min_connection': 0.6, 'min_track_width': 0.2032}) == 1))
+    results.append(("a project floor above the web flags it",
+                    _web({'min_track_width': 0.6}) == 1))
+    #     Control: with no project the floor is still the thinnest track
+    #     (#416), so a project-less board keeps its old verdicts.
+    results.append(("no project: the floor is the thinnest track, as before",
+                    _web() == 1 and _web(rescue=True) == 0))
+    #     The REPAIR passes ask what the board ships graded at, mid-run: the
+    #     project lowered to the thinnest track and the run's width, as the
+    #     writeback lowers it -- the same number on both fronts, whose copies
+    #     of the project differ mid-plan while the copper does not.
+    from fix_kicad_drc_settings import connection_width_floor as _cwf
+    _p06 = {'min_track_width': 0.6}
+    results.append(("shipped floor: the project's when the copper is wider",
+                    abs(_cwf(_webpcb(_p0203), shipped=True) - 0.2032) < 1e-9))
+    results.append(("shipped floor: lowered to a thinner track and the width",
+                    abs(_cwf(_webpcb(_p06, rescue=True), shipped=True) - 0.2032) < 1e-9
+                    and abs(_cwf(_webpcb(_p06), 0.3, shipped=True) - 0.3) < 1e-9
+                    and abs(_cwf(_webpcb(_p06, rescue=True)) - 0.6) < 1e-9))
+
     # 11. The reporter, which is what #696 actually broke: a finding whose
     #     category is missing from CATEGORIES counted toward the headline and
     #     the exit code but printed nothing, so the board was blocked by a

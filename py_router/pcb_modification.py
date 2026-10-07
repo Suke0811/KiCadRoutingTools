@@ -799,8 +799,9 @@ def close_soft_joints(results, pcb_data: PCBData, scope_net_ids, config,
 # round-capped segment meeting a convex pad rectangle) that erosion has an exact
 # closed form -- no shapely, so it runs in the KiCad-python GUI front too: in the
 # pad's axis-aligned local frame the eroded track is the segment buffered by
-# (r - e) (r = track half-width, e = floor/2, and r >= e because floor is the
-# thinnest track on the board), and the eroded pad is the rectangle shrunk by e.
+# (r - e) (r = track half-width, e = floor/2; a track with r < e is skipped,
+# since no floor-width web can exist through it), and the eroded pad is the
+# rectangle shrunk by e. The floor is the project's (connection_width_floor).
 # The joint survives IFF that buffered segment reaches the shrunk rectangle, i.e.
 #   dist(segment, pad_rect_shrunk_by_e) <= r - e.
 # When it does not, close_soft_joints adds a short connector from the endpoint to
@@ -1003,14 +1004,14 @@ def terminal_web_neck_exact(pcb_data, net_id, layer, ex, ey, floor,
 
 
 def _board_min_track_width(pcb_data, scope_net_ids, config) -> float:
-    """The connection_width grading floor: the thinnest track on the board
-    (KiCad's scan_board_minima). Falls back to the configured track width."""
-    widths = [s.width for s in pcb_data.segments
-              if not getattr(s, 'graphic', False) and s.width and s.width > 0]
-    cfg_w = getattr(config, 'track_width', 0.0) or 0.0
-    if cfg_w > 0:
-        widths.append(cfg_w)
-    return min(widths) if widths else (cfg_w or 0.1)
+    """The connection_width floor the board ships graded at
+    (fix_kicad_drc_settings.connection_width_floor, #1187): the project's,
+    lowered to the run's track width and the thinnest track, as the
+    writeback will lower it. 0.1 when nothing records a floor."""
+    from fix_kicad_drc_settings import connection_width_floor
+    return connection_width_floor(
+        pcb_data, getattr(config, 'track_width', 0.0) or 0.0,
+        shipped=True) or 0.1
 
 
 def snap_stub_gaps(results, pcb_data: PCBData, scope_net_ids, config,
@@ -2215,7 +2216,7 @@ class StrictRemovalModel:
       * no NEW soft joint (#319: _soft_joint_pairs, the guard every
         subtractive pass runs), and no NEW narrow pad joint (#416: a terminal
         whose cap meets its pad through a web under ``web_floor``, the
-        board's thinnest track -- check_weird's narrow-pad-joint).
+        board's connection_width floor -- check_weird's narrow-pad-joint).
 
     Candidates are unlocked, non-graphic track segments outside
     ``readonly_ids``. They are tried in UNITS: every single segment, and every
@@ -2884,11 +2885,10 @@ def collapse_strict_redundant(results, pcb_data: PCBData, scope_net_ids=None,
     vias_by_net = defaultdict(list)
     for v in pcb_data.vias:
         vias_by_net[v.net_id].append(v)
-    # The narrow-pad-joint floor as check_weird reads it: the thinnest track
-    # on the whole board (KiCad's scan_board_minima min_track_width).
-    _widths = [s.width for s in pcb_data.segments
-               if not getattr(s, 'graphic', False) and s.width and s.width > 0]
-    web_floor = min(_widths) if _widths else 0.0
+    # The narrow-pad-joint floor the board ships graded at: the project's,
+    # lowered as the writeback will lower it (connection_width_floor, #1187).
+    from fix_kicad_drc_settings import connection_width_floor
+    web_floor = connection_width_floor(pcb_data, shipped=True)
 
     removed_ids = set()
     dropped_via_ids = set()
