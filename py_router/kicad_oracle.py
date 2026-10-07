@@ -949,6 +949,66 @@ def clamp_emitted_width(route_points, extra_conn, used_width, nominal_width,
     return w
 
 
+def widen_link_legs(route_points, used_width, pcb_data, net_id, config,
+                    piece_mm=None):
+    """An oracle link's legs as ``[(x1, y1, x2, y2, layer, width)]`` (#1169):
+    each at the NET's own requested width wherever that copper clears, and at
+    ``used_width`` only through the pinch.
+
+    The width ladder above re-routes the WHOLE link at each width and stops at
+    the first that does not fit, and the exact-fill tier has no ladder at all,
+    so one pinch anywhere shipped the whole strap at the class width
+    (complex_hierarchy: GND 74.0 of 92.9 mm under its requested 0.6, all of it
+    oracle copper, where 58.6 mm of it fits at 0.6). This is the bulk route's
+    piecewise rule (#1033, ``_widen_fitting_pieces``) applied to the copper
+    about to be written, judged by the same exact check every oracle width
+    decision uses (``wide_route_clear``: foreign copper, board edge, NPTH
+    drills): a leg that clears whole ships wide whole; otherwise it is cut
+    into ``_WIDEN_PIECE_MM`` pieces and each is judged with its own end caps.
+    Both tiers emit through it."""
+    from plane_region_connector import wide_route_clear
+    from single_ended_routing import _WIDEN_PIECE_MM
+    piece = piece_mm or _WIDEN_PIECE_MM
+    bec = getattr(config, 'board_edge_clearance', 0.0)
+    out = []
+    for k in range(len(route_points) - 1):
+        x1, y1, l1 = route_points[k]
+        x2, y2, l2 = route_points[k + 1]
+        if l1 != l2 or (abs(x1 - x2) < 1e-9 and abs(y1 - y2) < 1e-9):
+            continue
+        try:
+            want = float(config.get_net_track_width(net_id, l1))
+        except Exception:                                   # noqa: BLE001
+            want = used_width
+        if want <= used_width + 1e-9:
+            out.append((x1, y1, x2, y2, l1, used_width))
+            continue
+
+        def _ok(a, b, _l=l1, _w=want):
+            return wide_route_clear([(a[0], a[1], _l), (b[0], b[1], _l)], _w,
+                                    pcb_data, net_id, config,
+                                    board_edge_clearance=bec)
+        if _ok((x1, y1), (x2, y2)):
+            out.append((x1, y1, x2, y2, l1, want))
+            continue
+        n = int(math.ceil(math.hypot(x2 - x1, y2 - y1) / piece))
+        if n <= 1:
+            out.append((x1, y1, x2, y2, l1, used_width))
+            continue
+        pts = [(x1 + (x2 - x1) * i / n, y1 + (y2 - y1) * i / n) for i in range(n)]
+        pts.append((x2, y2))
+        flags = [_ok(pts[i], pts[i + 1]) for i in range(n)]
+        i = 0
+        while i < n:
+            j = i
+            while j < n and flags[j] == flags[i]:
+                j += 1
+            out.append((pts[i][0], pts[i][1], pts[j][0], pts[j][1], l1,
+                        want if flags[i] else used_width))
+            i = j
+    return out
+
+
 def emitted_copper_clear(route_points, extra_conn, width, pcb_data, net_id,
                          config):
     """True when the copper about to be written -- `route_points` at `width`
@@ -2702,17 +2762,6 @@ def oracle_reconnect(board_file: str, net_names, config,
                             board_edge_clearance=rung_cfg.board_edge_clearance):
                         break
                     result, used_width = wider, w
-            if result:
-                # #1033: say so when the link ships below the net's own
-                # requested width (a power net's --power-nets-widths).
-                try:
-                    from fab_tiers import note_narrowing
-                    note_narrowing(net_id, 'track_width',
-                                   config.get_net_track_width(
-                                       net_id, config.layers[0]),
-                                   used_width, 'oracle reconnect')
-                except Exception:                           # noqa: BLE001
-                    pass
             if not result:
                 # ESCALATION (quickfeather U6-pocket class): the weld router
                 # runs at the step's nominal parameters, and a sub-mm link
@@ -3151,13 +3200,12 @@ def oracle_reconnect(board_file: str, net_names, config,
                 failed += 1
                 continue
             n_segs = 0
-            for k in range(len(route_points) - 1):
-                x1, y1, l1 = route_points[k]
-                x2, y2, l2 = route_points[k + 1]
-                if l1 != l2 or (abs(x1 - x2) < 1e-9 and abs(y1 - y2) < 1e-9):
-                    continue
+            # #1169: wide where the net's own width fits, narrow at the pinch.
+            _legs = widen_link_legs(route_points, used_width, pcb_data,
+                                    net_id, config)
+            for x1, y1, x2, y2, l1, _lw in _legs:
                 new_sexprs.append(generate_segment_sexpr(
-                    (x1, y1), (x2, y2), used_width, l1, net_id,
+                    (x1, y1), (x2, y2), _lw, l1, net_id,
                     net_name if v10 else None))
                 n_segs += 1
             for (p1, p2, _l) in _extra_conn:
@@ -3190,13 +3238,9 @@ def oracle_reconnect(board_file: str, net_names, config,
             # this round rebuild their obstacle maps from pcb_data, so the
             # copper just routed must exist there -- two different-net links
             # squeezing through one congested pocket otherwise cross.
-            for k in range(len(route_points) - 1):
-                x1, y1, l1 = route_points[k]
-                x2, y2, l2 = route_points[k + 1]
-                if l1 != l2 or (abs(x1 - x2) < 1e-9 and abs(y1 - y2) < 1e-9):
-                    continue
+            for x1, y1, x2, y2, l1, _lw in _legs:
                 _sobj = _Seg(start_x=x1, start_y=y1, end_x=x2, end_y=y2,
-                             width=used_width, layer=l1, net_id=net_id)
+                             width=_lw, layer=l1, net_id=net_id)
                 pcb_data.segments.append(_sobj)
                 emitted_segments.append(_sobj)
             for vx, vy in via_positions:
@@ -3206,9 +3250,20 @@ def oracle_reconnect(board_file: str, net_names, config,
                              net_id=net_id)
                 pcb_data.vias.append(_vobj)
                 emitted_vias.append(_vobj)
+            _ws = sorted({round(_l[5], 4) for _l in _legs}) or [used_width]
             print(f"    {net_name}: ({ax:.2f},{ay:.2f})<->({bx:.2f},{by:.2f})"
                   f"  OK {n_segs} seg(s), {len(via_positions)} via(s), "
-                  f"w={used_width:.2f}mm")
+                  f"w={_ws[0]:.2f}mm" + (f"..{_ws[-1]:.2f}mm" if len(_ws) > 1 else ''))
+            # #1033/#1169: say so when the link ships below the net's own
+            # requested width (a power net's --power-nets-widths), from what
+            # actually ships -- either tier.
+            try:
+                from fab_tiers import note_narrowing
+                note_narrowing(net_id, 'track_width',
+                               config.get_net_track_width(net_id, config.layers[0]),
+                               _ws[0], 'oracle reconnect')
+            except Exception:                               # noqa: BLE001
+                pass
             # Report the WELD, not just the intent. The per-link callback
             # above fires BEFORE the route and never says what happened, so a
             # GUI user watching a long leg sees "routing GND link (k/N)" and
