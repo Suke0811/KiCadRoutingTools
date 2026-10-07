@@ -1917,9 +1917,7 @@ def run_connectivity_check(pcb_file: str, net_patterns: Optional[List[str]] = No
         # that carries it in `nets`, --component graded it as a real net and
         # reported every no-net pad on the part as "disconnected" -- interf_u
         # --component U9 shipped a phantom "(net 0): 6 disconnected components".
-        # The no-component path never had this (net 0 has no segments/vias, so
-        # its `and net_id in pads_by_net` arm excludes it); only the component
-        # filter let it through.
+        # Every path now skips net 0 by id/name below (#1180).
         from net_queries import nets_for_components
         component_net_ids = set(nets_for_components(pcb_data, [component]).net_ids)
         if not quiet:
@@ -1928,6 +1926,14 @@ def run_connectivity_check(pcb_file: str, net_patterns: Optional[List[str]] = No
     # Determine which nets to check
     nets_to_check = []
     for net_id, net_info in pcb_data.nets.items():
+        # Net 0 is the no-net pseudo-net, never a net to connect (#1180). Its
+        # "has copper" test used to exclude it, until #908 parsed footprint
+        # copper (solder-jumper bridges, a SOT89 tab) as net-0 segments: on a
+        # KiCad 9 file, whose parse keeps nets[0], every no-net pad then read as
+        # a disconnected component, and a `--nets '*'` pattern matched its
+        # empty name the same way. Same guard as the unrouted loop below.
+        if net_id == 0 or not net_info.name:
+            continue
         # Filter by component if specified
         if component_net_ids is not None and net_id not in component_net_ids:
             continue
