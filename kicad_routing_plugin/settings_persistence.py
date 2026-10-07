@@ -226,6 +226,7 @@ def get_dialog_settings(dialog):
         # Create mode options
         'planes_zone_clearance': dialog.planes_tab.create_options.zone_clearance.GetValue(),
         'planes_thermal_relief': dialog.planes_tab.create_options.thermal_relief.GetValue(),
+        'planes_spine_split': dialog.planes_tab.create_options.spine_split.GetValue(),
         'planes_thermal_vias': dialog.planes_tab.create_options.thermal_vias.GetValue(),
         'planes_add_gnd_vias': dialog.planes_tab.create_options.add_gnd_vias_check.GetValue(),
         'planes_gnd_via_distance': dialog.planes_tab.create_options.gnd_via_distance.GetValue(),
@@ -722,6 +723,8 @@ def restore_dialog_settings(dialog, settings):
         dialog.planes_tab.create_options.zone_clearance.SetValue(settings['planes_zone_clearance'])
     if 'planes_thermal_relief' in settings:
         dialog.planes_tab.create_options.thermal_relief.SetValue(settings['planes_thermal_relief'])
+    if 'planes_spine_split' in settings:
+        dialog.planes_tab.create_options.spine_split.SetValue(settings['planes_spine_split'])
     if 'planes_thermal_vias' in settings:
         dialog.planes_tab.create_options.thermal_vias.SetValue(settings['planes_thermal_vias'])
     if 'planes_add_gnd_vias' in settings:

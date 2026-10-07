@@ -23,7 +23,8 @@ def compute_zone_boundaries(
     board_bounds: Tuple[float, float, float, float],
     return_raw_polygons: bool = False,
     board_edge_clearance: float = 0.0,
-    verbose: bool = False
+    verbose: bool = False,
+    merge: bool = True
 ) -> Dict[int, List[Tuple[float, float]]]:
     """
     Compute non-overlapping zone polygons for multiple nets using Voronoi.
@@ -42,6 +43,9 @@ def compute_zone_boundaries(
                             where raw_polygons[net_id] is list of individual Voronoi cells,
                             and via_to_polygon_idx[net_id] maps via position to polygon index
         board_edge_clearance: Clearance from board edge for zone polygons (mm)
+        merge: False (with return_raw_polygons) skips merging each net's cells and
+            returns ({}, raw_polygons, via_to_polygon_idx) -- for a caller that
+            builds its regions from the raw cells itself
 
     Returns:
         If return_raw_polygons=False:
@@ -117,6 +121,9 @@ def compute_zone_boundaries(
             # Track which via produced this polygon
             via_pos = all_vias[via_idx]
             via_to_polygon_idx[net_id][via_pos] = polygon_idx
+
+    if not merge and return_raw_polygons:
+        return {}, via_polygons, via_to_polygon_idx
 
     # Merge polygons for each net
     result: Dict[int, List[Tuple[float, float]]] = {}

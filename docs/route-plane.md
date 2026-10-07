@@ -100,8 +100,9 @@ These options control MST-based routing between vias when multiple nets share th
 | `--plane-track-via-clearance` | 0.8 | Clearance from MST track center to other nets' via centers (mm) |
 | `--voronoi-seed-interval` | 2.0 | Sample interval for Voronoi seed points along routes (mm) |
 | `--plane-max-iterations` | 200000 | Maximum A* iterations for routing plane connections |
+| `--spine-split` | off | Split a shared layer with the **spine split** instead of the grammar pour (see [Spine split](#spine-split---spine-split)). GUI: Planes tab, *Spine split for shared layers* |
 
-The `--plane-track-via-clearance` parameter ensures MST routes don't pass through narrow gaps between other nets' vias. A larger value ensures more room for polygon fill but may cause routing failures on dense boards.
+The `--plane-track-via-clearance` parameter ensures MST routes don't pass through narrow gaps between other nets' vias. A larger value ensures more room for polygon fill but may cause routing failures on dense boards. The spine split derives its own keep-out and drops the proximity cost (below), so these two settings do not apply to it.
 
 A net earns a Voronoi zone on a shared layer if it has **any** connection point there — a stitching via *or* a pad. A net whose pads are all through-hole or already on the layer places zero stitching vias, but its zone is still poured (seeded from those pads' positions); the partition is not gated on placing ≥1 via (issue #114).
 
@@ -365,6 +366,17 @@ Rationale (measured on orangecrab vs its human original): the previous pad-Voron
 5. **Compute final zones** - Uses Voronoi diagram with augmented seeds to create non-overlapping zone polygons per net
 
 The MST routes ensure that each net's zone polygons are connected (if routing succeeds). The `--debug-lines` option outputs the MST routes on User.1, User.2, etc. for visualization.
+
+#### Spine split (`--spine-split`)
+
+An opt-in alternative to the grammar pour for a shared layer. It keeps the grammar's background sheet and its compact islands, but connects each net's region with **spines** routed on the layer and partitions the layer round them, so every pad keeps its own net's plane under it:
+
+1. **Spines.** Every net's connection points on the layer join its MST: vias, the **virtual vias** of the pads the route step will drop to this plane (a BGA's balls included), and pads with copper on the layer. Each MST edge is routed on the layer as the middle of a plane neck, so it keeps from another net's via exactly the via's radius plus the zone clearance plus half the zone's minimum width, and from other nets' pads, holes and slots the same margin. It pays no proximity cost: that cost discourages *tracks* from breaking a plane up, while a spine *is* the plane. A bend costs about the corridor's width of path, so corridors run in long straight 0/45/90 stretches. A link to a pad on the layer may leave from anywhere on the pad's edge. The background's spines route last, and a retry is judged first by the other nets' failures.
+2. **Partition.** The Voronoi diagram of every net's points plus its spine samples. A spine is seeded every quarter of its distance to the nearest other net's point, so its boundary with a pad beside it runs straight.
+3. **Reach.** The background net (chosen as the grammar chooses it) is the whole layer's sheet. Every other net keeps its Voronoi share only inside the grammar's own reach: a **chamfered octagon** round each 5 mm cluster of its points, grown 2 mm, and a **3 mm corridor** along each spine, mitred at its bends. Two of a net's corridors less than a corridor's width apart run together where the gap is the net's own share. Every piece is held to the grammar's background invariant (the sheet stays one region that matters): an island shrinks then drops, and a corridor that would cut the sheet is refused. A background with a plane on another layer too (one this run pours, or one already on the board) is the sheet alone: its pads are served through that plane, so it neither takes part in the partition nor holds the others back.
+4. **Raster finishing** (`plane_split_raster.py`). The regions go onto one label grid, and each net's fill is modelled as KiCad pours it: inside the board's real shape (its outline less its Edge.Cuts cutouts) less the edge clearance, clear of other nets' pads and vias and of holes (a milled NPTH slot by the edge clearance, as KiCad grades it), pulled back only from the smaller zones that outrank it, and opened at the minimum width. A piece of fill holding none of its net's pads or vias is fed by nothing; it goes to the neighbour whose own fill carries it on to one of that neighbour's anchors, else back to the background. Each region is then drawn as an octilinear polygon. The background's own cells inside another net's region are poured as **pockets** of their own, but only where they hold one of its pads, so a panel's rails behind their tabs never become a zone.
+
+The outcome is printed as one `Spine split:` line per layer.
 
 ### Plane Resistance Analysis
 
