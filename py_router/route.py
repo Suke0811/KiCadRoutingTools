@@ -734,6 +734,70 @@ def _late_strict_collapse1063(pcb_data, output_file, return_results, results_dat
         return 0, 0
 
 
+def _late_soft_joint_bridge984(pcb_data, output_file, return_results,
+                               results_data, write_model, scope_names, config):
+    """Bridge the soft joints copper laid AFTER the run's cleanup left (#984).
+
+    close_soft_joints lives in run_post_route_cleanup, which runs before the
+    plane finalize; the finalize's own cleanup leg runs before its oracle
+    leg, and is skipped outright when every zone net is already complete.
+    The oracle legs (the finalize's, the #666 cap re-weld, the opt-in #678
+    weld and #589 re-audit) then lay copper nothing bridges: smartknob_base
+    shipped a GND plane tap 0.111 mm short of the trunk it joins. This runs
+    the SAME pass over the nets those legs touched, on the board the run
+    ships -- the written file on the CLI, the write model on the GUI -- and
+    puts its connectors on that board's channel. Returns connectors added.
+    """
+    import copy as _copy
+    from pcb_modification import close_soft_joints
+    try:
+        if return_results:
+            rd = results_data if results_data is not None else {}
+            segs_by_net, vias_by_net = write_model(rd)
+            board = _copy.copy(pcb_data)
+            board.segments = [s for _l in segs_by_net.values() for s in _l]
+            board.vias = [v for _l in vias_by_net.values() for v in _l]
+        elif output_file and os.path.isfile(output_file):
+            from kicad_parser import parse_kicad_pcb as _pk984
+            board = _pk984(output_file)
+        else:
+            return 0
+        names = set(scope_names)
+        scope = {nid for nid, n in board.nets.items() if n.name in names}
+        if not scope:
+            return 0
+        added = []
+        n = close_soft_joints(added, board, scope, config)
+        conns = [c for r in added for c in (r.get('new_segments') or [])]
+        if not conns:
+            return 0
+        if return_results:
+            rd.setdefault('results', []).extend(added)
+            pcb_data.segments.extend(conns)
+            bump_copper_epoch(pcb_data)
+        else:
+            from kicad_parser import board_uses_name_nets
+            from kicad_writer import generate_segment_sexpr
+            with open(output_file, 'r', encoding='utf-8') as _f:
+                _c = _f.read()
+            n2n = getattr(board, 'net_id_to_name', {}) or {}
+            v10 = board_uses_name_nets(_c)
+            sexprs = [generate_segment_sexpr(
+                (s.start_x, s.start_y), (s.end_x, s.end_y), s.width, s.layer,
+                s.net_id, n2n.get(s.net_id) if v10 else None) for s in conns]
+            lp = _c.rfind(')')
+            _c = _c[:lp] + '\n'.join(sexprs) + '\n' + _c[lp:]
+            with open(output_file, 'w', encoding='utf-8') as _f:
+                _f.write(_c)
+        print(f"  Soft joints after the oracle (#984): {n} connector(s) on "
+              f"{', '.join(sorted(names))}")
+        return n
+    except Exception as _e:                                     # noqa: BLE001
+        print(f"  (post-oracle soft-joint bridge skipped: "
+              f"{type(_e).__name__}: {_e})")
+        return 0
+
+
 def _late_orphan_sweep659(pcb_data, output_file, return_results, results_data,
                           protect_unfinished, keep_input_copper, skip_routing):
     """Sweep pad-less copper islands off the FINAL board (#659).
@@ -1170,6 +1234,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if final_reconcile:
         from rip_up_reroute import reset_run_ledgers
         reset_run_ledgers(pcb_data)
+    if final_reconcile or not _pcb_in_memory:
+        # #980: the copper this run was handed. A nested in-memory sub-run
+        # keeps its parent's mark, as it keeps the parent's ledgers.
+        from rip_up_reroute import mark_input_copper
+        mark_input_copper(pcb_data)
 
     # KICAD_DUP_TRAP=1: report the call site that re-appends the SAME copper
     # object to pcb_data. Inert otherwise. Armed here so it covers the whole
@@ -2938,11 +3007,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             keep_segs = [sg for sg in (saved.get('new_segments') or [])
                          if not _saved_route_collides(
                              {'new_segments': [sg], 'new_vias': []},
-                             pcb_data, [nid], config.clearance)]
+                             pcb_data, [nid], config.clearance,
+                             config=config)]
             keep_vias = [v for v in (saved.get('new_vias') or [])
                          if not _saved_route_collides(
                              {'new_segments': [], 'new_vias': [v]},
-                             pcb_data, [nid], config.clearance)]
+                             pcb_data, [nid], config.clearance,
+                             config=config)]
             from pcb_modification import drop_orphan_restore_pieces
             drop_orphan_restore_pieces(keep_segs, keep_vias, nid, pcb_data)
             if not keep_segs and not keep_vias:
@@ -3105,7 +3176,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 if _pe_connected(_rid):
                     continue  # reroute genuinely landed
                 if _pe_collides(_orig_pe[0], pcb_data, [_rid],
-                                config.clearance):
+                                config.clearance, config=config):
                     # The corridor was taken while this victim was ripped --
                     # but WHOSE copper took it decides whether that matters.
                     # Copper belonging to a net that is ITSELF still open is a
@@ -3126,7 +3197,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     # refused, exactly as before.
                     _blk = {getattr(_o, 'net_id', None) for _k, _o in
                             _pe_colliders(_orig_pe[0], pcb_data, [_rid],
-                                          config.clearance)}
+                                          config.clearance, config=config)}
                     _blk.discard(None)
                     _blk.discard(_rid)
                     _worthless = {_b for _b in _blk
@@ -3150,7 +3221,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                               f"'{_pe_ripped_reg.get(_b, _b)}' partial copper "
                               f"(it connects nothing) to free the corridor")
                     if _pe_collides(_orig_pe[0], pcb_data, [_rid],
-                                    config.clearance):
+                                    config.clearance, config=config):
                         continue  # something else holds it after all
                 _, _, _wir_par = _pe_rip(
                     _rid, pcb_data, routed_net_ids, routed_net_paths,
@@ -3265,7 +3336,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         from rip_up_reroute import partition_force_restores
         _fr_ids, _fr_refused_ids = partition_force_restores(
             force_ripped, pcb_data, config.clearance,
-            skip_net_ids=_fr_new_copper)
+            skip_net_ids=_fr_new_copper, config=config)
 
         def _fr_name(_nid):
             return (pcb_data.nets[_nid].name
@@ -4744,6 +4815,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # repair sub-run) is 'reconciliation-subset'; the MERGED document says
     # 'merged' (route_summary.merge_summaries).
     summary['scope'] = 'run' if not _SUMMARY_SINK else 'reconciliation-subset'
+    # #984: nets an ORACLE leg laid copper on -- after the run's cleanup, so
+    # nothing has bridged their soft joints (_late_soft_joint_bridge984).
+    _oracle_nets984 = set()
     if summary['scope'] != 'run':
         # These are recomputed over the WHOLE board even in the subset pass, so
         # a reader merging tallies must not add them twice.
@@ -5048,6 +5122,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                             # printed "0 link(s) welded, -1 remaining" for an
                             # oracle that could not run, indistinguishable
                             # from one that ran and found nothing to do.
+                            if _orc_cap.get('links_routed'):
+                                _oracle_nets984.update(_mvnames)
                             if not _orc_cap.get('available'):
                                 _capwhy = _orc_cap.get(
                                     'why', 'no reason recorded')
@@ -5723,6 +5799,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     k: _orc.get(k) for k in
                     ('available', 'reason', 'why', 'rounds', 'links_routed',
                      'links_failed', 'remaining')}
+                if _orc.get('links_routed'):
+                    _oracle_nets984.update(_zna)
                 if not _gui9:
                     # #589: keep the oracle's net list + config (and its
                     # by-name class and width maps, #1137/#1133) for the
@@ -6546,6 +6624,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                       f"{len(_aud678b['detached'])} still detached at ship "
                       f"-- promise-scoped oracle weld on "
                       f"{', '.join(_nets678)}")
+                _oracle_nets984.update(_nets678)
                 _orc678(_file678, _nets678, _reaudit9[1],
                         track_via_clearance=defaults.PLANE_TRACK_VIA_CLEARANCE,
                         hole_to_hole_clearance=config.hole_to_hole_clearance,
@@ -6615,6 +6694,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 project_from=input_file,
                 net_clearances_by_name=_reaudit9[2],
                 net_widths_by_name=_reaudit9[3])
+            if _orc10.get('links_routed'):
+                _oracle_nets984.update(_scope10)
             try:
                 results_data['post_reconcile_oracle'] = _orc10
             except (NameError, UnboundLocalError):
@@ -6644,6 +6725,18 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         for _v6 in (rd.get('all_swap_vias') or []):
             _av.setdefault(_v6.net_id, []).append(_v6)
         return _as, _av
+
+    # #984: the oracle legs lay copper after the run's only whole-scope
+    # cleanup (and on the finalize's complete-zones path, after its cleanup
+    # leg is skipped), so their soft joints were never bridged. Bridge them
+    # here, after the last pass that lays copper and before the strict
+    # collapse reads the board. Nothing to do when no oracle laid copper.
+    if (final_reconcile and not skip_routing and not _ckpt_stop
+            and _oracle_nets984 and not env_knobs.NO_SOFT_JOINT_BRIDGE):
+        _late_soft_joint_bridge984(
+            pcb_data, output_file, return_results,
+            locals().get('results_data'), _gui_write_model,
+            _oracle_nets984, config)
 
     # #1063: the strict collapse, ONCE, after every pass that lays copper (the
     # finalize, the oracle legs, the reconciliation laps, the #678 weld) and
@@ -6991,7 +7084,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         try:
             from improvement_gate import (net_connectivity_map,
                                           compare_connectivity, gate_verdict,
-                                          format_report)
+                                          format_report,
+                                          excluded_plane_attribution)
             if return_results:
                 # The board the GUI applier will produce (_gui_write_model):
                 # a broken net must not grade connected on orphan copper.
@@ -7015,13 +7109,35 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                          else f"Net {nid}"))
             _cmp = compare_connectivity(_before_map, _after_map, _name_of)
             _verdict = gate_verdict(_cmp)
-            _why = ("This run did not fail to execute -- it ran and was "
-                    "REJECTED, so re-running it with MORE rip authority "
-                    "cannot help: change the approach (thinner track / finer "
-                    "grid / different layers), or accept the open nets and "
-                    "report them. See docs/rip-up-reroute.md 'Improvement "
-                    "gate'. KICAD_IMPROVEMENT_GATE=0 ships the regression "
-                    "instead.")
+            # #1114: zone nets the finalize excluded BY PLAN (outside
+            # --nets) were never repaired before this grade.
+            try:
+                _xpl = excluded_plane_attribution(
+                    _before_map, _after_map, _name_of,
+                    summary.get('finalize_excluded_nets'))
+            except Exception:              # noqa: BLE001 -- a label, not the gate
+                _xpl = {'nets': [], 'alone': False}
+            if _xpl['nets']:
+                _cmp['excluded_plane_nets'] = _xpl['nets']
+                _cmp['rejected_on_excluded_plane_nets_alone'] = (
+                    _verdict == 'reject' and _xpl['alone'])
+            if _cmp.get('rejected_on_excluded_plane_nets_alone'):
+                _why = ("The verdict rests ALONE on zone net(s) "
+                        f"{', '.join(_xpl['nets'])}: this run's copper cut "
+                        "the pour, and they are outside --nets, so the in-run "
+                        "plane finalize excluded them BY PLAN and nothing "
+                        "repaired the cut. Re-run with them in --nets -- the "
+                        "finalize then repairs the pour before this gate "
+                        "grades it -- or set KICAD_IMPROVEMENT_GATE=0 and "
+                        "repair them in a later route step that carries them.")
+            else:
+                _why = ("This run did not fail to execute -- it ran and was "
+                        "REJECTED, so re-running it with MORE rip authority "
+                        "cannot help: change the approach (thinner track / "
+                        "finer grid / different layers), or accept the open "
+                        "nets and report them. See docs/rip-up-reroute.md "
+                        "'Improvement gate'. KICAD_IMPROVEMENT_GATE=0 ships "
+                        "the regression instead.")
             if _verdict == 'reject' and return_results:
                 # Withhold the change-set: the applier has not touched the
                 # live board yet, so an empty result IS the rollback. Keep

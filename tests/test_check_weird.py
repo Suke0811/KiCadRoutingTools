@@ -451,6 +451,14 @@ def main():
         return len([x for x in check_weird(board, tolerance=0)[0]
                     if x['category'] == 'soft-joint'])
 
+    def _flagged_ends(board):
+        """(soft joints, dangling ends) for the via rows. Their two stubs both
+        leave pad 1's centre, so their ends already meet THERE: since #984 a
+        pair joined elsewhere is not a soft joint, and an end the via does not
+        anchor reads as what it is, a dangling end."""
+        c = _cats(check_weird(board, tolerance=0)[0])
+        return c.get('soft-joint', 0), c.get('dangling-end', 0)
+
     pcb, segs, pads = _land(pad_layer='F.Cu', seg_layer='B.Cu')
     conn = check_net_connectivity(NET, segs, [], pads, [])
     results.append(("an other-layer pad anchors nothing: check_connected "
@@ -508,8 +516,8 @@ def main():
                     "(check_connected)",
                     conn_f['num_components'] > 1
                     or bool(conn_f['disconnected_pads'])))
-    results.append(("...and check_weird agrees: still a soft joint",
-                    _sj(pcb_f) == 1))
+    results.append(("...and check_weird agrees: both ends still flagged",
+                    _flagged_ends(pcb_f) == (0, 2)))
 
     # 15. Copper-layer GRAPHICS (#337) are immutable input art. They were
     #     soft-joint CANDIDATES here and nowhere else -- _check_dangles refuses
@@ -605,8 +613,8 @@ def main():
                     "check_connected calls this net SPLIT",
                     conn_b['num_components'] > 1
                     or bool(conn_b['disconnected_pads'])))
-    results.append(("...and check_weird agrees: still a soft joint",
-                    _sj(pcb_b) == 1))
+    results.append(("...and check_weird agrees: both ends still flagged",
+                    _flagged_ends(pcb_b) == (0, 2)))
     #     Control: the same via and the same geometry on a layer the barrel
     #     DOES occupy anchors the ends, so the row above is the LAYER test
     #     firing and not the predicate refusing every via.

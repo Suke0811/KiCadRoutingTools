@@ -345,6 +345,10 @@ class RoutingDialog(wx.Dialog):
             # answer for the board the user has edited since.
             from pcb_modification import bump_copper_epoch
             bump_copper_epoch(self.pcb_data)
+            # #980: the input-copper mark names the objects just replaced;
+            # the next engine run marks the board it is handed.
+            from rip_up_reroute import forget_input_copper
+            forget_input_copper(self.pcb_data)
 
             # Also sync zones - the connectivity check uses pcb_data.zones to
             # determine which nets are connected via copper pours. Without

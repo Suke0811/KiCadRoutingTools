@@ -253,6 +253,32 @@ def _pad_credit_disc(pad):
     return pad.global_x, pad.global_y, 0.05
 
 
+#: #1157: two real pads are ONE terminal only where their copper meets, as
+#: KiCad's connectivity has it. The 0.02-0.06 allowances the joins used to
+#: take are endpoint-COINCIDENCE tolerances (#320) -- geometric intent -- and
+#: asked a copper-reaches-copper question they joined two StickHub +5V pads
+#: 15 um apart, so the multipoint router never planned the link KiCad
+#: reports open. Point-like terminals (stubs) keep the caller's tolerance:
+#: theirs IS a coincidence question.
+PAD_JOIN_EPS = 1e-6
+
+
+def _pad_is_point(p) -> bool:
+    """A pad-like terminal with no outline (an _EndpointStub, or a pad with
+    no shape or size): a point, not copper."""
+    return not getattr(p, 'shape', None) or (p.size_x <= 0 and p.size_y <= 0)
+
+
+def _pads_join(pi: Pad, pj: Pad, tolerance: float) -> bool:
+    """Whether two same-net pads sharing a copper layer are one terminal: their
+    copper touches (exact gap <= PAD_JOIN_EPS, #1157). A point-like terminal
+    joins within `tolerance`, as before."""
+    if _pad_is_point(pi) or _pad_is_point(pj):
+        return _pads_copper_touch(pi, pj, tolerance)
+    from check_drc import pad_copper_gap
+    return pad_copper_gap(pi, pj) <= PAD_JOIN_EPS
+
+
 def _pads_copper_touch(pi: Pad, pj: Pad, tolerance: float = 0.05) -> bool:
     """Shape-accurate test that two pads' copper physically touches/overlaps
     (edge-to-edge gap <= tolerance).
@@ -268,10 +294,9 @@ def _pads_copper_touch(pi: Pad, pj: Pad, tolerance: float = 0.05) -> bool:
     """
     from check_drc import point_to_pad_distance, _pad_perimeter_points
 
-    def _degenerate(p):
-        # _EndpointStub terminals (and any pad-like without a shape/size)
-        # are points, not outlines.
-        return not getattr(p, 'shape', None) or (p.size_x <= 0 and p.size_y <= 0)
+    # _EndpointStub terminals (and any pad-like without a shape/size) are
+    # points, not outlines.
+    _degenerate = _pad_is_point
 
     if _degenerate(pi) and _degenerate(pj):
         return math.hypot(pi.global_x - pj.global_x,
@@ -304,7 +329,8 @@ def _pads_copper_touch(pi: Pad, pj: Pad, tolerance: float = 0.05) -> bool:
 
 def _net_pads_connected_by_overlap(pads: List[Pad], copper_layers, tolerance: float = 0.05) -> bool:
     """True if every pad of the net touches the others through overlapping
-    copper alone (no track needed).
+    copper alone (no track needed). Real pads join only where their copper
+    meets (_pads_join, #1157); `tolerance` reaches point-like terminals only.
 
     Castellated modules represent each pin as a through-hole pad plus an SMD
     pad at the same spot; such a net has pads but no segments yet is fully
@@ -338,7 +364,7 @@ def _net_pads_connected_by_overlap(pads: List[Pad], copper_layers, tolerance: fl
             dx = pi.global_x - pj.global_x
             dy = pi.global_y - pj.global_y
             if dx * dx + dy * dy <= reach * reach and \
-                    _pads_copper_touch(pi, pj, tolerance):
+                    _pads_join(pi, pj, tolerance):
                 parent[find(i)] = find(j)
     return len({find(i) for i in range(len(pads))}) == 1
 
@@ -1371,8 +1397,10 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
                 reach = pad_reach[idx] + pad_reach[jdx] + tolerance
                 dx = pad.global_x - other.global_x
                 dy = pad.global_y - other.global_y
+                # Physical, not `tolerance` (#1157): a positive gap between
+                # two pads is a link to route, whatever the point tolerance.
                 if dx * dx + dy * dy <= reach * reach and \
-                        _pads_copper_touch(pad, other, tolerance):
+                        _pads_join(pad, other, tolerance):
                     _union(pad_repr_id[idx], pad_repr_id[jdx])
 
     # A via dropped *inside* an SMD pad's copper connects that pad even when the

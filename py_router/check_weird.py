@@ -98,8 +98,8 @@ from check_connected import (matches_any_pattern, check_net_connectivity,
                              analyze_conn_excluding, point_in_polygon,
                              _point_in_pad)
 from check_drc import point_to_pad_distance
-from connectivity import (COINCIDENCE_TOL, endpoint_reaches_pad,
-                          endpoint_reaches_via)
+from connectivity import (COINCIDENCE_TOL, endpoint_reaches_pad, strict_joint_roots,
+                          endpoint_reaches_via, via_copper_layers)
 from routing_constants import SOFT_JOINT_MIN_GAP
 from pcb_modification import (_point_anchored, _prune_net_cycles, _pt_seg_dist,
                               _restore_soft_joint_bridges,
@@ -215,6 +215,14 @@ def _check_soft_joints(net_id, name, net_segs, net_vias, net_pads,
                                      id(s)))
 
     soft_pts = set()
+    roots = []   # check_drc's "ONLY" test (#984), built on the first candidate
+
+    def joined_elsewhere(oa, ob):
+        if not roots:
+            roots.append(strict_joint_roots(net_segs, net_vias, net_pads,
+                                            copper_layers))
+        return roots[0].get(oa) == roots[0].get(ob)
+
     for layer, ends in dangles.items():
         for i in range(len(ends)):
             xi, yi, wi, gi, oi = ends[i]
@@ -226,7 +234,8 @@ def _check_soft_joints(net_id, name, net_segs, net_vias, net_pads,
                 cap = (wi + wj) / 2.0
                 if gi and gj:
                     continue  # art meets art: nothing anyone can act on
-                if SOFT_JOINT_MIN_GAP < gap < cap - 1e-6:
+                if SOFT_JOINT_MIN_GAP < gap < cap - 1e-6 \
+                        and not joined_elsewhere(oi, oj):
                     # size=None: soft joints bypass the --tolerance filter.
                     # Filtering by GAP inverted the severity metric (small
                     # gap = still fragile) and on <=0.1mm-width routing every
@@ -246,7 +255,7 @@ def _check_soft_joints(net_id, name, net_segs, net_vias, net_pads,
 
 
 def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
-                   soft_pts, findings, join_tol: float = 0.0):
+                   soft_pts, findings, join_tol: float = 0.0, copper_layers=()):
     """Degree-1 endpoints that _point_anchored calls unanchored and that are
     not inside a same-net zone outline. Half-segment tails past a mid-body
     anchor reuse trim_dangles_past_body_anchor's geometry (report-only)."""
@@ -254,7 +263,20 @@ def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
     track_segs = [s for s in net_segs if not getattr(s, 'graphic', False)]
     if not track_segs:
         return
-    via_pts = [(v.x, v.y, getattr(v, 'size', 0.6) or 0.6) for v in net_vias]
+    # A via anchors only the layers its barrel has copper on (#722's via-layer
+    # rule, which _check_soft_joints already applies through
+    # endpoint_reaches_via): a blind F.Cu/In1.Cu via anchors no B.Cu end.
+    # This credit was layer-blind, and the soft-joint finding used to mask it
+    # -- until #984 stopped calling two stubs out of one vertex a soft joint.
+    _via_pts_on = {}
+
+    def via_pts_on(layer):
+        pts = _via_pts_on.get(layer)
+        if pts is None:
+            pts = _via_pts_on[layer] = [
+                (v.x, v.y, getattr(v, 'size', 0.6) or 0.6) for v in net_vias
+                if layer in via_copper_layers(v, copper_layers or None)]
+        return pts
     # NO pads are handed to _point_anchored. Its pad test is a bounding CIRCLE
     # of radius max(size_x, size_y)/2, which over-credits every non-square pad
     # -- and because it runs FIRST it can only ADD credit, so the exact test
@@ -300,7 +322,7 @@ def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
                 continue
             if ((s.layer, round(fx, 3), round(fy, 3)) in soft_pts):
                 continue  # already reported as the more specific soft-joint
-            if _point_anchored(fx, fy, s.layer, via_pts, pad_pts,
+            if _point_anchored(fx, fy, s.layer, via_pts_on(s.layer), pad_pts,
                                seg_index, _CELL, s, tol):
                 continue
             # _point_anchored's pad test is RADIAL (center distance vs the
@@ -365,7 +387,7 @@ def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
         # endpoint teeing into the body.
         cands = []
         if L2 >= 1e-9:
-            for vx, vy, vsize in via_pts:
+            for vx, vy, vsize in via_pts_on(s.layer):
                 t = ((vx - s.start_x) * dx + (vy - s.start_y) * dy) / L2
                 if t <= 0.02 or t >= 0.98:
                     continue
@@ -813,7 +835,8 @@ def check_weird(pcb_data: PCBData, net_patterns: Optional[List[str]] = None,
         soft_pts = _check_soft_joints(net_id, name, net_segs, net_vias,
                                       net_pads, findings, copper_layers)
         _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
-                       soft_pts, findings, join_tol=tolerance or 0.0)
+                       soft_pts, findings, join_tol=tolerance or 0.0,
+                       copper_layers=copper_layers)
         _check_orphan_islands(net_id, name, net_segs, net_vias, net_pads,
                               net_zones, findings)
         removable = _strict_removable(net_id, name, net_segs, net_vias,

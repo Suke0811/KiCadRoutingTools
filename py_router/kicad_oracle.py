@@ -438,7 +438,7 @@ def _pad_cluster_rung(pcb_data, net_id, x, y, layer, comps, tol):
     group, else (None, []) when no pad contains the point.
     """
     from check_drc import point_to_pad_distance
-    from check_connected import _pads_copper_touch
+    from check_connected import _pads_join
     comp_of_seg, comp_of_via, segs, vias, _ = comps
 
     def _pad_on_layer(p):
@@ -464,7 +464,9 @@ def _pad_cluster_rung(pcb_data, net_id, x, y, layer, comps, tol):
 
     # Overlap group: the hit pad plus same-net pads its copper touches
     # (transitive, but these groups are tiny -- dual-pad footprints).
-    # Cheap bounding-circle prefilter before the exact perimeter test.
+    # Cheap bounding-circle prefilter before the exact test, which is
+    # physical as exact_clusters' is (#1157): a sibling 15 um away is
+    # another cluster, and a weld on it would not reach this one.
     group, stack, seen = [hit], [hit], {id(hit)}
     while stack:
         base = stack.pop()
@@ -476,7 +478,7 @@ def _pad_cluster_rung(pcb_data, net_id, x, y, layer, comps, tol):
             if math.hypot(p.global_x - base.global_x,
                           p.global_y - base.global_y) > reach:
                 continue
-            if _pads_copper_touch(base, p, tol):
+            if _pads_join(base, p, tol):
                 seen.add(id(p))
                 group.append(p)
                 stack.append(p)
@@ -535,7 +537,7 @@ def _cluster_points(pcb_data, net_id, x, y, layer, comps, tol=0.06):
     checked shape-accurately (check_drc.point_to_pad_distance <= tol, the
     same geometry check_connected._pads_copper_touch applies to degenerate
     points). A containing pad resolves to a comps component when it -- or
-    an overlapping same-net sibling pad (_pads_copper_touch) -- reaches
+    an overlapping same-net sibling pad (_pads_join) -- reaches
     tracked copper; a bare pad group instead contributes its pads' centers
     as the copper extent (still root=None: pads carry no comps label).
 
