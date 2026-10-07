@@ -570,8 +570,11 @@ python py_tools/check_orphan_stubs.py original.kicad_pcb modified.kicad_pcb --co
 
 An orphan stub is a trace endpoint that:
 1. Has only one connected segment (degree-1 node in the connectivity graph)
-2. Is NOT near a via
-3. Is NOT near a through-hole pad
+2. Does not overlap same-net copper with its end cap: a via, a pad (by its
+   real outline), another track's body, or a same-net zone outline
+3. Is NOT a reverse T: no other same-net track vertex or via lands on the
+   stub's own body within 3 track widths of the free end (check_weird's
+   mid-body-anchor rule, #1167)
 
 These represent traces that end without a proper electrical connection.
 
