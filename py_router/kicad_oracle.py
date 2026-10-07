@@ -1795,7 +1795,7 @@ def oracle_via_rungs(config, pcb_data, net_id):
         vs = round(float(rungs[0]['via_diameter']), 4)
         vd = round(float(rungs[0]['via_drill']), 4)
         if vs < config.via_size - 1e-9:
-            out.append((vs, min(vd, config.via_drill)))
+            out.append((vs, vd))
     return out
 
 

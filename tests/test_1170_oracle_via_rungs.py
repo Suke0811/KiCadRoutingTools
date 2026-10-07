@@ -52,6 +52,11 @@ try:
     r = oracle_via_rungs(cfg, pcb, 1)
     check('fab: the tier floor, exactly the 0.45/0.2 the literal was',
           r == [(1.651, 0.6), (0.45, 0.2)], str(r))
+    fine = GridRouteConfig(layers=['F.Cu', 'B.Cu'], track_width=0.2, clearance=0.2,
+                           via_size=0.5, via_drill=0.15)
+    r = oracle_via_rungs(fine, pcb, 1)
+    check('fab: the rung is the tier floor as declared, drill included (the old 0.45/0.2)',
+          r == [(0.5, 0.15), (0.45, 0.2)], str(r))
     small = GridRouteConfig(layers=['F.Cu', 'B.Cu'], track_width=0.2, clearance=0.2,
                             via_size=0.4, via_drill=0.2)
     r = oracle_via_rungs(small, pcb, 1)
