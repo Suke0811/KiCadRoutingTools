@@ -65,6 +65,26 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:
 #: MEASURED, from the run recorded in the pull request. Never predicted.
 #:
+#: RE-RECORDED 2026-10-07 (#1159 and #1161). `truth.quality` only;
+#: `truth.blocking` and the headline did not mismatch on any row. ATTRIBUTED
+#: by regenerating each row at each commit of the batch:
+#:   * #1159 alone moves esp_prog:authored. The neck trigger stopped narrowing
+#:     a terminal whose edge gap EQUALS the clearance (the old 1e-4 margin in
+#:     the trigger shaved one net-4 terminal 0.3 -> 0.2998); the wider
+#:     terminal sends the later routes another way. A soft cost on one board;
+#:     the corpus A/B judged the batch (sets 1-5: incomplete 138 -> 130,
+#:     DRC 44 -> 44).
+#:   * #1161 alone moves splitflap_driver:authored. With the oval/roundrect
+#:     web polygon right, the cleanup lands C8.2's GND terminal inside the
+#:     pad instead of on its corner, so the shipped board loses the
+#:     narrow-pad-joint check_weird reported there (1 finding -> 0), at
+#:     +1.25 mm of copper.
+#:
+#:   esp_prog:authored            vias 32 -> 36, segs 201 -> 182, copper 303.46 -> 318.64
+#:   esp_prog:perturb-scatter-d1  unmoved
+#:   esp_prog:portfolio-1         unmoved
+#:   splitflap_driver:authored    copper 2864.97 -> 2866.22
+#:
 #: RE-RECORDED 2026-09-28 (#1063: the post-route cleanup removes what
 #: check_weird calls removable, in-pad / in-via wiggles included). All four
 #: rows moved in `truth.quality` only, and in one direction: `vias` identical
@@ -351,7 +371,8 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 286 -> 254; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 34/344.06/254 -> 34/336.58/250
                # 2026-09-16 (#958 fine-pitch tie guard): segs 250 -> 260
-               'quality': {'vias': 32, 'copper_mm': 303.46, 'segments': 201}},
+               # 2026-10-07 (#1159 at-rule neck): 32/303.46/201 -> 36/318.64/182
+               'quality': {'vias': 36, 'copper_mm': 318.64, 'segments': 182}},
         predictors={
             'crossings': 53, 'hpwl': 253.98092000000003,
             'halo': 127.48707486477095, 'overlap_area': 1.1400451712000104,
@@ -453,7 +474,8 @@ EXPECTED = {
                # 168/2913.82/1155 -> 168/2913.88/1154. Attributed by a
                # single-file revert; the fanout and plane-fill roundings of
                # the same change leave this row alone.
-               'quality': {'vias': 165, 'copper_mm': 2864.97,
+               # 2026-10-07 (#1161 web polygon): copper 2864.97 -> 2866.22
+               'quality': {'vias': 165, 'copper_mm': 2866.22,
                            'segments': 845}},
         predictors={
             'crossings': 300, 'hpwl': 2504.4400000000014,
