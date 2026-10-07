@@ -3215,7 +3215,7 @@ def create_plane(
     # #962: the input's vias as values, for the Type VII stamp (only vias this
     # run ADDS are stamped; see fab_notes.via_protection_stamps)
     from fab_notes import via_snapshot as _via_snapshot962
-    _input_vias962 = _via_snapshot962(pcb_data.vias)
+    _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)  # #1171: + sites
 
     # --plane-layers takes BARE copper layer names positionally matched to
     # --nets, but the natural thing to type (and what the routing skill's R1

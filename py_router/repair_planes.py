@@ -3744,8 +3744,9 @@ Examples:
         try:
             from kicad_parser import parse_kicad_pcb as _parse962
             from fab_notes import via_snapshot, ship_via_protection_file
+            _in962 = _parse962(args.input_file)
             _rec962 = ship_via_protection_file(
-                args.output_file, via_snapshot(_parse962(args.input_file).vias),
+                args.output_file, via_snapshot(_in962.vias, _in962),  # #1171
                 'repair_planes')
             if _rec962 and _rec962.get('count'):
                 import json as _json962

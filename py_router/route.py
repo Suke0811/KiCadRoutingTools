@@ -1414,9 +1414,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                           if _nid in pcb_data.nets else None))
     # #962: the input's vias as VALUES (net, x, y, size), not object references
     # (a nudge moves the objects). The ship-time Type VII stamp uses it to tell
-    # a via this run ADDED from one the board already had.
+    # a via this run ADDED from one the board already had. With the board
+    # (#1171) it also records whether each was ALREADY under solder, so a via
+    # re-laid 0.1 mm onto a paste opening is a site this run created rather
+    # than one "kept as the input had it".
     from fab_notes import via_snapshot as _via_snapshot962
-    _input_vias962 = _via_snapshot962(pcb_data.vias)
+    _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)
 
     # Layers must be specified - we can't auto-detect which are ground planes
     if layers is None:

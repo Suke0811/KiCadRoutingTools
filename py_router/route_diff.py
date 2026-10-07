@@ -440,7 +440,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     mark_input_copper(pcb_data)  # #980
     # #962: the input's vias as values, for the ship-time Type VII stamp
     from fab_notes import via_snapshot as _via_snapshot962
-    _input_vias962 = _via_snapshot962(pcb_data.vias)
+    _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)  # #1171: + sites
 
     # Route trace (#482, KICAD_ROUTE_TRACE=1): record diff-pair copper as it is
     # committed/ripped/restored for animating the run. Default-off; gated on a
