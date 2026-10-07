@@ -909,8 +909,8 @@ def build_plane_base_obstacles(
         if seg.layer != plane_layer:
             continue
         seg_expansion_mm = config.track_width / 2 + seg.width / 2 + config.clearance
-        seg_expansion_grid = max(1, coord.to_grid_dist_safe(seg_expansion_mm))
-        _add_segment_routing_obstacle(obstacles, seg, coord, layer_idx, seg_expansion_grid)
+        # (the capsule keep-out is in mm since #173: given the GRID distance, a 0.4 mm keep-out blocked 4 mm)
+        _add_segment_routing_obstacle(obstacles, seg, coord, layer_idx, seg_expansion_mm)
 
     # Block previous routes from other nets
     if previous_routes:
