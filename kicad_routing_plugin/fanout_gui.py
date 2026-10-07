@@ -350,10 +350,12 @@ class NetSelectionPanel(wx.Panel):
             return
 
         # Count pads per component
+        # Pins, not paste windows (#1148): the CLI auto-pick counts the same.
+        from kicad_parser import non_aperture_pads
         component_pad_counts = {}
         for footprint in self.pcb_data.footprints.values():
             ref = footprint.reference
-            pad_count = len(footprint.pads)
+            pad_count = len(non_aperture_pads(footprint))
             if pad_count >= self._min_pads_for_dropdown:
                 component_pad_counts[ref] = pad_count
 

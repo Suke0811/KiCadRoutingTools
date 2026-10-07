@@ -13,8 +13,8 @@ placement_state, recovery, lock_advisor, the board tools ...). Each now reads
 MOVERS (the quench's zero-pad branch, reconcile's anchors, the drift default,
 portfolio and the agent grade's poses), which keep an aperture-only part
 MOVABLE on purpose (`test_quench_keeps_an_aperture_only_part_movable`,
-`test_a_mechanical_aperture_only_part_is_anchored`), and the router's own
-readers, which are routing.
+`test_a_mechanical_aperture_only_part_is_anchored`). The router's own
+readers followed in #1148 (`tests/test_1148_router_pad_readers.py`).
 
 An aperture-only pad is: not NPTH, no drill, and no `*.Cu` layer. NPTH and
 drilled pads are KEPT -- a mounting hole is physical extent; dropping it moves

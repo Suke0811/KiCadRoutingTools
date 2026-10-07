@@ -8296,8 +8296,11 @@ def detect_package_type(footprint: Footprint) -> str:
     if 'DIP' in fp_name or 'PDIP' in fp_name:
         return 'DIP'
 
-    # Analyze pad arrangement if name doesn't indicate type
-    pads = footprint.pads
+    # Analyze pad arrangement if name doesn't indicate type. The PINS only
+    # (#1148): a paste or mask window is not a pad, and reading it made an
+    # 0201's split paste windows a four-pad "QFN" (rp2350 C28/R9) and
+    # orangecrab U6 a QFN that is OTHER without its apertures.
+    pads = non_aperture_pads(footprint)
     if len(pads) < 4:
         return 'OTHER'
 
@@ -8432,12 +8435,16 @@ def detect_bga_pitch(footprint: Footprint) -> float:
     Returns:
         Pitch in mm, or 1.0 as default if cannot be detected
     """
-    if not footprint.pads or len(footprint.pads) < 2:
+    # The pins only (#1148): a thermal pad's split paste windows sit between
+    # the balls, so they read as a pitch no part has (glasgow U36/U8: 0.1 for
+    # a 0.325 array; rp2350's 0402 caps: 0.025).
+    pads = non_aperture_pads(footprint)
+    if len(pads) < 2:
         return 1.0
 
     axis_pitches = []
     for _coord in (lambda q: q.global_x, lambda q: q.global_y):
-        positions = sorted({_coord(p) for p in footprint.pads})
+        positions = sorted({_coord(p) for p in pads})
         gaps = [b - a for a, b in zip(positions, positions[1:])
                 if (b - a) >= _PITCH_NOISE_MM]
         if gaps:

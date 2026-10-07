@@ -23,14 +23,13 @@ Before the #1143 fix the arm difference is the fix's impact. After it, every
 PLACEMENT site must agree in both arms on every board (the as-parsed arm then
 equals the stripped one), and `--check-predicate` asserts the code's predicate
 matches this script's on every pad. The three ROUTING readers (`ROUTING_SITES`:
-the package detector, the BGA pitch and the raw pad count the QFN auto-pick
-ranks by) are measured and printed but not changed by #1143 -- a change there
-moves routing and needs a corpus routing A/B -- so they keep moving after it.
+the package detector, the BGA pitch and the pin count the QFN auto-pick ranks
+by) were left by #1143 and read the pins only since #1148, so after it they
+must agree in both arms too.
 
-The KiCad 10 RoyalBlue54L-Feather demo is NOT evidence: its file carries 349
-copies of `(curved_edges no)filter_ratio 0.9)`, which close brackets early, so
-U2/U4/U6 parse with one F.Paste pad each. It is reported, flagged, and left out
-of the summary.
+KiCad 10.0.0's RoyalBlue54L-Feather demo carries 349 copies of
+`(curved_edges no)filter_ratio 0.9)`; since #1149 the parser reads them the way
+KiCad does, so it is ordinary evidence.
 
 Not collected by run_all (no `test_` prefix).
 
@@ -54,13 +53,11 @@ sys.path.insert(0, TESTS_DIR)
 
 CLEARANCE = 0.2
 TOL = 1e-6
-#: The ROUTING side's readers (py_router). Measured and disclosed, NOT changed
-#: by #1143: a change there is a routing change and needs a corpus routing A/B
-#: (#1148).
+#: The ROUTING side's readers (py_router), pins-only since #1148.
 ROUTING_SITES = ('package_type', 'bga_pitch', 'pad_count')
-#: A board whose file is known not to parse as KiCad reads it (see docstring).
-SUSPECT = {'RoyalBlue54L-Feather.kicad_pcb':
-           "349 x '(curved_edges no)filter_ratio 0.9)' close brackets early"}
+#: A board whose file is known not to parse as KiCad reads it. Empty since
+#: #1149 taught the parser RoyalBlue54L-Feather's unbracketed teardrop tokens.
+SUSPECT = {}
 
 
 def _aperture_only(p):
@@ -186,12 +183,13 @@ def _site_values(pcb, path, refs):
         k: v for k, v in groups.derive_groups(
             pcb, ('kicad', 'sheet', 'netprefix', 'decap')).items()
         if set(v) & set(refs)})
-    # routing reach (py_router/kicad_parser): the package detector, the BGA
-    # pitch and the QFN auto-pick's pad count read every pad.
+    # routing reach (py_router): the package detector, the BGA pitch and the
+    # QFN auto-pick's ranking key, each read through the code that uses it.
+    from qfn_fanout import autopick_rank
     site('package_type', lambda: {r: KP.detect_package_type(fps[r])
                                   for r in refs})
     site('bga_pitch', lambda: {r: KP.detect_bga_pitch(fps[r]) for r in refs})
-    site('pad_count', lambda: {r: len(fps[r].pads or ()) for r in refs})
+    site('pad_count', lambda: {r: autopick_rank(fps[r])[1] for r in refs})
     return out
 
 
@@ -306,8 +304,8 @@ def main(argv=None):
               f"{len(moved) - len(placement)} routing{flag}", flush=True)
         for k in sorted(moved):
             print(_diff_line(k, moved[k])
-                  + ('   [routing: disclosed, not changed]'
-                     if k in ROUTING_SITES else ''), flush=True)
+                  + ('   [routing reader]' if k in ROUTING_SITES else ''),
+                  flush=True)
     print(f"\n{n_moved} board(s) where aperture-only pads move a PLACEMENT "
           f"site; {n_routing} where they move a routing reader "
           f"({', '.join(ROUTING_SITES)}) (suspect files excluded)")
