@@ -41,6 +41,7 @@ from typing import Dict, List, NamedTuple, Sequence, Tuple, Set, Optional
 import numpy as np
 
 from kicad_parser import PCBData, local_to_global
+from paste_apertures import pad_has_copper as _pad_has_copper
 from connectivity import compute_mst_edges
 from placement.parser import (courtyard_for_side, extract_courtyard_sides,
                               extract_locked_refs, warn_missing_courtyards)
@@ -96,7 +97,9 @@ _BODY_OVERLAP_EPS = 1e-6
 #: invariant under every move this engine can make and `assembly_side` (#837)
 #: is invariant for the same reason one level up, `envelope` is a claim about
 #: the intent file, `decap_ungraded` is a claim about what the GRADE covers
-#: rather than about any pose, `legality` is a whole-board budget rather than
+#: rather than about any pose (since #1142 an ERROR for a cap a --decaps-from
+#: reference holds, which this gate still does not hold -- docs/floorplan-
+#: intent.md, the quench table), `legality` is a whole-board budget rather than
 #: a per-pose predicate, `pins_to_edge` is always-warn advice for a reviewer,
 #: and `array_formation` (#1051) is held by construction -- a declared array
 #: is a rigid group that only translates -- rather than priced per pose.
@@ -416,7 +419,8 @@ class IntentProbe:
     def _tether_guard_values(self) -> Tuple[float, ...]:
         """The LICENCE's view: as the gate reads each term. They differ for a
         decap pair past the search radius -- the grade stops grading it
-        (`decap_ungraded`, warn), so the count drops; the gate keeps
+        (`decap_ungraded`: a warn, or per cap an error the tether count
+        still does not see, #1142), so the count drops; the gate keeps
         measuring it, so the licence sees a cap that walked further from its
         IC as the regression it is, not as a fix (phase-2 verifier: esp_prog
         C3, radius 2.2, moved 1mm out, read `1 -> 0` and licensed)."""
@@ -742,6 +746,10 @@ class _Part:
         # #1101: the PAD copper box, for a board whose project waives the
         # courtyard rule -- the seat then spaces pads, not courtyards. None
         # for a pad-less footprint (a logo occupies no copper).
+        # `fp.pads`, not `non_aperture_pads` (#1143, deliberately): an
+        # aperture-only part stays a MOVABLE quench part (see the zero-pad
+        # branch in QuenchState), so it keeps a pad box -- the bbox
+        # fallback, since its apertures are not extent.
         self.padbox_local = (compute_footprint_bbox_local(fp)
                              if fp.pads else None)
         self.padbox_by_rot: Dict[float, Tuple[float, float, float, float]] = {}
@@ -995,6 +1003,15 @@ class QuenchState:
         no_courtyard = []
         outline_locked = []   # #829, reported below
         for ref, fp in pcb_data.footprints.items():
+            # `fp.pads`, not `non_aperture_pads` -- the one #1143 site left
+            # reading every pad, deliberately. A part whose only pads are
+            # paste/mask apertures (a logo) stays MOVABLE here: the seeder
+            # seats such a part by its courtyard when the intent fixes its
+            # pose (test_1051_hardening's copperless logo), and taking it
+            # down this branch would lock it as a static obstacle, which the
+            # fixed-pose stage then refuses as "already placed" (Phase-1
+            # verifier). A truly pad-less footprint is refused that way too,
+            # which is a separate, older question.
             if not fp.pads:
                 # Zero-pad footprints (graphics-only mechanical parts, logos
                 # with a courtyard) used to be dropped entirely -- neither
@@ -2539,7 +2556,8 @@ class QuenchState:
         the measurement `IntentProbe` counts, never the gate's. No cache is
         read or written (the gate's caches are keyed by ITS term index), and
         a decap pair the live election puts beyond the search radius reads 0,
-        because the grade calls it `decap_ungraded` (warn) however it was
+        because the grade calls it `decap_ungraded` (a warn, or per cap an
+        error under a --decaps-from intent, #1142) however it was
         elected at build -- the gate deliberately keeps measuring that pair,
         which is stricter than the grade and therefore not a count of it."""
         return self._tether_measure(t, None, None, grade_view=True)
@@ -3002,8 +3020,7 @@ class QuenchState:
             for r in self.parts:
                 fp = fps.get(r)
                 if fp is None or not any(
-                        getattr(p, 'pad_type', '') != 'np_thru_hole'
-                        for p in fp.pads or ()):
+                        _pad_has_copper(p) for p in fp.pads or ()):
                     continue
                 if bodies is None:
                     drawn = self.fab_rect(r)

@@ -121,9 +121,12 @@ def build_parser():
                         'Same derivation and withholding as --declare-decaps; '
                         'the census records decaps_basis reference:<file>. '
                         'Also derives decaps.max_pin_distance_mm (supply pin '
-                        'to nearest cap, #1102) and, when the reference keeps '
-                        'every rail cap inside the search radius, promotes '
-                        'decap_ungraded to error. Overrides the '
+                        'to nearest cap, #1102) and lists the caps the '
+                        'reference keeps inside the search radius '
+                        '(decaps.within_radius_refs, #1142): such a cap left '
+                        'beyond the radius is a decap_ungraded ERROR, per '
+                        'cap, while a cap the reference itself keeps beyond '
+                        'stays a warn. Overrides the '
                         '--*declare-decaps arms')
     p.add_argument('--declare-decaps', dest='declare_decaps',
                    action='store_const', const='strict',

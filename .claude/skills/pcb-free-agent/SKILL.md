@@ -60,7 +60,11 @@ them under `state`); exit codes are not the test. Read `pile`, not
   call (a human layout, or an earlier placement), and say in your report
   that you did. A pile has no decap distances to read, so without it the
   rule stays unarmed: run 36 left StickHub's hub decaps 2.1-9.8 mm from
-  their pins, where the human board keeps them within 2.2 mm.
+  their pins, where the human board keeps them within 2.2 mm. A cap the
+  reference keeps within 5 mm of its chip and your board leaves beyond it is
+  then a `decap_ungraded` ERROR, named by ref (#1142). Nothing repairs it
+  automatically -- `--repair-decaps` covers `decap_distance` and
+  `decap_pin_distance` only -- so move the cap with `place_pose`.
 - **On a pile, read the emitter's decap line before you seed.** It says how
   many caps the per-supply-pin stage can claim, and which only once their
   owner ICs are seated. When `place_seed` then reports the decap stage

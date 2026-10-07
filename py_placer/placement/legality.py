@@ -409,7 +409,8 @@ def sides_occupied(side: str, has_tht: bool) -> frozenset:
 ASSEMBLY_CENSUS_BASIS = (
     'every footprint BLOCK (#726): blocks sharing one reference are keyed '
     'with an ordinal suffix and counted separately. `pad_bearing` restricts '
-    'that to blocks carrying at least one pad, and it is the count the '
+    'that to blocks carrying at least one pad that is not a paste/mask '
+    'aperture (#1143), and it is the count the '
     'populated-side verdict is taken from -- a zero-pad graphic on the back '
     'does not make a board double-sided.')
 
@@ -446,7 +447,7 @@ def assembly_census(pcb_data) -> Dict:
     question -- where an unplated hole blocks the far side exactly as a plated
     one does -- and this is the assembly question.
     """
-    from kicad_parser import pad_is_plated_through
+    from kicad_parser import pad_is_plated_through, non_aperture_pads
     blocks = {'F': 0, 'B': 0}
     pad_bearing = {'F': 0, 'B': 0}
     pad_bearing_refs = {'F': [], 'B': []}
@@ -461,14 +462,17 @@ def assembly_census(pcb_data) -> Dict:
     for ref, fp in sorted((pcb_data.footprints or {}).items()):
         side = footprint_side(fp)
         blocks[side] = blocks.get(side, 0) + 1
-        if not (fp.pads or ()):
+        # An aperture-only pad (a paste or mask window) is not a pad (#1143):
+        # a block whose only pads are apertures is a zero-pad block.
+        pads = non_aperture_pads(fp)
+        if not pads:
             zero_pad[side].append(ref)
             continue
         pad_bearing[side] = pad_bearing.get(side, 0) + 1
         pad_bearing_refs[side].append(ref)
-        if any(pad_is_plated_through(p) for p in fp.pads):
+        if any(pad_is_plated_through(p) for p in pads):
             through_hole_by_side[side] += 1
-        elif any(getattr(p, 'pad_type', '') != 'np_thru_hole' for p in fp.pads):
+        elif any(getattr(p, 'pad_type', '') != 'np_thru_hole' for p in pads):
             smd[side] += 1
         else:
             # NPTH-ONLY: every pad is an unplated hole, so the part is
@@ -1144,18 +1148,20 @@ def pads_under_body_frac(pad_shape, body_shape):
 
 
 def bodyless_pad_shape(fp, x=None, y=None, rot=None):
-    """Union of a footprint's COPPER pads (NPTH skipped) at a pose, as a
-    board-frame shapely geometry, or None when it has none. Pads are taken
-    as their rectangles about their own centres at the footprint's angle --
-    the coarse, conservative reading a 'pad under a body' question needs."""
+    """Union of a footprint's COPPER pads (NPTH and aperture-only pads
+    skipped, #1143) at a pose, as a board-frame shapely geometry, or None when
+    it has none. Pads are taken as their rectangles about their own centres at
+    the footprint's angle -- the coarse, conservative reading a 'pad under a
+    body' question needs."""
     from shapely.geometry import box
     from shapely.ops import unary_union
+    from paste_apertures import pad_has_copper
     x = fp.x if x is None else x
     y = fp.y if y is None else y
     rot = (fp.rotation or 0.0) if rot is None else rot
     boxes = []
     for p in fp.pads or ():
-        if getattr(p, 'pad_type', '') == 'np_thru_hole':
+        if not pad_has_copper(p):
             continue
         lx, ly = float(p.local_x), float(p.local_y)
         # local size: board-space size_x/size_y were resolved at the file's
@@ -2197,10 +2203,14 @@ def pad_intersection_pairs(pcb_data, clearance: float,
     grid: Dict[Tuple[int, int], set] = {}
 
     def _pad_label(pads, idx):
-        try:
-            return pads[idx].pad_number or '?'
-        except Exception:
-            return '?'
+        # `idx` indexes the COPPER pads (PartPads order), not `fp.pads`:
+        # read raw, it named the wrong pad whenever a paste window or an NPTH
+        # peg came first in the file (#1143 final review: a short on U1.2
+        # printed as U1.1). `_pad_with_copper` is the same walk the exact
+        # check below uses.
+        p = _pad_with_copper(pads, idx, clearance)
+        return (getattr(p, 'pad_number', None) or '?') if p is not None \
+            else '?'
 
     entries = {}
     for ref, pp in parts.items():
@@ -3358,15 +3368,19 @@ def part_copper_geometry(footprints: Dict[str, object], clearance: float, *,
                     'the former and every caller would read the latter'
                     .format(_pp.clearance, clearance))
             break
+    from kicad_parser import non_aperture_pads
     out: Dict[str, CopperGeometry] = {}
     for ref, fp in footprints.items():
-        if not getattr(fp, 'pads', None):
+        # Aperture-only pads are not pads (#1143): a part with no other pad
+        # obstructs no lane, like a pad-less one.
+        _pads = non_aperture_pads(fp)
+        if not _pads:
             continue
         pp = parts.get(ref)
         ext = None if pp is None else pp.extent(fp.x, fp.y, fp.rotation or 0.0)
         if pp is None or ext is None:
-            xs = [p.global_x for p in fp.pads]
-            ys = [p.global_y for p in fp.pads]
+            xs = [p.global_x for p in _pads]
+            ys = [p.global_y for p in _pads]
             centre = (min(xs), min(ys), max(xs), max(ys))
             out[ref] = CopperGeometry(ref=ref, rect=centre, copper=centre,
                                       pads={}, modelled=False, rect_sides={})

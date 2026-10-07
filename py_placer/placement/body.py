@@ -189,10 +189,13 @@ def body_geometry(fp, side: str,
     the file read once, and so the rung logic has exactly one home.
     """
     from placement.utility import compute_footprint_bbox_local
+    from kicad_parser import non_aperture_pads
 
     ref = ref or getattr(fp, 'reference', '') or ''
     pads: Optional[Bbox] = None
-    if getattr(fp, 'pads', None):
+    # An aperture-only pad is not a pad here (#1143): a part whose only pads
+    # are paste windows has no pads rung, like a pad-less one.
+    if non_aperture_pads(fp):
         try:
             pads = compute_footprint_bbox_local(fp)
         except Exception:                                    # noqa: BLE001

@@ -6267,7 +6267,8 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
                 added.append(f'legality.{key}')
         # Past the decap search radius the finding is not cleared, it stops
         # being GRADED: `decap_distance` (error) becomes `decap_ungraded`
-        # (warn), which `findings_of` does not read. Still open, as the
+        # (a warn `findings_of` does not read -- or, since #1142, an error it
+        # does read for a cap a --decaps-from reference holds). Still open, as the
         # honesty re-grade already says (round-2 verifier: tigard C18 moved
         # 0.85mm to 5.21mm from U3 and read "cleared").
         still = (claim in findings_of(after)
@@ -6403,7 +6404,8 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     an escalating displacement cap. The opposite contract of --force (which
     re-derives everything).
 
-    Violators: intent grade errors with a ref (zone/edge/decap...), pad/hole
+    Violators: intent grade errors with a ref (zone/edge/decap...; never
+    `decap_ungraded`, which no move here can target -- #1142), pad/hole
     legality conflicts (the movable member of each pair), and parts off the
     board outline -- except refs the intent declares as edge connectors,
     whose overhang is by design.
@@ -6577,6 +6579,25 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                                  clearance=clearance,
                                  board_edge_clearance=board_edge_clearance)
         for v in graded.errors:
+            # #1142: a held cap stranded beyond the tether radius
+            # (`decap_ungraded`, an ERROR under a --decaps-from intent) is
+            # charged to no one. This repair seats a violator at its nearest
+            # LEGAL pose, not toward its IC, so charging one nudged the cap
+            # further out and shipped the worse pose (final review: esp_prog
+            # C2 5.64 -> 5.69 mm). The finding stays in the grade, and in its
+            # exit code; `--repair-decaps` has no rung for it either. The same
+            # holds for a #1102 board-wide `severity.decap_ungraded: error`.
+            # (`decap_distance` / `decap_pin_distance` are still charged and
+            # can be nudged the same way -- older than #1142, filed as
+            # #1150.) Said in `notes`, so a --dry-run, which has no final
+            # grade, still names the cap.
+            if v.rule == 'decap_ungraded':
+                notes.append(
+                    f"{v.ref}: not charged -- decap_ungraded (a cap the "
+                    f"reference holds, stranded past the tether radius, "
+                    f"#1142) has no repair that moves it toward its IC; "
+                    f"the finding stays in the grade")
+                continue
             if v.ref:
                 _charge(v.ref, float((v.measured or {}).get('outside_mm', 1.0)
                                      or 1.0))
@@ -7038,7 +7059,8 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                         if after is not None else None)
         # A cap pushed past the decap search radius does not clear its
         # `decap_distance` charge, it stops being GRADED: the finding becomes
-        # `decap_ungraded` (warn) under a different claim key. Read as the
+        # `decap_ungraded` (warn, or per cap an error under a --decaps-from
+        # intent, #1142) under a different claim key. Read as the
         # charge persisting, or leaving the radius would be a way to be fixed.
         ungraded = ({v.ref for v in after if v.rule == 'decap_ungraded'}
                     if after is not None else set())

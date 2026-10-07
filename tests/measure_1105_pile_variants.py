@@ -23,7 +23,9 @@ and their summed distance. The signal cannot see them -- under these intents
 `decap_ungraded` stays a WARN (#1142) -- so a variant that pushes caps out of
 the radius reads as better on the signal. Measured at 39affafb, after the
 #1141 fix: NO-GO, the candidate improved 1 of 7 piles (before that fix also
-1 of 7); the numbers are in #1105.
+1 of 7); the numbers are in #1105. Measured BEFORE #1142 made the promotion
+per cap (a held cap left beyond the radius is now an ERROR the signal does
+see); not re-measured since -- #1105 stays open.
 
 Not collected by run_all (no `test_` prefix): about 30-45 minutes.
 

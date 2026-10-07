@@ -240,7 +240,8 @@ def part_faces(pcb_data, ref: str, *, clearance: float, track_width: float):
     fp = pcb_data.footprints.get(ref)
     if fp is None:
         raise PoseRefusal("%s is not a footprint on this board" % (ref,), code=2)
-    if not (fp.pads or ()):
+    from kicad_parser import non_aperture_pads
+    if not non_aperture_pads(fp):       # apertures are not pads (#1143)
         raise PoseRefusal("%s has no pads, so it has no face to aim" % (ref,),
                           code=2)
     try:
@@ -268,7 +269,8 @@ def part_centre(pcb_data, ref: str):
     if fp is None:
         raise PoseRefusal("%s is not a footprint on this board" % (ref,),
                           code=2)
-    pads = list(fp.pads or ())
+    from kicad_parser import non_aperture_pads
+    pads = non_aperture_pads(fp)        # apertures are not copper (#1143)
     if not pads:
         return float(fp.x), float(fp.y)
     xs = [p.global_x for p in pads]

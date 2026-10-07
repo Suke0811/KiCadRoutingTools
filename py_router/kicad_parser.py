@@ -17,7 +17,7 @@ import routing_defaults as defaults  # fab-floor outline width for 0-stroke copp
 from swig_compat import patch_swig_iterators as _patch_swig_iterators
 # #962: the paste-stencil model. A leaf module (it imports check_drc/this module
 # only inside its functions), so importing it here cannot cycle.
-from paste_apertures import PasteAperture, build_paste_apertures
+from paste_apertures import PasteAperture, build_paste_apertures, pad_has_copper
 from dataclasses import dataclass, field
 from typing import Dict, List, Sequence, Tuple, Optional
 from pathlib import Path
@@ -1322,6 +1322,40 @@ def pad_is_plated_through(pad) -> bool:
     `pad.drill > 0` wherever the question is "does this pad connect layers"."""
     return ((getattr(pad, 'drill', 0.0) or 0.0) > 0
             and getattr(pad, 'pad_type', '') != 'np_thru_hole')
+
+
+def pad_is_aperture_only(pad) -> bool:
+    """True for a pad that is ONLY an aperture: not NPTH, no drill, and no
+    copper layer -- a paste or mask window, e.g. a thermal pad's split paste
+    windows or a spacer's paste ring (#1143).
+
+    Such a pad is not copper, not a hole and not a pin, so a measure that asks
+    "where are this part's pads" or "does this part have pads" must not read it.
+    NPTH and drilled pads are deliberately NOT aperture-only: a mounting hole is
+    physical extent, and dropping it moves splitflap's H6/H7 rects and the
+    #837 assembly census. Use `pad_has_copper` instead where the question is
+    copper (it is False for NPTH too).
+
+    A pad object with no `layers` attribute at all is NOT an aperture: nothing
+    says it is one. Both parsers always fill `layers`, but placement code builds
+    position-only stand-ins (`arrays.pose_free_chip_refs`' SimpleNamespace
+    pads, test stubs), and reading those as apertures dropped every pad of a
+    1xN header from the row test, so headers became "chips" (Phase-1
+    verifier: 13 of 22 corpus boards)."""
+    if getattr(pad, 'pad_type', '') == 'np_thru_hole':
+        return False
+    if (getattr(pad, 'drill', 0.0) or 0.0) > 0:
+        return False
+    if getattr(pad, 'layers', None) is None:
+        return False
+    return not pad_has_copper(pad)
+
+
+def non_aperture_pads(fp) -> list:
+    """`fp.pads` without its aperture-only pads (`pad_is_aperture_only`): the
+    pads a placement measure of extent, centre, pitch or "has pads" reads."""
+    return [p for p in (getattr(fp, 'pads', None) or ())
+            if not pad_is_aperture_only(p)]
 
 
 def pad_drill_circles(pad, step: float = 0.0) -> List[Tuple[float, float, float]]:

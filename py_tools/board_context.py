@@ -284,6 +284,7 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
     from placement.body import board_bodies
     from placement.legality import footprint_side, rotate_local_bounds
     from placement.part_class import classify_part
+    from kicad_parser import non_aperture_pads
     import list_nets
 
     bodies = board_bodies(pcb_data, pcb_file)
@@ -366,7 +367,8 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
             'body_source': (geom.source if geom is not None else 'none'),
             'drawn_body_source': (geom.drawn_source if geom is not None
                                   else 'none'),
-            'pads': len(fp.pads or ()),
+            # Apertures (paste/mask windows) are not pads (#1143).
+            'pads': len(non_aperture_pads(fp)),
             'side': footprint_side(fp),
             'at': [round(fp.x, 3), round(fp.y, 3),
                    round(fp.rotation or 0.0, 3)],

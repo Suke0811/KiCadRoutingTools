@@ -1181,8 +1181,9 @@ class _Repair:
         self.foreign_pad_mf: List[float] = []
         self.caps: Dict[str, _Cap] = {}
         self.static_rects: List[Tuple[Tuple[float, float, float, float], str]] = []
+        from kicad_parser import non_aperture_pads
         for ref, fp in pcb_data.footprints.items():
-            if not fp.pads:
+            if not non_aperture_pads(fp):   # apertures are not pads (#1143)
                 continue
             lb = courtyards.get(ref) or compute_footprint_bbox_local(fp)
             # Count COPPER pads only: paste-only apertures (split-paste 0201

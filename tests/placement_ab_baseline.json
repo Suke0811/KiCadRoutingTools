@@ -732,11 +732,11 @@
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
    "hpwl": 1546.63,
-   "intent_errors": 7,
+   "intent_errors": 6,
    "intent_errors_by_rule": {
-    "decap_distance": 7
+    "decap_distance": 6
    },
-   "intent_errors_enforced": 7,
+   "intent_errors_enforced": 6,
    "intent_errors_other": 0,
    "inversions": 216,
    "oob_keepout_copper_amount": 0.0,
@@ -1324,11 +1324,11 @@
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
    "hpwl": 1521.08,
-   "intent_errors": 4,
+   "intent_errors": 5,
    "intent_errors_by_rule": {
-    "decap_distance": 4
+    "decap_distance": 5
    },
-   "intent_errors_enforced": 4,
+   "intent_errors_enforced": 5,
    "intent_errors_other": 0,
    "inversions": 216,
    "oob_keepout_copper_amount": 0.0,
