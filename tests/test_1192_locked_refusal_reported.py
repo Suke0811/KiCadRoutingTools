@@ -36,7 +36,7 @@ import protected_nets                                          # noqa: E402
 from copy_board import copy_board                              # noqa: E402
 from kicad_parser import parse_kicad_pcb                       # noqa: E402
 
-BOARD = os.path.join(ROOT, 'kicad_files', 'sonde_u_routed.kicad_pcb')
+BOARD = os.path.join(ROOT, 'kicad_files', 'routed_output.kicad_pcb')
 failures = []
 
 
@@ -74,11 +74,25 @@ def main():
     # 2. End to end.
     with contextlib.redirect_stdout(io.StringIO()):
         pcb = parse_kicad_pcb(BOARD)
+    from check_connected import check_net_connectivity
     by_net = {}
     for s in pcb.segments:
         by_net.setdefault(s.net_id, []).append(s)
-    net_id = max((n for n in by_net if n and n in pcb.nets and pcb.nets[n].name),
-                 key=lambda n: (len(by_net[n]), -n))
+
+    def connected(n):
+        c = check_net_connectivity(
+            n, by_net[n], [v for v in pcb.vias if v.net_id == n],
+            pcb.pads_by_net.get(n, []),
+            [z for z in (pcb.zones or []) if z.net_id == n])
+        return c['num_components'] == 1 and not c['disconnected_pads']
+    # A net that is already connected, so the refusal empties the scope.
+    net_id = next((n for n in sorted(
+        (n for n in by_net if n and n in pcb.nets and pcb.nets[n].name
+         and len(by_net[n]) >= 2 and not any(z.net_id == n for z in pcb.zones or [])),
+        key=lambda n: (-len(by_net[n]), n)) if connected(n)), None)
+    check('precondition: a connected routed net exists', net_id is not None)
+    if net_id is None:
+        return 1
     name = pcb.nets[net_id].name
     tmp = tempfile.mkdtemp(prefix='t1192_')
     try:
@@ -86,9 +100,10 @@ def main():
         with contextlib.redirect_stdout(io.StringIO()):
             copy_board(BOARD, inp)
         text = open(inp, encoding='utf-8').read()
-        # Lock the net's first segment (net ids are numeric in this file).
-        m = re.search(r'\(segment\n((?:\t\t[^\n]*\n)*?)\t\t\(net %d\)\n' % net_id,
-                      text)
+        # Lock the net's first segment (either net dialect).
+        net_pat = r'\(net (?:%d|"%s")\)' % (net_id, re.escape(name))
+        m = next((b for b in re.finditer(r'\(segment\n(?:\t\t[^\n]*\n)+?\t\)', text)
+                  if re.search(net_pat, b.group(0))), None)
         check('precondition: a segment of the chosen net was found', m is not None,
               name)
         if m is None:
