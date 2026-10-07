@@ -837,8 +837,12 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
   with copper pads owns a land pattern (modelled, and NOT relocated to silk any
   more; it used to be, on every write, on both fronts), a pad-less one is a
   logo (relocated, as #146 has always done, and therefore not modelled). NPTH
-  pads do not count. Only the PERIMETER is modelled as an obstacle, never the
-  interior fill. #962 adds what a MEASUREMENT needs: `segment.drawn_width`
+  pads do not count. The perimeter is the segments; a FILLED shape's interior
+  (`segment.graphic_ring`, #1181) is stamped by the obstacle map and graded by
+  check_drc, lifted only for the shape's one own-pad net (or a declared tie
+  group), and a touching track or via grants net-tie copper its net but no
+  other footprint's (KiCad gives that copper none). #962 adds what a
+  MEASUREMENT needs: `segment.drawn_width`
   (the stroke as drawn -- `width` models a stroke-0 fill at the track width),
   `graphic_kind`, `graphic_circle` (the true circle; the outline is a 16-gon)
   and `graphic_filled`, and `pcb.graphic_copper_unmeasured` names the copper

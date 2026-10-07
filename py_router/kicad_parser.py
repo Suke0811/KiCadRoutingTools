@@ -429,6 +429,13 @@ class Segment:
     # tab is invisible to them; the off-outline census reads this to look
     # inside.
     graphic_filled: bool = False
+    # #1181: for a FILLED closed graphic, its outline as one tuple of (x, y)
+    # vertices, shared by every segment of the shape; None otherwise. The
+    # segments are only the perimeter, so a via lying wholly inside the shape
+    # touched none of them: the router put a foreign via in a filled shape and
+    # check_drc graded the short clean. The obstacle map stamps this interior
+    # and check_drc grades containment in it.
+    graphic_ring: Optional[Tuple[Tuple[float, float], ...]] = None
 
 
 @dataclass
@@ -5069,6 +5076,7 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
             return
         ew = w if w > 0 else defaults.TRACK_WIDTH
         seq = pts + [pts[0]] if closed else pts
+        ring = tuple((float(x), float(y)) for x, y in pts) if (filled and closed) else None
         for a, b in zip(seq, seq[1:]):
             if a == b:
                 # A poly whose vertex list already REPEATS its first point --
@@ -5082,7 +5090,8 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                 start_x=a[0], start_y=a[1], end_x=b[0], end_y=b[1],
                 width=ew, layer=layer, net_id=nid, uuid=uuid, graphic=True,
                 drawn_width=max(0.0, w), graphic_kind=kind,
-                graphic_circle=circle, graphic_filled=bool(filled and closed)))
+                graphic_circle=circle, graphic_filled=bool(filled and closed),
+                graphic_ring=ring))
 
     def _blk_fields(blk):
         # BOTH layer tokens (#659 follow-up). KiCad writes the singular
@@ -7006,6 +7015,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             for _ln in _lns:
                 def _emit_outline_b(pts, ew, kind='poly', circle=None):
                     seq = list(pts) + [pts[0]]
+                    _ring = (tuple((float(x), float(y)) for x, y in pts)
+                             if _filled_b else None)          # #1181
                     for _a, _b in zip(seq, seq[1:]):
                         if _a == _b:
                             continue        # see _emit_outline (text path)
@@ -7014,7 +7025,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                             width=ew, layer=_ln, net_id=_nid, graphic=True,
                             owner_ref=_owner, drawn_width=max(0.0, _w),
                             graphic_kind=kind, graphic_circle=circle,
-                            graphic_filled=_filled_b))
+                            graphic_filled=_filled_b, graphic_ring=_ring))
 
                 if _shape == getattr(_pcbnew_g, 'SHAPE_T_SEGMENT', 0):
                     if _w <= 0:

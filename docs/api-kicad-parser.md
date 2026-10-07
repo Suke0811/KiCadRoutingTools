@@ -158,6 +158,7 @@ whose resolved copper overlaps a different-net neighbour (a modelling error).
 | `graphic_kind` | str | Graphic copper only: the primitive (`'line'`, `'arc'`, `'poly'`, `'rect'`, `'circle'`; a footprint rect at a non-cardinal angle reads `'poly'`, as pcbnew loads it). `''` for tracks |
 | `graphic_circle` | Optional[Tuple] | For a circle, its TRUE `(cx, cy, r)`: the outline is a 16-gon whose chord midpoints sit 1.9% of r inside the curve, so a reach measured on the chords under-reads |
 | `graphic_filled` | bool | A closed graphic (poly/rect/circle) whose interior is copper, by KiCad's loader rules (a `(fill ...)` token; without one a poly is filled and a rect or circle only at stroke 0). The segments model only the outline; the off-outline grade reads this to look inside |
+| `graphic_ring` | Optional[Tuple] | For a FILLED closed graphic, its outline vertices as one tuple shared by every segment of the shape; `None` otherwise (#1181). The obstacle map stamps the interior it encloses and check_drc grades copper inside it (`check_drc.filled_graphic_shapes`). Both parse paths set it |
 
 ### `Via`
 
@@ -215,8 +216,9 @@ the two apart; `footprint_copper_is_functional(pad_count)` does, and the
 writer's silkscreen mover reads the same predicate — a footprint with copper
 pads owns a land pattern (modelled, kept on copper), a pad-less one is a logo
 (relocated to silk by the writer, as #146 has always done, and therefore not
-modelled). Only the **perimeter** is modelled as an obstacle, never the
-interior fill, which is the same limit board-level graphics have; the
+modelled). The segments are the **perimeter**; a filled shape's interior is
+its `graphic_ring` (#1181), which the obstacle map stamps for every foreign net
+and check_drc grades containment in -- the same for board-level graphics. The
 off-outline grade (`check_drc.footprint_graphic_outline_census`, #962) reads
 `Segment.graphic_filled` to look inside a filled shape.
 
