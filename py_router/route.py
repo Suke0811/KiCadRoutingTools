@@ -6951,11 +6951,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # Per-net story dump (KICAD_NET_STORY=1): the complete journey of every
     # net -- bus membership, ordering, failures with named blockers, rips,
     # rescues, Phase-3 tap order, costs -- assembled from state.
+    _json_doc1173 = None
     if json_out:
         try:
             from route_summary import merge_summaries, write_summary_file
             _merged = merge_summaries(list(_SUMMARY_SINK), _RECONCILE_RAISED[0],
                                       _FINAL_REGRADE[0])
+            _json_doc1173 = _merged
             # #962: set on the MERGED document. The printed JSON_SUMMARY
             # predates the finalize, so it cannot carry this.
             if _merged is not None and _via_in_pad962 is not None:
@@ -7185,6 +7187,26 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         except Exception as _ge:
             # A gate that crashes must not take the run's board with it.
             print(f"  (improvement gate skipped: {_ge})")
+
+    # #1173: --json-out was written above, before the gate, so a reverted
+    # run's file described copper that is not on the board (and carried no
+    # verdict at all). Publish it again with the verdict; after a revert it
+    # says the shipped board is the input and that its tallies are the
+    # rejected attempt's. The GUI front gets the same report in results_data.
+    if json_out and _json_doc1173 is not None and _gate_report is not None:
+        try:
+            from route_summary import write_summary_file
+            _json_doc1173['improvement_gate'] = _gate_report
+            if _gate_report.get('verdict') == 'reject':
+                _json_doc1173['shipped'] = 'input board'
+                _json_doc1173['shipped_note'] = (
+                    'the improvement gate REJECTED this run and the output '
+                    'is the input board; every tally in this file describes '
+                    'the rejected attempt, not the shipped board')
+            write_summary_file(json_out, _json_doc1173)
+        except Exception as _e:
+            print(f"  WARNING: could not add the improvement gate to "
+                  f"--json-out {json_out}: {type(_e).__name__}: {_e}")
 
     # ONE compact authoritative line per outermost run, CLI and GUI alike.
     # The big JSON_SUMMARY lines are 6-20KB each with scope semantics the log

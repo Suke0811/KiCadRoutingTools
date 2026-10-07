@@ -138,7 +138,10 @@ The verdict is also emitted as a machine-readable `JSON_IMPROVEMENT_GATE:` line
 `disconnected_pads_before/after`, `nets_compared`, `verdict`, and, when a
 poured net outside `--nets` got worse, `excluded_plane_nets` /
 `rejected_on_excluded_plane_nets_alone`), so a chain can
-assert on it instead of grepping prose.
+assert on it instead of grepping prose. The `--json-out` file carries the
+same report under `improvement_gate` (#1173), and after a revert it also
+says `"shipped": "input board"`, with a `shipped_note` saying that its
+tallies describe the rejected attempt, not the shipped board.
 
 **The head line names every net it judged on (#1032)**, each list at its own
 clause: `broke N [lost nets], worsened K [net before->after], connected M`.
