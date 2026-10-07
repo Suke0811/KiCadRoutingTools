@@ -31,7 +31,8 @@ import modal
 REPO = "/opt/krt"
 _src = Path(__file__).resolve().parents[1]
 PY_VERSION = os.environ.get("MODAL_WHOLE_PY", "3.14")
-PINS = ("numpy==2.3.3", "scipy==1.16.2", "shapely==2.1.2", "ortools==9.15.6755")
+PINS = ("numpy==2.3.3", "scipy==1.16.2", "shapely==2.1.2", "ortools==9.15.6755",
+        "pillow==12.0.0")      # (the renders: synth_layers.py draws every case, and run through ::stage it had none)
 # MODAL_WHOLE_KICAD=1 (read here, client side): KiCad in the image, for a whole chain whose route step and grades use
 # pcbnew and kicad-cli -- the stress app's recipe (tests/stress/modal_sweep/modal_app.py). It runs on the KiCad
 # image's own system python, the one that imports the distro's pcbnew, not on the laptop's 3.14.
