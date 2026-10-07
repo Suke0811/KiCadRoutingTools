@@ -1670,6 +1670,32 @@ def _stitch_via_clear(pcb_data, net_id, x, y, config, h2h) -> bool:
     return True
 
 
+def oracle_via_rungs(config, pcb_data, net_id):
+    """The via sizes an oracle link tries, largest first (#1170): its own,
+    then the first rung ``fab_tiers.escalation_rungs`` allows when that is
+    smaller -- the tier's standard floor under ``fab`` (0.45/0.2, the literal
+    this replaces), the board's own declared floor under ``board``, and
+    nothing under ``off``, where the link fails and is reported instead of
+    shipping a via the policy forbids. One descent rung, as before: deeper
+    rungs are the rescue ladder's."""
+    out = [(config.via_size, config.via_drill)]
+    try:
+        from fab_tiers import escalation_rungs
+        n = len(getattr(getattr(pcb_data, 'board_info', None),
+                        'copper_layers', None) or ()) or 2
+        _rf = getattr(config, 'rule_floors', None)
+        rungs = escalation_rungs(
+            n, extra_floors=_rf(net_id) if callable(_rf) else None)
+    except Exception:                                   # noqa: BLE001
+        rungs = []
+    if rungs:
+        vs = round(float(rungs[0]['via_diameter']), 4)
+        vd = round(float(rungs[0]['via_drill']), 4)
+        if vs < config.via_size - 1e-9:
+            out.append((vs, min(vd, config.via_drill)))
+    return out
+
+
 def oracle_reconnect(board_file: str, net_names, config,
                      track_via_clearance: float,
                      hole_to_hole_clearance: float,
@@ -2319,12 +2345,10 @@ def oracle_reconnect(board_file: str, net_names, config,
                 print(f"    {net_name}: exact-fill tier: strapping "
                       f"nearest approach ({_pa[0]:.2f},{_pa[1]:.2f})<->"
                       f"({_pb[0]:.2f},{_pb[1]:.2f}) [{_elayer}]")
-                # Via ladder like the main path: nominal, then the fab-floor
-                # rung (a 0.71 via has nowhere to drop in a dense pocket).
-                for _vs, _vd in ((config.via_size, config.via_drill),
-                                 (0.45, 0.2)):
-                    if _vs > config.via_size:
-                        continue
+                # Via ladder like the main path: nominal, then the first
+                # rung the escalation policy allows (a 0.71 via has nowhere
+                # to drop in a dense pocket).
+                for _vs, _vd in oracle_via_rungs(config, pcb_data, net_id):
                     # #658: the tier routes with the same per-net power
                     # layer discipline as the main ladder (closure over
                     # _pw_cfg, bound per link before any tier call).
@@ -2597,11 +2621,9 @@ def oracle_reconnect(board_file: str, net_names, config,
             result = None
             used_via_size, used_via_drill = config.via_size, config.via_drill
             # Via-size ladder: a 0.5 via has nowhere to drop in a QFN pocket
-            # (lumenpnp U5); the fab-floor 0.45/0.2 rung mirrors the
-            # fine-pitch tap escalation.
-            for vs, vd in ((config.via_size, config.via_drill), (0.45, 0.2)):
-                if vs > config.via_size:
-                    continue
+            # (lumenpnp U5); the descent rung is the escalation policy's
+            # (#1170), as at the fine-pitch tap escalation.
+            for vs, vd in oracle_via_rungs(config, pcb_data, net_id):
                 rung_cfg = _pw_cfg if vs == config.via_size else \
                     replace(_pw_cfg, via_size=vs, via_drill=vd)
                 rung_obstacles = base_obstacles
@@ -3148,6 +3170,16 @@ def oracle_reconnect(board_file: str, net_names, config,
                     [routing_layers[0], routing_layers[-1]], net_id,
                     net_name=net_name if v10 else None,
                     tenting_attrs=_new_via_attrs))
+            if via_positions and used_via_size < config.via_size - 1e-9:
+                # #1170: a smaller via is a descent, disclosed in
+                # design_rules like every other site's.
+                try:
+                    from fab_tiers import note_narrowing
+                    note_narrowing(net_id, 'via_diameter', config.via_size,
+                                   used_via_size, 'oracle reconnect',
+                                   count=len(via_positions), net_name=net_name)
+                except Exception:                           # noqa: BLE001
+                    pass
             # Same-round visibility (cross-net short fix): later links in
             # this round rebuild their obstacle maps from pcb_data, so the
             # copper just routed must exist there -- two different-net links
