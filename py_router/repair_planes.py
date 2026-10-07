@@ -501,7 +501,8 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
             corridor_ghosts=corridor_ghosts,
             # This tap's own rips freed this corridor FOR the tap: their
             # ghosts must not repel it.
-            ghost_exclude_ids=frozenset(ripped_ids_local))
+            ghost_exclude_ids=frozenset(ripped_ids_local),
+            plane_tap=True)  # #1179
         if result.success:
             # Collision-checked restore on SUCCESS too (#329): give back every
             # ripped net whose copper does not conflict with the NEW tap
@@ -1520,7 +1521,8 @@ def repair_planes(
                         distant_trace_radius=distant_radius,
                         shared_via_maps=shared_maps,
                         plane_oracle=plane_oracle,
-                        corridor_ghosts=corridor_ghosts)
+                        corridor_ghosts=corridor_ghosts,
+                        plane_tap=True)  # #1179
                     _rips_before = len(ripped_net_ids)
                     if not result.success and rip_blocker_nets:
                         if not _allow_rip:
@@ -2781,7 +2783,8 @@ def repair_planes(
                             distant_trace_radius=0.0, disable_reuse=True,
                             shared_via_maps=shared_maps,
                             plane_oracle=sweep_oracle,
-                            corridor_ghosts=corridor_ghosts)
+                            corridor_ghosts=corridor_ghosts,
+                            plane_tap=True)  # #1179
                         if result.success and result.via is not None:
                             if (vtry, dtry) in _escalated_pairs:
                                 warn_fab_escalation(
@@ -2871,7 +2874,8 @@ def repair_planes(
                             verbose=verbose, fine_for_all=True, pour_trace_only=True,
                             distant_trace_radius=max_search_radius, disable_reuse=True,
                             plane_oracle=sweep_oracle,
-                            corridor_ghosts=corridor_ghosts)
+                            corridor_ghosts=corridor_ghosts,
+                            plane_tap=True)  # #1179
                         if not (track_res.success and track_res.segments):
                             continue
                         new_seg_objs = []
