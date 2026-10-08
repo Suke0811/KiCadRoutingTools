@@ -405,6 +405,13 @@ skip cleanly without KiCad python). Run any directly:
   control), and both fronts decide with
   `fix_kicad_drc_settings.fanout_written_floors`. On the pre-fix tab it fails
   3 checks: a stub QFN run lowered the via floor 0.5 -> 0.3.
+- `test_1187_live_web_floor.py` -- the narrow-pad-joint floor
+  (`connection_width_floor`) on a live board reads the board's design settings
+  through `PCBData.live_rules_provider`, at call time: after one GUI step's
+  writeback the SAME PCBData answers the lowered live floor while the
+  `.kicad_pro` on disk still declares the original, and a live
+  `min_connection` outranks `min_track_width`. On the pre-fix code it fails 3
+  checks (the floor read the stale file, 0.3 where the board said 0.15).
 - `test_movie_recorder.py` -- the Advanced tab's **Make routing movie** debug
   checkbox (#506): default OFF and inert while off; one routing step renders
   ONE movie; a plan run (`begin_group`/`end_group`, what the AI tab's Run

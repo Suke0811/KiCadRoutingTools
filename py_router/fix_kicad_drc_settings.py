@@ -453,29 +453,41 @@ def connection_width_floor(pcb_data, track_width=None, *,
     """THE narrow-pad-joint floor (#1187), for detection (check_weird) and
     repair (the terminal-web firming, the strict removal model) alike.
 
-    The board's project decides it, through :func:`web_min_connection` -- the
-    same call kicad_drc_compare stages KiCad's connection_width grade from --
-    so copper on other nets never moves the grade of a finished board. It used
-    to be the thinnest track now on the board: re-routing complex_hierarchy's
-    one 0.2032 mm rescue at 0.4 mm flipped two unrelated pad joints to
-    narrow-pad-joint while the project, and KiCad's grade, still said 0.2032.
+    The board's declared rules decide it, through :func:`web_min_connection`
+    -- the same call kicad_drc_compare stages KiCad's connection_width grade
+    from -- so copper on other nets never moves the grade of a finished board.
+    It used to be the thinnest track now on the board: re-routing
+    complex_hierarchy's one 0.2032 mm rescue at 0.4 mm flipped two unrelated
+    pad joints to narrow-pad-joint while the project, and KiCad's grade, still
+    said 0.2032. The declared rules are the sibling .kicad_pro, or on the GUI
+    ``pcb_data.live_rules_provider`` (the live board's design settings, read
+    now): mid-plan the file beside the live board is still the original, and
+    the floors the plan lowered live in pcbnew's memory.
 
     ``shipped=True`` is a REPAIR pass's question, asked mid-run: the floor the
     board will be graded at once the writeback has run. The writeback lowers
     min_track_width (and an enabled min_connection) to the run's track width
-    and to the thinnest track on the board, so that floor is the project's
-    lowered to ``track_width`` and to the thinnest track -- the same number
-    on both fronts, since the GUI's copy of the project (the file beside its
-    live board, its in-memory settings) lags the CLI chain's written one but
-    the copper does not. Detection (``shipped=False``) reads the project as
-    it stands.
+    and to the thinnest track on the board, because KiCad grades connection
+    width at ONE board-wide floor and that floor must admit every track. So
+    the shipped floor is the declared one lowered to ``track_width`` and to
+    the thinnest track. It only ever lowers: a thin track re-routed wider
+    cannot raise it above the declared floor. A repair priced at the declared
+    floor alone would skip this run's own thinner tracks (no floor-width web
+    exists through them) and ship their sub-floor joints, which the lowered
+    grade flags. Detection (``shipped=False``) reads the declared rules as
+    they stand.
 
     With no project recording either rule (a project-less board, a synthetic
     PCBData) the floor is the thinnest track on the board, as #416 read it,
     then ``track_width``; 0.0 when there is nothing to read."""
     floor = None
     path = getattr(pcb_data, 'source_path', '') or ''
-    if path:
+    provider = getattr(pcb_data, 'live_rules_provider', None)
+    live = provider() if callable(provider) else None
+    if live is not None:
+        floor = web_min_connection(
+            {'board': {'design_settings': {'rules': dict(live)}}})
+    elif path:
         try:
             pro = find_project(path)
             if os.path.isfile(pro):

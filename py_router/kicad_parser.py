@@ -681,6 +681,17 @@ class PCBData:
     # match the copper the engine is routing against. Not a file path on
     # purpose: the GUI never needs to save to be priced correctly.
     exact_fill_provider: object = None
+    # #1187: callable returning the LIVE board's design-settings rules,
+    # {rule key: mm} in the .kicad_pro's own keys (min_track_width,
+    # min_connection), which the floor readers (fix_kicad_drc_settings.
+    # connection_width_floor) take in place of the sibling file. A callable,
+    # read when the floor is asked for, like the CLI's file read: mid-plan the
+    # file beside the live board is the ORIGINAL project, the floors the plan's
+    # steps lowered live in pcbnew's memory (update_live_drc_floors), and a
+    # PCBData the GUI built before a step's writeback is still in use after it
+    # -- a value captured at build time read the pre-writeback floor there.
+    # None = read the file (parse_kicad_pcb).
+    live_rules_provider: object = None
     # #459: KiCad (group "name" (uuid ...) (members <uuid> ...)) blocks, as
     # {group name: [footprint reference, ...]}. The designer's own statement that
     # these parts belong together, so placement grouping ranks it above any
@@ -7339,8 +7350,28 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         # #498 parity with parse_kicad_pcb: sibling-file discovery (.kicad_dru)
         source_path=os.path.abspath(board.GetFileName()) if board.GetFileName() else "",
         # #424: exact-fill consumers read the LIVE board, never a stale file
-        exact_fill_provider=_live_fill
+        exact_fill_provider=_live_fill,
+        # #1187: the floors the plan lowered live in memory, not in the file
+        live_rules_provider=lambda _board=board: _live_design_rules(_board),
     )
+
+
+def _live_design_rules(board):
+    """What PCBData.live_rules_provider answers for a live pcbnew board
+    (#1187): the design-settings rules the connection-width floor reads, in
+    mm, or None when the board has no design settings. A disabled
+    min_connection reads 0, as the file does."""
+    try:
+        bds = board.GetDesignSettings()
+    except Exception:
+        return None
+    out = {}
+    for key, attr in (('min_track_width', 'm_TrackMinWidth'),
+                      ('min_connection', 'm_MinConn')):
+        v = getattr(bds, attr, None)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[key] = v / 1e6                # divide, never multiply (#493)
+    return out or None
 
 
 def _global_to_local(fp_x, fp_y, fp_rotation_deg, global_x, global_y):
