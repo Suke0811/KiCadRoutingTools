@@ -27,8 +27,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-KICAD_PYTHONS = ('/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3',
-                 '/usr/bin/python3', 'C:/Program Files/KiCad/10.0/bin/python.exe')
+sys.path.insert(0, os.path.join(HERE, '..', 'py_router'))
+from kicad_locate import kicad_python_candidates   # noqa: E402
 TIMEOUT = 4 * 3600
 
 
@@ -37,8 +37,8 @@ def short(name):
 
 
 def kicad_python():
-    """KiCad's own python (pcbnew): KICAD_PYTHON, else the usual install paths"""
-    for py in [os.environ.get('KICAD_PYTHON')] + list(KICAD_PYTHONS):
+    """KiCad's own python (pcbnew): KICAD_PYTHON, else every install kicad_locate finds, newest first"""
+    for py in kicad_python_candidates():
         if py and os.path.isfile(py) and subprocess.run([py, '-c', 'import pcbnew'], capture_output=True).returncode == 0:
             return py
     sys.exit('baseline_freerouting: no python with pcbnew found; set KICAD_PYTHON')

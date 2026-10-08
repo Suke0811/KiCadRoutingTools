@@ -836,10 +836,6 @@ PLANES_KNOWN_GAPS = {
                        "defaults.PLANE_MIN_THICKNESS",
     '--plane-max-iterations': "no control; planes_gui passes "
                               "defaults.MAX_ITERATIONS",
-    '--plane-proximity-cost': "no control; planes_gui passes 2.0",
-    '--plane-proximity-radius': "no control; planes_gui passes 3.0",
-    '--plane-track-via-clearance': "no control; planes_gui passes "
-                                   "defaults.PLANE_TRACK_VIA_CLEARANCE",
     '--voronoi-seed-interval': "no control; planes_gui passes 2.0",
 }
 
