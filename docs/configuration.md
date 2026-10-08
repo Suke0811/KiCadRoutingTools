@@ -284,7 +284,7 @@ See [Power Net Analysis](power-nets.md) for automatic detection, AI-powered anal
 | `--turn-cost` | 1000 | Penalty for direction changes (encourages straighter paths) |
 | `--max-ripup` | 3 | Max blockers to rip up at once during rip-up and retry |
 | `--ripup-abandon-metric` | `stranded` | Keep-retry vs abandon rule for multipoint tap rip-ups (see [rip-up-reroute.md](rip-up-reroute.md#abandon-metrics)) |
-| `--routing-clearance-margin` | 1.0 | Multiplier on track-via clearance (1.0 = minimum DRC) |
+| `--routing-clearance-margin` | 1.0 | Diff pairs only (a pair the run routes or restores): multiplier on the track-to-via distance that sets the P/N via offset and the centerline's via keep-out (1.0 = minimum DRC). Single-ended tracks and vias do not read it |
 | `--hole-to-hole-clearance` | board's `min_hole_to_hole` (else 0.20) | Minimum drill hole edge-to-edge clearance (mm). Omitted → the board's own constraint minimum (#439) |
 | `--board-edge-clearance` | board's `min_copper_edge_clearance` (else 0.0) | Clearance from board edge in mm. Omitted → the board's own constraint minimum (#439) |
 | `--proximity-heuristic-factor` | 0.02 | Factor for proximity-aware A* heuristic (higher = faster but may find suboptimal paths, 0 = disabled) |
@@ -594,7 +594,7 @@ class GridRouteConfig:
     max_rip_up_count: int = 3     # max blockers to rip up at once (progressive N+1)
     ripup_abandon_metric: str = 'stranded'  # tap rip-up abandon rule (docs/rip-up-reroute.md)
     max_setback_angle: float = 45.0  # degrees
-    routing_clearance_margin: float = 1.0  # multiplier on track-via clearance (1.0 = min DRC)
+    routing_clearance_margin: float = 1.0  # diff-pair via spacing only: track-to-via distance multiplier (1.0 = min DRC)
     hole_to_hole_clearance: float = 0.20  # mm - drill-to-drill fab floor
     board_edge_clearance: float = 0.0    # mm - clearance from board edge (0 = use clearance)
     proximity_heuristic_factor: float = 0.0  # factor for proximity-aware heuristic (0 = disabled)

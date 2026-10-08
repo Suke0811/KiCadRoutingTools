@@ -2264,7 +2264,9 @@ Examples:
     parser.add_argument("--max-setback-angle", type=float, default=45.0,
                         help="Maximum angle (degrees) for setback position search (default: 45.0)")
     parser.add_argument("--routing-clearance-margin", type=float, default=defaults.ROUTING_CLEARANCE_MARGIN,
-                        help="Multiplier on track-via clearance (1.0 = minimum DRC)")
+                        help="Multiplier on the track-to-via distance that sets the "
+                             "P/N via offset and the centerline's via keep-out "
+                             "(1.0 = minimum DRC)")
     parser.add_argument("--hole-to-hole-clearance", type=float, default=None,
                         help="Minimum clearance between drill holes in mm. Default: the "
                              f"board's own min_hole_to_hole constraint, else {defaults.HOLE_TO_HOLE_CLEARANCE}.")

@@ -1769,6 +1769,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         pcb_data, disable_bga_zones, bga_exclusion_zones,
         selected_net_ids=_sel_ids)
 
+    if final_reconcile and abs(routing_clearance_margin - 1.0) > 1e-9:
+        # #1216: say what the knob reaches. It used to read as a general
+        # track-to-via margin, and a run spent 10 minutes on it for nothing.
+        print(f"  --routing-clearance-margin {routing_clearance_margin:g}: diff-pair "
+              f"via spacing only (the P/N via offset and the centerline's via "
+              f"keep-out); single-ended tracks and vias route at the clearance")
     config_kwargs = get_common_config_kwargs(
         track_width=track_width, clearance=clearance, via_size=via_size,
         via_drill=via_drill, grid_step=grid_step, via_cost=via_cost,
@@ -7789,7 +7795,11 @@ For differential pair routing, use route_diff.py:
                              "joint cut; falls back to count order when the "
                              "wall is static copper). Default: count.")
     parser.add_argument("--routing-clearance-margin", type=float, default=defaults.ROUTING_CLEARANCE_MARGIN,
-                        help=f"Multiplier on track-via clearance ({defaults.ROUTING_CLEARANCE_MARGIN} = minimum DRC)")
+                        help=f"Diff pairs only (a pair this run routes or restores): "
+                             f"multiplier on the track-to-via distance that sets the "
+                             f"P/N via offset and the centerline's via keep-out "
+                             f"({defaults.ROUTING_CLEARANCE_MARGIN} = minimum DRC). "
+                             f"Single-ended tracks and vias do not read it.")
     parser.add_argument("--hole-to-hole-clearance", type=float, default=None,
                         help="Minimum clearance between drill holes in mm. Default: the "
                              f"board's own min_hole_to_hole constraint, else {defaults.HOLE_TO_HOLE_CLEARANCE}.")

@@ -520,7 +520,7 @@ on the corpus.
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `routing_clearance_margin` | `1.0` | Multiplier on track-to-via clearance (1.0 = exact DRC minimum) |
+| `routing_clearance_margin` | `1.0` | Diff pairs only: multiplier on the track-to-via distance that sets the P/N via offset and the centerline's via keep-out (1.0 = exact DRC minimum). No single-ended obstacle reads it |
 | `hole_to_hole_clearance` | `0.25` | Drill-to-drill clearance, edge to edge. Net-blind, like KiCad's `hole_to_hole` rule: a new via keeps it from vias of its OWN net too -- the same-net via rings are `max(via_size + clearance, (d1 + d2)/2 + hole_to_hole)` (#1070) |
 | `hole_clearance` | `0.0` | Copper-to-HOLE floor (KiCad's `min_hole_clearance`) — keeps TRACKS off an NPTH wall (never below `routing_defaults.NPTH_TO_TRACK_CLEARANCE`), and whenever a floor resolves above 0 also keeps VIA copper `max(clearance, floor)` off it (#1038). NOT the same rule as `hole_to_hole_clearance` (drill-to-drill). `0` = read the board's own constraint (`rules.min_hole_clearance` or `fab_floor_origin`); the track keep-out then falls back to `NPTH_TO_TRACK_CLEARANCE`, the via keep-out to none. route.py's DRC writeback writes `min_hole_clearance` into each route step's output project, so every chain step after the first resolves a floor |
 | `board_edge_clearance` | `0.0` | Clearance from board edge (0 = use `clearance`) |
