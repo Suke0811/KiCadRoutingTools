@@ -65,6 +65,19 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:
 #: MEASURED, from the run recorded in the pull request. Never predicted.
 #:
+#: RE-RECORDED 2026-10-07 (#1181). ONE row, attributed by regenerating it at
+#: every commit of the #1148-#1181 batch: it moves at #1181 alone.
+#:   * esp_prog:portfolio-1 -- `truth.headline` 1 -> 2 (blocking_by: drc 1,
+#:     broken 0 -> 1). This candidate seats U2's filled SOT89 tab across the
+#:     corridor /U0TXD used: before #1181 the tab's interior was copper to
+#:     nobody, and the "routed" /U0TXD put 2 vias and 2 tracks INSIDE it --
+#:     shorts the old check_drc could not see (the new one reports all four,
+#:     via-segment 0.58/0.56 mm deep). Now the interior is an obstacle,
+#:     /U0TXD fails honestly and nothing shorts. The headline rose because
+#:     the grade became true, not because the board got worse.
+#:   esp_prog:portfolio-1         headline 1 -> 2, vias 33 -> 28, segs 225 -> 207, copper 347.97 -> 335.22
+#:   other rows                   unmoved
+#:
 #: RE-RECORDED 2026-10-07 (#1159 and #1161). `truth.quality` only;
 #: `truth.blocking` and the headline did not mismatch on any row. ATTRIBUTED
 #: by regenerating each row at each commit of the batch:
@@ -442,14 +455,17 @@ EXPECTED = {
         # headline 3 -> 0 (2026-09-03) -> 1 (2026-09-10). The 1 is `drc`, NOT
         # `unrouted`/`broken`: this candidate lands U2's SOT89 tab on Q1's
         # pads, and #908 is what makes that visible. See the header note.
-        truth={'headline': 1,
+        # -> 2 (2026-10-07, #1181): + broken /U0TXD, which used to route
+        # THROUGH the tab's interior (a short nobody graded). Header note.
+        truth={'headline': 2,
                # 2026-09-03 (auto/fab defaults): 32/347.03/270 -> 31/341.99/263
                # 2026-09-10 (#908 footprint copper): 31/341.99/263 -> 30/350.67/304
                # 2026-09-14 (#958 phase 2): segs 304 -> 269; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 30/350.67/269 -> 35/362.75/282
                # 2026-09-16 (#958 fine-pitch tie guard): 35/362.75/282 ->
                #   35/362.65/293 (the only row whose copper moved, -0.10mm)
-               'quality': {'vias': 33, 'copper_mm': 347.97, 'segments': 225}},
+               # 2026-10-07 (#1181 filled interior): 33/347.97/225 -> 28/335.22/207
+               'quality': {'vias': 28, 'copper_mm': 335.22, 'segments': 207}},
         predictors={
             'crossings': 23, 'hpwl': 260.0687799999999,
             'halo': 101.01900525631262, 'overlap_area': 1.0,

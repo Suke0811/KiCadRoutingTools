@@ -56,9 +56,9 @@ def _outline_owner_map(input_file: str) -> Dict[str, bool]:
     # without bound.
     if key not in _OUTLINE_OWNER_CACHE:
         try:
-            from kicad_parser import footprint_outline_owners
-            with open(input_file, encoding='utf-8') as fh:
-                _OUTLINE_OWNER_CACHE[key] = footprint_outline_owners(fh.read())
+            from kicad_parser import footprint_outline_owners, read_board_text
+            _OUTLINE_OWNER_CACHE[key] = footprint_outline_owners(
+                read_board_text(input_file, quiet=True))
         except Exception:                                     # noqa: BLE001
             # Cannot decide -> do not invent a refusal. The movable-set gates
             # are the primary defence; a backstop that failed closed on an
@@ -869,8 +869,10 @@ def write_placed_output(input_file: str, output_file: str,
     Returns:
         True if output was written successfully
     """
-    with open(input_file, 'r', encoding='utf-8') as f:
-        content = f.read()
+    # Read the way KiCad reads it (#1149): a footprint block cut short by an
+    # unbracketed teardrop token would rotate or flip only its first pad.
+    from kicad_parser import read_board_text
+    content = read_board_text(input_file, quiet=True)
 
     # Move text from copper layers to silkscreen (prevents routing interference)
     content = move_copper_text_to_silkscreen(content)
@@ -1187,9 +1189,11 @@ def write_placed_output(input_file: str, output_file: str,
     # Edge.Cuts. Only a board with footprint-embedded Edge.Cuts arms it, which
     # is 0 of the 27 tracked boards.
     if _outline_owner_map(input_file):
-        from kicad_parser import structural_outline_fingerprint
-        with open(input_file, encoding='utf-8') as _fh:
-            _before = structural_outline_fingerprint(_fh.read())
+        from kicad_parser import structural_outline_fingerprint, read_board_text
+        # The same read as `content` (#1149), or a repaired footprint block
+        # would read as an outline change.
+        _before = structural_outline_fingerprint(
+            read_board_text(input_file, quiet=True))
         if _before != structural_outline_fingerprint(content):
             raise OutlineOwnerMove(
                 f"this write would have CHANGED THE BOARD OUTLINE of "

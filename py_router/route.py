@@ -2630,6 +2630,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         config.net_track_widths = {}
                     config.net_track_widths[_nid] = _w_in
             existing_rippable.extend(_pe_auto)
+    # #1156: this run's rip authority over pre-existing copper (--rip-existing-
+    # nets matches plus the automatic candidacy above), for the blocker hint:
+    # it used to tell the agent to grant --rip-existing-nets for nets this
+    # same run had already ripped. A run ledger (RUN_LEDGERS), unioned so a
+    # nested sub-run adds to the outer run's set instead of replacing it.
+    pcb_data._rip_authority_ids = (
+        set(getattr(pcb_data, '_rip_authority_ids', None) or ())
+        | set(existing_rippable))
     base_map_exclusions = all_net_ids_to_route + existing_rippable + relocatable_plane_ids
     # Cross-class clearance: install the per-net class map + routing-side floor on
     # config so BOTH the base map and every incremental in-run obstacle stamper
@@ -7479,8 +7487,15 @@ For differential pair routing, use route_diff.py:
                         help="Net name patterns of PRE-EXISTING routed nets that may be "
                              "ripped up and re-routed when they block a net being routed "
                              "(e.g. on a board routed by a previous run). Use '*' to allow "
-                             "any non-plane net. Without this flag, committed tracks are "
-                             "never ripped.")
+                             "any non-plane net. Without this flag, small pre-existing nets "
+                             "are still rip candidates (unprotected, unlocked, not "
+                             "zone-backed, not '!'-negated in --nets, <= 30 segments and "
+                             "<= 6 vias), custody-backed: a ripped net is rerouted this run "
+                             "or restored, or at least keeps its escape stub "
+                             "(KICAD_RIP_PREEXISTING=0 disables); and the in-run plane "
+                             "finalize's pad repair may rip a signal net blocking a tap "
+                             "(KICAD_FINALIZE_RIP=0 disables). Protected and KiCad-locked "
+                             "copper is never ripped.")
     parser.add_argument("--force-reroute", action="store_true",
                         help="Rip and re-route from scratch every net selected by "
                              "--nets, even if already fully connected (#515's "

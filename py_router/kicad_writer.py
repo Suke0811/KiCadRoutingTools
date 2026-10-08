@@ -1573,7 +1573,9 @@ def remove_segments_from_content(content: str, segments: List,
 
     start_re = re.compile(r'\(start\s+([\d.-]+)\s+([\d.-]+)\)')
     end_re = re.compile(r'\(end\s+([\d.-]+)\s+([\d.-]+)\)')
-    layer_re = re.compile(r'\(layer\s+"?([^")]+)"?\)')
+    # Singular, or KiCad 9's mask-exposed (layers "F.Cu" "F.Mask"), which the
+    # parser models on its copper layer (#1158) -- so the strip must find it.
+    layer_re = re.compile(r'\(layer\s+"?([^")]+)"?\)|\(layers\s+"([^"]+\.Cu)"')
     net_name_re = re.compile(r'\(net\s+"((?:[^"\\]|\\.)*)"\)')
     net_id_re = re.compile(r'\(net\s+(\d+)\)')
 
@@ -1626,7 +1628,7 @@ def remove_segments_from_content(content: str, segments: List,
                 net_token = _canon(int(mi.group(1))) if mi else None
             key = seg_key(pos_key(float(ms.group(1)), float(ms.group(2))),
                           pos_key(float(me.group(1)), float(me.group(2))),
-                          ml.group(1), net_token)
+                          ml.group(1) or ml.group(2), net_token)
             if targets.get(key, 0) > 0:
                 targets[key] -= 1
                 keep = False

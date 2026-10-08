@@ -1542,6 +1542,19 @@ def generate_qfn_fanout(footprint: Footprint,
     return tracks, [], failed_nets
 
 
+
+def autopick_rank(fp):
+    """The CLI's QFN/QFP auto-pick key: name evidence, then PIN count.
+
+    Pins, not pads (#1148): a thermal pad's split paste windows are not
+    pins, and counting them ranked a part by its stencil (tigard J1 read 30
+    pads for 22 pins, watchy U4 73 for 57).
+    """
+    from kicad_parser import non_aperture_pads
+    name_hit = any(t in (fp.footprint_name or '').upper()
+                   for t in ('QFN', 'QFP', 'DFN', 'MLF'))
+    return (1 if name_hit else 0, len(non_aperture_pads(fp)))
+
 def main():
     """Run QFN fanout generation."""
     import argparse
@@ -1678,10 +1691,7 @@ def main():
             # Drop connector/marker classes (part_class KB), prefer
             # name-evidenced QFN/QFP footprints, then most pads. Fully
             # generic; prints its reasoning.
-            def _rank(fp):
-                name_hit = any(t in (fp.footprint_name or '').upper()
-                               for t in ('QFN', 'QFP', 'DFN', 'MLF'))
-                return (1 if name_hit else 0, len(fp.pads or []))
+            _rank = autopick_rank
             ranked = list(qfn_components)
             try:
                 from placement.part_class import classify_part
