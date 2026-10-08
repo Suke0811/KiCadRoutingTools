@@ -848,6 +848,35 @@ def main():
                     and abs(_cwf(_webpcb(_p06), 0.3, shipped=True) - 0.3) < 1e-9
                     and abs(_cwf(_webpcb(_p06, rescue=True)) - 0.6) < 1e-9))
 
+    # 23. KiCad's track_dangling on a joint stub lying on ONE other track
+    #     (#1217). KiCad counts an item touching both ends of a segment for the
+    #     nearer end only, so a 35 um stub whose far end is mid-body on track T
+    #     and whose root is inside T's copper dangles in KiCad's DRC (rp2350's
+    #     GND at (151.05, 97.525)); the T-junction rule credited both ends.
+    def _kd(segs, vias=(), pads=None):
+        pads = pads if pads is not None else [_pad(-2, 0, num='1'),
+                                              _pad(2, 0, num='2', ref='U2')]
+        return [x for x in check_weird(_pcb(segs, vias=vias, pads=pads),
+                                       tolerance=0)[0]
+                if x['category'] == 'kicad-dangling']
+    _trk = _seg(-2, 0, 2, 0, width=0.25)
+    _stub = _seg(0.03, 0.02, 0.0, 0.0, width=0.25)     # both ends on _trk
+    results.append(("a stub lying on one other track is kicad-dangling",
+                    len(_kd([_trk, _stub])) == 1))
+    #     Controls: a short link in a CHAIN (each neighbour holds one end
+    #     nearer) is not; nor is a stub at a via or with a pad at its root,
+    #     where KiCad's verdict turns on details this check does not model.
+    _chain = [_seg(-2, 0, -0.05, 0, width=0.25), _seg(-0.05, 0, 0.05, 0, width=0.25),
+              _seg(0.05, 0, 2, 0, width=0.25)]
+    results.append(("a short link in a chain is not kicad-dangling",
+                    not _kd(_chain)))
+    results.append(("a stub ending at a via is left to KiCad",
+                    not _kd([_trk, _stub], vias=[_via(0.0, 0.0)])))
+    results.append(("a stub with a pad at its root is left to KiCad",
+                    not _kd([_trk, _stub],
+                            pads=[_pad(-2, 0, num='1'), _pad(2, 0, num='2', ref='U2'),
+                                  _pad(0.03, 0.02, size=0.2, num='3', ref='U3')])))
+
     # 11. The reporter, which is what #696 actually broke: a finding whose
     #     category is missing from CATEGORIES counted toward the headline and
     #     the exit code but printed nothing, so the board was blocked by a

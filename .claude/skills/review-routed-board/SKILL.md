@@ -22,7 +22,9 @@ python3 -X utf8 py_router/check_weird.py board.kicad_pcb 2>&1 | tee /tmp/review_
 `check_orphan_stubs` iterates SEGMENT endpoints and treats a via as an anchor,
 so it structurally cannot report a bad via; `check_weird` owns `dangling-via`
 (same-net copper on only one of the layers the barrel spans -- KiCad's
-`via_dangling`), `unsupported-via`, `stacked-copper` and `orphan-island`.
+`via_dangling`), `unsupported-via`, `stacked-copper`, `orphan-island` and
+`kicad-dangling` (a joint stub lying on one other track, which KiCad reports as
+`track_dangling` though both its ends touch copper).
 Measured on run 11's final board: `check_orphan_stubs` none, `check_weird`
 **3 dangling vias**, each independently confirmed.
 
