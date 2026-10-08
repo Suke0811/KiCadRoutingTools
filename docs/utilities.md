@@ -275,6 +275,29 @@ is bounded by SCOPE -- the net patterns above. Each probe row carries a
 `status` (`ok` / `crashed` / `no_summary` / `screened`) so an absent verdict
 names its cause instead of being an undifferentiated `failures: null`.
 
+## Rule-Area Writer (`add_rule_area.py`)
+
+Writes a copper keep-out rule area -- `(zone ... (keepout ...))` -- onto a board
+(#1200). A module's PCB antenna needs one on every layer; the router stamps
+a rule area (`obstacle_map.add_rule_area_keepout_obstacles`), placement grades
+it, and KiCad reports copper inside it as `items_not_allowed`.
+
+```bash
+python3 py_router/add_rule_area.py in.kicad_pcb out.kicad_pcb \
+    --name ANT_KEEPOUT --ref U1 --rect -9 -18 9 -12
+```
+
+The area is `--rect X0 Y0 X1 Y1` or `--polygon X,Y X,Y X,Y ...` in board mm,
+or, with `--ref`, in that footprint's local frame as the file stores it -- the
+frame its pads' `(at)` positions are written in, already mirrored for a part on
+the back -- so re-running after the part moves puts the area where the part
+now is. It goes on every copper layer unless `--layers` names some, and
+forbids `tracks vias copperpour` unless `--forbid` lists others (pads and
+footprints stay allowed by default). A board-level rule area of the same
+`--name` is replaced, so the command is idempotent; the output gets the
+input's siblings. Exit 0 written, 2 for a usage error, a `--ref` the board
+does not have, or a layer it does not have.
+
 ## Rotation Ranker (`rank_rotations.py`)
 
 Ranks ONE part's rotations by what `place_seed` and its polish produce at each
