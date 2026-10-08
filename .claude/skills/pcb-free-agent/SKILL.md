@@ -134,7 +134,9 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   against its pins (its `dropped_by` says what vetoed each move). Rank it at
   seed level, passing the same `--seed-args` you will seed with:
   `python3 -X utf8 py_placer/rank_rotations.py <pile> --intent <intent.json> --out-dir wk/<run>/rot --probe --write-intent wk/<run>/intent_rot.json`
-  then seed from the written intent. The seed holds that angle through its
+  then seed from the written intent. `--jobs N` runs the control and the
+  angles' seeds N at a time with identical results; on a board where one
+  seed takes minutes, set it to your free cores. The seed holds that angle through its
   polish and re-seat: a part the re-seat cannot put back at it is named on a
   `NOT repaired` line (`reseat_declined`) and the seed exits 4, and
   `place_portfolio --intent` turns it only within its declaration (#1121).

@@ -303,7 +303,10 @@ not a tier -- on a pile most do, for repairable reasons -- but each angle report
 how many of its seeds did, and the winner line says so. A CONTROL arm seeds
 the same seeds with the intent as given (no rotation declared): it is the
 baseline the winner line compares with, because the seeder may turn the part
-itself, and it is reported, never ranked. Without `--ref` it ranks the
+itself, and it is reported, never ranked. Its median runs over the seeds that
+left no part in the pile (`unseated` 0), and the winner line names any it
+excluded (#1202). `--jobs N` runs up to N `place_seed` arms at once; each is an
+independent seeded subprocess writing its own board, so N changes no result. Without `--ref` it ranks the
 unlocked, undeclared, non-connector part with the most connected pads (at least
 `--min-pads`). Writes `rotations.json` (every row, every angle's spread, the
 ranking, `separated` when the winner's worst seed beats the runner-up's best)

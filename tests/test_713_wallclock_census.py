@@ -170,6 +170,8 @@ REGISTRY = {
 
     # --- reporting only: elapsed accumulated or printed ---------------------
     'py_router/route.py': ('reporting', 'phase timing prints'),
+    'py_tools/board_score.py': ('reporting', "per-tool wall seconds, SCORE_JSON "
+                                "tool_seconds (#1202)"),
     'py_router/route_diff.py': ('reporting', 'phase timing prints'),
     'py_router/global_plan.py': ('reporting', 'plan timing print'),
     'py_router/leg_rip.py': ('reporting', 'per-rip ms print'),

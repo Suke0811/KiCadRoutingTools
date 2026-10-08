@@ -370,11 +370,12 @@ LENS_MUST_BE_SOURCED = ('connectivity', 'drc', 'spec')
 
 #: Stop conditions a `--final --kind completion` row may carry when a lens
 #: FAILED. Two vocabularies, both of record: the stop NUMBERS (2 budget
-#: spent, 4 measured-unfixable) and the verdict NAMES as `verdict` prints them
-#: (the retired loop_driver's L5 interpolated them).
+#: spent, 3 plateau, 4 measured-unfixable) and the verdict NAMES as `verdict`
+#: prints them (the retired loop_driver's L5 interpolated them). '3' and STUCK
+#: are the same stop (#1202: STUCK passed while its number was refused).
 #: DONE-EXHAUSTED is deliberately absent -- with a FAIL lens it is a
 #: contradiction, refused above the membership check.
-FAIL_COMPATIBLE_STOPS = ('2', '4', 'STUCK', 'BUDGET')
+FAIL_COMPATIBLE_STOPS = ('2', '3', '4', 'STUCK', 'BUDGET')
 
 #: The WHOLE stop-condition vocabulary (#901), checked on every `record` that
 #: carries one -- not only when a lens FAILED, which is what let ~500 characters
@@ -1485,8 +1486,8 @@ def cmd_record(a):
     if a.final and _failed and _sc not in FAIL_COMPATIBLE_STOPS:
         print(f"record: {len(_failed)} lens FAILED, so this run did not "
               f"finish clean -- --stop-condition must be 2 (budget spent), "
-              f"4 (measured-unfixable and said so), or the loop verdict "
-              f"naming the same thing (STUCK, BUDGET), not "
+              f"3 (plateau), 4 (measured-unfixable and said so), or the "
+              f"loop verdict naming the same thing (BUDGET, STUCK), not "
               f"{a.stop_condition!r}. A FAIL means `blocking` was not "
               f"really zero. Nothing was written.", file=sys.stderr)
         return 2

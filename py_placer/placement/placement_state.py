@@ -359,8 +359,12 @@ def _global_rect(fp, side_boxes, rotate_local_bounds):
     return (fp.x + lx0, fp.y + ly0, fp.x + lx1, fp.y + ly1)
 
 
-def format_report(state: PlacementState, tool: str = 'placement') -> str:
-    """Human text for a refusal or a warning."""
+def format_report(state: PlacementState, tool: str = 'placement', *,
+                  allow_unplaced: bool = False, allow_routed: bool = False) -> str:
+    """Human text for a refusal or a warning. A condition the caller already
+    overrides gets no "Override with" advice (#1202: beautify_labels and
+    check_floorplan always pass allow_routed=True, ran and exited 0, and still
+    printed the refusal and its override)."""
     lines = []
     if state.unplaced:
         lines.append(
@@ -375,10 +379,15 @@ def format_report(state: PlacementState, tool: str = 'placement') -> str:
         lines.append(
             "  To see what the file currently contains:  "
             "python3 render_placement.py <board> -o state.png")
-        lines.append("  Override with --allow-unplaced.")
+        if not allow_unplaced:
+            lines.append("  Override with --allow-unplaced.")
     elif state.partially_unplaced:
         lines.append(f"{tool}: WARNING - {state.reasons[-1]}")
-    if state.has_copper:
+    if state.has_copper and allow_routed:
+        lines.append(
+            f"{tool}: this board carries {state.segments} segment(s) and "
+            f"{state.vias} via(s); proceeding with the copper left as it is.")
+    elif state.has_copper:
         lines.append(
             f"{tool}: this board carries {state.segments} segment(s) and "
             f"{state.vias} via(s). Placement moves FOOTPRINTS and does not move "
@@ -398,7 +407,8 @@ def gate_or_exit(pcb_data, pcb_file, tool: str, *, allow_unplaced: bool = False,
     """
     import sys
     st = assess_placement(pcb_data, pcb_file)
-    msg = format_report(st, tool)
+    msg = format_report(st, tool, allow_unplaced=allow_unplaced,
+                        allow_routed=allow_routed)
     blocking = (st.unplaced and not allow_unplaced) or (st.has_copper and not allow_routed)
     if msg:
         print(msg, file=sys.stderr if (blocking and not warn_only) else sys.stdout)
