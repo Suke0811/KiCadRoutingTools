@@ -7978,12 +7978,19 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
                 # compared too. The off-outline grade measures from them, so a
                 # front that reads a different stroke or fill grades a
                 # different overrun.
+                # #1181: and the filled interior, `graphic_ring` -- the
+                # obstacle map stamps it and check_drc grades inside it, so a
+                # front reading a different ring routes around different
+                # copper.
                 _dw = getattr(s, 'drawn_width', None)
+                _ring = getattr(s, 'graphic_ring', None)
                 return (ends, _q(s.width), s.layer, '<graphic>',
                         getattr(s, 'owner_ref', ''),
                         None if _dw is None else _q(_dw),
                         getattr(s, 'graphic_kind', ''),
-                        bool(getattr(s, 'graphic_filled', False)))
+                        bool(getattr(s, 'graphic_filled', False)),
+                        None if _ring is None
+                        else tuple((_q(x), _q(y)) for x, y in _ring))
             return (ends, _q(s.width), s.layer, _net_label(pcb, s.net_id))
         return _seg_sig
 
