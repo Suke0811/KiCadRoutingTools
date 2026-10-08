@@ -398,6 +398,13 @@ skip cleanly without KiCad python). Run any directly:
   netcode names another net (GND) in the save. KiCad's link source, the
   routers and the sliver weld are stubbed; the wx-free half is
   `tests/test_1133_oracle_width_keying.py`.
+- `test_1195_qfn_floors_gui.py` -- the fanout tab's REAL
+  `_apply_fanout_results` on a real `flat_hierarchy` board (via 0.5 / drill
+  0.3, no vias): a QFN step with no via leaves the via and drill floors, a QFN
+  step with no copper writes nothing, a BGA step lowers the via floors (the
+  control), and both fronts decide with
+  `fix_kicad_drc_settings.fanout_written_floors`. On the pre-fix tab it fails
+  3 checks: a stub QFN run lowered the via floor 0.5 -> 0.3.
 - `test_movie_recorder.py` -- the Advanced tab's **Make routing movie** debug
   checkbox (#506): default OFF and inert while off; one routing step renders
   ONE movie; a plan run (`begin_group`/`end_group`, what the AI tab's Run

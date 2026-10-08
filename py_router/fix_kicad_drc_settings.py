@@ -1519,6 +1519,21 @@ def seed_project_for_output(output_pcb: str, input_pcb=None):
     return out_pro
 
 
+def fanout_written_floors(kind, tracks, vias):
+    """Which floors a fanout step's writeback may lower: (any, vias) (#1195).
+
+    A QFN/QFP fanout writes only the floors of copper it drew: nothing when the
+    run changed no copper, and the via and hole floors only when it placed a
+    via (stub mode never does). bga_fanout writes them on every run. Both
+    fronts read this -- qfn_fanout's main for the file, the GUI fanout tab for
+    the live board -- because the tab kept lowering the via floors on every
+    stub run after the CLI stopped.
+    """
+    if kind != 'qfn':
+        return True, True
+    return bool(tracks or vias), bool(vias)
+
+
 def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                            hole_clearance=None, hole_to_hole=None, edge_clearance=None,
                            track_width=None, via_diameter=None, via_drill=None,

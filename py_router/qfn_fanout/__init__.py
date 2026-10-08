@@ -1841,8 +1841,10 @@ def main():
     # pipeline step and check_drc grade at the clearance the fanout used -- only
     # lowers, never tightens (issue #160).
     import clearance_ledger as _cl
+    from fix_kicad_drc_settings import fanout_written_floors
     eff_clearance = _cl.effective(args.clearance)
-    if out_path and os.path.isfile(out_path) and not (tracks or vias):
+    _floors, _via_floors = fanout_written_floors('qfn', tracks, vias)
+    if out_path and os.path.isfile(out_path) and not _floors:
         # #1195: a run that changed no copper writes no floors -- the board
         # went through unchanged, so its project does too (with every other
         # sibling), never a writeback of sizes nothing was drawn at.
@@ -1867,8 +1869,8 @@ def main():
                 # #1195: the via floors only when this run drew a via. Stub
                 # mode never does, and its --via-size/--via-drill defaults
                 # lowered the declared via and hole floors on every run.
-                via_diameter=(getattr(args, 'via_size', None) if vias else None),
-                via_drill=(getattr(args, 'via_drill', None) if vias else None),
+                via_diameter=(getattr(args, 'via_size', None) if _via_floors else None),
+                via_drill=(getattr(args, 'via_drill', None) if _via_floors else None),
                 clamp_nondefault_netclasses=True)  # #439: fanout escapes route to --clearance; always clamp
         except Exception as _e:
             print(f"  (skipped DRC-settings fix: {_e})")

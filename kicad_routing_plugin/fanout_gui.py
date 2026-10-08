@@ -2135,19 +2135,24 @@ class FanoutTab(wx.Panel):
         # 0.125 / 0.5-0.25 after step 9. Later steps resolve their geometry
         # from that class, so the fronts diverge from there.
         _fcfg = fanout_config or {}
+        # #1195: the floors of copper this step drew, as qfn_fanout's main
+        # writes them -- a QFN run with no copper writes none, one with no via
+        # leaves the via and hole floors alone.
+        from fix_kicad_drc_settings import fanout_written_floors
+        _floors, _via_floors = fanout_written_floors(fanout_kind, tracks, vias)
         # #693: gated on the shared "Fix DRC settings after routing" checkbox.
         # This tab is the one whose shared params did not even CARRY the flag,
         # so the gate and the flag were added together -- see the
         # get_shared_params() that feeds FanoutTab in swig_gui.
-        if _fcfg.get('fix_drc_settings', True):
+        if _fcfg.get('fix_drc_settings', True) and _floors:
             try:
                 from .gui_utils import update_live_drc_floors
                 _nd_changes = update_live_drc_floors(
                     board,
                     clearance=_fcfg.get('clearance'),
                     track_width=_fcfg.get('track_width'),
-                    via_size=_fcfg.get('via_size'),
-                    via_drill=_fcfg.get('via_drill'),
+                    via_size=_fcfg.get('via_size') if _via_floors else None,
+                    via_drill=_fcfg.get('via_drill') if _via_floors else None,
                     hole_to_hole=_fcfg.get('hole_to_hole_clearance'),
                     edge_clearance=_fcfg.get('board_edge_clearance'),
                     # #782: the writeback half of #768's GIVEN branch. This tab
