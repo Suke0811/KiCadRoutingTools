@@ -126,6 +126,15 @@ def copper_layers(board):
         return [], f'{type(exc).__name__}: {exc}'
 
 
+#: The objects a measurable fab floor is a statement about (#1198).
+_FLOOR_OBJECT = {
+    'min_track_width': 'track',
+    'min_via_diameter': 'via', 'min_via_annular_width': 'via',
+    'min_via_drill': 'via',
+    'min_through_hole_diameter': 'drilled hole',
+}
+
+
 def fab_floor_integrity(board, authored_from):
     """Does this board's copper sit below the floors its project ONCE declared?
 
@@ -139,8 +148,9 @@ def fab_floor_integrity(board, authored_from):
     the floors in place. Without it, say the check did not run rather than
     implying it passed.
     """
-    from fix_kicad_drc_settings import (FAB_FLOOR_KEYS, find_project,
-                                        scan_board_minima)
+    from fix_kicad_drc_settings import (FAB_FLOOR_KEYS,
+                                        FAB_FLOOR_KEYS_MEASURABLE,
+                                        find_project, scan_board_minima)
     if not authored_from:
         return {'ran': False, 'reason': 'no --authored-from: the chain rewrites '
                                         'the floors in place, so there is '
@@ -155,22 +165,54 @@ def fab_floor_integrity(board, authored_from):
     except Exception as exc:                                # noqa: BLE001
         return {'ran': False, 'reason': f'unreadable project: {exc}'}
     now = scan_board_minima(board) or {}
+    try:
+        with open(find_project(board), encoding='utf-8') as fh:
+            declared_now = ((json.load(fh).get('board') or {})
+                            .get('design_settings') or {}).get('rules') or {}
+    except (OSError, ValueError):
+        declared_now = {}
     relaxed = []
     unmeasured = []
+    vacuous = []
+    declared_kept = []
     for key, label in FAB_FLOOR_KEYS:
         was, is_ = authored.get(key), now.get(key)
-        if isinstance(was, (int, float)) and not isinstance(is_, (int, float)):
-            # The board DECLARES this floor and nothing here can measure it --
-            # scan_board_minima reads object sizes only, no pairwise geometry,
-            # so copper-to-hole has no measured counterpart. Silently skipping
-            # it made `relaxed: []` read as "every declared floor is honoured"
-            # when one of them had never been looked at. Name it instead.
-            unmeasured.append({'key': key, 'label': label, 'authored': was})
+        if not isinstance(was, (int, float)) or isinstance(was, bool):
             continue
-        if isinstance(was, (int, float)) and isinstance(is_, (int, float)) \
-                and is_ < was - 1e-9:
-            relaxed.append({'key': key, 'label': label, 'authored': was,
-                            'on_board': is_})
+        if was <= 0:
+            # #1198: a declared 0 is honoured by any board (ecc83 and
+            # complex_hierarchy declare copper-to-hole 0.0).
+            vacuous.append({'key': key, 'label': label, 'authored': was,
+                            'why': 'declared 0: nothing can sit below it'})
+            continue
+        if key in FAB_FLOOR_KEYS_MEASURABLE:
+            if not isinstance(is_, (int, float)):
+                # scan_board_minima emits a key only when the board has that
+                # kind of object, so a missing one is a floor held vacuously:
+                # a 0-via board breaks no via floor (#1198).
+                vacuous.append({'key': key, 'label': label, 'authored': was,
+                                'why': f'no {_FLOOR_OBJECT.get(key, "object")} '
+                                       f'on the board'})
+            elif is_ < was - 1e-9:
+                relaxed.append({'key': key, 'label': label, 'authored': was,
+                                'on_board': is_})
+            continue
+        # DECLARATION-only (copper-to-hole): scan_board_minima reads object
+        # sizes, no pairwise geometry, so the copper is never measured here.
+        # Compare the declarations instead (#1198). A project that still
+        # declares the authored floor is graded at it by whatever grades
+        # copper-to-hole (KiCad's DRC; check_drc's hole arms cover NPTH
+        # only), so this check has no relaxation to report. One that lowered
+        # it is UNKNOWN, not honoured: silently skipping it made `relaxed: []`
+        # read as "every declared floor is honoured" when it was never looked
+        # at, so it is named and keeps the verdict INCOMPLETE.
+        dec = declared_now.get(key)
+        if isinstance(dec, (int, float)) and dec >= was - 1e-9:
+            declared_kept.append({'key': key, 'label': label, 'authored': was,
+                                  'declared': dec})
+        else:
+            unmeasured.append({'key': key, 'label': label, 'authored': was,
+                               'declared': dec})
     # #1160: the Default CLASS clearance, declared vs declared (no measured
     # counterpart: clearance is pairwise). Counted only when an automatic
     # descent lowered it -- the board's project carries the writeback's
@@ -198,6 +240,7 @@ def fab_floor_integrity(board, authored_from):
     except (OSError, ValueError):
         pass
     return {'ran': True, 'relaxed': relaxed, 'unmeasured': unmeasured,
+            'vacuous': vacuous, 'declared_kept': declared_kept,
             'authored_from': authored_from}
 
 
@@ -349,11 +392,16 @@ def _grade(a, doc):
     # reader takes for "every declared floor is honoured". Append it to the
     # INCOMPLETE reasons so it travels with the verdict.
     if floors.get('unmeasured'):
-        _um = ', '.join(f'{r["label"]} (declared {r["authored"]})'
+        _um = ', '.join(f'{r["label"]} (declared {r["authored"]}'
+                        + (f', the project now declares {r["declared"]}'
+                           if r.get('declared') is not None else '')
+                        + ')'
                         for r in floors['unmeasured'])
-        reasons.append(f'declared fab floor(s) NOT measured by this check, so '
-                       f'unknown rather than honoured: {_um} -- grade with '
-                       f'check_drc.py, which reads them')
+        reasons.append(f'declared fab floor(s) lowered in the project and NOT '
+                       f'measured by this check, so unknown rather than '
+                       f'honoured: {_um} -- grade the copper with KiCad\'s DRC '
+                       f'at the authored value (check_drc\'s hole arms cover '
+                       f'NPTH only)')
     if floors.get('relaxed'):
         worst = ', '.join(f'{r["label"]} {r["authored"]} -> {r["on_board"]}'
                           for r in floors['relaxed'])

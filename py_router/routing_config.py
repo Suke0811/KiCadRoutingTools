@@ -815,6 +815,17 @@ class GridRouteConfig:
                 costs.append(1000)  # Default 1.0x
         return costs
 
+    def layer_costs_for(self, layers) -> List[int]:
+        """:meth:`get_layer_costs` aligned to `layers` BY NAME (#1185), for a
+        router whose obstacle map indexes some other list than
+        ``self.layers``. Each layer gets its own cost (a forbidden -1 stays
+        forbidden); a layer ``self.layers`` does not list is 1.0x. Indexing
+        the costs positionally against another list is how the plane repair's
+        region joins read ``[1.0, 1.5, 3.0, 1.0]`` as ``[1000, 1500]`` on a
+        4-layer board and laid +3V3 straps on a forbidden GND layer."""
+        by_name = dict(zip(self.layers, self.get_layer_costs()))
+        return [by_name.get(layer, 1000) for layer in layers]
+
     def get_layer_direction_preferences(self) -> List[int]:
         """Get layer direction preferences for the Rust router.
 

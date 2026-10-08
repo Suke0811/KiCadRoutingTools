@@ -567,27 +567,9 @@ def _drop_kicad_own_copper(kicad, cd_own):
     return keep, dropped
 
 
-def _web_min_connection(cfg: dict):
-    """The min-copper-web width (mm) a board should be graded at (#406), from
-    its .kicad_pro: an author-set `min_connection` is a real design rule and
-    wins; otherwise the project's `min_track_width` (the post-route ledger
-    floors it at the smallest object on the board, so the graded condition is
-    "a copper web narrower than the narrowest intentional track"). None when
-    neither is recorded -- connection_width is then NOT graded (KiCad's
-    default min_connection is 0 = checker off), and the caller reports None
-    rather than a fake clean 0."""
-    try:
-        rules = cfg.get("board", {}).get("design_settings", {}).get("rules", {})
-        for key in ("min_connection", "min_track_width"):
-            try:
-                v = float(rules.get(key))
-            except (TypeError, ValueError):
-                continue
-            if v > 0:
-                return v
-    except AttributeError:
-        pass
-    return None
+# The floor itself lives in py_router so check_weird and the repair passes call
+# the SAME function (#1187) rather than a mirror of it.
+from fix_kicad_drc_settings import web_min_connection as _web_min_connection  # noqa: E402
 
 
 _PAD_OVERRIDE_CACHE = {}

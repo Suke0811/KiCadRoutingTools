@@ -99,7 +99,8 @@ from check_connected import (matches_any_pattern, check_net_connectivity,
                              _point_in_pad)
 from check_drc import point_to_pad_distance
 from connectivity import (COINCIDENCE_TOL, endpoint_reaches_pad, strict_joint_roots,
-                          endpoint_reaches_via, via_copper_layers)
+                          endpoint_reaches_via, lands_on_interior,
+                          via_copper_layers)
 from routing_constants import SOFT_JOINT_MIN_GAP
 from pcb_modification import (_point_anchored, _prune_net_cycles, _pt_seg_dist,
                               _restore_soft_joint_bridges,
@@ -389,7 +390,7 @@ def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
         if L2 >= 1e-9:
             for vx, vy, vsize in via_pts_on(s.layer):
                 t = ((vx - s.start_x) * dx + (vy - s.start_y) * dy) / L2
-                if t <= 0.02 or t >= 0.98:
+                if not lands_on_interior(t, L2, tol):          # #1186
                     continue
                 cx_, cy_ = s.start_x + t * dx, s.start_y + t * dy
                 if math.hypot(vx - cx_, vy - cy_) < (vsize + s.width) / 2 - 1e-6:
@@ -399,7 +400,7 @@ def _check_dangles(net_id, name, net_segs, net_vias, net_pads, net_zones,
                     continue
                 for ox, oy in ((o.start_x, o.start_y), (o.end_x, o.end_y)):
                     t = ((ox - s.start_x) * dx + (oy - s.start_y) * dy) / L2
-                    if t <= 0.02 or t >= 0.98:
+                    if not lands_on_interior(t, L2, tol):      # #1186
                         continue
                     cx_, cy_ = s.start_x + t * dx, s.start_y + t * dy
                     if math.hypot(ox - cx_, oy - cy_) < (o.width + s.width) / 2 - 1e-6:
@@ -804,11 +805,13 @@ def check_weird(pcb_data: PCBData, net_patterns: Optional[List[str]] = None,
     copper_layers = (getattr(pcb_data.board_info, 'copper_layers', None)
                      or ['F.Cu', 'B.Cu'])
 
-    # Connection-width floor for the terminal-web check (#416): the thinnest
-    # track on the board -- KiCad's scan_board_minima min_track_width.
-    _widths = [s.width for s in pcb_data.segments
-               if not getattr(s, 'graphic', False) and s.width and s.width > 0]
-    min_track_w = min(_widths) if _widths else 0.0
+    # Connection-width floor for the terminal-web check (#416): the floor the
+    # board's project grades connection_width at (the author's min_connection,
+    # else min_track_width), the same call kicad_drc_compare stages KiCad's
+    # grade from (#1187) -- so re-routing one net cannot flip another's
+    # verdict. A board with no project falls back to its thinnest track.
+    from fix_kicad_drc_settings import connection_width_floor
+    min_track_w = connection_width_floor(pcb_data)
 
     net_ids = set(segs_by_net) | set(vias_by_net)
     check_ids = []

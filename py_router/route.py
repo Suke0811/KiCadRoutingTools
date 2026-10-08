@@ -564,6 +564,17 @@ def _write_summary_min_file(json_out: Optional[str], status: str,
         from route_summary import write_summary_file
         document = {'successful': 0, 'failed': 0, 'status': status,
                     **(extra or {})}
+        # A scope the protection filters emptied lands here too (#1192:
+        # `--nets +5V --force-reroute` on a net with one locked segment).
+        # Without the refusal the document reads "nothing to do", not
+        # "refused" -- the same key the normal end-of-run summary writes.
+        try:
+            from protected_nets import PROTECTED_SKIPPED
+            if PROTECTED_SKIPPED:
+                document['protected_skipped'] = {
+                    _c: dict(_m) for _c, _m in PROTECTED_SKIPPED.items()}
+        except Exception:                                       # noqa: BLE001
+            pass
         try:
             import env_knobs as _ek653
             document['env_knobs'] = _ek653.active_env_knobs()

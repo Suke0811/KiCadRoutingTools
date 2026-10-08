@@ -371,6 +371,76 @@ def read_project_edge_clearance(pcb_path: str):
     return 0.0
 
 
+def web_min_connection(cfg: dict):
+    """The min-copper-web width (mm) a board should be graded at (#406), from
+    its .kicad_pro: an author-set `min_connection` is a real design rule and
+    wins; otherwise the project's `min_track_width` (the post-route ledger
+    floors it at the smallest object on the board, so the graded condition is
+    "a copper web narrower than the narrowest intentional track"). None when
+    neither is recorded -- connection_width is then NOT graded (KiCad's
+    default min_connection is 0 = checker off), and the caller reports None
+    rather than a fake clean 0. kicad_drc_compare stages KiCad's grade from
+    this; check_weird and the repair passes read it through
+    connection_width_floor (#1187)."""
+    try:
+        rules = cfg.get("board", {}).get("design_settings", {}).get("rules", {})
+        for key in ("min_connection", "min_track_width"):
+            try:
+                v = float(rules.get(key))
+            except (TypeError, ValueError):
+                continue
+            if v > 0:
+                return v
+    except AttributeError:
+        pass
+    return None
+
+
+def connection_width_floor(pcb_data, track_width=None, *,
+                           shipped=False) -> float:
+    """THE narrow-pad-joint floor (#1187), for detection (check_weird) and
+    repair (the terminal-web firming, the strict removal model) alike.
+
+    The board's project decides it, through :func:`web_min_connection` -- the
+    same call kicad_drc_compare stages KiCad's connection_width grade from --
+    so copper on other nets never moves the grade of a finished board. It used
+    to be the thinnest track now on the board: re-routing complex_hierarchy's
+    one 0.2032 mm rescue at 0.4 mm flipped two unrelated pad joints to
+    narrow-pad-joint while the project, and KiCad's grade, still said 0.2032.
+
+    ``shipped=True`` is a REPAIR pass's question, asked mid-run: the floor the
+    board will be graded at once the writeback has run. The writeback lowers
+    min_track_width (and an enabled min_connection) to the run's track width
+    and to the thinnest track on the board, so that floor is the project's
+    lowered to ``track_width`` and to the thinnest track -- the same number
+    on both fronts, since the GUI's copy of the project (the file beside its
+    live board, its in-memory settings) lags the CLI chain's written one but
+    the copper does not. Detection (``shipped=False``) reads the project as
+    it stands.
+
+    With no project recording either rule (a project-less board, a synthetic
+    PCBData) the floor is the thinnest track on the board, as #416 read it,
+    then ``track_width``; 0.0 when there is nothing to read."""
+    floor = None
+    path = getattr(pcb_data, 'source_path', '') or ''
+    if path:
+        try:
+            pro = find_project(path)
+            if os.path.isfile(pro):
+                with open(pro) as f:
+                    floor = web_min_connection(json.load(f))
+        except (OSError, ValueError):
+            floor = None
+    tw = float(track_width) if track_width and track_width > 0 else None
+    widths = [s.width for s in getattr(pcb_data, 'segments', ())
+              if not getattr(s, 'graphic', False) and s.width and s.width > 0]
+    thinnest = min(widths) if widths else None
+    if floor is not None and not shipped:
+        return min(floor, tw) if tw else floor
+    vals = [v for v in (floor, thinnest, tw) if v is not None]
+    return min(vals) if vals else 0.0
+
+
 def fab_edge_floor(pcb_path=None) -> float:
     """The fab-process copper-to-Edge.Cuts minimum (JLC routed-outline 0.20 mm)
     for the active fab tier -- the hard lower bound below which routed copper
@@ -1428,16 +1498,23 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                            "meta": {"filename": os.path.basename(out_pro), "version": 1},
                            "net_settings": {"classes": [], "meta": {"version": 0}}},
                           f, indent=2)
-    # #498: carry the input's custom-rules file to the output the same way --
-    # the router routed to its per-layer clearances, and every grader
-    # (check_drc, staged kicad-cli, the next chain step) resolves them from the
-    # OUTPUT board's sibling. Never overwrite an existing output dru.
+    # Carry the input's other siblings (copy_board.SIBLING_EXTS) the same way:
+    # the .kicad_dru (#498: the router routed to its per-layer clearances, and
+    # every grader resolves them from the OUTPUT board's sibling), the
+    # .design-brief.json (#711: the declared intent, without which the next
+    # grade infers every edge from the current pose, #1190) and the .kicad_prl.
+    # Never overwrite an existing output sibling.
     if input_pcb:
-        in_dru = os.path.splitext(input_pcb)[0] + ".kicad_dru"
-        out_dru = os.path.splitext(output_pcb)[0] + ".kicad_dru"
-        if os.path.isfile(in_dru) and not os.path.isfile(out_dru) \
-                and os.path.abspath(in_dru) != os.path.abspath(out_dru):
-            shutil.copyfile(in_dru, out_dru)
+        from copy_board import SIBLING_EXTS
+        in_base = os.path.splitext(input_pcb)[0]
+        out_base = os.path.splitext(output_pcb)[0]
+        for ext in SIBLING_EXTS:
+            if ext == ".kicad_pro":
+                continue                                  # handled above
+            src, dst = in_base + ext, out_base + ext
+            if os.path.isfile(src) and not os.path.isfile(dst) \
+                    and os.path.abspath(src) != os.path.abspath(dst):
+                shutil.copyfile(src, dst)
 
     with open(out_pro) as f:
         proj = json.load(f)

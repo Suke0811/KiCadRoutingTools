@@ -65,6 +65,18 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:
 #: MEASURED, from the run recorded in the pull request. Never predicted.
 #:
+#: RE-RECORDED 2026-10-07 (#1186). `truth.quality` of ONE row; blocking and
+#: the headline unmoved. It passes at the commit before #1186 and fails at
+#: #1186 with the value HEAD of the #1185-#1198 batch gives.
+#:   * esp_prog:authored -- the main run's dead-end sweep used to trim a
+#:     6-segment /+3.3V spur whose free end lands ON another /+3.3V track,
+#:     0.035 mm from that track's end (t = 0.012 of 2.97 mm): inside the old
+#:     2 % blind band, so neither a T nor a shared endpoint. Now it is a T,
+#:     the spur stays, and the reconcile sub-run takes a shorter path.
+#:     Same vias and segments; one track end 0.05 mm longer.
+#:   esp_prog:authored            copper 318.64 -> 318.69
+#:   other rows                   unmoved
+#:
 #: RE-RECORDED 2026-10-07 (#1181). ONE row, attributed by regenerating it at
 #: every commit of the #1148-#1181 batch: it moves at #1181 alone.
 #:   * esp_prog:portfolio-1 -- `truth.headline` 1 -> 2 (blocking_by: drc 1,
@@ -385,7 +397,8 @@ EXPECTED = {
                # 2026-09-15 (#908 Phase 3 lift): 34/344.06/254 -> 34/336.58/250
                # 2026-09-16 (#958 fine-pitch tie guard): segs 250 -> 260
                # 2026-10-07 (#1159 at-rule neck): 32/303.46/201 -> 36/318.64/182
-               'quality': {'vias': 36, 'copper_mm': 318.64, 'segments': 182}},
+               # 2026-10-07 (#1186 T by distance): copper 318.64 -> 318.69
+               'quality': {'vias': 36, 'copper_mm': 318.69, 'segments': 182}},
         predictors={
             'crossings': 53, 'hpwl': 253.98092000000003,
             'halo': 127.48707486477095, 'overlap_area': 1.1400451712000104,

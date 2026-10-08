@@ -751,6 +751,103 @@ def main():
                     not [x for x in check_weird(_rim(0.52), tolerance=0)[0]
                          if x['category'] == 'narrow-pad-joint']))
 
+    # 21. A T near a LONG segment's end (#1186). "Interior" was 2 % of the
+    #     length, so on a 25.8 mm track a solid T 0.2 mm from the end (t =
+    #     0.992) was neither interior nor a coincident endpoint: check_weird
+    #     called it a free end while check_connected called the net
+    #     connected, and removing the "dangling" segment disconnected it.
+    #     Interior is a distance from both ends now (One-Air-Max /SCL). The
+    #     track runs on past its end (degree 2 there), as /SCL does: with a
+    #     bare end the pair reads as a soft joint instead.
+    from pcb_modification import prune_dead_end_segments
+    _tpads = [_pad(0, 0, size=0.6, num='1'),
+              _pad(25.6, -1.5, size=0.6, num='1', ref='U2'),
+              _pad(25.8, 3, size=0.6, num='2', ref='U2')]
+    _tsegs = [_seg(0, 0, 25.8, 0, width=0.25),
+              _seg(25.6, 0, 25.6, -1.5, width=0.25),
+              _seg(25.8, 0, 25.8, 3, width=0.25)]
+    _tc = check_net_connectivity(NET, _tsegs, [], _tpads, [])
+    results.append(("precondition: the near-end T is connected copper",
+                    _tc['num_components'] == 1 and not _tc['disconnected_pads']))
+    results.append(("a T 0.2 mm from a 25.8 mm track's end is no dangling-end",
+                    not [x for x in check_weird(_pcb(_tsegs, pads=_tpads),
+                                                tolerance=0)[0]
+                         if x['category'] == 'dangling-end']))
+    _kept, _removed = prune_dead_end_segments(list(_tsegs), pads=_tpads,
+                                              tol=COINCIDENCE_TOL)
+    results.append(("...and the dead-end pruner keeps both segments",
+                    not _removed))
+    #     Control: the same stub 0.6 mm off the track's centreline does not
+    #     touch it, and is still a dangling end.
+    _tmiss = [_seg(0, 0, 25.8, 0, width=0.25),
+              _seg(25.6, -0.6, 25.6, -1.5, width=0.25),
+              _seg(25.8, 0, 25.8, 3, width=0.25)]
+    results.append(("the stub moved off the track is still a dangling-end",
+                    len([x for x in check_weird(_pcb(_tmiss, pads=_tpads),
+                                                tolerance=0)[0]
+                         if x['category'] == 'dangling-end']) >= 1))
+    #     Control: a short segment keeps the interior the 2 % band gave it.
+    _short = [_seg(0, 0, 0.5, 0, width=0.1),
+              _seg(0.25, 0, 0.25, -1.5, width=0.1)]
+    _spads = [_pad(0, 0, size=0.2, num='1'), _pad(0.5, 0, size=0.2, num='2'),
+              _pad(0.25, -1.5, size=0.2, num='1', ref='U2')]
+    results.append(("a T in a 0.5 mm segment's middle is still anchored",
+                    not [x for x in check_weird(_pcb(_short, pads=_spads),
+                                                tolerance=0)[0]
+                         if x['category'] == 'dangling-end']))
+
+    # 22. The narrow-pad-joint floor is the PROJECT's (#1187). It was the
+    #     thinnest track on the board, so re-routing complex_hierarchy's one
+    #     0.2032 mm rescue at 0.4 flipped two unrelated pad joints to
+    #     narrow-pad-joint while the project -- and the KiCad grade, staged
+    #     from it -- still said 0.2032. A 0.8 mm track meets a 1.6 mm round
+    #     pad through a ~0.40 mm lens here.
+    import json as _json
+    import tempfile as _tempfile
+
+    def _webpcb(pro=None, rescue=False):
+        _p = _pcb([_seg(6, 0, 1.12, 0, width=0.8)]
+                  + ([_seg(-9, -9, -8, -9, width=0.2032)] if rescue else []),
+                  pads=[_pad(0, 0, size=1.6, num='1'),
+                        _pad(6, 0, size=1.6, num='2', ref='U2')])
+        if pro is not None:
+            _td = _tempfile.mkdtemp(prefix='t1187_')
+            _bp = os.path.join(_td, 'b.kicad_pcb')
+            open(_bp, 'w').close()
+            with open(os.path.join(_td, 'b.kicad_pro'), 'w') as _f:
+                _json.dump({'board': {'design_settings': {'rules': pro}}}, _f)
+            _p.source_path = _bp
+        return _p
+
+    def _web(pro=None, rescue=False):
+        return len([x for x in check_weird(_webpcb(pro, rescue), tolerance=0)[0]
+                    if x['category'] == 'narrow-pad-joint'])
+
+    _p0203 = {'min_track_width': 0.2032}
+    results.append(("under a 0.2032 project floor the 0.40 mm web is clean, "
+                    "with the thin rescue track and without it",
+                    _web(_p0203, rescue=True) == 0 and _web(_p0203) == 0))
+    results.append(("the author's min_connection outranks min_track_width",
+                    _web({'min_connection': 0.6, 'min_track_width': 0.2032}) == 1))
+    results.append(("a project floor above the web flags it",
+                    _web({'min_track_width': 0.6}) == 1))
+    #     Control: with no project the floor is still the thinnest track
+    #     (#416), so a project-less board keeps its old verdicts.
+    results.append(("no project: the floor is the thinnest track, as before",
+                    _web() == 1 and _web(rescue=True) == 0))
+    #     The REPAIR passes ask what the board ships graded at, mid-run: the
+    #     project lowered to the thinnest track and the run's width, as the
+    #     writeback lowers it -- the same number on both fronts, whose copies
+    #     of the project differ mid-plan while the copper does not.
+    from fix_kicad_drc_settings import connection_width_floor as _cwf
+    _p06 = {'min_track_width': 0.6}
+    results.append(("shipped floor: the project's when the copper is wider",
+                    abs(_cwf(_webpcb(_p0203), shipped=True) - 0.2032) < 1e-9))
+    results.append(("shipped floor: lowered to a thinner track and the width",
+                    abs(_cwf(_webpcb(_p06, rescue=True), shipped=True) - 0.2032) < 1e-9
+                    and abs(_cwf(_webpcb(_p06), 0.3, shipped=True) - 0.3) < 1e-9
+                    and abs(_cwf(_webpcb(_p06, rescue=True)) - 0.6) < 1e-9))
+
     # 11. The reporter, which is what #696 actually broke: a finding whose
     #     category is missing from CATEGORIES counted toward the headline and
     #     the exit code but printed nothing, so the board was blocked by a

@@ -2606,7 +2606,8 @@ def route_disconnected_regions(
     if plane_layer_idx is None:
         print(f"  Error: plane_layer '{plane_layer}' not in layer_map")
         return [], [], 0, []
-    routing_layers = list(layer_map.keys())
+    routing_layers = [l for l, _ in sorted(layer_map.items(),
+                                           key=lambda kv: kv[1])]
 
     # Build list of existing vias and through-hole pads from this net (can be
     # reused as layer transitions). pad_is_plated_through, not "'*.Cu' in
@@ -2644,7 +2645,8 @@ def route_disconnected_regions(
         h_weight=config.heuristic_weight,
         turn_cost=config.turn_cost,
         via_proximity_cost=0,
-        layer_costs=config.get_layer_costs(),
+        # One cost per layer_map index, by NAME (#1185).
+        layer_costs=config.layer_costs_for(routing_layers),
         proximity_heuristic_cost=config.get_proximity_heuristic_cost()
     )
 
@@ -3857,7 +3859,8 @@ def route_plane_connection_wide(
             h_weight=config.heuristic_weight,
             turn_cost=config.turn_cost,
             via_proximity_cost=0,
-            layer_costs=config.get_layer_costs(),
+            # One cost per routing_layers index, by NAME (#1185).
+            layer_costs=config.layer_costs_for(routing_layers),
             proximity_heuristic_cost=config.get_proximity_heuristic_cost()
         )
 

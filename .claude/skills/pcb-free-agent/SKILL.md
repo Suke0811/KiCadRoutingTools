@@ -17,7 +17,10 @@ board and `route` for a placed one. The positive test for which one is
 read `pile` and `has_copper` on its `JSON_SUMMARY` line (the file carries
 them under `state`); exit codes are not the test. Read `pile`, not
 `unplaced`: a staging ring of parts around the outline is a pile but reads
-`unplaced: false` (#1109).
+`unplaced: false` (#1109). The same line's `poured_nets` names the nets a
+copper pour already serves (`pours` in the file: layers, filled or not,
+coverage), which `has_copper` does not count; route.py's plane finalize
+serves those nets from the fill.
 
 **Measured basis.** Two runs used this contract before it became a skill:
 - **An 18-part 2-layer board, from a pile:** DONE in 12 min, 6 vias. The
@@ -249,7 +252,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   steps of a chain, pass `--clearance-ceiling`, not `--clearance`.
 - **Hand-written copper:** stage each join with `py_tools/check_join.py` before
   committing it, and stamp it `(locked yes)`. Pad-edge arithmetic once made 42
-  shorts, and the plane repair rips unlocked hand joins.
+  shorts, and the plane repair rips unlocked hand joins. A lock freezes the
+  WHOLE net: one locked segment takes it out of every later rip and
+  `--force-reroute`, with no override. Lock a join once its net is done, and
+  unlock it in the board before re-routing that net.
 
 ## 5. Rules
 
