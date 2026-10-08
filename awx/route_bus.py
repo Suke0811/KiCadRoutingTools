@@ -257,7 +257,9 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     joint, spec = {}, None
     if joint_fanout:
         zone_ids = {z.net_id for z in (pcb.zones or []) if z.net_id}
-        spec = {'layers': signal_layers(pcb),
+        # (every copper layer: an escape on a plane layer is the plan's to take only where the outer layers have no
+        # room, priced -- joint_escape.plane_layers, C_PLANE_LAYER)
+        spec = {'layers': list(pcb.board_info.copper_layers),
                 'arrays': [{'ref': r, 'others': others[r],
                             'drops': sorted({p.net_name for p in pcb.footprints[r].pads if p.net_id in zone_ids})}
                            for r in (src, dest)]}
@@ -463,16 +465,6 @@ def array_others(pcb, ref, names):
     bus = {short_name(n) for n in names}
     return sorted({p.net_name for p in pcb.footprints[ref].pads
                    if p.net_id and p.net_name and p.net_id not in zone_ids and short_name(p.net_name) not in bus})
-
-
-def signal_layers(pcb):
-    """the copper layers a signal may escape on: every layer but an INNER one carrying a pour (a plane layer --
-    zynq's In1 GND/RFGND and In2 VCC_1V8), unless the run routes on it (ROUTE_LAYERS: the bus's lanes cut that pour,
-    and the arrays' other nets escape on it as the human's do); an outer layer always, its pour refilled round the
-    copper"""
-    import route_layers
-    planes = {z.layer for z in (pcb.zones or []) if z.net_id and z.layer not in ('F.Cu', 'B.Cu')}
-    return [L for L in pcb.board_info.copper_layers if L not in planes or L in route_layers.layers()]
 
 
 def put_back(path, board, pcb, back):

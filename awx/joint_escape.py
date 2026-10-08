@@ -64,6 +64,11 @@ C_DEV_KIND = 3000          # ...another face, layer or kind than its preferred t
 W_DROP = 10_000            # a plane ball dropped to its plane
 C_VIP = 300                # a drop's via in the pad rather than a gap (filled and capped at the fab)
 C_FINE_VIA = 300           # a drop's via a finer rung of the fab ladder's than the rung's own (_sizes: drop_vias)
+# an escape's leg on a plane layer (plane_layers): ten vias, so a ball escapes there only where the outer layers have
+# no room for it -- serving it outweighs that (W_OTHER) -- as the human's do (the zynq's U1: 15 of its nets on In1,
+# 3 on In2). On F.Cu and B.Cu alone the zynq DDR's U1 left eight plane balls of its outer rings walled in by its other
+# nets' escapes; offered its two planes at this price its plan served every ball, 17 escapes taking an inner layer
+C_PLANE_LAYER = 3000
 C_LANE_FACE = 400          # a drop's via off the array beyond a face the bus's laid lanes leave by: dearer than one
 #                            in the pad -- that is the lanes' room, as the human keeps it (zynq U2's R9 and T9, dropped
 #                            half a pitch off its west face where A3, A6 and BA2 turn in to their berths, and the
@@ -105,6 +110,14 @@ def signal_layers(pcb):
     """every copper layer but an INNER one carrying a pour (a plane layer); an outer layer always"""
     planes = {z.layer for z in (pcb.zones or []) if z.net_id and z.layer not in OUTER}
     return [L for L in pcb.board_info.copper_layers if L not in planes]
+
+
+def plane_layers(pcb):
+    """the layers an escape takes only where it must: every INNER layer carrying a pour that the run does not route
+    on (route_layers) -- zynq's In1 GND and In2's supply islands. The plan prices a leg on one (C_PLANE_LAYER)"""
+    import route_layers
+    planes = {z.layer for z in (pcb.zones or []) if z.net_id and z.layer not in OUTER}
+    return sorted(planes - set(route_layers.layers()))
 
 
 def far_face(pcb, ref, other_ref):
@@ -643,6 +656,7 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
     items, menu, balls, dmenu = {}, {}, {}, {}
     bus_layers = bus_route_layers(pcb)
     rls = run_layers()
+    planes = set(plane_layers(pcb))
     pairs_ = array_pairs(foot, bus_s | oth_s)
     partner = {leg: (pn if leg == nn else nn) for _b, (pn, nn) in pairs_.items() for leg in (pn, nn)}
     nid_of = {short_name(n.name): i for i, n in pcb.nets.items() if n.name}
@@ -664,7 +678,10 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
             dmenu[key] = _drops(pcb, grid, p, obs, sz, foot, rays, regions)
             continue
         home = next((L for L in pcb.board_info.copper_layers if L in p.layers), 'F.Cu')
-        lays = [home] + [L for L in (bus_layers if nm in bus_s else other_layers) if L != home]
+        # (a plane layer only where a leg's layer is the plan's own and priced: on more routing layers than two a via
+        # move's run is the colouring's to place, which prices none)
+        lays = [home] + [L for L in (bus_layers if nm in bus_s else other_layers)
+                         if L != home and not (rls and L in planes)]
         runs = lays[1:] if rls and len(lays) > 2 else None       # (a via move's run on RUN, clear on these)
 
         def clear(a, b, L, _n=p.net_id, _runs=runs):
@@ -790,6 +807,7 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
     bm = build_menus(pcb, ref, bus, others, other_layers, far=far, drops=drops, climb=climb, street=street,
                      only=only, vias_only=vias_only)
     bus_s, oth_s, drop_s, sz = bm.bus_s, bm.oth_s, bm.drop_s, bm.sz
+    planes_ = set(plane_layers(pcb))             # (a leg on one priced: C_PLANE_LAYER)
     rls = run_layers()                # (more routing layers than two: the via moves' runs on RUN)
     items, menu, balls, opts, straps, dmenu, t_menu = (bm.items, bm.menu, bm.balls, bm.opts, bm.straps, bm.dmenu,
                                                        bm.t_menu)
@@ -874,7 +892,7 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
                              + (C_FINE_VIA if o.r < sz['vr'] - 1e-9 else 0)))
         ln = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b, _L in (o.legs or [])) or \
             math.hypot(o.exit_pt[0] - p.global_x, o.exit_pt[1] - p.global_y)
-        c = C_VIA * o.vias + C_MM * ln
+        c = C_VIA * o.vias + C_MM * ln + C_PLANE_LAYER * sum(1 for _a, _b, L_ in (o.legs or []) if L_ in planes_)
         g = (prefer or {}).get(nm) if nm in bus_s else None
         if g:
             t = g['tooth']

@@ -356,9 +356,17 @@ and the pairs, the other nets, the plane balls), each held before the next; a
 tier left undecided in its time is asked instead for the most of it served,
 and that is held (U1's 98 plane balls, undecided at four times the time).
 
+**The other nets escape on the plane layers too, where they must.** They are
+offered every copper layer, and a leg on a plane layer -- an inner layer with
+a pour the run does not route on (`joint_escape.plane_layers`) -- costs ten
+vias (`C_PLANE_LAYER`), less than serving its ball is worth: an escape goes
+inside only where the outer layers have no room, as the human's do (the
+zynq's U1: 15 of its nets on In1, 3 on In2).
+
 **On more routing layers than two the fanout plans every routing layer**, the
-other nets included where the run routes on a poured inner layer
-(`route_bus.signal_layers`). A via escape's run (its stretch from the via to
+other nets included where the run routes on a poured inner layer; a plane
+layer it does not route on is not offered there, as a run's layer is then the
+colouring's, which prices none. A via escape's run (its stretch from the via to
 the array's edge) is planned on no one layer:
 
 - **One move per escape shape**, with the layers its run is clear on. Offered
@@ -1468,10 +1476,10 @@ channels first, and the other escapes leave round it.
   pick (the nets, each one's layer, the pour's extent, rails sharing a layer)
   and measure it in the whole-chain A/B.
 - **The joint fanout, finished:** the ends model keeps each plane ball a way
-  down, but not another net's ball a way out, nor one plane ball's way from
-  another's escape -- the zynq's U1 still leaves eight plane balls of its
-  outer rings, each ringed by other nets' escapes on both layers; a re-laid
-  pair berth can run through a
+  down, but not another net's ball a way out; a drop's via is placed in its
+  pour's outline, not its fill -- on the zynq DDR, KiCad's own refill leaves
+  several balls of both arrays (U2's GND B1, M9, T9, ...) an island the fill
+  does not reach; a re-laid pair berth can run through a
   reserved via site; the whole route does not see the other nets' copper
   (item 3); the whole-chain A/B with and without it is owed.
 
