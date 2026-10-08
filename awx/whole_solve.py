@@ -523,6 +523,10 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=()):
         if NL > 2:
             lo_n = max(lo_n, QU(entry[n]))
         hi_n = Q(end[n] - VIN1[n])
+        # (a lane whose end rooms overlap has no room for a change: its changes stand inactive -- a domain from past its
+        # end was no domain at all, and CP-SAT refused the whole model. The zynq LVDS on the human's ends: RX_D1, a pair
+        # 1.14 mm of route u from its tooth to its berth, a dive room of 0.69 at each end)
+        lo_n = min(lo_n, hi_n + 1)
         cs_ = [m.NewIntVar(lo_n, hi_n + 1, f'c_{n}_{k}') for k in range(KMAX)]
         act = [m.NewBoolVar('') for _ in range(KMAX)]
         for k in range(KMAX):
