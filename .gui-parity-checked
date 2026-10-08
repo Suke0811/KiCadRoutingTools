@@ -1,3 +1,96 @@
+4e10db45 2026-10-08 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of a999f6a1..e42c25f0 (95 commits, 91 non-merge: 69 of them awx-only
+research from the bus622-take5 merge, 21 touching py_router/, py_placer/,
+py_tools/, kicad_routing_plugin/ or manifest_to_plan -- the spine split
+e9f3752a/43fb2df4/aa96369c, the joint fanout and under-pad rescues
+989ca7b8..1ec00e85 and ac5bb418, grid_router 0.23.0 a8de4737, #1187, #1198,
+#1218, 446f4a2b's speedups, and the KiCad 4/5/6 parser commits
+e514c3cb/4f2f5773/e42c25f0). ONE GAP FOUND AND FIXED; it is older than the
+range and a gate blind spot hid it, both fixed. The two OPEN items of the
+108cac8b entry are unchanged.
+
+METHOD. As before: every argparse flag added/removed/re-defaulted in range
+(AST over the 156 changed .py files), the signatures of batch_route,
+batch_route_diff_pairs, create_plane, generate_bga/qfn_fanout,
+add_gnd_vias_to_existing_board, build_base_obstacle_map, both parse entry
+points and GridRouteConfig, and every changed line of the routing and
+placement mains attributed to its enclosing function. Parser:
+validate_pcb_data on 8 in-repo boards plus 9 RAW KiCad 6-era corpus sources
+(formats 20201116..20211014), since three commits in range change how those
+parse.
+
+FLAGS AND SIGNATURES.
+  * route_planes lost --plane-proximity-cost / --plane-proximity-radius and
+    --plane-track-via-clearance (alias --track-via-clearance), and
+    create_plane the three params (the spine split replaced the routed
+    multi-net connections they priced). planes_gui stopped passing them in
+    the same commit; no control, FLAG_PARAMS or reset entry names them;
+    ee5ec665 took them out of PLANES_KNOWN_GAPS. repair_planes dropped only
+    its --plane-track-via-clearance alias. 0 of the 402 recorded manifests
+    under kicad_stress_test/runs_set* pass any of them, so no replay breaks.
+  * place_fanout_clearance --beneath-only: control, settings save/restore,
+    engine call and CAP_BOOL_FLAGS all in-commit.
+  * generate_bga_fanout(bus=None): passed only by awx/joint_escape.py; the
+    bga_fanout main does not pass it either.
+  * GridRouteConfig.diff_pair_setback_floor (None = the old floor): set only
+    by awx callers.
+  * awx/route_bus.py (the bus step) is a new board-writing actor. It records
+    nothing into a redo manifest and no skill or recorded chain calls it, so
+    it joins the previous entry's list of unmapped awx actors.
+  Mains: route.py, route_diff.py and qfn_fanout unchanged; route_planes main
+  is the flag removal plus a path_basis key in its resistance JSON (CLI file
+  output; the GUI shows no resistance table); bga_fanout's changes are all
+  in the engine.
+
+GAP, FIXED (older than the range):
+  4e10db45 -- #581 on the fanout tab. #621 (c39a8e99, 2026-08-16) moved both
+  fanout engine calls into a worker-thread kwargs dict and dropped
+  same_net_pad_clearance from both. The shared params kept carrying the
+  Basic tab's via-in-pad policy, so with "Allow via-in-pad" unticked
+  bga_fanout --same-net-pad-clearance X ran dog-bone and the GUI laid vias
+  in pads (unless the .kicad_pro already carried a persisted value, which
+  the engine's None reads). New gate
+  tests/gui_parity/test_581_fanout_via_in_pad_gui.py (real dialog, glasgow
+  U30 + U1, engines spied) fails 4 of 8 checks pre-fix.
+  WHY NOTHING CAUGHT IT: test_engine_kwarg_parity read only a call's own
+  keywords, so generate_*_fanout(footprint, self.pcb_data, **kwargs) gave
+  no GUI call site: Class 1 printed SKIP for both fanout pairs under an "OK"
+  verdict and Class 2 printed "OK (0 config-read kwargs)". Every audit
+  since 08-16 recorded the gate as passing. It now follows **kwargs into the
+  dict(...) GUI_KWARGS_DICTS names (engine_kw in _run_bga_fanout /
+  _run_qfn_fanout), and a pair it cannot read -- call site not found, an
+  unmapped **kwargs call, no config read -- FAILs. Against HEAD's
+  fanout_gui it reports the kwarg missing on both pairs; with the mapping
+  removed it reports the unreadable calls.
+
+NO GAP (checked on both fronts): the parser commits are themselves parity
+fixes, each bringing the text parser to what pcbnew (so the GUI) already
+read. The 8 in-repo boards PASS. Of the 9 raw KiCad 6-era sources 7 PASS;
+numpad and zynq7020_ad9364 differ only by (a) an NPTH pad's (layers
+F&B.Cu) kept literally where pcbnew lists F.Cu B.Cu -- every F&B.Cu pad in
+the corpus is NPTH, check_drc / net_queries / paste_apertures /
+pcb_modification expand the token, and 4f2f5773 classed it as spelling --
+and (b) on the 20201116 file only, all 76 zone outlines repeat their first
+vertex at the end, which pcbnew drops on load and the text parser keeps: a
+zero-length closing edge, same geometry. KiCad 4/5 files: the CLI now
+refuses them (UnsupportedBoardFormat, naming the plugin as the way in)
+where the GUI loads them through pcbnew -- deliberate and loud. #1187
+carries its GUI half and gate in-commit; #1218 and #1198 are engine- and
+grader-side; 446f4a2b, the spine split, the joint fanout and the under-pad
+rescues are inside the shared engines; placement/writer.py's bare-list
+flip: test_714 mirror gate PASS. The #581 .kicad_pro persist stays
+CLI-only on every routing CLI (the documented project carryover; the
+dialog seeds its control from the persisted value at open).
+
+GATES RUN (macOS, KiCad 10.0.6) on 4e10db45's tree: all 47 tests in
+tests/gui_parity pass (test_966, test_967 and test_engine_kwarg_parity under
+KiCad's python, so Class 2 runs), every log read for a self-skip, none;
+test_gui_engine_parity PARITY, copper sets IDENTICAL, kicad unconnected 0/0,
+drc 0/0; test_gui_livechain_rp2350 PASS; test_engine_kwarg_parity reads the
+fanout pairs (BGA 22 kwargs / 12 config reads, QFN 14 / 3); tests/
+test_581_same_net_pad_via_clearance and test_fanout_via_in_pad_clamp PASS;
+validate_pcb_data as above.
+
 a999f6a1 2026-10-08 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
 Audit of 108cac8b..a999f6a1 (79 commits, 49 touching py_router/, py_placer/,
 py_tools/, kicad_routing_plugin/ or manifest_to_plan before the fixes: PR
