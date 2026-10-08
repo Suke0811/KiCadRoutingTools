@@ -78,6 +78,10 @@ REFUSED_TOOLS = {
     'beautify_labels.py': (
         'tidies reference-designator silkscreen; no plan step yet -- run it '
         'before/after the plan'),
+    'add_rule_area.py': (
+        'writes a copper keep-out rule area that every later route step obeys '
+        '(#1200); the plan format has no step for it. Run it on the CLI and '
+        'start the plan from its output'),
 }
 
 # CLI flag -> plan params key (numbers parsed; lists collected).
