@@ -6025,6 +6025,13 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 state, edge_floor_fallback)}
 
 
+#: KiCad 6's bare footprint lock, ``(footprint "X" locked ...``; group 1 is
+#: everything before the word, which the unlock keeps.
+_BARE_FP_LOCK_RE = re.compile(
+    r'^(\(\s*(?:footprint|module)\s+(?:"(?:[^"\\]|\\.)*"|[^\s()"]+)'
+    r'(?:\s+[A-Za-z_]+)*?)\s+locked\b')
+
+
 def stamp_locked(board_file: str, refs: Sequence[str]) -> int:
     """Insert `(locked yes)` into the named footprints, in place.
 
@@ -6033,7 +6040,7 @@ def stamp_locked(board_file: str, refs: Sequence[str]) -> int:
     KiCad itself) reads it from. The grade's must_lock rule demands the lock
     IN THE FILE, so writing the intent's locks here is what makes the emitted
     seed grade clean rather than merely hoped-correct."""
-    from kicad_parser import iter_footprint_blocks
+    from kicad_parser import footprint_head_flags, iter_footprint_blocks
     with open(board_file, 'r', encoding='utf-8') as f:
         content = f.read()
     want = set(refs)
@@ -6047,8 +6054,9 @@ def stamp_locked(board_file: str, refs: Sequence[str]) -> int:
             list(iter_footprint_blocks(content))):
         if key not in want:
             continue
-        if re.search(r'\(locked\s+yes\)', fp_text[:fp_text.find('(pad')
-                                                  if '(pad' in fp_text else len(fp_text)]):
+        if (re.search(r'\(locked\s+yes\)', fp_text[:fp_text.find('(pad')
+                                                   if '(pad' in fp_text else len(fp_text)])
+                or 'locked' in footprint_head_flags(fp_text)):  # KiCad 6: bare
             continue
         open_m = re.match(r'\(footprint\s+"[^"]*"', fp_text)
         if not open_m:
@@ -6093,7 +6101,7 @@ def stamp_unlocked(board_file: str, refs: Sequence[str]) -> int:
     VIAS are copper, read by a different rule (#521), and are not footprint
     blocks, so nothing here can reach them.
     """
-    from kicad_parser import iter_footprint_blocks
+    from kicad_parser import footprint_head_flags, iter_footprint_blocks
     with open(board_file, 'r', encoding='utf-8') as f:
         content = f.read()
     want = set(refs)
@@ -6107,6 +6115,10 @@ def stamp_unlocked(board_file: str, refs: Sequence[str]) -> int:
         head_end = fp_text.find('(pad') if '(pad' in fp_text else len(fp_text)
         head, tail = fp_text[:head_end], fp_text[head_end:]
         new_head, n = re.subn(r'\s*\(locked\s+yes\)', '', head)
+        # KiCad 6 writes the lock as a bare word after the name:
+        # (footprint "X" locked (layer ... -- leave that and KiCad keeps it locked.
+        new_head, n_bare = _BARE_FP_LOCK_RE.subn(r'\1', new_head, count=1)
+        n += n_bare
         if not n:
             continue
         content = content[:start] + new_head + tail + content[end:]

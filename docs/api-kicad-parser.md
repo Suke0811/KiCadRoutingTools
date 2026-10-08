@@ -403,6 +403,48 @@ v10 = pcb.kicad_version >= KICAD_10_MIN_VERSION
 print(f"File version {pcb.kicad_version} -> {'KiCad 10+' if v10 else 'KiCad 9'} format")
 ```
 
+### KiCad 6-era files
+
+pcbnew converts several KiCad 6-era conventions when it loads a file, and the
+GUI (which builds from pcbnew) has always seen the converted board.
+`parse_kicad_pcb` applies the same conversions, at KiCad's own version cutoffs
+(`pcb_io_kicad_sexpr_parser.cpp` / `pcb_io_kicad_sexpr.h`, KiCad 10.0.0), so a
+KiCad 6 board parses on the CLI the way it loads in KiCad:
+
+| Convention in the file | Read as | Applies to |
+|---|---|---|
+| `(layers *.Cu *.Mask)` — names unquoted | the same names | every layer list (KiCad 6 writes pad lists bare) |
+| a zone on `(layers F&B.Cu)` / `(layers *.Cu)` | one `Zone` per layer: F.Cu + B.Cu / every copper layer | all versions |
+| `(gr_arc (start CENTER) (end ARC-START) (angle SWEEP))` | the three-point arc pcbnew writes | version ≤ `LEGACY_ARC_FORMATTING` (20210925) |
+| a footprint whose `(tags ...)` start with `"net tie"` | one `net_tie_groups` entry of every pad | version ≤ `LEGACY_NET_TIES` (20220815) |
+| `(tstamp ...)` | the item's `uuid` (an 8-hex-digit stamp expanded as KiCad's KIID does) | footprints, tracks, vias, zones |
+| `~X~` overbars in net names | `~{X}` | version < `NEW_OVERBAR_NOTATION` (20210606) |
+| a bare `locked`: `(footprint "X" locked (layer ...`, `(gr_line locked (start ...` | `Footprint.locked`; the shape is read as unlocked geometry | all versions (KiCad 6 spells it so) |
+
+The legacy arc rewrite and the shape-lock strip happen on the parser's
+**analysis copy** only: never write `upgrade_legacy_arcs` output back into a
+file of that version, which KiCad would then fail to load.
+
+```python
+layer_list_tokens(body: str) -> List[str]          # names in a (layers ...) body, quoted or bare
+map_layer_list_tokens(body: str, fn) -> str        # rewrite each name, keeping its spelling
+upgrade_legacy_arcs(content: str, kicad_version=None) -> str
+kiid_from_tstamp(raw: str) -> str
+uuid_or_tstamp(text: str) -> str                   # (uuid "...") else (tstamp ...), else ''
+convert_to_new_overbar_notation(old: str) -> str   # KiCad's ConvertToNewOverbarNotation
+footprint_head_flags(fp_text: str) -> set          # bare words after the name: {'locked', 'placed'}
+strip_bare_shape_locks(content: str) -> str        # (gr_line locked (start -> (gr_line (start
+```
+
+```python
+from kicad_parser import (convert_to_new_overbar_notation, kiid_from_tstamp,
+                          layer_list_tokens)
+
+print(convert_to_new_overbar_notation('/~RST~'))   # /~{RST}
+print(kiid_from_tstamp('5E3F1A2B'))                # 00000000-0000-0000-0000-00005e3f1a2b
+print(layer_list_tokens(' *.Cu *.Mask)'))          # ['*.Cu', '*.Mask']
+```
+
 ## Coordinate transformation
 
 ```python

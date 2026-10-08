@@ -21,7 +21,8 @@ import re
 from typing import Dict, Optional, Set, Tuple
 
 from kicad_parser import (_arc_to_segments, find_matching_paren,
-                          iter_footprint_blocks)
+                          footprint_head_flags, iter_footprint_blocks,
+                          strip_bare_shape_locks, upgrade_legacy_arcs)
 
 Bbox = Tuple[float, float, float, float]
 
@@ -92,7 +93,9 @@ def _file_blocks(pcb_file: str) -> list:
     if key is not None and key in _BLOCK_CACHE:
         return _BLOCK_CACHE[key]
     with open(pcb_file, 'r', encoding='utf-8') as f:
-        blocks = list(_footprint_blocks(f.read()))
+        # A pre-6.0 file's center/angle fp_arcs read as start/mid/end, the
+        # only arc form the outline readers here match (read-only copy).
+        blocks = list(_footprint_blocks(strip_bare_shape_locks(upgrade_legacy_arcs(f.read()))))
     if key is not None:
         if len(_BLOCK_CACHE) > 8:
             _BLOCK_CACHE.clear()
@@ -114,7 +117,8 @@ def extract_locked_refs(pcb_file: str) -> Set[str]:
         # It appears early in the footprint block, before properties
         first_pad = fp_text.find('(pad ')
         search_region = fp_text[:first_pad] if first_pad > 0 else fp_text[:500]
-        if re.search(r'\(locked\s+yes\)', search_region):
+        if (re.search(r'\(locked\s+yes\)', search_region)
+                or 'locked' in footprint_head_flags(fp_text)):  # KiCad 6: bare
             locked.add(ref)
     return locked
 

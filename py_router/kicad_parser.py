@@ -164,6 +164,144 @@ def detect_kicad_version(content: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+# ---------------------------------------------------------------------------
+# KiCad 6-era file conventions pcbnew converts on load. Each cutoff is KiCad's
+# own (pcb_io_kicad_sexpr_parser.cpp / pcb_io_kicad_sexpr.h at 10.0.0); the
+# text parser applies the same conversion so a KiCad 6 board parses the way
+# the GUI -- which builds from pcbnew -- already sees it. Found by parsing all
+# 89 KiCad 6 corpus sources raw and after a pcbnew round trip.
+# ---------------------------------------------------------------------------
+
+#: Files at or before this version wrote arcs as (start CENTER) (end ARC-START)
+#: (angle SWEEP) -- LEGACY_ARC_FORMATTING.
+LEGACY_ARC_FORMATTING = 20210925
+#: Files at or before this version declared a net tie by footprint keywords
+#: (tags "net tie ...") rather than (net_tie_pad_groups ...) -- LEGACY_NET_TIES.
+LEGACY_NET_TIES = 20220815
+#: Files before this version wrote overbars as ~TEXT~ rather than ~{TEXT}.
+NEW_OVERBAR_NOTATION = 20210606
+
+_TSTAMP_RE = re.compile(r'\(tstamp\s+"?([0-9A-Fa-f-]+)"?\)')
+
+
+def kiid_from_tstamp(raw: str) -> str:
+    """The uuid pcbnew gives a KiCad 6 ``(tstamp ...)`` (kiid.cpp).
+
+    A value of at most 8 hex digits is a LEGACY timestamp: only the last four
+    octets are filled, from the END of the string. Anything else is already a
+    uuid and is kept as written.
+    """
+    s = raw.strip('"')
+    if s and len(s) <= 8 and all(c in '0123456789abcdefABCDEF' for c in s):
+        octets = []
+        for i in range(4):
+            start = len(s) - 8 + i * 2
+            end = start + 2
+            start = max(0, start)
+            o = s[start:start + max(0, end - start)]
+            octets.append(int(o, 16) if o else 0)
+        return '00000000-0000-0000-0000-0000' + ''.join('%02x' % o for o in octets)
+    return s
+
+
+def uuid_or_tstamp(text: str) -> str:
+    """The first ``(uuid "...")`` in TEXT, else its KiCad 6 ``(tstamp ...)``
+    as pcbnew converts it, else ''. Callers bound TEXT to the item's own
+    header, exactly as they did for the uuid alone."""
+    m = re.search(r'\(uuid\s+"([^"]+)"', text)
+    if m:
+        return m.group(1)
+    m = _TSTAMP_RE.search(text)
+    return kiid_from_tstamp(m.group(1)) if m else ""
+
+
+def convert_to_new_overbar_notation(old: str) -> str:
+    """KiCad's ConvertToNewOverbarNotation (string_utils.cpp), ported as is:
+    ``~X~`` -> ``~{X}``, ``~~`` -> ``~``, a space / ``}`` / ``)`` ends an
+    open overbar, and a string already holding ``~{`` is returned untouched."""
+    if old == '~':
+        return old
+    out = []
+    in_overbar = False
+    i, n = 0, len(old)
+    while i < n:
+        ch = old[i]
+        if ch == '~':
+            la = i + 1
+            if la < n and old[la] == '~':
+                if la + 1 < n and old[la + 1] == '{':
+                    out.append('~~{}')
+                    i += 1
+                    continue
+                out.append('~')
+                i += 2
+                continue
+            if la < n and old[la] == '{':
+                return old
+            out.append('}' if in_overbar else '~{')
+            in_overbar = not in_overbar
+            i += 1
+            continue
+        if ch in ' })' and in_overbar:
+            out.append('}')
+            in_overbar = False
+        out.append(ch)
+        i += 1
+    if in_overbar:
+        out.append('}')
+    return ''.join(out)
+
+
+_LEGACY_ARC_RE = re.compile(
+    r'\((gr_arc|fp_arc)(\s+(?:locked\s+)?)'
+    r'\(start\s+([-\d.eE+]+)\s+([-\d.eE+]+)\)\s*'
+    r'\(end\s+([-\d.eE+]+)\s+([-\d.eE+]+)\)\s*'
+    r'\(angle\s+([-\d.eE+]+)\)')
+
+
+def _fmt_mm(v: float) -> str:
+    s = '%.6f' % v
+    s = s.rstrip('0').rstrip('.')
+    return '0' if s in ('-0', '') else s
+
+
+def upgrade_legacy_arcs(content: str, kicad_version: Optional[int] = None) -> str:
+    """CONTENT with every legacy center/angle arc rewritten as start/mid/end.
+
+    For files at or before LEGACY_ARC_FORMATTING, KiCad reads ``(start)`` as the
+    arc CENTER, ``(end)`` as the arc's START point and ``(angle)`` as the sweep
+    (SetArcAngleAndEnd: end = start rotated by the angle, the two swapped when
+    the angle is negative). Every reader here matches only the three-point
+    form, so an old arc was simply dropped: a rounded outline lost its corners
+    (or closed nothing at all). Analysis copies ONLY -- never write this back
+    into a file of that version, which KiCad would then fail to load.
+    """
+    if kicad_version is None:
+        kicad_version = detect_kicad_version(content)
+    if not kicad_version or kicad_version > LEGACY_ARC_FORMATTING or '(angle' not in content:
+        return content
+
+    def _sub(m):
+        cx, cy, sx, sy = (float(m.group(k)) for k in (3, 4, 5, 6))
+        ang = float(m.group(7))
+
+        def rot(a):
+            r = math.radians(a)
+            dx, dy = sx - cx, sy - cy
+            return (cx + dx * math.cos(r) - dy * math.sin(r),
+                    cy + dx * math.sin(r) + dy * math.cos(r))
+        ex, ey = rot(ang)
+        mx, my = rot(ang / 2.0)
+        start, end = (sx, sy), (ex, ey)
+        if ang < 0:
+            start, end = end, start
+        return '(%s%s(start %s %s) (mid %s %s) (end %s %s)' % (
+            m.group(1), m.group(2),
+            _fmt_mm(start[0]), _fmt_mm(start[1]), _fmt_mm(mx), _fmt_mm(my),
+            _fmt_mm(end[0]), _fmt_mm(end[1]))
+    return _LEGACY_ARC_RE.sub(_sub, content)
+
+
 def is_kicad_10(content: str) -> bool:
     """Check if file content is KiCad 10+ format (name-only nets)."""
     return detect_kicad_version(content) >= KICAD_10_MIN_VERSION
@@ -1601,6 +1739,25 @@ def find_matching_paren(content: str, open_idx: int) -> int:
 
 def extract_layers(content: str) -> BoardInfo:
     """Extract layer information from PCB file."""
+    layers, copper_layers = _layer_table(content)
+
+    # Extract board bounds from Edge.Cuts
+    bounds = extract_board_bounds(content)
+
+    # Extract board outline polygon(s) and cutouts for non-rectangular boards
+    outers, cutouts = extract_board_contours(content)
+
+    # Extract stackup information
+    stackup = extract_stackup(content)
+
+    return BoardInfo(layers=layers, copper_layers=copper_layers, board_bounds=bounds,
+                     stackup=stackup, board_outline=(outers[0] if outers else []),
+                     board_outlines=outers, board_cutouts=cutouts)
+
+
+def _layer_table(content: str) -> Tuple[Dict[int, str], List[str]]:
+    """The board's (layers ...) table: {id: name}, and its copper layer names
+    in table order."""
     layers = {}
     copper_layers = []
 
@@ -1624,19 +1781,7 @@ def extract_layers(content: str) -> BoardInfo:
             # 2-layer (issue #76).
             if '.Cu' in layer_name and layer_type in ('signal', 'power', 'mixed', 'jumper'):
                 copper_layers.append(layer_name)
-
-    # Extract board bounds from Edge.Cuts
-    bounds = extract_board_bounds(content)
-
-    # Extract board outline polygon(s) and cutouts for non-rectangular boards
-    outers, cutouts = extract_board_contours(content)
-
-    # Extract stackup information
-    stackup = extract_stackup(content)
-
-    return BoardInfo(layers=layers, copper_layers=copper_layers, board_bounds=bounds,
-                     stackup=stackup, board_outline=(outers[0] if outers else []),
-                     board_outlines=outers, board_cutouts=cutouts)
+    return layers, copper_layers
 
 
 def extract_stackup(content: str) -> List[StackupLayer]:
@@ -3302,7 +3447,6 @@ def _parse_ref_label(fp_text: str, ref_start: int,
 #: note in `footprint_raw_reference`).
 _FP_REF_RE = re.compile(r'\(property\s+"Reference"\s+"([^"]+)"')
 _FP_REF_LEGACY_RE = re.compile(r'\(fp_text\s+reference\s+"([^"]+)"')
-_FP_UUID_RE = re.compile(r'\(uuid\s+"([^"]+)"')
 _FP_START_RE = re.compile(r'\(footprint\s+"')
 
 #: Separator between a duplicated reference and its file-order ordinal (#726).
@@ -3342,10 +3486,36 @@ def _footprint_header_end(fp_text: str) -> int:
     return end
 
 
+_FP_HEAD_RE = re.compile(
+    r'\(\s*(?:footprint|module)\s+(?:"(?:[^"\\]|\\.)*"|[^\s()"]+)((?:\s+[A-Za-z_]+)*)')
+
+
+def footprint_head_flags(fp_text: str) -> set:
+    """The bare keywords right after a footprint's name. KiCad 6 writes its
+    flags there -- ``(footprint "X" locked placed (layer ...`` -- where KiCad
+    7+ writes ``(locked yes)`` children; pcbnew reads both."""
+    m = _FP_HEAD_RE.match(fp_text)
+    return set(m.group(1).split()) if m else set()
+
+
+_BARE_SHAPE_LOCK_RE = re.compile(r'\((gr_[a-z]+|fp_[a-z]+)\s+locked(?=\s*\()')
+
+
+def strip_bare_shape_locks(content: str) -> str:
+    """CONTENT with KiCad 6's bare ``locked`` dropped from graphic shapes:
+    ``(gr_line locked (start ...`` -> ``(gr_line (start ...``. Every shape
+    reader expects the geometry first, so a locked Edge.Cuts line was dropped
+    and a board drawn with locked outline segments parsed with no outline.
+    Graphic lock state is not modelled. Analysis copies only."""
+    if ' locked' not in content:
+        return content
+    return _BARE_SHAPE_LOCK_RE.sub(r'(\1', content)
+
+
 def footprint_uuid(fp_text: str) -> str:
-    """The footprint's OWN uuid, or '' when it has none."""
-    m = _FP_UUID_RE.search(fp_text[:_footprint_header_end(fp_text)])
-    return m.group(1) if m else ""
+    """The footprint's OWN uuid -- or its KiCad 6 (tstamp ...) as pcbnew
+    converts it -- or '' when it has none."""
+    return uuid_or_tstamp(fp_text[:_footprint_header_end(fp_text)])
 
 
 def footprint_raw_reference(fp_text: str) -> str:
@@ -3556,7 +3726,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             _i = fp_text.find(_tok)
             if _i != -1:
                 _hdr_end = min(_hdr_end, _i)
-        is_locked = bool(re.search(r'\(locked\s+yes\)', fp_text[:_hdr_end]))
+        is_locked = (bool(re.search(r'\(locked\s+yes\)', fp_text[:_hdr_end]))
+                     or 'locked' in footprint_head_flags(fp_text))  # KiCad 6: bare
 
         # Footprint-level (clearance ...) override (issue #326). KiCad writes it
         # in the footprint header, after the properties but before any graphic/
@@ -3583,11 +3754,24 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
         # numbers varies by KiCad version; strip it.
         net_tie_groups: List[List[str]] = []
         ntpg_match = re.search(r'\(net_tie_pad_groups\b([^)]*)\)', fp_text)
-        if ntpg_match:
-            for grp in re.findall(r'"([^"]*)"', ntpg_match.group(1)):
-                pads_in_group = [p.strip() for p in grp.split(',') if p.strip()]
-                if len(pads_in_group) >= 2:
-                    net_tie_groups.append(pads_in_group)
+        group_strings = (re.findall(r'"([^"]*)"', ntpg_match.group(1))
+                         if ntpg_match else [])
+        if (not ntpg_match and _file_version
+                and _file_version <= LEGACY_NET_TIES):
+            # A legacy net tie is declared by keyword: pcbnew turns a footprint
+            # whose (tags ...) START with "net tie" into one group of every pad
+            # (NetTie parts, and the library's BRIDGED solder jumpers).
+            _tag_end = min([i for i in (fp_text.find(t) for t in
+                                        ('(pad', '(fp_', '(zone', '(model'))
+                            if i != -1] or [len(fp_text)])
+            _tags = re.search(r'\(tags\s+"((?:[^"\\]|\\.)*)"\)', fp_text[:_tag_end])
+            if _tags and _unescape_kicad_string(_tags.group(1)).startswith('net tie'):
+                group_strings = [', '.join(
+                    re.findall(r'\(pad\s+"((?:[^"\\]|\\.)*)"', fp_text))]
+        for grp in group_strings:
+            pads_in_group = [p.strip() for p in grp.split(',') if p.strip()]
+            if len(pads_in_group) >= 2:
+                net_tie_groups.append(pads_in_group)
 
         # Own uuid + schematic sheet path, for placement grouping (#459). Both
         # sit in the footprint header; bound the uuid search to before the first
@@ -3597,8 +3781,7 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             _i = fp_text.find(_tok)
             if _i != -1:
                 _uid_end = min(_uid_end, _i)
-        _fp_uid = re.search(r'\(uuid\s+"([^"]+)"', fp_text[:_uid_end])
-        fp_uuid = _fp_uid.group(1) if _fp_uid else ""
+        fp_uuid = uuid_or_tstamp(fp_text[:_uid_end])  # KiCad 6: (tstamp ...)
         _path_m = re.search(r'\(path\s+"([^"]*)"', fp_text)
         fp_path = _path_m.group(1) if _path_m else ""
 
@@ -4139,7 +4322,7 @@ def extract_vias(content: str, name_to_id: Dict[str, int] = None) -> List[Via]:
             drill=float(geom[3]),
             layers=[geom[4], geom[5]],
             net_id=net_id,
-            uuid=u.group(1) if u else "",
+            uuid=(u.group(1) if u else uuid_or_tstamp(block)),  # KiCad 6: (tstamp ...)
             # Read from the block, not from a capture group and not from a
             # second uuid-keyed pass over the file. The old v10 path needed
             # that pass (#225's O(vias x filesize) backtracking, guarded by a
@@ -4566,10 +4749,8 @@ def _paste_shape_record(tag: str, blk: str, owner: str, transform):
     if not layers:
         return []
     wm = re.search(r'\(width\s+([-\d.]+)\)', blk)
-    um = (re.search(r'\(uuid\s+"([^"]+)"\)', blk)
-          or re.search(r'\(tstamp\s+([-\w]+)\)', blk))
     width = float(wm.group(1)) if wm else 0.0
-    uuid = um.group(1) if um else ''
+    uuid = uuid_or_tstamp(blk)
 
     def xy(name):
         m = re.search(r'\(' + name + r'\s+([-\d.]+)\s+([-\d.]+)\)', blk)
@@ -4749,12 +4930,12 @@ def _extract_via_protection_attrs(content: str) -> Dict[str, Dict[str, str]]:
 
     out: Dict[str, Dict[str, str]] = {}
     for _start, block in _via_blocks(content):
-        uuid_match = _VIA_UUID_RE.search(block)
-        if not uuid_match:
+        via_uuid = uuid_or_tstamp(block)  # KiCad 6 vias carry (tstamp ...)
+        if not via_uuid:
             continue
         spec = _via_spec_from_block(block)
         if spec:
-            out[uuid_match.group(1)] = spec
+            out[via_uuid] = spec
     return out
 
 
@@ -4904,13 +5085,16 @@ def _child_uuid(children) -> str:
     for args in children.get('uuid', ()):
         if args and args[0].startswith('"'):
             return args[0][1:-1]
+    for args in children.get('tstamp', ()):  # KiCad 6's spelling
+        if args:
+            return kiid_from_tstamp(args[0])
     return ""
 
 
 def _block_uuid(block: str) -> str:
     """A block's (uuid ...) wherever it sits; the fast path captures it only
     directly after (net ...)."""
-    if '(uuid' not in block:
+    if '(uuid' not in block and '(tstamp' not in block:
         return ""
     return _child_uuid(_sexpr_children(block)[0])
 
@@ -5156,11 +5340,9 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                     layers.append(_one)
         wm = re.search(r'\(width\s+([-\d.]+)\)', blk)
         nm = re.search(r'\(net\s+("[^"]*"|\d+)\)', blk)
-        um = (re.search(r'\(uuid\s+"([^"]+)"\)', blk)
-              or re.search(r'\(tstamp\s+([-\w]+)\)', blk))
         return (layers, float(wm.group(1)) if wm else 0.0,
                 _resolve_net(nm.group(1)) if nm else 0,
-                um.group(1) if um else '')
+                uuid_or_tstamp(blk))
 
     def _xy(blk, name):
         m = re.search(r'\(' + name + r'\s+([-\d.]+)\s+([-\d.]+)\)', blk)
@@ -5388,6 +5570,7 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
     These are used for power planes and other filled copper areas.
     """
     zones = []
+    copper_layers = None  # the board's copper stack, read once if a zone says *.Cu
 
     for zone_content, in_footprint in _iter_zone_blocks(content):
         # Rule areas are routing restrictions, not copper -- skip regardless
@@ -5458,17 +5641,28 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
             layers_match = re.search(r'\(layers\s+([^)]+)\)', zone_header)
             if not layers_match:
                 continue
-            _toks = [t.strip('"') for t in
-                     re.findall(r'"[^"]+"|\S+', layers_match.group(1))]
-            zone_layers = [l for l in _toks
-                           if l.endswith('.Cu') or l == '*.Cu']
+            # KiCad 6 spells a two-face pour (layers F&B.Cu) and an all-copper
+            # one (layers *.Cu); pcbnew loads them as F.Cu + B.Cu and as every
+            # copper layer. Kept literally, each became ONE zone on a layer
+            # nothing else recognizes, so the pour vanished from the model.
+            zone_layers = []
+            for l in layer_list_tokens(layers_match.group(1)):
+                if l == 'F&B.Cu':
+                    names = ['F.Cu', 'B.Cu']
+                elif l == '*.Cu':
+                    if copper_layers is None:
+                        copper_layers = _layer_table(content)[1]
+                    names = copper_layers
+                else:
+                    names = [l] if l.endswith('.Cu') else []
+                for nm in names:
+                    if nm not in zone_layers:
+                        zone_layers.append(nm)
             if not zone_layers:
                 continue
         layer = zone_layers[0]
 
-        # Extract UUID
-        uuid_match = re.search(r'\(uuid\s+"([^"]+)"\)', zone_content)
-        uuid = uuid_match.group(1) if uuid_match else ""
+        uuid = uuid_or_tstamp(zone_header)  # KiCad 6 zones carry (tstamp ...)
 
         # Fill semantics (#350). All three live before the polygon blocks, so
         # the header slice covers them: (priority N) is a direct zone child;
@@ -5644,6 +5838,9 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
     content = read_board_text(filepath)
 
     kicad_version = detect_kicad_version(content)
+    # A file from before 6.0's arc format: rewrite its center/angle arcs as
+    # start/mid/end on this ANALYSIS copy, the form every reader below matches.
+    content = strip_bare_shape_locks(upgrade_legacy_arcs(content, kicad_version))
 
     # Extract components in order
     board_info = extract_layers(content)
@@ -5684,6 +5881,8 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
     vias = extract_vias(content, name_to_id)
     segments = extract_segments(content, name_to_id)
     zones = extract_zones(content, name_to_id)
+    if kicad_version and kicad_version < NEW_OVERBAR_NOTATION:
+        _apply_new_overbar_notation(nets, footprints, zones)
     board_info.keepouts = extract_keepouts(content)
     guide_paths = parse_guide_paths(content, guide_layer)
     keepout_zones = parse_keepout_zones(content, keepout_layer)
@@ -5724,6 +5923,20 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
         paste_apertures=paste_apertures,
         graphic_copper_unmeasured=graphic_copper_unmeasured,
     )
+
+
+def _apply_new_overbar_notation(nets, footprints, zones) -> None:
+    """Rename ~X~ overbars to ~{X} on every DISPLAY net name, as pcbnew does on
+    loading a file from before NEW_OVERBAR_NOTATION -- so `--nets "/~{RST}"`,
+    which is how KiCad shows the net, matches on the CLI too. `name_to_id`
+    keeps the raw file text: in-file references still resolve against it."""
+    for net in nets.values():
+        net.name = convert_to_new_overbar_notation(net.name)
+    for fp in footprints.values():
+        for pad in fp.pads:
+            pad.net_name = convert_to_new_overbar_notation(pad.net_name or '')
+    for zone in zones:
+        zone.net_name = convert_to_new_overbar_notation(zone.net_name or '')
 
 
 def _nm_quantize_bounds(bounds):
