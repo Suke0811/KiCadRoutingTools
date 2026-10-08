@@ -851,7 +851,11 @@ solve as **cuts**.
   offsets between the trunk's end and the first column the pass laid. The tie
   is exact across the ring; along it the two ends stay apart by the half
   column the ring's first column rounds to and the second pass's move from
-  the end it was tied about, and that stretch is drawn.
+  the end it was tied about, and that stretch is drawn. A layer change up to
+  the ring's handoff is the trunk's and a later one the ring's, and each piece
+  reads its layers that way (`corridor.piece_u`): a ring piece entering short
+  of its ring's origin read the trunk's last change again -- the zynq DDR's
+  DQ1 drawn F, B for 0.18 mm, F, two vias 0.15 mm apart.
 - **Drawn as its own lines:** at a spine corner a lane's two legs meet where
   its own two lines cross, and a column past the crossing is not drawn
   (`Spine.lane_line`). A lane inside a corner lies, near it, beyond where its
@@ -1322,7 +1326,7 @@ With nothing supplied, as on the benches:
 | `fanout_from_plan.py`, `pages_first.py` | the planner and both fanouts |
 | `select_moves.py`, `escape_moves.py`, `plan_ends.py` | menus, conflicts, plan cost |
 | `source_realize.py` | a source plan realised with the production engine, audited per dimension |
-| `connect.py`, `corridor.py`, `topo_strings.py`, `taut_fast.py` | the real router, corridors, the taut relaxation |
+| `connect.py`, `corridor.py`, `topo_strings.py`, `taut_fast.py` | the real router, corridors (a lane's layers on its two pieces: `tests/test_622_piece_u.py`), the taut relaxation |
 | `pairs.py` | a differential pair's rules: its hand, end connectors, dive room, crossover, staircase; `harmonise` |
 | `plan_audit.py`, `route_lanes.py` | a plan checked before routing; chosen lanes routed one at a time in band, with renders and a refused search's frontiers |
 | `human_ends_bench.py` | a bench on a human's ends, with the plan sidecar |

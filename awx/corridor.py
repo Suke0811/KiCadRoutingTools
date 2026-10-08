@@ -635,6 +635,15 @@ def decide_sides(meets, home, split_side, box_mid, carry):
     return out
 
 
+def piece_u(u: float, trunk: bool, handoff: float) -> float:
+    """the place along a lane at which its layers are read on one of its pieces (whole_geo.lay_u), a point of it there
+    at `u`: its changes up to its ring's `handoff` are the trunk's and the later ones the ring's, as their vias are
+    drawn -- so on the trunk (`trunk`) no later than the handoff, and on the ring no earlier. A ring piece starts where
+    its trunk ENDS, which may be short of the ring's origin, its first columns' u short of the handoff"""
+    h = handoff + 1e-9
+    return min(u, h) if trunk else max(u, h)
+
+
 def held_interval(iv, ref: float, was, term):
     """(lo, hi): the free interval of a column a lane is bounded to (whole_geo's bound rows). `iv` the column's free
     offset intervals outside the arrays' boxes, `ref` the lane's reference there, `was` the interval it was held to a

@@ -147,6 +147,14 @@ def layer_of(n, u):
     return tl[n] ^ (sum(1 for cu in chg[n] if cu < u) & 1)
 
 
+def lay_u(f, n, u):
+    """the place along lane n at which its layers are read in frame f, a point of it there at `u` (corridor.piece_u:
+    a change is the trunk's up to its ring's handoff HK, the ring's after, as its via is drawn -- the vias, below).
+    Read at u itself, a ring piece starting short of its ring's origin took the trunk's last change again: the zynq
+    DDR's DQ1 drawn F, B for 0.18 mm, F, two vias 0.15 mm apart"""
+    return _cor.piece_u(u, f == 'T', HK[cls[n]]) if n in cls else u
+
+
 def layers_at(n, u):
     near = [cu for cu in chg[n] if abs(u - cu) <= VS[n]]
     if near:
@@ -543,7 +551,7 @@ def build_and_solve(sides, prev=None):
                 continue
             od = sorted(pres, key=functools.cmp_to_key(lambda a, b: -1 if below(a, b, u) else 1))
             orders[(f, k)] = od
-            lay = {n: layers_at(n, u) for n in od}
+            lay = {n: layers_at(n, lay_u(f, n, u)) for n in od}
 
             def slopes(n):
                 """(p1, p0) for the leaving and the arriving segment at column k"""
@@ -663,7 +671,7 @@ def build_and_solve(sides, prev=None):
                 uk = FR[f]['u'](k * G)
                 for side_ in (range(i + 1, len(od)), range(i - 1, -1, -1)):
                     for Ly in range(NL):
-                        nb_ = next((od[j] for j in side_ if Ly in layers_at(od[j], uk)), None)
+                        nb_ = next((od[j] for j in side_ if Ly in layers_at(od[j], lay_u(f, od[j], uk))), None)
                         if nb_ is not None and nb_ not in nbs:
                             nbs.append(nb_)
                 for nb in nbs:
@@ -1062,7 +1070,7 @@ def static_sides(sol):
                     continue
                 # only the lanes that share the island's free interval can reach it; one in another interval is
                 # kept off it by that interval's own bounds (SA12, 2.6 mm above SVREF's stub, was told to pass below)
-                lanes = [n for n in od if n != own and Ly in layers_at(n, um) and (f, n, ii) in mean_o
+                lanes = [n for n in od if n != own and Ly in layers_at(n, lay_u(f, n, um)) and (f, n, ii) in mean_o
                          and span[0] - 1e-6 <= float(np.mean(mean_o[(f, n, ii)])) <= span[1] + 1e-6]
                 if not lanes:
                     continue
@@ -1210,7 +1218,7 @@ def static_sides(sol):
     for (f, n, k, o_) in cols:
         v = PIECE[(f, n)]
         s_ = k * G
-        lay = layers_at(n, FR[f]['u'](s_))
+        lay = layers_at(n, lay_u(f, n, FR[f]['u'](s_)))
         at_end = (k - v['k0'] < 2 and v['o0'] is not None) or (v['k1'] - k < 2 and v['o1'] is not None)
         for ii, (sa, sb, oa, ob, Ls, lab, own) in enumerate(boxes[f]):
             g = LANE_ST + hw[n]
@@ -1227,7 +1235,7 @@ def static_sides(sol):
     for (f, n, k, o_) in cols:
         v = PIECE[(f, n)]
         s_ = k * G
-        lay = layers_at(n, FR[f]['u'](s_))
+        lay = layers_at(n, lay_u(f, n, FR[f]['u'](s_)))
         # (a lane's own terminal, its tooth or its berth -- not the handoff between its trunk and ring pieces, whose free
         # end was left unchecked against the islands: zynq K32's DQ3 ended its trunk 0.15 from C98's pad)
         at_end = (k - v['k0'] < 2 and v['o0'] is not None) or (v['k1'] - k < 2 and v['o1'] is not None)
@@ -1339,7 +1347,7 @@ for n in M:
         for (xa, ya, sa), (xb, yb, sb) in zip(line, line[1:]):
             if math.hypot(xb - xa, yb - ya) < 1e-9:
                 continue
-            Ly = layer_of(n, ufun((sa + sb) / 2))
+            Ly = layer_of(n, lay_u(f, n, ufun((sa + sb) / 2)))
             xy = [(xa, ya), (xb, yb)]
             if xy_all and pieces and len(xy) >= 2:
                 # inside a spine corner the two segments' offset lines overlap: a column point stepped back from
