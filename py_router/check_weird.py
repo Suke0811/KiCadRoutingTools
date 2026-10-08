@@ -19,7 +19,9 @@ Categories:
   removable-segment  any segment whose individual removal keeps the net's
                      (num_components, disconnected-pad count) unchanged
                      (check_connected.analyze_conn_excluding). Superset of
-                     redundant-cycle. Nets with >500 segments are skipped
+                     redundant-cycle. Segments with both endpoints buried
+                     in same-net pad/via copper are intentionally retained,
+                     matching collapse_strict_redundant. Nets with >500 segments are skipped
                      unless --thorough; zoned and <2-pad nets are skipped
                      (their connectivity result is trivially insensitive).
   stacked-copper     exactly-duplicate segments (same endpoints/layer/net
@@ -387,11 +389,21 @@ def _check_removable(net_id, name, net_segs, net_vias, net_pads, net_zones,
         # (collapse_strict_redundant) and skip the net.
         return
     base_copper = base.get('num_copper_components', 1)
+
+    def _buried(px, py):
+        for p in net_pads:
+            if point_to_pad_distance(px, py, p) <= 0:
+                return True
+        return any(math.hypot(px - v.x, py - v.y) <= v.size / 2
+                   for v in net_vias)
+
     for i in track_idx:
         t = analyze_conn_excluding(graph, (i,))
         if (t['num_components'], len(t['disconnected_pads'])) == base_key \
                 and t.get('num_copper_components', 1) <= base_copper:
             s = net_segs[i]
+            if _buried(s.start_x, s.start_y) and _buried(s.end_x, s.end_y):
+                continue  # in-pad/in-via wiggle: kept by cleanup policy
             mx, my = (s.start_x + s.end_x) / 2.0, (s.start_y + s.end_y) / 2.0
             findings.append(_finding(
                 'removable-segment', name, s.layer, mx, my,

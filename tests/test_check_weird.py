@@ -103,8 +103,8 @@ def main():
     c = _cats(f)
     results.append(("duplicate segment flagged as stacked-copper",
                     c['stacked-copper'] == 1))
-    results.append(("each duplicate is individually removable",
-                    c['removable-segment'] == 2))
+    results.append(("pad-anchored duplicate uses the specific stacked category",
+                    c['removable-segment'] == 0))
 
     # 5. Square loop: 4 edges between two pads; one edge is a redundant cycle.
     pads = [_pad(0, 0, num='1'), _pad(10, 0, num='2', ref='U2')]
@@ -114,8 +114,8 @@ def main():
     c = _cats(f)
     results.append(("square loop flagged as redundant-cycle",
                     c['redundant-cycle'] == 1))
-    results.append(("every loop edge individually removable (superset)",
-                    c['removable-segment'] == 4))
+    results.append(("non-pad-buried loop edges individually removable",
+                    c['removable-segment'] == 3))
     results.append(("loop has no dangling ends", c['dangling-end'] == 0))
 
     # 6. Clean two-pad net: one segment pad to pad; nothing weird.
@@ -123,6 +123,17 @@ def main():
     pcb = _pcb([_seg(0, 0, 10, 0)], pads=pads)
     f, _ = check_weird(pcb)
     results.append(("clean two-pad net has no findings", len(f) == 0))
+
+    # 6b. A redundant copper wiggle wholly buried in a pad is intentionally
+    # retained by collapse_strict_redundant; the report-only checker must use
+    # the same policy instead of rejecting an otherwise acceptable route.
+    pads = [_pad(0, 0, size=1.0, num='1'),
+            _pad(10, 0, num='2', ref='U2')]
+    pcb = _pcb([_seg(0, 0, 10, 0), _seg(-0.2, 0, 0.2, 0)], pads=pads)
+    f, _ = check_weird(pcb)
+    results.append(("pad-buried wiggle is exempt from removable findings",
+                    not [x for x in f
+                         if x['category'] == 'removable-segment']))
 
     # 7. Half-segment tail past a mid-body via anchor (#347 class): the trunk
     #    is load-bearing THROUGH the via at (6, 0), but 4mm of copper past it

@@ -130,6 +130,10 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
                                   shape pass, still before close (it removes
                                   copper); skips protected / impedance nets
                                   (_smooth_skip_net_ids).
+      9c. post-smooth cycle/strict cleanup -- smoothing rewrites copper and
+                                  can expose or recreate redundant paths; run
+                                  the existing subtractive invariants once
+                                  more before the final additive close.
      10. close_soft_joints     -- LAST copper step (#319 ordering): bridge any
                                   remaining same-net soft joint. The
                                   subtractive passes above run with the
@@ -450,6 +454,35 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
                   f"{_sm_stats.get('spans', 0)} staircase span(s) on "
                   f"{_sm_nets} net(s), -{_sm_stats.get('saved_mm', 0.0):.2f} mm "
                   f"of copper (#536)")
+
+        # Smoothing is a topology-preserving rewrite, but its replacement
+        # spans can overlap an existing alternate path. Reassert the same
+        # cycle/strict invariants after that rewrite; these existing passes
+        # preserve the board/write-list mutation contract and soft-joint
+        # guard. Nothing after this block removes copper.
+        if cycles:
+            _prog("post-smooth cycle prune")
+            _ps_cy_segs, _ps_cy_nets, _ps_cy_strip = prune_redundant_cycles(
+                results, pcb_data, _sub_scope, clearance=config.clearance,
+                keep_input_copper=keep_input_copper)
+            counts['post_smooth_cycles_pruned'] = _ps_cy_segs
+            _trace('post_smooth_cycles')
+            strip.extend(_ps_cy_strip)
+            if _ps_cy_segs:
+                print(f"{label}Post-smooth cycle prune: removed "
+                      f"{_ps_cy_segs} redundant loop segment(s) across "
+                      f"{_ps_cy_nets} net(s)")
+
+        _prog("post-smooth strict-redundant collapse")
+        _ps_sc_n, _ps_sc_strip = collapse_strict_redundant(
+            results, pcb_data, _sub_scope,
+            keep_input_copper=keep_input_copper)
+        counts['post_smooth_strict_collapsed'] = _ps_sc_n
+        _trace('post_smooth_strict_collapse')
+        strip.extend(_ps_sc_strip)
+        if _ps_sc_n:
+            print(f"{label}Post-smooth strict collapse: removed {_ps_sc_n} "
+                  f"redundant segment(s)")
 
     # FINAL copper step (#319 ordering): nothing below may remove copper.
     # KICAD_NO_SOFT_JOINT_BRIDGE=1 is an A/B ablation knob (like

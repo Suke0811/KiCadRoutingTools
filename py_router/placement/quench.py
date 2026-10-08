@@ -1086,8 +1086,9 @@ def quench(pcb_data: PCBData, pcb_file: str,
            move_refs: Optional[Set[str]] = None,
            net_weights: Optional[Dict[int, float]] = None,
            metrics_out: Optional[Dict] = None,
-           groups: Optional[Dict[str, List[str]]] = None,
-           verbose: bool = False) -> List[Dict]:
+            groups: Optional[Dict[str, List[str]]] = None,
+            verbose: bool = False,
+            strict_group_refs: Optional[Set[str]] = None) -> List[Dict]:
     """Greedy quench: iterate over parts, accept only cost-reducing moves.
 
     net_weights: optional {net_id: weight} priority multipliers. A weighted
@@ -1164,6 +1165,11 @@ def quench(pcb_data: PCBData, pcb_file: str,
 
     movable = [r for r, p in state.parts.items() if not p.locked]
     movable.sort(key=lambda r: state.parts[r].pin_count, reverse=True)
+    strict_group_refs = set(strict_group_refs or ())
+    unknown_strict_group_refs = strict_group_refs - set(movable)
+    if unknown_strict_group_refs:
+        raise ValueError(f"strict_group_refs must be movable footprint references: {sorted(unknown_strict_group_refs)}")
+    individually_movable = [ref for ref in movable if ref not in strict_group_refs]
 
     # --- placement blocks (#459) ---
     # A block moves as one rigid body, which is the move the per-part nudge
@@ -1235,7 +1241,7 @@ def quench(pcb_data: PCBData, pcb_file: str,
                           f"gain={base_cost - best[0]:.1f}")
 
         # --- single-part moves (nudge + rotate) ---
-        for ref in movable:
+        for ref in individually_movable:
             part = state.parts[ref]
             involved = set(part.nets)
             other_aw = state.airwires_excluding(involved)
@@ -1289,7 +1295,7 @@ def quench(pcb_data: PCBData, pcb_file: str,
         # --- same-footprint swap moves ---
         if allow_swaps:
             by_fp: Dict[str, List[str]] = {}
-            for ref in movable:
+            for ref in individually_movable:
                 by_fp.setdefault(state.parts[ref].footprint_name, []).append(ref)
             for fp_name, refs in by_fp.items():
                 if len(refs) < 2:
