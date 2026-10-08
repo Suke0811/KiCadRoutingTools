@@ -346,6 +346,58 @@ def project_copper_clearance(proj: dict):
     return mc if mc else None
 
 
+def project_grading_clearance(proj: dict):
+    """``(clearance, source)`` KiCad's DRC grades a Default-class pair at
+    (#1210): the Default class, floored at Board Setup ``rules.min_clearance``
+    -- KiCad's constraint resolution takes the larger, as
+    ``design_rules.resolve`` does (measured against KiCad 10.0.0). A 0 is
+    unset. ``source`` is 'Default net class' or 'board minimum clearance';
+    ``(None, None)`` when neither is set.
+
+    The GRADING reading only. :func:`project_copper_clearance` stays the class
+    value: it is what an omitted ``--clearance`` routes at and what the
+    writeback targets, and the writeback lowers ``min_clearance`` to the
+    routed clearance, so a routed output grades the same either way.
+    multichannel_mixer (class 0.2, min_clearance 0.3): kicad-cli reports 12
+    clearance errors on the designer's own board; graded at the class alone,
+    check_drc and board_score read clean."""
+    cls = project_copper_clearance(proj)
+    mc = ((proj.get("board") or {}).get("design_settings") or {}) \
+        .get("rules", {}).get("min_clearance")
+    mc = float(mc) if isinstance(mc, (int, float)) and mc > 0 else None
+    if mc is not None and (cls is None or mc > cls + 1e-9):
+        return mc, "board minimum clearance"
+    if cls is None:
+        return None, None
+    return cls, "Default net class"
+
+
+def board_min_clearance_above(input_pcb, run_clearance):
+    """``(declared, default_class)`` when the input board declares a Board
+    Setup ``min_clearance`` above ``run_clearance`` (#1210), else None.
+
+    KiCad grades the board at the declared value (see
+    :func:`project_grading_clearance`); a run below it relaxes that rule, and
+    the writeback then lowers ``min_clearance`` to what was routed. Read off
+    the INPUT project, so in a chain only the step that relaxes it reports
+    it. ``default_class`` (None when unset) lets the caller tell the board's
+    own class from a lower clearance the run was asked for."""
+    if not input_pcb or run_clearance is None:
+        return None
+    try:
+        pro = find_project(input_pcb)
+        with open(pro, encoding="utf-8") as f:
+            proj = json.load(f)
+    except (OSError, ValueError):
+        return None
+    mc = ((proj.get("board") or {}).get("design_settings") or {}) \
+        .get("rules", {}).get("min_clearance")
+    if not isinstance(mc, (int, float)) or mc <= 0 or run_clearance >= mc - 1e-9:
+        return None
+    from fab_tiers import project_default_class_clearance
+    return float(mc), project_default_class_clearance(proj)
+
+
 def project_edge_clearance(proj: dict):
     """The board's copper-to-Edge.Cuts constraint (Board Setup ->
     min_copper_edge_clearance). KiCad grades copper_edge_clearance from this
@@ -775,6 +827,13 @@ def _fab_floor_disclosure(output_pcb: str, rules_before: dict, proj: dict,
         under, total = census.get(key, (None, None))
         tail = (f"; {under} of {total} object(s) on this board are below the "
                 f"ORIGINAL {was:g}mm" if under is not None else "")
+        if key == "min_hole_clearance":
+            # #1217: no router setting holds copper off a via drill or a PTH
+            # barrel at this floor (the router applies it at NPTH walls), so
+            # "re-route at that floor" cannot restore it there.
+            tail += ("; the router holds it at NPTH walls only -- plated holes "
+                     "and vias sit at copper clearance, which re-routing does "
+                     "not change")
         if moved_here:
             lines.append(f"    {label}: {was:g} -> {now:g} mm{tail}")
         else:

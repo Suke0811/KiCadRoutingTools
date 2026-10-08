@@ -15,7 +15,9 @@ Options:
   --clearance FLOAT    Track-to-track clearance in mm. Default: auto-detected from
                        the sibling .kicad_pro Default net-class clearance (the value
                        the routing steps recorded as actually used, incl. auto-stepped
-                       fine-pitch taps); falls back to 0.2 if no project is found.
+                       fine-pitch taps), floored at Board Setup min_clearance as
+                       KiCad's DRC does (#1210); falls back to 0.2 if no project is
+                       found.
   --via-clearance FLOAT  Via-to-track clearance in mm (uses --clearance if not set)
   --hole-to-hole-clearance FLOAT  Minimum drill hole edge-to-edge clearance in mm
                                   (default: 0.20, the JLC fab floor — same as routing)
@@ -273,6 +275,29 @@ is bounded by SCOPE -- the net patterns above. Each probe row carries a
 `status` (`ok` / `crashed` / `no_summary` / `screened`) so an absent verdict
 names its cause instead of being an undifferentiated `failures: null`.
 
+## Rule-Area Writer (`add_rule_area.py`)
+
+Writes a copper keep-out rule area -- `(zone ... (keepout ...))` -- onto a board
+(#1200). A module's PCB antenna needs one on every layer; the router stamps
+a rule area (`obstacle_map.add_rule_area_keepout_obstacles`), placement grades
+it, and KiCad reports copper inside it as `items_not_allowed`.
+
+```bash
+python3 py_router/add_rule_area.py in.kicad_pcb out.kicad_pcb \
+    --name ANT_KEEPOUT --ref U1 --rect -9 -18 9 -12
+```
+
+The area is `--rect X0 Y0 X1 Y1` or `--polygon X,Y X,Y X,Y ...` in board mm,
+or, with `--ref`, in that footprint's local frame as the file stores it -- the
+frame its pads' `(at)` positions are written in, already mirrored for a part on
+the back -- so re-running after the part moves puts the area where the part
+now is. It goes on every copper layer unless `--layers` names some, and
+forbids `tracks vias copperpour` unless `--forbid` lists others (pads and
+footprints stay allowed by default). A board-level rule area of the same
+`--name` is replaced, so the command is idempotent; the output gets the
+input's siblings. Exit 0 written, 2 for a usage error, a `--ref` the board
+does not have, or a layer it does not have.
+
 ## Rotation Ranker (`rank_rotations.py`)
 
 Ranks ONE part's rotations by what `place_seed` and its polish produce at each
@@ -301,7 +326,10 @@ not a tier -- on a pile most do, for repairable reasons -- but each angle report
 how many of its seeds did, and the winner line says so. A CONTROL arm seeds
 the same seeds with the intent as given (no rotation declared): it is the
 baseline the winner line compares with, because the seeder may turn the part
-itself, and it is reported, never ranked. Without `--ref` it ranks the
+itself, and it is reported, never ranked. Its median runs over the seeds that
+left no part in the pile (`unseated` 0), and the winner line names any it
+excluded (#1202). `--jobs N` runs up to N `place_seed` arms at once; each is an
+independent seeded subprocess writing its own board, so N changes no result. Without `--ref` it ranks the
 unlocked, undeclared, non-connector part with the most connected pads (at least
 `--min-pads`). Writes `rotations.json` (every row, every angle's spread, the
 ranking, `separated` when the winner's worst seed beats the runner-up's best)

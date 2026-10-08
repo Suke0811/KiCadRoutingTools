@@ -129,6 +129,10 @@ Examples:
     p.add_argument("--seeds", type=int, nargs="+", default=[0],
                    help="Seed values; every rotation uses the same ones "
                         "(default: 0)")
+    p.add_argument("--jobs", type=int, default=1,
+                   help="Run up to N place_seed arms at once (default 1). "
+                        "Each arm is an independent seeded subprocess "
+                        "writing its own board, so N changes no result")
     p.add_argument("--out-dir", required=True,
                    help="Directory for the arm intents, boards and "
                         "rotations.json")
@@ -220,7 +224,7 @@ def eligible_refs(pcb, intent, blocks, pcb_file, *, min_pads=16,
     from placement.part_class import classify_part
     from placement.placement_state import assess_placement
     refs_all = sorted(pcb.footprints)
-    must = {r for p in intent.must_lock for r in fnmatch.filter(refs_all, p)}
+    must = {r for p in intent.must_lock for r in refs_all if fnmatch.fnmatchcase(r, p)}
     edge = {str(c['ref']) for c in intent.edge_claims()}
     fixed = {str(f['ref']) for f in intent.fixed_poses}
     declared = floorplan.rotations_for_ref(intent, blocks)
@@ -375,6 +379,8 @@ def main():
         parser.error("--rotations has duplicates (modulo 360)")
     if args.probe_top < 1:
         parser.error("--probe-top must be at least 1")
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1")
     # Output paths are checked BEFORE an hour of seeding, not after.
     if args.write_best and not args.write_best.endswith('.kicad_pcb'):
         parser.error("--write-best must name a .kicad_pcb file")
@@ -521,16 +527,35 @@ def main():
     if args.diagonal_rotations and '--diagonal-rotations' not in seed_args:
         seed_args.append('--diagonal-rotations')
 
+    def _seed_runs(specs):
+        """(spec, (rc, summary)) per (label, intent, seed, out) spec, in spec
+        order. #1202: up to --jobs at once -- glasgow's control alone took 21
+        min, and the control plus four angles ran one after another."""
+        def _run(sp):
+            return run_place_seed(args.input_file, sp[1], sp[2], sp[3],
+                                  ignore_nets=args.ignore_nets,
+                                  seed_args=seed_args)
+        if args.jobs <= 1:
+            for sp in specs:
+                print(f"[{sp[0]}, seed {sp[2]}] place_seed -> "
+                      f"{os.path.basename(sp[3])}")
+                yield sp, _run(sp)
+            return
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=args.jobs) as ex:
+            futs = [ex.submit(_run, sp) for sp in specs]
+            for sp, fut in zip(specs, futs):
+                print(f"[{sp[0]}, seed {sp[2]}] place_seed -> "
+                      f"{os.path.basename(sp[3])}")
+                yield sp, fut.result()
+
     # The CONTROL: the same seeds with the intent as given, no rotation
     # declared -- the seed the caller would have got. Never ranked.
     control_rows = []
-    for seed in args.seeds:
-        out = os.path.join(args.out_dir, f'control_seed_{seed}.kicad_pcb')
-        print(f"[{ref} undeclared (control), seed {seed}] place_seed -> "
-              f"{os.path.basename(out)}")
-        r, s = run_place_seed(args.input_file, args.intent, seed, out,
-                              ignore_nets=args.ignore_nets,
-                              seed_args=seed_args)
+    for (_l, _i, seed, out), (r, s) in _seed_runs(
+            [(f"{ref} undeclared (control)", args.intent, seed,
+              os.path.join(args.out_dir, f'control_seed_{seed}.kicad_pcb'))
+             for seed in args.seeds]):
         if r.returncode == PLACE_SEED_PLAN_REFUSED:
             return _finish(4, 'plan_check',
                            "the zone plan was refused before any seed was "
@@ -553,61 +578,66 @@ def main():
                                  if fp is not None else None),
             'pose_digest': file_pose_digest(out) if fp is not None else None})
         print(f"    crossings {s.get('crossings')}  hpwl {s.get('hpwl')}  "
+              f"unseated {s.get('unseated')}  "
               f"{ref} written at {control_rows[-1]['written_rotation']}")
+    # #1202: a seed that left parts in the pile is no baseline -- ecc83's
+    # median control (4 crossings) was seed 2, whose 12.5 mm C1 sat 10 mm off
+    # the outline. The median runs over seated seeds; when none is seated it
+    # runs over all of them and says so.
+    _seated = [c for c in control_rows if not c.get('unseated')]
+    _base = _seated or control_rows
     doc['control'] = {
         'rows': control_rows,
-        'crossings': _median([c['crossings'] for c in control_rows]),
-        'hpwl': _median([c['hpwl'] for c in control_rows]),
+        'crossings': _median([c['crossings'] for c in _base]),
+        'hpwl': _median([c['hpwl'] for c in _base]),
+        'baseline_seeds': [c['seed'] for c in _base],
+        'unseated_seeds': [c['seed'] for c in control_rows if c.get('unseated')],
         'rotations': sorted({c['written_rotation'] for c in control_rows
                              if c['written_rotation'] is not None})}
 
     by_rot = {rot: [] for rot in rots}
-    for rot in rots:
-        for seed in args.seeds:
-            out = os.path.join(args.out_dir,
-                               f'rot_{rot:g}_seed_{seed}.kicad_pcb')
-            print(f"[{ref} @ {rot:g}, seed {seed}] place_seed -> "
-                  f"{os.path.basename(out)}")
-            r, s = run_place_seed(args.input_file, arm_intent[rot], seed,
-                                  out, ignore_nets=args.ignore_nets,
-                                  seed_args=seed_args)
-            row = {'rotation': rot, 'delta': _norm(rot - input_rot),
-                   'seed': seed, 'board': out, 'intent': arm_intent[rot],
-                   'place_seed_rc': r.returncode,
-                   'gated': r.returncode == 4,
-                   'grade_errors': s.get('grade_errors'),
-                   'unseated': s.get('unseated'),
-                   'unseated_refs': s.get('unseated_refs') or [],
-                   'rotation_unseated': s.get('rotation_unseated') or {},
-                   # #1117: the parts the seed's post-polish re-seat could not
-                   # put back at their declared angle. `classify_row` flags the
-                   # ranked ref being one of them, and `rotation_key` ranks such
-                   # an angle as a TIER -- after every angle whose seeds held
-                   # the part, never eliminated.
-                   'reseat_declined': s.get('reseat_declined') or {},
-                   'pad_conflicts_seeded': s.get('pad_conflicts_seeded'),
-                   'decap_claimed': (s.get('decap_stage') or {}).get(
-                       'claimed'),
-                   'decap_claimed_late': ((s.get('decap_stage') or {}).get(
-                       'late') or {}).get('claimed'),
-                   'crossings': s.get('crossings'), 'hpwl': s.get('hpwl'),
-                   'probe': None, 'pose_digest': None}
-            written = None
-            if r.returncode in PLACE_SEED_OK and os.path.isfile(out):
-                fp = parse_kicad_pcb(out).footprints.get(ref)
-                written = (fp.rotation or 0.0) if fp is not None else None
-                row['pose_digest'] = file_pose_digest(out)
-            else:
-                row['note'] = ('place_seed failed: '
-                               + (r.stderr or r.stdout)[-300:].strip())
-            classify_row(row, ref, written)
-            print(f"    crossings {row['crossings']}  hpwl {row['hpwl']}  "
-                  f"unseated {row['unseated']}  grade errors "
-                  f"{row['grade_errors']}"
-                  + (f"  HARD FAIL: {row['hard_fail']}"
-                     if row['hard_fail'] else ''))
-            by_rot[rot].append(row)
-            doc['rows'].append(row)
+    _arm_specs = [(rot, seed) for rot in rots for seed in args.seeds]
+    for (rot, seed), ((_l, _i, _s, out), (r, s)) in zip(_arm_specs, _seed_runs(
+            [(f"{ref} @ {rot:g}", arm_intent[rot], seed,
+              os.path.join(args.out_dir, f'rot_{rot:g}_seed_{seed}.kicad_pcb'))
+             for rot, seed in _arm_specs])):
+        row = {'rotation': rot, 'delta': _norm(rot - input_rot),
+               'seed': seed, 'board': out, 'intent': arm_intent[rot],
+               'place_seed_rc': r.returncode,
+               'gated': r.returncode == 4,
+               'grade_errors': s.get('grade_errors'),
+               'unseated': s.get('unseated'),
+               'unseated_refs': s.get('unseated_refs') or [],
+               'rotation_unseated': s.get('rotation_unseated') or {},
+               # #1117: the parts the seed's post-polish re-seat could not
+               # put back at their declared angle. `classify_row` flags the
+               # ranked ref being one of them, and `rotation_key` ranks such
+               # an angle as a TIER -- after every angle whose seeds held
+               # the part, never eliminated.
+               'reseat_declined': s.get('reseat_declined') or {},
+               'pad_conflicts_seeded': s.get('pad_conflicts_seeded'),
+               'decap_claimed': (s.get('decap_stage') or {}).get(
+                   'claimed'),
+               'decap_claimed_late': ((s.get('decap_stage') or {}).get(
+                   'late') or {}).get('claimed'),
+               'crossings': s.get('crossings'), 'hpwl': s.get('hpwl'),
+               'probe': None, 'pose_digest': None}
+        written = None
+        if r.returncode in PLACE_SEED_OK and os.path.isfile(out):
+            fp = parse_kicad_pcb(out).footprints.get(ref)
+            written = (fp.rotation or 0.0) if fp is not None else None
+            row['pose_digest'] = file_pose_digest(out)
+        else:
+            row['note'] = ('place_seed failed: '
+                           + (r.stderr or r.stdout)[-300:].strip())
+        classify_row(row, ref, written)
+        print(f"    crossings {row['crossings']}  hpwl {row['hpwl']}  "
+              f"unseated {row['unseated']}  grade errors "
+              f"{row['grade_errors']}"
+              + (f"  HARD FAIL: {row['hard_fail']}"
+                 if row['hard_fail'] else ''))
+        by_rot[rot].append(row)
+        doc['rows'].append(row)
 
     aggs = [aggregate(rot, by_rot[rot], i) for i, rot in enumerate(rots)]
     if args.probe:
@@ -677,6 +707,14 @@ def main():
           f"{ctl['hpwl']} -> {winner['hpwl']['median']} against the "
           f"undeclared seed ({ref} written at "
           + (', '.join(f"{r:g}" for r in ctl['rotations']) or '?') + ")"
+          + ((f"; control median over seed(s) "
+              f"{', '.join(map(str, ctl['baseline_seeds']))}, seed(s) "
+              f"{', '.join(map(str, ctl['unseated_seeds']))} left parts in "
+              f"the pile"
+              + (" -- every control seed did, so all are counted"
+                 if set(ctl['baseline_seeds']) == {c['seed'] for c in ctl['rows']}
+                 else ""))
+             if ctl['unseated_seeds'] else "")
           + (f", probe failures {winner['probe_failures']}"
              if winner['probed'] else ''))
     if winner['gated_seeds']:

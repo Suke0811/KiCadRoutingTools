@@ -2038,8 +2038,12 @@ def resolve_hole_clearance(pcb_data: PCBData, config,
                 "writeback relaxed in the project"
                 if path in _HOLE_CLR_ORIGIN else "the board's own "
                 "min_hole_clearance")
-        print(f"Copper-to-hole clearance {v:g}mm (from {_src}, above the "
-              f"{defaults.NPTH_TO_TRACK_CLEARANCE}mm fab floor)")
+        # #1217: the floor holds copper off NPTH walls only; a via drill and a
+        # PTH barrel are held at copper clearance. Say so where the number is
+        # announced, or it reads as a promise for every hole.
+        print(f"Copper-to-hole {v:g}mm for NPTH holes (from {_src}, above the "
+              f"{defaults.NPTH_TO_TRACK_CLEARANCE}mm fab floor); plated holes "
+              f"and vias: copper clearance")
     return v
 
 

@@ -1078,7 +1078,70 @@ def _pair_via_offset(config, spacing_mm):
                track_via_clearance - spacing_mm)
 
 
-def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs):
+def _gnd_via_offsets(config, spacing_mm, gnd_net_id, pair_net_ids):
+    """(perpendicular, along-heading, clearance) of a companion GND via, in mm.
+
+    Perpendicular to the centerline: the pair's outer track edge + clearance +
+    via radius. Along the heading: one via + clearance from the P/N via. The
+    clearance is the one check_drc grades GND against the pair at (#1207):
+    `pair_clearance`, so a 90-ohm class at 0.2 over a 0.13 Default holds the
+    via 0.2 off the pair -- at the base it put 12 GND vias inside it. A through
+    via meets the pair on every layer, hence 'stack'. Shared by the placer and
+    the router's reservation so the two cannot drift.
+    """
+    gnd_pair_clr = max(config.pair_clearance(gnd_net_id, n, kind='stack')
+                       for n in pair_net_ids)
+    max_track_width = config.get_max_track_width()
+    return (spacing_mm + max_track_width / 2 + gnd_pair_clr + config.via_size / 2,
+            config.via_size + gnd_pair_clr, gnd_pair_clr)
+
+
+# Furthest a companion GND via is moved off its planned site to clear the
+# pair's tracks as drawn. The planned site is where the router checked it
+# against foreign copper; a longer move is re-checked here instead.
+_GND_SETTLE_MAX_MM = 0.25
+
+
+def _settle_gnd_via(x, y, ux, uy, pair_segs, config, gnd_net_id, pcb_data,
+                    pair_net_ids):
+    """Move a companion GND via outward along (ux, uy) until it clears the
+    pair's tracks AS DRAWN (#1207), or return it where it was planned.
+
+    The offsets are measured from the grid centerline, but the tracks follow
+    the smoothed float path, which can sit tens of microns off it beside the
+    via (measured 0.035 mm on a converging exit). Each track is priced at the
+    value check_drc grades the via against it, `pair_clearance` on its layer.
+    A moved site must also clear every other net's copper
+    (`via_barrel_clear_of_foreign_copper`), or the planned one is kept.
+    """
+    from geometry_utils import point_to_segment_distance_seg
+    r = config.via_size / 2
+    x0, y0, moved = x, y, 0.0
+    for _ in range(4):
+        deficit = max((r + seg.width / 2
+                       + config.pair_clearance(gnd_net_id, seg.net_id, seg.layer)
+                       - point_to_segment_distance_seg(x, y, seg)
+                       for seg in pair_segs), default=0.0)
+        if deficit <= 1e-6:
+            break
+        step = deficit + 1e-3
+        x, y, moved = x + ux * step, y + uy * step, moved + step
+    else:
+        return x0, y0
+    if moved == 0.0 or moved > _GND_SETTLE_MAX_MM:
+        return x0, y0
+    if pcb_data is not None:
+        from stub_layer_switching import via_barrel_clear_of_foreign_copper
+        ok, _why = via_barrel_clear_of_foreign_copper(
+            x, y, gnd_net_id, pcb_data, config,
+            {n for n in pair_net_ids if n is not None})
+        if not ok:
+            return x0, y0
+    return x, y
+
+
+def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
+                     pair_net_ids=(None,), pair_segs=(), pcb_data=None):
     """Create GND vias at layer changes in the centerline path.
 
     Args:
@@ -1089,6 +1152,9 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
         spacing_mm: P/N offset from centerline
         gnd_net_id: Net ID for GND vias
         gnd_via_dirs: List of directions (+1=ahead, -1=behind) from Rust router
+        pair_net_ids: (P, N) net ids, which price the via's clearance (#1207)
+        pair_segs: the pair's tracks as drawn; each via is settled clear of them
+        pcb_data: the board, against which a settled site is re-checked
 
     Returns:
         List of Via objects for GND connections
@@ -1097,16 +1163,16 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
     if gnd_net_id is None or len(simplified_path) < 2:
         return gnd_vias
 
-    # Calculate GND via perpendicular offset: track edge + clearance + via radius
-    # Use max track width for clearance since track width varies by layer
-    max_track_width = config.get_max_track_width()
-    gnd_via_perp_mm = spacing_mm + max_track_width/2 + config.clearance + config.via_size/2
-    via_via_dist_mm = config.via_size + config.clearance
+    gnd_via_perp_mm, via_via_dist_mm, _gnd_clr = _gnd_via_offsets(
+        config, spacing_mm, gnd_net_id, pair_net_ids)
     # #491: keep the companion GND via clear of the P/N vias on the DRILL rule
     # too, measured from where those vias actually land (_pair_via_offset), not
     # from spacing_mm. Scaling the offset pair preserves the placement
     # direction the Rust router chose.
-    _need_c2c = _min_via_center_distance(config)
+    from fab_tiers import min_via_center_distance
+    _need_c2c = min_via_center_distance(
+        config.via_size, _gnd_clr, config.via_drill,
+        getattr(config, 'hole_to_hole_clearance', 0.0))
     _perp_gap = gnd_via_perp_mm - _pair_via_offset(config, spacing_mm)
     _cur_c2c = math.hypot(_perp_gap, via_via_dist_mm)
     if 0.0 < _cur_c2c < _need_c2c:
@@ -1163,6 +1229,13 @@ def _create_gnd_vias(simplified_path, coord, config, layer_names, spacing_mm, gn
             gnd_p_y = cy + perp_y * gnd_via_perp_mm + dy * via_via_dist_mm * gnd_dir
             gnd_n_x = cx - perp_x * gnd_via_perp_mm + dx * via_via_dist_mm * gnd_dir
             gnd_n_y = cy - perp_y * gnd_via_perp_mm + dy * via_via_dist_mm * gnd_dir
+            if pair_segs:
+                gnd_p_x, gnd_p_y = _settle_gnd_via(
+                    gnd_p_x, gnd_p_y, perp_x, perp_y, pair_segs, config,
+                    gnd_net_id, pcb_data, pair_net_ids)
+                gnd_n_x, gnd_n_y = _settle_gnd_via(
+                    gnd_n_x, gnd_n_y, -perp_x, -perp_y, pair_segs, config,
+                    gnd_net_id, pcb_data, pair_net_ids)
 
             # Create GND vias (free=True prevents KiCad auto-assigning net)
             gnd_vias.append(Via(
@@ -2213,8 +2286,9 @@ def _try_route_direction(src, tgt, pcb_data, config, obstacles, base_obstacles,
     gnd_via_perp_grid = 0
     gnd_via_along_grid = 0
     if config.gnd_via_enabled:
-        gnd_via_perp_mm = spacing_mm + max_track_width/2 + config.clearance + config.via_size/2
-        via_via_dist_mm = config.via_size + config.clearance
+        _gnd_id, _ = resolve_return_net_id(pcb_data, p_net_id)
+        gnd_via_perp_mm, via_via_dist_mm, _ = _gnd_via_offsets(
+            config, spacing_mm, _gnd_id, (p_net_id, n_net_id))
         gnd_via_perp_grid = coord.to_grid_dist(gnd_via_perp_mm)
         gnd_via_along_grid = coord.to_grid_dist(via_via_dist_mm)
 
@@ -4762,7 +4836,9 @@ def route_diff_pair_with_obstacles(pcb_data: PCBData, diff_pair: DiffPairNet,
 
     # Create GND vias at layer changes if enabled
     gnd_vias = _create_gnd_vias(
-        simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs
+        simplified_path, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
+        pair_net_ids=(p_net_id, n_net_id), pair_segs=p_segs + n_segs,
+        pcb_data=pcb_data
     )
     new_vias.extend(gnd_vias)
 

@@ -2065,14 +2065,41 @@ def _strap_unescaped_extras(footprint: Footprint, pcb_data: PCBData,
                 pcb_data, cfg, net_id, ball_layer,
                 skip_pad_blocking=False, verbose=False)
             _block_outside_field(routing_obs)
+
+            def _straight_strap(ball):
+                """#1217: the exact straight segment to a same-net anchor
+                ball, nearest first, when it clears every other net's
+                copper as check_drc prices it. The 0.05-grid A* alone missed
+                rp2350's C4 -> D5 diagonal, which has 23 um of slack against
+                D4's via and grades clean."""
+                from stub_layer_switching import (stub_clear_of_foreign_tracks,
+                                                  stub_clear_of_foreign_pads)
+                bx, by = ball.global_x, ball.global_y
+                for ax, ay in sorted(anchors, key=lambda a: (a[0] - bx) ** 2
+                                     + (a[1] - by) ** 2):
+                    seg = Segment(start_x=ax, start_y=ay, end_x=bx, end_y=by,
+                                  width=track_width, layer=ball_layer,
+                                  net_id=net_id)
+                    if (stub_clear_of_foreign_tracks([seg], ball_layer, net_id,
+                                                     pcb_data, cfg, set())[0]
+                            and stub_clear_of_foreign_pads([seg], ball_layer,
+                                                           net_id, pcb_data,
+                                                           cfg, set())[0]):
+                        return [{'start': (ax, ay), 'end': (bx, by),
+                                 'width': track_width, 'layer': ball_layer,
+                                 'net_id': net_id}]
+                return None
+
             pending = list(net_balls)
             while pending:
                 pending.sort(key=lambda b: min(
                     (b.global_x - ax) ** 2 + (b.global_y - ay) ** 2
                     for ax, ay in anchors))
                 ball = pending.pop(0)
-                segs, _pos = route_multi_source_to_pad(
-                    anchors, ball, ball_layer, net_id, routing_obs, cfg)
+                segs = _straight_strap(ball)
+                if segs is None:
+                    segs, _pos = route_multi_source_to_pad(
+                        anchors, ball, ball_layer, net_id, routing_obs, cfg)
                 if not segs:
                     still_bare.append(f"{net_name} ball {ball.pad_number}")
                     continue
@@ -4400,6 +4427,106 @@ def _plane_drop_pass(footprint, pcb_data, new_tracks, new_vias, net_filter,
         del pcb_data.vias[n_via0:]
 
 
+def dropped_ball_neighbourhood(footprint, pcb_data, failed_nets, tracks, vias,
+                               layers, clearance, via_size, limit=12):
+    """Per dropped ball, the copper around it: one console line each (#1217).
+
+    The log named a dropped ball ("still dropped after trying 4 eviction(s)")
+    and never said what was in its way, so a retry at a smaller --clearance
+    was the only lever offered -- and on rp2350 two of them changed nothing,
+    while a different placement escaped all 30 balls. This names, per escape
+    layer, the nearest foreign copper within one ball pitch (board copper
+    and this run's escapes, tracks and vias), and whether a via of the run's
+    size has room at the ball. It is a pointer to what crowds the ball, not
+    a proof of what stopped the search, which can fail farther out.
+    """
+    import math as _m
+    from geometry_utils import point_to_segment_distance
+    names = set(failed_nets)
+    pads = [p for p in footprint.pads if p.net_name in names
+            and not (p.drill and p.drill > 0)]
+    if not pads:
+        return []
+    xs = [(p.global_x, p.global_y) for p in footprint.pads]
+    pitch = min((_m.hypot(a[0] - b[0], a[1] - b[1]) for i, a in enumerate(xs)
+                 for b in xs[i + 1:] if _m.hypot(a[0] - b[0], a[1] - b[1]) > 1e-6),
+                default=1.0)
+    nid_name = {nid: n.name for nid, n in pcb_data.nets.items()}
+    segs, seen = [], set()
+    for s in pcb_data.segments:
+        k = (round(s.start_x, 4), round(s.start_y, 4), round(s.end_x, 4),
+             round(s.end_y, 4), s.layer, s.net_id)
+        if k not in seen and not getattr(s, 'graphic', False):
+            seen.add(k)
+            segs.append((s.start_x, s.start_y, s.end_x, s.end_y, s.width, s.layer, s.net_id))
+    for t in tracks or ():
+        k = (round(t['start'][0], 4), round(t['start'][1], 4), round(t['end'][0], 4),
+             round(t['end'][1], 4), t['layer'], t.get('net_id'))
+        if k not in seen:
+            seen.add(k)
+            segs.append((t['start'][0], t['start'][1], t['end'][0], t['end'][1],
+                         t['width'], t['layer'], t.get('net_id')))
+    vs, vseen = [], set()
+    for x, y, size, net in ([(v.x, v.y, v.size, v.net_id) for v in pcb_data.vias]
+                            + [(v['x'], v['y'], v['size'], v.get('net_id'))
+                               for v in (vias or ())]):
+        k = (round(x, 4), round(y, 4), net)
+        if k not in vseen:
+            vseen.add(k)
+            vs.append((x, y, size, net))
+    out = []
+    for p in sorted(pads, key=lambda q: (q.net_name, q.pad_number))[:limit]:
+        px, py = p.global_x, p.global_y
+        # A through via meets every layer: foreign vias AND tracks bound it.
+        site = []
+        for vx, vy, vsz, vn in vs:
+            if vn == p.net_id:
+                continue
+            gap = _m.hypot(vx - px, vy - py) - vsz / 2 - via_size / 2
+            if gap < clearance - 1e-6:
+                site.append((gap, f"{nid_name.get(vn, vn)} via"))
+        for x0, y0, x1, y1, w, sl, sn in segs:
+            if sn == p.net_id:
+                continue
+            gap = (point_to_segment_distance(px, py, x0, y0, x1, y1) - w / 2
+                   - via_size / 2)
+            if gap < clearance - 1e-6:
+                site.append((gap, f"{nid_name.get(sn, sn)} track on {sl}"))
+        per_layer = []
+        for L in layers:
+            near = []
+            for x0, y0, x1, y1, w, sl, sn in segs:
+                if sl != L or sn == p.net_id:
+                    continue
+                d = point_to_segment_distance(px, py, x0, y0, x1, y1)
+                if d - w / 2 <= pitch:
+                    near.append((d - w / 2, f"{nid_name.get(sn, sn)} track"))
+            for vx, vy, vsz, vn in vs:
+                if vn == p.net_id:
+                    continue
+                d = _m.hypot(vx - px, vy - py) - vsz / 2
+                if d <= pitch:
+                    near.append((d, f"{nid_name.get(vn, vn)} via"))
+            near.sort()
+            if near:
+                per_layer.append(f"{L}: " + ', '.join(
+                    (f"{nm} over the ball" if g <= 0 else f"{nm} {g:.2f}mm")
+                    for g, nm in near[:2]))
+            else:
+                per_layer.append(f"{L}: clear within {pitch:.2f}mm")
+        site_txt = ("no room for a {:g}mm via at the ball ({})".format(
+            via_size, ', '.join((f"{nm} overlapping" if g <= 0
+                                 else f"{nm} {g:.2f}mm from it")
+                                for g, nm in sorted(site)[:2]))
+            if site else f"room for a {via_size:g}mm via at the ball")
+        out.append(f"    {footprint.reference}.{p.pad_number} {p.net_name}: "
+                   f"{site_txt}; nearest foreign copper (edge to ball centre): "
+                   + '; '.join(per_layer))
+    if len(pads) > limit:
+        out.append(f"    (+{len(pads) - limit} more dropped ball(s))")
+    return out
+
+
 def generate_bga_fanout(footprint: Footprint,
                         pcb_data: PCBData,
                         net_filter: Optional[List[str]] = None,
@@ -4614,6 +4741,18 @@ def generate_bga_fanout(footprint: Footprint,
     _st962, _rec962 = via_protection_stamps(vias_to_add, [], pcb_data)
     apply_stamps_in_memory(_st962)
     print_via_protection_record(_rec962, "BGA fanout")
+    if failed_nets and not _fired[0]:
+        try:
+            _nb = dropped_ball_neighbourhood(
+                footprint, pcb_data, failed_nets, tracks, vias_to_add,
+                layers, clearance, via_size)
+        except Exception as _e:                     # noqa: BLE001 -- a report
+            _nb = [f"    (dropped-ball report unavailable: {_e})"]
+        if _nb:
+            print(f"  Dropped ball(s) on {footprint.reference}, and what crowds "
+                  f"each (#1217):")
+            for _l in _nb:
+                print(_l)
     return tracks, vias_to_add, vias_to_remove, failed_nets
 
 
@@ -4883,8 +5022,11 @@ def main():
     if unescaped:
         print(f"\n  {len(unescaped)} of {requested} requested ball(s) could NOT be "
               f"escaped at --clearance {args.clearance}mm / --track-width "
-              f"{args.track_width}mm and were DROPPED from the output. Retry the "
-              f"fanout with a smaller --clearance (toward the manufacturing floor).")
+              f"{args.track_width}mm and were DROPPED from the output. The "
+              f"'Dropped ball(s)' lines above name what crowds each one: a "
+              f"smaller --clearance helps when that copper is a clearance away; "
+              f"when the count does not move, the lever is a layer, a "
+              f"neighbour's escape or the placement (#1217).")
     # DRC the written output at the routed clearance so downstream tooling can
     # detect sub-clearance grazes the escape left behind even when every ball
     # escaped (failed==0): via-over-track / via-over-pad (#130). The planner uses

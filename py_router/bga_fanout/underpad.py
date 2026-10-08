@@ -793,10 +793,30 @@ def generate_underpad_escape(footprint: Footprint,
     # thread between two via-in-pads a pitch apart, i.e. roughly
     # via <= pitch - 2*track - 2*clearance; beyond that balls will start failing.
     pitch = min(grid.pitch_x, grid.pitch_y)
-    if verbose and via_size > pitch - 2 * track_width - 2 * clearance + 1e-9:
+    _copper = len(getattr(pcb_data.board_info, 'copper_layers', None) or []) or 4
+    from list_nets import escalation_rungs
+    # escalation_rungs: empty under --escalation off, raised to the board's
+    # own minimums under board (#857).
+    floors = escalation_rungs(_copper)
+    _fit = pitch - 2 * track_width - 2 * clearance
+    if verbose and via_size > _fit + 1e-9:
+        # #1217: the fit is not clamped to anything a fab makes. Below the
+        # smallest via the ladder reaches (0.04 mm at 0.4 pitch), naming it
+        # as the fix contradicts the tool, which re-derives each via from its
+        # pad floored at that ladder.
+        _min_via = min((r.get('via_diameter') for r in floors
+                        if r.get('via_diameter')), default=None)
+        if _min_via is None:            # --escalation off: no ladder to walk
+            _min_via = fab_floor_min(_copper).get('via_diameter')
+        if _min_via is not None and _fit < _min_via - 1e-9:
+            _try = (f"No via fits: the smallest the fab ladder reaches is "
+                    f"{_min_via:g}mm. A narrower track or clearance, or a "
+                    f"via-less escape, is the lever.")
+        else:
+            _try = f"Try via <= {_fit:.2f}mm."
         print(f"  Under-pad: WARNING via {via_size:.2f}mm is large for {pitch:.2f}mm "
               f"pitch (track {track_width:.2f}, clearance {clearance:.2f}); "
-              f"expect drops. Try via <= {pitch - 2*track_width - 2*clearance:.2f}mm.")
+              f"expect drops. {_try}")
 
     # An optional safety margin on top of the exact keepout. The no-corner-cutting
     # rule (in astar) already removes the diagonal clipping that used to need it,
@@ -812,11 +832,6 @@ def generate_underpad_escape(footprint: Footprint,
     # never bulges past the pad edge AND the keep-out reserved below uses the
     # real (smaller) via -- letting neighbouring escapes route past it. Done
     # per-pad, so on a mixed-pad-size array only the small pads get smaller vias.
-    _copper = len(getattr(pcb_data.board_info, 'copper_layers', None) or []) or 4
-    from list_nets import escalation_rungs
-    # escalation_rungs: empty under --escalation off, raised to the board's
-    # own minimums under board (#857).
-    floors = escalation_rungs(_copper)
     clamp_stats = {'clamped': 0, 'floor': 0, 'escalated': 0}
     # #618's policy answer: DISCLOSE. Sites this engine declines to put a
     # via-in-pad on because their hole is inside the hole-to-hole floor --

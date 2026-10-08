@@ -434,7 +434,8 @@ def _build_film_body(a, frame_spool, sink, steps, final, size, supersample,
                             theme=_th, aspect=aspect,
                             geom_out=_geom, attempts_band=_bands.band,
                             lands_out=_lands,
-                            board3d=placement.get('board3d'), fps=fps)
+                            board3d=placement.get('board3d'), fps=fps,
+                            title=placement.get('title'))
     if not frames:
         if sink is not None:
             sink.close()
@@ -565,6 +566,10 @@ def main(argv=None):
     ap.add_argument('--hold', type=float, default=DEFAULT_HOLD, metavar='SEC',
                     help=f"how long a card stays up (default {DEFAULT_HOLD})")
     ap.add_argument('-o', '--out', default='film.gif')
+    ap.add_argument('--title', default=None,
+                    help="the board name on the film's rail (default: the "
+                         "ledger directory's name with --from-ledger, else "
+                         "derived from the boards)")
     ap.add_argument('--size', type=int, default=DEFAULT_SIZE)
     ap.add_argument('--fps', type=float, default=DEFAULT_FPS)
     ap.add_argument('--supersample', type=int, default=1)
@@ -666,7 +671,14 @@ def main(argv=None):
                                    'benchmark': a.benchmark_board,
                                    'benchmark_score': a.benchmark_score,
                                    'board3d': a.board_3d,
-                                   'intent': a.floorplan_intent},
+                                   'intent': a.floorplan_intent,
+                                   # #1202: the ledger's boards are extracted
+                                   # to <ledger dir>/_film, which the rail
+                                   # used to name every film after.
+                                   'title': a.title or (
+                                       os.path.basename(os.path.dirname(
+                                           os.path.abspath(a.from_ledger)))
+                                       if a.from_ledger else None)},
                         attempts=attempts,
                         attempts_from=('' if a.no_attempts else
                                        (a.from_loop_dir or

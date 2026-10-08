@@ -173,7 +173,7 @@ class GridRouteConfig:
     keep_away_cost: float = 0.5  # mm equivalent per cell (0 = report only)
     target_swap_crossing_penalty: float = 1000.0  # Penalty for crossing assignments in target swap
     crossing_layer_check: bool = True  # Only count crossings when routes share a layer
-    routing_clearance_margin: float = 1.0  # Multiplier on track-via clearance (1.0 = minimum DRC)
+    routing_clearance_margin: float = 1.0  # Diff pairs only: track-to-via distance multiplier for the P/N via offset (1.0 = minimum DRC)
     hole_to_hole_clearance: float = 0.20  # mm - edge-to-edge via drill spacing; JLC "Via
                                            # Hole-to-Hole Spacing" (keep in sync with
                                            # routing_defaults.HOLE_TO_HOLE_CLEARANCE)

@@ -72,6 +72,15 @@ Categories:
                      size, so --tolerance never filters it (as for soft-joint:
                      for a web, THINNER is worse, so a size filter would drop
                      the severe findings and keep the marginal ones).
+  kicad-dangling     a joint segment whose two ends both lie on other
+                     same-net TRACKS that hold the other end too (#1217):
+                     KiCad counts such an item for one end only, so its DRC
+                     reports track_dangling (a 24-35 um stub on one track)
+                     while the T-junction rule credits both ends. Only in
+                     that shape -- a via, pad or zone at either end is left to
+                     KiCad's own grade -- and with NO size, since KiCad warns
+                     at any length. Measured on six routed boards: every
+                     finding is one of KiCad's track_dangling warnings.
 
 This script NEVER modifies the board (read-only; nothing is written back).
 Net 0 (unconnected) copper is skipped -- "same-net" semantics do not apply.
@@ -109,7 +118,8 @@ from pcb_modification import (_point_anchored, _prune_net_cycles, _pt_seg_dist,
 
 CATEGORIES = ['dangling-end', 'soft-joint', 'redundant-cycle',
               'removable-segment', 'stacked-copper', 'unsupported-via',
-              'dangling-via', 'orphan-island', 'narrow-pad-joint']
+              'dangling-via', 'orphan-island', 'narrow-pad-joint',
+              'kicad-dangling']
 # Cost cap for the removable scan (skip unless --thorough): the removal pass's
 # own cap (#1063), so the checker never grades a net the pass may not clean.
 MAX_SEGS_PER_NET = STRICT_REMOVAL_MAX_SEGS
@@ -514,6 +524,75 @@ def _check_removable(net_id, name, net_segs, removable, findings):
             size=math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)))
 
 
+def _check_kicad_dangling(net_id, name, net_segs, net_vias, net_pads,
+                          net_zones, copper_layers, findings):
+    """A joint segment KiCad's DRC calls ``track_dangling`` although both its
+    ends lie on same-net copper (#1217).
+
+    KiCad's rule (CONNECTIVITY_DATA::TestTrackEndpointDangling): each item
+    touching the segment -- its shape within half the segment's width of an
+    end -- counts for that end, and an item touching BOTH ends counts only for
+    the end nearer it (a track by its nearer endpoint). The segment dangles
+    unless both ends are counted. So a 24-35 um stub lying on one other track
+    -- its far end mid-body, its root in that track's copper -- dangles in
+    KiCad, while check_weird's T-junction rule credits both ends.
+
+    Reported only in that unambiguous shape: every item touching the segment
+    is a same-net TRACK, each one touches both ends, and no via, pad or zone
+    touches it. Where a via, pad or zone is involved KiCad's verdict turns on
+    zone-fill and anchor details this model does not reproduce, so it says
+    nothing rather than guess. Never size-filtered: KiCad warns at any length.
+    """
+    for i, s in enumerate(net_segs):
+        if getattr(s, 'graphic', False):
+            continue
+        acc = s.width / 2.0
+        ends = ((s.start_x, s.start_y), (s.end_x, s.end_y))
+        touchers = []
+        for j, o in enumerate(net_segs):
+            if j == i or o.layer != s.layer or getattr(o, 'graphic', False):
+                continue
+            hits = [_pt_seg_dist(x, y, o.start_x, o.start_y, o.end_x, o.end_y)
+                    <= o.width / 2.0 + acc + 1e-9 for x, y in ends]
+            if any(hits):
+                touchers.append(hits)
+        if not touchers or not all(h[0] and h[1] for h in touchers):
+            continue
+        if any(s.layer in via_copper_layers(v, copper_layers)
+               and min(math.hypot(v.x - x, v.y - y) for x, y in ends)
+               <= v.size / 2.0 + acc + 1e-9 for v in net_vias):
+            continue
+        if any(endpoint_reaches_pad(x, y, acc, (s.layer,), p)
+               for p in net_pads for x, y in ends):
+            continue
+        if any(z.layer == s.layer and z.polygon
+               and any(point_in_polygon(x, y, z.polygon) for x, y in ends)
+               for z in net_zones):
+            continue
+        # Every toucher holds both ends, so each is counted once, at the end
+        # nearer one of its own endpoints; the other end is never counted.
+        counts = [0, 0]
+        for j, o in enumerate(net_segs):
+            if j == i or o.layer != s.layer or getattr(o, 'graphic', False):
+                continue
+            if _pt_seg_dist(ends[0][0], ends[0][1], o.start_x, o.start_y,
+                            o.end_x, o.end_y) > o.width / 2.0 + acc + 1e-9:
+                continue
+            d0, d1 = (min(math.hypot(o.start_x - x, o.start_y - y),
+                          math.hypot(o.end_x - x, o.end_y - y)) for x, y in ends)
+            counts[0 if d0 < d1 else 1] += 1
+        if all(counts):
+            continue
+        free = ends[0] if counts[0] == 0 else ends[1]
+        findings.append(_finding(
+            'kicad-dangling', name, s.layer, free[0], free[1],
+            f"segment ({s.start_x:.3f}, {s.start_y:.3f})-({s.end_x:.3f}, "
+            f"{s.end_y:.3f}) w{s.width:.3f}: both ends lie on other {name} "
+            f"track(s) that hold the other end too -- KiCad's DRC reports "
+            f"track_dangling at ({free[0]:.3f}, {free[1]:.3f})",
+            size=None))
+
+
 def _check_stacked(net_id, name, net_segs, net_vias, findings):
     """Exactly-duplicate segments (~1um) and coincident same-net vias."""
     groups = defaultdict(list)
@@ -849,6 +928,8 @@ def check_weird(pcb_data: PCBData, net_patterns: Optional[List[str]] = None,
                       findings, removable)
         _check_removable(net_id, name, net_segs, removable, findings)
         _check_stacked(net_id, name, net_segs, net_vias, findings)
+        _check_kicad_dangling(net_id, name, net_segs, net_vias, net_pads,
+                              net_zones, copper_layers, findings)
         _check_unsupported_vias(net_id, name, net_segs, net_vias, net_pads,
                                 net_zones, copper_layers, findings)
         _check_terminal_web(pcb_data, net_id, name, net_segs, net_pads,
@@ -913,9 +994,10 @@ def main():
                         help='Minimum finding size in mm (dangle/tail length, '
                              'gap, duplicated-copper length, via diameter); '
                              'smaller findings are dropped. Default 0.1; use '
-                             '0 to report everything. soft-joint and '
-                             'narrow-pad-joint carry no size and are ALWAYS '
-                             'reported -- for those, smaller is worse.')
+                             '0 to report everything. soft-joint, '
+                             'narrow-pad-joint and kicad-dangling carry no '
+                             'size and are ALWAYS reported -- smaller is '
+                             'worse, or KiCad warns at any length.')
     parser.add_argument('--max-print', type=int, default=20,
                         help='Max findings printed per category '
                              '(<=0 prints all; default 20)')

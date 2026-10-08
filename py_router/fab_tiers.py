@@ -711,10 +711,22 @@ def escalation_report_line():
     if not s['count'] and not s['fab_tier_escalations']:
         return ''
     parts = []
-    if s['count']:
+    # A row with no net is run-wide (#1210: the run's clearance below the
+    # board's minimum clearance), not a feature on a net.
+    run_wide = [r for r in s['narrowed'] if r['net'] is None]
+    per_net = [r for r in s['narrowed'] if r['net'] is not None]
+    for r in run_wide:
+        parts.append(f"{r['kind'].replace('_', ' ')} {r['delivered']:g} mm, below the "
+                     f"{r['site']} {r['requested']:g} mm")
+    if per_net:
+        mins = {}
+        for r in per_net:
+            k = r['kind']
+            mins[k] = r['delivered'] if k not in mins else min(mins[k], r['delivered'])
         kinds = ', '.join(f"smallest {k.replace('_', ' ')} {v:g} mm"
-                          for k, v in sorted(s['min_delivered'].items()))
-        parts.append(f"{s['count']} feature(s) on {len(s['nets'])} net(s) delivered below "
+                          for k, v in sorted(mins.items()))
+        parts.append(f"{sum(r['count'] for r in per_net)} feature(s) on "
+                     f"{len(s['nets'])} net(s) delivered below "
                      f"the requested size ({kinds})")
     if s['fab_tier_escalations']:
         _where = ("the board's own declared floors"

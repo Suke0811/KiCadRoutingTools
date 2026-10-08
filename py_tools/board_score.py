@@ -152,6 +152,12 @@ def _tool_path(root: str, tool: str) -> str:
     return os.path.join(root, tool)
 
 
+#: Wall seconds per sub-checker this run, published as SCORE_JSON
+#: `tool_seconds` (#1202 comment: a 61-minute score could not be attributed
+#: after the fact, because nothing recorded which child took the time).
+TOOL_SECONDS: dict = {}
+
+
 def run_tool(root: str, tool: str, *args) -> tuple:
     """(returncode, combined output). -X utf8 for the Ω/µ the tools print.
 
@@ -161,8 +167,11 @@ def run_tool(root: str, tool: str, *args) -> tuple:
     inner checker's EXIT=0). The outer invocation is the evidence unit."""
     cmd = [sys.executable, '-X', 'utf8', _tool_path(root, tool)] + [str(a) for a in args]
     env = dict(os.environ, KRT_NO_BANNER='1')
+    import time as _time
+    t0 = _time.monotonic()
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        encoding='utf-8', errors='replace', env=env)
+    TOOL_SECONDS[tool] = TOOL_SECONDS.get(tool, 0.0) + (_time.monotonic() - t0)
     return p.returncode, p.stdout
 
 
@@ -208,6 +217,48 @@ POURED_NETS_MEANING = (
     'signal nets puts them in here too (measured: 332 of 545 pads).')
 
 
+def poured_net_names(board: str) -> set:
+    """Nets with at least one zone on the board, read off the file text
+    (POURED_NETS_MEANING). Its own function so a fully connected board
+    reports them too (#1202: `poured_nets` read [] next to its own
+    meaning on a board carrying a GND zone)."""
+    poured = set()
+    try:
+        with open(board, encoding='utf-8', errors='replace') as f:
+            txt = f.read()
+        # A zone names its net as EITHER `(net_name "GND")` or `(net "GND")`
+        # depending on the writer -- KiCad 10 emits the second, and matching only
+        # the first classified a poured GND as `route` and sent the caller to a
+        # tool that cannot tap a pour. `(net 4)` is the numeric form and is
+        # deliberately not matched here: it identifies nothing without the net
+        # table, and a wrong name is worse than a missing one.
+        # `(?!_)` keeps `(zone_connect 2)` -- a per-pad property that appears
+        # hundreds of times inside footprints -- out of the scan.
+        #
+        # UNESCAPE, because this is the one net-name field in the whole payload
+        # read out of the RAW FILE TEXT rather than through the parser, and the
+        # file stores `/GPIO10\OE3#` as `/GPIO10\\OE3#`. Every other field here
+        # comes via check_connected/kicad_parser, which unescape. Measured on
+        # neo6502: `poured_nets` published `/GPIO10\\OE3#` while `unrouted.nets`
+        # in the SAME json.dump published `/GPIO10\OE3#` -- one file, one writer,
+        # two spellings of one net. A consumer built `--ignore-nets` from it,
+        # 10 of 61 names matched nothing, and the render came back hpwl +45.6%
+        # / crossings +129.5% on an identical board with nothing flagging it.
+        # The capture stays `[^"]+` -- deliberately the SAME body pattern
+        # kicad_parser uses for the net table (:2234), escaped-quote blind spot
+        # included. Widening it here alone would make this field disagree with
+        # the parser on a net whose name contains `\"`, which is the exact class
+        # of defect the net-name audit exists to catch; the two must be wrong
+        # together or right together, and the parser is the one that decides.
+        for zb in re.finditer(r'\(zone(?!_)', txt):
+            seg = txt[zb.start():zb.start() + 400]
+            if (zn := re.search(r'\(net(?:_name)? "([^"]+)"\)', seg)):
+                poured.add(_unescape_net_name(zn.group(1)))
+    except OSError:
+        pass
+    return poured
+
+
 def score_connectivity(root: str, board: str) -> dict:
     """Unrouted and broken nets, from check_connected.py.
 
@@ -217,7 +268,9 @@ def score_connectivity(root: str, board: str) -> dict:
     """
     rc, out = run_tool(root, 'check_connected.py', board)
     if 'ALL NETS FULLY CONNECTED' in out:
-        return {'ran': True, 'count': 0, 'unrouted': 0, 'broken': 0, 'nets': []}
+        return {'ran': True, 'count': 0, 'unrouted': 0, 'broken': 0, 'nets': [],
+                'poured_nets': sorted(poured_net_names(board)),
+                'poured_nets_meaning': POURED_NETS_MEANING}
     m = _CONN_TOTAL.search(out)
     if not m:
         return skipped(f'check_connected.py produced no summary (rc={rc})')
@@ -281,40 +334,7 @@ def score_connectivity(root: str, board: str) -> dict:
     # else to route (#1112), so a break only KiCad's exact fill sees is reached
     # too. The DNF case stays a human call, which is what the stranded pad's
     # `ref` is in the list for.
-    poured = set()
-    try:
-        with open(board, encoding='utf-8', errors='replace') as f:
-            txt = f.read()
-        # A zone names its net as EITHER `(net_name "GND")` or `(net "GND")`
-        # depending on the writer -- KiCad 10 emits the second, and matching only
-        # the first classified a poured GND as `route` and sent the caller to a
-        # tool that cannot tap a pour. `(net 4)` is the numeric form and is
-        # deliberately not matched here: it identifies nothing without the net
-        # table, and a wrong name is worse than a missing one.
-        # `(?!_)` keeps `(zone_connect 2)` -- a per-pad property that appears
-        # hundreds of times inside footprints -- out of the scan.
-        #
-        # UNESCAPE, because this is the one net-name field in the whole payload
-        # read out of the RAW FILE TEXT rather than through the parser, and the
-        # file stores `/GPIO10\OE3#` as `/GPIO10\\OE3#`. Every other field here
-        # comes via check_connected/kicad_parser, which unescape. Measured on
-        # neo6502: `poured_nets` published `/GPIO10\\OE3#` while `unrouted.nets`
-        # in the SAME json.dump published `/GPIO10\OE3#` -- one file, one writer,
-        # two spellings of one net. A consumer built `--ignore-nets` from it,
-        # 10 of 61 names matched nothing, and the render came back hpwl +45.6%
-        # / crossings +129.5% on an identical board with nothing flagging it.
-        # The capture stays `[^"]+` -- deliberately the SAME body pattern
-        # kicad_parser uses for the net table (:2234), escaped-quote blind spot
-        # included. Widening it here alone would make this field disagree with
-        # the parser on a net whose name contains `\"`, which is the exact class
-        # of defect the net-name audit exists to catch; the two must be wrong
-        # together or right together, and the parser is the one that decides.
-        for zb in re.finditer(r'\(zone(?!_)', txt):
-            seg = txt[zb.start():zb.start() + 400]
-            if (zn := re.search(r'\(net(?:_name)? "([^"]+)"\)', seg)):
-                poured.add(_unescape_net_name(zn.group(1)))
-    except OSError:
-        pass
+    poured = poured_net_names(board)
     for name, v in detail.items():
         v['handler'] = 'route'
 
@@ -873,7 +893,7 @@ def score_net_widths(board: str, spec_file: str) -> dict:
 
     failures, detail = 0, {}
     for name, widths in sorted(seen.items()):
-        req = next((mm for pat, mm in want.items() if fnmatch.fnmatch(name, pat)),
+        req = next((mm for pat, mm in want.items() if fnmatch.fnmatchcase(name, pat)),
                    None)
         if req is None:
             continue
@@ -895,7 +915,7 @@ def score_net_widths(board: str, spec_file: str) -> dict:
                             'length_under_share': (round(_und / _tot, 4)
                                                    if _tot > 0 else 0.0)}
     unmatched = [p for p in want
-                 if not any(fnmatch.fnmatch(n, p) for n in seen)]
+                 if not any(fnmatch.fnmatchcase(n, p) for n in seen)]
     return {'ran': True, 'count': failures, 'nets': detail,
             'patterns_matching_no_routed_net': unmatched}
 
@@ -1276,7 +1296,9 @@ def main():
              **({'placement': placement} if placement is not None else {}),
              'components': {**parts, **advisory},
              'floors': _floors(args.board, sizes),
-             'connectivity_nets': conn.get('nets', [])}
+             'connectivity_nets': conn.get('nets', []),
+             'tool_seconds': {k: round(v, 2)
+                              for k, v in sorted(TOOL_SECONDS.items())}}
     # Self-check the payload against the board it just graded (see
     # audit_net_names). Computed AFTER `score` is assembled so it audits what is
     # actually published, not what this function believes it published.

@@ -4143,7 +4143,7 @@ def quench(pcb_data: PCBData, pcb_file: str,
     if ignore_nets:
         import fnmatch
         for net_id, net in pcb_data.nets.items():
-            if any(fnmatch.fnmatch(net.name, pat) for pat in ignore_nets):
+            if any(fnmatch.fnmatchcase(net.name, pat) for pat in ignore_nets):
                 ignore_net_ids.add(net_id)
         print(f"Ignoring {len(ignore_net_ids)} nets for airwire scoring")
 
@@ -4151,7 +4151,7 @@ def quench(pcb_data: PCBData, pcb_file: str,
     if lock_refs:
         import fnmatch
         for ref in pcb_data.footprints:
-            if any(fnmatch.fnmatch(ref, pat) for pat in lock_refs):
+            if any(fnmatch.fnmatchcase(ref, pat) for pat in lock_refs):
                 extra_locked.add(ref)
         print(f"Locked via --lock: {', '.join(sorted(extra_locked))}")
 

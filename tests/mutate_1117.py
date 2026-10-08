@@ -210,8 +210,8 @@ ROWS = [
      "                    if False:",
      (CANDIDATES,), 'KILLED'),
     ('ranker-drops-the-record', 'rr',
-     "                   'reseat_declined': s.get('reseat_declined') or {},",
-     "                   'reseat_declined': {},",
+     "               'reseat_declined': s.get('reseat_declined') or {},",
+     "               'reseat_declined': {},",
      (RANK,), 'KILLED'),
     # -- test_893: the standing gate that missed it --------------------------
     ('gate-blind-to-attribute-calls', 't893',

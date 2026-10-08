@@ -324,7 +324,7 @@ class SpatialIndex:
 def matches_any_pattern(name: str, patterns: List[str]) -> bool:
     """Check if a net name matches any of the given patterns (fnmatch style)."""
     for pattern in patterns:
-        if fnmatch.fnmatch(name, pattern):
+        if fnmatch.fnmatchcase(name, pattern):
             return True
     return False
 
@@ -5023,8 +5023,9 @@ if __name__ == "__main__":
     parser.add_argument('--clearance', '-c', type=float, default=None,
                         help='Minimum clearance in mm to grade against. If omitted, '
                              'auto-detected from the sibling .kicad_pro Default net '
-                             'class (the value the board was routed/graded to); falls '
-                             'back to 0.2 if no project clearance is found.')
+                             'class (the value the board was routed/graded to), '
+                             'floored at Board Setup min_clearance as KiCad does; '
+                             'falls back to 0.2 if no project clearance is found.')
     parser.add_argument('--hole-to-hole-clearance', type=float, default=defaults.HOLE_TO_HOLE_CLEARANCE,
                         help=f'Minimum drill hole edge-to-edge clearance in mm '
                              f'(default: {defaults.HOLE_TO_HOLE_CLEARANCE}, the fab floor — same as routing)')
@@ -5106,17 +5107,19 @@ if __name__ == "__main__":
         found = False
         try:
             import os, json
-            from fix_kicad_drc_settings import find_project, project_copper_clearance
+            from fix_kicad_drc_settings import find_project, project_grading_clearance
             pro = find_project(args.pcb)
             if os.path.isfile(pro):
                 with open(pro) as f:
-                    pc = project_copper_clearance(json.load(f))
+                    pc, _src = project_grading_clearance(json.load(f))
                 if pc:
                     args.clearance = pc
                     found = True
                     if not args.quiet:
+                        # #1210: KiCad floors the Default class at Board
+                        # Setup min_clearance, so grade where KiCad does.
                         print(f"Grading at clearance {pc:.4g} mm "
-                              f"(from {os.path.basename(pro)} Default net class)")
+                              f"(from {os.path.basename(pro)} {_src})")
         except Exception as e:
             print(f"  (could not read project clearance, using 0.2 mm: {e})")
         if not found and not args.quiet:

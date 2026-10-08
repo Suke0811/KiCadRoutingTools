@@ -462,6 +462,26 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                             board=label, seconds=_t1069.time() - _t0,
                             disturbed_only=_worse)
     record['graded_nets'] = len(graded)
+    # #1215: a broken net outside pass 1's scope is either the run's own
+    # casualty (a rip it could not restore, a re-route that failed) or one the
+    # input already had broken. Graded on the input copper, as `_worse` is: a
+    # casualty was connected there, or had fewer pads off.
+    _scope_set0 = set(routing_scope)
+    _broken_out = sorted({n for n in record['failed_single'] + record['open_single']
+                          + [d['net_name'] for d in record['failed_multipoint']]
+                          if n not in _scope_set0})
+    _by_run: List[str] = []
+    _ids_out = [_in_id[n] for n in _broken_out if n in _in_id]
+    _before_out = (grade_nets(pcb_data, _ids_out, segs_by_net=orig_seg_by_net,
+                              vias_by_net=orig_via_by_net) if _ids_out else {})
+    for n in _broken_out:
+        _b = _before_out.get(_in_id.get(n))
+        if _b is None:
+            continue
+        if not _b['broken'] or len(_b['failed_pads']) < len(
+                grades.get(n, {}).get('failed_pads') or ()):
+            _by_run.append(n)
+    record['broken_by_run'] = _by_run
     # Round-trip so the in-process document equals what the log parses back.
     record = json.loads(json.dumps(record))
     print(f"JSON_REGRADE: {json.dumps(record)}")
@@ -494,11 +514,18 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
         print(f"  {RED if _mt > _mc else ''}Multi-point:   {_mc}/{_mt} pads "
               f"connected" + (f" ({_mt - _mc} FAILED){RESET}"
                               if _mt > _mc else ''))
+    _by_run_set = set(record.get('broken_by_run') or ())
+    if _by_run_set:
+        _br = sorted(_by_run_set)
+        print(f"  {RED}Broken by this run, outside its routing scope (connected "
+              f"on the input; ripped and not restored): "
+              f"{', '.join(_br[:12])}"
+              + (f" (+{len(_br) - 12} more)" if len(_br) > 12 else '') + RESET)
     _out_scope = sorted({n for n in fs + osn
                          + [d['net_name'] for d in record['failed_multipoint']]
-                         if n not in _scope_set})
+                         if n not in _scope_set and n not in _by_run_set})
     if _out_scope:
-        print(f"  {RED}Broken outside the routing scope: "
+        print(f"  {RED}Broken outside the routing scope, no worse than on the input: "
               f"{', '.join(_out_scope[:12])}"
               + (f" (+{len(_out_scope) - 12} more)"
                  if len(_out_scope) > 12 else '') + RESET)
@@ -508,6 +535,9 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     if record['recovered']:
         print(f"  Recovered after a summary reported them failing: "
               f"{len(record['recovered'])}")
+    if record['failed']:
+        print(f"  {RED}Ships broken: {record['failed']} net(s) -- the `failed` "
+              f"count, over every net the run owns{RESET}")
     return record
 
 
@@ -1739,6 +1769,35 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         pcb_data, disable_bga_zones, bga_exclusion_zones,
         selected_net_ids=_sel_ids)
 
+    if final_reconcile and abs(routing_clearance_margin - 1.0) > 1e-9:
+        # #1216: say what the knob reaches. It used to read as a general
+        # track-to-via margin, and a run spent 10 minutes on it for nothing.
+        print(f"  --routing-clearance-margin {routing_clearance_margin:g}: diff-pair "
+              f"via spacing only (the P/N via offset and the centerline's via "
+              f"keep-out); single-ended tracks and vias route at the clearance")
+    if final_reconcile and input_file:
+        # #1210: Board Setup min_clearance floors every class in KiCad's DRC.
+        # A run whose Default class sits below it relaxes that rule (the
+        # writeback lowers it to what was routed), and said so only on the
+        # writeback line. When the run routes at the board's OWN class, the
+        # relaxation is the run's doing: a design_rules.narrowed row, as every
+        # other floor descent is. A lower --clearance / ceiling was asked for,
+        # so it is named and not counted (--strict-sizes would fail a run that
+        # did what it was told).
+        from fix_kicad_drc_settings import board_min_clearance_above
+        _mc1210 = board_min_clearance_above(input_file, clearance)
+        if _mc1210:
+            _decl1210, _cls1210 = _mc1210
+            _own1210 = _cls1210 is None or clearance >= _cls1210 - 1e-9
+            print(f"  Clearance {clearance:g}mm is below the board's minimum clearance "
+                  f"{_decl1210:g}mm (Board Setup), which KiCad's DRC enforces above "
+                  f"every net class; the output project is lowered to the routed "
+                  f"clearance"
+                  + ("" if _own1210 else " (as --clearance / --clearance-ceiling asked)"))
+            if _own1210:
+                from fab_tiers import note_narrowing as _nn1210
+                _nn1210(None, 'clearance', _decl1210, clearance,
+                        site='board minimum clearance (Board Setup)')
     config_kwargs = get_common_config_kwargs(
         track_width=track_width, clearance=clearance, via_size=via_size,
         via_drill=via_drill, grid_step=grid_step, via_cost=via_cost,
@@ -7759,7 +7818,11 @@ For differential pair routing, use route_diff.py:
                              "joint cut; falls back to count order when the "
                              "wall is static copper). Default: count.")
     parser.add_argument("--routing-clearance-margin", type=float, default=defaults.ROUTING_CLEARANCE_MARGIN,
-                        help=f"Multiplier on track-via clearance ({defaults.ROUTING_CLEARANCE_MARGIN} = minimum DRC)")
+                        help=f"Diff pairs only (a pair this run routes or restores): "
+                             f"multiplier on the track-to-via distance that sets the "
+                             f"P/N via offset and the centerline's via keep-out "
+                             f"({defaults.ROUTING_CLEARANCE_MARGIN} = minimum DRC). "
+                             f"Single-ended tracks and vias do not read it.")
     parser.add_argument("--hole-to-hole-clearance", type=float, default=None,
                         help="Minimum clearance between drill holes in mm. Default: the "
                              f"board's own min_hole_to_hole constraint, else {defaults.HOLE_TO_HOLE_CLEARANCE}.")

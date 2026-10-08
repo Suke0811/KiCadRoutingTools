@@ -1093,7 +1093,7 @@ class RoutingDialog(wx.Dialog):
             ('vertical_attraction_cost', 'Vert. Attract Cost:', defaults.VERTICAL_ATTRACTION_COST, "Bonus for routing in the vertical shadow of other layers' tracks (0 = off; net-agnostic corridor stacking)"),
             ('ripped_route_avoidance_radius', 'Rip Avoid (mm):', defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS, "Radius of the corridor a ripped net's former route reserves for its reroute"),
             ('ripped_route_avoidance_cost', 'Rip Avoid Cost:', defaults.RIPPED_ROUTE_AVOIDANCE_COST, "Cost other nets pay to cross a ripped net's former corridor, reserving it for that net's reroute (the ripped net itself never pays it)"),
-            ('routing_clearance_margin', 'Clearance Margin:', defaults.ROUTING_CLEARANCE_MARGIN, "Extra clearance margin multiplier for safety"),
+            ('routing_clearance_margin', 'Pair Via Margin:', defaults.ROUTING_CLEARANCE_MARGIN, "Diff pairs only: multiplier on the track-to-via distance that sets the P/N via offset (1.0 = minimum DRC). Single-ended tracks and vias ignore it"),
         ]
         for name, label, default, tooltip in float_params:
             if name == 'keep_away_free':

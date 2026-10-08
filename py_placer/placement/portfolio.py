@@ -134,7 +134,7 @@ def free_refs(pcb_data, pcb_file: str,
             continue
         if ref in locked:
             continue
-        if lock_globs and any(fnmatch.fnmatch(ref, p) for p in lock_globs):
+        if lock_globs and any(fnmatch.fnmatchcase(ref, p) for p in lock_globs):
             continue
         if getattr(fp, 'owns_board_outline', False):
             # Not `owns_edge_cuts`: a relief parented to the part travels WITH
@@ -162,7 +162,7 @@ def ignore_net_ids(pcb_data, patterns: Optional[Sequence[str]]) -> Set[int]:
     ids: Set[int] = set()
     if patterns:
         for net_id, net in pcb_data.nets.items():
-            if any(fnmatch.fnmatch(net.name, p) for p in patterns):
+            if any(fnmatch.fnmatchcase(net.name, p) for p in patterns):
                 ids.add(net_id)
     return ids
 

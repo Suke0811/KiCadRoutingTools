@@ -689,7 +689,11 @@ def route_single_ended_nets(
 
         route_index += 1
         failed_str = f" ({failed} failed)" if failed > 0 else ""
-        print(f"\n[{route_index}/{total_routes}{failed_str}] Routing {net_name} (id={net_id})")
+        # #1202: nets ripped this pass wait in the reroute queue; without
+        # this the main pass reads "[110/110]" while 34 sit ripped.
+        _ripped = len(reroute_queue) if reroute_queue else 0
+        ripped_str = f" ({_ripped} ripped)" if _ripped else ""
+        print(f"\n[{route_index}/{total_routes}{failed_str}{ripped_str}] Routing {net_name} (id={net_id})")
 
         # Report progress
         if progress_callback is not None:

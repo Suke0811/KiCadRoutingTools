@@ -134,7 +134,9 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   against its pins (its `dropped_by` says what vetoed each move). Rank it at
   seed level, passing the same `--seed-args` you will seed with:
   `python3 -X utf8 py_placer/rank_rotations.py <pile> --intent <intent.json> --out-dir wk/<run>/rot --probe --write-intent wk/<run>/intent_rot.json`
-  then seed from the written intent. The seed holds that angle through its
+  then seed from the written intent. `--jobs N` runs the control and the
+  angles' seeds N at a time with identical results; on a board where one
+  seed takes minutes, set it to your free cores. The seed holds that angle through its
   polish and re-seat: a part the re-seat cannot put back at it is named on a
   `NOT repaired` line (`reseat_declined`) and the seed exits 4, and
   `place_portfolio --intent` turns it only within its declaration (#1121).
@@ -169,6 +171,12 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 - **Keep-out bands.** A pad in a `(keepout (tracks not_allowed))` band cannot
   be routed even on an empty board (#1031). Treat
   `checklist.a_off_outline.keepout_copper` like off-outline pad copper.
+- **A module antenna needs its copper keep-out WRITTEN, after placement.** A
+  design brief's `keepouts[]` grades placement only; no routing step reads it.
+  Once the module is placed, write the area onto the board in the module's own
+  frame, so a re-run after a move follows the part:
+  `python3 -X utf8 py_router/add_rule_area.py <in> <out> --name ANT_KEEPOUT --ref U1 --rect X0 Y0 X1 Y1`
+  (#1200). The router and KiCad then both keep copper out.
 - **A killed `place_*` job leaves no board.** Bound it by SCOPE instead: free
   only the refs the gate names, and lock the rest. Freeing 2 parts cleared
   both blocking pairs in 63 s, where whole-board sweeps ran over 10 min. For

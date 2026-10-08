@@ -60,7 +60,9 @@ SITES = {
     'py_router/plane_blocker_detection.py': ['_restored_piece_collides'],
     'py_router/single_ended_routing.py': ['_unblock_via_refit',
                                           '_merge_terminal_to_exact'],
-    'py_router/diff_pair_routing.py': ['_collapse_leg_attach_join'],
+    'py_router/diff_pair_routing.py': ['_collapse_leg_attach_join',
+                                       '_gnd_via_offsets', '_create_gnd_vias',
+                                       '_settle_gnd_via'],
 }
 
 _SAME_NET = ('a SAME-net item (check_drc grades no clearance between them): '
@@ -127,7 +129,7 @@ _CFG_ATTRS = ('config', 'cfg', '_config', '_cfg')
 _FOLDS = ('max', 'min')
 _PRICERS = ('pair_clearance', 'pad_pair_clearance',
             'pad_pair_clearance_before_override')
-_PRICER_FUNCS = ('_pair_floor', '_meander_pair_pricing')
+_PRICER_FUNCS = ('_pair_floor', '_meander_pair_pricing', '_gnd_via_offsets')
 
 
 def _cfgish(v, aliases=()):

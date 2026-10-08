@@ -3368,7 +3368,7 @@ def _repair_one_arm(pcb_data: PCBData, pcb_file: str,
     if lock_refs:
         import fnmatch
         for ref in pcb_data.footprints:
-            if any(fnmatch.fnmatch(ref, pat) for pat in lock_refs):
+            if any(fnmatch.fnmatchcase(ref, pat) for pat in lock_refs):
                 extra_locked.add(ref)
 
     # #733: ONE board-edge margin for every front end. Resolved HERE, in the

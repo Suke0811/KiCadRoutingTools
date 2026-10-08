@@ -110,7 +110,7 @@ def _split_pinned(graded, output_file, intent):
     def pinned(v):
         ref = getattr(v, 'ref', None)
         return bool(ref) and (ref in locked
-                              or any(fnmatch.fnmatch(ref, p) for p in pats))
+                              or any(fnmatch.fnmatchcase(ref, p) for p in pats))
     return ([v for v in graded.errors if not pinned(v)],
             [v for v in graded.errors if pinned(v)])
 
