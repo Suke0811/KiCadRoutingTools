@@ -6054,7 +6054,7 @@ def stamp_locked(board_file: str, refs: Sequence[str]) -> int:
             list(iter_footprint_blocks(content))):
         if key not in want:
             continue
-        if (re.search(r'\(locked\s+yes\)', fp_text[:fp_text.find('(pad')
+        if (re.search(r'\(locked(?:\s+yes)?\)', fp_text[:fp_text.find('(pad')
                                                    if '(pad' in fp_text else len(fp_text)])
                 or 'locked' in footprint_head_flags(fp_text)):  # KiCad 6: bare
             continue
@@ -6114,7 +6114,7 @@ def stamp_unlocked(board_file: str, refs: Sequence[str]) -> int:
             continue
         head_end = fp_text.find('(pad') if '(pad' in fp_text else len(fp_text)
         head, tail = fp_text[:head_end], fp_text[head_end:]
-        new_head, n = re.subn(r'\s*\(locked\s+yes\)', '', head)
+        new_head, n = re.subn(r'\s*\(locked(?:\s+yes)?\)', '', head)
         # KiCad 6 writes the lock as a bare word after the name:
         # (footprint "X" locked (layer ... -- leave that and KiCad keeps it locked.
         new_head, n_bare = _BARE_FP_LOCK_RE.subn(r'\1', new_head, count=1)

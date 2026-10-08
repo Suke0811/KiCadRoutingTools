@@ -181,6 +181,20 @@ LEGACY_NET_TIES = 20220815
 #: Files before this version wrote overbars as ~TEXT~ rather than ~{TEXT}.
 NEW_OVERBAR_NOTATION = 20210606
 
+#: The first board format with (footprint ...) blocks ("module -> footprint",
+#: KiCad 5.99). An older file -- KiCad 5, KiCad 4 -- writes (module ...) and
+#: bare net names, and this parser would read it as a board with no footprints
+#: and no nets: it is REFUSED instead (UnsupportedBoardFormat).
+FIRST_SUPPORTED_BOARD_VERSION = 20201115
+
+
+class UnsupportedBoardFormat(ValueError):
+    """A board file this parser cannot read. The message says what the file is
+    and what to do, so a CLI prints it as a clean ERROR line rather than as a
+    traceback (``user_facing``, honoured by cli_banner's excepthook)."""
+    user_facing = True
+
+
 _TSTAMP_RE = re.compile(r'\(tstamp\s+"?([0-9A-Fa-f-]+)"?\)')
 
 
@@ -3726,7 +3740,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             _i = fp_text.find(_tok)
             if _i != -1:
                 _hdr_end = min(_hdr_end, _i)
-        is_locked = (bool(re.search(r'\(locked\s+yes\)', fp_text[:_hdr_end]))
+        # (locked yes) from KiCad 7; (locked) in files 20210108-20210423.
+        is_locked = (bool(re.search(r'\(locked(?:\s+yes)?\)', fp_text[:_hdr_end]))
                      or 'locked' in footprint_head_flags(fp_text))  # KiCad 6: bare
 
         # Footprint-level (clearance ...) override (issue #326). KiCad writes it
@@ -5838,6 +5853,13 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
     content = read_board_text(filepath)
 
     kicad_version = detect_kicad_version(content)
+    if 0 < kicad_version < FIRST_SUPPORTED_BOARD_VERSION:
+        raise UnsupportedBoardFormat(
+            f"{filepath} is a KiCad 5 (or older) board, file format "
+            f"{kicad_version}. This tool reads KiCad 6 and later; it would see "
+            f"no footprints or nets in this file. Open the board in KiCad 6 or "
+            f"newer and save it, which converts it, or use the KiCad plugin, "
+            f"which reads the board through KiCad itself.")
     # A file from before 6.0's arc format: rewrite its center/angle arcs as
     # start/mid/end on this ANALYSIS copy, the form every reader below matches.
     content = strip_bare_shape_locks(upgrade_legacy_arcs(content, kicad_version))

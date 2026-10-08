@@ -237,7 +237,7 @@ ROWS = [
 
     # ---- the lock stamper -------------------------------------------------
     ('stamp_unlocked-removes-nothing', 's',
-     "        new_head, n = re.subn(r'\\s*\\(locked\\s+yes\\)', '', head)",
+     "        new_head, n = re.subn(r'\\s*\\(locked(?:\\s+yes)?\\)', '', head)",
      "        new_head, n = head, 0",
      (T_POSE,), 'KILLED'),
 

@@ -117,7 +117,7 @@ def extract_locked_refs(pcb_file: str) -> Set[str]:
         # It appears early in the footprint block, before properties
         first_pad = fp_text.find('(pad ')
         search_region = fp_text[:first_pad] if first_pad > 0 else fp_text[:500]
-        if (re.search(r'\(locked\s+yes\)', search_region)
+        if (re.search(r'\(locked(?:\s+yes)?\)', search_region)  # (locked) 2021 nightlies
                 or 'locked' in footprint_head_flags(fp_text)):  # KiCad 6: bare
             locked.add(ref)
     return locked

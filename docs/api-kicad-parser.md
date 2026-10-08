@@ -403,6 +403,17 @@ v10 = pcb.kicad_version >= KICAD_10_MIN_VERSION
 print(f"File version {pcb.kicad_version} -> {'KiCad 10+' if v10 else 'KiCad 9'} format")
 ```
 
+### KiCad 5 and older: refused
+
+A board older than `FIRST_SUPPORTED_BOARD_VERSION` (20201115, KiCad's
+"module -> footprint" change) writes its parts as `(module ...)` blocks with
+bare net names, which this parser does not read. Rather than return a board
+with no footprints and no nets, `parse_kicad_pcb` raises
+`UnsupportedBoardFormat` (a `ValueError`) saying what the file is and what to
+do: open it in KiCad 6 or newer and save it, or use the KiCad plugin, which
+reads the board through KiCad itself. The CLIs print it as one `ERROR:` line
+and exit 1.
+
 ### KiCad 6-era files
 
 pcbnew converts several KiCad 6-era conventions when it loads a file, and the
@@ -419,7 +430,7 @@ KiCad 6 board parses on the CLI the way it loads in KiCad:
 | a footprint whose `(tags ...)` start with `"net tie"` | one `net_tie_groups` entry of every pad | version ≤ `LEGACY_NET_TIES` (20220815) |
 | `(tstamp ...)` | the item's `uuid` (an 8-hex-digit stamp expanded as KiCad's KIID does) | footprints, tracks, vias, zones |
 | `~X~` overbars in net names | `~{X}` | version < `NEW_OVERBAR_NOTATION` (20210606) |
-| a bare `locked`: `(footprint "X" locked (layer ...`, `(gr_line locked (start ...` | `Footprint.locked`; the shape is read as unlocked geometry | all versions (KiCad 6 spells it so) |
+| a bare `locked`: `(footprint "X" locked (layer ...`, `(gr_line locked (start ...`; or `(locked)` (20210108-20210423) | `Footprint.locked`; the shape is read as unlocked geometry | all versions (KiCad 6 spells it so) |
 
 The legacy arc rewrite and the shape-lock strip happen on the parser's
 **analysis copy** only: never write `upgrade_legacy_arcs` output back into a
