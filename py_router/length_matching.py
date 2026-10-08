@@ -2964,7 +2964,9 @@ def apply_meanders_to_diff_pair(
             gnd_net_id = result.get('gnd_net_id')
             gnd_via_dirs = result.get('gnd_via_dirs', [])
             gnd_vias = _create_gnd_vias(
-                new_centerline_grid, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs
+                new_centerline_grid, coord, config, layer_names, spacing_mm, gnd_net_id, gnd_via_dirs,
+                pair_net_ids=(p_net_id, n_net_id), pair_segs=p_segs + n_segs,
+                pcb_data=pcb_data
             )
             new_vias.extend(gnd_vias)
 
