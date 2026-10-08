@@ -1594,7 +1594,8 @@ since been reverted (item 2).
    50 → 117/62 and 250 → 89/43, and the default went back to 250
    (aaa60331). 25 and 50 are worse than either end, so do not split the
    difference. Much higher (5000) gives strict H/V lanes but starves dense
-   boards.
+   boards -- a dense-corpus finding; on 2-layer through-hole bus boards
+   2000-4000 starved nothing and the defaults left nets open (Step 8).
 3. **Layer pricing** (order matches `--layers`): GND solid-plane layer
    **6.0**; rail/split pour layers **2.5**; F/B and free routing layers
    **1.0**; and leave the board's **bus-highway layer at 1.0 even if it
@@ -1942,6 +1943,74 @@ python3 py_router/route.py board.kicad_pcb \
 
 Without this flag, the router auto-detects BGA/PGA zones and avoids them, which would
 leave internal pads unconnected if they weren't fanned out.
+
+### 2-Layer Through-Hole Bus Boards (DIP logic, vintage CPU/MPU boards)
+
+Recognize it in Step 1: two copper layers, nearly every pad through-hole, and
+multi-drop address/data buses -- nets of 8-14 pads strung across rows of DIP
+RAMs, ROMs and peripherals. Home computers, pinball and arcade MPUs, and modern
+retro SBCs are this class. The corpus-measured defaults are the wrong prior
+here: route the signal step with
+
+```bash
+--layer-costs 1.0 1.0 --direction-preference-cost 4000 --turn-cost 2000 --via-cost 150
+```
+
+and run the defaults as a second arm only if you want the comparison. Measured
+on three corpus boards of the class (c64_250407, fellapc_6502,
+duodyne_z80_proc), routing every signal net with the hand-laid power copper
+held fixed:
+
+| board (signal nets) | arm | open | real DRC | vias | segments | on layer axis | diagonal |
+|---|---|---|---|---|---|---|---|
+| C64 motherboard (201) | defaults | 3 | 6 | 2496 | 13963 | 47% | 41% |
+| | the four flags above | 0 | 0 | 1144 | 5212 | 88% | 12% |
+| | hand layout | - | - | 432 | 5468 | - | - |
+| 6502 PC (203) | defaults | 0 | 0 | 1170 | 6638 | 36% | 41% |
+| | the four flags above | 0 | 0 | 831 | 4323 | 79% | 18% |
+| | hand layout | - | - | 470 | 3184 | - | - |
+| Z80 backplane CPU (241) | defaults | 11 | 0 | 2565 | 13706 | 42% | 43% |
+| | the four flags above | 0 | 0 | 1473 | 7543 | 83% | 16% |
+| | hand layout | - | - | 212 | 5556 | - | - |
+
+Directional on all three: completion better on two and equal on one, vias
+-29% to -54%, segments -35% to -63%, never worse. "On layer axis" is the
+share of track running F.Cu horizontal / B.Cu vertical.
+
+What each flag does (the C64's 24-net A/D bus subset, every arm 24/24
+connected):
+
+- **`--layer-costs 1.0 1.0`** is necessary but does not organize. The 2-layer
+  pricing of B.Cu at 3x makes a vertical run cheaper on F.Cu than on B.Cu, so
+  everything piles onto the top at any angle. Equal costs alone cut vias
+  497 -> 396 but left 40% diagonal and MORE segments (3585 vs 2535).
+- **`--direction-preference-cost`** is the organizing lever: 2000 put 69-74%
+  of track on the layer's axis, 4000 put 88-89%. The axes are fixed -- F.Cu
+  horizontal, B.Cu vertical, alternating down the stack -- and no flag swaps
+  them. fellapc's hand layout runs the opposite convention and the flags
+  still cut its vias 29%.
+- **`--turn-cost 2000`** keeps a strong preference from jogging: preference
+  4000 on equal layer costs alone used 2626 segments, and 1268 once turn cost
+  2000 and via cost 150 were added (those two were not measured apart).
+- **`--via-cost 150`** cut vias by about a quarter (356 -> 273, at
+  preference 2000 and turn cost 2000) with completion unchanged; 300 bought
+  about 8% more for longer track.
+
+This contradicts nothing measured: Step 2c's "much higher starves dense
+boards" and the leave-at-default advice below are findings on the dense,
+mostly-SMD corpus. On this class 2000-4000 starved nothing, and the defaults
+were the arm that left nets open.
+
+Set the expectation before routing: **H/V discipline is tidiness, not a via
+count a human would reach.** The router routes a multi-drop net as separate
+pin-to-pin links, each paying its own layer change at a corner, where a human
+runs a chip column on one layer or flows 45-degree bundles across the board.
+The Z80 board's hand layout does the latter and needs 212 vias; the flags'
+1473 is still 43% under the defaults' 2565. No parameter closes that gap.
+
+A board this size (the C64 is 390x180 mm) peaks around 5 GB per `route.py`
+run at the default grid, so run comparison arms one after another on a small
+machine.
 
 ### Multi-Layer Boards (4+ layers)
 
@@ -2300,7 +2369,9 @@ bound, not a plan.)
 Leave these at their defaults: `--direction-preference-cost` (default: 250)
 and `--turn-cost` (default: 1000) were measured on the corpus and no other
 value held up; `--proximity-heuristic-factor` (default: 0.02) beat 0, 0.01
-and 0.04 on a five-board probe and has had no corpus A/B since.
+and 0.04 on a five-board probe and has had no corpus A/B since. Exception:
+2-layer through-hole bus boards, where Step 8 raises the first two together
+with `--layer-costs` and `--via-cost`.
 
 Manufacturing constraints (set to match your fab's requirements):
 
