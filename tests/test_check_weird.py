@@ -837,8 +837,8 @@ def main():
                     _web() == 1 and _web(rescue=True) == 0))
     #     The REPAIR passes ask what the board ships graded at, mid-run: the
     #     project lowered to the thinnest track and the run's width, as the
-    #     writeback lowers it -- the same number on both fronts, whose copies
-    #     of the project differ mid-plan while the copper does not.
+    #     writeback lowers it (KiCad grades one board-wide floor, which must
+    #     admit every track).
     from fix_kicad_drc_settings import connection_width_floor as _cwf
     _p06 = {'min_track_width': 0.6}
     results.append(("shipped floor: the project's when the copper is wider",
@@ -847,6 +847,50 @@ def main():
                     abs(_cwf(_webpcb(_p06, rescue=True), shipped=True) - 0.2032) < 1e-9
                     and abs(_cwf(_webpcb(_p06), 0.3, shipped=True) - 0.3) < 1e-9
                     and abs(_cwf(_webpcb(_p06, rescue=True)) - 0.6) < 1e-9))
+    #     Why the repair follows the writeback down: the run's own 0.2032
+    #     track meets its pad through a lens below 0.2032. Priced at the
+    #     project's 0.6 alone it would be skipped (no 0.6 web exists through
+    #     it) and ship as a narrow-pad-joint once the writeback lowers the
+    #     grade to 0.2032. The shipped floor firms it.
+    from types import SimpleNamespace as _NS
+    from pcb_modification import close_soft_joints as _csj
+
+    def _thin_lens():
+        _p = _webpcb(_p06)
+        _p.segments = [_seg(6, 0, 0.88, 0, width=0.2032)]
+        return _p
+    _tl = _thin_lens()
+    _csj([], _tl, None, _NS(track_width=0.8, clearance=0.2))
+    with open(os.path.splitext(_tl.source_path)[0] + '.kicad_pro', 'w') as _f:
+        _json.dump({'board': {'design_settings': {'rules': {
+            'min_track_width': 0.2032}}}}, _f)     # what the writeback writes
+    results.append(("the repair firms a thin track's sub-floor lens the "
+                    "lowered grade flags",
+                    len(_tl.segments) == 2
+                    and not [x for x in check_weird(_tl, tolerance=0)[0]
+                             if x['category'] == 'narrow-pad-joint']))
+    _tl0 = _thin_lens()
+    _tl0_pro = os.path.splitext(_tl0.source_path)[0] + '.kicad_pro'
+    with open(_tl0_pro, 'w') as _f:
+        _json.dump({'board': {'design_settings': {'rules': {
+            'min_track_width': 0.2032}}}}, _f)
+    results.append(("control: unfirmed, that lens IS a narrow-pad-joint at "
+                    "the lowered grade",
+                    len([x for x in check_weird(_tl0, tolerance=0)[0]
+                         if x['category'] == 'narrow-pad-joint']) == 1))
+    #     The GUI's declared rules are its LIVE board's (live_rules_provider),
+    #     read when the floor is asked for: mid-plan the file beside the live
+    #     board is still the original while the steps lowered the floors in
+    #     memory, and a PCBData built before a step's writeback is in use
+    #     after it. The provider outranks the file.
+    _live = {'min_track_width': 0.6, 'min_connection': 0.0}
+    _lp = _webpcb(_p0203)
+    _lp.live_rules_provider = lambda: dict(_live)
+    _before = _cwf(_lp)
+    _live['min_track_width'] = 0.127              # a later step's writeback
+    results.append(("a live rules provider outranks the file, read at call time",
+                    abs(_before - 0.6) < 1e-9 and abs(_cwf(_lp) - 0.127) < 1e-9
+                    and abs(_cwf(_lp, shipped=True) - 0.127) < 1e-9))
 
     # 23. KiCad's track_dangling on a joint stub lying on ONE other track
     #     (#1217). KiCad counts an item touching both ends of a segment for the
