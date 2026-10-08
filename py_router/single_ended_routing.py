@@ -10,6 +10,7 @@ import math
 import time
 import numpy as np
 from contextlib import contextmanager
+from operator import attrgetter
 from typing import Dict, List, Optional, Set, Tuple
 from terminal_colors import YELLOW, GREEN, RESET
 
@@ -59,6 +60,7 @@ def _unblock_debug() -> bool:
 # kernels skip the bulk of the board's pads. Generous (~10x the largest realistic
 # margin) so routing stays byte-for-byte identical.
 _FOREIGN_PAD_WINDOW = 5.0  # mm
+_LAYER_OF = attrgetter('layer')
 # KICAD_SEG_DIST_EXACT=1 replaces the sampled sweep in _seg_foreign_seg_dist
 # with the exact segment-to-segment distance. Default OFF (2026-09-19): the
 # sweep is main's behaviour, and the exact distance changes copper on every
@@ -395,8 +397,11 @@ def _foreign_seg_arrays(pcb_data, layer):
     # length and its tail are still checked. Unset (the default), every
     # call pays the #803 digest as before.
     if not getattr(pcb_data, '_foreign_seg_arr_trust', False):
+        # attrgetter builds the same tuple as a generator over sg.layer at C
+        # speed -- this digest runs on every call (2026-10-08: 227 us of a
+        # 746 us query on an 8.9k-segment board).
         sig = sig + (sum(map(id, segs)), sum(map(id, vias)),
-                     hash(tuple(sg.layer for sg in segs)))
+                     hash(tuple(map(_LAYER_OF, segs))))
     cache = getattr(pcb_data, '_foreign_seg_arr_cache', None)
     if cache is None or cache[0] != sig:
         cache = (sig, {})
@@ -464,7 +469,7 @@ def _cached_own_pad_nets(pcb_data):
     return out
 
 
-def _foreign_seg_exempt(pcb_data, layer, net_id, n_rows):
+def _foreign_seg_exempt(pcb_data, layer, net_id, n_rows, validated=False):
     """Boolean mask of foreign-array rows that are NOT foreign to `net_id`.
 
     #908: a footprint's own copper carries no net, so it is foreign to every
@@ -474,8 +479,12 @@ def _foreign_seg_exempt(pcb_data, layer, net_id, n_rows):
     same exemption for the geometric terminal-graze / short gate, which reads
     copper directly rather than the map. Foreign nets are untouched: a row is
     exempt only for the nets its own footprint's pads put on it.
+
+    `validated`: the caller called _foreign_seg_arrays for this layer just
+    now, so the cache is current and its signature need not be recomputed.
     """
-    _foreign_seg_arrays(pcb_data, layer)
+    if not validated:
+        _foreign_seg_arrays(pcb_data, layer)
     per_layer = pcb_data._foreign_seg_arr_cache[1]
     key = (layer, 'exempt', net_id)
     hit = per_layer.get(key)
@@ -490,11 +499,12 @@ def _foreign_seg_exempt(pcb_data, layer, net_id, n_rows):
     return mask
 
 
-def _foreign_seg_bboxes(pcb_data, layer):
+def _foreign_seg_bboxes(pcb_data, layer, validated=False):
     """(min_x, max_x, min_y, max_y) arrays of the foreign segments+vias
     on `layer`, built with -- and valid exactly as long as -- the arrays
-    of _foreign_seg_arrays."""
-    _foreign_seg_arrays(pcb_data, layer)
+    of _foreign_seg_arrays. `validated` as in _foreign_seg_exempt."""
+    if not validated:
+        _foreign_seg_arrays(pcb_data, layer)
     return pcb_data._foreign_seg_arr_cache[1][(layer, 'bbox')]
 
 
@@ -525,10 +535,12 @@ def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
         return 1e9
     n = max(2, int(math.hypot(x2 - x1, y2 - y1) / 0.02) + 1)
     R = _FOREIGN_PAD_WINDOW
-    fminx, fmaxx, fminy, fmaxy = _foreign_seg_bboxes(pcb_data, layer)
+    # The arrays were validated just above; the helpers would each pay the
+    # cache signature again (two thirds of a query's time, 2026-10-08).
+    fminx, fmaxx, fminy, fmaxy = _foreign_seg_bboxes(pcb_data, layer, validated=True)
     near = ((fmaxx >= min(x1, x2) - R) & (fminx <= max(x1, x2) + R) &
             (fmaxy >= min(y1, y2) - R) & (fminy <= max(y1, y2) + R) & (nid != net_id))
-    near &= ~_foreign_seg_exempt(pcb_data, layer, net_id, nid.size)
+    near &= ~_foreign_seg_exempt(pcb_data, layer, net_id, nid.size, validated=True)
     if not near.any():
         return 1e9
     ax, ay, bx, by, hw = fax[near], fay[near], fbx[near], fby[near], fhw[near]
@@ -3491,6 +3503,35 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
         _FRAG_MM = 1.0
     _COPPER_RUNGS = env_knobs.POUR_LAUNCH_COPPER
     _DEEP_MM = 0.5
+    # Content memo behind the one above (2026-10-08): every reroute of a plane
+    # net builds a NEW grouping object, so the identity memo missed on calls
+    # whose inputs were unchanged -- 57 s of zynq_ad9364's route step. The key
+    # is everything the scan reads: the terminals' positions, each one's
+    # component, the layers and grid, and this net's zones with their fill
+    # models. A model is replaced, not mutated, when fills are invalidated, and
+    # the entry holds the zones and models so their ids cannot be reused.
+    # Skipped under POUR_LAUNCH_COPPER, which also reads the caller's island
+    # cells.
+    _ck = _models = None
+    if not _COPPER_RUNGS:
+        try:
+            _zs = [z for z in (pcb_data.zones or []) if z.net_id == net_id
+                   and z.layer in layer_names]
+            _models = [(z, get_zone_model(pcb_data, z)) for z in _zs]
+            _ck = (net_id, tuple(layer_names),
+                   tuple(sorted(vars(coord).items())), _FRAG_MM,
+                   tuple((_i[3], _i[4]) for _i in pad_info),
+                   tuple(pad_components.get(_j, _j)
+                         for _j in range(len(pad_info))),
+                   tuple((id(z), id(m)) for z, m in _models))
+            _lru = getattr(pcb_data, '_pour_launch_lru', None)
+            _hit = _lru.get(_ck) if _lru is not None else None
+            if _hit is not None:
+                _lru.move_to_end(_ck)
+                pcb_data._pour_launch_memo = (_mk, pad_components, _hit[0])
+                return _hit[0]
+        except Exception:
+            _ck = None
     out = {}
     _bare_kept = 0
     try:
@@ -3572,6 +3613,14 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
         print(f"  POUR-LAUNCH: {_bare_kept} bare fill region(s) kept by the "
               f"zone island policy are not yet nodes (deferred)")
     pcb_data._pour_launch_memo = (_mk, pad_components, out)
+    if _ck is not None:
+        from collections import OrderedDict as _OD
+        _lru = getattr(pcb_data, '_pour_launch_lru', None)
+        if _lru is None:
+            _lru = pcb_data._pour_launch_lru = _OD()
+        _lru[_ck] = (out, _models)
+        while len(_lru) > 128:
+            _lru.popitem(last=False)
     return out
 
 
