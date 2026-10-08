@@ -62,7 +62,11 @@ SITES = {
                                           '_merge_terminal_to_exact'],
     'py_router/diff_pair_routing.py': ['_collapse_leg_attach_join',
                                        '_gnd_via_offsets', '_create_gnd_vias',
-                                       '_settle_gnd_via'],
+                                       '_settle_gnd_via',
+                                       '_min_via_center_distance',
+                                       '_pair_via_offset', '_try_route_direction',
+                                       '_route_direct_coupled_middle',
+                                       '_process_via_positions'],
 }
 
 _SAME_NET = ('a SAME-net item (check_drc grades no clearance between them): '
@@ -122,6 +126,29 @@ ALLOWED = {
      'partner_segs else config.clearance'):
         (1, 'the INTRA-pair floor (#1134): priced at the pair when the '
             'partner has copper; with none there is nothing to graze'),
+    # #1218: the P/N transition vias and their partner tracks.
+    ('py_router/diff_pair_routing.py', '_min_via_center_distance',
+     "config.pair_clearance(net_a, net_b, kind='stack') if net_a is not None "
+     "and net_b is not None else config.clearance"):
+        (1, 'no pair given: the values-in adapter test_700 drives with a bare '
+            'config, at the run\'s base; every router caller passes the pair'),
+    ('py_router/diff_pair_routing.py', '_pair_via_offset',
+     "config.pair_clearance(p_net, n_net, kind='stack') if p_net is not None "
+     "and n_net is not None else config.clearance"):
+        (1, 'no pair given: the run\'s base; every caller passes P and N'),
+    ('py_router/diff_pair_routing.py', '_process_via_positions',
+     "config.pair_clearance(p_net_id, n_net_id, kind='stack') if p_net_id is "
+     "not None and n_net_id is not None else config.clearance"):
+        (1, 'no pair given: the run\'s base; both callers pass P and N'),
+    ('py_router/diff_pair_routing.py', '_try_route_direction',
+     'config.track_width / 2 + config.clearance'):
+        (1, 'the centerline setback\'s floor off the pad edge the pair '
+            'launched from -- its OWN pad, no other net\'s copper'),
+    ('py_router/diff_pair_routing.py', '_route_direct_coupled_middle',
+     'config.track_width + config.diff_pair_gap - config.clearance'):
+        (1, 'a lane-width COST margin for the partner leg (P and N couple at '
+            'the gap; every obstacle stamp already carries its own pair '
+            'clearance): no copper is admitted or refused on it'),
 }
 
 _CFG_NAMES = ('config', 'tap_config', 'cfg', 'c')
