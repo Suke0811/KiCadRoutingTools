@@ -29,8 +29,10 @@ Measured on run 11's final board: `check_orphan_stubs` none, `check_weird`
 `check_drc.py` auto-grades at the clearance the routing steps wrote into the sibling
 `.kicad_pro` (the smallest clearance any step actually used, including auto-stepped
 fine-pitch taps), so the bare invocation above already grades at the true routed
-floor. Pass `--clearance <value>` only to override (e.g. to grade a hand-routed
-board with no routed-floor `.kicad_pro`).
+floor. Like KiCad, it floors that class at Board Setup `min_clearance` (#1210):
+an unrouted or hand-routed board whose project declares a minimum above its
+Default class grades at the minimum. Pass `--clearance <value>` only to override
+(e.g. to grade a hand-routed board with no routed-floor `.kicad_pro`).
 
 When the board was routed from an input you have, add `--baseline <the input
 board>`. `VIA-IN-PASTE` rows are vias whose barrel sits in a solder-paste

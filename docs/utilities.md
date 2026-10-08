@@ -15,7 +15,9 @@ Options:
   --clearance FLOAT    Track-to-track clearance in mm. Default: auto-detected from
                        the sibling .kicad_pro Default net-class clearance (the value
                        the routing steps recorded as actually used, incl. auto-stepped
-                       fine-pitch taps); falls back to 0.2 if no project is found.
+                       fine-pitch taps), floored at Board Setup min_clearance as
+                       KiCad's DRC does (#1210); falls back to 0.2 if no project is
+                       found.
   --via-clearance FLOAT  Via-to-track clearance in mm (uses --clearance if not set)
   --hole-to-hole-clearance FLOAT  Minimum drill hole edge-to-edge clearance in mm
                                   (default: 0.20, the JLC fab floor — same as routing)

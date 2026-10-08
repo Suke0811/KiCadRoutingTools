@@ -1775,6 +1775,29 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         print(f"  --routing-clearance-margin {routing_clearance_margin:g}: diff-pair "
               f"via spacing only (the P/N via offset and the centerline's via "
               f"keep-out); single-ended tracks and vias route at the clearance")
+    if final_reconcile and input_file:
+        # #1210: Board Setup min_clearance floors every class in KiCad's DRC.
+        # A run whose Default class sits below it relaxes that rule (the
+        # writeback lowers it to what was routed), and said so only on the
+        # writeback line. When the run routes at the board's OWN class, the
+        # relaxation is the run's doing: a design_rules.narrowed row, as every
+        # other floor descent is. A lower --clearance / ceiling was asked for,
+        # so it is named and not counted (--strict-sizes would fail a run that
+        # did what it was told).
+        from fix_kicad_drc_settings import board_min_clearance_above
+        _mc1210 = board_min_clearance_above(input_file, clearance)
+        if _mc1210:
+            _decl1210, _cls1210 = _mc1210
+            _own1210 = _cls1210 is None or clearance >= _cls1210 - 1e-9
+            print(f"  Clearance {clearance:g}mm is below the board's minimum clearance "
+                  f"{_decl1210:g}mm (Board Setup), which KiCad's DRC enforces above "
+                  f"every net class; the output project is lowered to the routed "
+                  f"clearance"
+                  + ("" if _own1210 else " (as --clearance / --clearance-ceiling asked)"))
+            if _own1210:
+                from fab_tiers import note_narrowing as _nn1210
+                _nn1210(None, 'clearance', _decl1210, clearance,
+                        site='board minimum clearance (Board Setup)')
     config_kwargs = get_common_config_kwargs(
         track_width=track_width, clearance=clearance, via_size=via_size,
         via_drill=via_drill, grid_step=grid_step, via_cost=via_cost,
