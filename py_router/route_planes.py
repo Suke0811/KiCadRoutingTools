@@ -842,9 +842,9 @@ def build_plane_base_obstacles(
     other_nets_vias: Dict[int, List[Tuple[float, float]]],
     config: GridRouteConfig,
     pcb_data: PCBData,
-    track_via_clearance: float,
-    pad_cells: Tuple[np.ndarray, np.ndarray],
-    previous_routes: Optional[List[List[Tuple[float, float]]]] = None
+    track_via_clearance: float = defaults.PLANE_TRACK_VIA_CLEARANCE,
+    pad_cells: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    previous_routes: Optional[List[Tuple[int, List[Tuple[float, float]]]]] = None
 ) -> GridObstacleMap:
     """
     Build base obstacle map for routing a net's spines on a plane layer (reusable across its MST edges).
@@ -852,8 +852,9 @@ def build_plane_base_obstacles(
     Includes: other nets' via blocking (track_via_clearance from each centre), segment blocking, previous
     route blocking, and board edge blocking. Does NOT include source/target cells. Every pad_cells cell
     (_plane_pad_cells: (cells, net of each)) that is not this net's is blocked too -- other nets' pads and
-    vias, and holes: the fill cannot cross them either. No proximity cost: a spine IS the plane (the cost
-    keeps tracks from breaking a plane up).
+    vias, and holes: the fill cannot cross them either (None: no pad cells). No proximity cost: a spine IS
+    the plane (the cost keeps tracks from breaking a plane up). `previous_routes` are (net_id, path) pairs,
+    so each is kept at its pair clearance with `net_id` (#1131).
     """
     coord = GridCoord(config.grid_step)
     layer_idx = 0
@@ -887,29 +888,42 @@ def build_plane_base_obstacles(
         all_cells_3 = np.hstack([all_cells, layer_col])
         obstacles.add_blocked_cells_batch(all_cells_3)
 
-    # Block existing segments on this layer from other nets
+    # Block existing segments on this layer from other nets. The stamp takes
+    # MILLIMETRES (an exact capsule since #173); it was handed a grid-cell
+    # count, which kept every foreign track 4-8 mm away instead of ~0.4 (#1131).
+    # Each track is priced at its PAIR with this net, as check_drc grades it:
+    # the two classes, then the layer rule. kind='layer', not 'track': these
+    # paths are not copper (they are the spines the layer's split between its
+    # nets grows round), and the zone fill that follows is not a track, so
+    # #735's track-to-track rule does not apply.
     for seg in pcb_data.segments:
         if seg.net_id == net_id:
             continue
         if seg.layer != plane_layer:
             continue
-        seg_expansion_mm = config.track_width / 2 + seg.width / 2 + config.clearance
-        # (the capsule keep-out is in mm since #173: given the GRID distance, a 0.4 mm keep-out blocked 4 mm)
-        _add_segment_routing_obstacle(obstacles, seg, coord, layer_idx, seg_expansion_mm)
+        seg_expansion_mm = (config.track_width / 2 + seg.width / 2
+                            + config.pair_clearance(net_id, seg.net_id,
+                                                    plane_layer))
+        _add_segment_routing_obstacle(obstacles, seg, coord, layer_idx,
+                                      seg_expansion_mm)
 
-    # Block previous routes from other nets
+    # Block previous routes from other nets, each at its pair with this net
+    # (#1131), as above. This stamp does take GRID CELLS: a disc template
+    # around each Bresenham cell of the path.
     if previous_routes:
-        route_expansion_mm = config.track_width + config.clearance
-        route_expansion_grid = max(1, coord.to_grid_dist_safe(route_expansion_mm))
-        for route_path in previous_routes:
+        for route_net_id, route_path in previous_routes:
+            route_expansion_mm = config.track_width + config.pair_clearance(
+                net_id, route_net_id, plane_layer)
+            route_expansion_grid = max(1, coord.to_grid_dist_safe(route_expansion_mm))
             _block_route_as_obstacle(obstacles, route_path, coord, layer_idx, route_expansion_grid)
 
     # (every pad's, via's and hole's cells, built once per layer call by _plane_pad_cells: this net leaves out its
     # own copper)
-    allc, alln = pad_cells
-    sel = allc[(alln != net_id) | (alln == 0)]
-    if len(sel):
-        obstacles.add_blocked_cells_batch(np.hstack([sel, np.zeros((len(sel), 1), dtype=np.int32)]))
+    if pad_cells is not None:
+        allc, alln = pad_cells
+        sel = allc[(alln != net_id) | (alln == 0)]
+        if len(sel):
+            obstacles.add_blocked_cells_batch(np.hstack([sel, np.zeros((len(sel), 1), dtype=np.int32)]))
 
     # Block board edges
     _add_board_edge_track_obstacles(obstacles, pcb_data, config, layer_idx)
@@ -1631,7 +1645,7 @@ def _generate_multinet_layer_zones(
             # Compute other_nets_routes once per net (only contains routes from OTHER nets,
             # so it doesn't change within this net's MST edge loop)
             other_nets_routes = [
-                route for route_net_id, _, route in connection_routes
+                (route_net_id, route) for route_net_id, _, route in connection_routes
                 if route_net_id != net_id
             ]
 
@@ -3143,7 +3157,7 @@ def create_plane(
     # #962: the input's vias as values, for the Type VII stamp (only vias this
     # run ADDS are stamped; see fab_notes.via_protection_stamps)
     from fab_notes import via_snapshot as _via_snapshot962
-    _input_vias962 = _via_snapshot962(pcb_data.vias)
+    _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)  # #1171: + sites
 
     # --plane-layers takes BARE copper layer names positionally matched to
     # --nets, but the natural thing to type (and what the routing skill's R1
@@ -3378,8 +3392,14 @@ def create_plane(
         config.same_net_pad_clearance = same_net_pad_clearance
     # #498: per-layer .kicad_dru clearance rules -- tap tracks/vias, region
     # joins and blocker reroutes must obey them like every other routed copper.
-    from kicad_dru import install_layer_clearances
+    from kicad_dru import install_layer_clearances, install_track_clearances
     install_layer_clearances(config, None, input_file, pcb_data)
+    # #1135: and the track-to-track rules (#735), as batch_route installs
+    # them: a tap track or a blocker reroute is a track, and a board's
+    # `A.Type == 'track' && B.Type == 'track'` rule binds it too. Raise-only
+    # on seg-vs-seg pairs; the effective map over the nets this step pours.
+    install_track_clearances(config, None, input_file, pcb_data,
+                             routed_net_ids=net_ids)
     # Cross-class clearance (#434, mirrors batch_route/repair): auto-read the
     # board's non-Default netclasses from the INPUT's sibling .kicad_pro when
     # no map was passed, so tap tracks/vias and blocker reroutes honor KiCad's
@@ -4288,8 +4308,10 @@ Examples:
     _ceiling = getattr(args, 'clearance_ceiling', None)   # None iff omitted
     args._clamp_netclasses = _ceiling is not None
     args._clearance_ceiling = _ceiling
-    from fix_kicad_drc_settings import warn_if_missing_project_floor
+    from fix_kicad_drc_settings import (warn_if_missing_project_floor,
+                                        warn_if_class_clearance_relaxed)
     warn_if_missing_project_floor(args.input_file)  # #441: a dropped sibling .kicad_pro strands the DRC floor
+    warn_if_class_clearance_relaxed(args.input_file)  # #1160
     _dflt_clr = board_default_netclass_clearance(args.input_file)
     if args.clearance is None:
         args.clearance = _dflt_clr if _dflt_clr is not None else defaults.CLEARANCE
@@ -4354,10 +4376,14 @@ Examples:
 
     # Validate net/plane-layer counts match
     if len(args.nets) != len(args.plane_layers):
-        print(f"Error: Number of net arguments ({len(args.nets)}) must match number of plane layers ({len(args.plane_layers)})")
-        print("Each net argument needs a corresponding plane layer")
-        print("Use | to separate multiple nets on the same layer (e.g., --nets GND 'VA19|VA11' --plane-layers In4.Cu In5.Cu)")
-        return
+        # #1108: an argument error exits 2 (it used to print and exit 0, so a
+        # chain carried on with no board).
+        parser.error(
+            f"number of net arguments ({len(args.nets)}) must match number of "
+            f"plane layers ({len(args.plane_layers)}); each net argument needs "
+            f"a corresponding plane layer. Use | to separate multiple nets on "
+            f"the same layer (e.g., --nets GND 'VA19|VA11' --plane-layers "
+            f"In4.Cu In5.Cu)")
 
     # Parse --nets arguments: detect | separator for multi-net layers
     # Build data structures:
@@ -4570,13 +4596,13 @@ Examples:
             print(f"  (skipped castellated-landing retract: {e})")
 
     # NO KiCad-oracle recheck here (#217): the plane this step just poured has NOT
-    # yet been stitched -- tying pads/islands into the pour is route_disconnected_
-    # planes' job, the very next step. At the route_planes stage KiCad reports every
-    # not-yet-stitched pad as a missing link (hackrf: 26 plane links / 42 total),
-    # so an oracle pass here thrashes routing links that don't exist as failures
-    # (18 routed, 77 failed, 3 kicad-cli rounds) -- a 2-8x route_planes regression
-    # for work repair_planes does properly. The oracle runs ONCE, as an
-    # end-of-pipeline fallback at the end of repair_planes, on the
+    # yet been stitched -- tying pads/islands into the pour is the route step's
+    # job (#562: its pour-launch welds and in-run plane finalize). At the
+    # route_planes stage KiCad reports every not-yet-stitched pad as a missing
+    # link (hackrf: 26 plane links / 42 total), so an oracle pass here thrashes
+    # routing links that don't exist as failures (18 routed, 77 failed, 3
+    # kicad-cli rounds) -- a 2-8x route_planes regression for work the route
+    # step does properly. The oracle runs in that step's finalize, on the
     # already-repaired board -- do not re-add it here.
 
     # Make the output project's KiCad DRC constraints consistent with the routed
@@ -4688,6 +4714,13 @@ Examples:
     # (the CLI has no cancel source). `complete`/`status` are kept because
     # consumers read them -- see route_summary's sticky-incompleteness merge.
     import json as _json
+    # #1108: the engine refuses (unknown net, not a copper layer, zone
+    # conflict, no outline) by printing an error and writing nothing; that is
+    # a failure for a chained caller, not a success.
+    _no_output = not args.dry_run and not _wrote_output
+    if _no_output:
+        _summary['complete'] = False
+        _summary['status'] = 'no_output'
     _summary.setdefault('complete', True)
     _summary.setdefault('status', 'ok')
     try:                       # #653: env knobs into the machine-readable
@@ -4697,7 +4730,7 @@ Examples:
         pass
     print('JSON_SUMMARY: ' + _json.dumps(_summary, sort_keys=True, default=str),
           flush=True)
-    return 0
+    return 1 if _no_output else 0
 
 
 if __name__ == "__main__":
@@ -4707,7 +4740,4 @@ if __name__ == "__main__":
     # CLI-`__main__`-only: the GUI imports create_plane.
     import cli_banner
     cli_banner.install()
-    # `or 0`: main() has one early `return` (the net/plane-layer count
-    # mismatch) that returns None, and returning None from sys.exit is 0 --
-    # which is what this block did before, so that path is unchanged.
     sys.exit(main() or 0)

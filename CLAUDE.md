@@ -14,7 +14,9 @@ tool as `C:/Program Files/Git/+1V1`. Nothing warns, because a tool cannot tell a
 mangled net name from a net that does not exist. Measured: 61 nets passed to
 `--ignore-nets`, 4 survived (the four not starting with `/`), and the resulting
 render reported 1315 crossings where the truth was 357. It hits `--nets`,
-`--ignore-nets`, `--power-nets`, `--rip-existing-nets` — every net-name argument.
+`--ignore-nets`, `--power-nets`, `--rip-existing-nets`, `--keep-away` — every net-name argument
+(a `--keep-away` rule at least fails LOUDLY: `/LED_A:/AIN_B:0.3` arrives as
+`C:\Program Files\Git\LED_A;...`, which the rule parser rejects).
 **The variable is not free**: it also disables conversion for legitimate paths,
 so `~/Documents/...` then arrives as an unusable `/c/Users/...`. Pass
 Windows-style paths (`C:/Users/...`) in the same command.
@@ -145,7 +147,7 @@ Validate routed boards against the *real* spec, with the right checker — most
   - **`--clearance-ceiling X`** → every class (Default included) is capped at
     `min(its class, X)` in the map and the `.kicad_pro` writeback clamps every class
     DOWN to it, so KiCad grades exactly what was routed — the "stock classes are
-    aspirational" workflow. GUI: the **Class ceiling** checkbox with Min Clearance.
+    aspirational" workflow. GUI: the **Clearance ceiling** checkbox with Min Clearance.
   - **Both omitted** → base = the board's Default class, else
     `routing_defaults.CLEARANCE` 0.25; classes preserved.
   - **In a CHAIN, pass `--clearance-ceiling <floor>`, not `--clearance`.** The
@@ -184,7 +186,16 @@ Validate routed boards against the *real* spec, with the right checker — most
     one, so a run that legitimately moves nothing still ships the spec it was
     graded against. `grade_pad_legality` and `quench` keep the uncapped
     `max(base, netclass)` semantics: they write no project, so the class they
-    price at is one KiCad will still enforce.
+    price at is one KiCad will still enforce. With `--intent` (#1067) it also
+    holds the intent's decap limits through the quench's own tether gate
+    (`quench.TetherGateView`, QuenchState's methods bound, not copied) -- a
+    ladder: a cap whose every clear pose breaks a claim clears the copper
+    anyway and the claim is named (`decap.broken`); a gated run that broke
+    a claim or left a cap grazing is compared with the same pass without the
+    gate and the better kept by (unresolved grazes, decap claims made worse)
+    (`decap.compared`, so on that key `--intent` never ends worse) -- and
+    discloses the decap grade from the ENGINE so the GUI's `cap_intent_path`
+    gets it too.
   - `--hole-to-hole-clearance` / `--board-edge-clearance` work the same way: omitted →
     the board's own `min_hole_to_hole` / `min_copper_edge_clearance` constraint (via
     `list_nets.board_constraint`), else the fixed default.
@@ -192,7 +203,8 @@ Validate routed boards against the *real* spec, with the right checker — most
   `<board>.design-brief.json`.** Placement otherwise infers everything from the
   board: `emit_intent` is "a starter intent READ OFF the board", and every
   connector's edge is guessed from its current pose by `_nearest_edge`, which is
-  the only source of an edge in the toolchain. The brief is the channel for the
+  the only source of an edge in the toolchain -- except on a PILE, where no
+  UNLOCKED part's pose is read (#1103: `context.pose_claims_withheld`). The brief is the channel for the
   facts a board file cannot contain -- which connectors are user-facing, which
   edge each belongs on and **where along it**, what the enclosure forbids. It is
   auto-discovered by `check_floorplan.py` and `board_brief.py` the way
@@ -313,6 +325,13 @@ Validate routed boards against the *real* spec, with the right checker — most
   `--filters "908 910"` for one family, `--fast` for the unit lane.
   `run_all.py --shard I/N` does the splitting, so a local run and a 50-way
   fan-out cover the SAME set -- the driver never globs `test_*.py` itself.
+  Shards are packed on the measured wall seconds in the COMMITTED
+  `tests/run_all_durations.json` (refresh it with `run_all_modal.py
+  --write-durations`, which refuses a red run, and commit it when the cost
+  shape moves), and a test of independent rows may declare `RUN_ALL_PARTS = N`
+  and take `--part I/N` to run as N units -- `test_placement_ab` does (8).
+  No packing beats the slowest single unit (`test_compare_seeds`, ~730 s), so
+  that is the fan-out's floor: 50 shards finished green in 765 s (2026-10-05).
   Three things that decide whether you can trust the result:
   - **The verdict is each shard's own exit code, never the parsed counts.** A
     container that OOMs prints no summary line at all, so a driver deciding on
@@ -398,9 +417,14 @@ So, when grading a placement:
 placement defect**, ahead of every clearance graze: its nets cannot be routed
 at all, so it converts one-for-one into `unrouted` and `broken`. Measured, run
 10: 11 such parts produced ALL 13 unrouted nets and most of the 37 broken ones.
-Read it off `render_placement --json-out`'s
-`checklist.a_off_outline.pad_copper` — a whole-board pass/fail verdict is the
-wrong channel for it.
+Read WHICH parts off `render_placement --json-out`'s
+`checklist.a_off_outline.pad_copper_gating`; its sibling `pad_copper` also
+lists parts on the outline by design (a castellated module's half-holes, a
+round pad whose bbox corner crosses), which do not gate. Since #1096 a gating
+part makes `check_assembly` NOT BUILDABLE (per pad, margin 0, a lock does not
+exempt it), because run 36 routed a board with C20 7.84 mm below its outline
+on a `buildable` verdict; `oob_pad_copper_overrun_mm` is the distance, and
+`oob_pad_copper_refs` carries a ranking magnitude, not a distance.
 
 **Footprint GRAPHIC copper past the outline is the same defect (#962)**, and
 it used to be invisible: a drawn tab or antenna is not a pad, and check_drc's
@@ -813,8 +837,12 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
   with copper pads owns a land pattern (modelled, and NOT relocated to silk any
   more; it used to be, on every write, on both fronts), a pad-less one is a
   logo (relocated, as #146 has always done, and therefore not modelled). NPTH
-  pads do not count. Only the PERIMETER is modelled as an obstacle, never the
-  interior fill. #962 adds what a MEASUREMENT needs: `segment.drawn_width`
+  pads do not count. The perimeter is the segments; a FILLED shape's interior
+  (`segment.graphic_ring`, #1181) is stamped by the obstacle map and graded by
+  check_drc, lifted only for the shape's one own-pad net (or a declared tie
+  group), and a touching track or via grants net-tie copper its net but no
+  other footprint's (KiCad gives that copper none). #962 adds what a
+  MEASUREMENT needs: `segment.drawn_width`
   (the stroke as drawn -- `width` models a stroke-0 fill at the track width),
   `graphic_kind`, `graphic_circle` (the true circle; the outline is a 16-gon)
   and `graphic_filled`, and `pcb.graphic_copper_unmeasured` names the copper

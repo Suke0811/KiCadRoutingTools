@@ -152,12 +152,13 @@ whose resolved copper overlaps a different-net neighbour (a modelling error).
 | `uuid` | str | UUID from the file (`''` for newly created segments and for uuid-less file items — KiCad treats the token as optional, PR #534) |
 | `start_x_str`, … | str | Original coordinate strings, kept for exact file matching |
 | `graphic` | bool | This copper came from a **graphic**, not a track (issue #337, extended to footprint shapes by #908). It is real copper for obstacles and DRC, and it is immutable: cleanup passes must never prune it and writers cannot strip it, because there is no `(segment …)` block to match. It never conducts — connectivity gives a graphic no credit, so KiCad will keep calling such a net unconnected (#513 item 6). |
-| `locked` | bool | KiCad `(locked yes)`: the user pinned this copper. Its net is never rip-eligible (#521, no override); locked copper was already an obstacle (#150). Both parse paths set it. |
+| `locked` | bool | KiCad `(locked yes)`: the user pinned this copper. Its net is never rip-eligible (#521, no override); locked copper was already an obstacle (#150). Both parse paths set it. The text parser reads the token anywhere in the block, as KiCad does -- `(locked yes)`, `(locked)` or the bare `(segment locked ...` word (#1158) -- and reads every track block by its own tokens, so a hand-written block in any field order is modelled, and one it still cannot model is reported on stderr rather than dropped. |
 | `owner_ref` | str | For copper drawn **inside a footprint**, the disambiguated footprint key that owns it (`'U2'`, `'TP4~2'`); `''` for board-level graphics and every routed track (#908). It is what lets a DRC report name the object the way KiCad does — `net_0 [Polygon(U2)]` beside KiCad's *"Polygon [\<no net\>] of U2 on F.Cu"* — and what scopes the own-pad obstacle lift to the owning part. |
 | `drawn_width` | Optional[float] | Graphic copper only: the stroke AS DRAWN (#962). `width` models a filled shape drawn at stroke 0 at the fab track width, which is right for an obstacle and wrong for a measurement; the off-outline grade reads this. `None` for tracks |
 | `graphic_kind` | str | Graphic copper only: the primitive (`'line'`, `'arc'`, `'poly'`, `'rect'`, `'circle'`; a footprint rect at a non-cardinal angle reads `'poly'`, as pcbnew loads it). `''` for tracks |
 | `graphic_circle` | Optional[Tuple] | For a circle, its TRUE `(cx, cy, r)`: the outline is a 16-gon whose chord midpoints sit 1.9% of r inside the curve, so a reach measured on the chords under-reads |
 | `graphic_filled` | bool | A closed graphic (poly/rect/circle) whose interior is copper, by KiCad's loader rules (a `(fill ...)` token; without one a poly is filled and a rect or circle only at stroke 0). The segments model only the outline; the off-outline grade reads this to look inside |
+| `graphic_ring` | Optional[Tuple] | For a FILLED closed graphic, its outline vertices as one tuple shared by every segment of the shape; `None` otherwise (#1181). The obstacle map stamps the interior it encloses and check_drc grades copper inside it (`check_drc.filled_graphic_shapes`). Both parse paths set it |
 
 ### `Via`
 
@@ -215,8 +216,9 @@ the two apart; `footprint_copper_is_functional(pad_count)` does, and the
 writer's silkscreen mover reads the same predicate — a footprint with copper
 pads owns a land pattern (modelled, kept on copper), a pad-less one is a logo
 (relocated to silk by the writer, as #146 has always done, and therefore not
-modelled). Only the **perimeter** is modelled as an obstacle, never the
-interior fill, which is the same limit board-level graphics have; the
+modelled). The segments are the **perimeter**; a filled shape's interior is
+its `graphic_ring` (#1181), which the obstacle map stamps for every foreign net
+and check_drc grades containment in -- the same for board-level graphics. The
 off-outline grade (`check_drc.footprint_graphic_outline_census`, #962) reads
 `Segment.graphic_filled` to look inside a filled shape.
 

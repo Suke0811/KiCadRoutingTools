@@ -226,6 +226,18 @@ diff pairs emitted as net names, layerless repair_planes). The apply-side
 gaps (escape_method value->index, no_gnd_vias inversion) are ai_plan.py's
 job and belong to the wx harness / a future stub-dialog apply test.
 
+Those checks only see a flag that a manifest uses AND a table here names, so
+`route.py --bus` replayed with bus mode OFF and nothing noticed. The gate's
+`check_flag_coverage` therefore enumerates EVERY flag the argparse of each
+`FLAG_COVERAGE` tool accepts -- route.py, route_diff.py, route_planes.py and
+bga_fanout.py -- from `krt_capabilities.script_flags` (held exact by
+`tests/test_798_registrar_flags.py`), and requires each one to reach a
+control that tool's plan action can set, or to be listed for that tool as
+CLI-only or as a known gap with the reason. It also fails a reached control
+that `reset_params_to_defaults` does not restore, since a plan step that sets
+it would leak it into every later step. Its run_all half, with the negative
+controls, is `tests/test_route_flag_plan_coverage.py`.
+
 ## Cap-param delivery (test_772_cap_params_reach_engine.py)
 
 Needs KiCad's python (wx + pcbnew); re-execs into it automatically.
@@ -269,6 +281,23 @@ AST-extracts `ai_plan._ACTION_OWNERS` and a PER-CLASS control map (where
 param can actually REACH it. Verified as a change detector: removing
 `bga_options` from the cap step's owners makes it name all ten dropped
 params and exit 1.
+
+## Declared cap rotations (test_1122_cap_rotation_gui.py)
+
+Needs KiCad's python (wx + pcbnew); re-execs into it automatically, and
+exits 2 without it (a killer gate for `tests/mutate_1120_1121_1122.py`).
+
+    python3 tests/gui_parity/test_1122_cap_rotation_gui.py
+
+#1122: the cap pass reads the intent's rotation claims through
+`fanout_clearance.declared_cap_rotations`, which resolves the blocks
+against the PCBData the GUI built from pcbnew, so the CLI test cannot
+speak for this front. On the CLI test's fixture (the U30 crop, clearance
+0.1, budget 0.6 / 2.0, C24 declared at 270 -- the case in which the run
+KEPT is the one without the decap gate) it asserts that a contradictory
+declaration stops the step and moves nothing, that the live C24 keeps
+its angle, and that the GUI moves the caps the CLI moves, to the same
+poses.
 
 ## Class-2 post-pass coverage (test_cli_postpass_coverage.py)
 
@@ -359,6 +388,23 @@ skip cleanly without KiCad python). Run any directly:
   renamed "In1.Cu" as copper. Real Planes/Route tabs, each arm with a
   negative control (the display-name mapping patched back in). On the
   pre-fix code the pour lands on F.Cu and a re-apply doubles it.
+- `test_1133_staged_save_widths.py` -- the GUI oracle leg
+  (`gui_utils.run_kicad_oracle_on_live_board`) on a real `pcbnew.SaveBoard`
+  of `flat_hierarchy`, whose save renumbers 94 of its 111 nets (pcbnew 8 ->
+  staged 81 for `/pic_programmer/PC-CLOCK-OUT`). A power width posted BY NAME
+  for one net must reach exactly that net on the staged board, and the track
+  the oracle lays must land on that net on the LIVE board (`SetNetCode`
+  receives the live netcode, not the save's id). Negative control: the live
+  netcode names another net (GND) in the save. KiCad's link source, the
+  routers and the sliver weld are stubbed; the wx-free half is
+  `tests/test_1133_oracle_width_keying.py`.
+- `test_1195_qfn_floors_gui.py` -- the fanout tab's REAL
+  `_apply_fanout_results` on a real `flat_hierarchy` board (via 0.5 / drill
+  0.3, no vias): a QFN step with no via leaves the via and drill floors, a QFN
+  step with no copper writes nothing, a BGA step lowers the via floors (the
+  control), and both fronts decide with
+  `fix_kicad_drc_settings.fanout_written_floors`. On the pre-fix tab it fails
+  3 checks: a stub QFN run lowered the via floor 0.5 -> 0.3.
 - `test_movie_recorder.py` -- the Advanced tab's **Make routing movie** debug
   checkbox (#506): default OFF and inert while off; one routing step renders
   ONE movie; a plan run (`begin_group`/`end_group`, what the AI tab's Run

@@ -432,11 +432,6 @@ class AITab(wx.Panel):
         ctrl_box = wx.StaticBox(self, label="AI")
         ctrl_sizer = wx.StaticBoxSizer(ctrl_box, wx.VERTICAL)
 
-        # Availability status (kept current by _refresh_backend_ui)
-        self.status_label = wx.StaticText(self, label="")
-        self.status_label.Wrap(280)
-        ctrl_sizer.Add(self.status_label, 0, wx.ALL, 5)
-
         # Backend / model / effort selection
         sel_grid = wx.FlexGridSizer(cols=2, hgap=5, vgap=5)
         sel_grid.AddGrowableCol(1)
@@ -610,17 +605,16 @@ class AITab(wx.Panel):
         self._refresh_backend_ui()
 
     def _refresh_backend_ui(self):
-        """Point the status label, combo suggestions, tooltips, and button
+        """Point the CLI status note, combo suggestions, tooltips, and button
         enablement at the selected backend."""
         backend = self._current_backend()
         self._last_backend = backend
         cli_path = backend.find_cli()
-        if cli_path:
-            self.status_label.SetLabel(f"{backend.label} CLI found: {cli_path}")
-        else:
-            self.status_label.SetLabel(
-                backend.not_found_message() + " Then reopen this dialog.")
-        self.status_label.Wrap(280)
+        # The transcript, not a label: a CLI path has no spaces to wrap at
+        # and ran past the control column.
+        note = backend.cli_status(cli_path)
+        if note not in self.output_ctrl.GetValue():
+            self.output_ctrl.AppendText(note + "\n")
         params = self._backend_params[backend.id]
         self.model_choice.Set(list(backend.model_suggestions))
         self.model_choice.SetValue(params['model'] or DEFAULT_CHOICE)
@@ -896,7 +890,14 @@ class AITab(wx.Panel):
         """Adopt a validated step list (from a fresh plan OR a loaded plan
         file): populate the checklist and pre-fill the tabs."""
         from .ai_plan import step_label, apply_step_params, \
-            apply_step_selection
+            apply_step_selection, user_fix_drc_preference, \
+            restore_fix_drc_preference
+        # "Fix DRC settings after routing" is the user's preference as well
+        # as a step parameter: read it before the reset and the pre-fill below
+        # touch it, and put it back after them, so loading a plan never
+        # changes what is saved on close -- and the executor, which reads the
+        # box when the plan starts, reads the user's own choice.
+        _fix_drc_pref = user_fix_drc_preference(self.routing_dialog)
         # A new plan supersedes the session's panel tweaks: reset every
         # routing parameter to defaults BEFORE applying the plan's values,
         # so options the plan does not specify run at CLI-default-
@@ -926,6 +927,7 @@ class AITab(wx.Panel):
                 notes += apply_step_selection(step, self.routing_dialog)
             except Exception as e:
                 notes.append(f"applying {step['action']}: {e}")
+        restore_fix_drc_preference(self.routing_dialog, _fix_drc_pref)
         for note in notes:
             self.output_ctrl.AppendText(f"plan: {note}\n")
             self._log(f"AI plan: {note}")

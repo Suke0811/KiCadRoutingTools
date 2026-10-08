@@ -81,6 +81,9 @@ def get_dialog_settings(dialog):
         'via_proximity_cost': dialog.via_proximity_cost.GetValue(),
         'track_proximity_distance': dialog.track_proximity_distance.GetValue(),
         'track_proximity_cost': dialog.track_proximity_cost.GetValue(),
+        'keep_away': dialog.keep_away.GetValue(),
+        'keep_away_free': dialog.keep_away_free.GetValue(),
+        'keep_away_cost': dialog.keep_away_cost.GetValue(),
         'vertical_attraction_radius': dialog.vertical_attraction_radius.GetValue(),
         'vertical_attraction_cost': dialog.vertical_attraction_cost.GetValue(),
         'ripped_route_avoidance_radius': dialog.ripped_route_avoidance_radius.GetValue(),
@@ -190,6 +193,9 @@ def get_dialog_settings(dialog):
         'fanout_type': dialog.fanout_tab.fanout_type.GetSelection(),
         'fanout_bga_exit_margin': dialog.fanout_tab.bga_options.exit_margin.GetValue(),
         'fanout_bga_differential': dialog.fanout_tab.bga_options.differential_check.GetValue(),
+        # bga_fanout's --diff-pairs patterns and --diff-pair-gap.
+        'fanout_bga_diff_pair_patterns': dialog.fanout_tab.bga_options.diff_pair_patterns_ctrl.GetValue(),
+        'fanout_bga_diff_pair_gap': dialog.fanout_tab.bga_options.bga_diff_pair_gap.GetValue(),
         'fanout_bga_escape_direction': dialog.fanout_tab.bga_options.escape_direction.GetSelection(),
         'fanout_bga_force_escape': dialog.fanout_tab.bga_options.force_escape.GetValue(),
         'fanout_bga_rebalance': dialog.fanout_tab.bga_options.rebalance_escape.GetValue(),
@@ -209,6 +215,7 @@ def get_dialog_settings(dialog):
         'fanout_bga_cap_max_passes': dialog.fanout_tab.bga_options.cap_max_passes.GetValue(),
         'fanout_bga_cap_prefix': dialog.fanout_tab.bga_options.cap_prefix.GetValue(),
         'fanout_bga_cap_default_via_size': dialog.fanout_tab.bga_options.cap_default_via_size.GetValue(),
+        'fanout_bga_cap_intent_path': dialog.fanout_tab.bga_options.cap_intent_path.GetValue(),  # #1067
         'fanout_bga_cap_allow_rotation': dialog.fanout_tab.bga_options.cap_allow_rotation.GetValue(),
         'fanout_bga_cap_beneath_only': dialog.fanout_tab.bga_options.cap_beneath_only.GetValue(),
         'fanout_qfn_extension': dialog.fanout_tab.qfn_options.extension.GetValue(),
@@ -410,6 +417,12 @@ def restore_dialog_settings(dialog, settings):
         dialog.track_proximity_distance.SetValue(settings['track_proximity_distance'])
     if 'track_proximity_cost' in settings:
         dialog.track_proximity_cost.SetValue(settings['track_proximity_cost'])
+    if 'keep_away' in settings:
+        dialog.keep_away.SetValue(settings['keep_away'])
+    if 'keep_away_free' in settings:
+        dialog.keep_away_free.SetValue(settings['keep_away_free'])
+    if 'keep_away_cost' in settings:
+        dialog.keep_away_cost.SetValue(settings['keep_away_cost'])
     if 'vertical_attraction_radius' in settings:
         dialog.vertical_attraction_radius.SetValue(settings['vertical_attraction_radius'])
     if 'vertical_attraction_cost' in settings:
@@ -643,6 +656,12 @@ def restore_dialog_settings(dialog, settings):
         dialog.fanout_tab.bga_options.exit_margin.SetValue(settings['fanout_bga_exit_margin'])
     if 'fanout_bga_differential' in settings:
         dialog.fanout_tab.bga_options.differential_check.SetValue(settings['fanout_bga_differential'])
+    if 'fanout_bga_diff_pair_patterns' in settings:
+        dialog.fanout_tab.bga_options.diff_pair_patterns_ctrl.SetValue(
+            str(settings['fanout_bga_diff_pair_patterns']))
+    if 'fanout_bga_diff_pair_gap' in settings:
+        dialog.fanout_tab.bga_options.bga_diff_pair_gap.SetValue(
+            float(settings['fanout_bga_diff_pair_gap']))
     if 'fanout_bga_escape_direction' in settings:
         dialog.fanout_tab.bga_options.escape_direction.SetSelection(settings['fanout_bga_escape_direction'])
     if 'fanout_bga_force_escape' in settings:
@@ -686,6 +705,9 @@ def restore_dialog_settings(dialog, settings):
         dialog.fanout_tab.bga_options.cap_max_passes.SetValue(settings['fanout_bga_cap_max_passes'])
     if 'fanout_bga_cap_prefix' in settings:
         dialog.fanout_tab.bga_options.cap_prefix.SetValue(settings['fanout_bga_cap_prefix'])
+    if 'fanout_bga_cap_intent_path' in settings:   # #1067
+        dialog.fanout_tab.bga_options.cap_intent_path.SetValue(
+            settings['fanout_bga_cap_intent_path'] or '')
     if 'fanout_bga_cap_default_via_size' in settings:
         dialog.fanout_tab.bga_options.cap_default_via_size.SetValue(
             settings['fanout_bga_cap_default_via_size'])

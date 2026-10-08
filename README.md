@@ -8,15 +8,22 @@ A fast Rust-accelerated A* autorouter for KiCad PCB files. Compatible with **KiC
 
 📊 **[Project metrics](https://drandyhaas.github.io/KiCadRoutingTools/metrics/)** — installs, downloads and traffic, updated daily.
 
-☕ **[Donate](https://ko-fi.com/drandyhaas)** — the tool is free and MIT-licensed; donations cover the ~$500/month of cloud compute and AI development behind it.
+<p align="center">
+  <a href="https://ko-fi.com/drandyhaas"><img src="docs/donate_button.svg" alt="Donate" width="300"></a>
+  <br>
+  Free and MIT-licensed. Donations cover the ~$500/month of cloud compute and AI development behind it.
+  <br>
+  Also via <a href="https://github.com/sponsors/drandyhaas">GitHub Sponsors</a> or <a href="https://www.paypal.me/DrAndyHaas">PayPal</a> — see <a href="#support">Support</a>.
+</p>
 
 <p align="center">
-  <img src="docs/routed_all.png" alt="Routed PCB example" width="600">
-  <img src="docs/routed_kit.png" alt="Routed PCB example 2" width="600">
+  <img src="docs/routed_all.png" alt="Routed PCB example" width="380">
+  <img src="docs/routed_kit.png" alt="Routed PCB example 2" width="380">
 </p>
 
 ## Contents
 
+- [Support](#support) — donate via Ko-fi, GitHub Sponsors or PayPal
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [KiCad Plugin](#kicad-plugin) — GUI, the AI **AI tab**, installation
@@ -26,7 +33,29 @@ A fast Rust-accelerated A* autorouter for KiCad PCB files. Compatible with **KiC
 - [Performance](#performance)
 - [Command Reference](#command-reference) — options per tool (full list: `--help` / [configuration.md](docs/configuration.md))
 - [Project metrics](https://drandyhaas.github.io/KiCadRoutingTools/metrics/) — installs, downloads and traffic
-- [Requirements](#requirements) · [Limitations](#limitations) · [Contributing](#contributing) · [Support](#support) · [License](#license)
+- [Requirements](#requirements) · [Limitations](#limitations) · [Contributing](#contributing) · [License](#license)
+
+## Support
+
+KiCadRoutingTools is free and MIT-licensed, and it stays that way — there is no
+paid tier, no feature held back, and nothing in this repository is paywalled.
+
+Donations go to what it costs to build and maintain it: about **$500/month** of
+cloud computing and AI-assisted development.
+
+The compute is not incidental. Every change to the router is A/B-tested by
+replaying a corpus of real open-source boards on rented cores and grading each
+one for DRC violations and unconnected nets, and the ~600-file test suite fans
+out the same way. It is what stops a change that helps one board from quietly
+breaking ten others.
+
+- **[☕ Donate on Ko-fi](https://ko-fi.com/drandyhaas)** — card or PayPal, no account needed.
+- **[GitHub Sponsors](https://github.com/sponsors/drandyhaas)** — one-time or monthly, billed with any other projects you sponsor.
+- Prefer PayPal directly? **[paypal.me/DrAndyHaas](https://www.paypal.me/DrAndyHaas)** (the sender needs a PayPal account).
+
+A donation buys no priority support and unlocks no features. If you would rather
+contribute something worth more than money, route one of your own boards and file
+an issue for whatever breaks — see [Contributing](#contributing).
 
 ## Features
 
@@ -446,8 +475,13 @@ python py_router/route_planes.py kicad_files/input.kicad_pcb --nets GND --plane-
 > finishes with an in-run *plane finalize* that applies this same engine
 > (pad taps + region joins), the plane-copper cleanup, and a KiCad-oracle
 > completion check — so a pours-first chain repairs its planes automatically.
-> `KICAD_PLANE_FINALIZE=0` is the kill switch. Use the standalone script
-> below for a board routed OUTSIDE that chain (e.g. hand-edited copper).
+> `KICAD_PLANE_FINALIZE=0` is the kill switch. The finalize runs even when
+> the route step finds nothing else to route (#1112), so a chain should end
+> on `route.py`, never on this script. Use the standalone script below for a
+> board routed OUTSIDE that chain (e.g. hand-edited copper); its track and
+> via default to the board's Default net class, not to the sizes a chain
+> routed at, so pass `--track-width` / `--via-size` / `--via-drill` if they
+> differ.
 
 After creating power planes, regions may become split by vias and traces from other nets. Use `repair_planes.py` to reconnect them:
 
@@ -764,6 +798,7 @@ One-line summaries below (all of these modules live in `py_router/`); the
 | `obstacle_map.py` | Obstacle map building from PCB data |
 | `obstacle_cache.py` | Net obstacle caching for incremental obstacle map builds |
 | `obstacle_costs.py` | Stub and track proximity cost calculations |
+| `keep_away.py` | Pairwise keep-away between net groups (#1146): the per-net band cost and the in-band report |
 | `bresenham_utils.py` | Bresenham line-walking utilities for grid-based segment operations |
 | `geometry_utils.py` | Shared geometry calculations (point-to-segment distance, segment intersection, UnionFind) |
 | `routing_constants.py` | Shared constants (default layer stack, power net patterns, tolerances) |
@@ -902,27 +937,6 @@ the result with `check_drc.py` + `check_connected.py`, and file an issue for
 anything that breaks — ideally with a pointer to the board file. Fixes and
 pull requests for open issues are just as welcome. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
-
-## Support
-
-KiCadRoutingTools is free and MIT-licensed, and it stays that way — there is no
-paid tier, no feature held back, and nothing in this repository is paywalled.
-
-Donations go to what it costs to build and maintain it: about **$500/month** of
-cloud computing and AI-assisted development.
-
-The compute is not incidental. Every change to the router is A/B-tested by
-replaying a corpus of real open-source boards on rented cores and grading each
-one for DRC violations and unconnected nets, and the ~600-file test suite fans
-out the same way. It is what stops a change that helps one board from quietly
-breaking ten others.
-
-**[☕ Donate on Ko-fi](https://ko-fi.com/drandyhaas)** — card or PayPal, no account needed.
-Prefer PayPal directly? **[paypal.me/DrAndyHaas](https://www.paypal.me/DrAndyHaas)** (the sender needs a PayPal account).
-
-A donation buys no priority support and unlocks no features. If you would rather
-contribute something worth more than money, route one of your own boards and file
-an issue for whatever breaks — see [Contributing](#contributing).
 
 ## License
 

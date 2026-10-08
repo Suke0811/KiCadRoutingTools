@@ -32,6 +32,7 @@ for _sib in ('py_placer', 'py_tools'):
 import routing_defaults as defaults
 from kicad_parser import POSITION_DECIMALS
 from kicad_parser import mm_to_iu
+from keep_away import split_keep_away_specs
 
 # What a failed startup check can look like coming out of `import route`.
 # SystemExit is the historical form; StartupCheckError is what the checks raise
@@ -339,6 +340,15 @@ class RoutingDialog(wx.Dialog):
             # Replace pcb_data segments and vias with what's in pcbnew
             self.pcb_data.segments = new_segments
             self.pcb_data.vias = new_vias
+            # The same PCBData object lives across routing runs; work cached
+            # against its old copper (rescue maps, escape memos) must not
+            # answer for the board the user has edited since.
+            from pcb_modification import bump_copper_epoch
+            bump_copper_epoch(self.pcb_data)
+            # #980: the input-copper mark names the objects just replaced;
+            # the next engine run marks the board it is handed.
+            from rip_up_reroute import forget_input_copper
+            forget_input_copper(self.pcb_data)
 
             # Also sync zones - the connectivity check uses pcb_data.zones to
             # determine which nets are connected via copper pours. Without
@@ -549,8 +559,8 @@ class RoutingDialog(wx.Dialog):
             ('clearance', 'Min Clearance (mm):', defaults.CLEARANCE,
              "Copper clearance of the DEFAULT net class for this run (checked = this value, "
              "unchecked = the board's Default class). Nets in other classes keep their own "
-             "class clearance, pairwise as KiCad's DRC grades them; tick 'Class ceiling' to "
-             "cap every class at this value instead (the CLI's --clearance-ceiling)."),
+             "class clearance, pairwise as KiCad's DRC grades them; tick 'Clearance ceiling' "
+             "to cap every class at this value instead (the CLI's --clearance-ceiling)."),
             ('via_size', 'Via Size (mm):', defaults.VIA_SIZE,
              "Via outer diameter. Checked = every net's vias are this size; unchecked = each "
              "net draws its own net-class / .kicad_dru via size (the Default class for "
@@ -564,7 +574,7 @@ class RoutingDialog(wx.Dialog):
         # track/clearance/via, board Constraint for the hole floor); checking the
         # box overrides with the typed value. #530: the CLEARANCE box sets the
         # Default class for the run (== CLI --clearance); capping every class is
-        # the separate 'Class ceiling' box (== --clearance-ceiling).
+        # the separate 'Clearance ceiling' box (== --clearance-ceiling).
         for name, label, default, tooltip in params:
             r = defaults.PARAM_RANGES[name]
             grid.Add(wx.StaticText(parent, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -598,9 +608,9 @@ class RoutingDialog(wx.Dialog):
         # --clearance-ceiling, which is what the Min Clearance override alone
         # used to mean (#439). Unchecked, Min Clearance is the Default class's
         # clearance for the run and the other classes are honoured, as KiCad does.
-        grid.Add(wx.StaticText(parent, label="Class ceiling:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(wx.StaticText(parent, label="Clearance ceiling:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.clearance_ceiling_check = wx.CheckBox(
-            parent, label="Min Clearance caps every net class")
+            parent, label="Cap every net class")
         self.clearance_ceiling_check.SetValue(False)
         self.clearance_ceiling_check.SetToolTip(
             "With the Min Clearance override: cap EVERY net class (Default included) "
@@ -608,7 +618,7 @@ class RoutingDialog(wx.Dialog):
             "the 'stock net classes are aspirational' workflow, the CLI's "
             "--clearance-ceiling. Unchecked (default), Min Clearance sets only the "
             "Default class and the other classes route at their own clearance, as "
-            "KiCad's own router does.")
+            "KiCad's own router does. No effect unless Min Clearance is checked.")
         grid.Add(self.clearance_ceiling_check, 0, wx.EXPAND)
 
         grid.Add(wx.StaticText(parent, label="Fab Tier:"), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -762,6 +772,14 @@ class RoutingDialog(wx.Dialog):
             v = mins.get(src)
             if isinstance(v, (int, float)) and v > 1e-9:
                 out[key] = float(v)
+        if 'clearance' not in out:
+            # #1160: an unset Board Setup minimum leaves the Default class as
+            # the clearance every Default net is graded at -- the CLI's
+            # fab_tiers.board_floors_from_rules fallback.
+            nc = _get_netclass_parameters('Default') or {}
+            v = nc.get('clearance')
+            if isinstance(v, (int, float)) and v > 1e-9:
+                out['clearance'] = float(v)
         return out
 
     def _on_escalation_changed(self, event):
@@ -1069,13 +1087,32 @@ class RoutingDialog(wx.Dialog):
             ('via_proximity_cost', 'Via Prox. Multiplier:', defaults.VIA_PROXIMITY_COST, "Via cost multiplier in stub/BGA proximity zones (0 = no extra cost)"),
             ('track_proximity_distance', 'Track Prox. (mm):', defaults.TRACK_PROXIMITY_DISTANCE, "Distance to detect parallel tracks for bunching avoidance"),
             ('track_proximity_cost', 'Track Prox. Cost:', defaults.TRACK_PROXIMITY_COST, "Cost for routing parallel to existing tracks"),
+            ('keep_away_free', 'Keep-away Free (mm):', defaults.KEEP_AWAY_FREE, "#1146: within this distance of the routed net's own pads the keep-away band is not priced, so a pin can leave a package whose other pins belong to the other group"),
+            ('keep_away_cost', 'Keep-away Cost:', defaults.KEEP_AWAY_COST, "#1146: cost per cell inside a keep-away band, mm equivalent like the other proximity costs (0 = measure and report only)"),
             ('vertical_attraction_radius', 'Vert. Attract (mm):', defaults.VERTICAL_ATTRACTION_RADIUS, "Radius for cross-layer track stacking: attracts the route toward ANY net's tracks on other layers (net-agnostic)"),
             ('vertical_attraction_cost', 'Vert. Attract Cost:', defaults.VERTICAL_ATTRACTION_COST, "Bonus for routing in the vertical shadow of other layers' tracks (0 = off; net-agnostic corridor stacking)"),
-            ('ripped_route_avoidance_radius', 'Rip Avoid (mm):', defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS, "Radius to avoid area where previous route failed"),
-            ('ripped_route_avoidance_cost', 'Rip Avoid Cost:', defaults.RIPPED_ROUTE_AVOIDANCE_COST, "Cost for routing through previously ripped area"),
-            ('routing_clearance_margin', 'Clearance Margin:', defaults.ROUTING_CLEARANCE_MARGIN, "Extra clearance margin multiplier for safety"),
+            ('ripped_route_avoidance_radius', 'Rip Avoid (mm):', defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS, "Radius of the corridor a ripped net's former route reserves for its reroute"),
+            ('ripped_route_avoidance_cost', 'Rip Avoid Cost:', defaults.RIPPED_ROUTE_AVOIDANCE_COST, "Cost other nets pay to cross a ripped net's former corridor, reserving it for that net's reroute (the ripped net itself never pays it)"),
+            ('routing_clearance_margin', 'Pair Via Margin:', defaults.ROUTING_CLEARANCE_MARGIN, "Diff pairs only: multiplier on the track-to-via distance that sets the P/N via offset (1.0 = minimum DRC). Single-ended tracks and vias ignore it"),
         ]
         for name, label, default, tooltip in float_params:
+            if name == 'keep_away_free':
+                # #1146: the keep-away rules themselves (route.py --keep-away),
+                # one line, ahead of their free radius and cost.
+                grid.Add(wx.StaticText(parent, label="Keep-away:"), 0, wx.ALIGN_CENTER_VERTICAL)
+                self.keep_away = wx.TextCtrl(parent)
+                self.keep_away.SetToolTip(
+                    "#1146: soft keep-away between two net groups, rules "
+                    "AGGRESSOR:VICTIM:GAP separated by spaces, e.g. "
+                    "'CLK*,/I2C_*:/AUDIO_*:0.5 class=Digital:class=Audio:0.3'. Each "
+                    "side is comma-separated net patterns as in the net filter and/or "
+                    "net classes as class=NAME. Applies to the Route and Differential "
+                    "tabs. While a net "
+                    "of one side routes, cells closer than GAP mm (edge to edge, same "
+                    "layer) to the other side's copper cost Keep-away Cost. Nets of "
+                    "one side route against each other at the normal clearance. The "
+                    "log reports per net the length left inside a band. Empty = off.")
+                grid.Add(self.keep_away, 0, wx.EXPAND)
             r = defaults.PARAM_RANGES[name]
             grid.Add(wx.StaticText(parent, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
             ctrl = wx.SpinCtrlDouble(parent, min=r['min'], max=r['max'], initial=default, inc=r['inc'])
@@ -1395,7 +1432,9 @@ class RoutingDialog(wx.Dialog):
         rip_existing_sizer.Add(wx.StaticText(options_scroll, label="Rip Pre-Existing Nets:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         self.rip_existing_nets_ctrl = wx.TextCtrl(options_scroll, value="")
         self.rip_existing_nets_ctrl.SetToolTip("Let the router rip up tracks committed by a previous run when they block a retry: "
-                                               "net-name patterns (e.g. /DDR* USB+), ALL for every pre-existing net, or leave empty to keep them fixed")
+                                               "net-name patterns (e.g. /DDR* USB+), or ALL for every pre-existing net. "
+                                               "Left empty, only small unprotected nets (<= 30 segments, <= 6 vias) may be "
+                                               "ripped, each rerouted, restored or left its escape stub (#1156)")
         rip_existing_sizer.Add(self.rip_existing_nets_ctrl, 1, wx.EXPAND)
         options_inner.Add(rip_existing_sizer, 0, wx.EXPAND | wx.ALL, 3)
 
@@ -2645,7 +2684,11 @@ class RoutingDialog(wx.Dialog):
                     ('underpad_escape', False),
                     ('allow_via_in_pad', False),
                     ('plane_drop', True),    # #424 drops: default ON
-                    ('plane_net_layers_ctrl', '')):  # future-pour decl, empty
+                    ('plane_net_layers_ctrl', ''),   # future-pour decl, empty
+                    # bga_fanout --diff-pairs / --diff-pair-gap: no coupling,
+                    # the CLI's default gap.
+                    ('diff_pair_patterns_ctrl', ''),
+                    ('bga_diff_pair_gap', defaults.BGA_DIFF_PAIR_GAP)):
                 _ctl = _fctl(_name)
                 if _ctl is not None:
                     try:
@@ -2760,6 +2803,9 @@ class RoutingDialog(wx.Dialog):
         self.via_proximity_cost.SetValue(defaults.VIA_PROXIMITY_COST)
         self.track_proximity_distance.SetValue(defaults.TRACK_PROXIMITY_DISTANCE)
         self.track_proximity_cost.SetValue(defaults.TRACK_PROXIMITY_COST)
+        self.keep_away.SetValue("")
+        self.keep_away_free.SetValue(defaults.KEEP_AWAY_FREE)
+        self.keep_away_cost.SetValue(defaults.KEEP_AWAY_COST)
         self.vertical_attraction_radius.SetValue(defaults.VERTICAL_ATTRACTION_RADIUS)
         self.vertical_attraction_cost.SetValue(defaults.VERTICAL_ATTRACTION_COST)
         self.ripped_route_avoidance_radius.SetValue(defaults.RIPPED_ROUTE_AVOIDANCE_RADIUS)
@@ -2800,6 +2846,22 @@ class RoutingDialog(wx.Dialog):
         self.meander_spacing.SetValue(defaults.MEANDER_SPACING)
         self.time_matching_check.SetValue(defaults.TIME_MATCHING)
         self.time_match_tolerance.SetValue(defaults.TIME_MATCH_TOLERANCE)
+        # Guide corridor (#7) and keepout (#27): plan-settable (--guide-corridor
+        # / --keepout and their layer/spacing flags), so a step that sets them
+        # must not hand them to the next step. Restored to what the
+        # constructor sets. The "Clear ... layer after routing" boxes are not
+        # plan params (no CLI flag) and stay as the user left them.
+        self.guide_corridor_check.SetValue(defaults.GUIDE_CORRIDOR_ENABLED)
+        self.guide_corridor_layer_ctrl.SetValue(defaults.GUIDE_CORRIDOR_LAYER)
+        self.guide_corridor_spacing_ctrl.SetValue(str(defaults.GUIDE_CORRIDOR_SPACING))
+        self.keepout_check.SetValue(defaults.KEEPOUT_ENABLED)
+        self.keepout_layer_ctrl.SetValue(defaults.KEEPOUT_LAYER)
+        # "Fix DRC settings after routing" (#160/#693), ticked as the
+        # constructor ticks it. A plan replays route.py's per-step semantics:
+        # a step without --no-fix-drc-settings writes the DRC floors back, a
+        # step with it (manifest_to_plan unticks the box) does not, and the
+        # next step starts ticked again.
+        self.fix_drc_check.SetValue(True)
         self.debug_lines_check.SetValue(False)
         self.verbose_check.SetValue(False)
         self.skip_routing_check.SetValue(False)
@@ -3023,6 +3085,16 @@ class RoutingDialog(wx.Dialog):
             )
             return None, None
 
+        # #1146: refuse a malformed keep-away rule before routing starts
+        # (route.py refuses it at argparse time).
+        try:
+            from keep_away import parse_keep_away_rules
+            parse_keep_away_rules(self.keep_away.GetValue())
+        except ValueError as e:
+            wx.MessageBox(str(e), "Invalid Keep-away Rule",
+                          wx.OK | wx.ICON_WARNING)
+            return None, None
+
         return selected_nets, selected_layers
 
     @staticmethod
@@ -3086,6 +3158,9 @@ class RoutingDialog(wx.Dialog):
             'via_proximity_cost': self.via_proximity_cost.GetValue(),
             'track_proximity_distance': self.track_proximity_distance.GetValue(),
             'track_proximity_cost': self.track_proximity_cost.GetValue(),
+            'keep_away': self.keep_away.GetValue().strip(),
+            'keep_away_free': self.keep_away_free.GetValue(),
+            'keep_away_cost': self.keep_away_cost.GetValue(),
             'bga_proximity_radius': self.bga_proximity_radius.GetValue(),
             'bga_proximity_cost': self.bga_proximity_cost.GetValue(),
             'vertical_attraction_radius': self.vertical_attraction_radius.GetValue(),
@@ -3460,7 +3535,7 @@ class RoutingDialog(wx.Dialog):
                     if cname == 'Default':
                         continue
                     net_clearances[net_id] = class_clearance_cache.get(cname, config['clearance'])
-                # #530: the Class ceiling box (== the CLI passing --clearance-ceiling)
+                # #530: the Clearance ceiling box (== the CLI passing --clearance-ceiling)
                 # caps each class at min(class, clearance). Unchecked = every
                 # other class routed at its own clearance, no clamp.
                 if config.get('clamp_netclasses', False):
@@ -3629,6 +3704,9 @@ class RoutingDialog(wx.Dialog):
                     via_proximity_cost=config['via_proximity_cost'],
                     track_proximity_distance=config['track_proximity_distance'],
                     track_proximity_cost=config['track_proximity_cost'],
+                    keep_away=split_keep_away_specs(config.get('keep_away')) or None,
+                    keep_away_free=config.get('keep_away_free', defaults.KEEP_AWAY_FREE),
+                    keep_away_cost=config.get('keep_away_cost', defaults.KEEP_AWAY_COST),
                     bga_proximity_radius=config.get('bga_proximity_radius', 7.0),
                     bga_proximity_cost=config.get('bga_proximity_cost', 0.2),
                     vertical_attraction_radius=config.get('vertical_attraction_radius', 1.0),
@@ -4006,9 +4084,9 @@ class RoutingDialog(wx.Dialog):
                     layer_clearances=_pfo.get('layer_clearances'),
                     layers=_pfo.get('layers'),
                     layer_costs=_pfo.get('layer_costs'),
-                    power_net_widths=_pfo.get('power_net_widths'),
-                    net_track_widths=_pfo.get('net_track_widths'),
-                    net_layer_widths=_pfo.get('net_layer_widths'),
+                    net_widths_by_name=_pfo.get('net_widths_by_name'),
+                    net_clearances_by_name=_pfo.get(
+                        'net_clearances_by_name'),
                     progress_callback=(
                         lambda c, t, m: self._apply_status(
                             f"{m} ({c}/{t})" if t else m)))
