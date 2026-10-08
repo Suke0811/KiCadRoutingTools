@@ -495,15 +495,15 @@ bash stress_status.sh                              # DONE/RUNNING/TODO + free sl
 ```
 
 See `tests/stress/README.md` for the full pipeline, the per-board run
-procedure (`RUNBOOK.md`), the ~4 GB-per-job memory watchdog (`run_limited.sh`),
+procedure (`RUNBOOK.md`), the ~12 GB-per-step memory watchdog (`run_limited.sh`),
 the **deterministic no-LLM replay** of a recorded run (`redo_stress_test.py` +
-the command manifest `run_limited.sh` records — fast, reproducible, and the way
+the command manifest the tools record — fast, reproducible, and the way
 to A/B an engine change), and the list of kicad_parser issues the corpus
 preparation currently works around.
 
 The whole suite can also be driven by Claude Code with the `/stress-test-router`
 skill (see `docs/claude-skills.md`): it prepares the corpus if missing, runs the
-boards through the disk-driven queue manager (4 concurrent under the memory cap),
+boards through the disk-driven queue manager (admitted by load, under the per-step memory cap),
 aggregates the results, and drafts GitHub issues for new findings (filed only
 after user approval).
 
