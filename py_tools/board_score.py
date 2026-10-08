@@ -873,7 +873,7 @@ def score_net_widths(board: str, spec_file: str) -> dict:
 
     failures, detail = 0, {}
     for name, widths in sorted(seen.items()):
-        req = next((mm for pat, mm in want.items() if fnmatch.fnmatch(name, pat)),
+        req = next((mm for pat, mm in want.items() if fnmatch.fnmatchcase(name, pat)),
                    None)
         if req is None:
             continue
@@ -895,7 +895,7 @@ def score_net_widths(board: str, spec_file: str) -> dict:
                             'length_under_share': (round(_und / _tot, 4)
                                                    if _tot > 0 else 0.0)}
     unmatched = [p for p in want
-                 if not any(fnmatch.fnmatch(n, p) for n in seen)]
+                 if not any(fnmatch.fnmatchcase(n, p) for n in seen)]
     return {'ran': True, 'count': failures, 'nets': detail,
             'patterns_matching_no_routed_net': unmatched}
 

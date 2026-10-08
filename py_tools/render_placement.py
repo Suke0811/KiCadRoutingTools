@@ -2024,14 +2024,14 @@ def net_pattern_report(pcb, patterns, flag: str) -> dict:
     import fnmatch
     names = [n.name for n in pcb.nets.values() if n.name]
     pats = list(patterns or ())
-    hit = {p: sum(1 for nm in names if fnmatch.fnmatch(nm, p)) for p in pats}
+    hit = {p: sum(1 for nm in names if fnmatch.fnmatchcase(nm, p)) for p in pats}
     unmatched = sorted(p for p, c in hit.items() if not c)
     return {'flag': flag,
             'requested': len(pats),
             'matched': len(pats) - len(unmatched),
             'unmatched': unmatched,
             'nets_matched': sum(1 for nm in names
-                                if any(fnmatch.fnmatch(nm, p) for p in pats))}
+                                if any(fnmatch.fnmatchcase(nm, p) for p in pats))}
 
 
 def warn_unmatched(report: dict) -> None:
@@ -2118,7 +2118,7 @@ def main(argv=None):
     if args.ignore_nets:
         import fnmatch
         ignore_ids = {nid for nid, net in pcb.nets.items()
-                      if any(fnmatch.fnmatch(net.name, pat)
+                      if any(fnmatch.fnmatchcase(net.name, pat)
                              for pat in args.ignore_nets)}
         if not args.quiet:
             _r = net_lists['ignore_nets']
@@ -2195,7 +2195,7 @@ def main(argv=None):
         _bignore = set()
         if args.ignore_nets:
             _bignore = {nid for nid, net in _bpcb.nets.items()
-                        if net.name and any(fnmatch.fnmatch(net.name, pat)
+                        if net.name and any(fnmatch.fnmatchcase(net.name, pat)
                                             for pat in args.ignore_nets)}
         # Pass the AFTER board's RESOLVED floors explicitly, rather than the
         # unresolved --clearance. Board-first resolution reads each board's own

@@ -324,7 +324,7 @@ class SpatialIndex:
 def matches_any_pattern(name: str, patterns: List[str]) -> bool:
     """Check if a net name matches any of the given patterns (fnmatch style)."""
     for pattern in patterns:
-        if fnmatch.fnmatch(name, pattern):
+        if fnmatch.fnmatchcase(name, pattern):
             return True
     return False
 

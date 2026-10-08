@@ -2096,13 +2096,11 @@ def allow_pattern_matches(pattern: str, ref: str) -> bool:
     than no warning: it would send an author to fix a pattern that works, or
     stay quiet about one that does not.
 
-    `fnmatch.fnmatch`, deliberately, not `fnmatchcase`: it applies
-    `os.path.normcase`, so matching is case-insensitive on Windows and
-    case-sensitive elsewhere. That platform split is PRE-EXISTING and is not
-    fixed here -- the point of this function is that both callers inherit
-    exactly the same behaviour, whatever it is.
+    `fnmatchcase`, as every reference glob is (#1208): plain `fnmatch.fnmatch`
+    applies `os.path.normcase`, which folds case on Windows only, so one intent
+    exempted different parts per host.
     """
-    return fnmatch.fnmatch(ref, pattern)
+    return fnmatch.fnmatchcase(ref, pattern)
 
 
 def unresolved_keepout_allows(intent, pcb_data) -> List['Violation']:
@@ -2577,7 +2575,7 @@ def resolve_blocks(intent: Intent, pcb_data, group_sources: Sequence[str] = ()
     for z in intent.blocks:
         members = set()
         for pattern in z.refs:
-            members.update(fnmatch.filter(refs_all, pattern))
+            members.update([r for r in refs_all if fnmatch.fnmatchcase(r, pattern)])
         if z.group:
             found = derived.get(z.group)
             if found is None:
@@ -2814,7 +2812,7 @@ def resolve_intent_gate(intent: Intent, pcb_data,
 
     lock: set = set()
     for pat in intent.must_lock:
-        lock.update(fnmatch.filter(sorted(pcb_data.footprints), pat))
+        lock.update([r for r in sorted(pcb_data.footprints) if fnmatch.fnmatchcase(r, pat)])
     lock.update(str(c['ref']) for c in intent.edge_claims()
                 if c.get('ref') in pcb_data.footprints)
     # #893. The declared ROTATION travels with the gate, so the quench can
@@ -2924,7 +2922,7 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
                 for cap, _d in near[ic]]
         rows += [(cap, ic, False) for cap, ic, _d in beyond]
         for cap, ic, graded in sorted(rows):
-            if any(fnmatch.fnmatch(cap, p) for p in dd['exempt']):
+            if any(fnmatch.fnmatchcase(cap, p) for p in dd['exempt']):
                 continue
             rail = tuple(groups_mod.rail_chips(pcb_data, cap))
             out.append({'rule': 'decap_distance', 'name': f"{cap}->{ic}",
@@ -4664,7 +4662,7 @@ def rule_decap_distance(ctx) -> Iterator[Violation]:
         'decaps.max_distance_mm') == 'observed_baseline'
     for ic in sorted(tethers):
         for cap, dist in tethers[ic]:
-            if any(fnmatch.fnmatch(cap, pat) for pat in exempt):
+            if any(fnmatch.fnmatchcase(cap, pat) for pat in exempt):
                 continue
             if cap in sup:
                 continue        # graded by the declared relation instead
@@ -4881,7 +4879,7 @@ def rule_decap_ungraded(ctx) -> Iterator[Violation]:
         # decided about it; telling them it is also ungraded is noise about
         # their own decision. A cap a declared relation supersedes IS
         # graded -- by that relation.
-        if any(fnmatch.fnmatch(cap, pat) for pat in exempt) or cap in sup:
+        if any(fnmatch.fnmatchcase(cap, pat) for pat in exempt) or cap in sup:
             continue
         is_held = cap in held
         # `sev` stays the answer for every cap the list does not raise, so
@@ -4938,7 +4936,7 @@ def decap_pin_caps(spec: Dict, ref: str, ic_side, pad, by_net
     on_rail = [c for c in by_net.get(pad.net_id, ())
                if c.reference != ref]
     caps = [c for c in on_rail
-            if not any(fnmatch.fnmatch(c.reference, pat) for pat in exempt)]
+            if not any(fnmatch.fnmatchcase(c.reference, pat) for pat in exempt)]
     if spec.get('same_side'):
         # A MANUFACTURING claim, never an electrical one: the author is
         # asserting the back side is not available -- single-sided assembly, a
@@ -5253,7 +5251,7 @@ def rule_must_lock(ctx) -> Iterator[Violation]:
     """
     refs = sorted(ctx.pcb.footprints)
     for pattern in ctx.intent.must_lock:
-        matched = fnmatch.filter(refs, pattern)
+        matched = [r for r in refs if fnmatch.fnmatchcase(r, pattern)]
         if not matched:
             yield Violation(
                 rule='must_lock', severity=ctx.sev('must_lock'),

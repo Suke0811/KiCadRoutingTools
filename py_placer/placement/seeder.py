@@ -4129,7 +4129,7 @@ def decap_pin_forecast(pcb_data, intent, blocks, *,
                 | {c for c, _ic, _d in beyond})
     exempt = tuple(spec.get('exempt') or ())
     out['exempt'] = sorted(r for r in tethered
-                           if any(fnmatch.fnmatch(r, p) for p in exempt))
+                           if any(fnmatch.fnmatchcase(r, p) for p in exempt))
     scope = {r for r in tethered if r in fps and r not in out['exempt']}
     arrays = (floorplan.resolved_arrays(intent, pcb_data)
               if getattr(intent, 'arrays', ()) else ())
@@ -4155,7 +4155,7 @@ def decap_pin_forecast(pcb_data, intent, blocks, *,
                  | {str(f['ref']) for f in intent.fixed_poses}
                  | {str(c['ref']) for c in intent.edge_claims()}
                  | {r for p in intent.must_lock
-                    for r in fnmatch.filter(refs_all, p)}
+                    for r in refs_all if fnmatch.fnmatchcase(r, p)}
                  | zoned
                  | {str(a['serves']) for a in arrays
                     if a.get('serves') not in (None, 'unknown')
@@ -4277,7 +4277,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     zones_by_name = {z.name: z for z in intent.blocks if z.rect is not None}
 
     lock_refs: List[str] = sorted({
-        r for pat in intent.must_lock for r in fnmatch.filter(refs_all, pat)})
+        r for pat in intent.must_lock for r in refs_all if fnmatch.fnmatchcase(r, pat)})
     # #893. {ref: (declared rotation, declared candidates)}. NOTE these refs
     # are deliberately NOT added to `lock_refs`: that flag becomes
     # `_Part.locked`, one boolean covering position AND rotation, and
@@ -4992,7 +4992,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     | {c for c, _ic, _d in beyond})
         decap_scope = {r for r in tethered
                        if r in state.parts
-                       and not any(fnmatch.fnmatch(r, pat) for pat in exempt)}
+                       and not any(fnmatch.fnmatchcase(r, pat) for pat in exempt)}
 
     # ---- #1051: which declared rows stage 2.45 will seat ----------------------
     # Decided HERE, before stage 2, because two earlier stages must step
@@ -6435,7 +6435,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     # most parts. Feeding it here means the existing `.locked` checks below
     # (the unrepairable filter, and reseat's refusal list) pick it up for free.
     _extra_locked = {r for pat in (lock_globs or [])
-                     for r in fnmatch.filter(sorted(pcb_data.footprints), pat)}
+                     for r in sorted(pcb_data.footprints) if fnmatch.fnmatchcase(r, pat)}
     # #1054: a `fixed_poses[]` ref is a mechanical fact the seed put at its
     # exact pose and stamped (locked yes). A repair never nudges one, stamped
     # or not: an unstamped copy of the board must not turn the fact into a
@@ -6481,7 +6481,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     refs_all = sorted(pcb_data.footprints)
     notes: List[str] = []
     must_lock = {r for pat in intent.must_lock
-                 for r in fnmatch.filter(refs_all, pat)} if intent else set()
+                 for r in refs_all if fnmatch.fnmatchcase(r, pat)} if intent else set()
     # {ref: declared band max mm}. The off-board census below charges only the
     # EXCESS past the band, not nothing at all -- see the note there.
     edge_band: Dict[str, float] = {}
@@ -7669,7 +7669,7 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
     # most parts. Feeding it here means the existing `.locked` checks below
     # (the unrepairable filter, and reseat's refusal list) pick it up for free.
     _extra_locked = {r for pat in (lock_globs or [])
-                     for r in fnmatch.filter(sorted(pcb_data.footprints), pat)}
+                     for r in sorted(pcb_data.footprints) if fnmatch.fnmatchcase(r, pat)}
     state = pose_score.make_state(
         pcb_data, pcb_file, clearance=clearance,
         board_edge_clearance=board_edge_clearance, grid_step=grid_step,
@@ -7691,7 +7691,7 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
     refs_all = sorted(pcb_data.footprints)
     notes: List[str] = []
     must_lock = {r for pat in intent.must_lock
-                 for r in fnmatch.filter(refs_all, pat)}
+                 for r in refs_all if fnmatch.fnmatchcase(r, pat)}
 
     # ---- scope resolution --------------------------------------------------
     witnesses_before = _recon.damage_witnesses(state)
@@ -7702,7 +7702,7 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
         scope = set()
         scope_source = 'explicit'
         for pat in refs:
-            hits = fnmatch.filter(refs_all, pat)
+            hits = [r for r in refs_all if fnmatch.fnmatchcase(r, pat)]
             if not hits:
                 notes.append(f"{pat}: matches no reference on this board")
             scope.update(hits)

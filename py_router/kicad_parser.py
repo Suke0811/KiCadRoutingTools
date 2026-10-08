@@ -8189,7 +8189,7 @@ def get_nets_to_route(pcb_data: PCBData,
         # Skip based on exclude patterns
         excluded = False
         for pattern in exclude_patterns:
-            if fnmatch.fnmatch(net.name.upper(), pattern.upper()):
+            if fnmatch.fnmatchcase(net.name.upper(), pattern.upper()):
                 excluded = True
                 break
         if excluded:
@@ -8199,7 +8199,7 @@ def get_nets_to_route(pcb_data: PCBData,
         if net_patterns:
             matched = False
             for pattern in net_patterns:
-                if fnmatch.fnmatch(net.name, pattern):
+                if fnmatch.fnmatchcase(net.name, pattern):
                     matched = True
                     break
             if not matched:

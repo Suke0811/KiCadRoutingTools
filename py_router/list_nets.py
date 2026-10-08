@@ -29,7 +29,7 @@ import math
 import os
 import re
 from collections import defaultdict
-from fnmatch import fnmatch, fnmatchcase
+from fnmatch import fnmatchcase
 from kicad_parser import parse_kicad_pcb, find_components_by_type
 
 
@@ -1156,7 +1156,7 @@ def main():
             ))
             for pad in pads_sorted:
                 net_name = pad.net_name if pad.net_name else "(no net)"
-                if args.pattern and not fnmatch(net_name, args.pattern):
+                if args.pattern and not fnmatchcase(net_name, args.pattern):
                     continue
                 print(f"  {pad.pad_number}: {net_name}")
         else:
@@ -1164,7 +1164,7 @@ def main():
             nets = set()
             for pad in footprint.pads:
                 if pad.net_name and pad.net_id > 0:
-                    if args.pattern and not fnmatch(pad.net_name, args.pattern):
+                    if args.pattern and not fnmatchcase(pad.net_name, args.pattern):
                         continue
                     nets.add(pad.net_name)
 

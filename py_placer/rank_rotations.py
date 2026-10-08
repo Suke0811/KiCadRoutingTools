@@ -220,7 +220,7 @@ def eligible_refs(pcb, intent, blocks, pcb_file, *, min_pads=16,
     from placement.part_class import classify_part
     from placement.placement_state import assess_placement
     refs_all = sorted(pcb.footprints)
-    must = {r for p in intent.must_lock for r in fnmatch.filter(refs_all, p)}
+    must = {r for p in intent.must_lock for r in refs_all if fnmatch.fnmatchcase(r, p)}
     edge = {str(c['ref']) for c in intent.edge_claims()}
     fixed = {str(f['ref']) for f in intent.fixed_poses}
     declared = floorplan.rotations_for_ref(intent, blocks)

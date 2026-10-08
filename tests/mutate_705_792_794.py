@@ -191,7 +191,7 @@ ROWS = [
 
     ('the-pin-rules-exempt-filter-is-deleted', 'fp',
      "    caps = [c for c in on_rail\n"
-     "            if not any(fnmatch.fnmatch(c.reference, pat) for pat in exempt)]\n",
+     "            if not any(fnmatch.fnmatchcase(c.reference, pat) for pat in exempt)]\n",
      "    caps = list(on_rail)\n",
      (T705,), 'KILLED'),
 
@@ -247,10 +247,10 @@ ROWS = [
      "                    | {c for c, _ic, _d in beyond})\n"
      "        decap_scope = {r for r in tethered\n"
      "                       if r in state.parts\n"
-     "                       and not any(fnmatch.fnmatch(r, pat) for pat in exempt)}\n",
+     "                       and not any(fnmatch.fnmatchcase(r, pat) for pat in exempt)}\n",
      "        decap_scope = {r for r in state.parts\n"
      "                       if r[0] == 'C' and state.parts[r].pin_count == 2\n"
-     "                       and not any(fnmatch.fnmatch(r, pat) for pat in exempt)}\n",
+     "                       and not any(fnmatch.fnmatchcase(r, pat) for pat in exempt)}\n",
      (T792S,), 'KILLED'),
 
     ('the-put-back-is-deleted', 'sdr',

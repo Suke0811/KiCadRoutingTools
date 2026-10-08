@@ -501,7 +501,7 @@ def advise_locks(pcb_data, pcb_file: Optional[str] = None, *,
         src = 'kicad' if locked else None
         if not locked and lock_patterns:
             for pat in lock_patterns:
-                if fnmatch.fnmatch(ref, pat):
+                if fnmatch.fnmatchcase(ref, pat):
                     locked, src = True, 'cli'
                     break
         adv.findings.append(LockFinding(

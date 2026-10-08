@@ -2198,7 +2198,7 @@ def match_net_pattern(net_name: str, pattern: str) -> bool:
         return bool(re.match(regex_pattern, net_name))
     except re.error:
         # Fall back to simple fnmatch
-        return fnmatch.fnmatch(net_name, pattern)
+        return fnmatch.fnmatchcase(net_name, pattern)
 
 
 def find_nets_matching_patterns(all_net_names: List[str], patterns: List[str]) -> List[str]:
