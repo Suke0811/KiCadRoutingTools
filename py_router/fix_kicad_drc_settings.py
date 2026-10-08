@@ -290,9 +290,10 @@ def enable_used_layers(pcb_path: str, verbose: bool = True):
                 if d == 0:
                     break
         outside = outside[:stk.start()] + outside[k + 1:]
+    from kicad_parser import layer_list_tokens  # quoted, or KiCad 6's bare pad lists
     refs = set(re.findall(r'\(layer\s+"([^"]+)"', outside))
-    for grp in re.findall(r'\(layers\s+((?:"[^"]+"\s*)+)\)', outside):
-        refs.update(re.findall(r'"([^"]+)"', grp))
+    for grp in re.findall(r'\(layers\s+([^()]*)\)', outside):
+        refs.update(layer_list_tokens(grp))
 
     indent_m = re.search(r'\n([ \t]+)\(\d+\s+"', block)
     indent = indent_m.group(1) if indent_m else '\t\t'

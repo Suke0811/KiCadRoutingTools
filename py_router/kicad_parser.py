@@ -1289,6 +1289,31 @@ def pad_drill_capsule(pad) -> Tuple[Tuple[float, float], Tuple[float, float], fl
 _REMOVE_UNUSED_RE = re.compile(r'\(remove_unused_layers(?:\s+(yes|no))?\s*\)')
 _KEEP_END_RE = re.compile(r'\(keep_end_layers(?:\s+(yes|no))?\s*\)')
 
+# One name in a `(layers ...)` list, either spelling. KiCad 7+ quotes every
+# name, `(layers "*.Cu" "*.Mask")`; KiCad 6 writes a pad's list bare,
+# `(layers *.Cu *.Mask)`. A quoted-only reader returns [] for every pad of a
+# KiCad 6 file, so the board parses with no pad on any copper layer and every
+# net fails at its first step -- seen on a KiCad 6 corpus source routed
+# without the pcbnew round-trip that corpus prep always gives it.
+_LAYER_LIST_TOKEN_RE = re.compile(r'"((?:[^"\\]|\\.)*)"|([^\s"()]+)')
+
+
+def layer_list_tokens(body: str) -> List[str]:
+    """The layer names in the BODY of a `(layers ...)` list -- the text after
+    the keyword -- quoted or bare, in file order."""
+    return [bare or quoted
+            for quoted, bare in _LAYER_LIST_TOKEN_RE.findall(body)]
+
+
+def map_layer_list_tokens(body: str, fn) -> str:
+    """BODY with every layer name replaced by ``fn(name)``, each keeping the
+    spelling it had: a quoted name stays quoted, a bare one stays bare."""
+    def _sub(m):
+        if m.group(2) is not None:
+            return fn(m.group(2))
+        return '"' + fn(m.group(1)) + '"'
+    return _LAYER_LIST_TOKEN_RE.sub(_sub, body)
+
 
 def unconnected_layer_mode_from_text(pad_text: str) -> str:
     """A pad block's unconnected-layer mode (see Pad.unconnected_layer_mode).
@@ -3691,11 +3716,11 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             if not custom_resolved:
                 size_x, size_y, rect_rotation = _resolve_pad_rect(size_x, size_y, pad_rotation)
 
-            # Extract layers - use findall to get all quoted layer names
+            # Extract layers, quoted (KiCad 7+) or bare (KiCad 6)
             layers_section = re.search(r'\(layers\s+([^)]+)\)', pad_text)
             pad_layers = []
             if layers_section:
-                pad_layers = re.findall(r'"([^"]+)"', layers_section.group(1))
+                pad_layers = layer_list_tokens(layers_section.group(1))
 
             # Extract net - try KiCad 9 format first, then KiCad 10
             net_match = re.search(r'\(net\s+(\d+)\s+"%s"\)' % _ESC_STR, pad_text)

@@ -13,7 +13,7 @@ from typing import List, Dict
 
 from kicad_parser import (find_matching_paren, flip_layer_token,
                           iter_footprint_blocks, footprint_at_match,
-                          AT_NUM)
+                          AT_NUM, layer_list_tokens, map_layer_list_tokens)
 from kicad_writer import move_copper_text_to_silkscreen
 
 
@@ -643,8 +643,11 @@ def _flip_pad(node: str, ref: str, old_rot: float, new_rot: float) -> str:
     lm = re.search(r'\(layers\b', node)
     if lm:
         lend = find_matching_paren(node, lm.start())
-        block = node[lm.start():lend]
-        toks = re.findall(r'"([^"]+)"', block)
+        # The names AFTER the keyword, quoted or bare: KiCad 6 writes a pad's
+        # list bare, and a quoted-only rewrite left such a pad on the face the
+        # part just left.
+        body = node[lm.end():lend]
+        toks = layer_list_tokens(body)
         for t in toks:
             if '&' in t:
                 raise SideFlipUnsupported(
@@ -658,10 +661,7 @@ def _flip_pad(node: str, ref: str, old_rot: float, new_rot: float) -> str:
                     f"mirror image depends on the board's inner-layer count "
                     f"and on remove_unused_layers padstack semantics, and no "
                     f"tracked board carries one in a footprint pad. Refusing.")
-        new_block = re.sub(r'"([^"]+)"',
-                           lambda m: '"' + flip_layer_token(m.group(1)) + '"',
-                           block)
-        node = node[:lm.start()] + new_block + node[lend:]
+        node = node[:lm.end()] + map_layer_list_tokens(body, flip_layer_token) + node[lend:]
 
     node = _flip_at_angle(node, ref, lambda a: new_rot - (a - old_rot))
 
