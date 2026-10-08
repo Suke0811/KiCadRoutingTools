@@ -110,8 +110,10 @@ def test_issue_literal_disjoint_case():
     m = merge_summaries(sums, regrade=rg)
     assert sorted(m['failed_single']) == ['A', 'B', 'C'], m['failed_single']
     assert m['scope'] == 'merged'
-    assert (m['successful'], m['failed']) == (1, 1), (
-        "successful/failed count the whole run's routing scope (X, A)")
+    # `successful` counts the routing scope (X, A); `failed` every net the
+    # run ships broken, the laps' B and C included (#1215).
+    assert (m['successful'], m['failed']) == (1, 3), (
+        "successful counts the routing scope, failed what ships broken")
     mn = summary_min(m)
     assert mn['failed_single'] == ['A', 'B', 'C'] and mn['routed'] == 1
     print("  PASS: A, B and C present, scope merged")
@@ -152,7 +154,9 @@ def test_regrade_keeps_bucket_meanings():
     assert rg['multipoint_pads_connected'] == 6, rg  # M 3 + L 3
     assert rg['unowned_broken'] == ['V'], rg['unowned_broken']
     assert rg['recovered'] == [], rg['recovered']
-    assert (rg['successful'], rg['failed']) == (1, 4), rg
+    # #1215: `failed` counts every net the run ships broken, V (collateral,
+    # outside the scope) included -- not len(scope) - successful.
+    assert (rg['successful'], rg['failed']) == (1, 5), rg
     m = merge_summaries(sums, regrade=rg)
     deficit = m['multipoint_pads_total'] - m['multipoint_pads_connected']
     assert len(m['failed_single']) + len(m['open_single']) + deficit == 6

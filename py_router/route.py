@@ -462,6 +462,26 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                             board=label, seconds=_t1069.time() - _t0,
                             disturbed_only=_worse)
     record['graded_nets'] = len(graded)
+    # #1215: a broken net outside pass 1's scope is either the run's own
+    # casualty (a rip it could not restore, a re-route that failed) or one the
+    # input already had broken. Graded on the input copper, as `_worse` is: a
+    # casualty was connected there, or had fewer pads off.
+    _scope_set0 = set(routing_scope)
+    _broken_out = sorted({n for n in record['failed_single'] + record['open_single']
+                          + [d['net_name'] for d in record['failed_multipoint']]
+                          if n not in _scope_set0})
+    _by_run: List[str] = []
+    _ids_out = [_in_id[n] for n in _broken_out if n in _in_id]
+    _before_out = (grade_nets(pcb_data, _ids_out, segs_by_net=orig_seg_by_net,
+                              vias_by_net=orig_via_by_net) if _ids_out else {})
+    for n in _broken_out:
+        _b = _before_out.get(_in_id.get(n))
+        if _b is None:
+            continue
+        if not _b['broken'] or len(_b['failed_pads']) < len(
+                grades.get(n, {}).get('failed_pads') or ()):
+            _by_run.append(n)
+    record['broken_by_run'] = _by_run
     # Round-trip so the in-process document equals what the log parses back.
     record = json.loads(json.dumps(record))
     print(f"JSON_REGRADE: {json.dumps(record)}")
@@ -494,11 +514,18 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
         print(f"  {RED if _mt > _mc else ''}Multi-point:   {_mc}/{_mt} pads "
               f"connected" + (f" ({_mt - _mc} FAILED){RESET}"
                               if _mt > _mc else ''))
+    _by_run_set = set(record.get('broken_by_run') or ())
+    if _by_run_set:
+        _br = sorted(_by_run_set)
+        print(f"  {RED}Broken by this run, outside its routing scope (connected "
+              f"on the input; ripped and not restored): "
+              f"{', '.join(_br[:12])}"
+              + (f" (+{len(_br) - 12} more)" if len(_br) > 12 else '') + RESET)
     _out_scope = sorted({n for n in fs + osn
                          + [d['net_name'] for d in record['failed_multipoint']]
-                         if n not in _scope_set})
+                         if n not in _scope_set and n not in _by_run_set})
     if _out_scope:
-        print(f"  {RED}Broken outside the routing scope: "
+        print(f"  {RED}Broken outside the routing scope, no worse than on the input: "
               f"{', '.join(_out_scope[:12])}"
               + (f" (+{len(_out_scope) - 12} more)"
                  if len(_out_scope) > 12 else '') + RESET)
@@ -508,6 +535,9 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     if record['recovered']:
         print(f"  Recovered after a summary reported them failing: "
               f"{len(record['recovered'])}")
+    if record['failed']:
+        print(f"  {RED}Ships broken: {record['failed']} net(s) -- the `failed` "
+              f"count, over every net the run owns{RESET}")
     return record
 
 

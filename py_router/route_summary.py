@@ -439,8 +439,11 @@ def regrade_record(summaries: List[Dict], grades: Dict[str, Dict],
     'failed_pads': [{x, y, component_ref, pad_number}, ...]}} for every net the
     run owns (`named_nets` of its summaries, plus nets whose copper it
     changed). `routing_scope` is the outermost pass's routing scope (its
-    single-ended net list), which `successful` / `failed` count, as the
-    router always has. `disturbed_only` names the nets graded ONLY because the
+    single-ended net list), which `successful` counts. `failed` counts every
+    net the run ships broken (#1215): the distinct nets of failed_single,
+    open_single and failed_multipoint -- a net this run ripped and could not
+    re-route is outside pass 1's list, and `len(scope) - successful` read 0
+    for it. `disturbed_only` names the nets graded ONLY because the
     run changed their copper; the caller has already dropped those that were
     no worse than on the input board.
 
@@ -511,7 +514,8 @@ def regrade_record(summaries: List[Dict], grades: Dict[str, Dict],
         'multipoint_pads_total': mp_total,
         'multipoint_pads_connected': mp_conn,
         'successful': len(routed),
-        'failed': len(scope) - len(routed),
+        'failed': len(set(failed_single) | set(open_single)
+                      | {d['net_name'] for d in failed_mp}),
         # Disclosure: broken nets NO summary classified (caught only because
         # the run changed their copper), and nets some summary left failing
         # that the shipped board has connected.
@@ -556,7 +560,8 @@ def _apply_regrade(merged: Dict, regrade: Dict, summaries: List[Dict]) -> None:
         merged['pad_pairs_connected'] = max(
             0, merged['pad_pairs_total'] - _deficit)
     merged['regrade'] = {k: regrade.get(k) for k in (
-        'board', 'graded_nets', 'seconds', 'unowned_broken', 'recovered')}
+        'board', 'graded_nets', 'seconds', 'unowned_broken', 'recovered',
+        'broken_by_run')}
 
 
 def merge_route_summaries(log: str) -> Optional[Dict]:
