@@ -412,6 +412,14 @@ skip cleanly without KiCad python). Run any directly:
   `.kicad_pro` on disk still declares the original, and a live
   `min_connection` outranks `min_track_width`. On the pre-fix code it fails 3
   checks (the floor read the stale file, 0.3 where the board said 0.15).
+- `test_581_fanout_via_in_pad_gui.py` -- the Basic tab's via-in-pad policy
+  (#581) reaches BOTH escape engines from the REAL fanout tab, on glasgow's
+  U30 (BGA) and U1 (QFN), engines spied: unticked with a 0.15 spin, each
+  receives `same_net_pad_clearance=0.15`; ticked (the control), -1.0. On the
+  pre-fix tab it fails 4 checks -- #621's move to the worker thread had dropped
+  the kwarg from both calls, and `test_engine_kwarg_parity` could not see it
+  because it read no `**kwargs` call (it now follows `GUI_KWARGS_DICTS`, and a
+  pair it cannot read FAILs instead of printing SKIP).
 - `test_movie_recorder.py` -- the Advanced tab's **Make routing movie** debug
   checkbox (#506): default OFF and inert while off; one routing step renders
   ONE movie; a plan run (`begin_group`/`end_group`, what the AI tab's Run

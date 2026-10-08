@@ -1851,6 +1851,10 @@ class FanoutTab(wx.Panel):
             rebalance_escape=config['rebalance_escape'],
             via_size=via_size,
             via_drill=via_drill,
+            # #581: the Basic tab's via-in-pad policy (> 0: under-pad escapes
+            # run dog-bone). bga_fanout's --same-net-pad-clearance; lost from
+            # this dict when #621 moved the call onto the worker thread.
+            same_net_pad_clearance=shared.get('same_net_pad_clearance', -1.0),
             check_for_previous=config['check_for_previous'],
             no_inner_top_layer=config['no_inner_top_layer'],
             escape_method=config.get('escape_method', 'auto'),
@@ -1974,6 +1978,8 @@ class FanoutTab(wx.Panel):
             via_drill=via_drill,
             allow_via_in_pad=allow_via_in_pad,
             board_edge_clearance=shared.get('board_edge_clearance', 0.0),
+            # #581: the Basic tab's via-in-pad policy, as the BGA path.
+            same_net_pad_clearance=shared.get('same_net_pad_clearance', -1.0),
             # See the BGA path: safe from the worker via ui_thread_status.
             # Only the counted x/N lines reach the status feed -- the
             # uncounted phase chatter (gridding, staging, ...) is log-only.
