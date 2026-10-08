@@ -52,31 +52,16 @@ from kicad_parser import parse_kicad_pcb, Segment  # noqa: E402
 from kicad_writer import generate_segment_sexpr, generate_via_sexpr  # noqa: E402
 
 
-def read_arcs(pcb, path):
-    """The board's track arcs appended to pcb.segments as two chords each."""
-    n = 0
-    for m in re.finditer(r'\n  \(arc \(start ([-\d.]+) ([-\d.]+)\) \(mid ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) '
-                         r'([-\d.]+)\) \(width ([\d.]+)\) \(layer "([^"]+)"\) \(net (\d+)\)',
-                         open(path, encoding='utf-8').read()):
-        x0, y0, xm, ym, x1, y1, w = (float(m.group(i)) for i in range(1, 8))
-        for (p0, q0, p1, q1) in ((x0, y0, xm, ym), (xm, ym, x1, y1)):
-            pcb.segments.append(Segment(start_x=p0, start_y=q0, end_x=p1, end_y=q1, width=w,
-                                        layer=m.group(8), net_id=int(m.group(9))))
-        n += 1
-    return n
-
-
-def strip_blocks(txt, names=('segment', 'via', 'arc')):
-    """The board text with every top-level block of those kinds removed."""
-    out, i, n = [], 0, 0
-    pat = re.compile(r'\n  \((' + '|'.join(names) + r')[\s(]')
+def top_blocks(txt, names):
+    """(start, end) of every top-level block of those kinds in the board text: KiCad's own layout puts one at the
+    start of a line, indented one level -- a tab (KiCad 8 on), two spaces before; a nested block is indented more"""
+    pat = re.compile(r'\n(?:  |\t)\((' + '|'.join(names) + r')[\s(]')
+    i = 0
     while True:
         m = pat.search(txt, i)
         if not m:
-            out.append(txt[i:])
-            break
-        out.append(txt[i:m.start()])
-        j, depth, instr = m.start() + 3, 0, False
+            return
+        j, depth, instr = m.start(1) - 1, 0, False
         while j < len(txt):
             c = txt[j]
             if instr:
@@ -94,8 +79,44 @@ def strip_blocks(txt, names=('segment', 'via', 'arc')):
                     j += 1
                     break
             j += 1
+        yield m.start(), j
         i = j
+
+
+def read_arcs(pcb, path):
+    """The board's track arcs appended to pcb.segments as two chords each (its net by id, or by name on a board that
+    names its nets in its tracks)."""
+    n = 0
+    txt = open(path, encoding='utf-8').read()
+    by_name = {net.name: nid for nid, net in pcb.nets.items()}
+    num = r'([-\d.]+)'
+    for a, b in top_blocks(txt, ('arc',)):
+        blk = txt[a:b]
+        pts = [re.search(rf'\({k}\s+{num}\s+{num}\)', blk) for k in ('start', 'mid', 'end')]
+        w = re.search(rf'\(width\s+{num}\)', blk)
+        L = re.search(r'\(layer\s+"([^"]+)"\)', blk)
+        nm = re.search(r'\(net\s+(?:(\d+)|"((?:[^"\\]|\\.)*)")\)', blk)
+        if not (all(pts) and w and L and nm):
+            continue
+        nid = int(nm.group(1)) if nm.group(1) is not None else by_name.get(nm.group(2))
+        if nid is None:
+            continue
+        (x0, y0), (xm, ym), (x1, y1) = ((float(p.group(1)), float(p.group(2))) for p in pts)
+        for (p0, q0, p1, q1) in ((x0, y0, xm, ym), (xm, ym, x1, y1)):
+            pcb.segments.append(Segment(start_x=p0, start_y=q0, end_x=p1, end_y=q1, width=float(w.group(1)),
+                                        layer=L.group(1), net_id=nid))
         n += 1
+    return n
+
+
+def strip_blocks(txt, names=('segment', 'via', 'arc')):
+    """The board text with every top-level block of those kinds removed."""
+    out, i, n = [], 0, 0
+    for a, b in top_blocks(txt, names):
+        out.append(txt[i:a])
+        i = b
+        n += 1
+    out.append(txt[i:])
     return ''.join(out), n
 
 
@@ -313,6 +334,12 @@ def main(argv=None):
         return keep, '; '.join(report)
 
     txt, n_gone = strip_blocks(open(a.human, encoding='utf-8').read())
+    # (the copper written back in the board's own net dialect: by name where its tracks name their nets, as KiCad 10
+    # writes them -- a numeric ref there leaves a mixed-dialect board)
+    from kicad_parser import board_uses_name_nets
+    from kicad_writer import via_net_name
+    id2name = {i: n.name for i, n in pcb.nets.items()} if board_uses_name_nets(txt) else None
+    seg_name = lambda nid: id2name.get(nid) if id2name else None
     emit, tot_s, tot_v = [], 0, 0
     for nm in nets + others:
         if nm not in byname:
@@ -323,10 +350,11 @@ def main(argv=None):
         nid = byname[nm]
         for kind, o in keep:
             if kind == 's':
-                emit.append(generate_segment_sexpr((o[0], o[1]), (o[2], o[3]), o[4], o[5], nid))
+                emit.append(generate_segment_sexpr((o[0], o[1]), (o[2], o[3]), o[4], o[5], nid, net_name=seg_name(nid)))
                 tot_s += 1
             else:
                 emit.append(generate_via_sexpr(o.x, o.y, o.size, o.drill, list(o.layers), nid,
+                                               net_name=via_net_name(nid, id2name),
                                                tenting_attrs=o.tenting_attrs, inherit_when_unspecified=True))
                 tot_v += 1
         print(f'  {nm:7s} {rep}')
@@ -337,12 +365,14 @@ def main(argv=None):
         for s in b.segments:
             nid = byname.get(bs[s.net_id])
             if nid is not None:
-                emit.append(generate_segment_sexpr((s.start_x, s.start_y), (s.end_x, s.end_y), s.width, s.layer, nid))
+                emit.append(generate_segment_sexpr((s.start_x, s.start_y), (s.end_x, s.end_y), s.width, s.layer, nid,
+                                                   net_name=seg_name(nid)))
                 na += 1
         for v in b.vias:
             nid = byname.get(bs[v.net_id])
             if nid is not None:
                 emit.append(generate_via_sexpr(v.x, v.y, v.size, v.drill, list(v.layers), nid,
+                                               net_name=via_net_name(nid, id2name),
                                                tenting_attrs=v.tenting_attrs, inherit_when_unspecified=True))
                 nv += 1
         print(f'  added from {os.path.basename(bpath)}: {na} segments, {nv} vias')
