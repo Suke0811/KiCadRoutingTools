@@ -15,6 +15,13 @@ import os
 import re
 import sys
 import pcbnew
+from pathlib import Path
+
+# #795: KiCad's own __iter__ for GetTracks()/GetDrawings() calls the py2
+# `SwigPyIterator.next()`, which a current SWIG no longer supplies.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'py_router'))
+from swig_compat import patch_swig_iterators  # noqa: E402
+patch_swig_iterators()
 
 
 def rdp(points, eps):
@@ -137,7 +144,13 @@ def main():
         print(f"  outline: removed {_zl} zero-length Edge.Cuts primitive(s)")
 
     board = pcbnew.LoadBoard(_clean_src)
-    pcbnew.SaveBoard(routed_dst, board)  # normalized, routing intact
+    # aSkipSettings: the implicit settings save SIGABRTs on KiCad-9-saved
+    # projects (PR #613); the DRC floor travels as explicit sibling copies.
+    pcbnew.SaveBoard(routed_dst, board, aSkipSettings=True)  # normalized, routing intact
+    for _ext in ('.kicad_pro', '.kicad_dru'):
+        _sib = os.path.splitext(src)[0] + _ext
+        if os.path.exists(_sib):
+            shutil.copy(_sib, os.path.splitext(routed_dst)[0] + _ext)
 
     copper_ids = [lid for lid in board.GetEnabledLayers().CuStack()]
 
@@ -222,7 +235,11 @@ def main():
     for lid in copper_ids:
         board.SetLayerType(lid, pcbnew.LT_SIGNAL)
 
-    pcbnew.SaveBoard(dst, board)
+    pcbnew.SaveBoard(dst, board, aSkipSettings=True)  # see routed_dst above
+    for _ext in ('.kicad_pro', '.kicad_dru'):
+        _sib = os.path.splitext(src)[0] + _ext
+        if os.path.exists(_sib):
+            shutil.copy(_sib, os.path.splitext(dst)[0] + _ext)
     print(f"  OK removed {len(tracks)} tracks, {removed_zones} zones "
           f"(kept {kept_zones} rule areas, {removed_gfx} gfx), {len(copper_ids)} cu layers")
 

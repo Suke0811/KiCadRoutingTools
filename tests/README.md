@@ -15,6 +15,111 @@ cd tests
 python3 test_fanout_and_route.py --all
 ```
 
+## Running the WHOLE suite
+
+```bash
+python3 tests/run_all.py                     # everything, 4 at a time, locally
+python3 tests/run_all.py --fast              # unit only (skip CLI/board tests)
+python3 tests/run_all.py 908                 # only files whose name contains "908"
+python3 tests/run_all.py --list              # what would run, and its classification
+```
+
+### ...on Modal, fanned out
+
+The suite is ~594 files and roughly 40 minutes of one laptop. `--shard I/N`
+splits it into N disjoint slices, and the Modal driver runs them in parallel
+containers, so a full run takes about as long as its slowest shard:
+
+```bash
+modal run tests/stress/modal_suite/run_all_modal.py               # 50 shards
+modal run tests/stress/modal_suite/run_all_modal.py --shards 25
+modal run tests/stress/modal_suite/run_all_modal.py --filters 908 # one family
+```
+
+Three things to know before you trust its output:
+
+- **`run_all.py --shard` does the splitting**, so discovery and classification
+  have ONE source of truth -- the driver never globs `test_*.py` itself. A
+  local run and a 50-way fan-out therefore cover the same set. The slices are
+  packed longest-first onto the least-loaded shard from the measured wall
+  seconds in `tests/run_all_durations.json` (a new test is priced at the
+  median of its kind; with no table it falls back to a strided split by
+  name). `--write-durations` refreshes the table from a GREEN run; commit it
+  when the suite's cost shape has moved. Each shard's banner says whether it
+  was balanced, and on how many measured tests. No balancing beats the
+  slowest single test, so a test of independent rows may declare
+  `RUN_ALL_PARTS = N` and take `--part I/N`: it then runs as N units
+  (`test_placement_ab.py[3/8]`), each sharded on its own.
+- **The verdict is each shard's own exit code**, never the parsed counts. A
+  container that OOMs prints no summary line at all, and a driver that decided
+  on parsed counts would read that silence as zero failures. A shard that
+  never reported fails the run and is named.
+- **THIS image -- the SUITE image -- has no KiCad**, so every test needing
+  pcbnew/wx self-skips (exit 77). Those are reported in their own bucket and
+  are *not* passes -- and the wx/pcbnew parity gates in `tests/gui_parity/`
+  are not collected by `run_all` at all, so they still need a local
+  KiCad-python session.
+
+  **Do not read that as "the cloud has no KiCad".** It is true of
+  `modal_suite/run_all_modal.py` (plain `debian_slim`, no switch) and of
+  nothing else. The STRESS app has carried KiCad since 2026-08-23:
+  `cloud_replay_sets.py` passes `--with-kicad` **by default**
+  (`--no-kicad` opts out), which sets `KICAD_SWEEP_WITH_KICAD=1` and builds
+  `modal_sweep/modal_app.py` on `kicad/kicad:10.0.0`, proving `import pcbnew`
+  and `kicad-cli version` during the image build so a missing binding kills
+  the BUILD rather than quietly deadening the oracle legs. Note the two
+  defaults differ: `modal_app.py` read on its own defaults the env var OFF,
+  while the CLI you actually launch defaults it ON, and a KiCad wave labels
+  itself `-kc`.
+
+  Only **two** of `run_all`'s self-skips would be recovered by giving the
+  suite image KiCad -- `test_887_iso_render` (wants the `kicad-cli` binary;
+  Pillow, its other precondition, IS in `requirements.txt`) and
+  `test_910_fill_for_delivery` (wants KiCad's bundled python). The other two,
+  `test_887_run24_regression` and `test_run8_starved_face_gate`, want recorded
+  artifacts under `wk/` -- gitignored, 0 files tracked -- so they self-skip on
+  ANY clean clone, with or without KiCad. Verified 2026-09-20 by running all
+  four locally WITH KiCad present.
+
+The image is a clean checkout of HEAD (reproducible, and you can keep editing
+while it runs); `KICAD_SWEEP_DIRTY=1` ships the working tree instead and stamps
+the provenance `+dirty`.
+
+**The image has to be a FAITHFUL checkout, and that is harder than it looks.**
+The first full cloud run reported 15 failures that all pass locally. None was a
+code defect; every one was the image differing from a real working copy. They
+are listed here because each is a trap that will come back:
+
+| what was missing | what it broke |
+|---|---|
+| a git **index** | `run_utils.corpus_boards()` asks `git ls-files`, and `git archive` ships no `.git`, so it returned `[]` and 9 corpus-walking tests graded an EMPTY corpus instead of skipping |
+| `Pillow` | `startup_checks.check_render_dependencies` raised; 3 render tests died |
+| `pytest` | 2 tests imported it for fixtures (a test-only dep, correctly absent from `requirements.txt`). No test needs it now, so the image no longer installs it, and `test_718_static_test_hygiene.py` refuses a test file that imports pytest or that only pytest can run |
+| the right **Python version** | 2 tests behave differently on 3.12 vs 3.13+ |
+
+Three of those deserve spelling out:
+
+- **Runtime deps come from `requirements.txt`**, never a hand-copied list. The
+  sweep and route images pin numpy/scipy/shapely because that is the whole
+  dependency set of the *routing* path; the suite is not that narrow.
+- **The index is rebuilt from `git ls-files`, with `--force`** -- NOT
+  `git add -A`. `add` honours `.gitignore`, and a file added before a matching
+  rule stays tracked forever, so `-A` silently drops
+  `kicad_files/interf_u_unrouted.kicad_pcb` and leaves 21 of 22 boards. The
+  build asserts the count against the one measured on the host, so a short
+  corpus fails the build instead of quietly shrinking what the tests grade.
+- **The container's Python matches the interpreter you launched with.** This
+  repo has already had a Python upgrade change *routing results* (`math.fsum`),
+  so grading on a different one is not grading your code. It also moves tests:
+  `test_run8_write_order` passes on 3.13+ and fails on 3.12 -- and the pass is
+  VACUOUS either way, because its assertion (`'early line' in the log`) is
+  satisfied by 3.13's traceback echoing the `python -c` source rather than by
+  the program running. Override with `KICAD_SUITE_PYTHON=3.12` if Modal has no
+  image for yours.
+
+The moral, which cost a full red run to learn: **when a cloud suite fails tests
+that pass locally, suspect the image before the code.**
+
 ## Test Scripts
 
 ### test_fanout_and_route.py - Full 5-Layer BGA Board Test
@@ -390,15 +495,15 @@ bash stress_status.sh                              # DONE/RUNNING/TODO + free sl
 ```
 
 See `tests/stress/README.md` for the full pipeline, the per-board run
-procedure (`RUNBOOK.md`), the ~4 GB-per-job memory watchdog (`run_limited.sh`),
+procedure (`RUNBOOK.md`), the ~12 GB-per-step memory watchdog (`run_limited.sh`),
 the **deterministic no-LLM replay** of a recorded run (`redo_stress_test.py` +
-the command manifest `run_limited.sh` records — fast, reproducible, and the way
+the command manifest the tools record — fast, reproducible, and the way
 to A/B an engine change), and the list of kicad_parser issues the corpus
 preparation currently works around.
 
 The whole suite can also be driven by Claude Code with the `/stress-test-router`
 skill (see `docs/claude-skills.md`): it prepares the corpus if missing, runs the
-boards through the disk-driven queue manager (4 concurrent under the memory cap),
+boards through the disk-driven queue manager (admitted by load, under the per-step memory cap),
 aggregates the results, and drafts GitHub issues for new findings (filed only
 after user approval).
 

@@ -227,6 +227,73 @@ def read_impedance_for_pcb_data(pcb_data, input_file: Optional[str] = None) -> D
     return read_impedance_specs(pro_path_for_board(path))
 
 
+# --- #678: pour-served balls are a COMMITMENT, carried down the chain -------
+#
+# The BGA fanout's pour-direct serves a plane-net ball by fill contact instead
+# of a drop via (measured win: 38 rail balls, 18 -> 0 gap vias). That is a
+# PROMISE about a pour that a later route step can carve up: the ball's fill
+# island gets cut off the sourced region and the refill ships it split. The
+# fanout used to record only a per-net COUNT ('pour': n), in a process-local
+# report, so no later step could tell WHICH balls were promised. The list now
+# lives here, keyed by "REF.PAD" so it survives re-parses and both parse paths:
+#
+#     {"kicad_routing_tools": {"pour_served_pads":
+#         {"U3.E5": {"net": "GND", "layer": "F.Cu", "how": "pour"}, ...}}}
+#
+# `how` is 'pour' (fill contact at the ball) or 'pour_track' (#652: a short
+# same-layer track from the ball into the fill -- the same promise, one track
+# longer). The route step's in-run plane finalize reads it back and audits
+# every promised ball against the exact fill after routing (pour_promise.py).
+# There is deliberately no CLI flag and no GUI control: a promise is a
+# commitment, and defending it is default behaviour.
+POUR_SERVED_KEY = "pour_served_pads"
+
+
+def pour_served_key(component_ref: str, pad_number: str) -> str:
+    return f"{component_ref}.{pad_number}"
+
+
+def note_pour_served_pads(mapping: Dict[str, dict]) -> None:
+    """Record balls this fanout step promised to serve by fill contact
+    ({"REF.PAD": {"net": name, "layer": layer, "how": 'pour'|'pour_track'}})."""
+    _note(POUR_SERVED_KEY, mapping)
+
+
+def consume_pour_served_pads() -> Dict[str, dict]:
+    return _consume(POUR_SERVED_KEY)
+
+
+def persist_pour_served_pads(pro_path: str, mapping: Dict[str, dict],
+                             verbose: bool = True) -> bool:
+    return _persist_map(pro_path, POUR_SERVED_KEY, mapping,
+                        "Pour-served balls (#678, defended by later route steps)",
+                        verbose)
+
+
+def read_pour_served_pads(pro_path: str) -> Dict[str, dict]:
+    """The promise list from a .kicad_pro ({} when absent/unreadable)."""
+    try:
+        if not pro_path or not os.path.isfile(pro_path):
+            return {}
+        with open(pro_path, 'r', encoding='utf-8') as f:
+            proj = json.load(f)
+        m = (proj.get(PRO_NAMESPACE) or {}).get(POUR_SERVED_KEY) or {}
+        return {str(k): dict(v) for k, v in m.items()
+                if isinstance(v, dict)} if isinstance(m, dict) else {}
+    except Exception:
+        return {}
+
+
+def read_pour_served_for_pcb_data(pcb_data, input_file: Optional[str] = None
+                                  ) -> Dict[str, dict]:
+    """Promise list for the board an engine is working on (same discovery
+    rule as read_for_pcb_data: input_file, else PCBData.source_path)."""
+    path = input_file or getattr(pcb_data, 'source_path', "") or ""
+    if not path:
+        return {}
+    return read_pour_served_pads(pro_path_for_board(path))
+
+
 def locked_net_names(pcb_data) -> Set[str]:
     """Nets with any KiCad-locked segment or via. The user pinned that copper;
     rip machinery must never strip the net (a partial rip would strand the
@@ -238,6 +305,24 @@ def locked_net_names(pcb_data) -> Set[str]:
             if i in pcb_data.nets and pcb_data.nets[i].name}
 
 
+def cached_protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[str, str]:
+    """protection_map(), memoized per pcb_data for the in-run rip ladders.
+
+    The phase-3 tap ladder and the blocking analyser consult protection on
+    every candidate, and protection_map re-reads the sibling .kicad_pro each
+    time. The map cannot change mid-run (the .pro is read-only to the engine
+    and locked copper does not move), so one resolve per board is correct.
+    """
+    m = getattr(pcb_data, '_protection_map_memo', None)
+    if m is None:
+        m = protection_map(pcb_data, input_file)
+        try:
+            pcb_data._protection_map_memo = m
+        except Exception:
+            pass
+    return m
+
+
 def protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[str, str]:
     """Full protection map for a board: the .kicad_pro list plus nets with
     KiCad-locked copper. 'locked' wins where both apply -- unlike the .pro
@@ -247,12 +332,54 @@ def protection_map(pcb_data, input_file: Optional[str] = None) -> Dict[str, str]
     return m
 
 
+
+
+
+
 def exact_names(patterns: Optional[Iterable[str]]) -> Set[str]:
     """The non-glob entries of a pattern list: naming a net exactly is the
     deliberate-override signal that lifts its protection for this step."""
     if not patterns:
         return set()
     return {p for p in patterns if p and not (_GLOB_CHARS & set(p))}
+
+
+def stash_rip_overrides(pcb_data, patterns: Optional[Iterable[str]]) -> Set[str]:
+    """Record the exact-name rip overrides on pcb_data so the IN-RUN ladders
+    can honor them (run-6 z2 fix). The pre-run filters (--rip-existing-nets /
+    --force-reroute) already lift 'user' protection for exactly-named nets,
+    but the in-run ladders re-consult cached_protection_map, which still
+    lists them -- so the phase-3 tap cascade refused a net the operator had
+    explicitly named ('protected_skipped {"phase3 tap cascade":
+    {USB_DM_R: user}}' while --rip-existing-nets named it). 'locked' is
+    never overridable, here or anywhere."""
+    names = exact_names(patterns)
+    if names:
+        pcb_data._rip_override_names = set(
+            getattr(pcb_data, '_rip_override_names', None) or set()) | names
+    return getattr(pcb_data, '_rip_override_names', None) or set()
+
+
+def rip_override_names(pcb_data) -> Set[str]:
+    """The exact-name rip overrides stashed for this run (empty set if none)."""
+    return getattr(pcb_data, '_rip_override_names', None) or set()
+
+
+
+
+# What the last run's rip filters refused, and why: {context: {net: reason}}.
+# The print below is for a human reading a log; a PROGRAM driving the router
+# cannot see it, and the router's own failure hint tells that program to retry
+# with --rip-existing-nets naming exactly the net that was just refused. A
+# caller following that advice loops forever. route.py drains this into
+# JSON_SUMMARY['protected_skipped'] so the refusal is machine-readable, and so a
+# caller can tell "name it exactly to override" from "locked, no override ever".
+PROTECTED_SKIPPED: Dict[str, Dict[str, str]] = {}
+
+
+def clear_skipped() -> None:
+    """Reset the record. route.py calls this once per run."""
+    PROTECTED_SKIPPED.clear()
 
 
 def filter_rippable_names(names: List[str], protected: Dict[str, str],
@@ -271,11 +398,22 @@ def filter_rippable_names(names: List[str], protected: Dict[str, str],
         else:
             kept.append(n)
     if blocked:
+        PROTECTED_SKIPPED.setdefault(context, {}).update(
+            {n: protected[n] for n in blocked})
         by_reason: Dict[str, List[str]] = {}
         for n in blocked:
             by_reason.setdefault(protected[n], []).append(n)
         det = '; '.join(f"{r}: {', '.join(ns[:4])}{'...' if len(ns) > 4 else ''}"
                         for r, ns in sorted(by_reason.items()))
+        # The override hint only for the reasons that HAVE one (#1192): a
+        # 'locked' net was refused even if the caller named it exactly.
+        hints = []
+        if any(r != 'locked' for r in by_reason):
+            hints.append("name a net exactly (no glob) to override"
+                         + (" all but 'locked'" if 'locked' in by_reason else ""))
+        if 'locked' in by_reason:
+            hints.append("KiCad-locked copper has no override; unlock it in "
+                         "the board")
         print(f"  {len(blocked)} PROTECTED net(s) excluded from {context} ({det})"
-              f" -- name a net exactly (no glob) to override")
+              f" -- {'; '.join(hints)}")
     return kept

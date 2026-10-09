@@ -1,0 +1,8 @@
+# GitHub reads this file to render the "Sponsor" button on the repository page
+# and beside each release. Every entry appears in its dropdown.
+#
+# The same URLs live in kicad_routing_plugin/about_tab.py (DONATE_URL /
+# SPONSORS_URL / PAYPAL_URL), README.md and metadata.json -- change them together.
+github: drandyhaas
+ko_fi: drandyhaas
+custom: ["https://www.paypal.me/DrAndyHaas"]

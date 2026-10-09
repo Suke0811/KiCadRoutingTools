@@ -11,6 +11,18 @@ CLEARANCE = 0.25  # mm
 VIA_SIZE = 0.5  # mm
 VIA_DRILL = 0.3  # mm
 
+# Fab tier and escalation policy (#857/#530): THE one place these defaults
+# live -- fab_tiers.add_fab_tier_args (every routing CLI) and the GUI's
+# controls read them from here. Completion first (Andy, 2026-09-03): 'auto'
+# is the standard floor escalating to advanced when a fan-out, plane tap or
+# last-resort via cannot fit, 'fab' lets a descent go below the board's own
+# declared minimums to the tier floor -- the pre-#857 ladder, now disclosed
+# (the ledger, JSON_SUMMARY design_rules, the end-of-run line, --strict-sizes).
+# The hard tiers ('standard' / 'advanced') and the bounded policies
+# ('board' / 'off') are the opt-in for a run that must not narrow.
+FAB_TIER = 'auto'        # 'standard' | 'advanced' | 'auto'
+ESCALATION = 'fab'       # 'off' | 'board' | 'fab'
+
 # Grid parameters
 GRID_STEP = 0.1  # mm
 
@@ -38,7 +50,7 @@ DIAGONAL_MARGIN = 0.25  # mm
 UNBLOCK_REFIT_MARGIN_MM = 0.05  # mm (absolute; NOT a fraction like check_drc's clearance_margin)
 
 # Cost parameters
-VIA_COST = 50
+VIA_COST = 75  # 50 -> 75: #586 corpus (via75: -8 verdict, DRC -13, and composes with hw 2.3)
 VIA_PROXIMITY_COST = 10
 TURN_COST = 1000
 STUB_PROXIMITY_COST = 0.2
@@ -49,6 +61,11 @@ STUB_PROXIMITY_RADIUS = 2.0  # mm
 NECKDOWN_LENGTH = 2.5  # mm of narrow track from the pad on neck-down routes (issue #72)
 NECKDOWN_TAPER_LENGTH = 0.5  # mm narrow->wide width taper (0 = abrupt)
 TRACK_PROXIMITY_DISTANCE = 2.0  # mm
+# #1146 pairwise keep-away: band cost per cell (mm equivalent; 0 = measure
+# and report only) and the radius around the routed net's own pads where the
+# band is not priced.
+KEEP_AWAY_COST = 0.5
+KEEP_AWAY_FREE = 1.5  # mm
 BGA_PROXIMITY_RADIUS = 7.0  # mm
 BGA_PROXIMITY_COST = 0.2
 
@@ -104,9 +121,15 @@ STITCH_PITCH = 20.0  # mm
 
 # Algorithm parameters
 MAX_ITERATIONS = 200000
-HEURISTIC_WEIGHT = 1.9
-PROXIMITY_HEURISTIC_FACTOR = 0.02
-MAX_RIPUP = 3
+HEURISTIC_WEIGHT = 2.3  # 1.9 -> 2.3: #586 corpus dose-response peak (-30 verdict, DRC -67, cpu/mem ~0.85x; 1.7 and 2.5 both worse)
+PROXIMITY_HEURISTIC_FACTOR = 0.02  # restored from 0 (1af3096): "quality-neutral"
+# was measured on a CLI that never applied it -- route.py's argparse still passed an
+# explicit 0.02, which overrides the module default, so the corpus kept routing at 0.02
+# for two more commits. b50fc86 fixed that drift and connectivity dropped 17 nets on a
+# 5-board probe the same day; restoring 0.02 recovers 14 of them (50 -> 36 incomplete,
+# eis reaching zero). Neighbouring doses are NOT better (0.01 -> 49, 0.04 -> 55), so
+# treat 0.02 as the known-good value rather than a tuned optimum.
+MAX_RIPUP = 3  # briefly 5 (s2 rescan -30 on the curated set) -- REVERTED: holdout sets 11-15 showed ripup5+zoned ERASING the other flips' gains (v4 -2% vs lean -45% vs old defaults) at +37% CPU; deep rip-up stays retry-tier guidance
 # Phase 3 tap rip-up abandon metric (#85 arbitration); documented in
 # docs/rip-up-reroute.md "Abandon metrics". Must match phase3_routing.ABANDON_METRICS.
 RIPUP_ABANDON_METRIC = 'stranded'
@@ -126,7 +149,41 @@ RIPUP_BLOCKER_SELECT_CHOICES = ('count', 'near-target', 'bidir', 'mincut', 'cost
 
 # Layer direction preference (0=horizontal, 1=vertical, 255=none)
 # Alternates H/V starting with horizontal on top layer
-DIRECTION_PREFERENCE_COST = 250  # Cost penalty for non-preferred direction (0 = disabled).
+DIRECTION_PREFERENCE_COST = 250  # Cost penalty per off-axis move (0 = disabled).
+# 5 -> 250: REVERTS #663 (be73378b), re-screened with the ORACLE LEGS LIVE.
+#
+# #663 took this 250 -> 5 and reported -22 incomplete nets on sets1-5. That screen
+# ran on the old cloud image, which ships NO KiCad -- so find_kicad_cli() returned
+# None, oracle_reconnect returned available=False, and every oracle leg (the plane
+# finalize audit, the #589 re-audit, the oracle-summary check) was a no-op. Re-screened
+# at ONE commit with kicad/kicad:10.0.0 in the image, sets1-5, decision rule
+# pre-registered before any arm reported:
+#
+#     dirs    verdict (incomplete nets)   real DRC
+#       5            95                      58     <- #663's value
+#      25           116                      57
+#      50           117                      62
+#     250            89                      43     <- this
+#
+# 250 wins on BOTH axes (-6 nets; -15 DRC over 8 boards better / 1 worse) and lands
+# exactly on v0.21.2's own numbers -- paired against the released engine it is
+# W0/L0/T69 with identical DRC. This ONE constant accounted for 100% of main's
+# regression against 0.21.2; nothing else in the 21 commits since the tag moved it.
+#
+# 25 and 50 are worse than either end: a genuine interior WORST, not a plateau.
+# Do not "split the difference" here without measuring.
+#
+# Why #663 concluded the opposite: its 5 came from a 4-point sweep on ONE board
+# (orangecrab), and that board is an outlier for this knob -- a single-board
+# optimum that did not generalize. Do not re-derive this from one board.
+#
+# Two follow-ups measured and RETIRED, so they need not be re-litigated:
+#   * Coherence: making the oracle-weld/plane sub-configs follow this constant
+#     instead of their hardcoded 250 moved nothing (94/59 vs 95/58). The VALUE
+#     mattered; the mixed state did not.
+#   * Diff pairs at base/10 (the theory that a coupled pair cannot pay an
+#     off-axis tax): +6 nets and +52 real DRC vs plain 250, over 5 boards worse
+#     / 1 better. Refuted; the divisor was dropped.
 # 250 is a compromise: 5000 (5x a move) reproduced human H/V lane style but
 # starved routability on dense boards (sets 6-11 A/B: +104 incomplete nets,
 # kbic65 98.9%->15.1%, route.py ~2x slower); the old 50 (~5% of a move) was
@@ -182,7 +239,7 @@ BGA_DIFF_PAIR_GAP = 0.1  # mm
 # QFN Fanout defaults
 QFN_TRACK_WIDTH = 0.1  # mm
 QFN_CLEARANCE = 0.1  # mm
-QFN_EXTENSION = 0.1  # mm - extension past pad edge before bend
+QFN_EXTENSION = 0.05  # mm - extension past pad edge before bend (0.1 -> 0.05: s2 rescan, -25 verdict on 65 QFN boards -- shorter stubs leave routing room)
 
 # Differential Pair defaults
 DIFF_PAIR_WIDTH = 0.3  # mm track width for differential pairs (GUI diff tab
@@ -212,6 +269,11 @@ PLANE_PAD_STRAP_RADIUS = 1.5  # mm - max distance to strap a plane pad to an
                               # adjacent already-connected same-net pad instead
                               # of drilling another via (issue #349)
 PLANE_MAX_RIP_NETS = 3  # max blocker nets to rip up
+# Run-6 guard: nets with more pads than this are never PICKED as tap/join
+# blockers by the plane scripts' rip ladders -- ripping a rail as collateral
+# opens every one of its pads at once, and the in-step reconnect repeatedly
+# failed to restore them (test-board run 6: VCC3V3/VCC1V1 destroyed twice,
+# ripped_reconnect 0/2). Deliberately ripping a rail is still possible by
 PLANE_TRACK_VIA_CLEARANCE = 0.8  # mm - clearance from track center to other nets' via centers
 SAME_NET_PAD_CLEARANCE = -1.0  # mm - edge-to-edge clearance between via and same-net pads
                                # when placing plane stitching vias. -1 disables (allow via-in-pad).
@@ -292,6 +354,8 @@ PARAM_RANGES = {
     'via_proximity_cost': {'min': 0.0, 'max': 100.0, 'inc': 1.0, 'digits': 1},
     'track_proximity_distance': {'min': 0.0, 'max': 10.0, 'inc': 0.5, 'digits': 1},
     'track_proximity_cost': {'min': 0.0, 'max': 5.0, 'inc': 0.1, 'digits': 1},
+    'keep_away_free': {'min': 0.0, 'max': 10.0, 'inc': 0.5, 'digits': 1},
+    'keep_away_cost': {'min': 0.0, 'max': 5.0, 'inc': 0.1, 'digits': 1},
     'routing_clearance_margin': {'min': 0.5, 'max': 2.0, 'inc': 0.1, 'digits': 1},
     'hole_to_hole_clearance': {'min': 0.0, 'max': 1.0, 'inc': 0.05, 'digits': 3},
     'board_edge_clearance': {'min': 0.0, 'max': 5.0, 'inc': 0.1, 'digits': 3},

@@ -25,8 +25,8 @@ import subprocess
 import wx
 
 from .ai_backend import (
-    BACKENDS, BACKEND_IDS, DEFAULT_BACKEND_ID, get_backend,
-    extract_result_line,
+    ANALYSIS_CONSTRAINT, BACKENDS, BACKEND_IDS, DEFAULT_BACKEND_ID,
+    get_backend, extract_result_line,
 )
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +38,13 @@ if ROOT_DIR not in sys.path:      # top-level modules
 _ENGINE_DIR = os.path.join(ROOT_DIR, 'py_router')
 if os.path.isdir(_ENGINE_DIR) and _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
+# py_placer/ holds the placement package (placement.groups / .fanout_clearance
+# are imported from here) and py_tools/ the instruments. Same exists() guard so
+# a FLAT installed layout (PCM zip) keeps working.
+for _sib in ('py_placer', 'py_tools'):
+    _d = os.path.join(ROOT_DIR, _sib)
+    if os.path.isdir(_d) and _d not in sys.path:
+        sys.path.append(_d)
 
 # "Default" combo entry = don't pass the model/effort flag at all.
 DEFAULT_CHOICE = "Default"
@@ -66,7 +73,35 @@ def board_path_for_analysis(board_filename):
         base = os.path.basename(board_filename) if board_filename else "board.kicad_pcb"
         snapshot = os.path.join(tempfile.gettempdir(), f"kicadrt_analysis_{base}")
         try:
-            pcbnew.SaveBoard(snapshot, board)
+            # aSkipSettings: analysis snapshot; writing a .kicad_pro besides
+            # would crash on pre-KiCad-10 projects (uncaught C++ type_error
+            # in the .kicad_pro merge; see _stage_live_board in swig_gui.py).
+            pcbnew.SaveBoard(snapshot, board, aSkipSettings=True)
+            # Stage the on-disk project siblings beside the snapshot so the
+            # analysis sees the real netclasses and layer rules (#498) --
+            # the implicit settings save this replaced never carried the
+            # .kicad_dru at all. The snapshot path is deterministic, so a
+            # sibling left by an earlier snapshot of a DIFFERENT project
+            # must be removed, not inherited.
+            import shutil
+            # GUARDED for the same reason as placement_run.py: the
+            # plugin loader's sys.path is not the CLI's.
+            try:
+                from copy_board import SIBLING_EXTS
+            except Exception:                              # noqa: BLE001
+                SIBLING_EXTS = ('.kicad_pro', '.kicad_prl', '.kicad_dru',
+                                '.design-brief.json')
+            for ext in SIBLING_EXTS:
+                sib = (os.path.splitext(board_filename)[0] + ext
+                       if board_filename else None)
+                stale = os.path.splitext(snapshot)[0] + ext
+                try:
+                    if sib and os.path.isfile(sib):
+                        shutil.copy(sib, stale)
+                    elif os.path.isfile(stale):
+                        os.remove(stale)
+                except OSError:
+                    pass
             return snapshot
         except Exception as e:
             wx.MessageBox(
@@ -92,24 +127,48 @@ class AISkillRunner:
                                     error="Cancelled."
     """
 
-    def __init__(self, cli_path, on_transcript, on_done, backend=None):
+    def __init__(self, cli_path, on_transcript, on_done, backend=None,
+                 on_event=None):
         self.backend = backend or BACKENDS[DEFAULT_BACKEND_ID]
         self.cli_path = cli_path  # the backend's CLI path
         self.on_transcript = on_transcript
         self.on_done = on_done
+        # Optional raw-event tap (wx main thread): the parsed stream-json
+        # dict BEFORE formatting/truncation. The Placement tab's monitor
+        # derives its stage from full Bash commands this way - the formatted
+        # transcript prefers the tool's short description and truncates.
+        self.on_event = on_event
         self._process = None
         self._thread = None
         self._stream_state = None
+        self._stdin_payload = None
         self._cancel_requested = False
 
     def is_running(self):
         return self._thread is not None and self._thread.is_alive()
 
-    def run(self, prompt, model=None, effort=None):
+    def run(self, prompt, model=None, effort=None, **cmd_kwargs):
         if self.is_running():
             raise RuntimeError(f"a {self.backend.label} run is already in progress")
         cmd = self.backend.build_cmd(self.cli_path, prompt,
-                                     model=model, effort=effort)
+                                     model=model, effort=effort, **cmd_kwargs)
+        # npm installs resolve `claude`/`opencode` to a .cmd shim, which
+        # Windows launches through an implicit cmd.exe -- and cmd's tokenizer
+        # does not understand list2cmdline's \" escaping, so the first embedded
+        # quote in the prompt ends the quoted region and any | in it becomes a
+        # shell pipe. Both CLIs can take the prompt on stdin, so hand it over
+        # that way and keep the argv quote-free.
+        #
+        # The BACKEND does the split (#925). This used to search the argv for
+        # Claude's `-p` here, which no opencode command line contains: the
+        # lookup raised, the `except` swallowed it, and opencode went on
+        # passing a ~3 kB quoting-heavy prompt through cmd.exe -- dying at
+        # launch with "The system cannot find the file specified." A backend
+        # whose argv this runner does not recognise now stays on argv by
+        # DECLARATION rather than by an exception nobody sees.
+        self._stdin_payload = None
+        if os.name == "nt" and cmd and cmd[0].lower().endswith((".cmd", ".bat")):
+            cmd, self._stdin_payload = self.backend.stdin_prompt(cmd, prompt)
         self._stream_state = self.backend.stream_state()
         self._cancel_requested = False
         self._thread = threading.Thread(target=self._work, args=(cmd,), daemon=True)
@@ -130,16 +189,26 @@ class AISkillRunner:
             kwargs = {}
             if os.name == "nt":
                 kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            stdin_payload = self._stdin_payload
             self._process = subprocess.Popen(
                 cmd,
                 cwd=ROOT_DIR,  # skill discovery is working-directory based
+                stdin=subprocess.PIPE if stdin_payload is not None else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # utf-8, not the locale codec: the CLI emits UTF-8, and the
+                # RESULT= payload can carry file paths that must round-trip.
+                encoding="utf-8",
                 errors="replace",
                 bufsize=1,  # line-buffered: one stream-json event per line
                 **kwargs,
             )
+            if stdin_payload is not None:
+                try:
+                    self._process.stdin.write(stdin_payload)
+                finally:
+                    self._process.stdin.close()
             # Drain stderr concurrently so a chatty stderr can't fill its
             # pipe buffer and deadlock the stdout loop below.
             stderr_chunks = []
@@ -155,6 +224,8 @@ class AISkillRunner:
                     event = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
                     continue
+                if self.on_event is not None:
+                    wx.CallAfter(self.on_event, event)
                 text = state.feed(event)
                 if text:
                     wx.CallAfter(self.on_transcript, text)
@@ -361,11 +432,6 @@ class AITab(wx.Panel):
         ctrl_box = wx.StaticBox(self, label="AI")
         ctrl_sizer = wx.StaticBoxSizer(ctrl_box, wx.VERTICAL)
 
-        # Availability status (kept current by _refresh_backend_ui)
-        self.status_label = wx.StaticText(self, label="")
-        self.status_label.Wrap(280)
-        ctrl_sizer.Add(self.status_label, 0, wx.ALL, 5)
-
         # Backend / model / effort selection
         sel_grid = wx.FlexGridSizer(cols=2, hgap=5, vgap=5)
         sel_grid.AddGrowableCol(1)
@@ -539,17 +605,16 @@ class AITab(wx.Panel):
         self._refresh_backend_ui()
 
     def _refresh_backend_ui(self):
-        """Point the status label, combo suggestions, tooltips, and button
+        """Point the CLI status note, combo suggestions, tooltips, and button
         enablement at the selected backend."""
         backend = self._current_backend()
         self._last_backend = backend
         cli_path = backend.find_cli()
-        if cli_path:
-            self.status_label.SetLabel(f"{backend.label} CLI found: {cli_path}")
-        else:
-            self.status_label.SetLabel(
-                backend.not_found_message() + " Then reopen this dialog.")
-        self.status_label.Wrap(280)
+        # The transcript, not a label: a CLI path has no spaces to wrap at
+        # and ran past the control column.
+        note = backend.cli_status(cli_path)
+        if note not in self.output_ctrl.GetValue():
+            self.output_ctrl.AppendText(note + "\n")
         params = self._backend_params[backend.id]
         self.model_choice.Set(list(backend.model_suggestions))
         self.model_choice.SetValue(params['model'] or DEFAULT_CHOICE)
@@ -700,9 +765,9 @@ class AITab(wx.Panel):
             return
         self._start_run(
             "review-routed-board", board,
-            "analysis only, do not modify any files. After the report, end "
-            "your reply with exactly one line of the form RESULT=PASS or "
-            "RESULT=FAIL (the overall sign-off verdict)",
+            ANALYSIS_CONSTRAINT
+            + " After the report, end your reply with exactly one line of the "
+              "form RESULT=PASS or RESULT=FAIL (the overall sign-off verdict)",
             "review",
             f"Running review-routed-board on {os.path.basename(board)} ...\n"
             "(DRC + connectivity checkers + review; typically a few minutes)")
@@ -727,10 +792,11 @@ class AITab(wx.Panel):
             f.write(log_text)
         self._start_run(
             "diagnose-routing-failures", board,
-            f"the routing log from this GUI session is at {log_path}. "
-            "Analysis only, do not modify any files. After the report, end "
-            "your reply with exactly one line of the form RESULT=<one-line "
-            "recommended fix, or 'no failures found'>",
+            ANALYSIS_CONSTRAINT
+            + f" The routing log from this GUI session is at {log_path}."
+            + " After the report, end your reply with exactly one line of the "
+              "form RESULT=<one-line recommended fix, or 'no failures "
+              "found'>",
             "diagnose",
             f"Running diagnose-routing-failures on {os.path.basename(board)} "
             "+ the Log tab content ...\n(log analysis; typically a few minutes)")
@@ -748,9 +814,9 @@ class AITab(wx.Panel):
         from .ai_plan import PLAN_RESULT_SCHEMA
         self._start_run(
             "plan-pcb-routing", board,
-            "analysis and planning only: do not execute any routing commands "
-            "and do not modify any files. After the report, end your reply "
-            f"with exactly one line of the form {PLAN_RESULT_SCHEMA}",
+            ANALYSIS_CONSTRAINT
+            + " After the report, end your reply with exactly one line of the "
+              f"form {PLAN_RESULT_SCHEMA}",
             "plan",
             f"Running plan-pcb-routing on {os.path.basename(board)} ...\n"
             "(board analysis + datasheet lookups; typically several minutes)")
@@ -824,7 +890,14 @@ class AITab(wx.Panel):
         """Adopt a validated step list (from a fresh plan OR a loaded plan
         file): populate the checklist and pre-fill the tabs."""
         from .ai_plan import step_label, apply_step_params, \
-            apply_step_selection
+            apply_step_selection, user_fix_drc_preference, \
+            restore_fix_drc_preference
+        # "Fix DRC settings after routing" is the user's preference as well
+        # as a step parameter: read it before the reset and the pre-fill below
+        # touch it, and put it back after them, so loading a plan never
+        # changes what is saved on close -- and the executor, which reads the
+        # box when the plan starts, reads the user's own choice.
+        _fix_drc_pref = user_fix_drc_preference(self.routing_dialog)
         # A new plan supersedes the session's panel tweaks: reset every
         # routing parameter to defaults BEFORE applying the plan's values,
         # so options the plan does not specify run at CLI-default-
@@ -854,6 +927,7 @@ class AITab(wx.Panel):
                 notes += apply_step_selection(step, self.routing_dialog)
             except Exception as e:
                 notes.append(f"applying {step['action']}: {e}")
+        restore_fix_drc_preference(self.routing_dialog, _fix_drc_pref)
         for note in notes:
             self.output_ctrl.AppendText(f"plan: {note}\n")
             self._log(f"AI plan: {note}")
@@ -872,7 +946,16 @@ class AITab(wx.Panel):
                           "(or Load a plan file).", "AI",
                           wx.OK | wx.ICON_WARNING)
             return
+        # Default to <boardname>_plan.json next to the board.
+        default_dir = ""
+        default_file = "plan.json"
+        if self.board_filename:
+            default_dir = os.path.dirname(os.path.abspath(self.board_filename))
+            stem = os.path.splitext(os.path.basename(self.board_filename))[0]
+            if stem:
+                default_file = f"{stem}_plan.json"
         with wx.FileDialog(self, "Save plan (.json)", wildcard="*.json",
+                           defaultDir=default_dir, defaultFile=default_file,
                            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as dlg:
             if dlg.ShowModal() != wx.ID_OK:
                 return
@@ -952,10 +1035,17 @@ class AITab(wx.Panel):
             self._log("AI plan: stop requested (cancelling current step)")
 
     def _on_plan_step_progress(self, index, step, label, value, rng,
-                               elapsed, is_busy):
+                               elapsed, is_busy, force_repaint=False):
         """Mirror the working tab's status bar here: same text, same gauge,
         plus which step and its elapsed time -- a route_diff step reads
-        exactly like the differential tab while it runs."""
+        exactly like the differential tab while it runs.
+
+        Two feeds land here: the executor's POLL (main loop alive, normal
+        paint) and the ui_thread_status PUSH-mirror (`force_repaint=True`) for
+        steps that run ON the main loop -- fanout, cap optimize, the apply
+        phases -- where only a forced Refresh+Update can make the text visible
+        (same narrow repaint as gui_utils.ui_thread_status: label only, never
+        Gauge.Pulse, inside an action plugin)."""
         if not self:
             return
         mins, secs = divmod(int(elapsed), 60)
@@ -965,6 +1055,13 @@ class AITab(wx.Panel):
             text += f" - {label}"
         self.elapsed_label.SetLabel(text)
         self.Layout()
+        if force_repaint:
+            try:
+                self.elapsed_label.Refresh()
+                self.elapsed_label.Update()
+            except Exception:
+                pass
+            return  # gauge untouched: the value is meaningless mid-block
         try:
             if self.gauge.GetRange() != rng and rng > 0:
                 self.gauge.SetRange(rng)

@@ -98,6 +98,19 @@ def move_copper_text_to_silkscreen(content: str) -> str:
 # Graphic primitives that make up copper logos/artwork (no net). Functional copper
 # is zones / segments / vias / pads — never standalone graphics — so moving these
 # off copper is safe and only affects decoration.
+#
+# ...with ONE exception, #908: a footprint's own `fp_*` copper (a SOT89 tab, a
+# PCB antenna, a solder-jumper bridge) IS functional, and the net guard below
+# cannot see that, because a footprint shape cannot carry a `(net ...)` in
+# KiCad at all. The tags stay listed -- they are still handled -- but the
+# DECISION is now owner-aware: see `footprint_copper_is_functional`.
+#: The footprint tags the PARSER models as copper (kicad_parser._FP_SHAPE_TAGS).
+#: The keep decision below is scoped to exactly these: `fp_curve` is in the tag
+#: list above but the parser emits nothing for it, so keeping one on copper
+#: would leave it UNMODELLED there -- strictly worse than #146's relocation,
+#: and reported to the user as successfully "kept". Keep the two lists in step.
+_FP_MODELLED_TAGS = ('fp_poly', 'fp_line', 'fp_arc', 'fp_rect', 'fp_circle')
+
 _COPPER_GRAPHIC_TAGS = (
     'fp_poly', 'gr_poly', 'fp_line', 'gr_line', 'fp_circle', 'gr_circle',
     'fp_arc', 'gr_arc', 'fp_rect', 'gr_rect', 'fp_curve', 'gr_curve',
@@ -169,6 +182,35 @@ def strip_zero_length_edge_cuts(content: str) -> str:
     return ''.join(out)
 
 
+def _functional_footprint_spans(content: str):
+    """`[(start, end)]` of every footprint block whose copper this tool must
+    not relocate -- i.e. every footprint that has pads (#908).
+
+    Byte spans rather than references, because the caller works on raw text
+    offsets and a reference cannot say WHICH block on a board that spells one
+    reference twice.
+    """
+    if '(fp_' not in content:
+        return []
+    from kicad_parser import (_footprint_blocks_by_key, footprint_pad_count,
+                              footprint_copper_is_functional)
+    spans = []
+    for start, end, _key in _footprint_blocks_by_key(content):
+        if footprint_copper_is_functional(
+                footprint_pad_count(content[start:end])):
+            spans.append((start, end))
+    return spans
+
+
+def _in_any_span(pos: int, spans) -> bool:
+    """Is `pos` inside one of `spans`? Linear; the list is one entry per
+    pad-bearing footprint and the caller asks once per graphic primitive."""
+    for a, b in spans:
+        if a <= pos < b:
+            return True
+    return False
+
+
 def move_copper_graphics_to_silkscreen(content: str) -> str:
     """Move graphic primitives (logos / artwork drawn as polys, lines, arcs, ...)
     from copper layers to silkscreen, mirroring move_copper_text_to_silkscreen:
@@ -181,9 +223,32 @@ def move_copper_graphics_to_silkscreen(content: str) -> str:
     copper. A NET-TIED copper graphic is real functional copper (#337 models it
     as an immutable obstacle and DRC treats it as copper) and is LEFT IN PLACE --
     moving it would delete a real connection.
+
+    #908: that net guard is a NO-OP for footprint shapes, because a footprint
+    shape cannot carry a `(net ...)` in KiCad -- so until now EVERY `fp_*`
+    copper shape was relocated, and the corpus says what that costs: esp_prog
+    1, watchy 12, tigard 1, ulx3s 6, orangecrab_ext_pll 4 shapes moved off
+    copper on every single write. watchy's is a PCB antenna; esp_prog's is the
+    SOT89 tab under U2. Deleting a component's own land-pattern copper from a
+    board this tool was asked to route is not a routing decision to make.
+
+    The owner decides instead (`footprint_copper_is_functional`): a footprint
+    WITH pads owns functional copper, which stays and is now modelled by the
+    parser; a footprint with NO pads is a logo, which keeps #146's treatment
+    exactly. Board-level `gr_*` is untouched by this change.
     """
+    kept = 0
     count = 0
     for tag in _COPPER_GRAPHIC_TAGS:
+        # RECOMPUTED per tag pass, not hoisted: this loop rewrites `content`
+        # at the end of every iteration and each relocation grows the text by
+        # 3 bytes (F.Cu -> F.SilkS), so spans taken once from the original
+        # text drift out of alignment from the second tag onward. Measured:
+        # past ~33 relocated board-level logos a pad-bearing footprint's own
+        # land-pattern copper was relocated anyway -- the exact deletion this
+        # gate exists to stop, and silently, because the "Kept ..." line
+        # drifts away with it.
+        _keep_spans = _functional_footprint_spans(content)
         token = '(' + tag
         tlen = len(token)
         result_parts = []
@@ -225,6 +290,13 @@ def move_copper_graphics_to_silkscreen(content: str) -> str:
             if not net_tied:
                 name_match = re.search(r'\(net\s+"((?:[^"\\]|\\.)*)"\)', block)
                 net_tied = bool(name_match and name_match.group(1) != '')
+            if (layer_match and not net_tied and tag in _FP_MODELLED_TAGS
+                    and _in_any_span(start, _keep_spans)):
+                # #908: this footprint has pads, so its copper is the part's
+                # own land pattern, not decoration. Leave it on copper -- the
+                # parser models it, so nothing routes over it any more.
+                kept += 1
+                layer_match = None
             if layer_match and not net_tied:
                 layer = layer_match.group(1)
                 new_layer = 'F.SilkS' if layer == 'F.Cu' else 'B.SilkS'
@@ -239,6 +311,11 @@ def move_copper_graphics_to_silkscreen(content: str) -> str:
 
     if count > 0:
         print(f"  Moved {count} copper graphic(s)/logo(s) to silkscreen")
+    if kept > 0:
+        # Disclose what was KEPT, not only what was moved: this copper used to
+        # disappear from the deliverable silently (#908).
+        print(f"  Kept {kept} footprint copper shape(s) on copper "
+              f"(a part's own land pattern, not decoration)")
 
     return content
 
@@ -282,16 +359,59 @@ DEFAULT_VIA_TENTING = {'tenting': '(front yes) (back yes)'}
 VIA_PROTECTION_TOKEN_ORDER = ('tenting', 'covering', 'plugging', 'capping', 'filling')
 
 
-def via_protection_sexpr(tenting_attrs: dict = None, net_name: str = None) -> str:
+
+
+def via_protection_sexpr(tenting_attrs: dict = None,
+                         net_name: str = None,
+                         inherit_when_unspecified: bool = False) -> str:
     """The `(tenting ...)` / `(covering ...)` / ... fragment to emit for a via.
 
     `tenting_attrs` is a Via's parsed spec ({token: raw inner text}); passing it
-    keeps what the board actually specified. Without it the previous behavior
-    stands -- front+back tenting on KiCad 10 output -- since there is no
-    board-level policy to consult here (#489 §8).
+    keeps what the board actually specified. Without one, NOTHING is emitted,
+    in either dialect, so the via inherits the board's `(setup ...)` (see the
+    comment below for why the old front+back default was retired). The one
+    spec the tool itself decides is #962's Type VII on a via it added in a pad
+    or paste opening, and that arrives here as an ordinary `tenting_attrs`
+    (`fab_notes.via_protection_stamps`).
+
+      a real spec, either way   -> emit it
+      no spec                   -> emit NOTHING (the via inherits the board)
+
+    `inherit_when_unspecified` no longer changes the output (#741 made
+    inheriting the behaviour in all cases). Callers still pass True whenever
+    they RE-PLACE a via -- rip-up, sub-grid nudge, tap relocation -- because it
+    records at the call site that the via ALREADY EXISTED.
+
+    A KEYWORD rather than a sentinel value, deliberately. A sentinel object has
+    to survive being copied, and the copy idiom this repo actually uses for a
+    spec is `dict(via.tenting_attrs or {})` (fanout_clearance.py, plane_io.py)
+    -- which turns any dict-shaped sentinel back into a plain `{}` and silently
+    restores the bug. Carrying the DECISION separately from the VALUE cannot be
+    undone by copying the value.
     """
-    spec = tenting_attrs if tenting_attrs else (
-        DEFAULT_VIA_TENTING if net_name is not None else {})
+    # No spec -> emit NOTHING, in either dialect. The via then carries no
+    # protection token, which in KiCad means `*_MODE_FROM_BOARD`: it follows the
+    # board's own `(setup ...)` policy.
+    #
+    # This used to fall through to DEFAULT_VIA_TENTING on KiCad-10 output, and
+    # that was wrong in KiCad's own terms. Probed against pcbnew 10.0.0: a via
+    # left at FROM_BOARD serialises with NO token, and the token appears ONLY
+    # when the via explicitly overrides -- so stamping one converted an
+    # inheriting via into an OVERRIDE, which is not a thing this tool was ever
+    # asked to decide.
+    #
+    # Measured cost of the old behaviour, over 886 corpus boards: three
+    # (nanovoltmeter_marge, hexberry_fpga, pedal_404) declare
+    # `(tenting (front no) (back no))` board-wide -- do not tent -- and every
+    # via the tool added to them was stamped `(front yes) (back yes)`, silently
+    # contradicting the board. Tenting a via meant to stay exposed is a fab
+    # error, not a cosmetic one. On a board whose policy is KiCad's factory
+    # default the two agree, which is why this hid for so long.
+    #
+    # `inherit_when_unspecified` is therefore now the behaviour in ALL cases.
+    # The parameter is kept because callers pass it and it still records, at the
+    # call site, that a via ALREADY EXISTED -- see generate_via_sexpr.
+    spec = tenting_attrs if tenting_attrs else {}
     if not spec:
         return ""
     def _one(token: str, inner: str) -> str:
@@ -306,6 +426,80 @@ def via_protection_sexpr(tenting_attrs: dict = None, net_name: str = None) -> st
     parts += [_one(t, v) for t, v in spec.items()
               if t not in VIA_PROTECTION_TOKEN_ORDER]
     return "".join(f"\n\t\t{p}" for p in parts)
+
+
+def stamp_via_protection_in_content(content: str, stamps_by_uuid: dict):
+    """Insert a protection spec into the `(via ...)` blocks named by uuid (#962).
+
+    `stamps_by_uuid` is {via uuid: {token: inner}}. The tokens are inserted
+    where `generate_via_sexpr` writes them, just before the block's `(net ...)`.
+    Only tokens the block does NOT already carry are inserted: a token in the
+    file is the designer's or an earlier stamp and is never rewritten, so a
+    tenting-only via gains just the capping/filling it lacked (the stamp rule,
+    `fab_notes.via_protection_stamps`, has already declined any via that decides
+    capping or filling itself). Blocks come from the parser's own
+    paren-balanced `_via_blocks` scan, so a stamp cannot land in the wrong via
+    (#748). Returns `(content, n_stamped)`.
+    """
+    if not stamps_by_uuid:
+        return content, 0
+    from kicad_parser import _via_blocks
+    uuid_re = re.compile(r'\(uuid\s+"([^"]+)"\)')
+    edits = []
+    for start, blk in _via_blocks(content):
+        um = uuid_re.search(blk)
+        if not um or um.group(1) not in stamps_by_uuid:
+            continue
+        # only the tokens the block does not carry yet; one in the file is the
+        # designer's or an earlier stamp and is never rewritten
+        missing = {t: v for t, v in stamps_by_uuid[um.group(1)].items()
+                   if not re.search(r'\(' + re.escape(t) + r'[\s)]', blk)}
+        if not missing:
+            continue
+        k = blk.find('(net')
+        if k < 0:
+            k = blk.find('(uuid')
+        if k < 0:
+            continue
+        # insert the tokens, then re-open the line for `(net ...)`
+        edits.append((start + k, via_protection_sexpr(missing).lstrip() + '\n\t\t'))
+    if not edits:
+        return content, 0
+    out, pos = [], 0
+    for at, text in sorted(edits):
+        out.append(content[pos:at])
+        out.append(text)
+        pos = at
+    out.append(content[pos:])
+    return ''.join(out), len(edits)
+
+
+def via_net_name(net_id: int, net_id_to_name: dict) -> Optional[str]:
+    """This board's name for a net id, or None to mean "use the numeric dialect".
+
+    THE one resolver for every via emit site (#749 D). `net_id_to_name` has no
+    key `0` on any board -- `extract_nets` records `name_to_id[""] = 0` but never
+    builds a Net for id 0 -- so a legitimate no-net via missed the lookup at
+    every site and fell back to numeric. Measured: orangecrab_ext_pll resolves
+    169 nets and has no key 0.
+
+    That mattered more than a cosmetic dialect slip. `generate_via_sexpr` picks
+    the net dialect from `net_name` and the protection tokens from
+    `tenting_attrs` INDEPENDENTLY, so a numeric `(net N)` emitted alongside a
+    spec used to be a shape `extract_vias` could not read back at all -- the
+    barrel vanished from the model rather than merely losing its spec (#748,
+    fixed in the parser; this keeps the writer from producing the shape in the
+    first place). It also keeps a name-net board from acquiring numeric refs,
+    the mixed-dialect state `tests/stress/fix_mixed_net_refs.py` exists to undo.
+
+    An id the map genuinely does not know still answers None: that is a caller
+    passing an id from another board, and guessing a name for it would be worse
+    than the numeric ref.
+    """
+    if not net_id_to_name:
+        return None
+    name = net_id_to_name.get(net_id)
+    return '' if name is None and net_id == 0 else name
 
 
 def prevailing_via_protection(vias) -> Optional[dict]:
@@ -355,7 +549,8 @@ def prevailing_via_protection_in_text(content: str) -> Optional[dict]:
 
 def generate_via_sexpr(x: float, y: float, size: float, drill: float,
                        layers: List[str], net_id: int, free: bool = False,
-                       net_name: str = None, tenting_attrs: dict = None) -> str:
+                       net_name: str = None, tenting_attrs: dict = None,
+                       inherit_when_unspecified: bool = False) -> str:
     """Generate KiCad S-expression for a via.
 
     Args:
@@ -365,12 +560,18 @@ def generate_via_sexpr(x: float, y: float, size: float, drill: float,
             (Via.tenting_attrs). Pass it for any via that already existed so a
             ripped-and-re-placed via keeps its real tenting/plugging/filling
             instead of being re-stamped with front+back tenting (#489 §8).
+        inherit_when_unspecified: Pass True alongside it for a RE-PLACED via.
+            An empty spec then emits nothing, so a via that was inheriting the
+            board's `(setup (tenting ...))` keeps inheriting it rather than
+            gaining an explicit token it never had (#741). See
+            via_protection_sexpr.
     """
     layers_str = '" "'.join(layers)
     free_str = "\n\t\t(free yes)" if free else ""
     net_str = f'(net "{_escape_net_name(net_name)}")' if net_name is not None else f'(net {net_id})'
     # KiCad 10 adds structured tenting/covering/plugging fields after layers
-    tenting_str = via_protection_sexpr(tenting_attrs, net_name)
+    tenting_str = via_protection_sexpr(tenting_attrs, net_name,
+                                      inherit_when_unspecified)
     return f'''	(via
 		(at {x:.6f} {y:.6f})
 		(size {size})
@@ -475,7 +676,7 @@ def _polygons_overlap(pa, pb, eps: float = 0.02,
 
     Two things must not count as overlap, and each bit us in turn:
 
-    * ADJACENCY. route_planes' Voronoi cells tile the board, so neighbours
+    * ADJACENCY. route_planes' split regions tile the layer, so neighbours
       share a boundary and their vertices lie exactly ON each other's edges --
       where the even-odd rule is undefined, so a plain point-in-polygon test
       calls adjacent pairs "overlapping".
@@ -734,17 +935,30 @@ def npth_slot_keepout_polygons(pcb_data, dilate: float,
     return out
 
 
-def generate_keepout_zone_sexpr(layers: List[str],
-                                polygon_points: List[Tuple[float, float]],
-                                name: str,
-                                use_net_name: bool = False) -> str:
-    """Rule-area zone blocking only copper POUR (tracks/vias/pads stay
-    allowed -- the router enforces its own clearances). Used for the NPTH
-    slot edge keepouts (#448). use_net_name=True emits the KiCad 10 net
-    header (same switch as generate_zone_sexpr)."""
+#: The five keep-out flags of a KiCad rule area, in the order KiCad writes them.
+RULE_AREA_FLAGS = ('tracks', 'vias', 'pads', 'copperpour', 'footprints')
+
+
+def generate_rule_area_sexpr(layers: List[str],
+                             polygon_points: List[Tuple[float, float]],
+                             name: str,
+                             not_allowed=('tracks', 'vias', 'copperpour'),
+                             use_net_name: bool = False) -> str:
+    """A KiCad keep-out rule area: `(zone ... (keepout ...))` on `layers`,
+    forbidding each RULE_AREA_FLAGS member in `not_allowed` and allowing the
+    rest. The parser reads it back into ``board_info.keepouts``, which the
+    router stamps (`add_rule_area_keepout_obstacles`) and placement grades.
+    use_net_name=True emits the KiCad 10 net header (same switch as
+    generate_zone_sexpr)."""
+    bad = set(not_allowed)
+    unknown = bad - set(RULE_AREA_FLAGS)
+    if unknown:
+        raise ValueError(f"unknown rule-area flag(s): {sorted(unknown)}")
     pts_str = " ".join(f"(xy {x:.6f} {y:.6f})" for x, y in polygon_points)
     layers_str = " ".join(f'"{l}"' for l in layers)
     net_lines = '(net "")' if use_net_name else '(net 0)\n\t\t(net_name "")'
+    flags = "\n".join(f"\t\t\t({k} {'not_allowed' if k in bad else 'allowed'})"
+                      for k in RULE_AREA_FLAGS)
     return f'''	(zone
 		{net_lines}
 		(layers {layers_str})
@@ -756,11 +970,7 @@ def generate_keepout_zone_sexpr(layers: List[str],
 		)
 		(min_thickness 0.25)
 		(keepout
-			(tracks allowed)
-			(vias allowed)
-			(pads allowed)
-			(copperpour not_allowed)
-			(footprints allowed)
+{flags}
 		)
 		(fill
 			(thermal_gap 0.5)
@@ -772,6 +982,19 @@ def generate_keepout_zone_sexpr(layers: List[str],
 			)
 		)
 	)'''
+
+
+def generate_keepout_zone_sexpr(layers: List[str],
+                                polygon_points: List[Tuple[float, float]],
+                                name: str,
+                                use_net_name: bool = False) -> str:
+    """Rule-area zone blocking only copper POUR (tracks/vias/pads stay
+    allowed -- the router enforces its own clearances). Used for the NPTH
+    slot edge keepouts (#448). use_net_name=True emits the KiCad 10 net
+    header (same switch as generate_zone_sexpr)."""
+    return generate_rule_area_sexpr(layers, polygon_points, name,
+                                    not_allowed=('copperpour',),
+                                    use_net_name=use_net_name)
 
 
 def add_tracks_to_pcb(input_path: str, output_path: str, tracks: List[Dict],
@@ -859,7 +1082,15 @@ def add_tracks_and_vias_to_pcb(input_path: str, output_path: str,
         input_path: Path to original .kicad_pcb file
         output_path: Path for output file
         tracks: List of track dicts with keys: start, end, width, layer, net_id
-        vias: List of via dicts with keys: x, y, size, drill, layers, net_id
+        vias: List of via dicts with keys: x, y, size, drill, layers, net_id;
+            optionally free, and the two protection keys (#749 A):
+            tenting_attrs (the via's own parsed spec) and
+            inherit_when_unspecified (True for a via that ALREADY EXISTED, so
+            one carrying no spec keeps inheriting the board's `(setup ...)`
+            rather than gaining a token). A via with neither key is new copper
+            and gets no token, so it inherits the board's `(setup ...)` --
+            unless #962's Type VII stamp already set its `tenting_attrs`. See
+            docs/api-kicad-writer.md.
         remove_vias: List of via dicts with keys: x, y (position to match for removal)
         add_teardrops: Add teardrop settings to every pad and via in the output.
             Here rather than in each fanout main() so bga_fanout and qfn_fanout
@@ -961,7 +1192,31 @@ def add_tracks_and_vias_to_pcb(input_path: str, output_path: str,
     # Generate via S-expressions
     if vias:
         for via in vias:
-            via_net_name = net_id_to_name.get(via['net_id']) if net_id_to_name else None
+            # #749 A: this writer had NO tenting_attrs parameter at all, and it
+            # also takes remove_vias -- so a via removed and re-added round-trips
+            # through here and comes back re-stamped. Which behaviour is right
+            # depends on the caller, so the via dict carries the answer:
+            #
+            #   fanout / route_planes  -> new copper, no keys: prevailing spec
+            #   route.py's #666 re-emit -> PRE-EXISTING copper the written file
+            #                              lost, so its own spec, and inherit
+            #                              when it had none
+            #
+            # `inherit_when_unspecified` is the second half and not redundant:
+            # {} is what Via.tenting_attrs holds for a via that inherits the
+            # board's `(setup ...)`, so without it such a via would silently
+            # GAIN the prevailing spec on the way back in.
+            # A via this call ADDS carries no spec and so emits no token: it
+            # INHERITS the board's `(setup ...)` policy, which is what pcbnew
+            # does for a via the GUI adds and what KiCad does for one the user
+            # places. Copying the board's PREVAILING per-via spec onto it (the
+            # #489 s8 rule) is retired -- measured over 886 corpus boards, a
+            # prevailing spec never once disagreed with the board's own setup,
+            # so it only ever wrote a redundant token that turned an inheriting
+            # via into an override. Worse, the tool then read its OWN stamps
+            # back as "the board's convention" on the next run.
+            existing = bool(via.get('inherit_when_unspecified'))
+            attrs = via.get('tenting_attrs')
             v = generate_via_sexpr(
                 via['x'],
                 via['y'],
@@ -970,7 +1225,12 @@ def add_tracks_and_vias_to_pcb(input_path: str, output_path: str,
                 via['layers'],
                 via['net_id'],
                 via.get('free', False),
-                net_name=via_net_name
+                # #749 D: the ONE resolver, so a no-net via does not fall to the
+                # numeric dialect on a name-net board (net 0 is missing from
+                # every map).
+                net_name=via_net_name(via['net_id'], net_id_to_name),
+                tenting_attrs=attrs,
+                inherit_when_unspecified=existing,
             )
             elements.append(v)
 
@@ -1304,14 +1564,18 @@ def remove_segments_from_content(content: str, segments: List,
     if not segments:
         return content, 0
 
-    # #369 A1: gate on the net-token format the file ACTUALLY uses, like
-    # the caller (output_writer) does -- a pre-2025 header board that a
-    # previous pass round-tripped already carries (net "name") refs, and
-    # the old is_kicad_10 (header-only) gate made every strip a silent
-    # no-op there: ripped copper shipped alongside its replacement
-    # (stacked same-net drills; the #163/#344 stale-guard family).
-    from kicad_parser import board_uses_name_nets
-    use_names = net_id_to_name is not None and board_uses_name_nets(content)
+    # Net tokens are resolved PER BLOCK, in whichever dialect that block
+    # uses -- never from a file-level gate. The #369 A1 gate (match by the
+    # format the file "uses") still assumed a HOMOGENEOUS file; a MIXED-
+    # dialect board -- which this repo's own chain produces (#748/#749:
+    # segments `(net 6)` beside name-ref pads) -- reads as name-style, so
+    # every numeric segment block silently evaded the strip. Measured on
+    # the #622 bench: a force-rerouted net's stale input diagonal shipped
+    # verbatim and CROSSED the net routed into its vacated corridor (a
+    # hard short at (128.6, 64.2), the route.py same-call-shorts class).
+    # Both a numeric and a name ref now canonicalize to the same key.
+    def _canon(nid):
+        return net_id_to_name.get(nid, nid) if net_id_to_name else nid
 
     def seg_key(p1, p2, layer, net_token):
         return (frozenset((p1, p2)), layer, net_token)
@@ -1324,15 +1588,16 @@ def remove_segments_from_content(content: str, segments: List,
     targets = Counter()
     by_key = {}
     for s in segments:
-        net_token = (net_id_to_name.get(s.net_id) if use_names else s.net_id)
         k = seg_key(pos_key(s.start_x, s.start_y),
-                    pos_key(s.end_x, s.end_y), s.layer, net_token)
+                    pos_key(s.end_x, s.end_y), s.layer, _canon(s.net_id))
         targets[k] += 1
         by_key.setdefault(k, []).append(s)
 
     start_re = re.compile(r'\(start\s+([\d.-]+)\s+([\d.-]+)\)')
     end_re = re.compile(r'\(end\s+([\d.-]+)\s+([\d.-]+)\)')
-    layer_re = re.compile(r'\(layer\s+"?([^")]+)"?\)')
+    # Singular, or KiCad 9's mask-exposed (layers "F.Cu" "F.Mask"), which the
+    # parser models on its copper layer (#1158) -- so the strip must find it.
+    layer_re = re.compile(r'\(layer\s+"?([^")]+)"?\)|\(layers\s+"([^"]+\.Cu)"')
     net_name_re = re.compile(r'\(net\s+"((?:[^"\\]|\\.)*)"\)')
     net_id_re = re.compile(r'\(net\s+(\d+)\)')
 
@@ -1372,20 +1637,20 @@ def remove_segments_from_content(content: str, segments: List,
         ms, me, ml = start_re.search(block), end_re.search(block), layer_re.search(block)
         keep = True
         if ms and me and ml:
-            if use_names:
-                mn = net_name_re.search(block)
+            mn = net_name_re.search(block)
+            if mn:
                 # The file stores the ESCAPED name (backslash doubled, quote
                 # backslashed); targets use the parser's unescaped name. Undo
                 # the escapes or every backslash-named net silently evades the
                 # strip and its stale copper ships (neo6502 /GPIO*\* nets,
                 # found by the FILE_LEDGER audit -- #312/#264 family).
-                net_token = _unescape_kicad_string(mn.group(1)) if mn else None
+                net_token = _unescape_kicad_string(mn.group(1))
             else:
-                mn = net_id_re.search(block)
-                net_token = int(mn.group(1)) if mn else None
+                mi = net_id_re.search(block)
+                net_token = _canon(int(mi.group(1))) if mi else None
             key = seg_key(pos_key(float(ms.group(1)), float(ms.group(2))),
                           pos_key(float(me.group(1)), float(me.group(2))),
-                          ml.group(1), net_token)
+                          ml.group(1) or ml.group(2), net_token)
             if targets.get(key, 0) > 0:
                 targets[key] -= 1
                 keep = False
@@ -1419,14 +1684,12 @@ def remove_vias_from_content(content: str, vias: List,
     if not vias:
         return content, 0
 
-    # #369 A1: gate on the net-token format the file ACTUALLY uses, like
-    # the caller (output_writer) does -- a pre-2025 header board that a
-    # previous pass round-tripped already carries (net "name") refs, and
-    # the old is_kicad_10 (header-only) gate made every strip a silent
-    # no-op there: ripped copper shipped alongside its replacement
-    # (stacked same-net drills; the #163/#344 stale-guard family).
-    from kicad_parser import board_uses_name_nets
-    use_names = net_id_to_name is not None and board_uses_name_nets(content)
+    # Net tokens resolved PER BLOCK in either dialect -- see the segment
+    # twin above for the mixed-dialect hole this closes (#748/#749 boards:
+    # numeric refs on copper beside name refs elsewhere read as name-style,
+    # so every numeric block evaded the strip).
+    def _canon(nid):
+        return net_id_to_name.get(nid, nid) if net_id_to_name else nid
 
     # Counted multiset like the segment strip (#318 follow-up): only remove as
     # many blocks per key as were actually strip-listed.
@@ -1434,8 +1697,7 @@ def remove_vias_from_content(content: str, vias: List,
     targets = Counter()
     _v_by_key = {}
     for v in vias:
-        net_token = (net_id_to_name.get(v.net_id) if use_names else v.net_id)
-        _vk = (pos_key(v.x, v.y), net_token)
+        _vk = (pos_key(v.x, v.y), _canon(v.net_id))
         targets[_vk] += 1
         _v_by_key.setdefault(_vk, []).append(v)
 
@@ -1478,17 +1740,17 @@ def remove_vias_from_content(content: str, vias: List,
         ma = at_re.search(block)
         keep = True
         if ma:
-            if use_names:
-                mn = net_name_re.search(block)
+            mn = net_name_re.search(block)
+            if mn:
                 # The file stores the ESCAPED name (backslash doubled, quote
                 # backslashed); targets use the parser's unescaped name. Undo
                 # the escapes or every backslash-named net silently evades the
                 # strip and its stale copper ships (neo6502 /GPIO*\* nets,
                 # found by the FILE_LEDGER audit -- #312/#264 family).
-                net_token = _unescape_kicad_string(mn.group(1)) if mn else None
+                net_token = _unescape_kicad_string(mn.group(1))
             else:
-                mn = net_id_re.search(block)
-                net_token = int(mn.group(1)) if mn else None
+                mi = net_id_re.search(block)
+                net_token = _canon(int(mi.group(1))) if mi else None
             _vk = (pos_key(float(ma.group(1)), float(ma.group(2))), net_token)
             if targets.get(_vk, 0) > 0:
                 targets[_vk] -= 1
@@ -1755,36 +2017,27 @@ def swap_pad_nets_in_content(content: str, pad1: Pad, pad2: Pad) -> str:
         #369 A8: returns ALL same-number pads, not just the first -- connector
         shields / split EP paddles legally repeat one pad number, and swapping
         only the first left the twins on the old net (half-applied swap =
-        short/open at the target). Footprint references are matched via
-        (property "Reference" ...) with an (fp_text reference ...) fallback,
-        like the parser -- KiCad 6/7 boards only carry the latter, and bailing
-        here AFTER the segment/via relabels already applied shipped mixed-net
-        copper."""
-        fp_start_pattern = r'\(footprint\s+"[^"]*"'
+        short/open at the target).
+
+        #726: the footprint is located by the PARSER's key rather than by its
+        Reference string, so the KiCad 6/7 `(fp_text reference ...)` form is
+        handled for free and a duplicated reference resolves to the one block
+        the pad actually belongs to. Bailing here AFTER the segment/via
+        relabels have applied ships mixed-net copper, so a silent miss is the
+        expensive failure."""
+        from kicad_parser import iter_footprint_blocks
         spans = []
 
-        for fp_match in re.finditer(fp_start_pattern, content):
-            fp_start = fp_match.start()
-            # Find the end of this footprint block
-            depth = 0
-            fp_end = fp_start
-            for i, char in enumerate(content[fp_start:], fp_start):
-                if char == '(':
-                    depth += 1
-                elif char == ')':
-                    depth -= 1
-                    if depth == 0:
-                        fp_end = i + 1
-                        break
-
-            fp_text = content[fp_start:fp_end]
-
-            # Check if this footprint has the right Reference (KiCad 8+
-            # property, else the KiCad 6/7 fp_text form)
-            ref_pattern = rf'\(property\s+"Reference"\s+"{re.escape(component_ref)}"'
-            legacy_ref_pattern = rf'\(fp_text\s+reference\s+"{re.escape(component_ref)}"'
-            if not (re.search(ref_pattern, fp_text)
-                    or re.search(legacy_ref_pattern, fp_text)):
+        # Blocks are resolved by the PARSER's key (#726). `component_ref` comes
+        # off a `kicad_parser.Pad`, so on a board with two blocks named `TP4`
+        # it is `TP4~2` -- a name the old Reference-string match could never
+        # find, which made this a SILENT no-op after the segment/via relabels
+        # had already applied. Matching the string was equally wrong the other
+        # way: it took the first block carrying the name, which is a different
+        # physical part than the one the pad belongs to.
+        for fp_start, fp_end, fp_text, _raw_ref, key in iter_footprint_blocks(
+                content):
+            if key != component_ref:
                 continue
 
             # Find every pad with this number in this footprint

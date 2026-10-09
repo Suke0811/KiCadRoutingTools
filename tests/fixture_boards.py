@@ -9,7 +9,6 @@ alphabetically, which puts every consumer BEFORE its producer:
     test_493_interpreter_independence.py   27  <  test_fanout_and_route.py  91
     test_506_507_plan_movie_tools.py       37  <  test_fanout_and_route.py  91
     test_dru_layer_clearance_e2e.py        83  <  test_fanout_and_route.py  91
-    test_fanout_track_width_floor.py       93  <  test_interf_u.py         109
 
 So on a clean tree those tests could never pass, in any order. They had each
 grown their own `if not os.path.exists(...): print("SKIP"); return`, which turns
@@ -48,6 +47,12 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOARDS = os.path.join(ROOT, 'kicad_files')
+
+if os.path.join(ROOT, 'py_router') not in sys.path:
+    sys.path.insert(0, os.path.join(ROOT, 'py_router'))
+# One list, not a hand-written copy -- this file's said
+# ('.kicad_pcb', '.kicad_pro', '.kicad_prl') and dropped `.kicad_dru`.
+from copy_board import SIBLING_EXTS  # noqa: E402
 
 # Mirrors tests/test_fanout_and_route.py's parameter groups.
 _L4 = ['--layers', 'F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu']
@@ -92,6 +97,24 @@ class FixtureBuildError(RuntimeError):
     """A fixture board could not be produced from its tracked root."""
 
 
+# #522 moved the CLI scripts out of the repo root (bga_fanout / qfn_fanout /
+# route_planes -> py_router/). The recipes above name them bare, so resolve
+# here rather than in every lambda: a recipe added later gets this for free,
+# and a script that moves again is one list entry instead of N.
+_SCRIPT_DIRS = ('py_router', 'py_placer', 'py_tools', '')
+
+
+def _script_path(name):
+    """Absolute path to a fixture recipe's CLI script, by bare filename."""
+    for d in _SCRIPT_DIRS:
+        p = os.path.join(ROOT, d, name) if d else os.path.join(ROOT, name)
+        if os.path.isfile(p):
+            return p
+    raise FixtureBuildError(
+        f"fixture recipe wants {name}, which is in none of "
+        f"{', '.join(repr(d or '<root>') for d in _SCRIPT_DIRS)}")
+
+
 def _build(name, path):
     src_name, argv_for = _RECIPES[name]
     src = ensure(src_name)
@@ -103,7 +126,8 @@ def _build(name, path):
     stem = path[:-len('.kicad_pcb')]
     tmp_stem = f"{stem}.building{os.getpid()}"
     tmp = tmp_stem + '.kicad_pcb'
-    argv = [sys.executable] + argv_for(src, tmp)
+    argv = argv_for(src, tmp)
+    argv = [sys.executable, _script_path(argv[0])] + list(argv[1:])
     print(f"  [fixture] building {name} from {os.path.basename(src)} ...")
     try:
         r = subprocess.run(argv, capture_output=True, text=True, cwd=ROOT)
@@ -111,11 +135,11 @@ def _build(name, path):
             raise FixtureBuildError(
                 f"could not build {name}:\n  {' '.join(argv[1:])}\n"
                 f"{r.stdout[-1200:]}\n{r.stderr[-800:]}")
-        for ext in ('.kicad_pcb', '.kicad_pro', '.kicad_prl'):
+        for ext in ('.kicad_pcb',) + SIBLING_EXTS:
             if os.path.exists(tmp_stem + ext):
                 os.replace(tmp_stem + ext, stem + ext)
     finally:
-        for ext in ('.kicad_pcb', '.kicad_pro', '.kicad_prl'):
+        for ext in ('.kicad_pcb',) + SIBLING_EXTS:
             if os.path.exists(tmp_stem + ext):
                 os.unlink(tmp_stem + ext)
     return path

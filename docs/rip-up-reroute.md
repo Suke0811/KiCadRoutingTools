@@ -50,9 +50,145 @@ Validator-named blockers — identities proved by geometry validators such as vi
 
 ## Ripping Pre-Existing Routes
 
-By default only nets routed **in the current run** are rip-up candidates; tracks and vias already committed on the input board are left untouched, so re-running the router never disturbs existing routing. `route.py --rip-existing-nets PATTERN [PATTERN …]` opts specific pre-existing routed nets into the rip-up machinery: when one of them blocks a net the router is trying to route, it may be ripped up and re-routed like an in-run net. Use it on a board that a previous run (or another tool) already routed and that now needs a new net threaded through congested copper. Pass `'*'` to allow any non-plane net. Without the flag the default holds — pre-existing committed tracks are never ripped.
+Copper already committed on the input board can be ripped in two ways.
+
+**By default**, small pre-existing nets are rip candidates: a net that is unprotected (#521), not KiCad-locked, not zone-backed, not `!`-negated in `--nets`, and has at most 30 segments and 6 vias may be ripped when it blocks a net being routed. The rip is custody-backed: the victim is rerouted in the same run, or its original copper is restored, or -- when copper routed since the rip occupies its corridor -- at least its escape stub is kept (#468, #1156). The in-run plane finalize's pad repair may likewise rip a signal net that blocks a plane tap, under the same custody. `KICAD_RIP_PREEXISTING=0` and `KICAD_FINALIZE_RIP=0` switch the two off. The improvement gate still grades the result, so a run that broke more than it connected is reverted.
+
+**`route.py --rip-existing-nets PATTERN [PATTERN …]`** extends the authority past those limits to the matching pre-existing routed nets, whatever their size: when one of them blocks a net the router is trying to route, it may be ripped up and re-routed like an in-run net. Use it on a board that a previous run (or another tool) already routed and that now needs a new net threaded through congested copper. Pass `'*'` to allow any non-plane net. Protected nets need their exact name, and KiCad-locked copper is never ripped. The failure hint names which blocking nets this run could already rip, so the flag is only prescribed for the ones it would add.
 
 One exception: the end-of-run oracle-reconnect pass may auto-grant `--rip-existing-nets` authority over pre-existing blockers that earlier failure hints named (capped at 12). That escalation always respects the run's own net filter — a net the caller excluded by pattern (`'!GND'` while planes pour in a later step) is excluded *by plan* and is never auto-ripped; only an explicit operator `--rip-existing-nets` can override that.
+
+### When to grant rip authority — and when not to
+
+`--rip-existing-nets` and `--force-reroute` are **permissions to destroy
+already-routed copper**. The router will use them, and a rip whose restore is
+refused — its corridor was taken by copper routed while it was out — leaves
+that net broken. In the sets-21-27 corpus wave this was the single largest
+source of lost connectivity, ahead of routing failure itself (#600): 7 of 99
+boards, one turning a 3-pad problem into a 20-pad one while trying to fix it,
+another losing 20 nets all of their copper.
+
+Two things that are not obvious:
+
+- **Scoping `--nets` does not protect you.** One board regressed from a retry
+  naming three nets. It is the rip *permission* that does the damage, not the
+  route *scope*, so "just retry fewer nets" is not a safety measure.
+- **You usually do not need to pass anything.** The #103 escalation above
+  already grants the reconciliation rip authority over the exact blockers the
+  failures named, under guards (never protected, negated, plane-backed, or
+  large nets). A plain retry gets targeted rip authority for free; `'*'` adds
+  only the *untargeted* part.
+
+In rough order of preference for a congestion retry:
+
+1. **Re-run the whole signal step thinner** (fab-floor `--track-width`, finer
+   `--grid-step`). Thinner is monotonically better on dense boards and destroys
+   nothing.
+2. **Plain retry of the failed nets** — the in-run escalation supplies its own
+   targeted authority.
+3. **Named authority**: `--rip-existing-nets <the blockers the log named>`. The
+   router prints exactly which pre-existing nets boxed each failure; ripping
+   those is a decision, whereas `'*'` is a hope.
+4. **`--rip-existing-nets '*'`** — last resort. Especially avoid combining it
+   with `--force-reroute` over a large net list: that is the shape that cost
+   `spartan6_4layer` 20 nets' copper.
+
+Whatever you pass, the [improvement gate](#improvement-gate-600) is the
+backstop: a run that ends net-worse is reverted rather than shipped.
+
+## Improvement gate (#600)
+
+At the end of a run `route.py` compares the board it is about to ship against
+the board it was given, per multi-pad net, with the same authoritative
+union-find `check_connected` uses:
+
+- **lost** — connected before, broken after
+- **gained** — broken (or bare) before, connected after
+
+The run is **rejected** when it ends worse on **either** axis — more nets broken
+than it connected, *or* more disconnected pads than it started with. Both must
+be non-worse to ship. A rejected run's output file is replaced by the input
+board, because in every recorded case the pre-rip board was the better
+artifact, and the chain keeps a board to continue from.
+
+**Neither axis may outvote the other**, and `spartan6_4layer` is why. Re-running
+its wave command gives `lost 36, gained 43` — a net count that looks *better* by
+7 — while the board's disconnected pads go `83 → 154`. The nets it broke were
+far larger than the ones it closed. An earlier version of this gate compared
+the two lexicographically with the net count first and shipped that board. Pad
+count is the honest measure of how much of the board is unreachable, so a run
+that raises it is worse regardless of the net tally.
+
+This is still not an "any regression" test: a pass that closes five nets and
+breaks one ships, provided the pad count did not rise — the recovered pads
+outnumber the lost ones, which is exactly when discarding the run would throw
+away more than it saves.
+
+An equal trade on both axes ships, reported with both net lists named:
+`bms_sensor`'s retry reproduced today closes the three nets it was asked to
+close, breaks three others, and leaves the pad count unchanged. The operator who
+passed `--rip-existing-nets` authorised that; what they could not do before was
+see it.
+
+```
+IMPROVEMENT GATE: this run broke 3 previously-connected net(s) [/BMS.Can_L, /BMS.Enable_Out, V_+5V], worsened 0, connected 3 -- ACCEPTED
+  broken by this run: /BMS.Can_L, /BMS.Enable_Out, V_+5V
+  connected by this run: /CAN.Interrupt, /SPI.Clock, /SPI.Miso
+  disconnected pads: 3 -> 3 over 43 multi-pad net(s)
+```
+
+The verdict is also emitted as a machine-readable `JSON_IMPROVEMENT_GATE:` line
+(`lost`, `gained`, `worsened`,
+`disconnected_pads_before/after`, `nets_compared`, `verdict`, and, when a
+poured net outside `--nets` got worse, `excluded_plane_nets` /
+`rejected_on_excluded_plane_nets_alone`), so a chain can
+assert on it instead of grepping prose. The `--json-out` file carries the
+same report under `improvement_gate` (#1173), and after a revert it also
+says `"shipped": "input board"`, with a `shipped_note` saying that its
+tallies describe the rejected attempt, not the shipped board.
+
+**The head line names every net it judged on (#1032)**, each list at its own
+clause: `broke N [lost nets], worsened K [net before->after], connected M`.
+`worsened` is a net whose disconnected-pad count rose without being newly
+broken (it was already open), so it is not `lost`; the JSON `worsened` key
+holds exactly the same nets. Each list is capped at six.
+A pad-count-only rejection used to name nothing.
+
+**A poured net outside a scoped call's `--nets` is still judged.** The in-run
+finalize does not repair such a net (`finalize_excluded_nets`), so a lap that
+cuts its pour leaves those pads open, and the gate counts them: shipping the
+lap would ship the cut. Put the poured nets in `--nets` when the lap may cross
+their pours, so its finalize repairs what it cuts. The gate says so when it
+happens (#1114): such nets are listed as `excluded_plane_nets` in the JSON and
+on a line of their own in the report, and when the verdict would have been
+`accept` without them, `rejected_on_excluded_plane_nets_alone` is true and the
+report says the verdict rests on them ALONE, with that remedy in place of the
+advice below.
+
+**If you see `REVERTED`, the retry did not fail to run — it ran and was
+rejected.** Re-running it with *more* rip authority is the one response
+guaranteed not to help; change the approach instead (thinner, finer grid,
+different layer budget, or accept the open net and report it) -- unless the
+report says the verdict rests on excluded plane nets alone, above.
+
+`KICAD_IMPROVEMENT_GATE=0` disables the gate — for A/B measurement, or when you
+deliberately want the regressed board on disk to inspect it.
+
+**Both fronts measure and both revert**, by the same verdict from the same
+engine code. Only the spelling of the revert differs, because the artifact
+does: the file front rewrites the output as the input board; the GUI front
+returns an empty change-set, which is a true rollback rather than an un-apply
+because the plugin's applier runs *after* `batch_route` returns and therefore
+never touches the live board. The GUI also receives the verdict as
+`results_data['improvement_gate']`; diagnostics (`blockers`, `pad_pairs_open`,
+`boxed_in`) survive a rejection, since they are what the caller needs in order
+to try something different.
+
+The gate is skipped when it cannot mean anything: a run whose input board has
+no copper at all (nothing to regress), an in-place run (`output == input`,
+where no pre-run board survives to revert to), and every nested `batch_route` —
+the reconciliation sub-run and the plane finalize's reconnects all carry
+`final_reconcile=False`, and only the run that owns the artifact gates.
 
 ## Progressive N+1 Escalation
 
@@ -88,7 +224,7 @@ end up worse off. The *abandon decision* arbitrates: keep the retry, or
 abandon it, restore the net's original tap, and re-route the whole rip tree
 around it (issues #85, #354).
 
-`--ripup-abandon-metric` (GUI: Advanced tab → "Rip-up Abandon Metric"; env
+`--ripup-abandon-metric` (GUI: Advanced options tab → "Rip-up Abandon Metric"; env
 override `KICAD_RIPUP_ABANDON_METRIC` for replay A/Bs) selects how the two
 worlds are compared. All metrics except `stranded` compare the **retry
 world** (retry kept, rip-tree victims re-routed around it) against the

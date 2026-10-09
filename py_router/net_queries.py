@@ -7,7 +7,9 @@ MPS (Maximum Planar Subset) net ordering.
 from __future__ import annotations
 
 import math
+import difflib
 import fnmatch
+import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict, Set, Union
 
@@ -72,11 +74,16 @@ def net_pattern_matches(net_name: str, pattern: str) -> bool:
         net_pattern_matches('/GND_A', 'GND')                -> False
         net_pattern_matches('/GND', '/GND')                 -> True
         net_pattern_matches('/Analog/GND', '/GND')          -> False  (path given)
+
+    Case-SENSITIVE on every platform (#1208), as netclass membership is
+    (`list_nets`): plain `fnmatch.fnmatch` applies `os.path.normcase`, which
+    case-folds on Windows only, so `/*PCIE*` selected `/PCIe-M2/FB` there and
+    nowhere else.
     """
-    if fnmatch.fnmatch(net_name, pattern):
+    if fnmatch.fnmatchcase(net_name, pattern):
         return True
     if '/' not in pattern and '/' in net_name:
-        return fnmatch.fnmatch(net_name.rsplit('/', 1)[-1], pattern)
+        return fnmatch.fnmatchcase(net_name.rsplit('/', 1)[-1], pattern)
     return False
 
 
@@ -733,6 +740,164 @@ def expand_net_patterns(pcb_data: PCBData, patterns: List[str],
     return result
 
 
+# --------------------------------------------------------- component filters
+
+_REF_GLOB_CHARS = '*?['
+
+
+@dataclass
+class ComponentNetSelection:
+    """What :func:`nets_for_components` resolved a set of ref patterns to.
+
+    `unmatched_patterns` is the field that exists so a typo'd reference can be
+    reported as such: selecting nets by component and getting nothing back is
+    otherwise indistinguishable from "this component has no routable nets".
+    """
+    net_names: List[str]           # selected nets, sorted
+    net_ids: List[int]             # the same nets as ids, sorted
+    matched_refs: List[str]        # footprint references the patterns matched
+    unmatched_patterns: List[str]  # patterns that matched no footprint at all
+    excluded_names: List[str]      # nets dropped by `exclude_patterns`, sorted
+
+
+def component_ref_matches(ref: str, pattern: str, match: str = 'glob') -> bool:
+    """Match one footprint reference against one pattern.
+
+    Both modes send a pattern carrying an fnmatch metacharacter (``*?[``) through
+    fnmatch. They differ only in what a BARE token means:
+
+      ``glob``       bare token is an EXACT reference -- 'U1' does NOT match 'U10'
+      ``substring``  bare token is a substring        -- 'U1' matches 'U10', 'U100'
+
+    ``substring`` is the GUI Comp Filter's long-standing behaviour, and it is the
+    right reading there: it narrows a visible list as you type. ``glob`` is what
+    the CLI has always done, where the filter decides what copper gets placed and
+    a silently-included extra footprint is a real hazard.
+
+    Matching is case-insensitive, via ``fnmatchcase`` on upper-cased inputs so a
+    pattern resolves identically on Windows (where plain ``fnmatch`` case-folds
+    against the platform rules) and on POSIX (where it does not).
+    """
+    if not ref or not pattern:
+        return False
+    ref_u, pat_u = ref.upper(), pattern.upper()
+    if any(c in pattern for c in _REF_GLOB_CHARS):
+        return fnmatch.fnmatchcase(ref_u, pat_u)
+    if match == 'substring':
+        return pat_u in ref_u
+    return ref_u == pat_u
+
+
+def suggest_component_refs(refs, pattern: str, limit: int = 3) -> str:
+    """" (did you mean 'U3', 'U4'?)" for a reference pattern that matched nothing."""
+    if not pattern or not refs:
+        return ""
+    close = difflib.get_close_matches(pattern.upper(),
+                                      {r.upper(): r for r in refs}, n=limit, cutoff=0.6)
+    by_upper = {r.upper(): r for r in refs}
+    names = [by_upper[c] for c in close if c in by_upper]
+    return f" (did you mean {', '.join(repr(n) for n in names)}?)" if names else ""
+
+
+def nets_for_components(pcb_data: PCBData,
+                        patterns,
+                        *,
+                        mode: str = 'any',
+                        match: str = 'glob',
+                        exclude_patterns: Optional[List[str]] = None
+                        ) -> ComponentNetSelection:
+    """Nets touching the footprints matched by `patterns` (issue #537).
+
+    This is the single implementation of "the nets of these components". It
+    replaced four divergent ones that disagreed about the only question that
+    matters -- whether 'U1' also means U10, U12 and U100 -- so the same request
+    selected different nets on the CLI, in the GUI, and in a replayed plan.
+    Callers pick the policy explicitly via `match` (see
+    :func:`component_ref_matches`) instead of inheriting whichever loop they
+    happened to be written next to.
+
+    mode:
+      ``any``       net has >=1 pad on a matched footprint (the historical
+                    behaviour of every call site, and the default)
+      ``between``   net reaches >=2 DISTINCT matched footprints -- the wires
+                    running between the selected parts. Note this is stricter
+                    than ">=2 matched pads": two pads of one net on a single
+                    matched footprint run between nothing.
+      ``internal``  EVERY pad of the net is on a matched footprint -- the nets
+                    that do not leave the selected block. Beware that this is
+                    near-empty for a SINGLE selected footprint, which reads as a
+                    bug rather than as the correct answer it is.
+
+    `exclude_patterns` (e.g. POWER_NET_EXCLUSION_PATTERNS) drops matching nets
+    from the result and reports them in `excluded_names`, so a caller can say
+    what it dropped rather than dropping it silently.
+    """
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    patterns = [p.strip() for p in (patterns or []) if p and p.strip()]
+    if mode not in ('any', 'between', 'internal'):
+        raise ValueError(f"nets_for_components: bad mode {mode!r}")
+    if match not in ('glob', 'substring'):
+        raise ValueError(f"nets_for_components: bad match {match!r}")
+    if not patterns:
+        return ComponentNetSelection([], [], [], [], [])
+
+    # Every reference the board carries. `footprints` is the authoritative list,
+    # but pads carry `component_ref` independently, so union both -- a pattern is
+    # only "matched nothing" if it misses everything a pad could name.
+    all_refs = set(pcb_data.footprints or {})
+    for pads in pcb_data.pads_by_net.values():
+        for pad in pads:
+            if pad.component_ref:
+                all_refs.add(pad.component_ref)
+
+    matched_refs: Set[str] = set()
+    unmatched: List[str] = []
+    for pattern in patterns:
+        hits = {r for r in all_refs if component_ref_matches(r, pattern, match)}
+        if hits:
+            matched_refs |= hits
+        else:
+            unmatched.append(pattern)
+
+    selected: List[Tuple[str, int]] = []
+    for net_id, pads in pcb_data.pads_by_net.items():
+        if net_id <= 0 or not pads:
+            continue
+        on_matched = [p for p in pads if p.component_ref in matched_refs]
+        if not on_matched:
+            continue
+        if mode == 'between':
+            if len({p.component_ref for p in on_matched}) < 2:
+                continue
+        elif mode == 'internal':
+            if len(on_matched) != len(pads):
+                continue
+        net = pcb_data.nets.get(net_id)
+        name = (net.name if net and net.name else None) or pads[0].net_name
+        if name:
+            selected.append((name, net_id))
+
+    excluded: List[str] = []
+    if exclude_patterns:
+        kept = []
+        for name, net_id in selected:
+            if any(p and fnmatch.fnmatchcase(name.upper(), p.upper())
+                   for p in exclude_patterns):
+                excluded.append(name)
+            else:
+                kept.append((name, net_id))
+        selected = kept
+
+    return ComponentNetSelection(
+        net_names=sorted({n for n, _ in selected}),
+        net_ids=sorted({i for _, i in selected}),
+        matched_refs=sorted(matched_refs),
+        unmatched_patterns=unmatched,
+        excluded_names=sorted(set(excluded)),
+    )
+
+
 def identify_power_nets(pcb_data: PCBData,
                         patterns: List[str],
                         widths: List[float]) -> Dict[int, float]:
@@ -767,7 +932,7 @@ def identify_power_nets(pcb_data: PCBData,
 
         # Check patterns in order - first match wins
         for pattern, width in zip(patterns, widths):
-            if fnmatch.fnmatch(net.name, pattern):
+            if fnmatch.fnmatchcase(net.name, pattern):
                 power_net_widths[net_id] = width
                 break
 
@@ -790,9 +955,114 @@ def _gnd_base(name: str) -> str:
 
 def is_ground_net_name(name: str) -> bool:
     """True if a net name is in the GND family (GND, /GND, GNDA, AGND, DGND,
-    PGND, GND_D, GND1, ...); the sheet-path prefix is stripped first (#379)."""
+    PGND, GND_D, GND1, ...); the sheet-path prefix is stripped first (#379).
+
+    KNOWN and deliberately not widened: this does NOT match `VSS`, while
+    `list_nets.find_power_nets` calls VSS ground. No tracked board names a net
+    `VSS*`, so the divergence is structurally untestable here -- and widening a
+    predicate five other call sites already depend on, to fix a case no fixture
+    can exercise, is how the "second copy drifts" lesson gets earned rather than
+    read. Consumers that care must say which spelling they mean.
+    """
     b = _gnd_base(name)
     return b.startswith('GND') or b in _GND_SUFFIX_NAMES
+
+
+#: Pin-FUNCTION names that mean "supply" (#705). Lifted verbatim from the
+#: closure that used to live inside `analyze_power_paths.get_power_net_
+#: recommendations`, where it was unreachable to every other caller -- so the
+#: placement side had no pin-level power predicate at all and issue #705's
+#: channel 2 would have had to copy it. It is a power-AND-GROUND table: it was
+#: written for a current-summing tool that wanted both sides of the supply, and
+#: a caller that means "rail, not return" must exclude ground itself.
+POWER_PIN_KEYWORDS = ('VCC', 'VDD', 'VSS', 'GND', 'VCCA', 'VSSA', 'VDDA',
+                      'VDDPLL', 'VCCPLL', 'GNDPLL', 'VRH', 'VRL', 'AVDD',
+                      'AVSS')
+
+
+def is_supply_pintype(pintype: str) -> bool:
+    """Is this pad's `pintype` a supply pin the tool should grade?
+
+    Token-split, and BOTH halves are load-bearing. KiCad writes compound
+    pintypes, and every compound spelling in the tracked corpus is
+    `X+no_connect` -- 383 pads in all: 275 `passive`, 51 `bidirectional`,
+    21 `tri_state`, 15 `input`, 14 `output`, 4 `open_collector` and 3
+    `power_in`. (An earlier draft said 557 and 63 for the first two: those
+    came from a wider board glob rather than `corpus_boards()`, and were
+    overstated in the direction that flatters the argument. Only the
+    load-bearing 3 was right.) So:
+
+    * `pintype in ('power_in', 'power_out')` DROPS `power_in+no_connect`, which
+      is the right answer for the wrong reason -- it would drop a
+      `power_in+anything_else` too;
+    * `pintype.startswith('power_in')` GRADES it, which is wrong: a pin the
+      designer marked no-connect is uncovered by definition and would be
+      reported forever.
+
+    Measured, that one pad is the whole difference between "12 of 12 covered"
+    and "1 uncovered" on `glasgow_revC` U30 (pad B10, `VPP_FAST`), the cleanest
+    board in the corpus -- so the decision deserves a named predicate rather
+    than being a side effect of `in` versus `startswith`.
+    """
+    tokens = (pintype or '').split('+')
+    return (('power_in' in tokens or 'power_out' in tokens)
+            and 'no_connect' not in tokens)
+
+
+def is_supply_pinfunction(pinfunction: str, keywords=None) -> bool:
+    """Is this pad's `pinfunction` a supply name? Exact match or prefix.
+
+    Prefix is load-bearing: real boards spell the pin `VCC_14`, `GND_7`,
+    `VCC_16`. `keywords` overrides the default table wholesale (the intent's
+    `decaps.pin_functions`), because the failure mode is a DEFAULT entry that is
+    wrong for a board and an add-only override cannot remove one.
+    """
+    fn = (pinfunction or '').upper()
+    if not fn:
+        return False
+    # UPPER-CASED on both sides. The pad's value is upper-cased above, so an
+    # author writing `"pin_functions": ["vcc"]` silently disabled channel 2
+    # entirely -- measured on lvds_converter_dualclk, `["VCC"]` gives 3 errors
+    # and `["vcc"]` gives 0, falling through to the rail-net channel. That is
+    # exactly the failure the empty-list refusal was added to prevent, arriving
+    # through a spelling instead of a length.
+    kws = (POWER_PIN_KEYWORDS if keywords is None
+           else tuple(str(k).upper() for k in keywords))
+    return any(fn == kw or fn.startswith(kw) for kw in kws)
+
+
+def is_power_pin(pinfunction: str, pintype: str, keywords=None) -> bool:
+    """Either channel says supply. The form `analyze_power_paths` re-exports.
+
+    Behaviour-preserving against the closure this replaces on every pad of
+    every tracked board: the old form tested `pintype in ('power_in',
+    'power_out')`, and the two disagree only on a compound pintype that is not
+    `X+no_connect`, of which the corpus has none.
+    """
+    return (is_supply_pintype(pintype)
+            or is_supply_pinfunction(pinfunction, keywords))
+
+
+#: Net-NAME shapes that mean power or ground. Moved here from
+#: `placement.groups._POWER_NET`, unchanged, so the pin rule's rail-net fallback
+#: and the block-prefix grouper cannot drift apart.
+#:
+#: It is a PREFIX test on the sheet-path leaf, and it is loose on purpose for
+#: its original job (rejecting a net as a block-name source). Read as a supply
+#: test it over-matches -- the `\\d` and `pwr` and `vref` alternatives make
+#: `40M_P`, `32K_N`, `2V5_3V3` and `VREF` all "power" -- and it UNDER-matches
+#: the rails that matter most: it does not match `RAM_VDD`, `RAM_VDDQ` or
+#: `IOVDD`, because those do not START with a supply token. Measured, that
+#: under-match is why `orangecrab_ext_pll` abstains instead of grading 17 chips
+#: on ground, which is the true answer -- so it is disclosed, not widened.
+_POWER_NET_RE = re.compile(r'^(a?gnd|dgnd|pgnd|vcc|vdd|vss|vee|vbus|vin|vout|'
+                           r'vref|pwr|\+|-|\d)', re.I)
+
+
+def is_power_net_name(name: str) -> bool:
+    """True if a net name LOOKS like a rail or a return, by its leaf."""
+    leaf = (name or '').split('/')[-1]
+    return bool(leaf) and bool(_POWER_NET_RE.match(leaf))
 
 
 def resolve_gnd_net_id(pcb_data: PCBData,
@@ -1111,7 +1381,7 @@ def matches_diff_pair_patterns(net_name: str, base_name: str, patterns: List[str
     """
     candidates = (net_name, net_name.rsplit('/', 1)[-1],
                   base_name, base_name.rsplit('/', 1)[-1])
-    return any(fnmatch.fnmatch(candidate, pattern)
+    return any(fnmatch.fnmatchcase(candidate, pattern)
                for pattern in patterns for candidate in candidates)
 
 
@@ -1209,11 +1479,34 @@ def find_single_ended_nets(
             continue
 
         # Check if this net matches any pattern
-        matched = any(fnmatch.fnmatch(net_name, pattern) for pattern in patterns)
+        matched = any(fnmatch.fnmatchcase(net_name, pattern) for pattern in patterns)
         if matched:
             result.append((net_name, net_id))
 
     return result
+
+
+def pad_landing_extent(size_x: float, size_y: float, shape: str,
+                       rect_rotation: float, track_width: float):
+    """Where on a pad's copper a track may LAND -- the router's own rule.
+
+    Returns ``None`` when the router lands only at the pad centre (a pad
+    tilted off-axis, or one too small to hold the track cross-section),
+    else ``(half_x, half_y, round_outline)``: the pad's half-dims shrunk by
+    track_width/2 so the whole track stays inside the copper, clipped to the
+    inscribed ellipse when ``round_outline`` (circle and oval pads).
+
+    ONE rule for two consumers: `single_ended_routing._free_on_pad_cells`
+    (#479, the blocked-terminal seeding) and placement's rule-area keep-out
+    channel (#1031), which must not accept a pose the router cannot land on.
+    """
+    if rect_rotation:
+        return None
+    half_x = (size_x or 0.0) / 2.0 - track_width / 2.0
+    half_y = (size_y or 0.0) / 2.0 - track_width / 2.0
+    if half_x <= 0 or half_y <= 0:
+        return None
+    return half_x, half_y, shape in ('circle', 'oval')
 
 
 def expand_pad_layers(pad_layers: List[str], routing_layers: List[str]) -> List[str]:
@@ -1235,6 +1528,17 @@ def expand_pad_layers(pad_layers: List[str], routing_layers: List[str]) -> List[
         if layer == "*.Cu":
             # Expand to all copper routing layers
             expanded.extend(routing_layers)
+        elif layer in ("F&B.Cu", "F&B"):
+            # KiCad's OTHER copper layer-set token: front and back only, never
+            # the inners. It ends in ".Cu" but is not a layer, so the
+            # `endswith` branch below used to pass it through VERBATIM -- and
+            # "F&B.Cu" matches no real layer name, so every consumer scoping by
+            # this silently gave such a pad NO copper layer at all: unroutable
+            # to the router, invisible to the connectivity and clearance
+            # scopes. The bare "F&B" spelling is accepted because
+            # obstacle_map.py, plane_fill_model.py and pcb_modification.py all
+            # already accept both for zone layer tokens.
+            expanded.extend(["F.Cu", "B.Cu"])
         elif layer.endswith(".Cu"):
             # Regular copper layer
             expanded.append(layer)
@@ -1306,18 +1610,40 @@ def get_chip_pad_positions(pcb_data: PCBData, net_ids: List[int], min_pads: int 
     pad -- the future escape needs the surrounding space, so routing is
     discouraged near it.
 
-    Two gates (both matter):
-    - Package type, not raw pad count. Historically ANY footprint with
-      >= min_pads pads was a "chip", which made 4-pad capacitors and big
-      pin-header/edge connectors pseudo-stub emitters; a many-pin connector
-      concentrates many distinct nets' fields in one small area (exactly the
-      open-field stacking the #584 sum experiment measured), yet its coarse
-      pads need no escape protection. Only escape-constrained fine-pitch
-      packages qualify.
-    - No stub attached. Once fanout (or routing) has attached same-net copper
-      to the pad -- a segment end or a via inside the pad's reach -- the REAL
-      stub endpoint is the proximity signal (get_stub_endpoints) and the pad
-      proxy retires; keeping it would defend space the escape already used.
+    #585 item 8 added two gates. Both are ON by default (f785a7e's shipped
+    behaviour) and independently disablable with =0. They were briefly defaulted
+    OFF on a two-board 2x2 whose spread turned out comparable to its own noise;
+    two corpus A/Bs then measured ON BETTER -- by 3 nets on 148 boards, and by 2
+    on 129 boards with smoothing restored (7 boards better, 4 worse). They stay
+    SEPARATE knobs because the two are wildly asymmetric in reach: on spartan6's
+    final board the retire gate removes 95% of emitters (667 -> 33 pads) while
+    the package gate removes a third (667 -> 448).
+
+    - `KICAD_FINE_PITCH_PSEUDO_STUBS` (default ON) -- emit only for BGA/QFN/QFP. Introduced
+      to stop 4-pad capacitors and dense connectors emitting fields, reasoning
+      that "coarse pads need no escape protection". But the field protects
+      ARRIVAL as much as escape, and without it nets could not REACH multi-pin
+      headers: spartan6_6layer went 2 -> 7 incomplete nets across this commit,
+      three of four casualties on 24-pin headers H1/H5/H7 (package 'OTHER'),
+      and the same class took cubesat_backplane's /H2-* nets.
+
+      Its stacking rationale is also weaker than it looks under the shipped
+      default: composition is MAX (KICAD_PROXIMITY_SUM unset), so N overlapping
+      fields cost the max, not the sum -- a connector cannot inflate cost by
+      concentration unless an opt-in sum/zoned/softcap mode is selected.
+
+    - `KICAD_PSEUDO_STUB_RETIRE` (default ON) -- drop the proxy once same-net copper reaches
+      the pad, on the grounds that the real stub endpoint takes over as the
+      proximity signal. Plausible, but it retires on ANY attachment: a header
+      pad with one stub on it stops defending the corridor the REST of its
+      route still needs.
+
+    Kept as knobs rather than reverted because the trade is real and
+    board-dependent: a "re-admit dense connectors" variant regressed glasgow
+    while helping lpddr4 (#585 item 8). The likely missing piece is MAGNITUDE,
+    not membership -- the radius is a flat STUB_PROXIMITY_RADIUS (2.0mm)
+    whether the pad is a 0.5mm BGA ball or a 2.54mm header pin, so re-admitted
+    headers got a BGA-sized keep-out. A pitch-scaled radius would settle it.
 
     Args:
         pcb_data: PCB data
@@ -1327,33 +1653,53 @@ def get_chip_pad_positions(pcb_data: PCBData, net_ids: List[int], min_pads: int 
     Returns:
         List of (x, y, layer) tuples for chip pad positions.
     """
+    import env_knobs
+    import numpy as _np
     from kicad_parser import detect_package_type
 
     net_id_set = set(net_ids)
 
-    # Fine-pitch chip packages only (sorted for deterministic output order).
-    # A "qualify by >=8 distinct routable nets too" variant (re-admitting
-    # IO-bank headers / dense connectors) was A/B'd and NOT adopted: it
-    # regressed glasgow's default-mode result back to baseline while only
-    # marginally helping lpddr4 -- see #585 item 8 for the grid.
-    chip_refs = sorted(
-        ref for ref, footprint in pcb_data.footprints.items()
-        if footprint.pads and len(footprint.pads) >= min_pads
-        and detect_package_type(footprint) in ('BGA', 'QFN', 'QFP'))
+    # Sorted for deterministic output order. Footprints never move during a
+    # run, so the chip-ref list is board-static -- memoized per (min_pads,
+    # gate) on pcb_data (2026-08-14 profiling: this function was 95s of the
+    # orangecrab step, called 1,464x with a full package-detect + segment
+    # scan and a 570M-iteration retire genexpr each time).
+    _fine_only = env_knobs.FINE_PITCH_PSEUDO_STUBS
+    _refs_memo = getattr(pcb_data, '_chip_refs_memo', None)
+    if _refs_memo is None:
+        _refs_memo = pcb_data._chip_refs_memo = {}
+    _rk = (min_pads, _fine_only)
+    chip_refs = _refs_memo.get(_rk)
+    if chip_refs is None:
+        chip_refs = _refs_memo[_rk] = sorted(
+            ref for ref, footprint in pcb_data.footprints.items()
+            if footprint.pads and len(footprint.pads) >= min_pads
+            and (not _fine_only
+                 or detect_package_type(footprint) in ('BGA', 'QFN', 'QFP')))
 
     if not chip_refs:
         return []
 
-    # Same-net attachment points for the "already escaped" test:
-    # segment endpoints and via centers of the tracked nets.
-    attach_points: dict = {}
-    for seg in pcb_data.segments:
-        if seg.net_id in net_id_set:
-            attach_points.setdefault(seg.net_id, []).append((seg.start_x, seg.start_y))
-            attach_points[seg.net_id].append((seg.end_x, seg.end_y))
-    for via in pcb_data.vias:
-        if via.net_id in net_id_set:
-            attach_points.setdefault(via.net_id, []).append((via.x, via.y))
+    # Same-net attachment points for the "already escaped" test: segment
+    # endpoints and via centers. Rebuilt once per COPPER EPOCH (the
+    # add/remove_route choke-point counter) for ALL nets as float64 arrays;
+    # per-call subsets just index the dict. The vectorized retire test below
+    # runs the same float64 ops elementwise, so decisions are bit-identical
+    # to the scalar genexpr it replaces.
+    _epoch = getattr(pcb_data, '_copper_epoch', 0)
+    _apm = getattr(pcb_data, '_attach_pts_memo', None)
+    if _apm is None or _apm[0] != _epoch:
+        _raw: dict = {}
+        for seg in pcb_data.segments:
+            _raw.setdefault(seg.net_id, []).append((seg.start_x, seg.start_y))
+            _raw[seg.net_id].append((seg.end_x, seg.end_y))
+        for via in pcb_data.vias:
+            _raw.setdefault(via.net_id, []).append((via.x, via.y))
+        _apm = pcb_data._attach_pts_memo = (
+            _epoch,
+            {nid: _np.array(pts, dtype=_np.float64)
+             for nid, pts in _raw.items()})
+    attach_points = _apm[1]
 
     chip_pads = []
     for ref in chip_refs:
@@ -1371,12 +1717,15 @@ def get_chip_pad_positions(pcb_data: PCBData, net_ids: List[int], min_pads: int 
             if not pad_layer:
                 continue
             # Skip pads that already have an escape (stub end / via in reach)
-            pts = attach_points.get(pad.net_id)
-            if pts:
+            pts = (attach_points.get(pad.net_id)
+                   if env_knobs.PSEUDO_STUB_RETIRE else None)
+            if pts is not None and len(pts):
                 reach = max(pad.size_x, pad.size_y) / 2.0 + 0.05
                 reach_sq = reach * reach
                 px, py = pad.global_x, pad.global_y
-                if any((x - px) ** 2 + (y - py) ** 2 <= reach_sq for x, y in pts):
+                dx = pts[:, 0] - px
+                dy = pts[:, 1] - py
+                if bool((dx * dx + dy * dy <= reach_sq).any()):
                     continue
             chip_pads.append((pad.global_x, pad.global_y, pad_layer))
 

@@ -42,6 +42,13 @@ if ROOT_DIR not in sys.path:      # make_movie lives at the repo/plugin root
 _ENGINE_DIR = os.path.join(ROOT_DIR, 'py_router')
 if os.path.isdir(_ENGINE_DIR) and _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
+# py_placer/ holds the placement package (placement.groups / .fanout_clearance
+# are imported from here) and py_tools/ the instruments. Same exists() guard so
+# a FLAT installed layout (PCM zip) keeps working.
+for _sib in ('py_placer', 'py_tools'):
+    _d = os.path.join(ROOT_DIR, _sib)
+    if os.path.isdir(_d) and _d not in sys.path:
+        sys.path.append(_d)
 
 GREEN = '\033[92m'
 YELLOW = '\033[93m'
@@ -212,7 +219,11 @@ class MovieRecorder:
             if board is None:
                 return None
             path = os.path.join(self._temp_dir(), f"{name}.kicad_pcb")
-            pcbnew.SaveBoard(path, board)
+            # aSkipSettings: frames only need copper; the settings save
+            # aborts KiCad on worker threads for pre-KiCad-10 projects
+            # (uncaught C++ type_error in the .kicad_pro merge; see
+            # _stage_live_board in swig_gui.py).
+            pcbnew.SaveBoard(path, board, aSkipSettings=True)
             return path
         except Exception as e:
             self._log(f"{YELLOW}Routing movie: snapshot failed ({e}){RESET}")

@@ -21,11 +21,18 @@ if ROOT_DIR not in sys.path:
 _ENGINE_DIR = os.path.join(ROOT_DIR, 'py_router')
 if os.path.isdir(_ENGINE_DIR) and _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
+# py_placer/ holds the placement package (placement.groups / .fanout_clearance
+# are imported from here) and py_tools/ the instruments. Same exists() guard so
+# a FLAT installed layout (PCM zip) keeps working.
+for _sib in ('py_placer', 'py_tools'):
+    _d = os.path.join(ROOT_DIR, _sib)
+    if os.path.isdir(_d) and _d not in sys.path:
+        sys.path.append(_d)
 
 import routing_defaults as defaults
 from kicad_parser import mm_to_iu
 from .fanout_gui import NetSelectionPanel
-from .gui_utils import StdoutRedirector
+from .gui_utils import StdoutRedirector, board_minima_from_live
 
 
 def _live_board_edge_clearance():
@@ -618,6 +625,7 @@ class PlanesTab(wx.Panel):
         """Run find-high-speed-nets headless and fill the GND via distance
         field from its recommendation (issue #39)."""
         from .ai_gui import run_skill_dialog, board_path_for_analysis
+        from .ai_backend import ANALYSIS_CONSTRAINT
 
         board = board_path_for_analysis(self.board_filename)
         if board is None:
@@ -625,7 +633,7 @@ class PlanesTab(wx.Panel):
         value = run_skill_dialog(
             self, "AI: recommend GND via distance",
             "find-high-speed-nets", os.path.abspath(board),
-            "analysis only, do not modify any files. After the report, end "
+            ANALYSIS_CONSTRAINT + " After the report, end "
             "your reply with exactly one line of the form "
             "RESULT=<recommended --gnd-via-distance in mm> "
             "(a bare number), e.g. RESULT=2.5",
@@ -640,6 +648,7 @@ class PlanesTab(wx.Panel):
         """Run recommend-plane-mappings headless and fill the assignment
         list from its recommendation (issue #53)."""
         from .ai_gui import run_skill_dialog, board_path_for_analysis
+        from .ai_backend import ANALYSIS_CONSTRAINT
 
         board = board_path_for_analysis(self.board_filename)
         if board is None:
@@ -647,7 +656,7 @@ class PlanesTab(wx.Panel):
         value = run_skill_dialog(
             self, "AI: recommend plane mappings",
             "recommend-plane-mappings", os.path.abspath(board),
-            "analysis only, do not modify any files. After the report, end "
+            ANALYSIS_CONSTRAINT + " After the report, end "
             "your reply with exactly one line of the form "
             "RESULT=<net>:<layer>;<net>|<net>:<layer> "
             "(groups separated by ';', nets sharing a layer joined by '|', exact "
@@ -812,6 +821,21 @@ class PlanesTab(wx.Panel):
             self.progress_bar.Pulse()  # Indeterminate phase
             self.status_text.SetLabel(label)
 
+    def _apply_status(self, message):
+        """Status update for work running ON the UI thread (the apply path).
+
+        _update_progress is marshalled from the engine thread via CallAfter, so
+        the main loop paints it. Anything running ON the main thread blocks that
+        loop, so a bare SetLabel would not repaint until the work finished --
+        leaving the previous phase's label on screen and reading as a hang.
+        Guarded: a status update must never break the apply. See
+        gui_utils.ui_thread_status for why the repaint is deliberately narrow
+        (no Gauge.Pulse) inside an action plugin.
+        """
+        from .gui_utils import ui_thread_status
+        ui_thread_status(getattr(self, 'status_text', None),
+                         getattr(self, 'progress_bar', None), message)
+
     def _run_create_planes(self, config):
         """Run plane creation."""
         # Cleared here; repopulated from create_plane's returned ripped set
@@ -858,7 +882,7 @@ class PlanesTab(wx.Panel):
         # Expand assignments: each net goes on each layer in the assignment
         # e.g., nets=['+3.3V'] layers=['F.Cu', 'In2.Cu'] becomes:
         #   expanded_nets=['+3.3V', '+3.3V'], expanded_layers=['F.Cu', 'In2.Cu']
-        # Also build layer_nets dict for multi-net layer handling (Voronoi boundaries)
+        # Also build layer_nets dict for multi-net layer handling (the spine split)
         expanded_nets = []
         expanded_layers = []
         layer_nets = {}  # layer -> list of nets on that layer
@@ -913,8 +937,12 @@ class PlanesTab(wx.Panel):
                     class_clearance_cache[cname] = params.get('clearance', _plane_clearance)
                 else:
                     class_clearance_cache[cname] = _plane_clearance
+            # #530 decision 2 (mirrors list_nets.net_clearance_map_by_id): a
+            # Default-only net takes the run's clearance and gets NO entry.
             for net in self.pcb_data.nets.values():
                 cname = all_net_to_class.get(net.name, 'Default')
+                if cname == 'Default':
+                    continue
                 _plane_net_clearances[net.net_id] = class_clearance_cache.get(
                     cname, _plane_clearance)
             if _plane_clamp:
@@ -961,10 +989,6 @@ class PlanesTab(wx.Panel):
                 # config-driven, defaulting to the same value route_planes.py's
                 # argparse uses so current GUI behavior is unchanged unless a
                 # plan/control sets them.
-                plane_proximity_radius=config.get('plane_proximity_radius', 3.0),
-                plane_proximity_cost=config.get('plane_proximity_cost', 2.0),
-                plane_track_via_clearance=config.get('plane_track_via_clearance',
-                                                     defaults.PLANE_TRACK_VIA_CLEARANCE),
                 voronoi_seed_interval=config.get('voronoi_seed_interval', 2.0),
                 plane_max_iterations=config.get('plane_max_iterations', defaults.MAX_ITERATIONS),
                 debug_lines=config.get('debug_lines', False),
@@ -1043,15 +1067,24 @@ class PlanesTab(wx.Panel):
                     gnd_via_net = config.get('gnd_via_net', defaults.GND_VIA_NET)
 
                     def _gnd_via_edge_clearance():
-                        """The board's copper-to-edge rule, mm. 0.0 when it cannot
-                        be read -- add_gnd_vias' own bounding-box backstop then
-                        still keeps the via inside the outline."""
+                        """The board's copper-to-edge rule, mm, pinned UP to the fab
+                        copper-to-edge floor exactly as route_planes' CLI pins it
+                        (effective_board_edge_clearance, #441) -- a board declaring
+                        a sub-fab or 0 edge rule must not get return vias against
+                        the milled edge. 0.0 when neither can be read --
+                        add_gnd_vias' own bounding-box backstop then still keeps
+                        the via inside the outline."""
                         try:
                             import pcbnew as _pcbnew
-                            return (_pcbnew.GetBoard().GetDesignSettings()
+                            live = (_pcbnew.GetBoard().GetDesignSettings()
                                     .m_CopperEdgeClearance or 0) / 1e6
                         except Exception:
-                            return 0.0
+                            live = 0.0
+                        try:
+                            from fix_kicad_drc_settings import fab_edge_floor
+                            return max(live, fab_edge_floor(self.board_filename or None))
+                        except Exception:
+                            return live
 
                     # Create config for GND via placement
                     gnd_config = GridRouteConfig(
@@ -1060,7 +1093,12 @@ class PlanesTab(wx.Panel):
                         track_width=config.get('track_width', defaults.TRACK_WIDTH),
                         clearance=config.get('clearance', defaults.CLEARANCE),
                         grid_step=config.get('grid_step', defaults.GRID_STEP),
-                        layers=all_layers,
+                        # A THROUGH via must clear copper on EVERY board layer --
+                        # NOT `all_layers`, which is the plane step's routing set
+                        # (outer + pour layers) and leaves inner signal layers out,
+                        # so a return via could land on an inner track. CLI parity
+                        # with route_planes main (the bitaxe fix, 5c4a9f8d).
+                        layers=list(self.pcb_data.board_info.copper_layers),
                         # Thread the fab hole-to-hole minimum so GND-via placement
                         # enforces real drill spacing (issue #125), not the default.
                         hole_to_hole_clearance=config.get(
@@ -1076,10 +1114,20 @@ class PlanesTab(wx.Panel):
                         # (same reasoning as _run_kicad_oracle_after_apply).
                         board_edge_clearance=_gnd_via_edge_clearance(),
                     )
+                    # #498: the board's .kicad_dru per-layer clearance rules, read
+                    # from the live board's own project file as create_plane does
+                    # above -- CLI parity with route_planes main.
+                    from kicad_dru import install_layer_clearances
+                    install_layer_clearances(gnd_config, None, self.board_filename,
+                                             self.pcb_data)
                     coord = GridCoord(gnd_config.grid_step)
 
                     # Build obstacle map from PCB data (excluding no nets since we want all obstacles)
-                    obstacles = build_base_obstacle_map(self.pcb_data, gnd_config, [])
+                    # CLI parity: price foreign copper at its net class
+                    # (the same clamped map the plane step used above).
+                    obstacles = build_base_obstacle_map(
+                        self.pcb_data, gnd_config, [],
+                        net_clearances=_plane_net_clearances)
 
                     # Add GND vias near existing signal vias
                     gnd_vias = add_gnd_vias_to_existing_board(
@@ -1092,15 +1140,25 @@ class PlanesTab(wx.Panel):
                     )
 
                     # Add to new vias list
-                    for gv in gnd_vias:
-                        self._new_vias.append({
-                            'x': gv.x,
-                            'y': gv.y,
-                            'size': gv.size,
-                            'drill': gv.drill,
-                            'net_id': gv.net_id,
-                            'layers': gv.layers if hasattr(gv, 'layers') else ['F.Cu', 'B.Cu']
-                        })
+                    _gnd_dicts = [{
+                        'x': gv.x,
+                        'y': gv.y,
+                        'size': gv.size,
+                        'drill': gv.drill,
+                        'net_id': gv.net_id,
+                        'layers': gv.layers if hasattr(gv, 'layers') else ['F.Cu', 'B.Cu']
+                    } for gv in gnd_vias]
+                    # #962: the same Type VII stamp route_planes --add-gnd-vias
+                    # applies (all new here); the apply loop below writes it
+                    # through apply_via_protection.
+                    from fab_notes import (via_protection_stamps,
+                                           apply_stamps_in_memory,
+                                           print_via_protection_record)
+                    _st962, _rec962 = via_protection_stamps(_gnd_dicts, [],
+                                                            self.pcb_data)
+                    apply_stamps_in_memory(_st962)
+                    print_via_protection_record(_rec962, "GND return vias")
+                    self._new_vias.extend(_gnd_dicts)
                     total_vias += len(gnd_vias)
 
                 except Exception as e:
@@ -1268,7 +1326,17 @@ class PlanesTab(wx.Panel):
         self.net_panel.refresh()
 
     def _apply_results_to_board(self):
-        """Apply operation results to the pcbnew board."""
+        """Apply operation results to the pcbnew board.
+
+        Delegates under a log tee: the worker's stdout redirect is restored
+        before this main-thread handler runs, so without it the zone-add/
+        refill/cleanup narration reached the terminal but never the log tab.
+        """
+        from .gui_utils import redirect_prints_to_log
+        with redirect_prints_to_log(self.append_log):
+            return self._apply_results_to_board_body()
+
+    def _apply_results_to_board_body(self):
         import pcbnew
 
         # Reset before the early return below, so the completion message can
@@ -1277,6 +1345,8 @@ class PlanesTab(wx.Panel):
         board = pcbnew.GetBoard()
         if board is None:
             return
+
+        self._apply_status("Applying plane copper to the board...")
 
         # Relocate net-less copper logos/graphics to silkscreen (issue #146),
         # matching the CLI plane writer (plane_io.py): a copper logo is not a
@@ -1359,12 +1429,12 @@ class PlanesTab(wx.Panel):
         # re-apply the create run's swaps (#508 finding 19's shape).
         self._reconnect_swap_data = {}
 
-        # Get layer name to ID mapping
-        name_to_id = {}
-        for i in range(pcbnew.PCB_LAYER_ID_COUNT):
-            name = board.GetLayerName(i)
-            if name:
-                name_to_id[name] = i
+        # Get layer name to ID mapping -- the CANONICAL names the engine emits.
+        # This used to be keyed by board.GetLayerName(), a renamed layer's
+        # DISPLAY name, so a board whose In1.Cu is called "GND" poured every
+        # plane onto the F.Cu fallback below (#1056).
+        from .swig_gui import _build_layer_mappings
+        name_to_id, id_to_name = _build_layer_mappings()
 
         def get_layer_id(layer_name):
             return name_to_id.get(layer_name, pcbnew.F_Cu)
@@ -1385,6 +1455,11 @@ class PlanesTab(wx.Panel):
                 layers = via_data.get('layers', ['F.Cu', 'B.Cu'])
                 if len(layers) >= 2:
                     via.SetLayerPair(get_layer_id(layers[0]), get_layer_id(layers[-1]))
+                # #962: the engine stamped Type VII onto a via it put in a pad
+                # or paste opening, and a re-placed via carries its own spec.
+                # This tab applied NEITHER before (every other tab did).
+                from .gui_utils import apply_via_protection
+                apply_via_protection(via, via_data.get('tenting_attrs'))
                 board.Add(via)
                 vias_added += 1
             self._new_vias = []
@@ -1426,7 +1501,10 @@ class PlanesTab(wx.Panel):
                     except Exception:
                         existing_net = ''
                     try:
-                        existing_layer = board.GetLayerName(existing_zone.GetLayer())
+                        # Canonical, to compare with zone_data['layer']: the
+                        # display name never matched a renamed layer, so a
+                        # re-run duplicated every pour on it (#1056).
+                        existing_layer = id_to_name.get(existing_zone.GetLayer(), '')
                     except Exception:
                         existing_layer = ''
                     existing_zone_keys.add((existing_net, existing_layer))
@@ -1574,8 +1652,11 @@ class PlanesTab(wx.Panel):
         # already has a zone on that layer (skip_existing_zones, default on).
         self._last_zone_counts = (zones_added, zones_skipped)
 
-        # Build connectivity before filling so nets are resolved properly.
-        board.BuildConnectivity()
+        # NO bare BuildConnectivity here: the taps/stitch vias just added sit
+        # under the EXISTING (stale) fills, and building connectivity before
+        # the refill flips their netcodes to the zones' nets (see
+        # refill_all_zones's docstring). The refill below rebuilds
+        # connectivity itself, after the fills have correct knockouts.
 
         # Teardrops, if the shared "Add teardrops" checkbox is on (#489 §9). Both
         # plane modes apply copper into pcbnew, so the writers' file-side pass
@@ -1593,6 +1674,7 @@ class PlanesTab(wx.Panel):
         # around it, and later signal steps add copper these planes must clear
         # too (#362). Filling only new_zone_objs left the existing planes stale.
         from .gui_utils import refill_all_zones
+        self._apply_status("Refilling zones (KiCad exact fill)...")
         _rf = refill_all_zones(board)
         if _rf:
             print(f"Filled/refilled {_rf} zone(s)")
@@ -1644,30 +1726,42 @@ class PlanesTab(wx.Panel):
                     track_width=cfg.get('track_width'),
                     via_diameter=cfg.get('via_size'),
                     via_drill=cfg.get('via_drill'),
-                    fab_edge=fab_edge_floor())
+                    fab_edge=fab_edge_floor(),
+                    # #530: caps min_clearance at the smallest pad override
+                    minima=board_minima_from_live(board))
+                # #856: severities only on explicit request; {} = untouched.
+                _sev = severity_plan() if cfg.get('relax_drc_severities') else {}
                 if apply_targets_to_board(
-                        board, targets, severity_plan(keep_thermal=cfg.get('keep_thermal', False)),
+                        board, targets, _sev,
                         clamp_nondefault_netclasses=cfg.get('clamp_netclasses', False)):
                     board.SetModified()
                     print("DRC settings: loosened Board Setup floors to the plane routing values")
             except Exception as e:
                 print(f"(skipped DRC-settings write-back: {e})")
 
+        self._apply_status("Refreshing the board view...")
         pcbnew.Refresh()
 
         # Sync pcb_data
+        self._apply_status("Syncing board data...")
         if self.sync_pcb_data_callback:
             self.sync_pcb_data_callback()
 
-        from .gui_utils import update_live_drc_floors
+        # #693: gated on the shared "Fix DRC settings after routing"
+        # checkbox, like the netclass/severity writeback above -- it used to
+        # run unconditionally, so an unchecked box still moved the board's
+        # Board Setup floors. The CLI gates its twin on
+        # --no-fix-drc-settings.
         _cfg = getattr(self, '_plane_drc_config', {}) or {}
-        update_live_drc_floors(
-            board,
-            clearance=_cfg.get('clearance'),
-            track_width=_cfg.get('track_width'),
-            via_size=_cfg.get('via_size'),
-            via_drill=_cfg.get('via_drill'),
-            hole_to_hole=_cfg.get('hole_to_hole_clearance'))
+        if _cfg.get('fix_drc_settings', True):
+            from .gui_utils import update_live_drc_floors
+            update_live_drc_floors(
+                board,
+                clearance=_cfg.get('clearance'),
+                track_width=_cfg.get('track_width'),
+                via_size=_cfg.get('via_size'),
+                via_drill=_cfg.get('via_drill'),
+                hole_to_hole=_cfg.get('hole_to_hole_clearance'))
 
         # (No oracle recheck here, #562: after plane CREATION the remaining
         # gaps are deliberate -- the route step's in-run plane finalize and
@@ -1695,8 +1789,15 @@ class PlanesTab(wx.Panel):
             cfg = getattr(self, '_plane_drc_config', {}) or {}
             clearance = cfg.get('clearance') or defaults.CLEARANCE
             grid_step = cfg.get('grid_step', defaults.GRID_STEP)
+            self._apply_status("Plane cleanup: reading the live board...")
             pcb = build_pcb_data_from_board(board)
-            delta = compute_plane_copper_cleanup(pcb, names, clearance, grid_step)
+            # Runs on the UI thread, so it reports through _apply_status (which
+            # forces the repaint) rather than the engine-thread callback. This
+            # is the shared 13-pass pipeline -- it named none of its passes.
+            delta = compute_plane_copper_cleanup(
+                pcb, names, clearance, grid_step,
+                progress_callback=(lambda c, t, m:
+                                   self._apply_status(f"{m} ({c}/{t})" if t else m)))
             if delta.is_empty:
                 return
 
@@ -1745,7 +1846,10 @@ class PlanesTab(wx.Panel):
                 added += 1
 
             if removed or added or delta.snapped:
-                board.BuildConnectivity()
+                # refill-first (rebuilds connectivity itself): a bare
+                # BuildConnectivity over stale fills flips new copper's nets.
+                from .gui_utils import refill_all_zones
+                refill_all_zones(board)
                 print(f"Plane cleanup: closed {delta.snapped} stub gap(s), "
                       f"trimmed {len(delta.segments_to_remove)} dead-end "
                       f"segment(s), added {added} connector(s)")

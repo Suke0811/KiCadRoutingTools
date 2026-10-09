@@ -73,12 +73,23 @@ def main():
     ap.add_argument("--sets", default=",".join(f"set{i}" for i in range(1, 11)))
     ap.add_argument("--stress-dir", default=os.path.expanduser("~/Documents/kicad_stress_test"))
     ap.add_argument("--volume", default="kicad-corpus")
+    ap.add_argument("--boards", default="",
+                    help="comma-separated board names -- upload only these (smoke tests)")
+    ap.add_argument("--no-compress", action="store_true",
+                    help="upload files individually (the pre-compression path) "
+                         "instead of one tar.gz extracted server-side")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
     stress = Path(a.stress_dir)
     sets = [s.strip() for s in a.sets.split(",") if s.strip()]
     files = collect(stress, sets)
+    if a.boards:
+        want = {b.strip() for b in a.boards.split(",") if b.strip()}
+        # keep a file if it belongs to a wanted board, matching on the board dir
+        # component or the <board>.kicad_* basename
+        files = [(f, rel) for f, rel in files
+                 if any(p == b or p.startswith(b + ".") for p in Path(rel).parts for b in want)]
     total = sum(f.stat().st_size for f, _ in files)
     print(f"{len(files)} files, {total/1e9:.2f} GB across {len(sets)} sets")
     if a.dry_run:
@@ -92,6 +103,29 @@ def main():
         print("pip install modal", file=sys.stderr)
         return 1
     vol = modal.Volume.from_name(a.volume, create_if_missing=True)
+    if not a.no_compress:
+        # Compressed path: one tar.gz up (the corpus is s-expression text,
+        # ~6-8x gzip), extracted ON the volume by modal_app.extract_corpus --
+        # bandwidth is the bottleneck here, not CPU on either side. The
+        # archive upload itself is still transactional; extraction overwrites
+        # whole files, so a killed extract re-run is idempotent.
+        import tarfile
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            with tarfile.open(tmp.name, "w:gz", compresslevel=6) as tf:
+                for f, rel in files:
+                    tf.add(str(f), arcname=rel)
+            size = os.path.getsize(tmp.name)
+            print(f"compressed to {size/1e6:.0f} MB "
+                  f"({total/max(size,1):.1f}x); uploading archive")
+            with vol.batch_upload(force=True) as batch:
+                batch.put_file(tmp.name, "/_upload/corpus.tar.gz")
+        os.unlink(tmp.name)
+        from modal_app import app, extract_corpus
+        with modal.enable_output(), app.run():
+            n = extract_corpus.remote("_upload/corpus.tar.gz")
+        print(f"extracted {n} files -> volume {a.volume}")
+        return 0
     # batch_upload is transactional: it either lands the whole set or nothing,
     # so a half-populated volume can't silently produce "board not found" tasks.
     with vol.batch_upload(force=True) as batch:

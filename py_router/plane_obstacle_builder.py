@@ -14,15 +14,17 @@ import numpy as np
 
 from kicad_parser import PCBData, Pad, Segment
 from routing_config import GridRouteConfig, GridCoord
-from routing_utils import iter_pad_blocked_cells, pad_blocked_cells_array, segment_blocked_cells_array
+from routing_utils import iter_pad_blocked_cells, pad_blocked_cells_array, \
+    segment_blocked_cells_array, segment_blocked_spans
 from obstacle_map import (point_in_polygon, point_to_polygon_edge_distance,
                           add_user_keepout_obstacles, add_rule_area_keepout_obstacles,
                           block_via_cells_near_drills, block_track_cells_near_drills,
                           block_track_cells_near_override_pad_holes,
                           _pad_has_copper,
-                          _rasterize_polygon, _scanline_inside_rows,
+                          _rasterize_polygon_box, _box_masked_cells,
+                          _scanline_inside_rows,
                           _banded_edge_distance_rows, _block_cells_on_layers,
-                          _batch_cells_one_layer, _batch_vias)
+                          _batch_cells_one_layer, _batch_vias, GRID_TIE_EPS)
 
 import sys
 import os
@@ -127,18 +129,44 @@ class _NetConnGraph:
     __slots__ = ("seg_adj", "via_at", "pad_at", "via_arrays", "seg_ends_by_layer")
 
 
-# Cache of _NetConnGraph keyed by (id(pcb_data), net_id). _smd_pad_reaches_layer
-# was rebuilding this whole same-net graph on EVERY call (794x / 22s on daisho);
-# it depends only on (net_id, copper), so build it once and reuse across every
-# pad of the net. Invalidated when the board's segment/via count or tolerance
-# changes (copper only grows during routing, so a count change is a real change).
-_NET_GRAPH_CACHE: Dict[Tuple, Tuple] = {}
+# Cache of _NetConnGraph per net. _smd_pad_reaches_layer was rebuilding this
+# whole same-net graph on EVERY call (794x / 22s on daisho); it depends only on
+# (net_id, copper), so build it once and reuse across every pad of the net.
+#
+# #803: this had BOTH cache-invalidation bugs at once.
+#
+#   1. The token was COUNT-ONLY, justified by "copper only grows during routing,
+#      so a count change is a real change". That is no longer true -- the
+#      in-loop stub-debris trim REMOVES committed copper, and rip_up_net /
+#      restore_net cycles do too. Remove k items and add k others and the token
+#      is unchanged while the copper is completely different, so this returned a
+#      graph describing copper that no longer exists. The same false assumption
+#      in plane_pad_tap._tap_spatial_index put a rescue via through a foreign
+#      track on glasgow_revC.
+#   2. It was a MODULE-level dict keyed on id(pcb_data). CPython reuses ids
+#      after GC, and make_local_window mints a short-lived PCBData per tap/
+#      rescue, so a freed window's id is very likely to be handed to the next
+#      one -- which then inherits its predecessor's graph. net_cost._cache_for
+#      documents this exact hazard and the fix: hang the cache off the board,
+#      so its lifetime is tied to the data it describes.
+#
+# Both are fixed below: the cache lives on the board, and the token is
+# content-sensitive (summing element ids costs O(n), the same order as the
+# rebuild it guards, and only replaces a hit that was silently wrong).
 
 
 def _net_conn_graph(net_id: int, pcb_data: PCBData, inv_tol: float) -> "_NetConnGraph":
-    key = (id(pcb_data), net_id)
-    token = (len(pcb_data.segments), len(pcb_data.vias), inv_tol)
-    hit = _NET_GRAPH_CACHE.get(key)
+    segs, vias = pcb_data.segments, pcb_data.vias
+    token = (len(segs), len(vias), inv_tol,
+             id(segs), id(vias), sum(map(id, segs)), sum(map(id, vias)))
+    store = getattr(pcb_data, '_net_graph_cache', None)
+    if store is None:
+        store = {}
+        try:
+            pcb_data._net_graph_cache = store
+        except AttributeError:
+            store = None          # slotted/exotic board: degrade to uncached
+    hit = store.get(net_id) if store is not None else None
     if hit is not None and hit[0] == token:
         return hit[1]
 
@@ -201,7 +229,8 @@ def _net_conn_graph(net_id: int, pcb_data: PCBData, inv_tol: float) -> "_NetConn
         L: (np.asarray(xs, dtype=float), np.asarray(ys, dtype=float), ks)
         for L, (xs, ys, ks) in seg_ends_tmp.items()
     }
-    _NET_GRAPH_CACHE[key] = (token, g)
+    if store is not None:
+        store[net_id] = (token, g)
     return g
 
 
@@ -456,6 +485,7 @@ def build_via_obstacle_map(
     # Since vias span all layers, we must check segments on all copper layers, not just config.layers
     t0 = time.time()
     seg_count = 0
+    _seg_via_arrs = []
     for seg in pcb_data.segments:
         if seg.net_id == exclude_net_id:
             continue
@@ -469,8 +499,28 @@ def build_via_obstacle_map(
                             + config.layer_clearance(  # #498: meet on seg.layer
                                 seg.layer, config.obstacle_clearance(seg.net_id))
                             + grid_cushion)
-        _add_segment_via_obstacle(obstacles, seg, coord, seg_expansion_mm)
+        # FFI batching (2026-08-14): accumulate the memoized capsule arrays
+        # and stamp once after the loop -- concatenation preserves the exact
+        # row multiset/order and the batch inserts commute, so the map state
+        # is byte-identical to the per-segment calls this replaces.
+        # #815: SPAN form. Measured on glasgow_revC this single line was
+        # 2,698,062 of 7,585,865 capsule calls (35.6%) -- the largest consumer
+        # in the whole router, and all of it landing in the CELL memo, which
+        # sat pinned at 101% of its budget with 97% of its misses being
+        # evictions. Spans are 5.2x denser for identical membership, and Rust
+        # expands them. Pure accumulate-then-stamp: no removal twin and no
+        # cell iteration, so nothing here has to balance.
+        _va = segment_blocked_spans(seg.start_x, seg.start_y,
+                                    seg.end_x, seg.end_y,
+                                    seg_expansion_mm, coord.grid_step)
+        if len(_va):
+            _seg_via_arrs.append(_va)
         seg_count += 1
+    if _seg_via_arrs:
+        _vall = (np.concatenate(_seg_via_arrs) if len(_seg_via_arrs) > 1
+                 else _seg_via_arrs[0])
+        obstacles.add_blocked_via_spans_batch(
+            np.ascontiguousarray(_vall.astype(np.int32)))
     if verbose:
         print(f"  Segments: {seg_count} tracks in {time.time() - t0:.2f}s")
 
@@ -485,6 +535,18 @@ def build_via_obstacle_map(
         for pad in pads:
             _add_pad_via_obstacle(obstacles, pad, coord, config, clearance_override=pad_clearance)
             pad_count += 1
+    # #962: the target net's solder-paste OPENINGS, at the same clearance its
+    # pads get. The pad loop above sees the declared pad; the opening can be
+    # larger (esp_prog U2's F.Paste tab around an F.Cu-only pad 2) and a tap
+    # or stitching via there sits in the paste. Only for a POSITIVE clearance,
+    # as on the routing path (`same_net_pad_via_keepout_cells`): 0 keeps its
+    # legacy meaning, the declared pad and nothing more.
+    if exclude_net_id is not None and same_net_pad_clearance > 0:
+        from obstacle_map import paste_aperture_keepout_cells
+        _ap_cells = paste_aperture_keepout_cells(pcb_data, exclude_net_id, config,
+                                                 same_net_pad_clearance)
+        if len(_ap_cells):
+            obstacles.add_blocked_vias_batch(np.ascontiguousarray(_ap_cells, dtype=np.int32))
     if verbose:
         print(f"  Pads: {pad_count} pads in {time.time() - t0:.2f}s")
 
@@ -528,17 +590,17 @@ def _block_custom_pad_polys(obstacles, pad, coord, margin, via_mode, layer_idx=N
     `margin`, leaving the finger channels open instead of filling the bounding box
     (issue #188). Used by the plane obstacle builder's via- and track-blocking."""
     import numpy as np
-    from obstacle_map import _rasterize_polygon
     for poly in pad.polygons:
-        gxf, gyf, inside, edist = _rasterize_polygon(poly, coord, margin)
-        if gxf is None:
+        gx_lo, gy_lo, nx, ny, inside, edist = _rasterize_polygon_box(poly, coord, margin)
+        if inside is None:
             continue
-        mask = inside | (edist <= margin)
-        for i in np.flatnonzero(mask):
+        mask = inside | (edist <= margin - GRID_TIE_EPS)
+        gxs, gys = _box_masked_cells(gx_lo, gy_lo, nx, mask)
+        for gx_i, gy_i in zip(gxs.tolist(), gys.tolist()):
             if via_mode:
-                obstacles.add_blocked_via(int(gxf[i]), int(gyf[i]))
+                obstacles.add_blocked_via(gx_i, gy_i)
             else:
-                obstacles.add_blocked_cell(int(gxf[i]), int(gyf[i]), layer_idx)
+                obstacles.add_blocked_cell(gx_i, gy_i, layer_idx)
 
 
 def _add_pad_via_obstacle(obstacles: GridObstacleMap, pad: Pad,
@@ -569,7 +631,8 @@ def _add_pad_via_obstacle(obstacles: GridObstacleMap, pad: Pad,
     # Honor a per-pad local clearance override (fiducial keep-clear rings etc.)
     # unless an explicit same-net override was supplied.
     if clearance_override is None:
-        clearance = max(clearance, getattr(pad, 'local_clearance', 0.0) or 0.0)
+        # A pad override REPLACES the resolved value (KiCad, measured).
+        clearance = config.pad_override_clearance(clearance, pad)
     margin = config.via_size / 2 + clearance + config.grid_step / 2
     if getattr(pad, 'polygons', None):
         _block_custom_pad_polys(obstacles, pad, coord, margin, via_mode=True)
@@ -742,7 +805,7 @@ def _rasterize_cutout_cached(pcb_data, cutout_idx: int, cutout, coord: GridCoord
     ``clip_bounds`` restricts rasterization to the map's real extent. A milled
     inner contour is typically BOARD-SIZED (crkbd's is the whole outline), and
     without clipping every local-window build would rasterize the entire board
-    -- the exact cost _rasterize_polygon's own docstring warns about. Clipping
+    -- the exact cost _rasterize_polygon_box's own docstring warns about. Clipping
     is a pure optimisation: no cell inside the map changes."""
     cache = getattr(pcb_data, '_cutout_mask_cache', None)
     if cache is None:
@@ -753,19 +816,21 @@ def _rasterize_cutout_cached(pcb_data, cutout_idx: int, cutout, coord: GridCoord
            tuple(round(b, 6) for b in clip_bounds) if clip_bounds else None)
     hit = _lru_get(cache, key)
     if hit is None:
-        cgx, cgy, c_inside, c_edge = _rasterize_polygon(
+        c_gx_lo, c_gy_lo, c_nx, c_ny, c_inside, c_edge = _rasterize_polygon_box(
             cutout, coord, clearance, clip_bounds=clip_bounds)
-        if cgx is None:
+        if c_inside is None:
             hit = (None,)
         else:
-            cmask = (c_edge < clearance) if band_only \
-                else (c_inside | (c_edge < clearance))
+            _clr = clearance - GRID_TIE_EPS      # tie -> OPEN
+            cmask = (c_edge < _clr) if band_only \
+                else (c_inside | (c_edge < _clr))
             # #546 memory: store the MASKED CELLS only -- every consumer
             # reduces the (cgx, cgy, cmask) triple to exactly this array,
             # and the triple for a board-clipped inner contour was ~7 MB
             # against ~1-2 MB of actual band cells (the recheck phase's
             # full-radius windows ballooned the old cache to gigabytes).
-            hit = (np.column_stack([cgx[cmask], cgy[cmask]]),)
+            cgx, cgy = _box_masked_cells(c_gx_lo, c_gy_lo, c_nx, cmask)
+            hit = (np.column_stack([cgx, cgy]),)
         _lru_put(cache, key, hit, _CUTOUT_CACHE_MAX)
         # Byte budget on top of the entry cap: entries are usually small,
         # but a pathological board could still stack big ones.
@@ -820,7 +885,7 @@ def _board_edge_cell_mask(coord: GridCoord, board_outline, gmin_x: int, gmin_y: 
         edge_dist = _banded_edge_distance_rows(
             px_axis, py_axis, x1, y1, x2, y2,
             edge_clearance + coord.grid_step).ravel()[in_idx]
-        mask[in_idx[edge_dist < edge_clearance]] = True
+        mask[in_idx[edge_dist < edge_clearance - GRID_TIE_EPS]] = True
     return gx_flat, gy_flat, mask
 
 
@@ -1085,6 +1150,16 @@ def build_routing_obstacle_map(
     # Skip this entirely for plane connections where we're more lenient
     t0 = time.time()
     pad_count = 0
+    # FFI batching, same pattern the SEGMENT loop below already uses (and the
+    # via loop above it): accumulate the per-pad cell arrays and stamp once,
+    # instead of one Rust call per pad. The 2026-08-14 batching pass fixed the
+    # segment and via loops here and missed this one -- measured on glasgow,
+    # add_blocked_cells_batch was entered 1,483,841 times per route, ~299 per
+    # build_routing_obstacle_map call, i.e. once per pad. Bit-identical:
+    # concatenation preserves the exact row multiset, and the batch insert
+    # refcounts a given cell the same number of times whether the rows arrive
+    # split or joined.
+    _pad_cell_arrs = []
     if not skip_pad_blocking:
         for net_id, pads in pcb_data.pads_by_net.items():
             if net_id == exclude_net_id:
@@ -1099,9 +1174,10 @@ def build_routing_obstacle_map(
                     # keep-clear rings carry a clearance far larger than the
                     # board global), else copper routes within the pad's
                     # required clearance (no-net fiducial DRC, upduino #146).
-                    pad_clr = max(config.layer_clearance(  # #498: on route_layer
-                                      route_layer, config.obstacle_clearance(net_id)),
-                                  getattr(pad, 'local_clearance', 0.0) or 0.0)
+                    pad_clr = config.pad_override_clearance(
+                        config.layer_clearance(  # #498: on route_layer
+                            route_layer, config.obstacle_clearance(net_id)),
+                        pad)
                     # Half-grid discretization cushion, matching this file's own
                     # VIA stamps and build_base_obstacles (#173) -- the segment
                     # capsule below deliberately carries NO cushion, same as the
@@ -1134,9 +1210,15 @@ def build_routing_obstacle_map(
                                                     off_y=pad.global_y - gy * coord.grid_step,
                                                     rotation_deg=pad.rect_rotation)
                     if len(cells):
-                        layer_col = np.full((cells.shape[0], 1), layer_idx, dtype=np.int32)
-                        obstacles.add_blocked_cells_batch(np.hstack([cells, layer_col]))
+                        _pad_cell_arrs.append(cells)
                     pad_count += 1
+    if _pad_cell_arrs:
+        _pall = (np.concatenate(_pad_cell_arrs) if len(_pad_cell_arrs) > 1
+                 else _pad_cell_arrs[0])
+        _rows = np.empty((len(_pall), 3), dtype=np.int32)
+        _rows[:, :2] = _pall
+        _rows[:, 2] = layer_idx
+        obstacles.add_blocked_cells_batch(np.ascontiguousarray(_rows))
     if verbose:
         print(f"  Pads: {pad_count} pads in {time.time() - t0:.2f}s")
 
@@ -1144,6 +1226,7 @@ def build_routing_obstacle_map(
     # Use actual segment width for proper clearance calculation
     t0 = time.time()
     seg_count = 0
+    _seg_cell_arrs = []
     for seg in pcb_data.segments:
         if seg.net_id == exclude_net_id:
             continue
@@ -1153,11 +1236,30 @@ def build_routing_obstacle_map(
         # The exact capsule keep-out measures from the real segment, so the blocked
         # halo matches the true clearance envelope without the grid-rounding that used
         # to leave connection traces within clearance of signal copper (#146/#173).
+        # #498 layer rule (#434 cross-class), then the #735 track-to-track
+        # rule (#1135): the route is a track, and so is this segment
         seg_expansion_mm = (route_track_w / 2 + seg.width / 2
-                            + config.layer_clearance(  # #498 (#434 cross-class)
-                                route_layer, config.obstacle_clearance(seg.net_id)))
-        _add_segment_routing_obstacle(obstacles, seg, coord, layer_idx, seg_expansion_mm)
+                            + config.track_obstacle_clearance(
+                                seg.net_id, config.layer_clearance(
+                                    route_layer,
+                                    config.obstacle_clearance(seg.net_id))))
+        # FFI batching (2026-08-14): same pattern as the via loop above --
+        # accumulate, then one Rust call for the whole (single-layer) set.
+        # #815: SPAN form (789,803 calls / 10.4% on glasgow_revC). Same
+        # accumulate-then-stamp shape as the via loop above.
+        _ca = segment_blocked_spans(seg.start_x, seg.start_y,
+                                    seg.end_x, seg.end_y,
+                                    seg_expansion_mm, coord.grid_step)
+        if len(_ca):
+            _seg_cell_arrs.append(_ca)
         seg_count += 1
+    if _seg_cell_arrs:
+        _call = (np.concatenate(_seg_cell_arrs) if len(_seg_cell_arrs) > 1
+                 else _seg_cell_arrs[0])
+        _rows = np.empty((len(_call), 4), dtype=np.int32)
+        _rows[:, :3] = _call
+        _rows[:, 3] = layer_idx
+        obstacles.add_blocked_cell_spans_batch(np.ascontiguousarray(_rows))
     if verbose:
         print(f"  Segments: {seg_count} tracks in {time.time() - t0:.2f}s")
 
@@ -1178,7 +1280,7 @@ def build_routing_obstacle_map(
                     route_layer, config.obstacle_clearance(via.net_id))
                 + config.grid_step / 2)
         rg = coord.to_grid_dist_safe(r_mm)
-        r_sq = r_mm * r_mm
+        r_sq = (r_mm - GRID_TIE_EPS) ** 2   # tie -> OPEN; twin in obstacle_cache
         # Vectorized real-centre disc (bit-identical to the scalar double loop:
         # same (gx+ex)*step - via.x distance and <= r_sq test), one batch call (#225).
         ex = np.arange(-rg, rg + 1, dtype=np.int32)
@@ -1210,7 +1312,14 @@ def build_routing_obstacle_map(
             if pad.drill > 0 and not _pad_has_copper(pad):
                 from kicad_parser import pad_drill_circles
                 npth_holes.extend(pad_drill_circles(pad))
-    npth_clr = max(config.clearance, defaults.NPTH_TO_TRACK_CLEARANCE)
+    # Board-first, exactly as the signal obstacle map does (#D11). The plane
+    # engines build their own map and never call add_drill_hole_obstacles, so
+    # fixing that one alone left plane taps / region joins / reconnects still
+    # pricing NPTH at the flat 0.20 fab floor on a board declaring more.
+    # Raise-only: a board declaring nothing is byte-identical.
+    from obstacle_map import resolve_hole_clearance
+    npth_clr = max(config.clearance, defaults.NPTH_TO_TRACK_CLEARANCE,
+                   resolve_hole_clearance(pcb_data, config))
     block_track_cells_near_drills(obstacles, npth_holes, route_track_w,
                                   npth_clr, config.grid_step, [layer_idx])
     # Holes of pads carrying a clearance OVERRIDE (pad.local_clearance): KiCad's

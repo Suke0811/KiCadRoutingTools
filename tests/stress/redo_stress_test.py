@@ -37,14 +37,55 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for _gitver when run as a script
+# #522/py_placer layout. The engine dirs hang off the REPO ROOT, which is
+# parent.parent.parent (tests/stress/ -> repo), not parent -- and the join
+# must close before insert's second argument, or the module is a SyntaxError
+# and every importer of it dies, gates included.
+_ENGINE_ROOT = Path(__file__).resolve().parent.parent.parent
+for _d in ('py_router', 'py_placer', 'py_tools'):
+    sys.path.insert(0, os.path.join(str(_ENGINE_ROOT), _d))
 from _gitver import write_git_version, format_version
 
 REPO = Path(__file__).resolve().parent.parent.parent  # tests/stress/ -> repo root
 
 
 def _tree_rss_kb(pid):
-    """Resident set size (KB) of a process plus its direct children, via ps --
-    same tree-RSS method run_limited.sh uses for its memory watchdog."""
+    """Resident set size (KB) of a process plus its direct children.
+
+    Linux: read /proc directly -- no subprocess spawns (the ps path forks
+    twice per 0.5s sample), and it works in slim containers that carry no
+    procps at all (the Modal image's silent 0-MB rows). Elsewhere: ps, the
+    same tree-RSS method run_limited.sh uses for its memory watchdog.
+
+    Each PROCESS counts once, by its thread-group id. Under gVisor (Modal's
+    sandbox) the children file lists a child's THREADS as well, and every
+    thread's status reports the whole process's VmRSS: one 19-thread
+    `kicad-cli pcb drc` under route.py was summed 19 times, so schoko's route
+    step read 10.5 GB for ~1.3 GB of memory (761 MB route.py + 515 MB
+    kicad-cli, measured in-process 2026-10-08)."""
+    if os.path.isdir(f"/proc/{pid}"):
+        total, seen = 0, set()
+        pids = [str(pid)]
+        try:
+            with open(f"/proc/{pid}/task/{pid}/children") as f:
+                pids += f.read().split()
+        except Exception:
+            pass
+        for p_ in pids:
+            try:
+                tgid, rss = p_, 0
+                with open(f"/proc/{p_}/status") as f:
+                    for line in f:
+                        if line.startswith("Tgid:"):
+                            tgid = line.split()[1]
+                        elif line.startswith("VmRSS:"):
+                            rss = int(line.split()[1])
+            except Exception:
+                continue                   # exited between the two reads
+            if tgid not in seen:
+                seen.add(tgid)
+                total += rss
+        return total
     total = 0
     try:
         out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)],
@@ -171,30 +212,55 @@ def parse_manifest(path):
     follow-up command has none of its own. Resetting to None there made the
     follow-up run in the launcher's cwd, breaking the relative-path chain
     (FileNotFoundError on the just-cp'd board) and falsely marking the board
-    chain-broken under --remap."""
+    chain-broken under --remap.
+
+    A command may span SEVERAL lines when one of its arguments contains
+    newlines -- `--net-clearances '{ ...pretty-printed JSON... }'` is the real
+    case (uncutgem_nv). Splitting per line raises "No closing quotation" and, in
+    the shared parser, that killed the whole board: not just manifest_to_plan,
+    but every replay path (redo_stress_test, ab_replay_grade, the Modal sweep).
+    So lines are ACCUMULATED until shlex can split them, which is exactly the
+    shell's own continuation rule. Newlines inside the quotes survive into the
+    token, reproducing the recorded argument byte-for-byte.
+    """
     cmds = []
     current_cwd = None
+    buf = ""
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.rstrip("\n")
-            if line.startswith("# cwd="):
-                # The cwd was recorded with %q quoting on the value after 'cwd='.
-                current_cwd = " ".join(shlex.split(line[len("# cwd="):]))
-                continue
-            if not line or line.startswith("#") or line in ("set -e",):
-                continue
-            if line.startswith("#!"):
-                continue
-            argv = shlex.split(line)
+            if not buf:
+                # Directives/comments only apply BETWEEN commands -- mid-continuation
+                # a '#' is data inside a quoted argument, not a comment.
+                if line.startswith("# cwd="):
+                    # The cwd was recorded with %q quoting on the value after 'cwd='.
+                    current_cwd = " ".join(shlex.split(line[len("# cwd="):]))
+                    continue
+                if not line or line.startswith("#") or line in ("set -e",):
+                    continue
+                if line.startswith("#!"):
+                    continue
+                buf = line
+            else:
+                buf += "\n" + line
+            try:
+                argv = shlex.split(buf)
+            except ValueError:
+                continue  # unbalanced quote so far -> this command continues
+            buf = ""
             if argv:
                 cmds.append((current_cwd, argv))
+    if buf.strip():
+        # Genuinely unterminated at EOF: raise rather than silently drop the tail,
+        # which would replay a TRUNCATED chain and look like a routing failure.
+        raise ValueError(f"{path}: unterminated quote at end of manifest: {buf[:120]!r}")
     return cmds
 
 
 def relocate_moved_scripts(argv):
     """#522 default remap: recorded manifests bake repo-root script paths
-    (…/KiCadRoutingTools/route.py), but the scripts live in py_router/ or
-    py_tools/ now. For any argv token that is a repo .py path that no longer
+    (…/KiCadRoutingTools/route.py), but the scripts live in py_router/,
+    py_tools/ or py_placer/ (the placement split) now. For any argv token that is a repo .py path that no longer
     exists at root, rewrite it to its new home when exactly one exists. Runs
     AFTER user --remap rules so an explicit remap always wins. Old manifests
     replay transparently; new recordings carry the new paths and pass
@@ -212,7 +278,7 @@ def relocate_moved_scripts(argv):
             for name in (b, RENAMES.get(b)):
                 if name is None:
                     continue
-                for sub in ('', 'py_router', 'py_tools'):
+                for sub in ('', 'py_router', 'py_tools', 'py_placer'):
                     cand = _os.path.join(d, sub, name) if sub else _os.path.join(d, name)
                     if _os.path.exists(cand):
                         a = cand
@@ -283,11 +349,42 @@ def board_io(argv):
     (bga_fanout.py, qfn_fanout.py), because the --output value still appears after
     the input in argv. Boards are keyed by BASENAME so the dependency analysis is
     invariant under --remap / --workdir path rewriting (issue #231). Returns
-    ([], None) when the command names no board (e.g. `--help`)."""
-    toks = [a for a in argv if a.endswith(".kicad_pcb")]
-    if not toks:
+    ([], None) when the command names no board (e.g. `--help`).
+
+    ONE board token is the exception, and it is not the output unless a write
+    flag introduces it. A READ-ONLY step names its board once and writes
+    nothing -- hexberry_fpga records
+    `qfn_fanout.py step1_planes.kicad_pcb --component U7 ... --dry-run`.
+    Under the bare last-token rule `toks[:-1]` is empty, so that command was
+    read as a PRODUCER of the board it only reads. It then took over
+    `producer['step1_planes.kicad_pcb']` from the real route_planes step, the
+    backward walk kept it instead, and the plane step was pruned out -- every
+    later step died on `FileNotFoundError: step1_planes.kicad_pcb`, in 2.6s,
+    identically in both A/B arms, so the board was excluded from every corpus
+    A/B. The chain-HOLE warning could not fire either: from the pruner's own
+    view that board was produced. Measured over all 402 recorded manifests,
+    2665 of 2666 board-bearing non-check commands carry >= 2 board tokens and
+    are untouched by this branch; hexberry's is the only single-token one.
+
+    `--output=<board>` is read as the board too. A joined token ENDS with
+    .kicad_pcb, so the bare scan took the whole `--output=b.kicad_pcb` string
+    as the board's name -- latent (no recorded manifest spells it that way)
+    but wrong for both the output and this branch's write-flag test."""
+    def _named_board(a):
+        return a.split("=", 1)[1] if a.startswith("-") and "=" in a else a
+
+    vals = [_named_board(a) for a in argv]
+    idx = [i for i, v in enumerate(vals) if v.endswith(".kicad_pcb")]
+    if not idx:
         return [], None
-    return [os.path.basename(t) for t in toks[:-1]], os.path.basename(toks[-1])
+    if len(idx) == 1:
+        i = idx[0]
+        prev = argv[i - 1] if i > 0 else ""
+        written = prev in ("--output", "-o") or argv[i].startswith("--output=")
+        if not written:
+            return [os.path.basename(vals[i])], None
+    return ([os.path.basename(vals[i]) for i in idx[:-1]],
+            os.path.basename(vals[idx[-1]]))
 
 
 def compute_prune_keep(cmds):
@@ -746,14 +843,24 @@ def main():
         if cwd and not os.path.isdir(cwd):
             os.makedirs(cwd, exist_ok=True)
         cmd_t0 = time.time()
+        # Per-command USER+SYS CPU via getrusage(RUSAGE_CHILDREN) deltas:
+        # commands run serially and each child's whole reaped tree folds into
+        # the counter at wait(), so the delta is that command's tree CPU.
+        # Wall time is load-confounded (parallel pools, shared cloud hosts);
+        # CPU-seconds are the honest cross-run cost metric.
+        import resource as _res
+        _ru0 = _res.getrusage(_res.RUSAGE_CHILDREN)
         timeout = args.timeout if args.timeout and args.timeout > 0 else None
         rc, peak_kb, timed_out, peak_fp_mb = run_with_peak_rss(argv, cwd, timeout=timeout)
+        _ru1 = _res.getrusage(_res.RUSAGE_CHILDREN)
+        cpu_s = (_ru1.ru_utime - _ru0.ru_utime) + (_ru1.ru_stime - _ru0.ru_stime)
         if rc == 0 and not timed_out:
             # A `cp`/`mv` of a board must carry its .kicad_pro (the recorded DRC
             # floor) or the renamed board grades at the looser design default.
             mirror_project_sibling(argv, cwd)
         dt = time.time() - cmd_t0
-        rec = {"index": i, "seconds": round(dt, 3), "returncode": rc,
+        rec = {"index": i, "seconds": round(dt, 3),
+               "cpu_seconds": round(cpu_s, 3), "returncode": rc,
                "peak_rss_mb": round(peak_kb / 1024, 1),
                "timed_out": timed_out, "argv": argv}
         # peak_footprint_mb (darwin only): the authoritative memory number that

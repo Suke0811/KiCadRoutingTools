@@ -74,14 +74,27 @@ def pad_is_fine_pitch(pad: Pad, pcb_data: PCBData) -> bool:
     return False
 
 
-def note_clearance_used(pcb_data: PCBData, clearance: float) -> None:
+def note_clearance_used(pcb_data: PCBData, clearance: float, net_id=None,
+                        requested=None, site=None) -> None:
     """Record that a routing step used ``clearance`` mm of copper clearance, so
     the board's running minimum (``board_info.min_clearance_used``) tracks the
     tightest clearance any step actually routed to. Downstream the routers fold
     this into the .kicad_pro DRC floor and JSON_SUMMARY so check_drc grades at
-    the true routed clearance rather than the looser nominal one."""
+    the true routed clearance rather than the looser nominal one.
+
+    A DESCENT site also passes the net, the clearance it was asked for and its
+    own name (#1160): the descent is then a ``clearance`` row in
+    JSON_SUMMARY design_rules like every other narrowing, which is how the
+    writeback tells a Default class lowered by a rescue from one lowered by
+    the step's own request."""
     if clearance is None or clearance <= 0:
         return
+    if net_id is not None and requested is not None:
+        from fab_tiers import note_narrowing
+        _net = (getattr(pcb_data, 'nets', None) or {}).get(net_id)
+        note_narrowing(net_id, 'clearance', requested, clearance,
+                       site or 'clearance descent',
+                       net_name=getattr(_net, 'name', None))
     bi = pcb_data.board_info
     cur = getattr(bi, 'min_clearance_used', None)
     if cur is None or clearance < cur:
@@ -214,8 +227,34 @@ def fine_tap_configs(config: GridRouteConfig, pad: Pad, pcb_data: PCBData):
     lives in one place. Replaces the single hard-coded fine-parameter jump (#226)."""
     fab_clear, fab_track = fab_floor_clearance_track(pcb_data)
     fine_grid = min(config.grid_step, FINE_TAP_GRID_STEP)
-    # Narrow the tap track to fit between fine-pitch pads, never below the fab floor.
+    from fab_tiers import may_narrow, note_narrowing
+    if not may_narrow():
+        # --escalation off: the finer grid is the only retry; width and
+        # clearance stay exactly what the caller asked for.
+        yield replace(config, grid_step=fine_grid)
+        return
+    # Narrow the tap track to fit between fine-pitch pads, never below the fab
+    # floor (raised to the board's own minimum under --escalation board).
+    fab_track = config.track_floor(getattr(pad, 'net_id', 0) or 0, None, fab_track)  # #530
+    # #530: the tap's clearance may step down only to the tapped net's own
+    # floors (its class clearance for a non-Default net, .kicad_dru rules).
+    try:
+        fab_clear = max(fab_clear, config.rule_floors(getattr(pad, 'net_id', 0) or 0)
+                        .get('clearance', 0.0))
+    except Exception:                                          # noqa: BLE001
+        pass
     fine_track = max(fab_track, min(min(pad.size_x, pad.size_y), config.track_width))
+    # #1033: the requested width is the NET's (a power net asked for its
+    # --power-nets-widths), not the call's signal width -- measured against
+    # track_width, a 0.3 power tap delivered at 0.127 recorded nothing.
+    _tap_net = getattr(pad, 'net_id', 0) or 0
+    try:
+        _req_w = max(config.track_width,
+                     config.get_net_track_width(_tap_net, config.layers[0]))
+    except Exception:                                          # noqa: BLE001
+        _req_w = config.track_width
+    note_narrowing(getattr(pad, 'net_id', None), 'track_width', _req_w,
+                   fine_track, 'fine-pitch tap')
     for clearance in _clearance_ladder(config.clearance, fab_clear, FINE_TAP_CLEARANCE_STEPS):
         yield replace(config, grid_step=fine_grid, clearance=clearance,
                       track_width=fine_track)
@@ -284,8 +323,31 @@ def _build_tap_spatial_index(pcb_data: PCBData):
 
 
 def _tap_spatial_index(pcb_data: PCBData):
-    sig = (len(pcb_data.segments), len(pcb_data.vias),
-           sum(len(v) for v in pcb_data.pads_by_net.values()))
+    # #803: the signature must be CONTENT-sensitive, not count-only.
+    #
+    # Counts alone are safe only while copper is exclusively ADDED -- then the
+    # lengths strictly increase and every mutation changes the signature. Any
+    # pass that REMOVES copper breaks that: the in-loop stub-debris trim, and
+    # rip_up_net/restore_net cycles. Remove k items, add k others, and the
+    # counts return to a cached value with completely different content, so
+    # this returns a STALE index. make_local_window builds the rescue/tap
+    # window FROM this index, so the window silently omits copper that exists
+    # -- and the rescue then drops a fab-ladder via straight through a foreign
+    # track. Measured on glasgow_revC: a /~{ALERT} rescue via (0.30/0.15, the
+    # fine rung) landed on /RD's B.Cu track, 0.100mm centre-to-axis against a
+    # 0.250mm touch distance. The working obstacle map was CORRECT throughout
+    # -- the rescue never consults it, which is why every ref-count audit of
+    # that map came back clean.
+    #
+    # Summing id()s is O(n) per call, but building the index is O(n) too and
+    # this only replaces a hit that was silently wrong. Identity of the list
+    # objects is included so a REBIND is caught even if the contents' ids
+    # happen to sum the same.
+    segs, vias = pcb_data.segments, pcb_data.vias
+    sig = (len(segs), len(vias),
+           sum(len(v) for v in pcb_data.pads_by_net.values()),
+           id(segs), id(vias),
+           sum(map(id, segs)), sum(map(id, vias)))
     cached = getattr(pcb_data, '_tap_spatial_index_cache', None)
     if cached is not None and cached[0] == sig:
         return cached[1]
@@ -347,6 +409,25 @@ def make_local_window(pcb_data: PCBData, cx: float, cy: float,
         if in_window(p.global_x, p.global_y, max(p.size_x, p.size_y)):
             pads_by_net.setdefault(nid, []).append(p)
     local.pads_by_net = pads_by_net
+    # #665: a shallow copy SHARES the parent's derived-geometry caches; the
+    # window rebinds pads/segments/vias/board_info, so any cache the window
+    # rebuilds must live on ITS OWN attribute or it poisons the parent (the
+    # pad-array cache did exactly that -- 24 through-pad DRC violations).
+    # The pad/seg/via caches are signature-versioned now; drop the rest of
+    # the geometry-derived caches so the window rebuilds them locally.
+    # `_foreign_seg_arr_trust` rides along, though it is not a cache but a
+    # CALLER's promise (smooth_octolinear_chains) that it drops the seg cache
+    # itself at every splice of its own. The window is a DIFFERENT object with
+    # rebound segments, so it inherits no such promise and must re-earn the
+    # #803 digest.
+    for _cattr in ('_foreign_pad_arr_cache', '_foreign_seg_arr_cache',
+                   '_foreign_seg_arr_trust',
+                   '_foreign_via_arr_cache', '_foreign_hole_cap_cache',
+                   '_edge_grid_cache', '_edge_mask_cache',
+                   '_cutout_mask_cache', '_tap_spatial_index_cache',
+                   '_net_tie_lift', '_attach_pts_memo'):
+        if _cattr in local.__dict__:
+            del local.__dict__[_cattr]
 
     board_info = copy.copy(pcb_data.board_info)
     board_info.board_bounds = (min_x, min_y, max_x, max_y)
@@ -922,6 +1003,18 @@ def _try_trace_to_same_net_copper(pad, pad_layer, net_id, local, routing_obs,
     return None
 
 
+def _site_reaches_other_layer(pos, pad_layer, zones) -> bool:
+    """Does a through via at `pos` meet this net's pour on any layer OTHER
+    than the pad's own (#1179)? By zone outline, the credit the grader and
+    the oracle give a via there. `zones` are the net's own zones."""
+    from check_connected import point_in_polygon
+    for z in zones:
+        if (getattr(z, 'layer', None) != pad_layer
+                and point_in_polygon(pos[0], pos[1], z.polygon)):
+            return True
+    return False
+
+
 def try_tap_pad(
     pad: Pad,
     pad_layer: Optional[str],
@@ -944,8 +1037,15 @@ def try_tap_pad(
     plane_oracle=None,
     corridor_ghosts=None,
     ghost_exclude_ids=(),
+    plane_tap: bool = False,
 ) -> TapResult:
     """Attempt to connect one pad to the plane with the given parameters.
+
+    ``plane_tap`` (#1179): the tap exists to reach the PLANE, so a via whose
+    site meets the net's pour on no layer but the pad's own is dropped (see
+    the end of this function). Escape callers -- the single-ended last-resort
+    via, the plan's escapes, the fanout rescue -- leave it False: their via is
+    a layer change the router routes on next, useful with no pour at all.
 
     ``corridor_ghosts`` (#517 arm 2): a plane_corridor_ghosts.CorridorGhosts
     registry of vacated ripped-net corridors. In soft mode its cost stamps are
@@ -1131,15 +1231,17 @@ def try_tap_pad(
                 return r
             # oracle rejected the trace target: fall through to via placement
 
+    _net_zones = [z for z in (getattr(pcb_data, 'zones', None) or [])
+                  if z.net_id == net_id and getattr(z, 'polygon', None)
+                  and len(z.polygon) >= 3]
+
     # 2. Place a new via near the pad. When the net has zone outline(s), the
     # via must land INSIDE one of them (issue #287, neptune): on a Voronoi-
     # shared plane layer a via in the gap between cells touches no fill --
     # DRC-clean but electrically floating -- while the tap reports success.
     # Nets without zones (pure trace/via repair) are unconstrained as before.
     zone_filter = None
-    _net_zone_polys = [z.polygon for z in (getattr(pcb_data, 'zones', None) or [])
-                       if z.net_id == net_id and getattr(z, 'polygon', None)
-                       and len(z.polygon) >= 3]
+    _net_zone_polys = [z.polygon for z in _net_zones]
     if plane_oracle is not None and not plane_oracle.inert:
         # T6: constrain new vias to the MAIN plane component's zone outlines --
         # a via inside a floating zone fragment's outline taps the island, not
@@ -1229,6 +1331,23 @@ def try_tap_pad(
             return TapResult(success=False, blocked_cells=route_result.blocked_cells or [])
         segments = route_result.segments
 
+    # #1179: a via joins layers, so one whose site meets this net's copper on
+    # the pad's layer ONLY joins nothing. That is a net poured on the pad's own
+    # layer and on no other layer here: sonde_xilinx's GND is a B.Cu pour, and
+    # its B.Cu pads J1.20/J1.25 (fill contact pinched) were tapped with a B.Cu
+    # trace to a through via inside the B.Cu pour -- `via_dangling` x2 in
+    # KiCad, a 1.65 mm disc of F.Cu routing space and a drill each, while the
+    # trace's end, inside the pour, is the whole connection. Ship the trace
+    # alone, its end recorded so the oracle still proves it lands on the main
+    # fill. A via landed IN the pad there reaches nothing the pad does not, so
+    # it is no tap at all: fail honestly and let the ladder go on.
+    if plane_tap and pad_layer and _net_zones and not _site_reaches_other_layer(
+            via_pos, pad_layer, _net_zones):
+        if not segments:
+            return TapResult(success=False)
+        return _gate(TapResult(success=True, via=None, segments=segments,
+                               reused_via_pos=via_pos))
+
     via = {'x': via_pos[0], 'y': via_pos[1], 'size': via_size,
            'drill': via_drill, 'layers': ['F.Cu', 'B.Cu'], 'net_id': net_id}
     return _gate(TapResult(success=True, via=via, segments=segments))
@@ -1257,6 +1376,7 @@ def tap_pad_with_escalation(
     plane_oracle=None,
     corridor_ghosts=None,
     ghost_exclude_ids=(),
+    plane_tap: bool = False,
 ) -> TapResult:
     """Tap a pad, escalating to scoped fine parameters for fine-pitch pads.
 
@@ -1279,7 +1399,7 @@ def tap_pad_with_escalation(
             distant_trace_radius=distant_trace_radius, disable_reuse=disable_reuse,
             shared_via_maps=shared_via_maps, pour_trace_only=pour_trace_only,
             plane_oracle=plane_oracle, corridor_ghosts=corridor_ghosts,
-            ghost_exclude_ids=ghost_exclude_ids)
+            ghost_exclude_ids=ghost_exclude_ids, plane_tap=plane_tap)
         if result.success:
             result.params_label = 'default'
             result.clearance_used = config.clearance
@@ -1311,11 +1431,15 @@ def tap_pad_with_escalation(
         # Shrink BOTH the emitted via (scalar args) AND config.via_size, which
         # find_via_position / build_via_obstacle_map use for the placement halo.
         from bga_fanout.geometry import clamp_via_to_pad
-        from list_nets import fab_floor_ladder, warn_fab_escalation
+        from list_nets import escalation_rungs, warn_fab_escalation
         fine_via_size, fine_via_drill = via_size, via_drill
         n_layers = len(pcb_data.board_info.copper_layers) or 2
+        # escalation_rungs: empty under --escalation off (the via then stays
+        # at the caller's size), raised to the board's minimums under board.
         cvs, cvd, vstatus, vrung = clamp_via_to_pad(
-            via_size, via_drill, pad, fab_floor_ladder(n_layers))
+            via_size, via_drill, pad,
+            escalation_rungs(n_layers, extra_floors=config.rule_floors(
+                getattr(pad, 'net_id', 0) or 0)))
         # Only adopt the clamp when it genuinely produces a SMALLER via than the
         # caller's -- a pad the caller's via already fits ('fits'), or a pad so
         # small the clamp can't shrink below the fab floor it's already at, leaves
@@ -1335,11 +1459,14 @@ def tap_pad_with_escalation(
                 distant_trace_radius=distant_trace_radius, disable_reuse=disable_reuse,
                 shared_via_maps=shared_via_maps, pour_trace_only=pour_trace_only,
                 plane_oracle=plane_oracle, corridor_ghosts=corridor_ghosts,
-                ghost_exclude_ids=ghost_exclude_ids)
+                ghost_exclude_ids=ghost_exclude_ids, plane_tap=plane_tap)
             if result.success:
                 result.params_label = 'fine'
                 result.clearance_used = fine_config.clearance
-                note_clearance_used(pcb_data, fine_config.clearance)
+                note_clearance_used(pcb_data, fine_config.clearance,
+                                    net_id=getattr(pad, 'net_id', None),
+                                    requested=config.clearance,
+                                    site='fine-pitch plane tap')
                 return result
             last_failure = result
 

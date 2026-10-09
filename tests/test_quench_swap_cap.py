@@ -12,7 +12,7 @@ grid degenerates to the seed point only (n = int(max_disp/1000) = 0), which
 is skipped as the current pose, so ANY movement must come from the swap
 block. The final test runs the full optimizer on a real board and checks the
 headline #430 invariant: no returned part ends up further than
-max_displacement (+ grid snap slop) from where it started.
+max_displacement from where it started (exactly, since #708).
 """
 
 import math
@@ -22,9 +22,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'py_router'))  # #522
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'py_placer'))  # placement split
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'py_tools'))  # #522
-
-import pytest
 
 from kicad_parser import parse_kicad_pcb
 from placement.quench import quench
@@ -170,19 +169,21 @@ def test_locked_parts_never_swap():
 def test_swap_cap_validation():
     """swap_max_displacement must be within [0, max_displacement]."""
     pcb, path = _swap_board(3)
-    with pytest.raises(ValueError):
-        quench(pcb, path, max_displacement=5.0, swap_max_displacement=6.0,
-               **SWAP_ONLY)
-    with pytest.raises(ValueError):
-        quench(pcb, path, max_displacement=5.0, swap_max_displacement=-1.0,
-               **SWAP_ONLY)
+    for bad in (6.0, -1.0):
+        try:
+            quench(pcb, path, max_displacement=5.0, swap_max_displacement=bad,
+                   **SWAP_ONLY)
+        except ValueError:
+            continue
+        raise AssertionError(f"swap_max_displacement={bad} with "
+                             f"max_displacement=5.0 was accepted")
     os.unlink(path)
 
 
 def test_no_stranding_after_full_run():
     """Headline #430 invariant on a real board: a full quench run (nudges,
-    rotations AND swaps) leaves every reported part within max_displacement
-    (plus the grid_step snap slop) of its input position."""
+    rotations AND swaps) leaves every reported part within max_displacement of
+    its input position -- EXACTLY, with no snap slop, since #708."""
     pcb = parse_kicad_pcb(INTERF_U)
     orig = {ref: (fp.x, fp.y) for ref, fp in pcb.footprints.items()}
     max_disp = 3.0
@@ -193,13 +194,58 @@ def test_no_stranding_after_full_run():
         ref = placement['reference']
         ox, oy = orig[ref]
         dist = math.hypot(placement['new_x'] - ox, placement['new_y'] - oy)
-        # 0.1 = default grid_step: candidate positions snap to the grid, so a
-        # radius-capped candidate can end up at most one snap past the cap.
-        assert dist <= max_disp + 0.1 + 1e-6, \
+        # EXACT, with no snap slop, since #708. The old bound was
+        # `max_disp + 0.1` because `_candidate_positions` tested the radius on
+        # the UNSNAPPED candidate and snapped afterwards, so a final pose could
+        # sit up to grid_step*sqrt(2)/2 past the cap. It now snaps the offset
+        # first and tests the radius on that, so the cap is the cap. Measured
+        # on this fixture: the largest displacement is 2.8575mm -- 9 x 0.3175,
+        # the board's own lattice -- against a 3.0mm cap.
+        assert dist <= max_disp + 1e-6, \
             f"{ref} stranded {dist:.3f}mm from seed (cap {max_disp}mm)"
 
 
+def test_strict_group_refs_prevent_individual_swap():
+    pcb, path = _swap_board(3)
+    try:
+        result = quench(pcb, path, max_displacement=5.0,
+                        strict_group_refs={'C1'}, **SWAP_ONLY)
+        assert result == []
+    finally:
+        os.unlink(path)
+
+
+def test_strict_group_refs_prevent_individual_nudges():
+    pcb, path = _swap_board(3)
+    try:
+        result = quench(pcb, path, max_displacement=5.0, step=1.0,
+                        groups={'caps': ['C1', 'C2']},
+                        strict_group_refs={'C1', 'C2'}, max_passes=2)
+        # The anchors pull the caps in opposite directions. A rigid translation
+        # cannot improve their combined length, while individual moves can.
+        assert result == []
+    finally:
+        os.unlink(path)
+
+
+def test_strict_group_refs_reject_unknown_or_locked_refs():
+    for ref in ('missing', 'J1'):
+        pcb, path = _swap_board(3)
+        try:
+            try:
+                quench(pcb, path, strict_group_refs={ref}, **SWAP_ONLY)
+            except ValueError as error:
+                assert 'movable footprint references' in str(error)
+            else:
+                raise AssertionError('invalid strict group reference accepted')
+        finally:
+            os.unlink(path)
+
+
 if __name__ == '__main__':
+    test_strict_group_refs_prevent_individual_swap()
+    test_strict_group_refs_prevent_individual_nudges()
+    test_strict_group_refs_reject_unknown_or_locked_refs()
     test_swap_beyond_cap_rejected()
     test_swap_within_cap_accepted_and_reported()
     test_swap_cap_flag_tightens()

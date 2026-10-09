@@ -37,7 +37,10 @@ BASE_CMD = [sys.executable, '-X', 'utf8', os.path.join(ROOT, 'py_router', 'bga_f
             '--nets', '*', '!GND', '!+3V3', '!+1V2',
             '--diff-pairs', '*_P', '*_N',
             '--track-width', '0.13', '--clearance', '0.1',
-            '--via-size', '0.45', '--via-drill', '0.2', '--diff-pair-gap', '0.15']
+            '--via-size', '0.45', '--via-drill', '0.2', '--diff-pair-gap', '0.15',
+            # #857: the via-in-pad clamp descends the ladder for sub-0.45 balls;
+            # that is the AUTO tier's now (standard is a hard floor).
+            '--fab-tier', 'auto']
 
 
 def _grid():
@@ -91,8 +94,11 @@ def run():
                   js_ch['failed'] > 0)
             check("auto escapes every ball channel dropped",
                   js_auto['failed'] == 0 and js_auto['escaped'] > js_ch['escaped'])
+            # #669: auto's retry ladder announces dogbone first; underpad
+            # follows only when dogbone still dropped balls.
             check("auto retry message printed",
-                  'retrying with the under-pad grid escape' in res_auto.stdout)
+                  'retrying with the dog-bone escape' in res_auto.stdout
+                  or 'retrying with the under-pad escape' in res_auto.stdout)
 
         # --layer-costs: forbidding In2.Cu must leave it free of NEW copper.
         out_lc = os.path.join(td, 'lc.kicad_pcb')

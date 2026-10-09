@@ -22,6 +22,77 @@ def _md5(path):
     return hashlib.md5(open(path, "rb").read()).hexdigest()
 
 
+
+def _check_in_run_floor_sync():
+    """#650: the in-run audit must grade at the floors the board will SHIP with.
+
+    ``apply_routed_floors`` lowers the sibling project's COPPER floors mid-run,
+    before the plane finalize's oracle grades the board -- until it existed, that
+    sibling was still the INPUT's (seeded by ``seed_project_for_output``) and its
+    looser declared floors made the zone filler pull the pours back further than
+    the shipped board's would, so the audit over-reported opens. Measured on
+    orangecrab: 57 reported vs the 46 that ship (GND 19 vs 11), all of it
+    ``rules.min_hole_clearance`` 0.25 -> 0.0889.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "py_router"))
+    from fix_kicad_drc_settings import apply_routed_floors
+    fails = []
+    with tempfile.TemporaryDirectory() as td:
+        pcb = os.path.join(td, "b.kicad_pcb")
+        pro = os.path.join(td, "b.kicad_pro")
+        shutil.copyfile(BOARD, pcb)
+
+        # No sibling project -> no-op, and none is created (a project-less
+        # board must stay project-less; #441 warns about it, we must not
+        # silently invent one).
+        if apply_routed_floors(pcb, clearance=0.1) != []:
+            fails.append("#650: reported changes with no sibling .kicad_pro")
+        if os.path.exists(pro):
+            fails.append("#650: created a .kicad_pro where the board had none")
+
+        # A board declaring LOOSER floors than the run routed to: hole/copper
+        # comes down to the routed clearance (the measured fill driver), and so
+        # does the Default class.
+        json.dump({"board": {"design_settings": {
+                      "rules": {"min_hole_clearance": 0.25, "min_clearance": 0.2}}},
+                   "net_settings": {"classes": [
+                       {"name": "Default", "clearance": 0.2},
+                       {"name": "HS", "clearance": 0.3}]}},
+                  open(pro, "w"))
+        changes = apply_routed_floors(pcb, clearance=0.0889)
+        rules = json.load(open(pro))["board"]["design_settings"]["rules"]
+        if abs(rules.get("min_hole_clearance", 9) - 0.0889) > 1e-9:
+            fails.append(f"#650: min_hole_clearance = {rules.get('min_hole_clearance')}, "
+                         f"expected 0.0889")
+        if abs(rules.get("min_clearance", 9) - 0.0889) > 1e-9:
+            fails.append(f"#650: min_clearance = {rules.get('min_clearance')}, expected 0.0889")
+        classes = {c["name"]: c for c in json.load(open(pro))["net_settings"]["classes"]}
+        if abs(classes["Default"].get("clearance", 9) - 0.0889) > 1e-9:
+            fails.append("#650: the Default class was not lowered to the routed clearance")
+        # Non-Default classes are the WRITEBACK's call (#439 -- it depends on the
+        # caller having passed a --clearance ceiling, a main() fact). Clamping
+        # them here could ship a tightened class on a run that meant to honor them.
+        if abs(classes["HS"].get("clearance", 0) - 0.3) > 1e-9:
+            fails.append("#650: a non-Default class was clamped by default")
+        if not changes:
+            fails.append("#650: reported no changes on a project that needed lowering")
+
+        # Idempotent -- it runs before every in-run grade.
+        if apply_routed_floors(pcb, clearance=0.0889) != []:
+            fails.append("#650: not idempotent (second call reported changes)")
+
+        # ONLY-loosen: a board already declaring a TIGHTER floor keeps it, so
+        # this can never manufacture a violation on correct copper.
+        json.dump({"board": {"design_settings": {
+                      "rules": {"min_hole_clearance": 0.05}}}}, open(pro, "w"))
+        apply_routed_floors(pcb, clearance=0.0889)
+        rules = json.load(open(pro))["board"]["design_settings"]["rules"]
+        if abs(rules.get("min_hole_clearance", 9) - 0.05) > 1e-9:
+            fails.append(f"#650: RAISED a tighter declared floor to "
+                         f"{rules.get('min_hole_clearance')} (must only loosen)")
+    return fails
+
+
 def main():
     if not os.path.exists(BOARD):
         print(f"FAIL: test board missing ({BOARD})")
@@ -90,17 +161,58 @@ def main():
                     fails.append(f"created Default class missing '{required}' (KiCad won't honour a sparse class)")
         if "meta" not in proj["net_settings"]:
             fails.append("net_settings.meta missing (KiCad needs it to read classes)")
-        # Non-routing severities ignored.
-        for cat in ("solder_mask_bridge", "lib_footprint_mismatch", "courtyards_overlap",
-                    "annular_width"):
-            if sev.get(cat) != "ignore":
-                fails.append(f"severity[{cat}] = {sev.get(cat)}, expected ignore")
-        # Thermal-relief shortfall demoted error -> warning (still visible).
-        if sev.get("starved_thermal") != "warning":
-            fails.append(f"severity[starved_thermal] = {sev.get('starved_thermal')}, expected warning")
+        # #856: severities are UNTOUCHED without --relax-severities. The
+        # author's 'error' on solder_mask_bridge survives, the pre-existing
+        # 'ignore' on courtyards_overlap survives, nothing new appears.
+        if sev.get("solder_mask_bridge") != "error":
+            fails.append(f"severity[solder_mask_bridge] = {sev.get('solder_mask_bridge')}, "
+                         f"expected the author's 'error' to survive (#856)")
+        if sev.get("courtyards_overlap") != "ignore":
+            fails.append(f"severity[courtyards_overlap] = {sev.get('courtyards_overlap')}, "
+                         f"expected the author's 'ignore' to survive")
+        for cat in ("lib_footprint_mismatch", "annular_width", "starved_thermal"):
+            if cat in sev:
+                fails.append(f"severity[{cat}] = {sev.get(cat)} was written without "
+                             f"--relax-severities (#856)")
+        if "saved_severities" in proj.get("kicad_routing_tools", {}):
+            fails.append("saved_severities recorded although no severity changed")
+        # Default net class DRAW sizes are never lowered (#842 ratchet): the
+        # created class keeps the template's 0.2 track_width, not the 0.15
+        # routed width, and no via field is touched.
+        if default is not None:
+            if abs(default.get("track_width", -1) - 0.2) > 1e-9:
+                fails.append(f"net_class[Default].track_width = {default.get('track_width')}, "
+                             f"expected 0.2 (draw default preserved, #842)")
+            if abs(default.get("via_diameter", -1) - 0.6) > 1e-9:
+                fails.append(f"net_class[Default].via_diameter = {default.get('via_diameter')}, "
+                             f"expected 0.6 (draw default preserved, #842)")
         # The board file must be byte-for-byte unchanged (version preserved).
         if _md5(pcb) != md5_before:
             fails.append("the .kicad_pcb was modified (must only edit the .kicad_pro)")
+
+        # With --relax-severities the category plan applies, only-loosening, and
+        # the previous values are recorded so the change is reversible.
+        r3 = subprocess.run(
+            [sys.executable, SCRIPT, pcb, "--clearance", "0.15", "--relax-severities"],
+            capture_output=True, text=True, cwd=ROOT)
+        if r3.returncode != 0:
+            print("FAIL: --relax-severities run errored\n" + r3.stdout + r3.stderr)
+            return 1
+        proj3 = json.load(open(pro))
+        sev3 = proj3["board"]["design_settings"]["rule_severities"]
+        for cat in ("solder_mask_bridge", "lib_footprint_mismatch", "annular_width"):
+            if sev3.get(cat) != "ignore":
+                fails.append(f"[relax] severity[{cat}] = {sev3.get(cat)}, expected ignore")
+        if sev3.get("courtyards_overlap") != "ignore":
+            fails.append("[relax] courtyards_overlap was RAISED from the author's ignore")
+        if sev3.get("starved_thermal") != "warning":
+            fails.append(f"[relax] severity[starved_thermal] = {sev3.get('starved_thermal')}, expected warning")
+        saved = proj3.get("kicad_routing_tools", {}).get("saved_severities", {})
+        if saved.get("solder_mask_bridge") != "error":
+            fails.append(f"[relax] saved_severities[solder_mask_bridge] = {saved.get('solder_mask_bridge')}, "
+                         f"expected the previous 'error'")
+        if "courtyards_overlap" in saved:
+            fails.append("[relax] saved_severities records a category that did not change")
 
         # Idempotent: a second run reports nothing to change.
         r2 = subprocess.run([sys.executable, SCRIPT, pcb, "--clearance", "0.15",
@@ -110,11 +222,16 @@ def main():
         if "already consistent" not in r2.stdout:
             fails.append("second run was not idempotent (expected 'already consistent')")
 
+    fails += _check_in_run_floor_sync()
+
     if fails:
         print("FAIL: " + "; ".join(fails))
         return 1
     print("PASS: constraints loosened to the routed floor (never tightened), Default "
-          "net class created, non-routing severities ignored, .kicad_pcb untouched, idempotent")
+          "net class created with its draw sizes preserved (#842), severities untouched "
+          "unless --relax-severities (#856, previous values recorded), .kicad_pcb untouched, idempotent; "
+          "in-run floor sync (#650) lowers hole/copper to the routed floor, only-loosens, "
+          "is idempotent, and no-ops without a sibling project")
     return 0
 
 

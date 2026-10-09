@@ -25,8 +25,94 @@ from kicad_writer import add_tracks_and_vias_to_pcb
 from qfn_fanout.types import QFNLayout, PadInfo, FanoutStub
 from bga_fanout.constants import POSITION_TOLERANCE
 from net_queries import matches_net_filter
-from qfn_fanout.layout import analyze_qfn_layout, analyze_pad
+from qfn_fanout.layout import analyze_qfn_layout, analyze_pad, single_line_reason
 from qfn_fanout.geometry import calculate_fanout_stub
+
+# #621: nets whose escape was never ATTEMPTED because this run's own
+# `cancel_check` stopped it -- in practice the GUI's Cancel button or the plan
+# executor's Stop, the only cancel sources there are (the CLI passes None).
+# Refreshed by every generate_qfn_fanout call and EMPTY unless a cancel
+# actually fired.
+#
+# Deliberately a separate ledger from failed_nets/unescaped_nets: an unfinished
+# search has measured nothing about a pad, and folding untried pads into the
+# failure list reports a cancel as a routing defect -- which would send the
+# planner (or the user) into a pointless tighter-clearance retry.
+LAST_CANCEL_SKIPPED: List[str] = []
+
+# #619: what the last under-pad escape's obstacle map ERASED, published so a
+# sweep or a test can grade against the set the ENGINE used instead of
+# re-deriving it. Re-deriving is a live trap: `fanned_nets` comes from
+# `pad_infos`, which drops net 0, `unconnected-*`, net-filter misses and
+# `center` pads, so the obvious proxy -- `{p.net_id for p in footprint.pads}`
+# -- can report the gate as live on a footprint where the erased set is
+# empty and the gate is a constant True. Keys: `nets` (the net-id set handed
+# to nets_to_route), `vias`/`segs` (erased counts), `layer` (where the stub
+# copper lands), `clearance` (the floor the stub was graded at).
+LAST_ERASED_SETS: Dict = {}
+
+# #846: what the last under-pad escape's COMMIT LOOP decided, published for the
+# same reason as LAST_ERASED_SETS -- a sweep or a test grades against what the
+# engine did rather than re-deriving it. `via_in_pad` is the FAB question (the
+# barrel overlaps same-net pad copper, `fab_notes.via_overlaps_pad`), which is
+# what the IPC-4761 note counts and what #202's clamp is for; it is NOT the
+# 0.001mm centre coincidence this loop used to decide it by. Keys: `via_in_pad`,
+# `via_in_pad_offcentre` (the subset #846 was about, which used to ship
+# unclamped), `clamped`, `max_stub_mm`, `allow_via_in_pad`.
+LAST_UNDERPAD_REPORT: Dict = {}
+
+
+def axis_offset_ladder(pad_width, via_size, step, mode='near'):
+    """Signed offsets along the escape axis, under KICAD_QFN_ONPAD_REACH (#846).
+
+    `mode` orders them: 'in' sweeps inward (toward the chip) first, 'near'
+    alternates nearest first.
+
+    NOT an "on-pad ladder", though it was called `_onpad` and documented as one.
+    Only k = 0 is guaranteed on the pad. The increment is the INTER-NET stagger
+    -- the centre-to-centre a via needs from a DIFFERENT net's via at this pitch
+    -- and on a fine-pitch part that exceeds the pad: on routed_output's QFN-76
+    (pitch 0.40, via 0.45, clearance 0.1) step is 0.4275 against a pad whose
+    escape-axis extent is 0.875, so rung 1 lands 0.0100 mm inside the pad EDGE,
+    rung 2 is 0.8550 mm out and rung 8 reaches +-3.4199 mm.
+
+    Those rungs ARE load-bearing, measured by
+    `tests/sweep_846_onpad_ladder.py` -- committed, so this stays checkable
+    rather than remembered: confining the ladder regressed escapes on 1 of 5
+    boards ('pad': routed_output U2, 15 -> 10) and 3 of 5 ('barrel'), improved
+    none, and left drc_grazes identical arm-to-arm. So the default is 'full' --
+    the ladder is right and the NAME was wrong.
+
+    It is also where the long stubs come from, which is what #846 reports: on
+    routed_output U2 the longest EMITTED stub is 3.0125 mm against a 0.875 mm
+    pad. (An earlier draft of this docstring said 2.9924 mm -- that is the
+    ladder's requested OFFSET at k = 7, before `snap()` puts the via on the
+    routing grid, not the copper that shipped.)
+
+    KICAD_QFN_ONPAD_REACH picks the arm -- 'full' (default), 'pad' (the via
+    CENTRE stays on the pad), 'barrel' (the whole barrel does). An unrecognised
+    value is 'full', so a typo cannot silently shorten the ladder.
+
+    Module-level, and the engine's only source for these offsets, because a
+    test that restates the arithmetic cannot detect the arithmetic changing:
+    the first draft of tests/test_846_onpad_ladder_reach.py rebuilt the ladder
+    from the same formula and every knob row of tests/mutate_846.py SURVIVED.
+
+    Whether a via that lands here is IN a pad is not decided here -- the commit
+    loop asks `via_overlaps_pad`, the fab question.
+    """
+    seq = [0.0]
+    if mode == 'in':
+        seq += [-k * step for k in range(1, 9)] + [k * step for k in range(1, 9)]
+    else:                                   # 'near'
+        for k in range(1, 9):
+            seq += [k * step, -k * step]
+    reach = {'pad': pad_width / 2.0,
+             'barrel': pad_width / 2.0 - via_size / 2.0,
+             }.get(env_knobs.QFN_ONPAD_REACH)
+    if reach is not None:
+        seq = [d for d in seq if abs(d) <= reach + 1e-9]
+    return seq
 
 
 def _snap_tip_on_grid(corner, tip, net_id, grid_step, grazes):
@@ -118,9 +204,134 @@ def _board_edge_model(pcb_data, clearance, board_edge_clearance):
     return edge_clear, rings, outer, cutouts
 
 
+def run_output_conflict(vx, vy, net_id, placed, px=None, py=None, *,
+                        via_size, via_drill, clearance, track_width,
+                        hole_to_hole, adds_via=True):
+    """Does a candidate via (and its stub) collide with THIS RUN's own output?
+
+    D10. The underpad escape's `via_clears` tested a candidate against the
+    board it was handed -- `foreign_vias` / `foreign_pads` / `foreign_tracks`
+    are a snapshot taken once, before anything is placed -- and against the via
+    CENTRES emitted so far. It never saw the STUBS the same run emitted, so it
+    approved vias sitting on copper it had just laid itself, and those escapes
+    came back DRC CONTACTS.
+
+    Measured: U2 (QFN56) reported 39 of 46 escapes under
+    `--escape-method underpad --allow-via-in-pad` and the gate rejected every
+    one as a contact -- while the geometry was fine (a 1.4 mm moat admitting a
+    0.7 mm via at all 56 pads, `pad_via == 0`, a real 0.700 mm via placeable
+    DRC-clean in U2.43, true capacity 11 of 14 lanes per side). A valid escape
+    strategy reported as impossible, and two cycles skipped fanout on it.
+
+    `placed` entries are ``(via_x, via_y, net_id, pad_x, pad_y)``; the stub
+    runs pad -> via. A through-via conflicts with copper on ANY layer, so the
+    stubs are tested exactly the way `foreign_tracks` is -- the difference is
+    only that these cannot be in that list.
+
+    Module-level and pure so it is testable directly: the caller is a closure
+    over fifteen locals, and a check this consequential should not be reachable
+    only by routing a whole board.
+
+    ``adds_via=False`` is the REUSE case (#479 audit gap 2): the position is an
+    existing board via, so this run adds no drill and no via copper -- only the
+    bridging stub. Everything about that via's spacing is a fact of the input
+    board, not something this run creates, so pricing it as a NEW via at
+    ``config.via_size`` judges two vias that already exist, at a size neither
+    has, for a spacing this run does not produce. Measured on
+    kicad_files/routed_output.kicad_pcb U2 (B.Cu, track/clearance 0.1, via
+    0.45/0.25, --escape-method underpad --allow-via-in-pad): with the via terms
+    applied, all 7 reuse candidates were rejected on the different-net floor
+    ``via_size + clearance`` = 0.55 against pre-existing 0.30 vias sitting at
+    0.400 mm -- legal (0.15+0.15+0.10) and already on the board. That cost
+    Net-(U2A-DATA_30) its escape and put a fresh drill where a reuse would have
+    served: 28 vias / 12 dropped / 30 tracks became 29 / 13 / 31.
+
+    The VIA-TO-VIA term is not merely wrong there, it is REDUNDANT. Every
+    entry in `placed` is either a via this run created -- already tested
+    against this reuse target in `via_clears`'s `foreign_vias` loop at exact
+    pairwise sizes (``via_size/2 + fs/2 + clearance``, and
+    ``(via_drill + fd)/2 + h2h`` for same net) -- or another pre-existing via,
+    whose spacing is the board's.
+
+    TERM 1 (the candidate via against a stub this run emitted) is dropped for
+    a different and weaker reason, stated here rather than overclaimed: the
+    reuse target's POSITION is not this run's doing, so a stub grazing it is
+    a defect of that stub, which is already emitted. Rejecting the reuse does
+    not remove the graze -- it only forces a fresh drill elsewhere and leaves
+    the graze in place. It is a false remedy, not a check.
+
+    That it fires at all exposes a REAL and separate gap, measured rather than
+    assumed: an emitted stub is never tested against a pre-existing via on
+    another FANNED net, because `build_base_obstacle_map(nets_to_route=...)`
+    excludes every net being escaped (obstacle_map.py:105), so
+    `check_line_clearance` cannot see it, and `via_clears` tests only the via
+    CENTRE against `foreign_vias`, never the stub. Measured on U2: 5 emitted
+    stubs sit inside a foreign pre-existing via's floor, one of them at
+    0.0000mm, and in all 5 the via's net is a fanned one. That count is
+    IDENTICAL at 715c821 and here, so it is pre-existing and untouched by this
+    change -- and it wants its own fix in the stub check, not an accidental
+    partial cover for the subset of vias that happen to be reuse targets.
+
+    So with ``adds_via=False`` only the new STUB is tested against this run's
+    own output, which is the only copper the reuse emits. A stub shorter than
+    POSITION_TOLERANCE emits no track at all (the commit loop skips it), so it
+    conflicts with nothing.
+
+    Returns True when the candidate must be REJECTED.
+    """
+    from geometry_utils import segment_to_segment_distance
+    from obstacle_map import point_to_segment_distance
+
+    via_half = via_size / 2 + clearance - 1e-6
+    track_half = track_width / 2
+    if not adds_via and (px is None
+                         or math.hypot(px - vx, py - vy) <= POSITION_TOLERANCE):
+        return False                    # reuse with no stub emits no copper
+    for entry in placed:
+        qx, qy, qn = entry[0], entry[1], entry[2]
+        qpx = entry[3] if len(entry) > 3 else None
+        qpy = entry[4] if len(entry) > 4 else None
+        # Via-to-via. Same-net floor was via_size*0.5 -- BELOW drill
+        # hole-to-hole for standard vias (#479 audit gap 2); both are via_drill.
+        # Skipped for a REUSE: no drill and no via copper is added, so there is
+        # no new pair for this run to space.
+        if adds_via:
+            floor = (via_size + clearance) if qn != net_id \
+                else max(via_size * 0.5, via_drill + hole_to_hole)
+            if math.hypot(vx - qx, vy - qy) < floor - 1e-6:
+                return True
+        if qn == net_id:
+            continue                           # own-net copper is no obstacle
+        has_stub = (qpx is not None
+                    and math.hypot(qpx - qx, qpy - qy) > POSITION_TOLERANCE)
+        # 1. the candidate VIA against the stub already emitted for that via.
+        #    Dropped for a reuse because the target's POSITION is not this
+        #    run's doing: the graze belongs to that already-emitted stub, and
+        #    refusing the reuse only buys a fresh drill while leaving it. See
+        #    run_output_conflict's docstring for the separate, measured gap
+        #    this exposes (stub vs pre-existing via on another FANNED net).
+        if adds_via and has_stub \
+                and point_to_segment_distance(vx, vy, qpx, qpy, qx, qy) \
+                < via_half + track_half:
+            return True
+        if px is None:
+            continue
+        # 2. the candidate's own STUB against that placed via, and
+        # 3. stub against stub -- the same blindness, the other way round.
+        if point_to_segment_distance(qx, qy, px, py, vx, vy) \
+                < via_half + track_half:
+            return True
+        if has_stub and segment_to_segment_distance(
+                px, py, vx, vy, qpx, qpy, qx, qy) \
+                < track_width + clearance - 1e-6:
+            return True
+    return False
+
+
 def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
                          track_width, clearance, via_size, via_drill, grid_step,
-                         allow_via_in_pad=False, board_edge_clearance=0.0):
+                         allow_via_in_pad=False, board_edge_clearance=0.0,
+                         progress_callback=None):
     """Via-drop escape (issue #164): instead of a surface 45-degree fan, run a
     short stub from each pad to a through-via just past the pad edge and let
     signal routing pick the net up on an inner/back layer. This escapes a
@@ -155,17 +366,22 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
     -- nothing here assumes a group shares an edge axis."""
     from obstacle_map import (build_base_obstacle_map, build_layer_map,
                               check_line_clearance, point_to_segment_distance)
+    from geometry_utils import segment_to_segment_distance
     from bga_fanout.reroute import _seg_hits_pad
     from bga_fanout.geometry import clamp_via_to_pad
-    from list_nets import fab_floor_ladder, fab_floor_min, warn_fab_escalation
+    from fab_notes import via_overlaps_pad
+    from list_nets import fab_floor_min, warn_fab_escalation
     from routing_config import GridRouteConfig
 
     # Fab floors for the via-in-pad clamp (#202): when a chosen via sits ON its
     # pad, size it to the pad edge so it can't bulge into a neighbouring net. Pass
     # the active fab-tier ladder so the clamp escalates standard->advanced (#237).
     _copper = len(getattr(pcb_data.board_info, 'copper_layers', None) or []) or 4
-    floors = fab_floor_ladder(_copper)
-    clamp_n = floor_n = escalated_n = 0
+    from list_nets import escalation_rungs
+    # escalation_rungs: empty under --escalation off, raised to the board's
+    # own minimums under board (#857).
+    floors = escalation_rungs(_copper)
+    clamp_n = floor_n = escalated_n = offcentre_n = vip_n = 0
 
     # Only the nets we're escaping right now are exempt from the obstacle map --
     # the chip's OTHER nets (a routed neighbour pair, a crossing track) must
@@ -173,12 +389,36 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
     fanned_nets = {pi.pad.net_id for pi in pad_infos}
     cfg = GridRouteConfig(layers=list(pcb_data.board_info.copper_layers or [layer]),
                           track_width=track_width, clearance=clearance)
+    _ref = getattr(footprint, 'reference', '?')
+
+    def _prog(cur, tot, what):
+        if progress_callback:
+            progress_callback(cur, tot, f"QFN via-drop {_ref}: {what}")
+
     from kicad_dru import install_layer_clearances
     install_layer_clearances(cfg, None, None, pcb_data)  # #498
     layer_map = build_layer_map(cfg.layers)
+    _prog(0, 0, "building obstacle map...")
     obstacles = build_base_obstacle_map(pcb_data, cfg, nets_to_route=list(fanned_nets),
                                         extra_clearance=track_width / 2)
-    obs_layer_idx = layer_map.get(layer)
+    # #845: the obstacle plane for the STUB, which is emitted on the pad's own
+    # mount layer (:766 and :777, deliberately -- putting it on an inner/back
+    # escape layer would float it above the pad, #195). This used to resolve
+    # `layer`, the ESCAPE layer, which is where the VIA lands and not where the
+    # stub's copper is; on the configuration under-pad exists for (an F.Cu part
+    # escaped to B.Cu) every stub was clearance-tested against the wrong
+    # layer's plane -- grading copper that is not there and ignoring copper
+    # that is.
+    #
+    # It is the only consumer of this index. The VIA is not tested through the
+    # map at all (it is a through via, and `via_clears` scans pcb_data
+    # geometrically), so there was never a second reader for whom the escape
+    # layer was the right answer.
+    #
+    # Per-layer clearance comes along for free: build_base_obstacle_map stamps
+    # each layer at that layer's own rule (#498, installed into cfg at :331),
+    # so reading the mount layer's plane also reads the mount layer's floor.
+    stub_layer_idx = layer_map.get(footprint.layer)
 
     # Foreign obstacles, keyed by net so the via's OWN net is exempt at check
     # time. A through-via spans every copper layer, so foreign tracks on ANY
@@ -192,9 +432,140 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
     _own_via_pos: Dict[int, List[Tuple[float, float]]] = {}
     for v in pcb_data.vias:
         _own_via_pos.setdefault(v.net_id, []).append((v.x, v.y))
+    # #619: `nets_to_route` above ERASES every piece of copper on a net we are
+    # escaping -- segments, vias AND pads (obstacle_map.py :216 / :299 / :312).
+    # Right for a net's OWN copper; wrong for every OTHER net in the same call.
+    # The candidate VIA still meets that copper (via_clears scans pcb_data
+    # directly), but the pad->via STUB's only channel to the input board is
+    # `check_line_clearance` on the holed map -- so stubs shipped straight
+    # through the CENTRES of pre-existing vias on sibling fanned nets.
+    #
+    # The SURFACE fan already closes exactly this hole for itself, geometrically
+    # (#257, the tail of `_seg_grazes`); the under-pad path returns ~200 lines
+    # earlier and shares none of it. This is that backstop, ported.
+    #
+    # These lists are EXACTLY the complement of what `nets_to_route` erases:
+    # build_base_obstacle_map stamps only segments, vias and pads and never
+    # zone copper, so pour copper is invisible to the stub before and after
+    # this change and nothing is being silently left out.
+    _erased_vias = [v for v in pcb_data.vias if v.net_id in fanned_nets]
+    _erased_segs = [s for s in pcb_data.segments if s.net_id in fanned_nets]
+    # The pad half needs FOUR exclusions the surface fan's pad loop (:990-996)
+    # does not make, or it phantom-rejects. Three are check_drc's own rules,
+    # applied here so the gate refuses exactly what the grader flags:
+    #   * NPTH carries no copper -- KiCad lists *.Cu on it for hole keep-out,
+    #     but an np_thru_hole pad's "size" is only the mask opening. check_drc
+    #     skips it for PAD-SEGMENT (`_pad_has_no_copper`, #260); so do we.
+    #   * layer scope resolves through `pad_copper_layers`, which expands the
+    #     `*.Cu` and `F&B.Cu` wildcards. A bare `layer in pad.layers` misses
+    #     both -- zero occurrences in this corpus, but the pcbnew parse path
+    #     emits them, so the GUI front would diverge from the CLI one (#722).
+    #   * `pad.local_clearance` RAISES the floor: check_drc grades PAD-SEGMENT
+    #     at `_pad_pair_cl = max(local_clearance, pair)`. It is per-pad, so it
+    #     cannot be hoisted the way the surface fan hoists its `margin` -- that
+    #     is precisely why the surface fan cannot honour it and this does.
+    # The fourth is a net TIE: `_seg_hits_pad` is net-blind, and obstacle_map's
+    # own tie lift only fires when exactly one net is being routed
+    # (obstacle_map.py:338-341), so the under-pad path never gets it. Today a
+    # tie partner on a fanned net is absent from the map by accident; without
+    # this the pad half would turn that accident into a hard block with no lift.
+    from check_drc import (_pad_has_no_copper, pad_copper_layers,
+                           check_pad_segment_overlap,
+                           _net_tie_span_waived as _tie_span_waived)
+    from kicad_parser import Segment as _Segment
+    _board_cu = list(pcb_data.board_info.copper_layers or [])
+    _erased_pads = [p for p in foreign_pads
+                    if p.net_id in fanned_nets
+                    and not _pad_has_no_copper(p)
+                    and footprint.layer in pad_copper_layers(p, _board_cu)]
+    # The stub is emitted on `footprint.layer` -- the pad's OWN mount layer,
+    # deliberately, so it does not float above the pad (#195) -- and NOT on the
+    # `layer` argument. The caller's #498 dru swap resolved `clearance` for the
+    # ESCAPE layer, which is where the VIA lands, not where the stub's copper
+    # lives, and check_drc grades a segment with `_pair_cl(..., layer=seg.layer)`.
+    # So the stub's own pair clearance is the mount layer's rule.
+    # PARTIAL, and the limit is worth stating: when footprint.layer IS ruled
+    # this is exact, but when it is not, the fallback is `clearance` -- which
+    # the caller already rebound to the ESCAPE layer's rule (#498, :900-904).
+    # So an unruled mount layer inherits the escape layer's number rather than
+    # the base. Closing that means not rebinding the scalar in the CALLER at
+    # all, which is a change to the surface fan's path too and is deliberately
+    # not attempted here. The map-based test above does not share the problem:
+    # build_base_obstacle_map stamps each layer at its own rule, so reading the
+    # mount layer's plane already reads the mount layer's floor. Inert on every
+    # board this repo ingests (#770: no tracked board carries a .kicad_dru
+    # layer rule), and inert on the default path, where --layer IS the mount
+    # layer.
+    _stub_clr = cfg.layer_clearance(footprint.layer, clearance)
+    # A SET of halves, so an A/B arm can be 'via', 'via,seg', 'off' or 'all'.
+    # 'off' wins over everything (an explicit ablation is never partial), and
+    # an empty or unrecognised value is 'all' -- a typo must not silently
+    # disable the gate.
+    _gate = env_knobs.QFN_UNDERPAD_ERASED_GATE
+    _gsel = {t for t in _gate.replace(',', ' ').split() if t}
+    # ANY unrecognised token means ALL and says so. The earlier form silently
+    # dropped a half on a transposition -- 'sge,pad' ran the pad half only,
+    # reporting itself as a deliberate two-half arm -- and quietly accepted the
+    # PLURAL spellings ('vias', 'segs', 'pads') that LAST_ERASED_SETS itself
+    # publishes, as well as 'none'/'0'/'false', which read as ablations and are
+    # not. Fail-safe in direction (never silently OFF) and now audible.
+    _known = {'all', 'off', 'via', 'seg', 'pad'}
+    _bad = _gsel - _known
+    if _bad:
+        print(f"  WARNING: KICAD_QFN_UNDERPAD_ERASED_GATE={_gate!r} has "
+              f"unrecognised token(s) {sorted(_bad)}; running ALL halves. "
+              f"Valid: all | off | via | seg | pad (comma-separated).")
+        _gsel = {'all'}
+    _gate_all = not _gsel or 'all' in _gsel or not (_gsel & {'via', 'seg', 'pad'})
+    _gate_via = 'off' not in _gsel and (_gate_all or 'via' in _gsel)
+    _gate_seg = 'off' not in _gsel and (_gate_all or 'seg' in _gsel)
+    _gate_pad = 'off' not in _gsel and (_gate_all or 'pad' in _gsel)
+
+    def _tie_exempt(net_id):
+        f = getattr(pcb_data, 'net_tie_exempt_pad_ids', None)
+        return f(net_id) if f else ()
+
+    global LAST_ERASED_SETS
+    LAST_ERASED_SETS = {'nets': set(fanned_nets), 'vias': len(_erased_vias),
+                        'segs': len(_erased_segs), 'pads': len(_erased_pads),
+                        'layer': footprint.layer,
+                        'clearance': _stub_clr, 'gate': _gate}
     from kicad_parser import pad_drill_circles as _pdc
     import routing_defaults as _rd
-    _h2h = _rd.HOLE_TO_HOLE_CLEARANCE
+    # BOARD-FIRST, same rule as every other floor: a board declaring
+    # min_hole_to_hole above the packaged default was having its drills spaced
+    # at the default instead. Discovered via source_path so the GUI inherits it.
+    #
+    # RAISE-ONLY IN THE CODE, not only in this comment. `board_floor` is
+    # board-AUTHORITATIVE, not raise-only -- it returns whatever the board
+    # declares once it is positive, with no max() against the fallback, and
+    # that is correct for the floors it mostly serves (check_channels and
+    # check_assembly must grade at the board's own clearance even when that is
+    # BELOW their default, or they manufacture phantom violations). It is a
+    # DRILL floor here, so the same freedom is a fab hazard: a project
+    # declaring `min_hole_to_hole: 0.10` resolved to (0.1, 'board constraint')
+    # and spaced this run's drills below the 0.20 JLC floor. `resolve_hole_clearance`
+    # is called raise-only for the same reason, and is raise-only only because
+    # ITS consumers wrap it in a max() (obstacle_map.py:1580,
+    # plane_obstacle_builder.py:1208) -- this is that wrap. The engine cannot
+    # lean on the CLI's enforce_fab_floors: that pins args.hole_to_hole_clearance,
+    # a value this code path never reads.
+    from list_nets import board_floor
+    _h2h_decl, _h2h_src = board_floor(
+        getattr(pcb_data, 'source_path', "") or "", 'hole_to_hole',
+        None, _rd.HOLE_TO_HOLE_CLEARANCE)
+    _h2h_fab = fab_floor_min(_copper).get('hole_to_hole', 0.0)
+    _h2h = max(_h2h_decl, _h2h_fab)
+    if _h2h_src == 'board constraint' and _h2h_decl > _rd.HOLE_TO_HOLE_CLEARANCE:
+        print(f"  Hole-to-hole {_h2h:g}mm (from the board's own "
+              f"min_hole_to_hole)")
+    elif _h2h_src == 'board constraint' and _h2h_decl < _h2h_fab:
+        # Never SILENTLY relaxed -- the whole point of the guard is that a
+        # board file cannot lower a fab floor without saying so. A user who
+        # genuinely has a finer fab declares it with --fab-tier/--fab-overrides,
+        # which is what fab_floor_min reads.
+        print(f"  Board min_hole_to_hole {_h2h_decl:g}mm is below the "
+              f"{_h2h_fab:g}mm fab hole-to-hole floor; using {_h2h:g}mm.")
     _drilled_pad_holes = [(hx, hy, hd)
                           for p in foreign_pads if p.drill and p.drill > 0
                           for (hx, hy, hd) in _pdc(p)]
@@ -212,7 +583,27 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
     from check_drc import _point_to_rings_distance as _pt_rings_dist
     from check_drc import _point_on_board as _pt_on_board
 
-    def via_clears(vx, vy, net_id, placed):
+    def via_clears(vx, vy, net_id, placed, px=None, py=None):
+        """Is a via at (vx, vy) legal, given the board AND this run's own output?
+
+        `foreign_vias` / `foreign_pads` / `foreign_tracks` above are a SNAPSHOT
+        of the INPUT board, taken once. `placed` is what this run has emitted so
+        far -- and it used to carry only via CENTRES, so the STUBS this run laid
+        from each pad to each via were invisible to every later candidate. The
+        test therefore approved vias sitting on copper it had just emitted
+        itself, and each such escape came back a DRC CONTACT.
+
+        Measured: U2 (QFN, 56 pads) reported 39 of 46 escapes under
+        `--escape-method underpad --allow-via-in-pad`, and the gate rejected
+        every one of them as a contact. The wall was NOT geometry -- U2 has a
+        1.4 mm moat that admits a 0.7 mm via at all 56 pads, `pad_via == 0` in
+        every run, and a real 0.700 mm via IS placeable DRC-clean in pad U2.43.
+        True capacity is 11 of 14 lanes per side. So a valid escape strategy
+        reported as impossible, and two cycles skipped fanout on that premise.
+
+        `px, py` are the candidate's OWN pad, so its stub can be tested too --
+        the same blindness in the other direction.
+        """
         if _edge_rings:
             if not _pt_on_board(vx, vy, _edge_outer, _edge_cutouts):
                 return False
@@ -245,42 +636,129 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
             if point_to_segment_distance(vx, vy, sx0, sy0, sx1, sy1) \
                     < via_size / 2 + sw / 2 + clearance - 1e-6:
                 return False
-        for qx, qy, qn in placed:
-            # Same-net floor was via_size*0.5 -- BELOW drill hole-to-hole for
-            # standard vias (#479 audit gap 2); both holes are via_drill here.
-            floor = (via_size + clearance) if qn != net_id \
-                else max(via_size * 0.5, via_drill + _h2h)
-            if math.hypot(vx - qx, vy - qy) < floor - 1e-6:
-                return False
+        return not run_output_conflict(
+            vx, vy, net_id, placed, px, py,
+            via_size=via_size, via_drill=via_drill, clearance=clearance,
+            track_width=track_width, hole_to_hole=_h2h)
+
+    def stub_clears_erased(px, py, vx, vy, net_id):
+        """#619: is the pad->via stub clear of the copper `nets_to_route` erased?
+
+        The tail of the surface fan's `_seg_grazes` (#257), applied to the
+        bridging stub. Returns True when the stub is CLEAR -- the opposite
+        polarity to `_seg_grazes`, so it reads like the `stub_ok` it is
+        and-ed into.
+
+        Deliberately LAYER-BLIND, matching every grader around it:
+        `check_drc.check_via_segment_overlap` ignores `via.layers` ("vias go
+        through ALL copper layers") and `obstacle_map._add_via_obstacle`
+        stamps every via on every layer. Filtering a blind/buried via out
+        here would emit copper this repo's own DRC flags, and would make a
+        fanned-net via behave differently from an identical non-fanned one.
+
+        Called BEFORE `via_clears`, not after, and that ordering is
+        load-bearing rather than cosmetic: `via_clears` scans, per candidate,
+        every board via + every board pad (a 17-sample `_seg_hits_pad` each)
+        + every board segment -- ~20k point tests on routed_output U2, where
+        `_erased_vias` is 89. Running this first kills a doomed candidate for
+        ~0.5% of that cost. Measured on U2: correctly ordered 7.0s against a
+        10.9s baseline (-36%); appended after `via_clears` instead, +18%.
+        The gate is a speed-up.
+        """
+        if math.hypot(vx - px, vy - py) <= POSITION_TOLERANCE:
+            # Via centred on the pad: the commit loop emits NO track at all
+            # (:604, :616), so there is no stub to test. `run_output_conflict`
+            # states the same rule for the reuse case at :213-215; without
+            # this, a zero-length reuse -- a pre-existing via-in-pad at the pad
+            # centre, the canonical re-run case -- is judged as a degenerate
+            # segment and can be rejected for copper it will never emit.
+            return True
+        if _gate_via:
+            for v in _erased_vias:
+                if v.net_id == net_id:
+                    continue                # own-net copper is no obstacle
+                if point_to_segment_distance(v.x, v.y, px, py, vx, vy) \
+                        < v.size / 2 + track_width / 2 + _stub_clr - 1e-6:
+                    return False
+        if _gate_seg:
+            # Segments, unlike vias, really ARE single-layer objects, so this
+            # half filters -- on `footprint.layer`, where the stub's copper is
+            # emitted, NOT on `layer`. The surface fan compares against `layer`
+            # (:999) only because ITS stubs land there. Measured on U2: the two
+            # spellings disagree completely -- `footprint.layer` (F.Cu) finds 25
+            # pairs, `layer` (B.Cu) finds 17 DIFFERENT ones.
+            for s in _erased_segs:
+                if s.net_id == net_id or s.layer != footprint.layer:
+                    continue
+                if segment_to_segment_distance(px, py, vx, vy,
+                                               s.start_x, s.start_y,
+                                               s.end_x, s.end_y) \
+                        < s.width / 2 + track_width / 2 + _stub_clr - 1e-6:
+                    return False
+        if _gate_pad and _erased_pads:
+            # CALL the grader; do not mirror it. An earlier revision of this
+            # used `_seg_hits_pad` with a hand-built margin, which is what the
+            # surface fan's pad loop does -- and it was measurably NOT the same
+            # predicate. Audited over the whole corpus at 0.1/0.1/0.45, it
+            # rejected 83 candidate/pad pairs that `check_pad_segment_overlap`
+            # grades CLEAN, the worst 0.234mm clear of the requirement, from
+            # two causes it cannot express:
+            #   * `_seg_hits_pad` tests the full axis-aligned RECTANGLE and
+            #     grows it with square corners, while check_drc resolves a
+            #     `corner_radius` for circle/oval/roundrect and calls
+            #     `segment_to_rect_distance` with it -- a 1.45mm round pad
+            #     becomes a 1.6x1.6 box whose corner is 1.131mm from centre
+            #     where the true keep-out is 0.875mm (61 of the 83); and
+            #   * it rejects at 1e-6 while the grader forgives `_grade_tol` =
+            #     5% of clearance, so a 0.005mm overlap at CL 0.1 is clean to
+            #     check_drc and a violation here (the other 22).
+            # It is also SAMPLED (`samples=16`), so on a long stub a small pad
+            # can fall between two samples: a 0.25mm pad on a 6.95mm stub --
+            # reachable at via 0.8 / pitch 0.4, where the ladder's top offset
+            # is exactly 6.95mm -- was reported CLEAR while the stub ran
+            # through its centre. `check_pad_segment_overlap` is exact.
+            seg = _Segment(start_x=px, start_y=py, end_x=vx, end_y=vy,
+                           width=track_width, layer=footprint.layer,
+                           net_id=net_id)
+            _tie = _tie_exempt(net_id)
+            for p in _erased_pads:
+                if p.net_id == net_id:
+                    continue
+                # The net-tie waiver is check_drc's BOTH-condition form. The
+                # exemption is LOCAL -- KiCad waives the contact only where it
+                # lies on the tied net's own pad (DRC_ENGINE::IsNetTieExclusion)
+                # -- so skipping the partner pad outright would wave through a
+                # real short 2-3mm away, which is exactly the geometry the
+                # ladder produces. `id(p) in _tie` alone is NOT the rule.
+                if id(p) in _tie and _tie_span_waived(pcb_data, seg, net_id,
+                                                     p, _stub_clr):
+                    continue
+                # local_clearance is per-PAD and RAISES the floor, exactly as
+                # check_drc's `_pad_pair_cl = max(local_clearance, pair)`.
+                _eff = max(_stub_clr, getattr(p, 'local_clearance', 0.0) or 0.0)
+                if check_pad_segment_overlap(p, seg, _eff, _board_cu)[0]:
+                    return False
         return True
 
     def snap(v):
         return round(v / grid_step) * grid_step if grid_step > 0 else v
 
-    def _onpad(mode):
-        # On-pad (via-in-pad) offsets along the escape axis, ordered by `mode`:
-        # 'in' sweeps inward (toward the chip) first; 'near' alternates nearest
-        # first. 0 == via centred on the pad.
-        seq = [0.0]
-        if mode == 'in':
-            seq += [-k * step for k in range(1, 9)] + [k * step for k in range(1, 9)]
-        else:                                   # 'near'
-            for k in range(1, 9):
-                seq += [k * step, -k * step]
-        return seq
-
     def candidate_offsets(pad_width, mode):
-        # Off-pad outward offsets always clear the pad body. With via-in-pad we
-        # ALSO offer on-pad offsets and mix the two: 'out' prefers off-pad
-        # outward then falls back to on-pad; 'near'/'in' prefer on-pad then fall
-        # back to off-pad outward.
+        # `outward` starts past the pad body and always clears it. With
+        # --allow-via-in-pad we ALSO offer the axis ladder, which starts ON the
+        # pad centre and steps by the inter-net stagger -- so it reaches on-pad
+        # positions AND off-pad ones on the inward side (#846). 'out' prefers
+        # the outward ladder and falls back to the axis one; 'near'/'in' prefer
+        # the axis ladder and fall back to outward.
         base = pad_width / 2 + via_size / 2 + clearance
         outward = [base + k * step for k in range(0, 9)]
         if not allow_via_in_pad:
             return outward
+        axis = axis_offset_ladder(pad_width, via_size, step,
+                                  'near' if mode == 'out' else mode)
         if mode == 'out':
-            return outward + _onpad('near')
-        return _onpad(mode) + outward
+            return outward + axis
+        return axis + outward
 
     def place_pin(pi, mode, placed):
         ex, ey = pi.escape_direction
@@ -296,15 +774,50 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
                 _best = (_d, ovx, ovy)
         if _best is not None:
             _rvx, _rvy = _best[1], _best[2]
-            if (obs_layer_idx is None or
+            # `check_line_clearance` reads the INPUT-board obstacle map, so on
+            # its own this branch is blind to everything this run has emitted
+            # -- the reuse path was one of two ways a position is returned, and
+            # the only one that never consulted via_clears. The bridging stub
+            # it emits can still cross another net's stub or via laid earlier
+            # in the same run, and the position was then appended to
+            # placed_global as though it had been checked.
+            #
+            # It calls run_output_conflict directly rather than via_clears:
+            # the reused via IS on the board, so it is in `foreign_vias` at
+            # distance 0 from itself, and the full test would reject every
+            # reuse on its own same-net drill floor. Only this run's output is
+            # in question here.
+            #
+            # And `adds_via=False`, because a reuse adds NO drill and NO via
+            # copper -- only the bridging stub. Pricing the existing via as a
+            # new one at config.via_size rejected every reuse on this board:
+            # 0.30 board vias 0.400mm apart (legal at 0.15+0.15+0.10, and
+            # already there) judged against a demanded 0.55. That was measured
+            # as Net-(U2A-DATA_30) losing its escape to a fresh drill --
+            # 28/12/30 vias/dropped/tracks becoming 29/13/31 on U2.
+            #
+            # stub_clears_erased is a SEPARATE `and` term, never folded into
+            # the `stub_layer_idx is None` `or`: that short-circuit skips the
+            # whole clearance test when the escape layer is not in the layer
+            # map, and #619 is pure geometry on the mount layer that must run
+            # regardless.
+            if (stub_layer_idx is None or
                     check_line_clearance(obstacles, px, py, _rvx, _rvy,
-                                         obs_layer_idx, cfg)):
+                                         stub_layer_idx, cfg)) \
+                    and stub_clears_erased(px, py, _rvx, _rvy, pi.pad.net_id) \
+                    and not run_output_conflict(
+                        _rvx, _rvy, pi.pad.net_id, placed, px, py,
+                        via_size=via_size, via_drill=via_drill,
+                        clearance=clearance, track_width=track_width,
+                        hole_to_hole=_h2h, adds_via=False):
                 return (_rvx, _rvy)
         for d in candidate_offsets(pi.pad_width, mode):
             vx, vy = snap(px + ex * d), snap(py + ey * d)
-            stub_ok = (obs_layer_idx is None or
-                       check_line_clearance(obstacles, px, py, vx, vy, obs_layer_idx, cfg))
-            if stub_ok and via_clears(vx, vy, pi.pad.net_id, placed):
+            stub_ok = (stub_layer_idx is None or
+                       check_line_clearance(obstacles, px, py, vx, vy, stub_layer_idx, cfg))
+            if stub_ok \
+                    and stub_clears_erased(px, py, vx, vy, pi.pad.net_id) \
+                    and via_clears(vx, vy, pi.pad.net_id, placed, px, py):
                 return (vx, vy)
         return None
 
@@ -316,7 +829,10 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
             pos = place_pin(pis[idx], mode_fn(idx), placed)
             results[idx] = pos
             if pos is not None:
-                placed.append((pos[0], pos[1], pis[idx].pad.net_id))
+                # Carry the PAD origin, so the stub this placement implies is
+                # visible to every later candidate in the same run (D10).
+                placed.append((pos[0], pos[1], pis[idx].pad.net_id,
+                               pis[idx].pad.global_x, pis[idx].pad.global_y))
         return results
 
     # Stagger configurations, tried in order; the most-escaped wins, ties keep
@@ -346,7 +862,9 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
         by_side[pi.side].append(pi)
 
     n_alt = 0
-    for side, pis in by_side.items():
+    for _si, (side, pis) in enumerate(by_side.items()):
+        _prog(_si + 1, len(by_side),
+              f"placing via drops, side {side} ({len(pis)} pin(s))")
         pis.sort(key=lambda pi: (pi.pad.global_x, pi.pad.global_y))
         order_fwd = list(range(len(pis)))
         best, best_n, best_ci = None, -1, 0
@@ -368,8 +886,10 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
                 dropped.append(pi.pad.net_name)
                 continue
             vx, vy = pos
-            placed_global.append((vx, vy, pi.pad.net_id))
             px, py = pi.pad.global_x, pi.pad.global_y
+            # Committed across SIDES: side 2's candidates must see side 1's
+            # stubs, not only its via centres (D10).
+            placed_global.append((vx, vy, pi.pad.net_id, px, py))
             # Reused an existing same-net via (#479 audit gap 2): emit only
             # the bridging stub, never a duplicate drill.
             if any(abs(vx - ox) < 1e-4 and abs(vy - oy) < 1e-4
@@ -390,16 +910,46 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
                 tracks.append({'start': (px, py), 'end': (vx, vy),
                                'width': track_width, 'layer': footprint.layer,
                                'net_id': pi.pad.net_id})
-                v_size, v_drill = via_size, via_drill   # off-pad via: not in a pad
-            else:
+            # Whether a STUB is needed and whether the via is IN THE PAD are
+            # two questions, and this loop used to answer both with one 0.001mm
+            # centre-coincidence test (#846). They come apart in two ways:
+            #
+            #  * `snap()` quantises the via COORDINATE to the routing grid
+            #    (0.05 by default) while pad centres are off-lattice on real
+            #    parts -- 76 of 77 pads on routed_output's QFN-76, 6 of 6 on
+            #    qfn_diffpair_escape -- so the genuinely centred rung lands
+            #    0.0125mm out, 12.5x POSITION_TOLERANCE. The via-in-pad branch
+            #    was unreachable by construction on those boards.
+            #  * an offset rung can put the barrel well inside the pad without
+            #    the centre being on it at all.
+            #
+            # Either way the via shipped at NOMINAL size with no #202 clamp,
+            # free to bulge past the pad -- while `print_via_in_pad_note` below
+            # counted the very same via as needing IPC-4761 Type VII, because
+            # it asks the fab question: does the BARREL overlap the copper. The
+            # commit loop now calls that same predicate, on the pad this leg is
+            # escaping (`via_in_pad_sites` scans every same-net pad and would
+            # classify against a NEIGHBOUR's, then clamp to this one's).
+            if via_overlaps_pad(pi.pad, vx, vy, via_size):
+                vip_n += 1
                 # via-in-pad: clamp to the pad edge so it never bulges past it (#202)
-                v_size, v_drill, status, rung = clamp_via_to_pad(via_size, via_drill, pi.pad, floors)
+                # Pass the via's REAL position: this branch is reached for
+                # OFF-CENTRE vias since #846, and a centred clamp does not
+                # stop those bulging (#860 follow-up). Off-centre, the
+                # honest verdict is usually 'floor' -- the barrel cannot be
+                # both manufacturable and inside the pad at that offset.
+                v_size, v_drill, status, rung = clamp_via_to_pad(
+                    via_size, via_drill, pi.pad, floors, via_x=vx, via_y=vy)
                 if status == 'clamped':
                     clamp_n += 1
                 elif status == 'floor':
                     floor_n += 1
                 if rung > 0:
                     escalated_n += 1
+                if math.hypot(vx - px, vy - py) > POSITION_TOLERANCE:
+                    offcentre_n += 1
+            else:
+                v_size, v_drill = via_size, via_drill   # off-pad via: not in a pad
             vias.append({'x': vx, 'y': vy, 'size': v_size, 'drill': v_drill,
                          'layers': ['F.Cu', 'B.Cu'], 'net_id': pi.pad.net_id})
 
@@ -411,16 +961,50 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
         print(f"    dropped (no clear via offset): {dropped}")
     if clamp_n:
         print(f"    clamped {clamp_n} via-in-pad(s) to fit their pad edge (#202)")
+    # Cleared HERE and repopulated in the same breath, but the engine
+    # entry point clears it too: a caller that runs two components in one
+    # process must not read the first one's numbers for the second.
+    LAST_UNDERPAD_REPORT.clear()
+    LAST_UNDERPAD_REPORT.update({
+        'via_in_pad': vip_n,
+        'via_in_pad_offcentre': offcentre_n,
+        'clamped': clamp_n,
+        'max_stub_mm': round(max((math.hypot(t['end'][0] - t['start'][0],
+                                             t['end'][1] - t['start'][1])
+                                  for t in tracks), default=0.0), 4),
+        'allow_via_in_pad': bool(allow_via_in_pad),
+    })
+    if offcentre_n:
+        # Disclosed separately, not folded into the line above: these are the
+        # vias #846 was about -- overlapping their pad while OFF its centre,
+        # which the old test could not see. A reader has to be able to watch
+        # this number move.
+        print(f"    {offcentre_n} of them sit OFF the pad centre (#846); "
+              f"before, those shipped unclamped")
     # The FAB requirement this escape may have just created (#489 §8). Emitted
     # from the shared engine path so the GUI fanout tab reports it too.
-    from fab_notes import print_via_in_pad_note
-    print_via_in_pad_note(vias, pcb_data.pads_by_net, context="QFN underpad escape")
+    # #962: DECLARED on each via-in-pad, (capping yes) (filling yes), not only
+    # printed. The dicts carry it to the CLI writer and the GUI fanout tab.
+    # `vias` are all this escape's own (empty input snapshot).
+    from fab_notes import (via_protection_stamps, apply_stamps_in_memory,
+                           print_via_protection_record)
+    _st962, _rec962 = via_protection_stamps(vias, [], pcb_data)
+    apply_stamps_in_memory(_st962)
+    print_via_protection_record(_rec962, "QFN underpad escape")
     if escalated_n:
         warn_fab_escalation(f"{escalated_n} via-in-pad(s) (sub-0.45mm pads)")
     if floor_n:
-        print(f"    WARNING: {floor_n} pad(s) smaller than the fab via floor "
-              f"({fab_floor_min(_copper)['via_diameter']:.2f}mm dia); via held at the "
-              f"floor and still bulges past the pad edge")
+        # Two causes reach here and the message names both (#860 follow-up):
+        # the pad really is smaller than anything manufacturable, OR the via
+        # sits far enough OFF the pad centre that its remaining reach inside
+        # the pad is -- `clamp_via_to_pad` measures min(sx-2|dx|, sy-2|dy|)
+        # when it is given the position. Either way the barrel is held at the
+        # floor and still crosses the pad edge, which is the honest statement;
+        # saying "clamped to fit their pad edge" for these would not be.
+        print(f"    WARNING: {floor_n} via-in-pad(s) cannot fit their pad at "
+              f"the fab via floor ({fab_floor_min(_copper)['via_diameter']:.2f}mm "
+              f"dia) -- pad smaller than the floor, or the via too far off its "
+              f"centre; via held at the floor and still bulges past the pad edge")
     return tracks, vias, dropped
 
 
@@ -440,7 +1024,11 @@ def generate_qfn_fanout(footprint: Footprint,
                         # #581: > 0 forbids via-in-pad (overrides
                         # allow_via_in_pad); None auto-reads the .kicad_pro
                         # record a chain step persisted.
-                        same_net_pad_clearance: Optional[float] = None) -> Tuple[List[Dict], List[Dict], List[str]]:
+                        same_net_pad_clearance: Optional[float] = None,
+                        # progress_callback(current, total, label); the fanout
+                        # tab otherwise shows one static label for the run.
+                        progress_callback=None,
+                        cancel_check=None) -> Tuple[List[Dict], List[Dict], List[str]]:
     """
     Generate QFN fanout tracks for a footprint.
 
@@ -466,10 +1054,41 @@ def generate_qfn_fanout(footprint: Footprint,
         too close to another net's stub (endpoint spacing < track_width +
         extension); those tracks are still emitted but flagged as failing
         clearance so the GUI can surface them.
+
+    Cancellation (#621): `cancel_check` is the standard zero-arg cooperative
+    predicate (`batch_route` / `create_plane` take the same one), honoured at
+    the head of the escape work and at the head of the per-stub clearance loop
+    -- the loop that actually costs the time (every stub is checked against the
+    obstacle map, every foreign pad and the board edge, then shortened by
+    search). It BREAKS the loop, never raises: an exception here dies in this
+    package's `except Exception` swallowers. Stubs already kept ship their
+    tracks; pads it never reached carry no copper and are NOT added to
+    failed_nets -- an unfinished search has measured nothing. The untried pads'
+    nets are published as qfn_fanout.LAST_CANCEL_SKIPPED. Passing None (the
+    default, and what the CLI passes) is fully inert.
     """
+    LAST_CANCEL_SKIPPED.clear()
+    # #619: and the erased-set report, for the same reason. `generate_qfn_fanout`
+    # returns early on several paths that never reach `_underpad_via_escape`
+    # (no recognised layout, no pad_infos, a cancel), and the surface fan never
+    # reaches it at all -- so without this a later reader gets the PREVIOUS
+    # footprint's set, from a different board. Measured over the tracked corpus:
+    # 155 of 408 footprints with >=4 pads never enter the escape, and every one
+    # of them was being graded against whatever ran before it.
+    global LAST_ERASED_SETS
+    LAST_ERASED_SETS = {}
+    _cancelled = [False]
+
+    def _cancel() -> bool:
+        if cancel_check is not None and cancel_check():
+            _cancelled[0] = True
+            return True
+        return False
     layout = analyze_qfn_layout(footprint)
     if layout is None:
-        print(f"Warning: {footprint.reference} doesn't appear to be a QFN/QFP")
+        _why = single_line_reason(footprint)
+        print(f"Warning: {footprint.reference} doesn't appear to be a QFN/QFP"
+              + (f": {_why}" if _why else ""))
         return [], [], []
 
     # #581: an active (> 0) same-net pad via clearance forbids via-in-pad --
@@ -511,7 +1130,15 @@ def generate_qfn_fanout(footprint: Footprint,
     # mean the pad rotation/size is modelled wrong, so the stubs would be placed
     # across neighbouring pads (issue: rotated-package fanout). Warn loudly.
     from check_pads import find_pad_overlaps
-    _ov = find_pad_overlaps(pcb_data, component=footprint.reference)
+    try:
+        _ov = find_pad_overlaps(pcb_data, component=footprint.reference)
+    except Exception as _exc:                                # noqa: BLE001
+        # #1111: the check measures a custom pad's copper with shapely now;
+        # a geometry failure on one odd pad must not abort a fanout over
+        # what is only a warning.
+        print(f"  WARNING: the pad-geometry check for {footprint.reference} "
+              f"could not run ({type(_exc).__name__}: {_exc})")
+        _ov = []
     if _ov:
         print(f"  WARNING: {footprint.reference} has {len(_ov)} overlapping "
               f"different-net pad pair(s) - pad geometry looks wrong, fanout "
@@ -530,6 +1157,11 @@ def generate_qfn_fanout(footprint: Footprint,
     # Analyze all pads
     pad_infos: List[PadInfo] = []
     side_counts = defaultdict(int)
+
+    if progress_callback:
+        progress_callback(
+            0, 0, f"QFN fanout {getattr(footprint, 'reference', '?')}: "
+                  f"analyzing {len(footprint.pads)} pad(s)...")
 
     for pad in footprint.pads:
         if not pad.net_name or pad.net_id == 0:
@@ -567,6 +1199,26 @@ def generate_qfn_fanout(footprint: Footprint,
     if not pad_infos:
         return [], [], []
 
+    def _record_skipped(tracks_, vias_, failed_):
+        """#621: the untried complement -- a candidate pad with no copper from
+        this call and no entry in failed_. Only built when a cancel fired."""
+        if not _cancelled[0]:
+            return
+        live = ({t.get('net_id') for t in tracks_}
+                | {v.get('net_id') for v in vias_})
+        done = set(failed_)
+        LAST_CANCEL_SKIPPED.extend(sorted(
+            {pi.pad.net_name for pi in pad_infos
+             if pi.pad.net_name and pi.pad.net_id not in live
+             and pi.pad.net_name not in done}))
+
+    # #621 escape-work head: covers BOTH escape methods, so a cancel raised
+    # before the first pad stops here with nothing tried instead of running an
+    # unbounded escape.
+    if _cancel():
+        _record_skipped([], [], [])
+        return [], [], []
+
     # Via-drop / underpad escape (issue #164): drop a through-via just past each
     # pad and let signal routing pick the net up on an inner layer, for crowded
     # fine-pitch edges where the surface fan has no room.
@@ -576,7 +1228,8 @@ def generate_qfn_fanout(footprint: Footprint,
         return _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
                                     track_width, clearance, via_size, via_drill, grid_step,
                                     allow_via_in_pad=allow_via_in_pad,
-                                    board_edge_clearance=board_edge_clearance)
+                                    board_edge_clearance=board_edge_clearance,
+                                    progress_callback=progress_callback)
 
     # Build stubs
     stubs: List[FanoutStub] = []
@@ -636,8 +1289,11 @@ def generate_qfn_fanout(footprint: Footprint,
     install_layer_clearances(_obs_cfg, None, None, pcb_data)  # #498
     _obs_layer_map = build_layer_map(_obs_cfg.layers)
     _fanned_net_ids = [p.net_id for p in footprint.pads if p.net_id]
+    if progress_callback:
+        progress_callback(0, 0, "QFN fanout: building obstacle map...")
     _obstacles = build_base_obstacle_map(pcb_data, _obs_cfg, nets_to_route=_fanned_net_ids,
-                                         extra_clearance=track_width / 2)
+                                         extra_clearance=track_width / 2,
+                                         progress_callback=progress_callback)
     _obs_layer_idx = _obs_layer_map.get(layer)
     # Window the foreign-pad scan by the actual STUB extent (every stub endpoint),
     # not the part's pad bbox: on large packages (LQFP) a straight escape runs
@@ -735,7 +1391,18 @@ def generate_qfn_fanout(footprint: Footprint,
     n_short = 0
     n_ext_short = 0
     kept_stubs: List[FanoutStub] = []
-    for stub, pad_info in zip(stubs, pad_infos):
+    # The per-stub graze test scans every foreign pad; on a crowded board this
+    # loop is where the QFN seconds go, so count it out to the status line.
+    for _sti, (stub, pad_info) in enumerate(zip(stubs, pad_infos)):
+        if _cancel():                                   # #621
+            # Untried stubs are simply not kept: no copper, and NOT appended to
+            # qfn_dropped -- they were never checked, so they are not failures.
+            break
+        if progress_callback:
+            progress_callback(
+                _sti + 1, len(stubs),
+                f"QFN fanout {getattr(footprint, 'reference', '?')}: "
+                f"clearing stub {stub.pad.net_name or stub.net_id}")
         nid = stub.net_id
         if _seg_grazes(stub.pad_pos, stub.corner_pos, nid):
             # #513 item 15 (ice4pi): a straight escape toward a nearby board
@@ -873,8 +1540,22 @@ def generate_qfn_fanout(footprint: Footprint,
     else:
         print(f"  Validated: No endpoint collisions")
 
+    _record_skipped(tracks, [], failed_nets)
     return tracks, [], failed_nets
 
+
+
+def autopick_rank(fp):
+    """The CLI's QFN/QFP auto-pick key: name evidence, then PIN count.
+
+    Pins, not pads (#1148): a thermal pad's split paste windows are not
+    pins, and counting them ranked a part by its stencil (tigard J1 read 30
+    pads for 22 pins, watchy U4 73 for 57).
+    """
+    from kicad_parser import non_aperture_pads
+    name_hit = any(t in (fp.footprint_name or '').upper()
+                   for t in ('QFN', 'QFP', 'DFN', 'MLF'))
+    return (1 if name_hit else 0, len(non_aperture_pads(fp)))
 
 def main():
     """Run QFN fanout generation."""
@@ -889,16 +1570,24 @@ def main():
     parser.add_argument('--layer', '-l', default=None,
                         help='Routing layer (default: the layer the component '
                              'is mounted on)')
-    parser.add_argument('--width', '-w', type=float, default=0.1,
-                        help='Track width in mm')
-    parser.add_argument('--extension', type=float, default=0.1,
+    # --track-width is an ALIAS, not a second knob: bga_fanout spells this
+    # same concept --track-width, and two sibling fanout CLIs disagreeing on
+    # the name is a trap. It cost a recorded stress run a wasted step
+    # (openstint set4 has three qfn_fanout attempts in its manifest -- the
+    # middle one is `--track-width 0.08` failing against this parser) and it
+    # cost a replay of that manifest another. dest stays `width`.
+    parser.add_argument('--width', '--track-width', '-w', type=float,
+                        default=0.1, help='Track width in mm '
+                                          '(--track-width is an alias)')
+    import routing_defaults as defaults
+    parser.add_argument('--extension', type=float, default=defaults.QFN_EXTENSION,
                         help='Extension past pad edge before bend (mm)')
-    parser.add_argument('--clearance', type=float, default=0.1,
+    parser.add_argument('--clearance', type=float, default=defaults.QFN_CLEARANCE,
                         help='Min clearance to other-net pads (mm); stubs that '
                              'would graze a foreign pad are shortened or dropped')
     parser.add_argument('--nets', '-n', nargs='*',
                         help='Net patterns to include')
-    parser.add_argument('--grid-step', type=float, default=0.1,
+    parser.add_argument('--grid-step', type=float, default=defaults.GRID_STEP,
                         help='Routing grid step in mm (default: 0.1). Fanned stub ends are '
                              'snapped to this grid so the router gets on-grid terminals (issue '
                              '#149); MATCH the --grid-step you pass to route.py.')
@@ -910,7 +1599,7 @@ def main():
                         help='Underpad escape via outer diameter (mm, default 0.45)')
     parser.add_argument('--via-drill', type=float, default=0.25,
                         help='Underpad escape via drill diameter (mm, default 0.25)')
-    parser.add_argument('--board-edge-clearance', type=float, default=0.0,
+    parser.add_argument('--board-edge-clearance', type=float, default=defaults.BOARD_EDGE_CLEARANCE,
                         help='Min clearance from stub/via copper to the Edge.Cuts '
                              'outline in mm (default 0 = use --clearance). Stubs '
                              'that would graze the board edge are shortened or '
@@ -925,7 +1614,13 @@ def main():
                         help='Underpad escape: let the escape via overlap its OWN pad '
                              '(via-in-pad), so a via boxed in on the outward side can '
                              'stagger inward toward the chip instead of being dropped. '
-                             'The via still must clear other-net pads, vias and tracks.')
+                             'It also enables an INWARD search along the escape axis '
+                             'that steps by the inter-net stagger, so on a fine-pitch '
+                             'part its later rungs land past the pad edge on the chip '
+                             'side, and four extra stagger configurations (#846). A via '
+                             'that does overlap its pad is clamped to the pad edge '
+                             '(#202) and needs IPC-4761 Type VII. The via still must '
+                             'clear other-net pads, vias and tracks.')
     # #489 section 9: fanout is where a teardrop matters most (a 0.1mm trace
     # meeting a 0.25mm via pad), and this step had no way to ask for one.
     parser.add_argument('--add-teardrops', action='store_true',
@@ -939,9 +1634,12 @@ def main():
     # identical behavior for existing commands.
     from fix_kicad_drc_settings import add_drc_fix_args
     add_drc_fix_args(parser)
-    args = parser.parse_args()
+    args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
     from fix_kicad_drc_settings import warn_if_missing_project_floor
     warn_if_missing_project_floor(args.pcb)  # #441: a dropped sibling .kicad_pro strands the DRC floor
+    # This front registers --clearance-ceiling (add_fab_tier_args does) and used
+    # to IGNORE it, so the spelling CLAUDE.md tells a chain to use did nothing.
+    __import__('fab_tiers').apply_clearance_ceiling(args, 'qfn_fanout')
     # #513 item 15: default the edge keep-out to the BOARD'S OWN
     # min_copper_edge_clearance (route.py's documented behavior and the GUI's
     # unchecked-override behavior), not the copper-copper --clearance. ice4pi
@@ -958,6 +1656,13 @@ def main():
             print(f"--board-edge-clearance not given; using the board "
                   f"min_copper_edge_clearance {_edge}mm.")
     set_default_fab_tier(*fab_tier_from_args(args))
+    # #530: --width IS this run's track-width request. The stale-minimum rule
+    # (set_policy_from_args) and the physical-floor pin (enforce_fab_floors)
+    # both look for `track_width`; without the alias neither saw it, so a
+    # stock 0.2 mm board minimum pinned 0.1 mm escape stubs up to 0.2.
+    if getattr(args, 'track_width', None) is None:
+        args.track_width = args.width
+    __import__('fab_tiers').set_policy_from_args(args, args.pcb)  # #857
     _pinned_floors = enforce_fab_floors(
         count_copper_layers_in_file(args.pcb),
         track_width=getattr(args, 'track_width', None),
@@ -983,10 +1688,30 @@ def main():
         if not qfn_components:
             qfn_components = find_components_by_type(pcb_data, 'QFP')
         if qfn_components:
-            args.component = qfn_components[0].reference
+            # Run-6 ranking: file order picked J1 (a rect-pad USB-C the
+            # geometric fallback classifies QFN) over the real 64-pin QFN.
+            # Drop connector/marker classes (part_class KB), prefer
+            # name-evidenced QFN/QFP footprints, then most pads. Fully
+            # generic; prints its reasoning.
+            _rank = autopick_rank
+            ranked = list(qfn_components)
+            try:
+                from placement.part_class import classify_part
+                keep = [fp for fp in ranked
+                        if classify_part(fp, fp.reference).name
+                        not in ('edge_receptacle', 'edge_actuator',
+                                'mount_hole', 'fiducial', 'testpoint')]
+                if keep:
+                    ranked = keep
+            except Exception:
+                pass
+            ranked.sort(key=_rank, reverse=True)
+            args.component = ranked[0].reference
             print(f"Auto-detected QFN/QFP component: {args.component}")
-            if len(qfn_components) > 1:
-                print(f"  (Other QFN/QFPs found: {[fp.reference for fp in qfn_components[1:]]})")
+            if len(ranked) > 1:
+                print(f"  (Ranked over: "
+                      f"{[fp.reference for fp in ranked[1:]]}; name-evidence "
+                      f"then pad count; connector/marker classes dropped)")
         else:
             print("Error: No QFN/QFP components found in PCB")
             print(f"Available components: {list(pcb_data.footprints.keys())[:20]}...")
@@ -998,6 +1723,13 @@ def main():
         return 1
 
     footprint = pcb_data.footprints[args.component]
+    _single = single_line_reason(footprint)
+    if _single:
+        # #1195: refused by name, not analysed as a degenerate QFN that
+        # "finds 0 pads", writes the board through and exits 0.
+        print(f"Error: {args.component} ({footprint.footprint_name}) is not a "
+              f"QFN/QFP: {_single}. Nothing was written.")
+        return 1
     print(f"\nFound {args.component}: {footprint.footprint_name}")
     print(f"  Position: ({footprint.x:.2f}, {footprint.y:.2f})")
     print(f"  Rotation: {footprint.rotation}deg")
@@ -1015,6 +1747,10 @@ def main():
               f"mounted layer {footprint.layer} - stubs will NOT touch the "
               f"SMD pads unless this is intentional")
 
+    # #621: the CLI passes no cancel_check. The engine's cooperative cancel is
+    # the GUI's (its Cancel button / the plan executor's Stop); a CLI-side
+    # wall-clock budget was removed deliberately -- no result this tool produces
+    # may depend on timing, or the same command stops producing the same board.
     tracks, vias, _failed_nets = generate_qfn_fanout(
         footprint,
         pcb_data,
@@ -1067,6 +1803,10 @@ def main():
                        | {v['net_id'] for v in vias if v.get('net_id') is not None})
     unescaped = sorted(set(_failed_nets))
     escaped = len(escaped_net_ids)
+    # The CLI never cancels (#621: no --deadline, no other CLI cancel source),
+    # so LAST_CANCEL_SKIPPED is empty here by construction and every pad was
+    # concluded one way or the other. The partial-ledger arithmetic lives in the
+    # engine for the GUI, which does have a cancel.
     requested = escaped + len(unescaped)
     drc_grazes = {}
     out_path = getattr(args, 'output', None)
@@ -1077,6 +1817,13 @@ def main():
             with _cl.redirect_stdout(_io.StringIO()):  # keep JSON_SUMMARY output clean
                 _viols = _run_drc(out_path, clearance=args.clearance,
                                   quiet=True, max_print=0, check_sizes=False)
+            # #962: via-in-paste rows (and their accepted protected/inherited
+            # twins) are a fab-protection finding, not a clearance graze; a
+            # fanout's own stamped via-in-pad would otherwise inflate `total`.
+            # #995: an accepted footprint-own-copper contact is not a graze
+            # either -- published by check_drc, counted by nobody.
+            _viols = [_v for _v in _viols
+                      if _v.get('type') not in ('via-in-paste', 'footprint-own-copper')]
             _by = {}
             for _v in _viols:
                 _by[_v['type']] = _by.get(_v['type'], 0) + 1
@@ -1094,8 +1841,24 @@ def main():
     # pipeline step and check_drc grade at the clearance the fanout used -- only
     # lowers, never tightens (issue #160).
     import clearance_ledger as _cl
+    from fix_kicad_drc_settings import fanout_written_floors
     eff_clearance = _cl.effective(args.clearance)
-    if out_path and os.path.isfile(out_path) \
+    _floors, _via_floors = fanout_written_floors('qfn', tracks, vias)
+    if out_path and os.path.isfile(out_path) and not _floors:
+        # #1195: a run that changed no copper writes no floors -- the board
+        # went through unchanged, so its project does too (with every other
+        # sibling), never a writeback of sizes nothing was drawn at.
+        try:
+            import shutil as _sh
+            from copy_board import SIBLING_EXTS
+            _ib, _ob = os.path.splitext(args.pcb)[0], os.path.splitext(out_path)[0]
+            if os.path.abspath(_ib) != os.path.abspath(_ob):
+                for _ext in SIBLING_EXTS:
+                    if os.path.isfile(_ib + _ext):
+                        _sh.copyfile(_ib + _ext, _ob + _ext)
+        except Exception as _e:
+            print(f"  (could not carry the project through: {_e})")
+    elif out_path and os.path.isfile(out_path) \
             and not getattr(args, 'no_fix_drc_settings', False):
         try:
             from fix_kicad_drc_settings import fix_project_for_output
@@ -1103,11 +1866,16 @@ def main():
                 out_path, input_pcb=args.pcb,
                 clearance=eff_clearance,
                 track_width=args.width,
-                via_diameter=getattr(args, 'via_size', None),
-                via_drill=getattr(args, 'via_drill', None),
+                # #1195: the via floors only when this run drew a via. Stub
+                # mode never does, and its --via-size/--via-drill defaults
+                # lowered the declared via and hole floors on every run.
+                via_diameter=(getattr(args, 'via_size', None) if _via_floors else None),
+                via_drill=(getattr(args, 'via_drill', None) if _via_floors else None),
                 clamp_nondefault_netclasses=True)  # #439: fanout escapes route to --clearance; always clamp
         except Exception as _e:
             print(f"  (skipped DRC-settings fix: {_e})")
+    if out_path and os.path.isfile(out_path) \
+            and not getattr(args, 'no_fix_drc_settings', False):
         # #581: record an ACTIVE same-net pad via clearance for later steps.
         try:
             from protected_nets import (persist_same_net_pad_clearance,
@@ -1137,9 +1905,24 @@ def main():
         # and check_drc grade the board at this floor.
         'min_clearance_used': eff_clearance,
     }
+    # #846: what --allow-via-in-pad actually did. Before this, the only
+    # machine-readable numbers a fanout run published were escape counts, so
+    # neither the flag's effect nor a stub-length claim could be checked
+    # without re-parsing the board. `via_in_pad` is the fab question, so it
+    # agrees with the IPC-4761 note printed above it.
+    summary['allow_via_in_pad'] = bool(getattr(args, 'allow_via_in_pad', False))
+    if LAST_UNDERPAD_REPORT:
+        summary['via_in_pad'] = LAST_UNDERPAD_REPORT.get('via_in_pad', 0)
+        summary['via_in_pad_clamped'] = LAST_UNDERPAD_REPORT.get('clamped', 0)
+        summary['via_in_pad_offcentre'] = LAST_UNDERPAD_REPORT.get(
+            'via_in_pad_offcentre', 0)
+        summary['max_stub_mm'] = LAST_UNDERPAD_REPORT.get('max_stub_mm', 0.0)
+    try:                       # #653: env knobs into the machine-readable
+        import env_knobs as _ek653   # summary, so a harness can detect a
+        summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
+    except Exception:          # without re-reading logs
+        pass
     print(f"JSON_SUMMARY: {_json.dumps(summary)}")
-
-
     return 0
 
 

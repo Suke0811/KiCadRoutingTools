@@ -24,7 +24,7 @@ from bresenham_utils import walk_line
 from obstacle_map import (add_board_edge_obstacles, add_user_keepout_obstacles,
                           add_rule_area_keepout_obstacles,
                           _batch_cells_one_layer, _batch_vias,
-                          block_track_cells_near_drills,
+                          block_track_cells_near_drills, resolve_hole_clearance,
                           block_track_cells_near_override_pad_holes, _pad_has_copper)
 from plane_obstacle_builder import (
     _precompute_circle_offsets,
@@ -295,13 +295,26 @@ def _net_has_pourable_anchor(pcb_data, net_id: int, plane_layer: str) -> bool:
     An anchor inside a copperpour keep-out anchors NOTHING: no copper is poured
     there to touch it.
     """
+    # #803: this answer is COPPER-DEPENDENT -- it tallies pcb_data.vias and
+    # pcb_data.segments below -- and the comment further down says so outright
+    # ("the ordinary mid-chain state of an inner plane BEFORE its stitching vias
+    # exist"). It was cached with NO invalidation at all, so the first answer,
+    # computed before that copper existed, was frozen for the rest of the run.
+    # Token it on copper content, exactly like _tap_spatial_index and
+    # _net_conn_graph: counts alone are not enough because the stub-debris trim
+    # and rip/restore both REMOVE copper, so a count can return to a cached
+    # value with different content.
+    segs, vias = pcb_data.segments, pcb_data.vias
+    token = (len(segs), len(vias), id(segs), id(vias),
+             sum(map(id, segs)), sum(map(id, vias)))
     cache = getattr(pcb_data, '_pourable_anchor_cache', None)
-    if cache is None:
-        cache = {}
+    if cache is None or cache[0] != token:
+        cache = (token, {})
         try:
             pcb_data._pourable_anchor_cache = cache
         except Exception:
             pass
+    cache = cache[1]
     key = (net_id, plane_layer)
     if key in cache:
         return cache[key]
@@ -382,15 +395,25 @@ def _island_kept_by_filler(pcb_data, net_id: int, plane_layer: str, patch,
                 _near_patch(s.start_x, s.start_y) or _near_patch(s.end_x, s.end_y)):
             return True
 
-    gx, gy = next(iter(patch))
-    x, y = coord.to_float(gx, gy)
+    # Owner lookup samples SEVERAL spread cells, not one arbitrary cell
+    # (#612): raster patches include cells rounded onto the zone outline,
+    # where point_in_polygon returns False -- an unlucky single sample then
+    # found no owner and defaulted to "keep", promoting filler-erased
+    # islands to joinable regions. The median-of-sorted cells are interior.
+    _cells = sorted(patch)
+    _samples = {_cells[len(_cells) // 2], _cells[len(_cells) // 4],
+                _cells[(3 * len(_cells)) // 4], _cells[0], _cells[-1]}
     owner = None
-    for z in (getattr(pcb_data, 'zones', []) or []):
-        if z.net_id == net_id and z.layer == plane_layer \
-                and getattr(z, 'polygon', None) \
-                and point_in_polygon(x, y, z.polygon):
-            if owner is None or getattr(z, 'priority', 0) > getattr(owner, 'priority', 0):
-                owner = z
+    for (sgx, sgy) in _samples:
+        x, y = coord.to_float(sgx, sgy)
+        for z in (getattr(pcb_data, 'zones', []) or []):
+            if z.net_id == net_id and z.layer == plane_layer \
+                    and getattr(z, 'polygon', None) \
+                    and point_in_polygon(x, y, z.polygon):
+                if owner is None or getattr(z, 'priority', 0) > getattr(owner, 'priority', 0):
+                    owner = z
+        if owner is not None:
+            break
     if owner is None:
         return True
     mode = getattr(owner, 'island_removal_mode', 0)
@@ -436,28 +459,53 @@ def _regions_from_fill_models(net_id, pcb_data, coord, plane_layer,
                 return (id(m), c)
         return None
 
-    # Coarse-grid cells per plane-layer fill component: one vectorized
-    # gather of each model's label array at the analysis-grid cell centres.
-    cells_by_comp: Dict[tuple, Set[Tuple[int, int]]] = {}
     gxs = np.arange(min_gx, max_gx + 1)
     gys = np.arange(min_gy, max_gy + 1)
     if gxs.size == 0 or gys.size == 0:
         return None
-    for m in plane_models:
-        ix = ((gxs * coord.grid_step - m.x0) / m.cell).astype(np.int64)
-        iy = ((gys * coord.grid_step - m.y0) / m.cell).astype(np.int64)
-        ok_x = (ix >= 0) & (ix < m.nx)
-        ok_y = (iy >= 0) & (iy < m.ny)
-        lab = np.zeros((gxs.size, gys.size), dtype=m.labels.dtype)
-        sel_x = np.where(ok_x)[0]
-        sel_y = np.where(ok_y)[0]
-        if sel_x.size == 0 or sel_y.size == 0:
-            continue
-        lab[np.ix_(sel_x, sel_y)] = m.labels[ix[sel_x][:, None], iy[sel_y]]
-        nz = np.nonzero(lab)
-        for ii, jj in zip(nz[0].tolist(), nz[1].tolist()):
-            cells_by_comp.setdefault((id(m), int(lab[ii, jj])), set()).add(
-                (int(gxs[ii]), int(gys[jj])))
+
+    def _gather_cells(models, colocated=None):
+        """Coarse-grid cells per fill component: one vectorized gather of
+        each model's label array at the analysis-grid cell centres.
+
+        `colocated`, when given, also collects (key_a, key_b) pairs for
+        components that share a coarse cell: on ONE net and ONE layer that is
+        one conductor split across two fills, so the caller unions them.
+        Storing the first key per cell (union is transitive) instead of a set
+        per cell costs ~60MB less on a board-wide pour, for the same answer.
+        Coarse sampling can only MISS an overlap -- the over-split direction
+        this module already prefers -- never invent one. Off for the #612
+        raster-fallback sweep, which only needs the cell map.
+        """
+        out: Dict[tuple, Set[Tuple[int, int]]] = {}
+        first_key_by_cell: Dict[Tuple[int, int], tuple] = {}
+        for m in models:
+            ix = ((gxs * coord.grid_step - m.x0) / m.cell).astype(np.int64)
+            iy = ((gys * coord.grid_step - m.y0) / m.cell).astype(np.int64)
+            ok_x = (ix >= 0) & (ix < m.nx)
+            ok_y = (iy >= 0) & (iy < m.ny)
+            lab = np.zeros((gxs.size, gys.size), dtype=m.labels.dtype)
+            sel_x = np.where(ok_x)[0]
+            sel_y = np.where(ok_y)[0]
+            if sel_x.size == 0 or sel_y.size == 0:
+                continue
+            lab[np.ix_(sel_x, sel_y)] = m.labels[ix[sel_x][:, None], iy[sel_y]]
+            nz = np.nonzero(lab)
+            for ii, jj in zip(nz[0].tolist(), nz[1].tolist()):
+                _key = (id(m), int(lab[ii, jj]))
+                _cell = (int(gxs[ii]), int(gys[jj]))
+                out.setdefault(_key, set()).add(_cell)
+                if colocated is not None:
+                    _prev = first_key_by_cell.setdefault(_cell, _key)
+                    if _prev != _key:
+                        colocated.append((_prev, _key))
+        return out
+
+    # Coarse-grid cells per plane-layer fill component. Regions/join seeds
+    # are built from THESE only; other poured layers are gathered later for
+    # the #611 report-only orphan scan.
+    colocated_pairs: List[Tuple[tuple, tuple]] = []
+    cells_by_comp = _gather_cells(plane_models, colocated_pairs)
 
     if not cells_by_comp:
         return None
@@ -473,6 +521,33 @@ def _regions_from_fill_models(net_id, pcb_data, coord, plane_layer,
     # every island any single chain touches.
     uf = UnionFind()
     _pt_uf = UnionFind()
+
+    # CO-LOCATED islands are ONE piece of copper. A ZoneFillModel is built per
+    # ZONE and labels that zone's fill in isolation, but KiCad merges the fills
+    # of same-net zones on the same layer into a single pour -- so a patch pour
+    # dropped inside a board-wide pour yields two island keys over the very same
+    # copper, and nothing below ever unions them (the segment-chain and barrel
+    # passes both credit one key per layer). The join loop then sees a split
+    # that does not exist: it picks the pair at distance ~0, the A* answers with
+    # a zero-length or 0.1mm "strap", and the pair is burned as UNVERIFIED.
+    # Measured on neo6502 GND (27 sub-mm priority-16962 patch pours inside the
+    # board-wide F.Cu pour): 42 model regions where the fill-aware grader counts
+    # 13 components. Two models predicting fill at the SAME point means copper
+    # exists there in both fills, which on one net and one layer is one
+    # conductor -- so union them. Coarse sampling can only MISS an overlap
+    # (the over-split direction this module already prefers), never invent one.
+    # KEPT (with the material-predicate seeding below, deliberately as a PAIR).
+    # Both answer "what counts as one region": this unions two fills that
+    # predict copper at the same point on one net and one layer, and the
+    # `validity`/`_on_material` predicates gate a join seed on being ON that
+    # region. They were developed and tuned together; reverting one half
+    # leaves the predicate judging a more-fragmented region view than it was
+    # measured against -- a combination that existed in neither branch.
+    _colo_uf = UnionFind()          # co-located unions ONLY, for the log line
+    for _ka, _kb in colocated_pairs:
+        uf.union(_ka, _kb)
+        _colo_uf.union(_ka, _kb)
+    n_islands = len({_colo_uf.find(_ck) for _ck in cells_by_comp})
 
     def _pk(layer, x, y):
         return (layer, round(x, 3), round(y, 3))
@@ -581,37 +656,196 @@ def _regions_from_fill_models(net_id, pcb_data, coord, plane_layer,
     # inside the copperpour keep-out band, so all 482 of its islands survive
     # and 199 are DRC-flagged isolated_copper, while we skipped every one as
     # "the filler will delete it" and left them to the post-write oracle.
-    _unanchored = not _net_has_pourable_anchor(pcb_data, net_id, plane_layer)
-    if _modes != {0} or _unanchored:
-        _amin = max([getattr(z, 'island_area_min', 0.0) or 0.0
-                     for z in _zones] + [0.0])
-        orphan_min_mm2 = max(25.0, _amin)
-        anchored_roots = set(groups.keys())
-        min_patch_cells = max(100, int(orphan_min_mm2
-                                       / (analysis_grid_step * analysis_grid_step)))
-        orphan_cells: Dict[tuple, Set[Tuple[int, int]]] = {}
-        for ck, cset in cells_by_comp.items():
-            root = uf.find(ck)
-            if root in anchored_roots:
+    # #609: decide PER ISLAND with the same filler-aware test the raster path
+    # uses, instead of a blanket mode-0 skip. The old gate was
+    # `if _modes != {0} or _unanchored:` -- under the KiCad-DEFAULT mode 0
+    # (which is also what route_planes writes) it appended NOTHING, so every
+    # pad-less island vanished from the region list with no area bar and no
+    # per-island judgement. `len(region_anchors) < 2` then printed "Zone is
+    # fully connected" over a plane the model had just found split: a signal
+    # net routed across a pour islands it, and the pass whose job is to find
+    # exactly that reported the zone whole and exited satisfied.
+    #
+    # _island_kept_by_filler answers the real question -- would KiCad KEEP this
+    # fill? An island with any same-net pad/via/track on or near it is not
+    # isolated, so the filler keeps it under ANY mode (the #217 castor +3.3VA
+    # class, itself a mode-0 zone) and it must be joined. Only a TRULY bare
+    # island follows the zone's removal mode, which preserves the duodyne
+    # finding that joining islands the filler deletes is pure clutter.
+    _amin = max([getattr(z, 'island_area_min', 0.0) or 0.0
+                 for z in _zones] + [0.0])
+    orphan_min_mm2 = max(25.0, _amin)
+    anchored_roots = set(groups.keys())
+    min_patch_cells = max(100, int(orphan_min_mm2
+                                   / (analysis_grid_step * analysis_grid_step)))
+    orphan_cells: Dict[tuple, Set[Tuple[int, int]]] = {}
+    for ck, cset in cells_by_comp.items():
+        root = uf.find(ck)
+        if root in anchored_roots:
+            continue
+        orphan_cells.setdefault(root, set())
+        orphan_cells[root] |= cset
+    # Islands the filler will DELETE are still skipped -- but they are counted
+    # and reported, because "the filler will erase this" is not the same claim
+    # as "the zone is whole", and the caller was making the second one.
+    dropped_cells = 0
+    dropped_islands = 0
+    # #611: KEPT islands that are real KiCad missing-connections but not
+    # join-eligible from THIS analysis -- below the join area bar, or on a
+    # non-primary poured layer (joins seed from plane_layer geometry only).
+    # KiCad keeps them on refill and flags 'Missing connection between
+    # items'; they must at least be REPORTED. Report-only: never appended to
+    # the region list, so routed copper is unchanged.
+    _cell_mm2 = analysis_grid_step * analysis_grid_step
+    kept_unjoined = 0
+    kept_unjoined_mm2 = 0.0
+    kept_layers: Set[str] = set()
+    kept_details: List[Tuple[str, float, float, float]] = []  # (layer, mm2, x, y)
+
+    def _kept_note(layer, cset):
+        cx = sum(c[0] for c in cset) / len(cset) * analysis_grid_step
+        cy = sum(c[1] for c in cset) / len(cset) * analysis_grid_step
+        kept_details.append((layer, len(cset) * _cell_mm2,
+                             round(cx, 1), round(cy, 1)))
+    # A kept island is a DRC item at any size, but sub-mm^2 patches are model
+    # quantization noise -- floor the report at 1 mm^2.
+    kept_floor_cells = max(4, int(round(1.0 / _cell_mm2)))
+
+    def _connected_through_a_via(layer, cset):
+        """#611 false-alarm guard (the #217 blocked-anchor class): a same-net
+        via ON/NEAR this island that also lands on ANCHORED fill of another
+        poured layer means the island is genuinely connected through the
+        stack -- the union gate just missed it because the model blocks cells
+        at the barrel. Suppress the split report for it."""
+        for v in pcb_data.vias:
+            if v.net_id != net_id:
                 continue
-            orphan_cells.setdefault(root, set())
-            orphan_cells[root] |= cset
-        for root, cset in orphan_cells.items():
-            if len(cset) >= min_patch_cells:
+            cgx, cgy = coord.to_grid(v.x, v.y)
+            if not any((cgx + dx, cgy + dy) in cset
+                       for dx in range(-2, 3) for dy in range(-2, 3)):
+                continue
+            for l2 in zone_layers:
+                if l2 == layer:
+                    continue
+                k2 = _comp_key_at(l2, v.x, v.y)
+                if k2 is not None and uf.find(k2) in anchored_roots:
+                    return True
+        return False
+
+    for root, cset in orphan_cells.items():
+        if len(cset) < min_patch_cells:
+            # Below the JOIN bar. A bare sliver is noise (the filler deletes
+            # it silently, as KiCad itself does), but a KEPT one is a real
+            # missing connection KiCad will flag forever -- make it a REGION
+            # so the join runs (#611 follow-up). The area bar exists to stop
+            # clutter joins for copper the filler ERASES (duodyne); that
+            # argument does not apply to kept islands, and the join here is
+            # cheaper and more exact than leaving it to the post-write
+            # kicad-cli oracle (a last resort).
+            if (len(cset) >= kept_floor_cells
+                    and _island_kept_by_filler(pcb_data, net_id, plane_layer,
+                                               cset, coord, analysis_grid_step)
+                    and not _connected_through_a_via(plane_layer, cset)):
                 region_anchors.append([])
                 region_cells.append(cset)
                 region_islands.append(islands_by_root.get(root, set()))
+            continue
+        if _island_kept_by_filler(pcb_data, net_id, plane_layer, cset,
+                                  coord, analysis_grid_step):
+            region_anchors.append([])
+            region_cells.append(cset)
+            region_islands.append(islands_by_root.get(root, set()))
+        else:
+            dropped_islands += 1
+            dropped_cells += len(cset)
 
+    # #611: the scan above only sees plane_layer's fill. On a multi-layer
+    # plane the repair pass makes ONE call with plane_layer = the first
+    # poured layer, so a pad-less island cut off on any OTHER poured layer
+    # was structurally invisible -- no region, no tally -- and the caller
+    # printed "Zone is fully connected" while KiCad flagged the missing link
+    # (the #611 5-layer GND). Scan the remaining layers' models too.
+    # REPORT-ONLY: kept islands go into the kept_unjoined tally, and
+    # filler-deleted ones above the area bar into the dropped tally.
+    _judged_roots = set(orphan_cells.keys())
+    # #611 audit gap 4: an ANCHORED region whose fill lives entirely on
+    # non-primary layers (groups[root]['cells'] empty -- e.g. an SMD-pad
+    # island on another poured layer when pad repair is off) gets no join
+    # seeds and no model-island verification from THIS call, and a non-via
+    # seed is stamped on the PRIMARY layer, so its strap lands on the wrong
+    # layer's copper. Flag its layer(s) for the per-layer follow-up join,
+    # which analyses with that layer primary and joins it correctly.
+    followup_layers: Set[str] = set()
+    _off_primary: Dict[tuple, Dict[str, Set[Tuple[int, int]]]] = {}
+    for _layer in sorted(set(zone_layers) - {plane_layer}):
+        for ck, cset in _gather_cells(
+                models_by_layer.get(_layer) or []).items():
+            root = uf.find(ck)
+            if root in _judged_roots:
+                continue     # already judged via its plane_layer fragment
+            if root in anchored_roots:
+                if not groups.get(root, {}).get('cells'):
+                    followup_layers.add(_layer)
+                continue     # connected (or an anchored region handled above)
+            _lay = _off_primary.setdefault(root, {})
+            _lay.setdefault(_layer, set()).update(cset)
+
+    _all_net_zones = [z for z in (getattr(pcb_data, 'zones', None) or [])
+                      if z.net_id == net_id]
+
+    def _drop_bar_cells(layers_involved):
+        # #611 audit gap 8: the dropped-island area bar follows the involved
+        # LAYERS' zones' island_area_min, not the primary layer's.
+        amin = 0.0
+        for z in _all_net_zones:
+            if z.layer in layers_involved:
+                amin = max(amin, getattr(z, 'island_area_min', 0.0) or 0.0)
+        return max(100, int(max(25.0, amin) / _cell_mm2))
+
+    for root, bylayer in _off_primary.items():
+        total_cells = sum(len(c) for c in bylayer.values())
+        if total_cells < kept_floor_cells:
+            continue
+        kept = any(_island_kept_by_filler(pcb_data, net_id, l, c, coord,
+                                          analysis_grid_step)
+                   and not _connected_through_a_via(l, c)
+                   for l, c in bylayer.items())
+        if kept:
+            kept_unjoined += 1
+            kept_unjoined_mm2 += total_cells * _cell_mm2
+            kept_layers.update(bylayer.keys())
+            for l, c in bylayer.items():
+                _kept_note(l, c)
+        elif total_cells >= _drop_bar_cells(bylayer.keys()):
+            dropped_islands += 1
+            dropped_cells += total_cells
+
+    # dropped = islands the FILLER will erase. Carried out (not just skipped)
+    # so the caller can say what actually happened instead of "fully
+    # connected" -- see the #609 note above. kept_report = kept-but-unjoined
+    # islands (#611), same reason.
+    dropped = (dropped_islands, dropped_cells * _cell_mm2)
+    # Layers may include follow-up-only entries (anchored regions with no
+    # primary cells, audit gap 4) beyond the kept-island count -- the repair
+    # loop keys its per-layer follow-up joins off this tuple's layer list.
+    kept_report = (kept_unjoined, kept_unjoined_mm2,
+                   tuple(sorted(kept_layers | followup_layers)),
+                   tuple(kept_details[:8]))
     if len(region_anchors) < 2:
-        n_anchors = len(region_anchors[0]) if region_anchors else 0
         return ([region_anchors[0] if region_anchors else []],
                 [region_cells[0] if region_cells else set()],
-                [region_islands[0] if region_islands else set()])
+                [region_islands[0] if region_islands else set()],
+                dropped, kept_report)
+    # Report the island count AFTER the co-located union -- the raw
+    # len(cells_by_comp) counts one key per (zone model, label), so overlapping
+    # same-net zones inflate it next to a region count that already merged them.
+    _colo = len(cells_by_comp) - n_islands
+    _colo_note = f", {_colo} co-located key(s) fused" if _colo > 0 else ""
     print(f"  Region discovery from fill model: {len(region_anchors)} "
-          f"region(s) ({len(cells_by_comp)} fill island(s), "
+          f"region(s) ({n_islands} fill island(s){_colo_note}, "
           f"{len(singletons)} off-fill anchor(s), "
           f"{sum(1 for a in region_anchors if not a)} orphan island(s))")
-    return region_anchors, region_cells, region_islands
+    return region_anchors, region_cells, region_islands, dropped, kept_report
 
 
 def find_disconnected_zone_regions(
@@ -655,6 +889,15 @@ def find_disconnected_zone_regions(
         - List of grid cell sets per region (for finding closest points)
         - List of (path, layer) tuples showing connectivity paths (if debug=True, else empty)
     """
+    # #609: cleared per call -- this is a function attribute and one run
+    # analyses many (net, layer) pairs, so a previous zone's dropped-island
+    # tally must never be read as this one's. #611: same for the
+    # kept-but-unjoined tally (islands KiCad KEEPS -- below the join bar or
+    # on a non-primary poured layer). #612: the raster fallback sets both
+    # too (its own per-layer orphan sweep), at a coarser 25mm^2 floor.
+    find_disconnected_zone_regions._last_dropped = (0, 0.0)
+    find_disconnected_zone_regions._last_kept_unjoined = (0, 0.0, (), ())
+
     # Use a coarser grid for connectivity analysis (much faster)
     coord = GridCoord(analysis_grid_step)
     min_x, min_y, max_x, max_y = zone_bounds
@@ -748,6 +991,13 @@ def find_disconnected_zone_regions(
             _models_by_layer, anchor_points, zone_bounds,
             analysis_grid_step)
         if _res is not None:
+            # #609/#611: stash what the FILLER will erase (dropped) and what
+            # it KEEPS but this pass cannot join (kept_unjoined) so the
+            # caller reports the split instead of "fully connected".
+            # Attributes, not extra return values: this function's 4-tuple
+            # is consumed positionally.
+            find_disconnected_zone_regions._last_dropped = _res[3]
+            find_disconnected_zone_regions._last_kept_unjoined = _res[4]
             return _res[0], _res[1], [], _res[2]
 
     # Collect cross-layer connection points using helper function
@@ -1041,13 +1291,15 @@ def find_disconnected_zone_regions(
     # fill-cell pseudo-anchors give them connectable points. Tiny slivers
     # (<1mm^2 at the analysis grid) are model noise, not real islands.
     orphan_patches: List[Set[Tuple[int, int]]] = []
+    _cell_mm2 = analysis_grid_step * analysis_grid_step
+    # High bar: >=25mm^2. The raster's fill is approximate (thermal spokes,
+    # coarse carves) and a low bar manufactured DOZENS of phantom 0-anchor
+    # regions on zone-heavy boards -- 75 join edges of copper spam on the
+    # kit board. Small REAL islands are the kicad-oracle recheck's job (it
+    # sees the authoritative fill).
+    min_patch_cells = max(100, int(25.0 / _cell_mm2))
+    _drop612_n, _drop612_mm2 = 0, 0.0
     if inside_plane is not None:
-        # High bar: >=25mm^2. The model's fill is approximate (thermal
-        # spokes, coarse carves) and a low bar manufactured DOZENS of
-        # phantom 0-anchor regions on zone-heavy boards -- 75 join edges of
-        # copper spam on the kit board. Small REAL islands are the
-        # kicad-oracle recheck's job (it sees the authoritative fill).
-        min_patch_cells = max(100, int(25.0 / (analysis_grid_step * analysis_grid_step)))
         for start in inside_plane:
             if start in plane_visited or start in blocked_plane:
                 continue
@@ -1067,10 +1319,109 @@ def find_disconnected_zone_regions(
                     plane_visited.add((nx, ny))
                     patch.add((nx, ny))
                     queue.append((nx, ny))
-            if len(patch) >= min_patch_cells and _island_kept_by_filler(
-                    pcb_data, net_id, plane_layer, patch, coord,
-                    analysis_grid_step):
+            if len(patch) < min_patch_cells:
+                continue
+            if _island_kept_by_filler(pcb_data, net_id, plane_layer, patch,
+                                      coord, analysis_grid_step):
                 orphan_patches.append(patch)
+            else:
+                # #612: filler-erased islands were silently skipped on this
+                # path (the fill-model path counts them since #609), so the
+                # caller printed "fully connected" over an erased-copper
+                # split whenever the raster fallback ran.
+                _drop612_n += 1
+                _drop612_mm2 += len(patch) * _cell_mm2
+
+    # #612: the sweep above covers plane_layer only -- the raster fallback
+    # had the whole #611 blind spot. Re-derive blocked/inside per OTHER
+    # poured layer (no fill models on this path), mark copper reachable
+    # from the net's vias/THT barrels/on-layer pads, and sweep the leftovers
+    # into orphan patches: KEPT ones land in the #611 kept tally (so
+    # repair_planes runs its per-layer follow-up joins here too), bare ones
+    # in the dropped tally. Anchored-but-split islands on non-primary
+    # layers remain coarser on this path than on the fill-model path.
+    _kept612_n, _kept612_mm2 = 0, 0.0
+    _kept612_layers: Set[str] = set()
+    _kept612_details: List[Tuple[str, float, float, float]] = []
+    for _olayer in sorted(set(zone_layers) - {plane_layer}):
+        _oclr = (zone_clearances or {}).get(_olayer, zone_clearance)
+        _oblocked, _oseg = _build_layer_blocked_set(
+            _olayer, net_id, pcb_data, coord, _oclr)
+        _oinside = _zone_interior_cells(net_id, _olayer, pcb_data, coord,
+                                        bounds_grid)
+        if not _oinside:
+            continue
+        _ovis: Set[Tuple[int, int]] = set()
+        _oseeds: List[Tuple[int, int]] = []
+        for (_vx, _vy, _vlayers) in cross_layer_points:
+            if _olayer in _vlayers:
+                _oseeds.append(coord.to_grid(_vx, _vy))
+        for _p in pcb_data.pads_by_net.get(net_id, []):
+            if _olayer in (_p.layers or []) or '*.Cu' in (_p.layers or []):
+                _oseeds.append(coord.to_grid(_p.global_x, _p.global_y))
+        for _s0 in _oseeds:
+            if _s0 in _ovis:
+                continue
+            _ovis.add(_s0)
+            _q = deque([_s0])
+            while _q:
+                _gx, _gy = _q.popleft()
+                for _dx, _dy in ((0, 1), (0, -1), (1, 0), (-1, 0),
+                                 (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                    _n = (_gx + _dx, _gy + _dy)
+                    if _n in _ovis:
+                        continue
+                    if not (min_gx <= _n[0] <= max_gx
+                            and min_gy <= _n[1] <= max_gy):
+                        continue
+                    if _dx != 0 and _dy != 0 and _n not in _oseg:
+                        continue
+                    if (_n in _oblocked or _n not in _oinside) \
+                            and _n not in _oseg:
+                        continue
+                    _ovis.add(_n)
+                    _q.append(_n)
+        for _start in _oinside:
+            if _start in _ovis or _start in _oblocked:
+                continue
+            _patch = {_start}
+            _ovis.add(_start)
+            _q = deque([_start])
+            while _q:
+                _gx, _gy = _q.popleft()
+                for _dx, _dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                    _n = (_gx + _dx, _gy + _dy)
+                    if _n in _ovis or _n in _oblocked or _n not in _oinside:
+                        continue
+                    if not (min_gx <= _n[0] <= max_gx
+                            and min_gy <= _n[1] <= max_gy):
+                        continue
+                    _ovis.add(_n)
+                    _patch.add(_n)
+                    _q.append(_n)
+            if len(_patch) < min_patch_cells:
+                continue   # raster noise floor stays high, unlike the
+                           # fill-model path's 1mm^2 kept floor
+            if _island_kept_by_filler(pcb_data, net_id, _olayer, _patch,
+                                      coord, analysis_grid_step):
+                _kept612_n += 1
+                _amm2 = len(_patch) * _cell_mm2
+                _kept612_mm2 += _amm2
+                _kept612_layers.add(_olayer)
+                _kept612_details.append((
+                    _olayer, _amm2,
+                    round(sum(c[0] for c in _patch) / len(_patch)
+                          * analysis_grid_step, 1),
+                    round(sum(c[1] for c in _patch) / len(_patch)
+                          * analysis_grid_step, 1)))
+            else:
+                _drop612_n += 1
+                _drop612_mm2 += len(_patch) * _cell_mm2
+    find_disconnected_zone_regions._last_dropped = (_drop612_n, _drop612_mm2)
+    if _kept612_n:
+        find_disconnected_zone_regions._last_kept_unjoined = (
+            _kept612_n, _kept612_mm2, tuple(sorted(_kept612_layers)),
+            tuple(_kept612_details[:8]))
 
     # Group anchors by their root
     groups: Dict[int, List[int]] = {}
@@ -1232,7 +1583,7 @@ def _npth_holes(pcb_data):
     return holes
 
 
-def npth_floor_ok(x, y, pcb_data, track_half: float) -> bool:
+def npth_floor_ok(x, y, pcb_data, track_half: float, config=None) -> bool:
     """False when track copper of half-width `track_half` centered at (x, y)
     would violate the NPTH-to-track fab floor of a no-copper drill (#390).
 
@@ -1240,8 +1591,15 @@ def npth_floor_ok(x, y, pcb_data, track_half: float) -> bool:
     the obstacle map's (correct) NPTH drill keep-out -- so every fill-derived
     seed must respect the floor itself. The fill-validity margin ladder must
     never relax below this: zone fill lawfully sits closer to an NPTH than
-    track copper may (crkbd GNDR strap seeded 0.15 from the rEXSW1 hole edge)."""
-    floor = defaults.NPTH_TO_TRACK_CLEARANCE + track_half
+    track copper may (crkbd GNDR strap seeded 0.15 from the rEXSW1 hole edge).
+
+    #617: the floor is raised to the BOARD's own `min_hole_clearance` when it
+    declares one above the 0.20 fab value (`resolve_hole_clearance`, raise-only
+    and cached per board path). `config` is optional -- the read is driven by
+    ``pcb_data.source_path``, so seed callers with no config in hand still get
+    the board's value; passing one only adds the explicit override."""
+    floor = max(defaults.NPTH_TO_TRACK_CLEARANCE,
+                resolve_hole_clearance(pcb_data, config)) + track_half
     for hx, hy, hdia in _npth_holes(pcb_data):
         if math.hypot(x - hx, y - hy) < hdia / 2.0 + floor:
             return False
@@ -1425,13 +1783,27 @@ def find_region_connection_points(
     return mst_edges
 
 
+# How many open-space candidates are material-tested before giving up (a model
+# query per probe is not free). The probe ORDER is what makes this bound safe:
+# candidates are ranked most-open first and then NEAREST THE REGION'S CENTROID.
+# Ranking by raw grid order instead is a trap -- the net's own copper is
+# excluded from the obstacle map, so clearance saturates across most of the
+# +-search_radius box and the tie-break decides everything; grid order then
+# probes only the far-left columns (2.5% of the box at a 0.1mm routing grid,
+# every one of them ~5mm off the region), so the search reports "no valid open
+# point" while hundreds sit next to the region, and the fallback silently stops
+# rescuing exactly the hemmed-in shards it exists for.
+_OPEN_SPACE_VALIDITY_PROBES = 256
+
+
 def find_open_space_point(
     anchors: List[Tuple[float, float]],
     base_obstacles: GridObstacleMap,
     plane_layer_idx: int,
     coord: GridCoord,
     search_radius: float = 5.0,
-    bounds: Optional[Tuple[float, float, float, float]] = None
+    bounds: Optional[Tuple[float, float, float, float]] = None,
+    validity=None
 ) -> Optional[Tuple[float, float]]:
     """
     Find the most open space near a region's anchors - a point with maximum clearance from obstacles.
@@ -1442,6 +1814,20 @@ def find_open_space_point(
         plane_layer_idx: Layer index to check for obstacles
         coord: Grid coordinate converter
         search_radius: How far from anchors to search (mm)
+        validity: Optional callable(x, y) -> bool the returned point must
+            satisfy. WITHOUT it this function answers "where is the emptiest
+            cell within search_radius of the region's centroid", which is a
+            question about the OBSTACLE MAP and says nothing about the
+            region's own copper -- the emptiest cell is typically a bare gap
+            metres of grid away from any fill. Fed to the connection A* as an
+            extra seed (see _try_route_between_regions) that point is the
+            cheapest cell in the neighbourhood, so the search lands on it and
+            the strap's end connects nothing (neo6502 GND: 15 joins routed
+            open-space-to-open-space, one of them a 0.1mm strap between two
+            regions' open points, all correctly rejected by the #479 endpoint
+            verification -- which then burned each pair's whole try
+            allowance). Callers that use the result as a seed MUST pass the
+            same material predicate the join is verified against.
 
     Returns:
         (x, y) of the most open point, or None if no good point found
@@ -1458,6 +1844,7 @@ def find_open_space_point(
 
     best_clearance = 0
     best_point = None
+    candidates: List[Tuple[int, int, int, int]] = []
 
     # Search in a grid around the centroid
     for dx in range(-search_radius_grid, search_radius_grid + 1):
@@ -1484,13 +1871,28 @@ def find_open_space_point(
             # Calculate clearance - distance to nearest blocked cell
             clearance = _calculate_clearance(gx, gy, base_obstacles, plane_layer_idx, max_check=10)
 
-            if clearance > best_clearance:
-                best_clearance = clearance
-                best_point = coord.to_float(gx, gy)
+            if validity is None:
+                if clearance > best_clearance:
+                    best_clearance = clearance
+                    best_point = coord.to_float(gx, gy)
+            elif clearance >= 2:
+                # Deterministic order: most open first, then nearest the
+                # region, then grid order (see _OPEN_SPACE_VALIDITY_PROBES).
+                candidates.append((-clearance,
+                                   (gx - center_gx) ** 2 + (gy - center_gy) ** 2,
+                                   gx, gy))
 
-    # Only return if we found a point with meaningful clearance (at least 2 grid steps)
-    if best_clearance >= 2:
-        return best_point
+    if validity is None:
+        # Only return if we found a point with meaningful clearance (at least 2 grid steps)
+        if best_clearance >= 2:
+            return best_point
+        return None
+
+    candidates.sort()
+    for _c, _d2, gx, gy in candidates[:_OPEN_SPACE_VALIDITY_PROBES]:
+        fx, fy = coord.to_float(gx, gy)
+        if validity(fx, fy):
+            return (fx, fy)
     return None
 
 
@@ -1541,6 +1943,8 @@ def _try_route_between_regions(
     bounds: Optional[Tuple[float, float, float, float]] = None,
     pcb_data=None,
     net_id: Optional[int] = None,
+    open_ok_i=None,
+    open_ok_j=None,
 ) -> Tuple[Optional[Tuple[List[Tuple[float, float, str]], List[Tuple[float, float]]]], float, Optional[Tuple[float, float]]]:
     """
     Try to route between two regions, attempting multiple track widths.
@@ -1560,6 +1964,12 @@ def _try_route_between_regions(
         max_iterations: Max routing iterations
         coord: Grid coordinate converter
         verbose: Print debug info
+        open_ok_i / open_ok_j: material predicates callable(x, y) -> bool for
+            the two regions. The open-space fallback below seeds the A* with a
+            point that is merely EMPTY, not on either region -- these gate it
+            so a fallback seed can only be a point the join's endpoint
+            verification would accept as that region's material. Omitted
+            (None) restores the pre-fix behavior of seeding any open cell.
 
     Returns:
         Tuple of (route_result, track_width_used, open_space_via_if_used)
@@ -1570,12 +1980,44 @@ def _try_route_between_regions(
     _attempt_details = []
     _any_exhausted = False
 
+    # #612 gap 6: a bare (x, y) seed that is an SMD pad of this net on some
+    # OTHER layer must stamp on the PAD's layer -- _stamp puts 2-tuple
+    # non-via seeds on plane_layer_idx, so a strap "joining" a cross-layer
+    # region landed on copper that isn't the island's. Convert such seeds to
+    # the (x, y, layer) form _stamp already understands. Fill pseudo-anchors
+    # (not pads) correctly stay on the plane layer.
+    _smd_lname: Dict[Tuple[float, float], str] = {}
+    if pcb_data is not None and net_id is not None:
+        from kicad_parser import pad_is_plated_through as _pipt612
+        _plname = routing_layers[plane_layer_idx] \
+            if 0 <= plane_layer_idx < len(routing_layers) else None
+        for _p in pcb_data.pads_by_net.get(net_id, []):
+            if _pipt612(_p) or (_p.drill or 0) > 0:
+                continue
+            _pls = [l for l in (_p.layers or []) if l in routing_layers]
+            if _pls and _plname not in _pls:
+                _smd_lname[(round(_p.global_x, 3),
+                            round(_p.global_y, 3))] = _pls[0]
+
+    def _lift(pts):
+        if not _smd_lname:
+            return pts
+        out = []
+        for pt in pts:
+            if len(pt) == 2:
+                _ln = _smd_lname.get((round(pt[0], 3), round(pt[1], 3)))
+                if _ln is not None:
+                    out.append((pt[0], pt[1], _ln))
+                    continue
+            out.append(pt)
+        return out
+
     def _try_route(src, tgt, margin, iters, label):
         """Helper to attempt one route and track stats."""
         nonlocal _attempt_count, _total_route_time
         _t0 = _time.time()
         result, used_iters = route_plane_connection_wide(
-            src, tgt,
+            _lift(src), _lift(tgt),
             plane_layer_idx=plane_layer_idx,
             routing_layers=routing_layers,
             base_obstacles=base_obstacles,
@@ -1639,8 +2081,10 @@ def _try_route_between_regions(
     if result is None:
         # Can't route even at min width - try open-space fallback
         _t0 = _time.time()
-        open_i = find_open_space_point(anchors_i, base_obstacles, plane_layer_idx, coord, bounds=bounds)
-        open_j = find_open_space_point(anchors_j, base_obstacles, plane_layer_idx, coord, bounds=bounds)
+        open_i = find_open_space_point(anchors_i, base_obstacles, plane_layer_idx, coord,
+                                       bounds=bounds, validity=open_ok_i)
+        open_j = find_open_space_point(anchors_j, base_obstacles, plane_layer_idx, coord,
+                                       bounds=bounds, validity=open_ok_j)
         _dt_open = _time.time() - _t0
         _attempt_details.append(f"open-search {_dt_open:.2f}s")
         _total_route_time += _dt_open
@@ -1765,7 +2209,8 @@ def route_disconnected_regions(
     debug_connectivity: bool = False,
     zone_clearances: Optional[Dict[str, float]] = None,
     progress_callback=None,
-    cancel_check=None
+    cancel_check=None,
+    split_report: bool = True
 ) -> Tuple[List[Dict], List[Dict], int, List[List[Tuple[float, float]]], List[Tuple[List[Tuple[float, float]], str]]]:
     """
     Detect and route between disconnected zone regions.
@@ -1792,6 +2237,10 @@ def route_disconnected_regions(
             region discovery and per connection attempt (issue #364)
         cancel_check: Optional callable returning True to abort; checked
             before each region connection (issue #364)
+        split_report: False suppresses the red Zone SPLIT banners (#609
+            dropped-island, #611 kept-island). Used by the per-layer
+            follow-up joins so the banners the primary call already printed
+            are not repeated; the tallies are still recorded.
 
     Returns:
         Tuple of (list of segment dicts, list of via dicts, number of routes added,
@@ -1817,9 +2266,58 @@ def route_disconnected_regions(
         )
 
     n_regions = len(region_anchors)
+    # #611: islands KiCad KEEPS on refill (they carry same-net copper) that
+    # this pass cannot join -- below the join area bar, or cut off on a
+    # poured layer other than the primary analysis layer (a 5-layer GND is
+    # analysed in ONE call with plane_layer = the first poured layer, and
+    # these used to be structurally invisible: no region, no tally, "Zone is
+    # fully connected" over a plane KiCad grades as missing a connection).
+    # Report-only -- copper is unchanged; the post-write kicad-cli oracle
+    # recheck is what attempts these.
+    _kept_n, _kept_mm2, _kept_layers, _kept_details = getattr(
+        find_disconnected_zone_regions, '_last_kept_unjoined',
+        (0, 0.0, (), ()))
+    if _kept_n and split_report:
+        print(f"  {RED}Zone SPLIT: {_kept_n} island(s) ({_kept_mm2:.1f} mm^2) "
+              f"on {', '.join(_kept_layers)} carry same-net copper, so KiCad "
+              f"KEEPS them on refill and flags the missing connection "
+              f"(#611){RESET}")
+        for (_kl, _kmm2, _kx, _ky) in _kept_details:
+            print(f"    - {_kl} near ({_kx}, {_ky}): {_kmm2:.1f} mm^2")
+        print(f"    Joins from this call seed from the primary analysis "
+              f"layer ({plane_layer}); a follow-up join runs with each "
+              f"flagged layer primary (#611).")
     if n_regions < 2:
         n_anchors = len(region_anchors[0]) if region_anchors else 0
-        print(f"  Zone is fully connected ({n_anchors} anchors in 1 region)")
+        # #609: do NOT claim "fully connected" when the discovery just found
+        # pour islands and discarded them. They are skipped because KiCad's
+        # filler will DELETE them (island_removal_mode 0 + a truly bare
+        # island), which is a different statement from "the zone is whole" --
+        # the pour IS split, the copper is about to disappear, and the
+        # reference plane under whatever crosses it has a hole. Saying
+        # "fully connected" here is what let a split plane ship: the summary
+        # was clean, the zone check was clean, and the break only appeared
+        # once the zones were refilled.
+        _drop_n, _drop_mm2 = getattr(
+            find_disconnected_zone_regions, '_last_dropped', (0, 0.0))
+        if _drop_n and split_report:
+            print(f"  {RED}Zone SPLIT: 1 anchored region plus {_drop_n} "
+                  f"stranded island(s) ({_drop_mm2:.1f} mm^2) with no pad, "
+                  f"via or track on them{RESET}")
+            print(f"    Not joined: the zone's island_removal_mode deletes "
+                  f"isolated islands, so KiCad ERASES this copper on refill "
+                  f"-- strapping it would ship copper that is never poured.")
+            print(f"    But the pour IS cut here. Grade with "
+                  f"'kicad-cli pcb drc --refill-zones' (without the refill "
+                  f"the check reads a stale fill and reports 0), and treat a "
+                  f"split reference plane as a return-path/impedance defect, "
+                  f"not just a connectivity one (#609).")
+        elif not _kept_n and not _drop_n:
+            # Only claim it when BOTH tallies are empty -- a kept-unjoined
+            # island (#611) is a split even though the region list has one
+            # entry. (split_report=False keeps a follow-up call from
+            # re-printing banners the primary call already showed.)
+            print(f"  Zone is fully connected ({n_anchors} anchors in 1 region)")
         return [], [], 0, [], connectivity_paths
 
     # #513 item 8 (idempotency): the region model can read a plane as split
@@ -1919,6 +2417,53 @@ def route_disconnected_regions(
             comp_np[root] = arr
         return arr
 
+    # ENDPOINT / SEED MATERIAL TEST (#479 duodyne): a point counts as a
+    # component's own copper when it sits on one of the component's fill
+    # ISLANDS per the model, within one analysis cell of its fill cells, or
+    # within 0.75mm of an anchor / earlier strap vertex. Used for BOTH the
+    # post-route endpoint verification below AND (since neo6502 GND) the
+    # open-space fallback seed, so the search can no longer be handed a seed
+    # the gate will reject.
+    #
+    # `strict` drops the 0.75mm branch. That branch is a post-hoc ACCEPTANCE
+    # tolerance -- fine for judging a strap the router already committed to,
+    # wrong as the objective a seed SEARCH optimizes against, because the
+    # search would then hunt for a point that barely passes it and hand back a
+    # strap ending up to 0.75mm of bare board short of the pour (#479's own
+    # failure mode at a smaller radius). It also admits earlier straps'
+    # vertices, which comp_pts stores LAYER-STRIPPED, so a B.Cu vertex would
+    # vouch for an F.Cu point. Seed gating and the coincident-merge guard use
+    # strict; the endpoint verification keeps the tolerance it shipped with.
+    def _on_material(_root, _pt, strict=False):
+        # Exact test first: does the landing point sit on one of the
+        # component's fill ISLANDS per the model? (The coarse cell sets
+        # below starve thin real islands -- quickfeather U6.29's joins
+        # died UNVERIFIED on legitimate landings.)
+        _keys = comp_islands.get(_root)
+        if _keys:
+            for _ms in _join_models.values():
+                for _m in _ms:
+                    _c = _m.query_component(_pt[0], _pt[1],
+                                            size=min_track_width)
+                    if _c is not None and _c > 0 \
+                            and (id(_m), _c) in _keys:
+                        return True
+        _gx, _gy = cell_coord.to_grid(_pt[0], _pt[1])
+        _cs = comp_cells.get(_root, ())
+        for _dx in (-1, 0, 1):
+            for _dy in (-1, 0, 1):
+                if (_gx + _dx, _gy + _dy) in _cs:
+                    return True
+        if strict:
+            return False
+        _arr = _comp_arr(_root)
+        if _arr.size:
+            _d2 = ((_arr[:, 0] - _pt[0]) ** 2
+                   + (_arr[:, 1] - _pt[1]) ** 2)
+            if float(_d2.min()) <= 0.75 * 0.75:
+                return True
+        return False
+
     pair_cache: Dict[frozenset, Optional[tuple]] = {}
     # A failed pair is retried ONLY when a later merge meaningfully shrinks
     # its gap (< 0.75x the distance it failed at), and at most 3 times total:
@@ -1940,6 +2485,50 @@ def route_disconnected_regions(
         # Failed marks survive under a REKEYED identity: the merged blob keeps
         # root min(i,j), so a failed pair {blob, X} keeps its key and its
         # distance gate; only distances are recomputed.
+
+    def _merge_components(root_i, root_j, route_points):
+        """Merge two components. The union's points PLUS the strap's vertices
+        become landing space for every later join (trace reuse): a later join
+        Ts into the strap instead of paralleling it. `route_points` may be
+        empty (a coincident pair merged without emitting copper)."""
+        _keep = min(root_i, root_j)
+        _gone = root_j if _keep == root_i else root_i
+        comp_members[_keep] = comp_members[root_i] + comp_members[root_j]
+        comp_pts[_keep] = (comp_pts[root_i] + comp_pts[root_j]
+                           + [(p[0], p[1]) for p in route_points])
+        comp_cells[_keep] = (comp_cells.get(root_i, set())
+                             | comp_cells.get(root_j, set())
+                             | {cell_coord.to_grid(p[0], p[1])
+                                for p in route_points})
+        comp_success[_keep] = (comp_success.get(root_i, 0)
+                               + comp_success.get(root_j, 0) + 1)
+        comp_strikes[_keep] = (comp_strikes.get(root_i, 0)
+                               + comp_strikes.get(root_j, 0))
+        comp_islands[_keep] = (comp_islands.get(root_i, set())
+                               | comp_islands.get(root_j, set()))
+        if _gone != _keep:
+            comp_members.pop(_gone, None)
+            comp_pts.pop(_gone, None)
+            comp_cells.pop(_gone, None)
+            comp_strikes.pop(_gone, None)
+            comp_success.pop(_gone, None)
+            comp_islands.pop(_gone, None)
+            comp_roots.discard(_gone)
+        comp_np.pop(root_i, None)
+        comp_np.pop(root_j, None)
+        # Rekey failure gates onto the merged root (tightest distance, most
+        # tries survive), then drop stale cached distances to the blob --
+        # they get recomputed, and the retry gate decides eligibility.
+        for _k in [k for k in failed_at if k & {root_i, root_j}]:
+            _other = next(iter(_k - {root_i, root_j}), None)
+            _e = failed_at.pop(_k)
+            if _other is None or _other == _keep:
+                continue
+            _nk = frozenset((_keep, _other))
+            _p = failed_at.get(_nk)
+            failed_at[_nk] = _e if _p is None else (min(_e[0], _p[0]),
+                                                   max(_e[1], _p[1]))
+        _invalidate_pairs(root_i, root_j)
 
     def _pair_closest(ra, rb):
         Pa, Pb = _comp_arr(ra), _comp_arr(rb)
@@ -2017,7 +2606,8 @@ def route_disconnected_regions(
     if plane_layer_idx is None:
         print(f"  Error: plane_layer '{plane_layer}' not in layer_map")
         return [], [], 0, []
-    routing_layers = list(layer_map.keys())
+    routing_layers = [l for l, _ in sorted(layer_map.items(),
+                                           key=lambda kv: kv[1])]
 
     # Build list of existing vias and through-hole pads from this net (can be
     # reused as layer transitions). pad_is_plated_through, not "'*.Cu' in
@@ -2044,6 +2634,7 @@ def route_disconnected_regions(
     vias: List[Dict] = []
     routes_added = 0
     routes_failed = 0
+    routes_coincident = 0   # pairs that turned out to be the same copper
     previous_routes: List[List[Tuple[float, float]]] = []
 
     # Create a single reusable router for all MST edges
@@ -2054,7 +2645,8 @@ def route_disconnected_regions(
         h_weight=config.heuristic_weight,
         turn_cost=config.turn_cost,
         via_proximity_cost=0,
-        layer_costs=config.get_layer_costs(),
+        # One cost per layer_map index, by NAME (#1185).
+        layer_costs=config.layer_costs_for(routing_layers),
         proximity_heuristic_cost=config.get_proximity_heuristic_cost()
     )
 
@@ -2066,7 +2658,7 @@ def route_disconnected_regions(
         if _pick is None:
             break   # every remaining component pair already failed to route
         (dist, point_i, point_j), (root_i, root_j) = _pick
-        edge_idx = routes_added + routes_failed
+        edge_idx = routes_added + routes_failed + routes_coincident
         # The merged component point sets play the per-region anchor role:
         # member anchors + fill subsamples + earlier straps' vertices.
         anchors_i = comp_pts[root_i]
@@ -2079,10 +2671,16 @@ def route_disconnected_regions(
         # Pseudo-anchors on the fill nearest the closest approach: a new via
         # anywhere on a region's fill IS the region (castor +3.3VA -- the
         # human's bridge started at a bare fill spot 20mm from the anchor).
-        _zone_polys = [z.polygon for z in (getattr(pcb_data, 'zones', []) or [])
-                       if z.net_id == net_id and getattr(z, 'polygon', None)]
         _plane_layer_name = [l for l, i in layer_map.items()
                              if i == plane_layer_idx][0]
+        # #611 audit gap 5: only THIS layer's outlines. The obstacle tests
+        # inside _real_fill_point are already plane_layer-scoped; an
+        # unfiltered outline list accepted pseudo-anchors that sit only in
+        # ANOTHER layer's zone (split power planes with different outlines
+        # per layer), validated against the wrong layer's obstacles.
+        _zone_polys = [z.polygon for z in (getattr(pcb_data, 'zones', []) or [])
+                       if z.net_id == net_id and z.layer == _plane_layer_name
+                       and getattr(z, 'polygon', None)]
         _margin = zone_clearance + min_track_width / 2
 
         def _valid_fill(pt):
@@ -2129,6 +2727,14 @@ def route_disconnected_regions(
                                          if p not in anchors_j], point_j, 512)
         reduced = (len(seed_i) < len(full_i)) or (len(seed_j) < len(full_j))
 
+        # Material predicates for THIS pair's open-space fallback seeds: the
+        # fallback point must be copper the endpoint verification will credit
+        # to that component, or the strap it produces connects nothing.
+        _open_ok_i = (lambda _x, _y, _r=root_i:
+                      _on_material(_r, (_x, _y), strict=True))
+        _open_ok_j = (lambda _x, _y, _r=root_j:
+                      _on_material(_r, (_x, _y), strict=True))
+
         # Progress indicator
         seed_note = f" (seed {len(seed_i)}x{len(seed_j)})" if reduced else ""
         print(f"    [{edge_idx+1}/{planned}] Component {root_i} ({len(comp_members[root_i])} region(s), {len(anchors_i)} pts) <-> Component {root_j} ({len(comp_members[root_j])} region(s), {len(anchors_j)} pts){seed_note}...", end=" ", flush=True)
@@ -2153,6 +2759,8 @@ def route_disconnected_regions(
                 router=plane_router,
                 pcb_data=pcb_data,
                 net_id=net_id,
+                open_ok_i=_open_ok_i,
+                open_ok_j=_open_ok_j,
             )
 
         # Try routing with multiple track widths using helper function
@@ -2192,6 +2800,8 @@ def route_disconnected_regions(
                 router=plane_router,
                 pcb_data=pcb_data,
                 net_id=net_id,
+                open_ok_i=_open_ok_i,
+                open_ok_j=_open_ok_j,
             )
 
         # Last resort (#217 castor +3.3VA): the corridor between two regions
@@ -2236,6 +2846,8 @@ def route_disconnected_regions(
                 router=plane_router,
                 pcb_data=pcb_data,
                 net_id=net_id,
+                open_ok_i=_open_ok_i,
+                open_ok_j=_open_ok_j,
             )
 
         if result is None:
@@ -2265,6 +2877,34 @@ def route_disconnected_regions(
             route_points,
             keep={(round(vx, 3), round(vy, 3)) for vx, vy in via_positions})
 
+        # COINCIDENT PAIR: the A* reached a target cell from a source cell in
+        # ZERO steps, so one grid cell on one layer is claimed by BOTH
+        # components' seed sets -- typically because the model split ONE piece
+        # of copper (overlapping same-net zones on a layer are labelled per
+        # zone, so a patch pour inside a board-wide pour becomes a second
+        # component over the same fill). Merge and emit NOTHING: a zero-length
+        # strap is not copper, and the old path reported it as UNVERIFIED
+        # "ends=None/None", which burned the pair's whole try allowance and
+        # left the phantom region in the tally forever (neo6502 GND).
+        #
+        # A shared seed CELL is not by itself proof of shared copper: seed
+        # lists also carry earlier straps' vertices (layer-stripped) and a
+        # gated open-space point, and two seeds within one grid step quantize
+        # together. So demand the meeting point be STRICT material for BOTH
+        # components before fusing them -- otherwise fall through to the
+        # endpoint verification, which refuses and re-queues the pair. Merging
+        # on the weaker evidence would be exactly the silent false "joined"
+        # that #479's verification exists to stop.
+        if len(route_points) < 2:
+            _mp = route_points[0] if route_points else None
+            if _mp is not None and _on_material(root_i, _mp, strict=True) \
+                    and _on_material(root_j, _mp, strict=True):
+                print(f"{GREEN}COINCIDENT{RESET} (same copper at "
+                      f"({_mp[0]:.2f},{_mp[1]:.2f}) -- merged, no join needed)")
+                routes_coincident += 1
+                _merge_components(root_i, root_j, route_points)
+                continue
+
         # ENDPOINT VERIFICATION (#479 duodyne): join success was previously
         # self-reported by the A* against its obstacle map -- the open-space
         # fallback in particular drops a via at "the most open point near the
@@ -2272,38 +2912,9 @@ def route_disconnected_regions(
         # 5 of duodyne's 23 joins shipped dangling vias/stubs while Prim
         # recorded the pair as merged (7 pad islands reached the gate
         # floating behind an all-OK report). Require each strap end to land
-        # on its component's MATERIAL: within one analysis cell of the
-        # component's fill cells, or within 0.75mm of an anchor / earlier
-        # strap vertex. An unverified join is a FAILED join: no copper is
-        # emitted and the pair re-enters the retry policy.
-        def _on_material(_root, _pt):
-            # Exact test first: does the landing point sit on one of the
-            # component's fill ISLANDS per the model? (The coarse cell sets
-            # below starve thin real islands -- quickfeather U6.29's joins
-            # died UNVERIFIED on legitimate landings.)
-            _keys = comp_islands.get(_root)
-            if _keys:
-                for _ms in _join_models.values():
-                    for _m in _ms:
-                        _c = _m.query_component(_pt[0], _pt[1],
-                                                size=min_track_width)
-                        if _c is not None and _c > 0 \
-                                and (id(_m), _c) in _keys:
-                            return True
-            _gx, _gy = cell_coord.to_grid(_pt[0], _pt[1])
-            _cs = comp_cells.get(_root, ())
-            for _dx in (-1, 0, 1):
-                for _dy in (-1, 0, 1):
-                    if (_gx + _dx, _gy + _dy) in _cs:
-                        return True
-            _arr = _comp_arr(_root)
-            if _arr.size:
-                _d2 = ((_arr[:, 0] - _pt[0]) ** 2
-                       + (_arr[:, 1] - _pt[1]) ** 2)
-                if float(_d2.min()) <= 0.75 * 0.75:
-                    return True
-            return False
-
+        # on its component's MATERIAL (see _on_material above the loop). An
+        # unverified join is a FAILED join: no copper is emitted and the pair
+        # re-enters the retry policy.
         _verified = False
         if len(route_points) >= 2:
             _e0, _e1 = route_points[0], route_points[-1]
@@ -2311,6 +2922,42 @@ def route_disconnected_regions(
                           and _on_material(root_j, _e1))
                          or (_on_material(root_i, _e1)
                              and _on_material(root_j, _e0)))
+        if not _verified and os.environ.get('KRT_JOIN_VERIFY_DEBUG'):
+            def _dbg(_root, _pt):
+                if _pt is None:
+                    return 'pt=None'
+                _keys = comp_islands.get(_root)
+                _hits = []
+                for _lay, _ms in _join_models.items():
+                    for _m in _ms:
+                        _c = _m.query_component(_pt[0], _pt[1],
+                                                size=min_track_width)
+                        if _c is not None and _c > 0:
+                            _hits.append((_lay, id(_m), _c,
+                                          (id(_m), _c) in (_keys or ())))
+                _gx, _gy = cell_coord.to_grid(_pt[0], _pt[1])
+                _cs = comp_cells.get(_root, ())
+                _cellhit = any((_gx + _dx, _gy + _dy) in _cs
+                               for _dx in (-1, 0, 1) for _dy in (-1, 0, 1))
+                _arr = _comp_arr(_root)
+                _dmin = None
+                if _arr.size:
+                    _dmin = float(np.sqrt(((_arr[:, 0] - _pt[0]) ** 2
+                                           + (_arr[:, 1] - _pt[1]) ** 2).min()))
+                return (f'root={_root} nkeys={len(_keys or ())} '
+                        f'ncells={len(_cs)} npts={_arr.shape[0]} '
+                        f'cellhit={_cellhit} dmin={_dmin} '
+                        f'modelhits={_hits[:6]}')
+            _d0, _d1 = (route_points[0], route_points[-1]) \
+                if len(route_points) >= 2 else (None, None)
+            print(f"\n      VERIFY-DEBUG pair=({root_i},{root_j}) dist={dist:.3f}"
+                  f" pi={point_i} pj={point_j} npts={len(route_points)}")
+            print(f"        e0 {_d0} vs i: {_dbg(root_i, _d0)}")
+            print(f"        e0 {_d0} vs j: {_dbg(root_j, _d0)}")
+            print(f"        e1 {_d1} vs i: {_dbg(root_i, _d1)}")
+            print(f"        e1 {_d1} vs j: {_dbg(root_j, _d1)}")
+            if len(route_points) < 6:
+                print(f"        route={route_points}")
         if not _verified:
             _e0, _e1 = (route_points[0], route_points[-1]) \
                 if len(route_points) >= 2 else (None, None)
@@ -2416,10 +3063,47 @@ def route_disconnected_regions(
             _tl = _transition_layers(vx, vy)
             if not _tl:
                 return
+            # This bridge is NOT a route_points leg, so wide_route_clear --
+            # which only ever sees same-layer legs of the routed path -- never
+            # saw it, and it is drawn on the TRANSITION layers, which are not
+            # the layers the strap was routed and gated on. Measured on
+            # zynq_ad9364: the strap ran on In1.Cu/In2.Cu (gated clear there),
+            # while this bridge put a 0.8mm-wide, 0.057mm-long disc on F.Cu
+            # straight through TX_D1_N -- a protected diff-pair member whose
+            # copper is in the step's own input. Nine violations, and not
+            # grazes: the copper OVERLAPS by up to 160um, a hard short.
+            #
+            # Two things are wrong and both are fixed here. The WIDTH: this
+            # joint ties two barrels a fraction of a via apart, so the strap's
+            # full width buys nothing electrically (the barrels dominate) and
+            # only widens the keep-out -- cap it at the via diameter. And the
+            # CHECK: run the same predicate the widening path uses, per layer,
+            # narrowing to min_track_width before giving up.
+            #
+            # If no width is clear the bridge is SKIPPED on that layer rather
+            # than drawn illegally. That can leave the strap's transition
+            # unbridged (#508 finding 14) and the plane region split, which the
+            # run reports -- strictly better than shipping copper shorted to a
+            # signal net, which nothing downstream would have caught.
+            # Floored at `min_track_width` (or at the strap's own width, when
+            # the #217 last resort drew it narrower): the cap is about not
+            # drawing a disc where a joint belongs, not about going under the
+            # caller's declared minimum. Without the floor an advanced-tier via
+            # (--via-size below min_track_width) would silently emit a bridge
+            # thinner than the run asked for -- a narrowing with no disclosure,
+            # which is not how this repo reports them (design_rules.narrowed).
             for _l in set(_tl):
+                _w_ok = via_bridge_width(
+                    [(vx, vy, _l), (sx, sy, _l)], track_width,
+                    config.via_size, min_track_width, pcb_data, net_id, config)
+                if _w_ok is None:
+                    print(f"    via-suppression bridge on {_l} at "
+                          f"({vx:.3f}, {vy:.3f}) SKIPPED: no width clears "
+                          f"foreign copper (strap stays split here)")
+                    continue
                 segments.append({
                     'start': (vx, vy), 'end': (sx, sy),
-                    'width': track_width, 'layer': _l, 'net_id': net_id})
+                    'width': _w_ok, 'layer': _l, 'net_id': net_id})
 
         # First filter via_positions to remove vias too close to each other within this route
         filtered_via_positions = []
@@ -2473,56 +3157,66 @@ def route_disconnected_regions(
                                     _near[0], _near[1])
 
         routes_added += 1
-
-        # Merge the two components. The union's points PLUS this strap's
-        # vertices become landing space for every later join (trace reuse):
-        # a later join Ts into the strap instead of paralleling it.
-        _keep = min(root_i, root_j)
-        _gone = root_j if _keep == root_i else root_i
-        comp_members[_keep] = comp_members[root_i] + comp_members[root_j]
-        comp_pts[_keep] = (comp_pts[root_i] + comp_pts[root_j]
-                           + [(p[0], p[1]) for p in route_points])
-        comp_cells[_keep] = (comp_cells.get(root_i, set())
-                             | comp_cells.get(root_j, set())
-                             | {cell_coord.to_grid(p[0], p[1])
-                                for p in route_points})
-        comp_success[_keep] = (comp_success.get(root_i, 0)
-                               + comp_success.get(root_j, 0) + 1)
-        comp_strikes[_keep] = (comp_strikes.get(root_i, 0)
-                               + comp_strikes.get(root_j, 0))
-        comp_islands[_keep] = (comp_islands.get(root_i, set())
-                               | comp_islands.get(root_j, set()))
-        if _gone != _keep:
-            comp_members.pop(_gone, None)
-            comp_pts.pop(_gone, None)
-            comp_cells.pop(_gone, None)
-            comp_strikes.pop(_gone, None)
-            comp_success.pop(_gone, None)
-            comp_islands.pop(_gone, None)
-            comp_roots.discard(_gone)
-        comp_np.pop(root_i, None)
-        comp_np.pop(root_j, None)
-        # Rekey failure gates onto the merged root (tightest distance, most
-        # tries survive), then drop stale cached distances to the blob --
-        # they get recomputed, and the retry gate decides eligibility.
-        for _k in [k for k in failed_at if k & {root_i, root_j}]:
-            _other = next(iter(_k - {root_i, root_j}), None)
-            _e = failed_at.pop(_k)
-            if _other is None or _other == _keep:
-                continue
-            _nk = frozenset((_keep, _other))
-            _p = failed_at.get(_nk)
-            failed_at[_nk] = _e if _p is None else (min(_e[0], _p[0]),
-                                                   max(_e[1], _p[1]))
-        _invalidate_pairs(root_i, root_j)
+        _merge_components(root_i, root_j, route_points)
 
     # Summary for this net
+    _coin_note = (f", {routes_coincident} coincident pair(s) merged without copper"
+                  if routes_coincident else "")
     if routes_failed > 0:
-        print(f"  {YELLOW}Result: {routes_added}/{planned} join(s) succeeded, {routes_failed} attempt(s) failed{RESET}")
-    elif routes_added > 0:
-        print(f"  {GREEN}Result: All {routes_added} route(s) succeeded{RESET}")
+        print(f"  {YELLOW}Result: {routes_added}/{planned} join(s) succeeded, {routes_failed} attempt(s) failed{_coin_note}{RESET}")
+    elif routes_added > 0 or routes_coincident:
+        print(f"  {GREEN}Result: All {routes_added} route(s) succeeded{_coin_note}{RESET}")
 
     return segments, vias, routes_added, previous_routes, connectivity_paths
+
+
+def via_bridge_width(leg, track_width, via_size, min_track_width,
+                     pcb_data, net_id, config):
+    """Width for a via-suppression bridge on one layer, or None to skip it.
+
+    When two vias on a region-join strap land closer than
+    `via_drill + hole_to_hole`, one is suppressed and a bridge joins the
+    orphaned transition to the survivor -- on BOTH transition layers (#508
+    finding 14), so the strap is not severed there.
+
+    Two things this decides, both of which the bridge used to get wrong:
+
+    WIDTH. It was drawn at the strap's full `track_width`. The joint ties two
+    barrels a fraction of a via apart, so the strap width buys nothing
+    electrically (the barrels dominate) and only widens the keep-out. Measured
+    on zynq_ad9364: a 0.057mm bridge at 0.8mm put a disc on F.Cu straight
+    through TX_D1_N -- a protected diff-pair member whose copper is in the
+    step's own INPUT -- overlapping by up to 160um. Nine segment-segment
+    violations, and shorts rather than grazes. Capped at the via diameter, and
+    FLOORED at `min_track_width` so an advanced-tier via cannot silently emit a
+    bridge thinner than the run asked for -- or at the strap's own width when
+    that is narrower. The #217 last resort draws a strap at the run's
+    --track-width when its corridor refuses `min_track_width`; holding that
+    strap's bridge to `min_track_width` asked the same corridor for the width
+    it had just refused, so the bridge was skipped and the plane left split
+    (#1112). The run's own track width is not thinner than the run asked for.
+
+    CLEARANCE. The bridge is not a `route_points` leg, so `wide_route_clear` --
+    which only ever sees same-layer legs of the routed path -- never saw it,
+    and it lands on the TRANSITION layers, which are not the layers the strap
+    was routed and gated on. It now runs the same predicate, per layer,
+    narrowing to `min_track_width` before giving up.
+
+    Returns None when no width clears. The caller skips that layer rather than
+    drawing illegal copper: the strap's transition may then be unbridged and
+    the region stays split, which the run reports -- strictly better than
+    copper shorted to a signal net, which nothing downstream catches.
+    """
+    floor = (min(min_track_width, track_width) if track_width > 0
+             else min_track_width)
+    cap = max(floor, min(track_width, via_size))
+    for w in (cap, floor):
+        if w <= 0:
+            continue
+        if pcb_data is None or net_id is None or wide_route_clear(
+                leg, w, pcb_data, net_id, config):
+            return w
+    return None
 
 
 def wide_route_clear(route_points, width, pcb_data, net_id, config,
@@ -2624,6 +3318,13 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
         return best
 
     _clr_max_by_layer = {}
+    # the widest #735 track rule: the segment prefilter must reach it (#1135)
+    _trk = getattr(config, 'track_clearances', None) or {}
+    _trk_max = max(_trk.values()) if _trk else 0.0
+    # #617: the board's own copper-to-hole floor, resolved once per call
+    # (cached per board path inside the helper). Raise-only, so a board that
+    # declares nothing keeps this predicate's decisions bit-identical.
+    _hole_clr = resolve_hole_clearance(pcb_data, config)
 
     for (x1, y1, x2, y2, layer) in legs:
         bb = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
@@ -2643,7 +3344,7 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
                 continue
             if _seg_pt(x1, y1, x2, y2, v.x, v.y) < req - EPS:
                 return False
-        sreq = half + _shalf + clr_max
+        sreq = half + _shalf + max(clr_max, _trk_max)
         _lh = hash(layer)
         for si in np.nonzero((_slay == _lh)
                              & (bb[0] - sreq <= _sxhi)
@@ -2653,8 +3354,11 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
             s = _segs_l[si]
             if s.layer != layer:
                 continue
-            req = half + s.width / 2.0 + config.layer_clearance(  # #498
-                layer, config.obstacle_clearance(s.net_id))
+            # #498 layer rule, then the #735 track rule (#1135): the leg is a
+            # track, and so is this foreign segment
+            req = half + s.width / 2.0 + config.track_obstacle_clearance(
+                s.net_id, config.layer_clearance(
+                    layer, config.obstacle_clearance(s.net_id)))
             if not (bb[0] - req <= max(s.start_x, s.end_x)
                     and min(s.start_x, s.end_x) <= bb[2] + req
                     and bb[1] - req <= max(s.start_y, s.end_y)
@@ -2668,7 +3372,8 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
         # math per leg), so both share this superset gate. NPTH's req is
         # half + hdia/2 + npth_clr with the drill inside the pad body, so
         # pext + max(local, clr_max, config.clearance, NPTH floor) bounds it.
-        _npth_bound = max(config.clearance, defaults.NPTH_TO_TRACK_CLEARANCE)
+        _npth_bound = max(config.clearance, defaults.NPTH_TO_TRACK_CLEARANCE,
+                          _hole_clr)
         preq = half + _pext + _pdrill + np.maximum(_plocal,
                                                    max(clr_max, _npth_bound))
         for pi in np.nonzero((bb[0] - preq <= _px) & (_px <= bb[2] + preq)
@@ -2680,9 +3385,10 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
                 on_layer = ('*.Cu' in p.layers or layer in p.layers)
                 is_th = bool(p.drill and p.drill > 0)
                 if p.pad_type != 'np_thru_hole' and (on_layer or is_th):
-                    clr = max(config.layer_clearance(  # #498: meet on the leg's layer
-                                  layer, config.obstacle_clearance(pnid)),
-                              getattr(p, 'local_clearance', 0.0) or 0.0)
+                    clr = config.pad_override_clearance(
+                        config.layer_clearance(  # #498: meet on the leg's layer
+                            layer, config.obstacle_clearance(pnid)),
+                        p)
                     pext = max(p.size_x, p.size_y) / 2.0
                     req = half + pext + clr
                     if (bb[0] - req <= p.global_x <= bb[2] + req
@@ -2701,7 +3407,8 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
                             return False
                 if is_th:
                     npth_clr = max(config.clearance,
-                                   defaults.NPTH_TO_TRACK_CLEARANCE) \
+                                   defaults.NPTH_TO_TRACK_CLEARANCE,
+                                   _hole_clr) \
                         if p.pad_type == 'np_thru_hole' else None
                     if npth_clr is not None:
                         for hx, hy, hdia in pad_drill_circles(p):
@@ -2866,7 +3573,11 @@ def build_base_obstacles(
                 _block_segment_via_obstacle(obstacles, seg, coord,
                                             via_seg_expansion_mm)
             continue
-        seg_expansion_mm = track_width / 2 + seg.width / 2 + _seg_clr + cushion
+        # #1135: the track stamp also takes the .kicad_dru track-to-track rule
+        # (#735, raise-only; the via stamp below does not -- it binds tracks)
+        seg_expansion_mm = (track_width / 2 + seg.width / 2
+                            + config.track_obstacle_clearance(seg.net_id, _seg_clr)
+                            + cushion)
         _block_segment_obstacle(obstacles, seg, coord, layer_idx, seg_expansion_mm)
         # Also block vias along this segment - must include segment width for proper clearance
         via_seg_expansion_mm = config.via_size / 2 + seg.width / 2 + _seg_clr + cushion
@@ -2918,7 +3629,7 @@ def build_base_obstacles(
                 _pc = (config.stack_clearance(_pc)
                        if ('*.Cu' in (pad.layers or []) or not _pls)
                        else max(config.layer_clearance(l, _pc) for l in _pls))
-            pad_clr = max(_pc, getattr(pad, 'local_clearance', 0.0) or 0.0)
+            pad_clr = config.pad_override_clearance(_pc, pad)
             pad_expansion_mm = track_width / 2 + pad_clr + cushion
             half_w, half_h = pad_rect_halfspan(pad, pad_expansion_mm)
             min_gx, _ = coord.to_grid(pad.global_x - half_w, 0)
@@ -2955,7 +3666,10 @@ def build_base_obstacles(
     # the hard fab requirement and cell centers at >= the radius stay free, so
     # this blocks the minimum area that avoids real copper-to-hole violations.
     if npth_holes:
-        npth_clr = max(config.clearance, defaults.NPTH_TO_TRACK_CLEARANCE)
+        # #617: raised to the board's own min_hole_clearance when it declares
+        # one above the fab floor (raise-only; inert on a silent board).
+        npth_clr = max(config.clearance, defaults.NPTH_TO_TRACK_CLEARANCE,
+                       resolve_hole_clearance(pcb_data, config))
         block_track_cells_near_drills(obstacles, npth_holes, track_width,
                                       npth_clr, config.grid_step,
                                       list(range(num_layers)))
@@ -3145,7 +3859,8 @@ def route_plane_connection_wide(
             h_weight=config.heuristic_weight,
             turn_cost=config.turn_cost,
             via_proximity_cost=0,
-            layer_costs=config.get_layer_costs(),
+            # One cost per routing_layers index, by NAME (#1185).
+            layer_costs=config.layer_costs_for(routing_layers),
             proximity_heuristic_cost=config.get_proximity_heuristic_cost()
         )
 

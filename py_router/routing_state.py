@@ -95,6 +95,15 @@ class RoutingState:
     # in a restore-crossing (cparti +1V8<->B_{n}ON). No clearing needed: a net only
     # re-routes after being ripped, so its ancestry is always freshly set then.
     rip_ancestry: Dict[int, Any] = field(default_factory=dict)
+    # #622 victim-priority restore: victims restored WITH AUTHORITY (their
+    # channel squatter ripped so the full restore could land) are protected
+    # from being ripped again for the rest of the run -- rip_exclude_set
+    # folds this set in, so every blocker analysis skips them. Without the
+    # protection the requeued squatter's own ladder just rips the victim
+    # back and the exchange oscillates. victim_authority_used caps the
+    # mechanism at once per victim.
+    restore_protected_net_ids: Set[int] = field(default_factory=set)
+    victim_authority_used: Set[int] = field(default_factory=set)
 
     # #572: exact-fill links the plane-finalize oracle left unroutable,
     # forced into this (reconcile sub-)run -- net_id ->
@@ -148,6 +157,10 @@ class RoutingState:
     # Multi-point routing: track nets needing Phase 3 completion
     # Maps net_id -> main_result dict with 'multipoint_pad_info' and 'routed_pad_indices'
     pending_multipoint_nets: Dict[int, Dict] = field(default_factory=dict)
+    # Of those, the nets whose taps Phase 3 has routed (or tried to): no longer
+    # stub-proximity sources. The pending dict itself keeps them, because
+    # the Phase 3 reroute of a ripped net reads it.
+    multipoint_taps_done: Set[int] = field(default_factory=set)
 
     # Layer swap tracking
     all_segment_modifications: List = field(default_factory=list)
@@ -342,8 +355,11 @@ def diff_pair_rip_exclude(state: RoutingState, p_net_id: int, n_net_id: int) -> 
 
 
 def rip_exclude_set(state: RoutingState, net_id: int) -> Set[int]:
-    """Nets a (re)routing net must NOT rip: itself plus its rip-ancestry."""
-    return {net_id} | set(state.rip_ancestry.get(net_id, frozenset()))
+    """Nets a (re)routing net must NOT rip: itself, its rip-ancestry, and
+    every victim restored with authority (#622 victim-priority restore --
+    re-ripping one just re-opens the exchange this mechanism closed)."""
+    return ({net_id} | set(state.rip_ancestry.get(net_id, frozenset()))
+            | set(getattr(state, 'restore_protected_net_ids', None) or ()))
 
 
 def get_net_history_summary(state: RoutingState, net_id: int, pcb_data: 'PCBData') -> str:
@@ -387,6 +403,66 @@ def get_net_history_summary(state: RoutingState, net_id: int, pcb_data: 'PCBData
 
         elif event == "reroute_succeeded":
             lines.append(f"[{seq}] Re-route succeeded")
+
+        # The three diagnosis events (#860 follow-up). They were reaching the
+        # bare-name `else` below, so a failed net's history printed
+        # "preexisting_blockers" / "boxed_in_static" / "fanout_dropped" with
+        # none of the detail each one is recorded WITH -- which is the whole
+        # reason they are recorded. Rendered from their own keys, and each
+        # falls back to the bare name if a producer ever records nothing.
+        elif event == "preexisting_blockers":
+            blockers = details.get("blockers") or []
+            if blockers:
+                lines.append(f"[{seq}] Blocked by pre-existing copper: "
+                             + ", ".join(str(b) for b in blockers[:3])
+                             + (f" (+{len(blockers) - 3} more)"
+                                if len(blockers) > 3 else ""))
+            else:
+                lines.append(f"[{seq}] Blocked by pre-existing copper")
+            hint = details.get("hint")
+            if hint:
+                lines.append(f"       {hint}")
+
+        elif event == "boxed_in_static":
+            geom = details.get("geometry") or {}
+            iters = details.get("iterations", "?")
+            bits = [f"{k.replace('_', ' ')} {v:g}"
+                    for k, v in (("grid", geom.get("grid_step")),
+                                 ("clearance", geom.get("clearance")),
+                                 ("track", geom.get("track_width")),
+                                 ("via", geom.get("via_diameter")))
+                    if isinstance(v, (int, float))]
+            lines.append(f"[{seq}] Boxed in at this geometry after "
+                         f"{iters} iteration(s)"
+                         + (f" ({', '.join(bits)} mm)" if bits else ""))
+
+        elif event == "sealed_by_snpc":
+            # #907. The remedy is a FLAG, so name the flag and its value --
+            # an event with no arm here prints bare and loses its details,
+            # which is exactly how this cause stayed invisible.
+            lines.append(
+                f"[{seq}] Pad {details.get('pad', '?')} sealed by "
+                f"--same-net-pad-clearance "
+                f"{details.get('same_net_pad_clearance', '?')}: every via "
+                f"site within {details.get('escape_reach_mm', '?')}mm is banned "
+                f"by that flag alone (needs "
+                f"{details.get('required_surround_mm', '?')}mm of clear pad "
+                f"surround)")
+
+        elif event == "fanout_dropped":
+            # The fix for this one is UPSTREAM (re-run the fanout), which is
+            # the point of naming it apart from the two above.
+            pad = details.get("pad")
+            comp = details.get("component")
+            where = pad or comp or "a pad"
+            lines.append(f"[{seq}] Fanout never escaped {where}"
+                         + (" (plane-like net: the fix is a plane drop, not a "
+                            "fanout re-run)" if details.get("plane_like")
+                            else " -- no escape stub exists for a retry to rip"))
+            pads = details.get("pads") or []
+            if len(pads) > 1:
+                lines.append(f"       Also bare: "
+                             + ", ".join(str(x) for x in pads[1:4]))
 
         else:
             lines.append(f"[{seq}] {event}")

@@ -12,14 +12,20 @@ Usage:
 Pipeline: bga_fanout.py -> animate_fanout_clearance.py (visualizes the same
 repair that place_fanout_clearance.py performs).
 
-Requires pygame (rendering) and Pillow (GIF encoding) -- both already used by
+Requires only Pillow: rendering goes through route_render.BoardRenderer and
+encoding through animate_route.save_movie (#431), so this file no longer
+carries its own transform, GIF writer or font handling. Both are already used by
 this repo's tooling. No matplotlib / ffmpeg needed.
 """
+
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': ['placement'], 'kind': 'instrument'}
+
 import _path  # noqa: F401  (#522: makes ../py_router importable)
 
 
 import argparse
-import colorsys
 import os
 import sys
 
@@ -65,21 +71,18 @@ class _Recorder:
 # Rendering helpers
 # ---------------------------------------------------------------------------
 
-def _net_color(net_id):
-    """Stable, well-separated color per net id (gray for unconnected/0)."""
-    if not net_id or net_id <= 0:
-        return (130, 130, 130)
-    h = ((net_id * 0.61803398875) % 1.0)
-    r, g, b = colorsys.hsv_to_rgb(h, 0.65, 1.0)
-    return (int(r * 255), int(g * 255), int(b * 255))
-
-
-def _smoothstep(t):
-    return t * t * (3.0 - 2.0 * t)
-
-
-def _lerp_rect(a, b, t):
-    return tuple(a[i] + (b[i] - a[i]) * t for i in range(4))
+# Shared with render_placement / the movie camera (#431). Moved to
+# movie_camera.py rather than copied: these are pure functions and the versions
+# there are byte-for-byte these, verified over net ids -2..399 and t in [0,1],
+# so docs/fanout-cap-placement.gif was unchanged by the move (it was drawn in the
+# dark theme; since #1081 the default is light, so a regeneration without
+# $KICAD_RENDER_THEME=dark draws it light). movie_camera imports no PIL and
+# no pygame at module scope precisely so this import stays cheap here.
+# the CONFIGURED default theme (#1081: light, or $KICAD_RENDER_THEME)
+from render_theme import default_theme as _default_theme
+_TH = _default_theme()
+from movie_camera import (lerp_rect as _lerp_rect, net_color as _net_color,
+                          smoothstep as _smoothstep)
 
 
 def _view_bounds(recorder, pad_mm):
@@ -100,76 +103,77 @@ def _view_bounds(recorder, pad_mm):
 
 
 def render_gif(recorder, out_path, size=900, sub_frames=14,
-               fps=30, hold_start=8, hold_end=24, pad_mm=0.8):
-    import pygame
-    from PIL import Image
+               fps=30, hold_start=8, hold_end=24, pad_mm=0.8, pcb=None):
+    """Render the recorded cap moves.
 
-    os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-    pygame.init()
-    try:
-        font = pygame.font.SysFont('Menlo,DejaVuSansMono,monospace', 13)
-        small = pygame.font.SysFont('Menlo,DejaVuSansMono,monospace', 10)
-    except Exception:
-        font = small = pygame.font.Font(None, 14)
+    Ported off pygame onto the shared stack (#431): `route_render.BoardRenderer`
+    supplies the substrate and the mm->px transform, and
+    `animate_route.save_movie` does the encoding. That deletes three
+    duplications this file used to carry -- a hand-rolled world->screen mapping,
+    a hand-rolled GIF writer, and its own font handling -- and buys two things
+    for free: the REAL board underneath the BGA field (outline, cutouts, zones),
+    which the pygame version never drew, and `.mp4` output when the caller asks
+    for one.
 
-    wx0, wy0, wx1, wy1 = _view_bounds(recorder, pad_mm)
-    ww, wh = wx1 - wx0, wy1 - wy0
-    margin = 40
-    scale = min((size - 2 * margin) / ww, (size - 2 * margin) / wh)
-    # center the content
-    off_x = (size - ww * scale) / 2.0
-    off_y = (size - wh * scale) / 2.0
-    # KiCad Y increases downward, same as screen -> no vertical flip.
-    def w2s(x, y):
-        return (off_x + (x - wx0) * scale, off_y + (y - wy0) * scale)
+    `pcb` is optional so a caller with only a recorder still works: without it
+    there is no substrate, just the overlay on a plain background, which is
+    exactly what the pygame version produced.
+    """
+    from PIL import Image, ImageDraw
 
-    def rect_px(r):
-        x0, y0 = w2s(r[0], r[1])
-        x1, y1 = w2s(r[2], r[3])
-        return pygame.Rect(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+    import animate_route as _ar
+    from route_render import BoardRenderer, load_font
 
-    BG = (18, 20, 26)
+    view = _view_bounds(recorder, pad_mm)
     st = recorder.static
 
-    def draw_frame(surf, interp, label):
-        surf.fill(BG)
-        # BGA outline
-        for bb in st['bga']:
-            pygame.draw.rect(surf, (70, 78, 96), rect_px(bb), 2)
-        # same-net balls (dim dots)
-        for (x, y, net) in st['balls']:
-            sx, sy = w2s(x, y)
-            c = _net_color(net)
-            pygame.draw.circle(surf, (c[0] // 3, c[1] // 3, c[2] // 3),
-                               (int(sx), int(sy)), 2)
-        # fanout vias: keepout ring + solid via disk
-        for (vx, vy, vnet, ko) in st['vias']:
-            sx, sy = w2s(vx, vy)
-            c = _net_color(vnet)
-            pygame.draw.circle(surf, (c[0] // 3, c[1] // 3, c[2] // 3),
-                               (int(sx), int(sy)), int(ko * scale), 1)
-            vr = max(2, (ko - st['clearance']) * scale)
-            pygame.draw.circle(surf, c, (int(sx), int(sy)), int(vr))
-        # caps: seed ghost, current courtyard, current pads, label
-        for ref, d in interp.items():
-            seed = d['seed_court']
-            pygame.draw.rect(surf, (52, 52, 60), rect_px(seed), 1)
-            court = d['court']
-            pygame.draw.rect(surf, (150, 150, 165), rect_px(court), 1)
-            cx = cy = 0.0
-            for (x0, y0, x1, y1, net) in d['pads']:
+    if pcb is not None:
+        # show_pads=False: the caps MOVE during a tween, so board pads drawn at
+        # their final poses would ghost against the animated ones.
+        r = BoardRenderer(pcb, size=size, supersample=1, show_pads=False,
+                          view=view)
+    else:
+        r = _PlainCanvas(size, view)
+
+    def overlay_for(interp):
+        def _draw(d, rr):
+            tf = rr.tf
+
+            def px(rect):
+                x0, y0 = tf.pt(rect[0], rect[1])
+                x1, y1 = tf.pt(rect[2], rect[3])
+                return [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
+
+            for bb in st['bga']:                       # BGA outline
+                d.rectangle(px(bb), outline=_TH.rgb('fanout_field_edge'),
+                            width=2)
+            for (x, y, net) in st['balls']:            # same-net balls
+                sx, sy = tf.pt(x, y)
                 c = _net_color(net)
-                pr = rect_px((x0, y0, x1, y1))
-                shade = pygame.Surface((pr.w, pr.h), pygame.SRCALPHA)
-                shade.fill((c[0], c[1], c[2], 210))
-                surf.blit(shade, pr)
-                pygame.draw.rect(surf, c, pr, 1)
-                cx, cy = w2s((x0 + x1) / 2, (y0 + y1) / 2)
-            lbl = small.render(ref, True, (235, 235, 245))
-            surf.blit(lbl, (cx - lbl.get_width() / 2, cy - lbl.get_height() / 2))
-        # HUD
-        txt = font.render(label, True, (210, 215, 230))
-        surf.blit(txt, (12, 10))
+                d.ellipse([sx - 2, sy - 2, sx + 2, sy + 2],
+                          fill=(c[0] // 3, c[1] // 3, c[2] // 3))
+            for (vx, vy, vnet, ko) in st['vias']:      # keepout ring + via
+                sx, sy = tf.pt(vx, vy)
+                c = _net_color(vnet)
+                kr = tf.length(ko)
+                d.ellipse([sx - kr, sy - kr, sx + kr, sy + kr],
+                          outline=(c[0] // 3, c[1] // 3, c[2] // 3), width=1)
+                vr = max(2.0, tf.length(ko - st['clearance']))
+                d.ellipse([sx - vr, sy - vr, sx + vr, sy + vr], fill=c)
+            font = load_font(max(9, size // 90))
+            for ref, cap in interp.items():
+                d.rectangle(px(cap['seed_court']),
+                            outline=_TH.rgb('fanout_court_seed'), width=1)
+                d.rectangle(px(cap['court']),
+                            outline=_TH.rgb('fanout_court'), width=1)
+                cx = cy = 0.0
+                for (x0, y0, x1, y1, net) in cap['pads']:
+                    c = _net_color(net)
+                    d.rectangle(px((x0, y0, x1, y1)), fill=c, outline=c)
+                    cx, cy = tf.pt((x0 + x1) / 2, (y0 + y1) / 2)
+                d.text((cx, cy), ref, fill=_TH.rgb('fanout_label'), font=font,
+                       anchor='mm')
+        return _draw
 
     def interp_caps(fa, fb, t):
         out = {}
@@ -184,13 +188,10 @@ def render_gif(recorder, out_path, size=900, sub_frames=14,
             }
         return out
 
-    surf = pygame.Surface((size, size))
     images = []
 
     def grab(interp, label):
-        draw_frame(surf, interp, label)
-        raw = pygame.image.tobytes(surf, 'RGB')
-        images.append(Image.frombytes('RGB', (size, size), raw))
+        images.append(r.frame(overlays=[overlay_for(interp)], label=label))
 
     frames = recorder.frames
     n = len(frames)
@@ -199,17 +200,40 @@ def render_gif(recorder, out_path, size=900, sub_frames=14,
     for i in range(1, n):
         for s in range(sub_frames):
             t = _smoothstep((s + 1) / sub_frames)
-            grab(interp_caps(frames[i - 1], frames[i], t),
-                 f'move {i}/{n - 1}')
+            grab(interp_caps(frames[i - 1], frames[i], t), f'move {i}/{n - 1}')
     for _ in range(hold_end):
         grab(frames[-1], f'final placement  ({n - 1}/{n - 1} moves)')
 
-    pygame.quit()
-    dur = int(1000 / fps)
-    images[0].save(out_path, save_all=True, append_images=images[1:],
-                   duration=dur, loop=0, optimize=True)
-    print(f"Wrote {out_path}  ({len(images)} frames, ~{len(images) / fps:.1f}s "
-          f"at {fps} fps)")
+    # Extension picks the format, with the .mp4 -> .gif fallback, the PNG dump
+    # and the even-dimension crop all inherited.
+    _ar.save_movie(images, out_path, fps=fps, end_hold=0.0)
+    return out_path
+
+
+class _PlainCanvas:
+    """The no-board fallback: a bare background plus the same Transform, so the
+    overlay code is identical whether or not a board was supplied."""
+
+    def __init__(self, size, view):
+        from PIL import Image, ImageDraw
+        from route_render import Transform, load_font
+        self.W = self.H = size
+        self.ss = 1
+        self._bg = _TH.rgb('fanout_ground')
+        self.tf = Transform(view, size, size, 40)
+        self._Image, self._Draw, self._font = Image, ImageDraw, load_font
+
+    def frame(self, overlays=None, label=None, **_kw):
+        img = self._Image.new('RGB', (self.W, self.H), self._bg)
+        d = self._Draw.Draw(img)
+        for fn in (overlays or ()):
+            fn(d, self)
+        if label:
+            f = self._font(max(12, self.H // 55))
+            d.rectangle([3, 3, 12 + 8 * len(label), 24],
+                        fill=_TH.rgb('chrome_band'))
+            d.text((6, 6), label, fill=_TH.rgb('chrome_text'), font=f)
+        return img
 
 
 def main():
@@ -218,9 +242,18 @@ def main():
     p.add_argument("input_file", help="Post-fanout KiCad PCB file")
     p.add_argument("output_file", nargs="?", help="Output GIF "
                    "(default: input_capmove.gif)")
-    p.add_argument("--clearance", type=float, default=defaults.CLEARANCE)
+    # #768: None = "resolve it from the board", the same contract
+    # --board-edge-clearance has had since #733. This front writes no
+    # project, but it must PRICE identically to place_fanout_clearance.py
+    # or the GIF shows a repair the tool does not perform.
+    p.add_argument("--clearance", type=float, default=None,
+                   help="Copper clearance CEILING in mm; omitted = the "
+                        "board's own Default net class (see #768).")
     p.add_argument("--grid-step", type=float, default=defaults.GRID_STEP)
-    p.add_argument("--board-edge-clearance", type=float, default=0.55)
+    # None, not 0.55 (#733): the engine resolves it, so the GIF frames the
+    # same usable box the run it visualises actually used. A private copy
+    # here would be a third notion of the margin -- the defect #733 closed.
+    p.add_argument("--board-edge-clearance", type=float, default=None)
     p.add_argument("--capture-radius", type=float, default=2.0)
     p.add_argument("--default-via-size", type=float, default=DEFAULT_VIA_SIZE)
     p.add_argument("--near-margin", type=float, default=1.0)
@@ -229,15 +262,30 @@ def main():
     p.add_argument("--max-displacement-cap", type=float, default=3.0)
     p.add_argument("--displacement-growth", type=float, default=1.5)
     p.add_argument("--no-rotate", action="store_true")
-    p.add_argument("--cap-prefix", default="C,R")
+    # 'C,R,FB' -- #252 added ferrite beads, and this front kept 'C,R'. Unlike
+    # the fanout tab's unreachable fallback (#742), THIS one is live: the
+    # animator was visualising a run that moves no ferrite beads while the CLI
+    # run it depicts moves them.
+    p.add_argument("--cap-prefix", default="C,R,FB")
     p.add_argument("--lock", nargs="+", default=None, metavar="REF")
     p.add_argument("--max-passes", type=int, default=30)
+    from placement.cli_gates import add_intent_arg, load_intent_or_exit
+    add_intent_arg(p, summary=(
+        "Its decap limits and declared rotations are held while caps move, "
+        "exactly as place_fanout_clearance.py --intent holds them (#1067, "
+        "#1122). The GIF "
+        "records the gated pass; when the run keeps the pass without the "
+        "gate instead (its `Decap:` line says so), the GIF is not of the "
+        "result kept."))
     # animation controls
     p.add_argument("--size", type=int, default=900, help="GIF size in px")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--sub-frames", type=int, default=14,
                    help="Interpolated frames per cap move (smoothness)")
     args = p.parse_args()
+    intent, _rc = load_intent_or_exit(args)
+    if _rc:
+        return _rc
 
     if args.output_file is None:
         base, _ = os.path.splitext(args.input_file)
@@ -245,11 +293,22 @@ def main():
 
     print(f"Loading {args.input_file}...")
     pcb_data = parse_kicad_pcb(args.input_file)
+    if intent is not None:
+        # #1122: a part two blocks declare at different angles is refused
+        # before anything moves, as place_fanout_clearance refuses it.
+        from placement import floorplan as _fp1122
+        from placement.fanout_clearance import declared_cap_rotations
+        try:
+            declared_cap_rotations(intent, pcb_data)
+        except _fp1122.IntentError as exc:
+            print(f"cannot use intent {args.intent}: {exc}", file=sys.stderr)
+            return 2
 
     rec = _Recorder()
     repair_fanout_clearance(
         pcb_data, pcb_file=args.input_file,
-        clearance=args.clearance, grid_step=args.grid_step,
+        clearance=args.clearance, netclass_ceiling=args.clearance,
+        grid_step=args.grid_step,
         board_edge_clearance=args.board_edge_clearance,
         near_margin=args.near_margin, capture_radius=args.capture_radius,
         default_via_size=args.default_via_size, step=args.step,
@@ -258,14 +317,14 @@ def main():
         displacement_growth=args.displacement_growth,
         allow_rotations=not args.no_rotate, cap_prefix=args.cap_prefix,
         lock_refs=args.lock, max_passes=args.max_passes,
-        on_move=rec,
+        on_move=rec, intent=intent,
     )
 
     if not rec.frames or len(rec.frames) < 2:
         print("No cap moves were recorded -- nothing to animate.")
         return 1
     render_gif(rec, args.output_file, size=args.size, fps=args.fps,
-               sub_frames=args.sub_frames)
+               sub_frames=args.sub_frames, pcb=pcb_data)
     return 0
 
 

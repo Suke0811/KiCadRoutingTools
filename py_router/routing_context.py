@@ -6,9 +6,11 @@ like building obstacle maps and recording route results.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import List, Set, Dict, Optional, Tuple, TYPE_CHECKING
 import math
 import numpy as np
+import env_knobs
 from routing_config import GridCoord, GridRouteConfig
 from obstacle_map import (
     add_net_stubs_as_obstacles, add_net_vias_as_obstacles, add_net_pads_as_obstacles,
@@ -56,8 +58,17 @@ def _add_free_via_positions(obstacles, pcb_data, net_ids: List[int], config):
         obstacles.add_free_vias_batch(free_via_positions)
 
 
-def filter_ripped_ghosts(ghost_dict, config: GridRouteConfig, routed_net_ids=None):
+def filter_ripped_ghosts(ghost_dict, config: GridRouteConfig, routed_net_ids=None,
+                         own_net_ids=()):
     """C1 filter for ripped-route ghost dicts (layer costs OR via positions).
+
+    A ghost RESERVES a ripped net's former corridor for its reroute (the
+    feature's own statement, 1841cf9c: "encourages the current route to avoid
+    that area, increasing the chance the ripped net can be successfully
+    re-routed later"). So the net(s) being routed (`own_net_ids`) never pay
+    their own ghost: charging a victim's reroute for the corridor reserved for
+    it pushed it OFF that corridor, the opposite of the reservation, and no
+    builder excluded it until now.
 
     Nets that have ROUTED again since being ripped are skipped (soft-knobs
     review C1): once the net has real copper down, the reserved corridor is
@@ -70,9 +81,103 @@ def filter_ripped_ghosts(ghost_dict, config: GridRouteConfig, routed_net_ids=Non
     """
     if not ghost_dict or config.ripped_route_avoidance_cost <= 0:
         return {}
-    done = set(routed_net_ids or ())
+    done = set(routed_net_ids or ()) | set(own_net_ids or ())
     return {nid: v for nid, v in ghost_dict.items()
             if nid not in done and v is not None and len(v) > 0}
+
+
+def _prices(rows) -> bool:
+    """A cache entry that puts at least one cost row on the map."""
+    return rows is not None and len(rows) > 0
+
+
+# (id of the run's cache, the keys a derived view drops) -> (that cache, the
+# view last handed out). See _per_net_cost_sources.
+_DERIVED_SOURCES: "OrderedDict[tuple, tuple]" = OrderedDict()
+_DERIVED_SOURCES_MAX = 64
+
+
+def _per_net_cost_sources(track_proximity_cache, net_ids, sibs=()):
+    """The track_proximity_cache entries the net(s) being routed are priced
+    with: all of them but their river siblings' corridors (#658), their own
+    pours' plane-fragility rows (a same-net track joins its plane, it cannot
+    cut it) and their own track-proximity entry (a multipoint net's Phase 3
+    taps were pushed off its own main route).
+
+    The merge memo is keyed on this dict's identity, so a view equal to the
+    one handed out last time for the same drop (same keys, same arrays) is
+    THAT object again: a fresh dict per prepare would never hit the memo, and
+    each miss would pin another stacked copy of every source. The same dict
+    as the cache when nothing is dropped."""
+    from plane_fragility import without_own_fragility
+    cache = without_own_fragility(track_proximity_cache, net_ids)
+    # Only entries that price something: at the default track proximity cost
+    # 0 every routed net holds an EMPTY array, and dropping it would build a
+    # new dict (a memo miss and one more pinned stack) for nothing.
+    drop = {n for n in set(sibs) | set(net_ids) if _prices(cache.get(n))}
+    if drop:
+        cache = {k: v for k, v in cache.items() if k not in drop}
+    if cache is track_proximity_cache:
+        return cache
+    key = (id(track_proximity_cache),
+           tuple(sorted(repr(k) for k in track_proximity_cache if k not in cache)))
+    prev = _DERIVED_SOURCES.get(key)
+    if (prev is not None and prev[0] is track_proximity_cache
+            and prev[1].keys() == cache.keys()
+            and all(prev[1][k] is v for k, v in cache.items())):
+        _DERIVED_SOURCES.move_to_end(key)
+        return prev[1]
+    # The entry holds the cache, so its id cannot be reused while it is live.
+    _DERIVED_SOURCES[key] = (track_proximity_cache, cache)
+    while len(_DERIVED_SOURCES) > _DERIVED_SOURCES_MAX:
+        _DERIVED_SOURCES.popitem(last=False)
+    return cache
+
+
+def _stub_proximity_source_ids(config, pcb_data, all_unrouted_net_ids,
+                               routed_net_ids, exclude):
+    """Nets whose stub free ends and unescaped chip pads repel the net(s)
+    being routed (`exclude`).
+
+    Every unrouted net, as before, plus two the batch-start list misses:
+    - a multipoint net whose Phase 1 main route is in but whose taps Phase 3
+      has not routed yet -- it joins routed_net_ids after Phase 1, which used
+      to strip its unconnected tap pads of escape protection for the rest of
+      Phase 1 and all of Phase 3 (`config._pending_multipoint`, the run's
+      pending dict, less `config._multipoint_taps_done`: the pending dict
+      keeps a net after its taps are done, because the Phase 3 reroute of a
+      ripped net reads it);
+    - a pre-existing net ripped this run and not yet back
+      (`pcb_data._preexisting_rips`): its pads are bare again, but it was
+      routed when the list was made."""
+    routed = set(routed_net_ids)
+    done = getattr(config, '_multipoint_taps_done', None) or ()
+    pending = {n for n in (getattr(config, '_pending_multipoint', None) or {})
+               if n not in done}
+    ripped = getattr(pcb_data, '_preexisting_rips', None) or {}
+    ids = list(all_unrouted_net_ids)
+    if ripped:
+        listed = set(ids)
+        ids += [n for n in ripped if n not in listed]
+    return [n for n in ids
+            if n not in exclude and (n not in routed or n in pending)]
+
+
+# Run state a batch hangs on its config for the builders to read.
+# dataclasses.replace() copies only the dataclass fields, so a clone routing
+# through a builder carries these over (carry_run_state).
+_RUN_STATE_ATTRS = ('_pending_multipoint', '_multipoint_taps_done',
+                    '_fragility_field')
+
+
+def carry_run_state(src, dst):
+    """`dst` (a dataclasses.replace clone of `src` at the same grid) with the
+    run state `src` carries: the pending multipoint taps the stub-proximity
+    sources read and the live plane-fragility field its commits refresh."""
+    for a in _RUN_STATE_ATTRS:
+        if hasattr(src, a):
+            setattr(dst, a, getattr(src, a))
+    return dst
 
 
 def build_diff_pair_obstacles(
@@ -142,15 +247,15 @@ def build_diff_pair_obstacles(
             add_net_pads_as_obstacles(obstacles, pcb_data, other_net_id, config, extra_clearance)
 
     # Add stub proximity costs (includes chip pads as pseudo-stubs)
-    stub_proximity_net_ids = [nid for nid in all_unrouted_net_ids
-                               if nid != p_net_id and nid != n_net_id
-                               and nid not in routed_net_ids]
+    stub_proximity_net_ids = _stub_proximity_source_ids(
+        config, pcb_data, all_unrouted_net_ids, routed_net_ids,
+        {p_net_id, n_net_id})
     unrouted_stubs = get_stub_endpoints(pcb_data, stub_proximity_net_ids)
     chip_pads = get_chip_pad_positions(pcb_data, stub_proximity_net_ids)
     all_stubs = unrouted_stubs + chip_pads
     if config.verbose:
         print(f"    stub proximity: {len(stub_proximity_net_ids)} nets, {len(unrouted_stubs)} stubs, {len(chip_pads)} chip pads")
-    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids)
+    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids, (p_net_id, n_net_id))
     _stub_surplus = apply_stub_proximity(obstacles, pcb_data, stub_proximity_net_ids,
                                          all_stubs, config,
                                          ghost_via_groups=_ghost_vias,
@@ -160,10 +265,18 @@ def build_diff_pair_obstacles(
     # stub surplus, one composition pass). Congestion v2 stays out of the
     # diff-pair path (it never stamped here -- its owner exemption is
     # single-net).
+    from history_congestion import add_history_source
+    from keep_away import add_keepaway_source
     merge_track_proximity_costs(
-        obstacles, track_proximity_cache,
-        ghost_costs={**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
-                     **(_stub_surplus or {})},
+        obstacles, _per_net_cost_sources(track_proximity_cache,
+                                         (p_net_id, n_net_id)),
+        ghost_costs=add_keepaway_source(add_history_source(
+            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids, (p_net_id, n_net_id)),
+             **(_stub_surplus or {})}, config),
+            config, pcb_data, (p_net_id, n_net_id),
+            # No extra clearance = build_diff_pair_leg_obstacles: the hybrid
+            # pair's one-track legs, not the coupled centreline.
+            single_track=not extra_clearance),
         config=config)
 
     # Add cross-layer track data
@@ -257,6 +370,42 @@ def build_single_ended_obstacles(
     """
     obstacles = base_obstacles.clone_fresh()
 
+    # #908: the own-pad lift has to ride THIS path too, or a footprint's own
+    # copper seals the pad it was drawn around on every net routed through
+    # here. `prepare_obstacles_inplace` lifts it for the map it mutates, and
+    # `build_base_obstacle_map` BAKES it when the base was built for a single
+    # net -- but this builder clones a base built for the whole batch and was
+    # covered by neither, so the lift simply never happened.
+    #
+    # Measured on cparti_fpga's net ties: with the lift correct but absent
+    # here, HF_Bn_50Ohm routed 3 of 4 pads and failed at the tie pad; the same
+    # board with the tie copper physically removed routed 4 of 4. The lift was
+    # being computed, recorded and then not applied on the map the net was
+    # actually routed on.
+    #
+    # No restore, unlike prepare_obstacles_inplace: this is a `clone_fresh()`
+    # built for ONE net and discarded after it, so there is no shared map to
+    # put the rows back into.
+    #
+    # Unconditional, because the base this clones NEVER lifts (#977): the base
+    # build records the rows and applies none of them, so this clone carries
+    # every own-pad row blocked and is the only thing that can take them off.
+    # It used to be guarded -- by `pcb_data._graphic_own_pad_lift_baked`, a
+    # marker shared by every build on that board, which a NESTED single-net
+    # build (`net_rescue._pristine_rescue_map` laps the run's own pcb_data
+    # into its build) sets to its own net. This clone would then skip the lift
+    # for a net its base never baked and hand the router a sealed pad, or find
+    # the marker cleared and lift rows a second time, taking a cell two
+    # obstacles blocked from 2 -> 0 on the very map the net routes on.
+    _op_lift = (getattr(pcb_data, '_graphic_own_pad_lift', None)
+                or {}).get(net_id)
+    _op_via = (getattr(pcb_data, '_graphic_own_pad_via_lift', None)
+               or {}).get(net_id)
+    if _op_lift is not None and len(_op_lift):
+        obstacles.remove_blocked_cell_spans_batch(_op_lift)
+    if _op_via is not None and len(_op_via):
+        obstacles.remove_blocked_via_spans_batch(_op_via)
+
     # Add previously routed nets as obstacles
     # Note: Cannot use cache for routed nets because their segments have changed
     for routed_id in routed_net_ids:
@@ -279,12 +428,25 @@ def build_single_ended_obstacles(
             add_net_pads_as_obstacles(obstacles, pcb_data, other_net_id, config)
 
     # Add stub proximity costs (includes chip pads as pseudo-stubs)
-    stub_proximity_net_ids = [nid for nid in all_unrouted_net_ids
-                               if nid != net_id and nid not in routed_net_ids]
+    stub_proximity_net_ids = _stub_proximity_source_ids(
+        config, pcb_data, all_unrouted_net_ids, routed_net_ids, {net_id})
+    # #658 river: same-bus siblings exert NO soft proximity on a member --
+    # hard clearance stays (obstacle stamps), so members can pack to the
+    # legal minimum pitch instead of being repelled from the hug zone the
+    # follow-the-leader lane points into (measured: hug 0% with the
+    # repulsion active -- the proximity field outbids any attraction dose).
+    from global_plan import river_sibling_ids
+    _sibs = river_sibling_ids(config, net_id)
+    import os as _ros
+    if _ros.environ.get('KICAD_RIVER_PROX_DEBUG') and _sibs:
+        _in_cache = sum(1 for k in track_proximity_cache if k in _sibs)
+        print(f"    [river-prox] net {net_id}: {len(_sibs)} sibs, "
+              f"cache={len(track_proximity_cache)} entries "
+              f"({_in_cache} sib entries filtered)")
     unrouted_stubs = get_stub_endpoints(pcb_data, stub_proximity_net_ids)
     chip_pads = get_chip_pad_positions(pcb_data, stub_proximity_net_ids)
     all_stubs = unrouted_stubs + chip_pads
-    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids)
+    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids, (net_id,))
     _stub_surplus = apply_stub_proximity(obstacles, pcb_data, stub_proximity_net_ids,
                                          all_stubs, config,
                                          ghost_via_groups=_ghost_vias,
@@ -293,12 +455,18 @@ def build_single_ended_obstacles(
     # Add track proximity costs (+ ripped-corridor layer ghosts + layer-aware
     # stub surplus, one composition pass)
     from congestion_field import congestion2_rows
+    from history_congestion import add_history_source
+    from global_plan import add_plan_source
+    from keep_away import add_keepaway_source
     _c2 = congestion2_rows(config, net_id, routed_net_ids)
     merge_track_proximity_costs(
-        obstacles, track_proximity_cache,
-        ghost_costs={**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
-                     **(_stub_surplus or {}),
-                     **({('congestion2',): _c2} if _c2 is not None else {})},
+        obstacles,
+        _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),
+        ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
+            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids, (net_id,)),
+             **(_stub_surplus or {}),
+             **({('congestion2',): _c2} if _c2 is not None else {})}, config),
+            config, net_id, routed_net_ids), config, pcb_data, net_id),
         config=config)
     # Congestion v2 (#424): demand/capacity field, owner-exempt (no-op
     # unless KICAD_CONGESTION2_COST > 0 and the field was built).
@@ -329,7 +497,9 @@ def build_incremental_obstacles(
     routed_net_ids: List[int],
     track_proximity_cache: Dict,
     layer_map: Dict,
-    net_obstacles_cache: Dict[int, NetObstacleData]
+    net_obstacles_cache: Dict[int, NetObstacleData],
+    ripped_route_layer_costs: Dict[int, np.ndarray] = None,
+    ripped_route_via_positions: Dict[int, List[Tuple[int, int]]] = None
 ):
     """
     Build obstacle map for single-ended routing using incremental approach.
@@ -363,19 +533,54 @@ def build_incremental_obstacles(
         remove_net_obstacles_from_cache(obstacles, net_obstacles_cache[net_id])
 
     # Add stub proximity costs (includes chip pads as pseudo-stubs)
-    stub_proximity_net_ids = [nid for nid in all_unrouted_net_ids
-                               if nid != net_id and nid not in routed_net_ids]
+    stub_proximity_net_ids = _stub_proximity_source_ids(
+        config, pcb_data, all_unrouted_net_ids, routed_net_ids, {net_id})
+    # #658 river: same-bus siblings exert NO soft proximity (hard clearance
+    # stays) -- this is the FAST main-loop builder, the path that actually
+    # prices the hug zone (measured: the exemption in the slow builder was
+    # unreachable; only reconcile sub-runs go through it).
+    from global_plan import river_sibling_ids
+    _sibs = river_sibling_ids(config, net_id)
+    if _sibs:
+        import os as _ros
+        if _ros.environ.get('KICAD_RIVER_PROX_DEBUG'):
+            _hit = sum(1 for k in track_proximity_cache if k in _sibs)
+            print(f"    [river-prox] net {net_id}: {len(_sibs)} sibs, "
+                  f"{_hit} sib cache entr(ies) exempted")
     unrouted_stubs = get_stub_endpoints(pcb_data, stub_proximity_net_ids)
     chip_pads = get_chip_pad_positions(pcb_data, stub_proximity_net_ids)
     all_stubs = unrouted_stubs + chip_pads
+    # Ripped-route ghosts and congestion v2, as the main pass prices them:
+    # Phase 3 used to route taps and rip victims blind to the corridors of
+    # pending victims, and differently depending on whether length matching
+    # sent it to the slow builder (which has them).
+    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config,
+                                       routed_net_ids, (net_id,))
     _stub_surplus = apply_stub_proximity(obstacles, pcb_data,
                                          stub_proximity_net_ids, all_stubs,
-                                         config, layer_map=layer_map)
+                                         config, ghost_via_groups=_ghost_vias,
+                                         layer_map=layer_map)
 
-    # Add track proximity costs (+ layer-aware stub surplus)
-    merge_track_proximity_costs(obstacles, track_proximity_cache,
-                                ghost_costs=_stub_surplus or None,
-                                config=config)
+    # Add track proximity costs (+ ripped-corridor layer ghosts + layer-aware
+    # stub surplus + congestion v2, #590 history, one composition pass)
+    from congestion_field import congestion2_rows
+    from history_congestion import add_history_source
+    from global_plan import add_plan_source
+    from keep_away import add_keepaway_source
+    # Phase 3 hands this builder routed_net_ids WITH net_id in it (its main
+    # route is in); congestion2_rows already takes the owner out of its own
+    # demand, so it gets the list without it, as the slow builder does.
+    _c2 = congestion2_rows(config, net_id,
+                           [r for r in routed_net_ids if r != net_id])
+    merge_track_proximity_costs(
+        obstacles,
+        _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),
+        ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
+            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids, (net_id,)),
+             **(_stub_surplus or {}),
+             **({('congestion2',): _c2} if _c2 is not None else {})}, config),
+            config, net_id, routed_net_ids), config, pcb_data, net_id) or None,
+        config=config)
 
     # Add cross-layer track data
     add_cross_layer_tracks(obstacles, pcb_data, config, layer_map,
@@ -437,6 +642,10 @@ def prepare_obstacles_inplace(
     working_obstacles.clear_cross_layer_tracks()
     working_obstacles.clear_free_vias()
     working_obstacles.clear_source_target_cells()  # Clear source/target overrides from previous route
+    # Terminal escape rects (route_net_with_obstacles, the #189 via unblock)
+    # are per route too; left on the map they opened BGA-zone cells for every
+    # later net, and clone_fresh() copied them into Phase 3's maps.
+    working_obstacles.clear_allowed_cells()
 
     # Remove current net's obstacles so we can route through our own stubs
     if net_id in net_obstacles_cache:
@@ -449,21 +658,83 @@ def prepare_obstacles_inplace(
     # sibling routes and third nets stays intact; pads are never ripped and
     # the partner trunk's base stamps are only mutated by this balanced
     # remove / restore re-add pair. Via blocking is not recorded, not lifted.
+    # #908: a footprint's own copper must not seal the pad it was drawn
+    # around. The base map stamps it for everyone (it IS foreign copper to
+    # every other net); here the rows it contributed are lifted for the ONE
+    # net whose pad it touches, and restore_obstacles_inplace puts them back.
+    # Recorded rows, not recomputed geometry, so the remove/re-add is exactly
+    # balanced and cannot desync a refcount.
+    # Unconditional: no obstacle map arrives here with any net's own-pad rows
+    # already off, because the base build records them and lifts none (#977).
+    _op_lift = (getattr(pcb_data, '_graphic_own_pad_lift', None)
+                or {}).get(net_id)
+    if _op_lift is not None and len(_op_lift):
+        working_obstacles.remove_blocked_cell_spans_batch(_op_lift)
+        _lift_record(_OWNPAD_LIFTED, working_obstacles, net_id, _op_lift)
+    # #908 VIA half. Stamped for every net and, until now, lifted for none --
+    # so a footprint's own copper kept a via keep-out over the pad it was drawn
+    # around and a pad needing a via stayed unreachable however clear the track
+    # layer was. Same balanced remove/restore.
+    _op_via = (getattr(pcb_data, '_graphic_own_pad_via_lift', None)
+               or {}).get(net_id)
+    if _op_via is not None and len(_op_via):
+        working_obstacles.remove_blocked_via_spans_batch(_op_via)
+        _lift_record(_OWNPAD_VIA_LIFTED, working_obstacles, net_id, _op_via)
+
     _tie_lift = getattr(pcb_data, '_net_tie_lift', None)
     if _tie_lift:
         _lifted = [a for a in _tie_lift.get(net_id, []) if len(a)]
         if _lifted:
             for _arr in _lifted:
                 working_obstacles.remove_blocked_cells_batch(_arr)
-            _TIE_LIFTED[(id(working_obstacles), net_id)] = _lifted
+            _lift_record(_TIE_LIFTED, working_obstacles, net_id, _lifted)
+            # #667: the lifted band is legal CELL-BY-CELL but its copper
+            # can be illegal as a SEGMENT (KiCad's IsNetTieExclusion
+            # waives a (track, partner-pad) pair only when the contact
+            # lies on the OWN pad -- cynthion shipped 3 router-introduced
+            # tie violations per pass through this exact band). Price the
+            # band (radius 1: the cells themselves, no halo) so the A*
+            # prefers the clean own-axis approach the human uses; the
+            # band stays available as a last resort, so connectivity is
+            # never lost (the reject-gate attempt stranded 3 sense nets).
+            # clear_stub_proximity() at prepare/finish brackets this like
+            # every other proximity cost -- no cross-net leak.
+            _tie_cost = env_knobs.TIE_BAND_COST
+            if _tie_cost > 0:
+                # Differential pricing: the OWN-PAD approach (KiCad-waived
+                # contact) stays free; only the off-pad corridor cells are
+                # priced. Uniform pricing over the whole lifted band was
+                # measured INERT on cynthion (no gradient = no steering).
+                _price667 = (getattr(pcb_data, '_net_tie_price', None)
+                             or {}).get(net_id)
+                if _price667 is None:
+                    _pos667 = np.unique(np.concatenate(
+                        [np.asarray(_a)[:, :2] for _a in _lifted]), axis=0)
+                    _price667 = [(int(gx), int(gy)) for gx, gy in _pos667]
+                if _price667:
+                    working_obstacles.add_stub_proximity_costs_batch(
+                        [(int(gx), int(gy)) for gx, gy in _price667], 1,
+                        config.cell_cost(_tie_cost))
 
     # Add stub proximity costs (includes chip pads as pseudo-stubs)
-    stub_proximity_net_ids = [nid for nid in all_unrouted_net_ids
-                               if nid != net_id and nid not in routed_net_ids]
+    stub_proximity_net_ids = _stub_proximity_source_ids(
+        config, pcb_data, all_unrouted_net_ids, routed_net_ids, {net_id})
+    # #658 river: same-bus siblings exert NO soft proximity on a member
+    # (hard clearance stays). THIS is the hot in-place path the main loop
+    # actually uses -- the slow/incremental builders only serve fallbacks
+    # and reconcile sub-runs.
+    from global_plan import river_sibling_ids
+    _sibs = river_sibling_ids(config, net_id)
+    if _sibs:
+        import os as _ros
+        if _ros.environ.get('KICAD_RIVER_PROX_DEBUG'):
+            _hit = sum(1 for k in track_proximity_cache if k in _sibs)
+            print(f"    [river-prox] net {net_id}: {len(_sibs)} sibs, "
+                  f"{_hit} sib cache entr(ies) exempted")
     unrouted_stubs = get_stub_endpoints(pcb_data, stub_proximity_net_ids)
     chip_pads = get_chip_pad_positions(pcb_data, stub_proximity_net_ids)
     all_stubs = unrouted_stubs + chip_pads
-    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids)
+    _ghost_vias = filter_ripped_ghosts(ripped_route_via_positions, config, routed_net_ids, (net_id,))
     _stub_surplus = apply_stub_proximity(working_obstacles, pcb_data,
                                          stub_proximity_net_ids, all_stubs,
                                          config, ghost_via_groups=_ghost_vias,
@@ -472,12 +743,18 @@ def prepare_obstacles_inplace(
     # Add track proximity costs (+ ripped-corridor layer ghosts + layer-aware
     # stub surplus, one composition pass)
     from congestion_field import congestion2_rows
+    from history_congestion import add_history_source
+    from global_plan import add_plan_source
+    from keep_away import add_keepaway_source
     _c2 = congestion2_rows(config, net_id, routed_net_ids)
     merge_track_proximity_costs(
-        working_obstacles, track_proximity_cache,
-        ghost_costs={**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids),
-                     **(_stub_surplus or {}),
-                     **({('congestion2',): _c2} if _c2 is not None else {})},
+        working_obstacles,
+        _per_net_cost_sources(track_proximity_cache, (net_id,), _sibs),
+        ghost_costs=add_keepaway_source(add_plan_source(add_history_source(
+            {**filter_ripped_ghosts(ripped_route_layer_costs, config, routed_net_ids, (net_id,)),
+             **(_stub_surplus or {}),
+             **({('congestion2',): _c2} if _c2 is not None else {})}, config),
+            config, net_id, routed_net_ids), config, pcb_data, net_id),
         config=config)
 
 
@@ -489,46 +766,37 @@ def prepare_obstacles_inplace(
     coord = GridCoord(config.grid_step)
     same_net_via_cells = []
 
-    # Via-via clearance
-    via_via_expansion_grid = max(1.0, (config.via_size + config.clearance) * coord.inv_step)
-    for via in pcb_data.vias:
-        if via.net_id != net_id:
-            continue
-        gx, gy = coord.to_grid(via.x, via.y)
-        # Grow by the via's sub-grid offset so an off-grid via-in-pad keeps a NEW
-        # same-net via the full clearance from its TRUE centre (issue #70; mirror of
-        # add_same_net_via_clearance and the via-obstacle rasterizers).
-        off_cells = math.hypot(via.x - gx * coord.grid_step,
-                               via.y - gy * coord.grid_step) / coord.grid_step
-        radius = via_via_expansion_grid + off_cells
-        rng = int(math.ceil(radius))
-        radius_sq = radius * radius
-        for ex in range(-rng, rng + 1):
-            for ey in range(-rng, rng + 1):
-                if ex*ex + ey*ey <= radius_sq:
-                    same_net_via_cells.append((gx + ex, gy + ey))
+    # Same-net via spacing: the larger of the copper via-via spacing and the
+    # drill hole-to-hole minimum (#1070), from each via's TRUE centre (#70).
+    # The one ring add_same_net_via_clearance stamps -- shared, so the in-place
+    # path and the clone builders cannot drift apart again.
+    from obstacle_map import same_net_via_ring_cells, same_net_new_via_drill
+    _ring = same_net_via_ring_cells(pcb_data.vias, net_id, config, coord)
+    if len(_ring):
+        same_net_via_cells.extend(map(tuple, _ring.tolist()))
 
     # Pad drill hole clearance
     # Skip the pad center - the router can use existing through-holes for layer transitions
     if config.hole_to_hole_clearance > 0:
+        _new_drill = same_net_new_via_drill(config, net_id)
         for pad in pcb_data.pads_by_net.get(net_id, []):
             if pad.drill and pad.drill > 0:
                 # Include pad drill radius in clearance calculation. Float radius +
                 # ceil bound (not the flooring to_grid_dist) so this circular hole-to-
                 # hole keep-out reserves the full clearance instead of ~1 cell short
                 # (same grid-quantization fix as the via-via keep-out above / #154).
-                required_dist = pad.drill / 2 + config.via_drill / 2 + config.hole_to_hole_clearance
+                required_dist = pad.drill / 2 + _new_drill / 2 + config.hole_to_hole_clearance
                 radius = required_dist * coord.inv_step
                 expand = int(math.ceil(radius))
                 radius_sq = radius * radius
                 gx, gy = coord.to_grid(pad.global_x, pad.global_y)
-                for ex in range(-expand, expand + 1):
-                    for ey in range(-expand, expand + 1):
-                        if ex*ex + ey*ey <= radius_sq:
-                            # Skip the pad center - allow layer transitions at through-holes
-                            if ex == 0 and ey == 0:
-                                continue
-                            same_net_via_cells.append((gx + ex, gy + ey))
+                # Sweep item 3 (#625): integer-mask disc; the pad centre stays
+                # landable (layer transitions at through-holes), identical set.
+                _ax = np.arange(-expand, expand + 1, dtype=np.int64)
+                _EX, _EY = np.meshgrid(_ax, _ax, indexing='ij')
+                _m = (_EX * _EX + _EY * _EY <= radius_sq) & ~((_EX == 0) & (_EY == 0))
+                same_net_via_cells.extend(
+                    zip((_EX[_m] + gx).tolist(), (_EY[_m] + gy).tolist()))
 
     # #581: same-net pad via keep-out. When the board carries an active
     # same_net_pad_clearance (flag / persisted .kicad_pro record), the CURRENT
@@ -558,6 +826,25 @@ def prepare_obstacles_inplace(
                 working_obstacles.add_blocked_vias_small_batch(same_net_via_arr)
         except (AttributeError, ImportError):
             pass
+        # #530 per-net rungs, the same mirror (#1070): a net searched at its
+        # own via class reads only its rung's map, so it saw none of these.
+        # POPULATED rungs only (see populated_via_rungs). The rungs stamped
+        # are RECORDED, and the restore removes from exactly those: a rung
+        # populated between prepare and restore must not lose a count it
+        # never received.
+        try:
+            from obstacle_map import _per_net_rungs, populated_via_rungs
+            _pn = set(_per_net_rungs(working_obstacles))
+            _rungs = tuple(r for r in populated_via_rungs(working_obstacles)
+                           if r in _pn)
+            if _rungs:
+                for _r in _rungs:
+                    working_obstacles.add_blocked_vias_rung_batch(
+                        _r, same_net_via_arr)
+                _lift_record(_SAME_NET_RUNG_MIRROR, working_obstacles, net_id,
+                             (_rungs, same_net_via_arr))
+        except (AttributeError, ImportError):
+            pass
     else:
         same_net_via_arr = np.empty((0, 2), dtype=np.int32)
 
@@ -567,11 +854,40 @@ def prepare_obstacles_inplace(
     return all_stubs, same_net_via_arr
 
 
-# Net-tie corridor stamps lifted by prepare_obstacles_inplace, re-added by
-# restore_obstacles_inplace. Keyed by (map id, net id): prepare/restore are
-# strictly paired per net route on one thread, so entries live only across
-# that window; keying by map id keeps cloned maps independent.
-_TIE_LIFTED: Dict[tuple, list] = {}
+# Rows lifted by prepare_obstacles_inplace / ensure_own_pad_lift and re-added
+# by their matching restore/release. Keyed by (map id, net id): the lift and
+# its undo are strictly paired per net route on one thread, so entries live
+# only across that window, and keying by map keeps cloned maps independent.
+#
+# Each value PINS the map (#977). `id()` names an object only while that object
+# is alive; a freed map's address is handed straight back to the next map
+# (measured on macOS: twenty maps built and dropped in a row all landed on ONE
+# address), so an entry that outlives its map -- a lift whose undo an exception
+# skipped -- would answer for whatever map lands there next and suppress that
+# map's own lift. Holding the map in the value makes its address unavailable
+# for as long as the entry exists, so a key cannot come to mean a different
+# map. It pins nothing beyond the lift's own bracket, where the caller is
+# holding the map anyway. All three registries, because they share the key:
+# an id() that lies lies for every table built on it.
+_TIE_LIFTED: Dict[tuple, tuple] = {}
+#: #908 own-pad lift, same lifetime, keying and pin as _TIE_LIFTED.
+_OWNPAD_LIFTED: Dict[tuple, tuple] = {}
+_OWNPAD_VIA_LIFTED: Dict[tuple, tuple] = {}
+#: #1070 same-net via keep-outs mirrored into #530 per-net rungs by prepare:
+#: (rungs stamped, cells), removed by the matching restore. Same lifetime,
+#: keying and pin as _TIE_LIFTED.
+_SAME_NET_RUNG_MIRROR: Dict[tuple, tuple] = {}
+
+
+def _lift_record(registry, obstacles, net_id, rows):
+    """Record `rows` as lifted from `obstacles` for `net_id`, pinning the map."""
+    registry[(id(obstacles), net_id)] = (obstacles, rows)
+
+
+def _lift_take(registry, obstacles, net_id):
+    """Pop and return the rows recorded for (`obstacles`, `net_id`), else None."""
+    entry = registry.pop((id(obstacles), net_id), None)
+    return None if entry is None else entry[1]
 
 
 def restore_obstacles_inplace(
@@ -598,6 +914,7 @@ def restore_obstacles_inplace(
     working_obstacles.clear_layer_proximity()
     working_obstacles.clear_cross_layer_tracks()
     working_obstacles.clear_free_vias()
+    working_obstacles.clear_allowed_cells()
 
     # Remove same-net via clearance cells
     if len(same_net_via_cells) > 0:
@@ -609,17 +926,80 @@ def restore_obstacles_inplace(
                     same_net_via_cells)
         except (AttributeError, ImportError):
             pass
+    # #1070: the per-net rung mirror, from exactly the rungs prepare stamped.
+    _mir = _lift_take(_SAME_NET_RUNG_MIRROR, working_obstacles, net_id)
+    if _mir is not None:
+        _rungs, _cells = _mir
+        for _r in _rungs:
+            working_obstacles.remove_blocked_vias_rung_batch(_r, _cells)
 
     # Re-add the net-tie corridor stamps lifted by prepare (see there).
-    _lifted = _TIE_LIFTED.pop((id(working_obstacles), net_id), None)
+    _lifted = _lift_take(_TIE_LIFTED, working_obstacles, net_id)
     if _lifted:
         for _arr in _lifted:
             working_obstacles.add_blocked_cells_batch(_arr)
+
+    # #908: and the own-pad graphic lift, the same balanced way.
+    _op = _lift_take(_OWNPAD_LIFTED, working_obstacles, net_id)
+    if _op is not None and len(_op):
+        working_obstacles.add_blocked_cell_spans_batch(_op)
+    _opv = _lift_take(_OWNPAD_VIA_LIFTED, working_obstacles, net_id)
+    if _opv is not None and len(_opv):
+        working_obstacles.add_blocked_via_spans_batch(_opv)
 
     # Restore current net's obstacles (from cache - original stubs)
     # Note: If routing succeeded, caller should update cache first with new route data
     if net_id in net_obstacles_cache:
         add_net_obstacles_from_cache(working_obstacles, net_obstacles_cache[net_id])
+
+
+
+def ensure_own_pad_lift(obstacles, pcb_data, net_id):
+    """Apply the #908 own-pad lift to `obstacles` if it is not there already.
+
+    prepare_obstacles_inplace lifts the map IT mutates, and the single-net base
+    build bakes the map IT returns -- but a net can be routed on a map that had
+    neither: multipoint Phase 3 receives a map built elsewhere, and measured on
+    cparti_fpga its view of a net-tie pad was sealed (the approach solid on
+    F.Cu) while the same board with the tie copper removed had it open. The
+    lift rows were sitting on pcb_data, unapplied, the whole time.
+
+    IDEMPOTENT, because double-lifting is the hazard #908 already paid for: a
+    cell two obstacles blocked would go 2 -> 0 instead of 2 -> 1 and the
+    restore would hand it back at 1, leaving the map describing copper that is
+    not there. The (map, net) registry prepare already keeps is the same one
+    consulted here, so a map prepare is holding open is not lifted twice. No
+    base map is ever consulted, because none of them lift (#977).
+
+    Returns a token for `release_own_pad_lift`, or None when nothing was done.
+    """
+    key = (id(obstacles), net_id)
+    if key in _OWNPAD_LIFTED or key in _OWNPAD_VIA_LIFTED:
+        return None
+    cells = (getattr(pcb_data, '_graphic_own_pad_lift', None) or {}).get(net_id)
+    vias = (getattr(pcb_data, '_graphic_own_pad_via_lift', None) or {}).get(net_id)
+    did = False
+    if cells is not None and len(cells):
+        obstacles.remove_blocked_cell_spans_batch(cells)
+        _lift_record(_OWNPAD_LIFTED, obstacles, net_id, cells)
+        did = True
+    if vias is not None and len(vias):
+        obstacles.remove_blocked_via_spans_batch(vias)
+        _lift_record(_OWNPAD_VIA_LIFTED, obstacles, net_id, vias)
+        did = True
+    return key if did else None
+
+
+def release_own_pad_lift(obstacles, net_id, token):
+    """Undo `ensure_own_pad_lift`. Safe to call with None."""
+    if token is None:
+        return
+    cells = _lift_take(_OWNPAD_LIFTED, obstacles, net_id)
+    if cells is not None and len(cells):
+        obstacles.add_blocked_cell_spans_batch(cells)
+    vias = _lift_take(_OWNPAD_VIA_LIFTED, obstacles, net_id)
+    if vias is not None and len(vias):
+        obstacles.add_blocked_via_spans_batch(vias)
 
 
 def record_diff_pair_success(
@@ -634,7 +1014,9 @@ def record_diff_pair_success(
     routed_results: Dict,
     diff_pair_by_net_id: Dict,
     track_proximity_cache: Dict,
-    layer_map: Dict
+    layer_map: Dict,
+    working_obstacles=None,
+    net_obstacles_cache: Dict = None,
 ):
     """
     Record a successful diff pair route.
@@ -652,8 +1034,15 @@ def record_diff_pair_success(
         diff_pair_by_net_id: Dict mapping net ID to (pair_name, pair)
         track_proximity_cache: Cache of track proximity costs
         layer_map: Layer name to index mapping
+        working_obstacles / net_obstacles_cache: the run's persistent map and
+            per-net cache (#806). When given, both members' entries are
+            refreshed from the committed copper, the same contract
+            record_single_ended_success's callers keep. None = no map.
     """
     add_route_to_pcb_data(pcb_data, result, debug_lines=config.debug_lines)
+    from obstacle_cache import refresh_net_obstacles
+    refresh_net_obstacles(working_obstacles, net_obstacles_cache, pcb_data,
+                          config, (pair.p_net_id, pair.n_net_id))
 
     if pair.p_net_id in remaining_net_ids:
         remaining_net_ids.remove(pair.p_net_id)
@@ -784,7 +1173,8 @@ def restore_ripped_net(
     # (unrouted beats shorted); the bookkeeping below still runs so the net
     # is tracked either way.
     from rip_up_reroute import _saved_route_collides
-    if _saved_route_collides(ripped_saved, pcb_data, list(ripped_ids), config.clearance):
+    if _saved_route_collides(ripped_saved, pcb_data, list(ripped_ids), config.clearance,
+                             config=config):
         names = [pcb_data.nets[r].name if r in pcb_data.nets else str(r) for r in ripped_ids]
         print(f"    restore of {'/'.join(names)} would collide with copper routed "
               f"meanwhile -- leaving unrouted for reroute (#134 guard)")

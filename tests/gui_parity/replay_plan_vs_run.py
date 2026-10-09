@@ -90,7 +90,7 @@ Usage:
                         apples-to-oranges (the GUI then runs a different step
                         list than the CLI reference); use regen in that case.
     --raw-plan          skip parse_plan_result's plan augmentation (the #479
-                        late-pinch repair_planes guard the GUI appends), for a
+                        late-pinch guard the GUI appends: a final route step), for a
                         strictly like-for-like step count vs the CLI chain
     --max-steps N       run only the first N plan steps (bisecting)
     --gui-board PATH    skip the replay; compare this already-replayed board
@@ -158,10 +158,17 @@ for _p in (REPO, STRESS_TESTS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# Every versioned install, newest first by NUMERIC version (a string sort
+# puts KiCad\9.0 above KiCad\10.0).
+sys.path.insert(0, os.path.join(REPO, 'py_router'))
+from kicad_locate import path_version_key  # noqa: E402
+del sys.path[0]    # this file orders its own sys.path further down
 KICAD_PYTHONS = [
     "/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3",
     "/usr/bin/python3",
     os.path.expandvars(r"C:\\Program Files\\KiCad\\bin\\python.exe"),
+    *sorted(glob.glob(r"C:\Program Files\KiCad\*\bin\python.exe"),
+           key=path_version_key, reverse=True),
 ]
 
 
@@ -172,7 +179,12 @@ def _reexec_into_kicad():
             continue
         if subprocess.run([cand, '-c', 'import pcbnew, wx'],
                           capture_output=True).returncode == 0:
-            os.execv(cand, [cand, os.path.abspath(__file__)] + sys.argv[1:])
+            argv = [cand, os.path.abspath(__file__)] + sys.argv[1:]
+            if os.name == 'nt':
+                # os.execv re-splits argv on spaces on Windows, and the
+                # interpreter lives under "Program Files".
+                sys.exit(subprocess.run(argv).returncode)
+            os.execv(cand, argv)
     print("ERROR: no python with pcbnew+wx found (KiCad's bundled python).",
           file=sys.stderr)
     sys.exit(3)
@@ -254,7 +266,7 @@ def load_plan(info, source='saved', augment=True):
 
     `steps` are what the GUI would hold after Load...: the plan JSON put through
     the REAL parse_plan_result (which validates, inserts optimize_caps and
-    appends the #479 late-pinch repair_planes guard) unless augment=False.
+    appends the #479 late-pinch guard, a final route step) unless augment=False.
     `cli_names[i]` is the BASENAME of the CLI chain board plan step i
     corresponds to (or None when the step has no CLI counterpart). Names, not
     paths: the caller resolves them against whichever reference dir is in use,
@@ -470,9 +482,13 @@ def replay(info, steps, workdir, timeout=7200, verbose=False, snapshots=True):
         elapsed = time.time() - state['started'].get(index, time.time())
         tee.progress(f"  step {index + 1}/{len(steps)}  {status}  ({elapsed:.1f}s)")
 
+    try:
+        shown = os.path.relpath(log_path, REPO)
+    except ValueError:      # a work dir on another Windows drive than the repo
+        shown = log_path
     with tee:
         tee.progress(f"  replaying {len(steps)} step(s) "
-                     f"(engine output -> {os.path.relpath(log_path, REPO)})")
+                     f"(engine output -> {shown})")
         result = run_plan(live, steps,
                           snapshot_dir=(workdir if snapshots else None),
                           snapshot_prefix='gui_step',

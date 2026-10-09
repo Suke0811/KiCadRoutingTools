@@ -122,7 +122,8 @@ yourself:
 ```python
 generate_segment_sexpr(start, end, width, layer, net_id, net_name=None) -> str
 generate_via_sexpr(x, y, size, drill, layers, net_id,
-                   free=False, net_name=None) -> str
+                   free=False, net_name=None, tenting_attrs=None,
+                   inherit_when_unspecified=False) -> str
 generate_gr_line_sexpr(start, end, width, layer) -> str      # debug graphics
 generate_gr_text_sexpr(text, x, y, layer, size=0.5, angle=0) -> str
 generate_zone_sexpr(net_id, net_name, layer, polygon_points,
@@ -141,6 +142,166 @@ from kicad_writer import generate_segment_sexpr
 print(generate_segment_sexpr((100.0, 100.0), (105.0, 100.0),
                              0.25, 'F.Cu', 42))
 ```
+
+### Via protection (`tenting_attrs`)
+
+`tenting_attrs` is a via's own protection spec -- `Via.tenting_attrs`, the
+`(tenting ...)` / `(covering ...)` / `(plugging ...)` / `(capping ...)` /
+`(filling ...)` family, see `docs/api-kicad-parser.md`. Which value you pass
+is read together with `inherit_when_unspecified`, and the four combinations
+are not interchangeable (#489 s8, #741):
+
+| `tenting_attrs` | Emitted |
+|---|---|
+| a non-empty parsed spec | that spec, in canonical token order |
+| `None` or `{}` | **nothing** -- the via inherits the board's `(setup ...)`, in either net dialect |
+
+`inherit_when_unspecified` no longer changes the output: emitting nothing for an
+empty spec is now the behaviour in every case. It is kept because callers pass
+it and because it still records, at the call site, that a via ALREADY EXISTED.
+The old KiCad-10 fallback to front+back tenting is gone -- see below.
+
+### Why an unspecified via emits nothing
+
+Probed against pcbnew 10.0.0: a via left at `TENTING_MODE_FROM_BOARD`
+serialises with **no token**, and a token appears **only** when the via
+explicitly overrides the board -- KiCad writes one even when the overriding
+value equals the board default. So a token is a statement that this via is
+special. Stamping one on a via the tool added converts an inheriting via into
+an override, which is not a decision this tool was ever asked to make.
+
+Two rules were retired to get here:
+
+* **The hardcoded front+back tenting** on KiCad-10 output. Measured over 886
+  corpus boards, three (`nanovoltmeter_marge`, `hexberry_fpga`, `pedal_404`)
+  declare `(tenting (front no) (back no))` board-wide, and every via the tool
+  added to them came back tented -- tenting a via the designer said to leave
+  exposed, which is a fab error rather than a cosmetic one. It hid because
+  KiCad's FACTORY policy is tented front+back, so on an ordinary board the
+  stamp and the inheritance agree.
+* **`prevailing_via_protection` as the added-via default** (the #489 s8 rule).
+  Across those same 886 boards a prevailing spec never once disagreed with the
+  board's own `(setup ...)`, so it only ever wrote a redundant token -- and the
+  tool then read its OWN stamps back as "the board's convention" on the next
+  run. orangecrab_ext_pll's 136 `(tenting …)` tokens are byte-identical to
+  `generate_via_sexpr` output; hackrf_one's pristine source has **0/498** vias
+  declaring anything, its 498 tokens being KiCad 10's upgrade migration writing
+  out the factory defaults. The function remains correct and available; it is
+  simply not a default.
+
+`prevailing_via_protection(vias)` / `prevailing_via_protection_in_text(content)`
+still answer "what do this board's vias actually say", which is the right
+question if you ever need a new via to match its neighbours rather than the
+board policy. No writer calls them today.
+
+**Pass the spec back for any via that already existed.** A via you re-place
+without it -- rip-up, sub-grid nudge, tap relocation -- loses its spec and
+ships inheriting the board's setup, which is wrong for a via-in-pad that had
+IPC-4761 Type VII (filled + capped + plated).
+
+**Pass `inherit_when_unspecified=True` for any via that already existed.** An
+empty spec emits nothing in every case now, so the flag no longer changes the
+output (it once stopped the retired front+back default); it records at the
+call site that the via existed. This matches the GUI side --
+`gui_utils.apply_via_protection` returns early on an empty spec, because
+pcbnew's `*_MODE_FROM_BOARD` already means inherit.
+
+**And keep the board's net dialect**, with `via_net_name(net_id,
+net_id_to_name)` -- the ONE resolver, used by every emit site (#749 D).
+`net_id_to_name` has no key `0` on any board (`extract_nets` records
+`name_to_id[""] = 0` but never builds a `Net` for id 0), so a plain `.get`
+sends every no-net via down the numeric dialect. On a name-net board that is
+the mixed-dialect state `tests/stress/fix_mixed_net_refs.py` exists to undo.
+
+It used to be worse than a dialect slip: `generate_via_sexpr` picks the dialect
+from `net_name` and the protection tokens from `tenting_attrs` independently,
+and `extract_vias`' numeric pattern had no gap for those tokens -- so a numeric
+ref emitted alongside a spec produced a via the parser could not read back at
+all, and the barrel VANISHED from the model. That is #748, fixed in the parser:
+both dialects now tolerate the protection family in any position. The resolver
+still matters, because emitting the board's own dialect is right regardless.
+
+### Which sites pass what
+
+| Site | Vias it emits | What it passes |
+|---|---|---|
+| `output_writer` | routed + swap vias | the via's own spec, else nothing |
+| `add_tracks_and_vias_to_pcb` | depends on caller | the via dict's `tenting_attrs` / `inherit_when_unspecified`, else nothing (#749 A) |
+| `route.py` #666 re-emit | PRE-EXISTING copper the write lost | own spec + `inherit_when_unspecified=True` |
+| `bga_fanout`, `qfn_fanout`, `route_planes` | new | nothing -> inherits `(setup ...)`, EXCEPT a via in a pad or paste opening: Type VII (see below) |
+| `kicad_oracle` (3 weld/link sites) | new | nothing, spelled out as `None` (#749 B) |
+| `plane_io.create_plane` / `repair_planes` | new | the via's own spec, else nothing |
+| `plane_io.restore_failed_reroute_nets` | RESTORED | own spec + `inherit_when_unspecified=True` (#749 C) |
+| `py_placer/placement/writer.py` | re-placed (the #313 nudge) | own spec + `inherit_when_unspecified=True` (#741) |
+
+`tests/test_749_via_protection_emit_sites.py` walks the AST of every module in
+that table and fails on a `generate_via_sexpr` call with no `tenting_attrs=`,
+so a NEW emit site that forgets is caught rather than discovered on a board.
+
+**GUI side**, `kicad_parser.pcbnew_via_protection_attrs(via, text_specs)` is the
+reader, not `_pcbnew_via_protection_attrs`: the shipping KiCad 10.0.0 SWIG
+wrapper does not export the `TENTING_MODE_*` family, so the live-object reader
+answers `{}` for every via and the resolver falls back to the board file (#751).
+
+**CLI and GUI now agree on new vias.** The GUI builds a `PCB_VIA` and calls
+`apply_via_protection`, which returns early on an empty spec and leaves every
+mode at `*_MODE_FROM_BOARD` -- inheriting the board's `(setup ...)`. The CLI
+emits no token, which is the same thing in the file. There is no longer a
+CLI-only default to drift.
+
+For vias you **add**, pass nothing: no token means the via inherits the board's
+`(setup ...)`, which is what KiCad does for a via a user places.
+
+### The one exception: a via the tool adds in a pad or paste opening (#962)
+
+Solder paste printed onto a via barrel wicks into it unless the via is
+IPC-4761 Type VII, filled AND capped. So a via UNDER SOLDER -- its barrel
+overlaps a same-net SMD pad or a paste opening of its own net -- is stamped
+`fab_notes.TYPE_VII_STAMP = {'capping': 'yes', 'filling': 'yes'}` when THIS
+run created the site: it added the via, or a part it moved put a pad or paste
+opening onto an input via (`site_created`; `place_fanout_clearance` pulls cap
+pads onto same-net vias by design). Tenting, covering and plugging are not
+stamped; they keep inheriting. The decision is
+`fab_notes.via_protection_stamps(vias, input_snapshot, pcb_data)`, and a via
+is left alone when:
+
+- the input board already had a via at that spot, already under solder
+  (`via_snapshot`, taken before the run changes the board; pass it the
+  board as well when the run MOVES PARTS, so it records who was under
+  solder). If that input via carried a spec and the shipped one does not, it
+  was stripped and laid again, and the input's spec is handed back
+  (`restored`);
+- its spec DECIDES capping or filling (the designer's decision). A spec that
+  only tents or covers says nothing about either, so Type VII is merged into
+  it; the file stamper inserts only the tokens a via block lacks;
+- the board's setup already makes it filled and capped;
+- the FILE FORMAT predates per-via capping/filling. KiCad 10 added them;
+  KiCad 9.0's parser has no case for either token (read from its source, not
+  probed), so a 20241229 board gets NO token; the via is counted
+  `unstampable` and the requirement goes on the fab drawing.
+
+It runs at SHIP time, after the passes that add vias: `route.py` after the
+late orphan sweep, `create_plane` after `_finalize_plane_copper`,
+`route_planes --add-gnd-vias` and the planes tab's GND return vias,
+`repair_planes` after the oracle, `route_diff` after its writes, the BGA and
+QFN fanouts over every via they return, `place_fanout_clearance` after its
+moves and the fanout tab's cap optimisation, the GUI oracle fallback, and
+`check_join`. (The `route_planes` CLI's `clean_plane_copper` runs after its
+stamp and can REMOVE vias, so that record can over-count; it adds none.) The
+CLI stamps the written file by uuid
+(`kicad_writer.stamp_via_protection_in_content`); the GUI sets `tenting_attrs`
+on its in-memory vias, which `apply_via_protection` writes. The record is
+published as `via_in_pad` ({count, sites, stamped, restored, protected,
+unstampable, site_created, unprotected, note}, plus `written` when a file
+stamp could not place every token) on the route step's merged `--json-out`
+summary and on `results_data`. The early `JSON_SUMMARY` lines predate the
+finalize, so route.py prints the record on its own `VIA_IN_PAD_JSON:` line
+(as route_diff and repair_planes do), and
+`route_summary.merge_route_summaries` folds the last one in: the file and the
+merged stdout stay one document. `check_drc` reports what still ships unprotected as
+`via-in-paste` (on a pre-KiCad-10 file it accepts them as
+`undeclarable-via-in-paste` and counts them, since that file cannot declare
+Type VII at all).
 
 ## Modifying existing copper
 
@@ -213,6 +374,15 @@ doesn't collide with routed copper. `write_routed_output` and
 logos/artwork (graphic polys, lines, arcs). The GUI plugin mirrors both moves on
 apply (via `kicad_routing_plugin/gui_utils.move_copper_graphics_to_silkscreen_board`)
 so its output matches the CLI writer (issue #146).
+
+**Board-level `gr_*` only, since #908.** A footprint shape cannot carry a
+`(net …)` in KiCad, so the "net-tied copper is functional, leave it" guard was
+a no-op for `fp_*` and every footprint copper shape was relocated on every
+write — including a part's own land-pattern copper. Both fronts now ask
+`kicad_parser.footprint_copper_is_functional(pad_count)`: a footprint **with**
+copper pads keeps its copper (the parser models it, so nothing routes over it
+any more), a **pad-less** one is a logo and is relocated exactly as before.
+The pass reports what it kept as well as what it moved.
 
 ```python
 add_teardrops_to_pads(content: str, best_length_ratio=0.5, max_length=1.0,

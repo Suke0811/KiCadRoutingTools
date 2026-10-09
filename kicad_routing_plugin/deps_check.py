@@ -1,74 +1,122 @@
 """
 Runtime check for Python dependencies that KiCad does not bundle.
 
-KiCad ships numpy + wxPython, but not scipy or shapely. When this plugin is
-installed via the KiCad PCM (Plugin and Content Manager), no pip step runs,
-so we must detect missing dependencies on first invocation and offer to
-install them into KiCad's bundled Python.
+KiCad ships wxPython, and -- depending on the version and platform -- may ship
+neither scipy nor shapely nor numpy. KiCad 10.0.0 on macOS bundles NO numpy at
+all (verified 2026-09-18: `find KiCad.app -name numpy` is empty), so do not
+assume any of them is present; earlier notes here claimed numpy was bundled and
+that was the assumption this gate was built on. When this plugin is installed
+via the KiCad PCM (Plugin and Content Manager) no pip step runs, so we must
+detect missing dependencies on first invocation and offer to install them into
+KiCad's bundled Python.
 
-The list of required packages is read from `requirements.txt` at the plugin
-root, so requirements.txt is the single source of truth for both the CLI
-install path (install_plugin.py) and this runtime check.
+The list of packages is read from `requirements.txt` at the plugin root, so
+requirements.txt is the single source of truth for both the CLI install path
+(install_plugin.py) and this runtime check.
+
+TOO OLD counts as missing (2026-09-18). The probe used to be `except
+ImportError` and nothing else, and the specifiers were deliberately stripped
+(`numpy>=1.21.0` -> `numpy`), so an ancient numpy passed the gate, raised no
+dialog, and could not be repaired by the one-click install either -- `pip
+install --upgrade` runs only for packages that are MISSING, and that numpy was
+not missing. What the user saw instead was scipy's "A NumPy version >=1.22.4
+... is required" and `TypeError: 'numpy._DTypeMeta' object is not
+subscriptable`, neither of which names the plugin, and both of which are
+checked by running `pip show numpy` against a completely different interpreter
+-- where it is up to date. Hence `startup_checks.dependency_problems`, which
+reports the version and the FILE the running interpreter actually imports.
+
+Not every one of them BLOCKS, though (#943). `OPTIONAL_PACKAGES` names the ones
+whose absence disables a feature instead of stopping the plugin; only the rest
+gate `ensure_dependencies`.
 
 The pip install runs in a worker thread so the wx event loop keeps ticking
 and the progress dialog stays responsive (otherwise KiCad freezes for the
 full duration of the install, which can be minutes on a slow network).
+
+It is not offered at all on a PEP 668 interpreter (#944) -- see
+`startup_checks.externally_managed_marker`, shared with install_plugin.py.
 """
 
 import os
-import re
 import subprocess
 import sys
 import threading
 
 import wx
 
+# `action_plugin` puts these on sys.path at import time, but this module is also
+# imported directly (tests, install tooling), so repair the path here rather
+# than depend on the order. The flat PCM layout has startup_checks beside the
+# plugin directory; the repo layout has it in py_router/ (#522).
+_PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _d in (_PLUGIN_ROOT, os.path.join(_PLUGIN_ROOT, 'py_router')):
+    if os.path.isdir(_d) and _d not in sys.path:
+        sys.path.insert(0, _d)
 
-# Mapping of pip package name -> import statement used to verify it. The
-# specific submodule imports catch broken/partial installs (e.g. shapely
-# without its native lib) better than a bare `import pkg`. Packages not in
-# this dict fall back to a plain `import <pkg>`.
-IMPORT_TESTS = {
-    "numpy": "import numpy",
-    "scipy": "from scipy.optimize import linear_sum_assignment",
-    "shapely": "from shapely.geometry import Polygon",
+
+# The dependency tables and the probes live in `startup_checks` -- wx-free, and
+# shared with the CLI gate (`check_python_dependencies`) so the two fronts
+# cannot disagree about what is required or how old is too old. IMPORT_TESTS is
+# re-exported here because that is the name this module's callers and tests
+# already use, and it is the SAME dict object, not a copy.
+from startup_checks import (                                   # noqa: E402
+    IMPORT_TESTS,
+    Problem,
+    dependency_problems,
+    externally_managed_advice,
+    externally_managed_marker,
+    quoted_requirements,
+    requirement_floors,
+)
+
+
+# Packages the plugin can RUN without. They are still installed by the prompt
+# below when it fires for something else -- on the PCM path this dialog is the
+# only installer there is -- but a machine that lacks one gets the plugin, with
+# the feature that needs it turned off.
+#
+# Pillow is the RASTER path and nothing else (#943): the "Make routing movie"
+# checkbox (movie_recorder.py) and the placement tab's preview image
+# (placement_gui.py), both of which already disable themselves on ImportError.
+# Routing needs none of it -- `startup_checks.check_render_dependencies` is a
+# separate gate for exactly this reason, and gating the GUI on Pillow here
+# re-made, one layer up, the mistake that function was written to record.
+OPTIONAL_PACKAGES = {
+    "Pillow": "board renders, the placement preview and the routing movie",
 }
 
-# Pattern matching the package name at the start of a requirements line.
-# Stops at the first version-specifier or environment-marker character.
-_REQ_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+def _optional_effect(names):
+    """One line per optional package saying what turns off without it."""
+    return "\n".join(
+        f"Without {n}: {OPTIONAL_PACKAGES.get(n, 'a feature')} are unavailable. "
+        f"Everything else works."
+        for n in names
+    )
 
 
 def _requirements_path():
     """Path to the requirements.txt at the plugin root.
 
-    deps_check.py lives at <plugin_dir>/kicad_routing_plugin/, so the file
-    is one directory up.
+    deps_check.py lives at <plugin_dir>/kicad_routing_plugin/, so the file is
+    one directory up -- which is also where `startup_checks.requirements_path`
+    looks from py_router/. Both spellings resolve to the same file in the repo
+    layout and in a flat PCM install.
     """
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "requirements.txt",
-    )
+    return os.path.join(_PLUGIN_ROOT, "requirements.txt")
 
 
 def _parse_requirements(path):
-    """Return the list of pip package names listed in requirements.txt.
+    """Return the pip package names listed in a requirements file.
 
-    Skips comments, blank lines, and pip directives (`-r ...`, URLs, etc.).
-    Strips version specifiers so `numpy>=1.21.0` -> `numpy`.
+    Names only. The SPECIFIERS are not discarded any more -- they are read by
+    `startup_checks.requirement_floors`, which is what turns `numpy>=1.22.0`
+    into a gate instead of a comment -- they are simply not this function's
+    answer. See `_problems()` for the version-aware probe.
     """
-    names = []
-    if not os.path.isfile(path):
-        return names
-    with open(path, "r") as f:
-        for raw in f:
-            line = raw.split("#", 1)[0].strip()
-            if not line or line.startswith("-") or "://" in line:
-                continue
-            m = _REQ_NAME_RE.match(line)
-            if m:
-                names.append(m.group(1))
-    return names
+    from startup_checks import parse_requirements
+    return [name for name, _spec in parse_requirements(path)]
 
 
 def _required_packages():
@@ -77,14 +125,32 @@ def _required_packages():
             for name in _parse_requirements(_requirements_path())]
 
 
+def _problems():
+    """Every requirements.txt package that is absent OR too old, as Problems.
+
+    One call, both fronts: `startup_checks.dependency_problems` is the same
+    function the CLI gate runs, over the same IMPORT_TESTS and the same floors.
+    """
+    names = _parse_requirements(_requirements_path())
+    return dependency_problems(names, floors=requirement_floors())
+
+
+def _split_problems(problems):
+    """(blocking, optional) Problem lists, split by OPTIONAL_PACKAGES."""
+    blocking = [p for p in problems if p.name not in OPTIONAL_PACKAGES]
+    optional = [p for p in problems if p.name in OPTIONAL_PACKAGES]
+    return blocking, optional
+
+
 def _missing_packages():
-    missing = []
-    for pip_name, import_stmt in _required_packages():
-        try:
-            exec(import_stmt, {})
-        except ImportError:
-            missing.append(pip_name)
-    return missing
+    """Return (blocking, optional): the pip NAMES that are absent or too old,
+    split by whether the plugin can run without them (`OPTIONAL_PACKAGES`).
+
+    Kept name-based because that is what the callers and #943's test read; the
+    detail behind each name is in `_problems()`.
+    """
+    blocking, optional = _split_problems(_problems())
+    return [p.name for p in blocking], [p.name for p in optional]
 
 
 def _find_python_executable():
@@ -160,21 +226,80 @@ def _pip_install_threaded(packages, progress):
     return result["returncode"] == 0, log
 
 
-def ensure_dependencies(parent=None):
-    """Verify that scipy and shapely are importable. If not, prompt the user
-    to install them via pip into KiCad's Python. Returns True if all deps are
-    present (after any install), False if the user cancelled or install failed.
+def _describe_missing(blocking, optional):
+    """The problem packages as display lines, optional ones marked.
+
+    Takes Problem objects, so an outdated package says its version and the FILE
+    it was imported from. That path is the whole point: a user told "your numpy
+    is too old" checks `pip show numpy` in a terminal, sees a current version,
+    and concludes the plugin is wrong -- because KiCad's Python is not the
+    Python they checked, and nothing in the old message said so.
     """
-    missing = _missing_packages()
-    if not missing:
+    lines = [p.describe() for p in blocking]
+    lines += [f"{p.describe()}  (optional -- "
+              f"{OPTIONAL_PACKAGES.get(p.name, 'a feature')})"
+              for p in optional]
+    return "\n".join(lines)
+
+
+def _report_externally_managed(parent, blocking, optional, marker):
+    """Say what to install, instead of offering an install that cannot run.
+
+    Direction (1) of #944, and deliberately not (2): retrying with
+    `--break-system-packages` writes into a prefix the distro's own package
+    manager owns, which is the user's call to make and not a plugin's to make
+    silently. The command is spelled out so making it is one paste.
+    """
+    advice = externally_managed_advice(blocking + optional,
+                                       _find_python_executable())
+    wx.MessageBox(
+        "KiCad Routing Tools needs the following Python packages that are not "
+        "bundled with KiCad:\n\n"
+        f"{_describe_missing(blocking, optional)}\n\n"
+        "This Python is managed by your distribution (PEP 668):\n"
+        f"  {marker}\n\n"
+        "pip cannot install into it, so no one-click install is offered. "
+        "Install the distribution's own packages instead:\n\n"
+        + "\n".join(advice),
+        "Install with your package manager", wx.OK | wx.ICON_INFORMATION,
+        parent=parent,
+    )
+
+
+def ensure_dependencies(parent=None):
+    """Verify the packages the plugin cannot run without are importable AND new
+    enough. If any is missing or stale, prompt the user to install them via pip
+    into KiCad's Python. Returns True if all BLOCKING deps are satisfied (after
+    any install), False if the user cancelled or the install failed.
+
+    A missing `OPTIONAL_PACKAGES` entry never returns False and never raises a
+    dialog of its own (#943) -- the feature it serves turns itself off, which is
+    the behaviour the plugin already had at those call sites. It IS added to the
+    pip command when the prompt fires for a blocking package anyway, so a fresh
+    PCM install (which has none of them) still ends up with everything.
+
+    "Stale" is handled by the same path as "absent" (2026-09-18) and the pip
+    command carries the FLOOR (`numpy>=1.22`, not `numpy`), because pip
+    considers a bare requirement already satisfied by whatever is installed --
+    so the one-click install for a too-old package used to be a no-op that
+    reported success.
+    """
+    blocking, optional = _split_problems(_problems())
+    if not blocking:
         return True
 
-    pkg_list = ", ".join(missing)
+    marker = externally_managed_marker()
+    if marker is not None:
+        _report_externally_managed(parent, blocking, optional, marker)
+        return False
+
+    to_install = [p.requirement for p in blocking + optional]
+    pkg_list = ", ".join(to_install)
     python_exe = _find_python_executable()
     msg = (
-        f"KiCad Routing Tools needs the following Python packages that are not "
-        f"bundled with KiCad:\n\n"
-        f"  {pkg_list}\n\n"
+        f"KiCad Routing Tools needs these Python packages, which are missing "
+        f"or too old in the Python that KiCad runs:\n\n"
+        f"{_describe_missing(blocking, optional)}\n\n"
         f"Install them now into KiCad's Python?\n"
         f"({python_exe})"
     )
@@ -194,26 +319,61 @@ def ensure_dependencies(parent=None):
         style=wx.PD_APP_MODAL | wx.PD_CAN_ABORT | wx.PD_AUTO_HIDE,
     )
 
-    ok, log = _pip_install_threaded(missing, progress)
+    ok, log = _pip_install_threaded(to_install, progress)
     progress.Destroy()
 
-    if not ok:
+    still_missing, still_optional = _split_problems(_problems())
+    if not ok and still_missing:
         wx.MessageBox(
             f"pip install failed.\n\n"
             f"You may need to install manually with:\n"
-            f"  \"{python_exe}\" -m pip install {pkg_list}\n\n"
+            f"  \"{python_exe}\" -m pip install --upgrade "
+            f"{' '.join(chr(34) + r + chr(34) for r in to_install)}\n\n"
             f"Output:\n{log[-2000:]}",
             "Install failed", wx.OK | wx.ICON_ERROR, parent=parent,
         )
         return False
-
-    still_missing = _missing_packages()
-    if still_missing:
+    if not ok:
+        # Only the optional half failed. Say so and carry on -- refusing here
+        # would block the plugin on a package it does not need (#943).
+        names = [p.name for p in still_optional]
         wx.MessageBox(
-            "Dependencies were installed but are still not importable in this "
-            "KiCad session. Please restart KiCad and try again.",
-            "Restart required", wx.OK | wx.ICON_INFORMATION, parent=parent,
+            f"Installed what the plugin needs, but pip could not install: "
+            f"{', '.join(names)}.\n\n"
+            f"{_optional_effect(names)}\n\n"
+            f"To install later:\n"
+            f"  \"{python_exe}\" -m pip install --upgrade "
+            f"{quoted_requirements(still_optional)}",
+            "Some optional packages missing", wx.OK | wx.ICON_INFORMATION,
+            parent=parent,
         )
+
+    if still_missing:
+        # Two different situations wear this face, so say which. A package that
+        # is still ABSENT is almost always loaded-already/needs-a-restart. A
+        # package that is still TOO OLD after a successful upgrade is a
+        # SHADOWING problem -- pip wrote a new one somewhere that is not first
+        # on sys.path -- and restarting KiCad will not fix that, so the path in
+        # each line is the thing to act on.
+        stale = [p for p in still_missing if p.state == 'outdated']
+        detail = _describe_missing(still_missing, [])
+        if stale:
+            wx.MessageBox(
+                "pip finished, but this Python still imports an older copy:\n\n"
+                f"{detail}\n\n"
+                "Another copy earlier on sys.path is shadowing the one pip "
+                "just installed, so restarting KiCad will not help. Remove or "
+                "update the copy at the path above.",
+                "Older copy still being imported", wx.OK | wx.ICON_ERROR,
+                parent=parent,
+            )
+        else:
+            wx.MessageBox(
+                "Dependencies were installed but are still not importable in "
+                f"this KiCad session:\n\n{detail}\n\n"
+                "Please restart KiCad and try again.",
+                "Restart required", wx.OK | wx.ICON_INFORMATION, parent=parent,
+            )
         return False
 
     return True

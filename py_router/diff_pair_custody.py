@@ -44,6 +44,9 @@ def classify_diff_pair_failure(result: Optional[dict]) -> str:
       pn-crossing                  P/N tracks must cross; untangle failed
       connector-graze              emitted geometry grazes committed foreign copper (#165/#246)
       no-escape-path               endpoint escape blocked (probe/setback: 0 search iterations)
+      needs-fanout                 endpoint escape blocked for the PAIR only -- a single
+                                   track still launches there, so the terminal needs a
+                                   coupled fanout, not more room (#764)
       pose-router-failure          PoseRouter centerline search exhausted (#346)
       no-route                     failed with no iterations and no blocked cells
     Call BEFORE the caller pops blocked_cells_* off the result.
@@ -57,6 +60,11 @@ def classify_diff_pair_failure(result: Optional[dict]) -> str:
         return 'pn-crossing'
     if result.get('connector_graze'):
         return 'connector-graze'
+    if result.get('needs_fanout'):
+        # #764: the coupled sweep failed where a single-ended re-probe succeeded.
+        # Distinct from no-escape-path: more clearance/setback cannot fix it, an
+        # escape built by the fanout step can.
+        return 'needs-fanout'
     if result.get('probe_blocked'):
         return 'no-escape-path'
     fwd = result.get('iterations_forward', 0)
@@ -162,6 +170,43 @@ def build_pair_reports(state, diff_pair_ids_to_route, member_audit,
         incomplete = [nm for tag, nm in (('p', pair.p_net_name),
                                          ('n', pair.n_net_name))
                       if not aud.get(tag, True)]
+        # A COUPLED claim contradicted by actual pad connectivity (#514).
+        mismatch = bool(outcome == 'coupled' and incomplete)
+        if mismatch:
+            # #602: demote the OUTCOME as well, not just the summary bucket.
+            # route_diff already keeps such a pair out of routed_diff_pairs,
+            # but the per-pair record kept saying 'coupled' next to its own
+            # 'members with disconnected pads' -- one JSON blob carrying two
+            # verdicts, and callers read the optimistic one (muzy_zynq4
+            # /HDMI_CK + /HDMI_D2, lwdo_sdr, spartan6_4layer). 'incomplete'
+            # is distinct from the by-design 'partial': a partial pair's
+            # peeled terminals are EXPECTED to close in the single-ended
+            # follow-up, whereas this one claimed a finished coupled route
+            # and did not deliver it.
+            outcome = 'incomplete'
+        # 'partial' credit discriminator: a partial pair KEEPS its
+        # routed_diff_pairs credit while it kept ANY coupled trunk copper;
+        # it is demoted ONLY when it kept no coupled trunk copper at all.
+        # (An earlier rule demoted on member count -- 'partial' + both
+        # members incomplete -- which misfires on multipoint pairs whose
+        # extra pads are DELIBERATELY deferred: tigard /USB_D keeps a
+        # coupled, DRC-clean trunk while the redundant J1-row pads close in
+        # the designed single-ended follow-up, expected step-level state,
+        # not false success; that rule dropped test_tigard_usb_diff from
+        # 12/12 to 9/12 with the copper unchanged. Incomplete members are
+        # already counted as pad deficit at chain level, so credit with a
+        # real coupled trunk hides nothing.) Trunk signal, recorded not
+        # derived: 'is_diff_pair' is stamped ONLY by the coupled-route
+        # constructors (route_diff_pair_with_obstacles, the multipoint leg
+        # merge) -- never by single-ended results -- and 'new_segments'
+        # nonempty means that coupled result committed real copper.
+        no_coupled_trunk = bool(
+            outcome == 'partial'
+            and not any(rr.get('is_diff_pair') and rr.get('new_segments')
+                        for rr in (_rr_p, _rr_n) if rr))
+        if no_coupled_trunk:
+            print(f"{RED}DEMOTED {pair_name}: no coupled trunk copper kept "
+                  f"-- 'partial' pair dropped from routed_diff_pairs{RESET}")
         rep = {
             'pair': pair_name,
             'p_net': pair.p_net_name,
@@ -172,19 +217,42 @@ def build_pair_reports(state, diff_pair_ids_to_route, member_audit,
             'failure_stage': (diag.get('stage')
                               ) if outcome in ('failed', 'deferred') else None,
             'incomplete_members': incomplete,
-            # A COUPLED claim contradicted by actual pad connectivity: the
-            # "one member silently incomplete" class (#514, peaksat CAN).
-            # 'partial' is deliberately NOT in this tuple: a partial pair
-            # already DECLARES disconnected members (its peeled terminals
-            # close in the single-ended follow-up, which runs after this
-            # audit), so flagging it here made every multipoint pair with a
-            # by-design peeled leg -- tigard /USB_D's redundant J1 row --
-            # read as a contradicted claim and demoted it from
+            # A summary claim contradicted by the actual copper. Two causes:
+            # (1) a COUPLED claim contradicted by actual pad connectivity --
+            # the "one member silently incomplete" class (#514, peaksat CAN).
+            # 'partial'-with-incomplete-members is deliberately NOT that: a
+            # partial pair already DECLARES disconnected members (its peeled
+            # terminals close in the single-ended follow-up, which runs
+            # after this audit), so flagging it here made every multipoint
+            # pair with a by-design peeled leg -- tigard /USB_D's redundant
+            # J1 row -- read as a contradicted claim and demoted it from
             # routed_diff_pairs while its trunk was coupled and its board
             # finished clean. incomplete_members stays populated either way.
-            'member_audit_mismatch': bool(outcome == 'coupled'
-                                          and incomplete),
+            # (2) a PARTIAL claim with no coupled trunk copper kept at all
+            # (no_coupled_trunk above) -- there is no coupled route to
+            # credit. route_diff reads this flag to move the pair from
+            # routed_diff_pairs to partial_diff_pairs.
+            # NOTE `mismatch` is the CAPTURED value: #602 rewrites
+            # `outcome` to 'incomplete' above, so re-testing
+            # `outcome == 'coupled'` here would be permanently False and
+            # would drop #602's audit flag on the merge.
+            'member_audit_mismatch': bool(mismatch or no_coupled_trunk),
+            'no_coupled_trunk': no_coupled_trunk,
         }
+        # #766: a HYBRID ESCAPE is a coupled middle plus point-to-point
+        # (single-ended) terminal legs. Its members connect and its copper is
+        # DRC-clean, so it is genuinely routed and keeps its credit -- but
+        # 'coupled' means "both members routed coupled", and this pair's
+        # TERMINALS are not. Disclose it rather than silently reclassify:
+        # demoting to 'partial' would drop the pair out of routed_diff_pairs
+        # and imply downstream work that does not exist (a partial pair's
+        # terminals are peeled to a follow-up pass; a hybrid's are already
+        # routed). The terminals are where P/N geometry breaks, which is
+        # where intra-pair skew comes from -- so a caller holding a skew
+        # budget needs to see this, and `successful` never showed it.
+        if any(rr.get('hybrid_escape') for rr in (_rr_p, _rr_n) if rr):
+            rep['coupled_terminals'] = False
+            rep['escape'] = 'hybrid'
         if diag.get('blocking_nets'):
             rep['blocking_nets'] = diag['blocking_nets']
         if diag.get('casualty'):
@@ -201,6 +269,7 @@ def build_pair_reports(state, diff_pair_ids_to_route, member_audit,
             'failure_stage': 'pre-route',
             'incomplete_members': [p_name, n_name],
             'member_audit_mismatch': False,
+            'no_coupled_trunk': False,
         })
     return sorted(reports, key=lambda r: r['pair'])
 
@@ -490,7 +559,9 @@ def run_casualty_reconcile(state, progress_callback=None,
                     state.remaining_net_ids, state.routed_net_ids,
                     state.routed_net_paths, state.routed_results,
                     state.diff_pair_by_net_id, state.track_proximity_cache,
-                    state.layer_map)
+                    state.layer_map,
+                    working_obstacles=state.working_obstacles,    # #806
+                    net_obstacles_cache=state.net_obstacles_cache)
                 record_pair_diag(state, pair_name, casualty='rerouted')
                 rerouted = True
         else:
@@ -511,6 +582,22 @@ def run_casualty_reconcile(state, progress_callback=None,
                     state.routed_net_ids, state.routed_net_paths,
                     state.routed_results, state.track_proximity_cache,
                     state.layer_map)
+                # `record_single_ended_success` takes no obstacle map -- it
+                # updates pcb_data and the tracking dicts only. The main loop
+                # refreshes separately around its own calls; this branch did
+                # not, so a casualty RE-ROUTE (as opposed to branch D's
+                # partial restore, which already refreshes) left the working
+                # map holding that net's PRE-ROUTE footprint.
+                #
+                # Measured on cparti_fpga's retry step with KICAD_STAGE_AUDIT,
+                # once the #134 and rescue sites were fixed this was the last
+                # remaining source of invariant-E staleness: "REROUTED
+                # SRAM_A8" left 1 stale entry, 1599 of its 2465 cells
+                # unblocked and 119 via cells unblocked.
+                from obstacle_cache import refresh_net_obstacles  # #806
+                refresh_net_obstacles(state.working_obstacles,
+                                      state.net_obstacles_cache,
+                                      pcb_data, config, [net_id])
                 rerouted = True
         if rerouted:
             print(f"  {GREEN}REROUTED{RESET} {name}: casualty re-routed with "
@@ -528,11 +615,13 @@ def run_casualty_reconcile(state, progress_callback=None,
         keep_segs = [sg for sg in (src.get('new_segments') or [])
                      if not _saved_route_collides(
                          {'new_segments': [sg], 'new_vias': []},
-                         pcb_data, ripped_ids, config.clearance)]
+                         pcb_data, ripped_ids, config.clearance,
+                         config=config)]
         keep_vias = [v for v in (src.get('new_vias') or [])
                      if not _saved_route_collides(
                          {'new_segments': [], 'new_vias': [v]},
-                         pcb_data, ripped_ids, config.clearance)]
+                         pcb_data, ripped_ids, config.clearance,
+                         config=config)]
         pn = _pair_name(net_id)
         from pcb_modification import drop_orphan_restore_pieces
         drop_orphan_restore_pieces(keep_segs, keep_vias, net_id, pcb_data)
@@ -545,7 +634,22 @@ def run_casualty_reconcile(state, progress_callback=None,
             pruned['partial_restore_134'] = True
             add_route_to_pcb_data(pcb_data, pruned,
                                   debug_lines=config.debug_lines)
+            from obstacle_cache import refresh_net_obstacles  # #806
+            refresh_net_obstacles(state.working_obstacles,
+                                  state.net_obstacles_cache, pcb_data, config,
+                                  sorted(set(ripped_ids or []) | {net_id}))
             state.results.append(pruned)
+            # Same registration the route.py sibling owes (see there): a net in
+            # neither routed_net_ids nor remaining_net_ids is never stamped as
+            # foreign copper by `build_single_ended_obstacles`, so this restore
+            # would be invisible to every map built afterwards. Refreshing the
+            # cache entry alone does not cover it -- the cache is consulted
+            # only for remaining_net_ids.
+            for _rid in sorted(set(ripped_ids or []) | {net_id}):
+                if _rid in state.remaining_net_ids:
+                    state.remaining_net_ids.remove(_rid)
+                if _rid not in state.routed_net_ids:
+                    state.routed_net_ids.append(_rid)
             print(f"  {RED}PARTIAL{RESET} {name}: reroute failed; restored "
                   f"{len(keep_segs)} segment(s) + {len(keep_vias)} via(s) of "
                   f"its pre-rip route (dropped {dropped} colliding piece(s)); "

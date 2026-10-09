@@ -144,7 +144,12 @@ def compute_congestion_cells(pcb_data: PCBData, config: GridRouteConfig,
 def register_congestion_field(pcb_data: PCBData, config: GridRouteConfig,
                               track_proximity_cache: Dict) -> None:
     """Compute and register the field under the reserved cache key (no-op
-    when disabled)."""
+    when disabled).
+
+    STATIC by design: the field is computed ONCE, from the pin density at
+    batch start, and never refreshed as the run routes -- it prices where the
+    board was crowded before routing, not where copper has since gone. (v2
+    below is the variant whose demand decays as nets complete.)"""
     cells = compute_congestion_cells(pcb_data, config, len(config.layers))
     if len(cells):
         track_proximity_cache[CONGESTION_CACHE_KEY] = cells
@@ -167,15 +172,64 @@ def congestion2_knobs():
     return dict(env_knobs.CONGESTION2)
 
 
-def build_congestion2(pcb_data, config, net_ids_to_route):
-    """Precompute bins {(bx,by): (free_area_mm2, owners frozenset)} plus
-    per-net terminal coords. Returns None when disabled."""
-    k = congestion2_knobs()
-    if k['cost'] <= 0:
-        return None
-    bin_mm = max(0.25, k['bin'])
-    num_layers = max(1, len(config.layers))
-    to_route = set(net_ids_to_route)
+def congestion_bins(pcb_data, net_ids, num_layers, bin_mm,
+                    extra_demand_points=None, include_bins=None):
+    """THE demand/capacity census: {(bx,by): (free_area_mm2, owners)} plus
+    per-net terminal coords, and the BIN IT ACTUALLY USED.
+
+    That third return value is not decoration: `bin_mm` is floored at 0.25,
+    and a caller that builds coordinates from its own requested value puts
+    the report on the wrong part of the board (check_pockets at --bin 0.1
+    named windows ~39mm from the ones it measured). Ask, do not assume.
+
+    One definition, two consumers (run-23): `build_congestion2` attaches it
+    as an A* cost (env-gated), and `check_pockets.py` reports it PRE-ROUTE
+    at the placement->routing handoff -- because every per-net gate
+    (check_channels, check_reachability) passed run 23's board while two
+    nets died in one bin whose demand/free-area no instrument ever printed.
+
+    extra_demand_points (#589): optional {net_id: [(x_mm, y_mm), ...]} of
+    predicted-corridor samples (the global plan's rough paths) folded into
+    each net's terminal set -- the net then claims demand along its whole
+    predicted path instead of only at its endpoints, and its own exemption
+    disks follow the corridor (owner-exempt by construction).
+
+    include_bins (#709): optional iterable of (bx, by) keys to report EVEN
+    WHEN NOTHING DEMANDS THEM. The result was keyed off `owners`, which only
+    gains a key where some net has a terminal -- so a window with nothing in
+    it never entered the dict and `check_pockets` could not represent an
+    empty region at all. Measured on esp_prog at 2mm: the lattice over
+    `board_bounds` is 128 windows and the census returned 44, so 84 of them
+    -- 66% -- were not merely un-ranked but absent.
+    Such a bin comes back with `owners` empty and its free area computed the
+    same way as everyone else's, which is what separates "empty" from "full
+    of another net's copper".
+
+    That free area is FLOORED AT 5% of the bin, here as everywhere, and the
+    floor is not decoration at small bins: a segment is charged wholly to its
+    midpoint bin, so `used` overshoots as the bin shrinks. Measured share of
+    no-demand windows returning the floor rather than a real remainder --
+    esp_prog 0% at 2mm, 16.9% at 1mm, 100% at 0.25mm; glasgow_revC 1.1% /
+    1.3% / 78.0%. At the 0.25mm census floor the empty-vs-occupied
+    distinction is therefore saturated away on most windows; ask it at the
+    2mm default, which is what `check_pockets` uses.
+
+    THE A* CONSUMER NEVER PASSES THIS. `build_congestion2` omits it, so the
+    key sequence is `owners`' own iteration order, byte for byte as before,
+    and the extra keys are APPENDED to `list(owners)` rather than unioned
+    through a set. To be accurate about why: the np.array `congestion2_rows`
+    builds from `bins.items()` reaches consumers that are order-INSENSITIVE
+    (the Rust `set_layer_proximity_batch` max-inserts per cell; the SUM
+    branch goes through np.unique/bincount), so a permutation would not
+    change what the router prices cells with. What insertion order does
+    decide is the tie-break in `check_pockets`' stable `sort(key=-ratio)`.
+    Preserving it is cheap and keeps the function's contract exact either
+    way. (Defensively, a demand-0 bin scores ratio 0 <= thresh and is skipped
+    in `congestion2_rows` anyway, at any non-negative threshold.)
+    """
+    bin_mm = max(0.25, bin_mm)
+    num_layers = max(1, num_layers)
+    to_route = set(net_ids)
 
     copper = {}
     for s in pcb_data.segments:
@@ -199,21 +253,56 @@ def build_congestion2(pcb_data, config, net_ids_to_route):
         for v in pcb_data.vias:
             if v.net_id == nid:
                 pts.append((v.x, v.y))
+        if extra_demand_points:
+            pts.extend(extra_demand_points.get(nid, ()))
         terminals[nid] = pts
         for (x, y) in pts:
             owners.setdefault((int(x // bin_mm), int(y // bin_mm)), set()).add(nid)
-    for p in getattr(pcb_data, 'pads', []) or []:
-        pass  # pad copper folded via per-net pads below
     for nid, plist in getattr(pcb_data, 'pads_by_net', {}).items():
         for p in plist:
             b = (int(p.global_x // bin_mm), int(p.global_y // bin_mm))
             copper[b] = copper.get(b, 0.0) + p.size_x * p.size_y
     bin_area_total = bin_mm * bin_mm * num_layers
     bins = {}
-    for b, own in owners.items():
+    if include_bins is None:
+        extra = []
+    else:
+        # Materialise before the emptiness test: `not <numpy array>` raises,
+        # and an iterator would be consumed by it.
+        extra = list(include_bins)
+        bad = next((b for b in extra
+                    if not (isinstance(b, tuple) and len(b) == 2)), None)
+        if bad is not None:
+            # A bare (bx, by) instead of a LIST of them used to insert an int
+            # key, which then failed three frames away in a consumer's
+            # `for (bx, by), ... in bins.items()`. Fail where the mistake is.
+            raise TypeError(
+                'congestion_bins: include_bins takes an iterable of (bx, by) '
+                'bin keys; got %r. A single key must be wrapped in a list.'
+                % (bad,))
+    keys = owners.keys() if not extra else (
+        list(owners) + [b for b in extra if b not in owners])
+    for b in keys:
+        own = owners.get(b, frozenset())
         used = copper.get(b, 0.0)
         free = max(bin_area_total * 0.05, bin_area_total - used)
         bins[b] = (free, frozenset(own))
+    return bins, terminals, bin_mm
+
+
+def build_congestion2(pcb_data, config, net_ids_to_route,
+                      extra_demand_points=None):
+    """Precompute bins {(bx,by): (free_area_mm2, owners frozenset)} plus
+    per-net terminal coords. Returns None when disabled.
+
+    extra_demand_points (#589): see `congestion_bins` -- forwarded through."""
+    k = congestion2_knobs()
+    if k['cost'] <= 0:
+        return None
+    bin_mm = max(0.25, k['bin'])
+    bins, terminals, bin_mm = congestion_bins(
+        pcb_data, net_ids_to_route, len(config.layers), bin_mm,
+        extra_demand_points=extra_demand_points)
     n_hot = sum(1 for b, (fa, ow) in bins.items()
                 if len(ow) / fa > k['thresh'])
     print(f"Congestion2 field: {len(bins)} demand bins, {n_hot} above "

@@ -397,11 +397,16 @@ Based on the highest speed class found on the board:
 
 | Speed Class | Frequency | Recommended `--gnd-via-distance` | Rationale |
 |-------------|-----------|----------------------------------|-----------|
-| Ultra-high | >1 GHz | 2.0 mm | Return path critical; lambda/20 ~ 7 mm at 1 GHz in FR4 |
+| Ultra-high | >1 GHz | the floor below (2.25 mm at the default 0.5 via / 0.25 clearance) | Return path critical; lambda/20 ~ 7 mm at 1 GHz in FR4 — but 2.0 mm, the value this row used to name, is UNDER the floor |
 | High | 100 MHz - 1 GHz | 3.0 mm | Good return path, moderate density |
 | Medium | 10 - 100 MHz | 5.0 mm | Return current less localized |
 | Low | <10 MHz | Skip | Plane provides adequate return path |
 | **Minimum physical** | any | **3 x (via_size + clearance)** | Vias cannot physically fit closer |
+
+**The floor row is not a footnote — it outranks every row above it.** Compute
+`3 x (via_size + clearance)` for the board's actual via and clearance and
+recommend `max(the speed tier, that floor)`. Recommending below it asks for
+vias that cannot be placed.
 
 For this board, the tightest interface is **[interface]** at **[freq]**, so use:
 
@@ -441,7 +446,7 @@ rip-up cannot re-route the impedance nets at the wrong width, and counted as
 # Step 2b: impedance-controlled single-ended nets (e.g. the antenna feed), on an
 # outer layer over the GND pour created in Step 1c; short/direct is the router default.
 python3 -X utf8 py_router/route.py board_diff.kicad_pcb board_imp.kicad_pcb \
-    --nets RF --impedance 50 --layers F.Cu --clearance <floor> ...
+    --nets RF --impedance 50 --layers F.Cu --clearance-ceiling <floor> ...
 ```
 
 **Differential impedance pairs** keep being routed in the diff-pair step (Step 2),
@@ -464,6 +469,9 @@ not allowed to lower the board-wide clearance, so the engine now **floors the ga
 to clearance** (`route_diff` raises `diff_pair_gap` to `max(gap, clearance)` before
 routing). Plan the two so this floor never has to bite: **pick `--clearance` first,
 then set `--diff-pair-gap` ≥ that** — for tight coupling, put BOTH at the fab floor.
+A `.kicad_dru` clearance rule raises the gap the same way (#1145): a layer rule on a
+layer the pair routes on, or a track rule on the pair's class. The `--impedance`
+widths are solved at the raised gap.
 
 **Width and spacing: choose them near the fab floor (~0.1 mm), overriding the
 net class.** The stock Default net class is usually wide (e.g. `diff_pair_gap`

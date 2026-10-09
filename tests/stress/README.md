@@ -38,7 +38,7 @@ python3 validate_boards.py
 Drive the whole corpus with the queue manager:
 
 ```bash
-bash run_queue.sh [concurrency=4] [model=sonnet]   # from tests/stress/
+bash run_queue.sh [max_concurrency=8] [model=sonnet]   # from tests/stress/
 bash stress_status.sh                              # monitor: DONE/RUNNING/TODO + free slots
 ```
 
@@ -57,11 +57,13 @@ in `RUNBOOK.md` → "Orchestration".
 Operational limits (baked into the scripts / learned the hard way):
 
 - Every routing/fanout/plane/check command is wrapped in `run_limited.sh`
-  (kills the job at ~4 GB RSS, overridable with `LIMIT_KB`). It also **records**
-  each command to a replay manifest — see "Deterministic replay" below.
-- 4 boards run concurrently — most jobs stay well under the 4 GB cap, so
-  4-in-flight works on an 8 GB machine and the per-job watchdog backstops any
-  spike. (Lower the concurrency arg if you see swapping.)
+  (kills the job at ~12 GB RSS, overridable with `LIMIT_KB`; 4 GB until #422).
+  The wrapper only enforces that cap: the tools themselves **record** each
+  command to a replay manifest — see "Deterministic replay" below.
+- Boards are admitted by load, not a fixed count (`run_queue.sh`: a hard
+  ceiling, default 8, under `QUEUE_LOAD_MAX`, default ncore-2). The watchdog is
+  per step, so size the machine from 12 GB per concurrently heavy step. (Lower
+  the ceiling arg if you see swapping.)
 - Each worker runs its routing commands in the foreground under a hard
   3-hour/command cap and ~3.5-hour board budget (RUNBOOK rule 12). The queue
   manager and `stress_status.sh` track liveness from disk (results JSON +
@@ -203,6 +205,17 @@ identical.
 ranks per-board regressions, and flags broken chains separately (a release blocker
 that can never appear as a DRC delta).
 
+**`diff_pairs_coupled` is a TRUNK measure, not a pad-connectivity one** (#602).
+A pair whose coupled trunk routed but whose terminals were peeled to the
+single-ended follow-up counts as coupled by design — its trunk *is* coupled and
+the follow-up closes the terminals — so the coupled count alone never tells you
+a pair's member pads are open. Gate on **`diff_pairs_member_incomplete`** for
+that: it is route_diff's own member audit, carried through as
+`member_incomplete_pairs` in `JSON_SUMMARY`, and it names every pair with a
+disconnected member pad whatever bucket the pair landed in. `diff_pairs_partial`
+counts the pairs route_diff demoted out of `coupled` because they claimed a
+finished coupled route the audit contradicted (`outcome: "incomplete"`).
+
 Both are documented in depth in `RUNBOOK.md` → "Multi-set waves & release
 sign-off", including the run-for-hours checklist: detach with `nohup`, wrap in
 `caffeinate -s`, attach a monitor that greps failures as well as progress, freeze
@@ -223,6 +236,17 @@ performance can be compared across code versions:
   breakdown, and with `--timings-out PATH` writes the per-command timings as JSON.
   Timing the deterministic replay (not the LLM run, whose wall time is interleaved
   with model thinking) is the apples-to-apples measurement.
+
+The two files together also **identify attempts that DIED** (#599): the manifest
+line is written when a command *starts*, but the timings record only on a clean
+exit, so a manifest command with no matching `redo_timings.jsonl` entry was
+killed part-way — by the caller's command timeout, the memory watchdog, or a
+crash. That is the cheapest way to tell a wave's wasted attempts from its real
+work. Such an attempt does not corrupt a replay: it wrote no output, and
+`minimize_manifest.py`'s backward slice binds each read to the file's *current*
+producer, so the successful rerun's write supersedes it and the dead line drops
+out. Check `ORPHANED_STEP.txt` / `KILLED_STEP.txt` in the run dir for the
+wrapper's own account of what killed it.
 
 ### Minimizing a manifest (#132)
 

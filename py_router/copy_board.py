@@ -13,20 +13,47 @@ Use this instead of ``cp`` whenever you rename/duplicate a board mid-chain:
 
     python3 copy_board.py src.kicad_pcb dst.kicad_pcb
 
-It copies ``.kicad_pcb`` and every sibling that exists (``.kicad_pro``,
+It copies ``.kicad_pcb`` and every sibling in ``SIBLING_EXTS``
+(``.kicad_pro``, ``.kicad_prl``, ``.kicad_dru``, ``.design-brief.json``)
 ``.kicad_prl``), so the DRC floor travels with the board. It also self-records into
 the stress redo manifest (``REDO_MANIFEST``) like the routing tools, so a replayed
 manifest reproduces the full copy (not just the board) -- no more floor drop.
 """
+
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': ['placement', 'routing', 'combined'], 'kind': 'actor'}
+
 import os
 import shutil
 import sys
 
 # Sibling extensions that must travel with a board. .kicad_pro is the DRC floor
 # (the whole point); .kicad_prl is per-board local state (harmless to carry);
+# .design-brief.json is the DECLARED design intent (#711: which connectors
+# are user-facing, which edge each belongs on and where along it, what the
+# enclosure forbids). Stranding it drops every declared claim and the next
+# step silently falls back to inferring an edge from the current pose.
 # .kicad_dru carries the board's custom rules (#498: per-layer clearances the
 # router honors and kicad-cli grades -- stranding it silently drops them).
-SIBLING_EXTS = (".kicad_pro", ".kicad_prl", ".kicad_dru")
+SIBLING_EXTS = (".kicad_pro", ".kicad_prl", ".kicad_dru",
+                ".design-brief.json")
+
+
+def copy_siblings(src_pcb: str, dst_pcb: str) -> list:
+    """Copy every existing sibling of ``src_pcb`` beside ``dst_pcb`` (the
+    board itself not copied): for a step that WRITES its own board and must
+    carry the project, the rules and the brief with it. Returns the copied
+    paths."""
+    copied = []
+    src_base = src_pcb[: -len(".kicad_pcb")] if src_pcb.endswith(".kicad_pcb") else os.path.splitext(src_pcb)[0]
+    dst_base = dst_pcb[: -len(".kicad_pcb")] if dst_pcb.endswith(".kicad_pcb") else os.path.splitext(dst_pcb)[0]
+    for ext in SIBLING_EXTS:
+        s = src_base + ext
+        if os.path.isfile(s) and os.path.abspath(s) != os.path.abspath(dst_base + ext):
+            shutil.copy2(s, dst_base + ext)
+            copied.append(dst_base + ext)
+    return copied
 
 
 def copy_board(src_pcb: str, dst_pcb: str) -> list:

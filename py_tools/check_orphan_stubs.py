@@ -19,6 +19,11 @@ Examples:
 """
 
 from __future__ import annotations
+
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': ['routing'], 'kind': 'instrument'}
+
 import _path  # noqa: F401  (#522: makes ../py_router importable)
 
 import argparse
@@ -37,11 +42,60 @@ def load_pcb_data(filename: str):
     return parse_kicad_pcb(filename)
 
 
+def _pad_probe(pad) -> Tuple[float, float, float, float, float, str]:
+    """(cx, cy, w, h, rot_deg, shape) -- the pad's real copper footprint."""
+    return (pad.global_x, pad.global_y, pad.size_x, pad.size_y,
+            getattr(pad, 'rect_rotation', 0.0) or 0.0,
+            (getattr(pad, 'shape', '') or '').lower())
+
+
+def _point_in_pad(px: float, py: float, probe, margin: float) -> bool:
+    """Is (px, py) within `margin` of this pad's copper?
+
+    Run-7 A8: pads were modelled as circles of diameter max(w, h) about the
+    centre, which is wrong in BOTH directions and produced measured false
+    orphans on two boards. On a square pad the circle misses the corners, so a
+    trace ending in the corner copper reads as a dead end; on a 1.5 x 0.9 pad
+    the same circle over-credits 0.3mm past the long edges. A false orphan is
+    not cosmetic -- one drove a net split that a watcher had to unpick.
+    """
+    if len(probe) == 3:
+        # Legacy (x, y, size) probe: a circle of that diameter. Callers outside
+        # this module (and its own older tests) still speak it.
+        cx, cy, size = probe
+        return math.hypot(px - cx, py - cy) <= size / 2.0 + margin
+    cx, cy, w, h, rot, shape = probe
+    dx, dy = px - cx, py - cy
+    if rot:                                   # into the pad's own frame
+        a = math.radians(-rot)
+        ca, sa = math.cos(a), math.sin(a)
+        dx, dy = dx * ca - dy * sa, dx * sa + dy * ca
+    if shape == 'circle' or (shape != 'rect' and abs(w - h) < 1e-9
+                             and shape in ('oval', 'roundrect')):
+        return math.hypot(dx, dy) <= w / 2.0 + margin
+    if shape == 'oval':
+        # A capsule: the segment joining the two cap centres, inflated by the
+        # short half-axis.
+        if w >= h:
+            half, r = (w - h) / 2.0, h / 2.0
+            t = max(-half, min(half, dx))
+            return math.hypot(dx - t, dy) <= r + margin
+        half, r = (h - w) / 2.0, w / 2.0
+        t = max(-half, min(half, dy))
+        return math.hypot(dx, dy - t) <= r + margin
+    # rect, roundrect, trapezoid, custom and anything unknown: the bounding
+    # rectangle. For custom pads that is the conservative direction for an
+    # orphan REPORTER -- over-crediting hides noise, under-crediting invents
+    # a dead end that sends someone re-routing good copper.
+    return abs(dx) <= w / 2.0 + margin and abs(dy) <= h / 2.0 + margin
+
+
 def _endpoint_connected(pt: Tuple[float, float], segments: List[Dict],
                         vias: List[Tuple[float, float, float]] = None,
-                        ph_pads: List[Tuple[float, float, float]] = None,
-                        layer_pads: List[Tuple[float, float, float]] = None,
-                        tol: float = 0.05) -> bool:
+                        ph_pads: List = None,
+                        layer_pads: List = None,
+                        tol: float = 0.05,
+                        end_half_width: float = 0.0) -> bool:
     """True if a degree-1 endpoint actually lands on same-net copper.
 
     The naive checker treated an endpoint as connected only if within a fixed
@@ -52,14 +106,25 @@ def _endpoint_connected(pt: Tuple[float, float], segments: List[Dict],
     tests against the actual copper extents -- via radius, pad half-extent, trace
     half-width -- plus a small overlap margin, matching the connectivity model.
 
-    vias / ph_pads span all layers; layer_pads are SMD pads on this layer. Each
-    entry is (x, y, size) where size is the full diameter / max pad dimension.
+    vias / ph_pads span all layers; layer_pads are SMD pads on this layer. Via
+    entries are (x, y, diameter) -- vias really are round. Pad entries are
+    `_pad_probe` tuples carrying the pad's own width, height, rotation and
+    shape, because a pad is not a circle (see `_point_in_pad`).
+    `end_half_width` is half the width of the trace that owns this endpoint.
     The endpoint's own segment is skipped (an endpoint trivially touches itself).
     """
     px, py = pt
-    for group in (vias, ph_pads, layer_pads):
-        for cx, cy, csize in (group or ()):
-            if math.hypot(px - cx, py - cy) < csize / 2 + tol:
+    # The endpoint is the CENTRE of the trace's end cap, so its copper reaches
+    # half a track width further in every direction. Crediting that is the
+    # second half of A8: one measured false orphan sat 0.01mm outside a pad
+    # whose copper its end cap overlapped by 0.19mm.
+    margin = tol + max(0.0, end_half_width)
+    for cx, cy, csize in (vias or ()):        # vias really are circles
+        if math.hypot(px - cx, py - cy) < csize / 2 + margin:
+            return True
+    for group in (ph_pads, layer_pads):
+        for probe in (group or ()):
+            if _point_in_pad(px, py, probe, margin):
                 return True
     for s in segments:
         sx, sy = s['start']
@@ -72,10 +137,53 @@ def _endpoint_connected(pt: Tuple[float, float], segments: List[Dict],
             continue
         # Nearest point on the whole segment (endpoints included): catches
         # T-junction taps, near-coincident endpoints, and collinear overlap.
+        # The end cap's own half-width counts here as it does against vias
+        # and pads (#1167): copper overlap is copper overlap.
         t = max(0.0, min(1.0, ((px - sx) * dx + (py - sy) * dy) / seg_len_sq))
-        if math.hypot(px - (sx + t * dx), py - (sy + t * dy)) < s.get('width', 0.0) / 2 + tol:
+        if math.hypot(px - (sx + t * dx), py - (sy + t * dy)) < \
+                s.get('width', 0.0) / 2 + margin:
             return True
-    return False
+    return _reverse_t_anchored(pt, segments, vias, tol)
+
+
+def _reverse_t_anchored(pt, segments, vias, tol) -> bool:
+    """Reverse T (#1167): another same-net track's VERTEX, or a via barrel,
+    landing on the BODY of the stub that owns ``pt`` anchors it -- check_weird's
+    mid-body-anchor rule. A tap smoothing re-anchored on a trunk's old diagonal
+    overlaps the trunk along its body while its free end overhangs; every other
+    checker calls that connected. The tail past the anchor must be a
+    sub-visible nib (at most 3 x the track width, check_weird's allowance): a
+    longer tail is still a dead end."""
+    px, py = pt
+    own = next((s for s in segments if s['start'] == pt or s['end'] == pt), None)
+    if own is None:
+        return False
+    (sx, sy), (ex, ey) = own['start'], own['end']
+    free_is_start = own['start'] == pt
+    dx, dy = ex - sx, ey - sy
+    L2 = dx * dx + dy * dy
+    if L2 < 1e-9:
+        return False
+    w = own.get('width', 0.0)
+    probes = [(vx, vy, vsize) for vx, vy, vsize in (vias or ())]
+    for o in segments:
+        if o is own:
+            continue
+        for v in (o['start'], o['end']):
+            probes.append((v[0], v[1], o.get('width', 0.0)))
+    from connectivity import lands_on_interior
+    cands = []
+    for ox, oy, osize in probes:
+        t = ((ox - sx) * dx + (oy - sy) * dy) / L2
+        if not lands_on_interior(t, L2):                # #1186, as check_weird
+            continue
+        if math.hypot(ox - (sx + t * dx), oy - (sy + t * dy)) < (osize + w) / 2 - 1e-6:
+            cands.append(t)
+    if not cands:
+        return False
+    t = min(cands) if free_is_start else max(cands)
+    tail = (t if free_is_start else 1.0 - t) * math.sqrt(L2)
+    return tail <= max(tol, 3 * w)
 
 
 def find_orphan_stubs(filename: str, net_name: Optional[str] = None,
@@ -136,8 +244,7 @@ def find_orphan_stubs(filename: str, net_name: Optional[str] = None,
         through_hole_pads = []
         for pad in net.pads:
             if pad.drill > 0 or '*.Cu' in pad.layers:
-                through_hole_pads.append((pad.global_x, pad.global_y,
-                                          max(pad.size_x, pad.size_y)))
+                through_hole_pads.append(_pad_probe(pad))
 
         net_results = {}
         for lyr in layers_to_check:
@@ -147,9 +254,12 @@ def find_orphan_stubs(filename: str, net_name: Optional[str] = None,
 
             # Find single endpoints (degree-1 nodes)
             endpoints = Counter()
+            end_half = {}
             for seg in segments:
-                endpoints[seg['start']] += 1
-                endpoints[seg['end']] += 1
+                _hw = seg.get('width', 0.0) / 2.0
+                for _pt in (seg['start'], seg['end']):
+                    endpoints[_pt] += 1
+                    end_half[_pt] = max(end_half.get(_pt, 0.0), _hw)
             single_endpoints = [pt for pt, count in endpoints.items() if count == 1]
 
             if not single_endpoints:
@@ -159,8 +269,7 @@ def find_orphan_stubs(filename: str, net_name: Optional[str] = None,
             layer_pads = []
             for pad in net.pads:
                 if lyr in pad.layers or '*.Cu' in pad.layers:
-                    layer_pads.append((pad.global_x, pad.global_y,
-                                       max(pad.size_x, pad.size_y)))
+                    layer_pads.append(_pad_probe(pad))
 
             # A degree-1 endpoint is an orphan only if it touches NO same-net
             # copper: not within a via/pad's copper extent, and not on another
@@ -177,8 +286,9 @@ def find_orphan_stubs(filename: str, net_name: Optional[str] = None,
                            for poly in zone_polys)
 
             orphans = {pt for pt in single_endpoints
-                       if not _endpoint_connected(pt, segments, vias,
-                                                  through_hole_pads, layer_pads)
+                       if not _endpoint_connected(
+                           pt, segments, vias, through_hole_pads, layer_pads,
+                           end_half_width=end_half.get(pt, 0.0))
                        and not _in_same_net_zone(pt)}
 
             if orphans:
@@ -289,4 +399,5 @@ def main():
 
 
 if __name__ == '__main__':
+    import cli_banner; cli_banner.install()  # CMD/EXIT self-echo (run-3 B1)
     main()

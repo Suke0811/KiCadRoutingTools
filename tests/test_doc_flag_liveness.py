@@ -1,0 +1,454 @@
+#!/usr/bin/env python3
+"""Every `--flag` the routing docs tell you to pass must actually exist.
+
+Run 22 lost a routing lap to `--track-width-floor`. The flag was DELETED in
+53a5a16e (with `--protect-nets` and `--net-layers`), but the routing skill
+still told the reader to pass it in nine places, `docs/api-routing-config.md`
+still documented the config field as live, and `krt_capabilities.py`'s own
+usage example still used it. The run followed the documentation, `route.py`
+answered `error: unrecognized arguments`, and a lap was spent finding out why.
+
+Nothing caught it, and the near-miss is instructive: `test_krt_capabilities.py`
+asserts `--track-width-floor` is absent on `route_planes.py` and
+`route_diff.py` -- but never on `route.py`, the one CLI it had actually been
+removed from. The removal passed CI because the only assertions about the flag
+were about the two tools that never had it.
+
+How this differs from `tests/test_431_skill_commands.py`, which is ALSO a
+"every flag the skill tells you to pass must exist" gate over the same skill
+files -- keep both, and do not delete either as a duplicate:
+
+  * #431 reads COMMAND LINES and resolves each flag against the NAMED tool's
+    real parser (`--help`, or the built argparse object). Stronger, per-tool,
+    and it is the right check for an emitted invocation.
+  * this gate reads PROSE -- a `--flag` in backticks in a sentence -- and
+    resolves it as a UNION over every tool, because prose names a flag without
+    naming a tool.
+
+That is exactly the gap 53a5a16e fell through: the stale `--track-width-floor`
+instruction was a sentence ("plus `--track-width-floor` for a width clause"),
+never a command line, so #431 could not see it and was not at fault.
+
+The gate is UNION-shaped on purpose: a flag is live if ANY routing CLI defines
+it. A per-tool gate would drown in false positives, because the prose
+legitimately discusses one tool's flag while describing another's step, and a
+gate that cries wolf gets deleted.
+
+Run: python3 -X utf8 tests/test_doc_flag_liveness.py
+"""
+import ast
+import os
+import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+os.environ.setdefault('KRT_NO_BANNER', '1')
+
+import krt_capabilities as K                                   # noqa: E402
+
+#: The docs this gate holds to the engine's actual surface.
+#:
+#: (History: the staged placement skill, since retired for pcb-free-agent.)
+#: `plan-pcb-placement/SKILL.md` was excluded (#923) over two rows that came
+#: back, on the reasoning that neither was a defect and a gate shipping two
+#: standing false positives stops being read. #936 resolved both instead, so
+#: it is in the list now:
+#:
+#:   * `--no-ratsnest` is REAL -- `render_placement.py --help` prints it --
+#:     and `_bool_pair` composes it as `f'--no-{name}'`, so no literal exists
+#:     anywhere for the scan to find. `_composed_flags` resolves registrars
+#:     of that shape at their call sites now, rather than by name.
+#:   * `--variant` exists on NO tool, and the prose that named it was a
+#:     conditional about a seeder that MIGHT take such an axis. `--seed` is
+#:     the axis both seeders actually take; the sentence says so now.
+#:
+#: An excluded file is where a real defect hides, so this list is the whole
+#: population again.
+#:
+#: Kept from the #923 review, because it stays true and is the reason the
+#: exclusion could not simply be waved through: `test_doc_constants` lists
+#: the placement skill but derives NOTHING from it -- that gate needs a
+#: `CONST (module.py) | value |` row and the file has none. It is listed for
+#: the day one appears. "Its numeric claims are covered elsewhere" was the
+#: unchecked coverage claim that review removed, and adding the file HERE is
+#: what makes the coverage real rather than asserted.
+DOCS = (
+    os.path.join('.claude', 'skills', 'plan-pcb-routing', 'SKILL.md'),
+    # The free-agent skill replaced the staged placement and combined skills
+    # (#923 had enrolled those after a number they quoted was pinned nowhere);
+    # it inherits their place in the list, verifier brief included.
+    os.path.join('.claude', 'skills', 'pcb-free-agent', 'SKILL.md'),
+    os.path.join('.claude', 'skills', 'pcb-free-agent', 'references',
+                 'verifier.md'),
+    os.path.join('docs', 'api-routing-config.md'),
+    # #946: this file was in NO gate at all -- not this one, not
+    # test_doc_constants, not run_doc_examples -- while quoting flags and
+    # constants throughout. Added here rather than to run_doc_examples,
+    # which EXECUTES its ```python blocks: a render block there would need
+    # Pillow and a board and would write PNGs into the repo root.
+    os.path.join('docs', 'route-animation.md'),
+)
+
+#: What counts as LIVE: any non-test source file that registers the flag with
+#: argparse. Deliberately a text scan over the whole engine rather than a
+#: per-CLI parser walk -- `krt_capabilities.script_flags` follows a registrar
+#: only when it sits BESIDE the script (the rule that stops it handing
+#: route_planes the whole of route.py's vocabulary), so flags registered from
+#: a sub-package (`py_placer/placement/cli_gates.py` supplies --suggest-locks
+#: and --allow-routed) read as dead and the gate cries wolf. A gate that cries
+#: wolf gets deleted, which would be worse than no gate.
+SKIP_DIRS = ('.git', 'wk', 'kicad_files', 'docs', 'node_modules',
+             '__pycache__', 'rust_router')
+
+#: A flag literal quoted inside an `add_argument(...)` CALL -- not any
+#: `--flag`-shaped string anywhere in the source.
+#:
+#: The first version of this gate scanned all non-test source text for
+#: `--flag` literals, on the reasoning that a removed flag disappears from the
+#: source entirely. It does not. A REMOVED flag survives in prose: docstrings,
+#: usage examples, comments and legacy tables. Measured on the commit that
+#: introduced this file, the broad scan reported:
+#:
+#:     --track-width-floor -> LIVE      (krt_capabilities.py's usage example)
+#:     --protect-nets      -> LIVE      (a tuple in tests/stress/manifest_to_plan.py)
+#:     --net-layers        -> dead
+#:
+#: -- so the gate was blind to two of the three flags it was written to catch,
+#: including the one that cost run 22 a lap. It passed only because that commit
+#: had already removed the doc mentions by hand; re-adding one tomorrow would
+#: have stayed green. A gate that cries wolf gets deleted, but a gate that
+#: never cries at all is worse: it is deleted AND it was never doing anything.
+#:
+#: The two objections the broad scan was reaching for both survive here:
+#:   * flags registered from a sibling sub-package (`--suggest-locks` via
+#:     `py_placer/placement/cli_gates.py`) stay live, because the scan is a
+#:     UNION over every non-test source file, not a per-CLI parser walk;
+#:   * generated boolean pairs stay live via the `--no-` derivation below --
+#:     `argparse.BooleanOptionalAction` registers `--refs` and supplies
+#:     `--no-refs` (`py_router/route_render.py`), which appears in no
+#:     add_argument call anywhere. This comment used to add that
+#:     `--no-ratsnest` is 'no such flag -- render_placement.py registers
+#:     --ratsnest-nets and --ratsnest-all and nothing else'. That was WRONG:
+#:     `--help` prints `--ratsnest` and `--no-ratsnest`, both composed by
+#:     `_bool_pair`, and `_composed_flags` is what finds them (#936).
+_ADD_ARG_CALL = re.compile(r"add_argument\s*\(")
+_FLAG_LIT = re.compile(r"""['"](--[a-z][a-z0-9-]{2,})['"]""")
+
+
+def _call_args(text, open_paren):
+    """The source slice between `add_argument(` and its matching `)`.
+
+    Quote-aware, because help strings routinely contain unbalanced parens
+    ("(default: 5)"). Returns '' if the call does not close within a
+    generous window -- a malformed slice must yield no flags rather than
+    swallow the rest of the file.
+    """
+    depth, k, n = 0, open_paren, min(len(text), open_paren + 4000)
+    while k < n:
+        c = text[k]
+        if c in '\'"':
+            q = c
+            trip = text.startswith(q * 3, k)
+            k += 3 if trip else 1
+            while k < n:
+                if text[k] == '\\':
+                    k += 2
+                    continue
+                if trip and text.startswith(q * 3, k):
+                    k += 3
+                    break
+                if not trip and text[k] == q:
+                    k += 1
+                    break
+                if not trip and text[k] == '\n':
+                    break
+                k += 1
+            continue
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                return text[open_paren:k]
+        k += 1
+    return ''
+
+
+def live_flags():
+    """Every long flag any non-test source registers with argparse."""
+    out = set()
+    for base, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs
+                   if d not in SKIP_DIRS and not d.startswith('.')
+                   or d in ('.claude',)]
+        for name in files:
+            # Skip TEST files, not the tests/ tree: tests/stress carries real
+            # tools the docs legitimately tell you to run (run_watch.py,
+            # fence_audit.py, tee_cmd.py).
+            if not name.endswith('.py') or name.startswith('test_'):
+                continue
+            try:
+                text = open(os.path.join(base, name), encoding='utf-8',
+                            errors='replace').read()
+            except OSError:
+                continue
+            for m in _ADD_ARG_CALL.finditer(text):
+                out |= set(_FLAG_LIT.findall(
+                    _call_args(text, m.end() - 1)))
+            out |= _composed_flags(text)
+    # Paired boolean flags: several tools register `--x` and get `--no-x`
+    # from a helper, so `--no-ratsnest` is real on render_placement.py while
+    # appearing in no add_argument call anywhere. A text scan cannot see the
+    # generated half, so derive it.
+    out |= {'--no-' + f[2:] for f in list(out)}
+    return out
+
+
+def _composed_flags(text):
+    """Flags a REGISTRAR builds from an f-string, resolved at its call sites.
+
+    `py_tools/render_placement.py:_bool_pair` does
+
+        g.add_argument(f'--{name}', ...); g.add_argument(f'--no-{name}', ...)
+
+    so neither `--ratsnest` nor `--no-ratsnest` is a literal anywhere and the
+    scan above sees neither. The `--no-` derivation does not rescue it either:
+    it derives from a set that never contained `--ratsnest`.
+
+    This file's own comment used to assert "there is no such flag --
+    render_placement.py registers `--ratsnest-nets` and `--ratsnest-all` and
+    nothing else". `render_placement.py --help` prints both `--ratsnest` and
+    `--no-ratsnest`, and #936 is an issue about exactly that kind of sentence.
+
+    Resolved by SHAPE, not by a list of helper names: find any function whose
+    body calls `add_argument` with an f-string of exactly two parts,
+    `--<literal>` then `{param}`, and read the literal every caller in the
+    same file passes at that parameter's position.
+
+    WHAT THAT SHAPE DOES NOT COVER, stated because an unstated limit is how
+    a gate is believed to cover more than it does. UNDER: an f-string of
+    three or more parts (`f'--{prefix}-{name}'`), and a keyword-only
+    parameter (`fn.args.args` excludes kwonly and posonly). OVER: a
+    registrar that reassigns its parameter before use yields the
+    pre-transform spelling; a same-named function in another scope
+    contributes its call sites; a call under `if False:` still counts.
+    Over-approximating is the dangerous direction here -- an invented flag
+    makes the gate blind to a real dead one -- so if a second registrar ever
+    appears, check it. `render_placement._bool_pair` is the only one in the
+    repo today, and all 18 flags it yields are real per `--help`.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    #: {function name: [(literal prefix, positional index, parameter name)]}
+    registrars = {}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = [a.arg for a in fn.args.args]
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == 'add_argument' and node.args):
+                continue
+            first = node.args[0]
+            if not isinstance(first, ast.JoinedStr) or len(first.values) != 2:
+                continue
+            head, tail = first.values
+            if not (isinstance(head, ast.Constant)
+                    and isinstance(head.value, str)
+                    and head.value.startswith('--')
+                    and isinstance(tail, ast.FormattedValue)
+                    and isinstance(tail.value, ast.Name)
+                    and tail.value.id in params):
+                continue
+            registrars.setdefault(fn.name, []).append(
+                (head.value, params.index(tail.value.id), tail.value.id))
+
+    out = set()
+    for call in ast.walk(tree):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):
+            continue
+        for prefix, idx, arg_name in registrars.get(call.func.id, ()):
+            val = None
+            if len(call.args) > idx and isinstance(call.args[idx], ast.Constant):
+                val = call.args[idx].value
+            for kw in call.keywords:
+                if kw.arg == arg_name and isinstance(kw.value, ast.Constant):
+                    val = kw.value.value
+            if isinstance(val, str) and val:
+                out.add(prefix + val)
+    return out
+
+
+#: Flags that belong to something other than this repo's CLIs. Seeded by
+#: running the gate once and reading what it found; keep it short, and add to
+#: it only for a genuinely foreign tool.
+EXTERNAL = {
+    # git / shell / kicad-cli / pytest / gh, quoted in worked examples
+    '--oneline', '--json', '--format', '--output', '--help', '--version',
+    '--no-verify', '--hard', '--force', '--from-source', '--stat',
+    '--exclude-all', '--define-var', '--drc', '--severity-all', '--units',
+    '--schematic-parity', '--all', '--quiet', '--verbose', '--dry-run',
+    '--name-only', '--porcelain', '--short', '--set-upstream', '--amend',
+    '--no-pager', '--follow', '--patch', '--word-diff', '--color',
+    '--recurse-submodules', '--depth', '--branch', '--tags',
+    # `gh issue list --search` (pcb-free-agent's hand-back: check the open
+    # issues before filing a tool gap).
+    '--search',
+    # Prose placeholders, not flags: "`--flag`" in a worked example, and
+    # "`--stitch-`" as the prefix of a family.
+    '--flag', '--stitch-',
+}
+
+FAILURES = []
+
+
+def check(name, cond, detail=''):
+    print(f'  {"PASS" if cond else "FAIL"}  {name}'
+          + (f'\n        {detail}' if not cond and detail else ''))
+    if not cond:
+        FAILURES.append(name)
+
+
+#: A mention sitting in one of these sentences is the doc DOING ITS JOB --
+#: telling the reader a flag is gone. Counting those as errors would punish
+#: the very correction this gate exists to produce, and would leave the gate
+#: permanently unfixable: every honest "--x was REMOVED" note would fail it.
+_ABSENT = re.compile(
+    r'REMOVED|does not exist|do NOT exist|there is no|no such flag|'
+    r'was removed|were removed|deleted in|not a flag|do not emit|'
+    r'no longer exists|has been removed',
+    re.IGNORECASE)
+
+
+def documented_flags(rel):
+    """Long flags a doc tells the reader to PASS, as `--flag` in backticks.
+
+    Bare prose mentions are not matched: the point is the instruction, not
+    every incidental word. And a mention whose sentence says the flag is
+    ABSENT is not an instruction either -- see `_ABSENT`.
+    """
+    lines = open(os.path.join(ROOT, rel), encoding='utf-8').read().splitlines()
+    found = {}
+    for n, line in enumerate(lines):
+        # The sentence, generously: this line plus its neighbours, because a
+        # "REMOVED" verdict often lands a line away from the flag it names.
+        if _ABSENT.search(' '.join(lines[max(0, n - 2):n + 3])):
+            continue
+        for m in re.finditer(r'`([^`\n]*?)`', line):
+            for f in re.findall(r'(?<![\w-])(--[a-z][a-z0-9-]{2,})',
+                                m.group(1)):
+                found[f] = found.get(f, 0) + 1
+    return found
+
+
+
+#: Scripts a doc names but the repo does not ship. Same failure as a dead flag
+#: -- the reader runs it, gets "No such file or directory", and spends a lap
+#: finding out the tool was renamed. `route_disconnected_planes.py` became
+#: `repair_planes.py`, and both skills still named the old one.
+#:
+#: Same ABSENT-sentence exemption as the flag half: a doc that says "x.py was
+#: renamed to y.py" is doing its job.
+_SCRIPT_RE = re.compile(r'(?<![\w-])([a-z][a-z0-9_]{2,40}\.py)(?![\w])')
+
+#: Names that are examples or foreign tools, not repo scripts.
+EXTERNAL_SCRIPTS = {
+    # "If the repo has a `check_spec.py` (or equivalent), run it" -- a
+    # conditional about a file the reader may have, not an instruction to run
+    # one this repo ships. The only entry that is load-bearing today; keep the
+    # set this short, and add to it only for a genuinely foreign tool.
+    'check_spec.py',
+}
+
+
+def repo_scripts():
+    """Every .py filename the repo ships."""
+    out = set()
+    for base, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS
+                   and (not d.startswith('.') or d == '.claude')]
+        for name in files:
+            if name.endswith('.py'):
+                out.add(name)
+    return out
+
+
+def documented_scripts(rel):
+    """Script names a doc tells the reader to RUN, as `x.py` in backticks or
+    on a command line, minus any sitting in an "it is gone" sentence."""
+    lines = open(os.path.join(ROOT, rel), encoding='utf-8').read().splitlines()
+    found = {}
+    for n, line in enumerate(lines):
+        if _ABSENT.search(' '.join(lines[max(0, n - 2):n + 3])):
+            continue
+        cands = [m.group(0) for m in re.finditer(r'`([^`\n]*?)`', line)]
+        if 'python3' in line or re.search(r'\b(py_router|py_placer|py_tools|'
+                                          r'tests)/', line):
+            cands.append(line)
+        for c in cands:
+            for s in _SCRIPT_RE.findall(c):
+                found[s] = found.get(s, 0) + 1
+    return found
+
+
+def main():
+    live = live_flags()
+    scripts = repo_scripts()
+    check('the capability scan found a plausible flag surface',
+          len(live) > 100, f'only {len(live)} flags found by the add_argument scan')
+    check('the script scan found a plausible file surface',
+          len(scripts) > 100, f'only {len(scripts)} .py files found')
+    # POSITIVE CONTROL on the composed-flag resolver. It used to be held down
+    # only by the retired placement skill citing `--no-ratsnest`; with that
+    # skill gone no doc here cites a composed flag, so a blinded resolver
+    # would pass every row above. `render_placement.py --help` prints both.
+    check('the composed-flag resolver finds render_placement\'s --ratsnest pair',
+          {'--ratsnest', '--no-ratsnest'} <= live,
+          'the f-string registrar (_bool_pair) is no longer resolved')
+
+    for rel in DOCS:
+        if not os.path.exists(os.path.join(ROOT, rel)):
+            continue
+        print(f'{rel}')
+        documented = documented_flags(rel)
+        dead = sorted(f for f in documented
+                      if f not in live and f not in EXTERNAL)
+        check(f'{os.path.basename(rel)} names no flag the engine dropped',
+              not dead,
+              'these are documented but exist on NO tool: '
+              + ', '.join(f'{f} (x{documented[f]})' for f in dead))
+
+        documented_s = documented_scripts(rel)
+        dead_s = sorted(s for s in documented_s
+                        if s not in scripts and s not in EXTERNAL_SCRIPTS)
+        check(f'{os.path.basename(rel)} names no script the repo dropped',
+              not dead_s,
+              'these are documented but the repo ships no such file: '
+              + ', '.join(f'{s} (x{documented_s[s]})' for s in dead_s))
+
+
+    print('the near-miss that let 53a5a16e through')
+    caps = K.capabilities()
+    # test_krt_capabilities asserted this flag's absence on the two tools that
+    # never had it, and not on the one it was removed from.
+    for token in ('route.py:--track-width-floor',
+                  'route.py:--net-layers',
+                  'route.py:--protect-nets'):
+        check(f'{token} is reported missing',
+              bool(K.missing(caps, [token])),
+              'either the flag came back, or the capability scan is lying')
+
+    print()
+    if FAILURES:
+        print(f'FAIL: {len(FAILURES)} check(s): {", ".join(FAILURES)}')
+        return 1
+    print('OK')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

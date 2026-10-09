@@ -9,19 +9,50 @@ When this skill is invoked with a board file, run a full post-route review and p
 
 ## Step 1: Mechanical Checks
 
-Run all three checkers, capturing output:
+Run all four checkers, capturing output:
 
 ```bash
 python3 -X utf8 py_router/check_drc.py board.kicad_pcb 2>&1 | tee /tmp/review_drc.txt
 python3 -X utf8 py_router/check_connected.py board.kicad_pcb 2>&1 | tee /tmp/review_connectivity.txt
 python3 -X utf8 py_tools/check_orphan_stubs.py board.kicad_pcb 2>&1 | tee /tmp/review_orphans.txt
+python3 -X utf8 py_router/check_weird.py board.kicad_pcb 2>&1 | tee /tmp/review_weird.txt
 ```
+
+`check_weird.py` is here because the other three cannot see its classes.
+`check_orphan_stubs` iterates SEGMENT endpoints and treats a via as an anchor,
+so it structurally cannot report a bad via; `check_weird` owns `dangling-via`
+(same-net copper on only one of the layers the barrel spans -- KiCad's
+`via_dangling`), `unsupported-via`, `stacked-copper`, `orphan-island` and
+`kicad-dangling` (a joint stub lying on one other track, which KiCad reports as
+`track_dangling` though both its ends touch copper).
+Measured on run 11's final board: `check_orphan_stubs` none, `check_weird`
+**3 dangling vias**, each independently confirmed.
 
 `check_drc.py` auto-grades at the clearance the routing steps wrote into the sibling
 `.kicad_pro` (the smallest clearance any step actually used, including auto-stepped
 fine-pitch taps), so the bare invocation above already grades at the true routed
-floor. Pass `--clearance <value>` only to override (e.g. to grade a hand-routed
-board with no routed-floor `.kicad_pro`).
+floor. Like KiCad, it floors that class at Board Setup `min_clearance` (#1210):
+an unrouted or hand-routed board whose project declares a minimum above its
+Default class grades at the minimum. Pass `--clearance <value>` only to override
+(e.g. to grade a hand-routed board with no routed-floor `.kicad_pro`).
+
+When the board was routed from an input you have, add `--baseline <the input
+board>`. `VIA-IN-PASTE` rows are vias whose barrel sits in a solder-paste
+opening of their own net without IPC-4761 Type VII (filled AND capped); solder
+wicks into such a barrel. KiCad has no such check, so check_drc is the only
+instrument that reports them. On a KiCad 10-format board the router stamps
+Type VII onto every via it adds in a pad or paste opening, so these are almost
+always vias the input already had: `--baseline` accepts those (a via the input
+had under solder, unprotected) as `inherited-via-in-paste` and the console line
+counts them. A file older than KiCad 10 (version < 20250000) cannot carry
+the tokens at all, so there every such via `--baseline` does not inherit is
+accepted `undeclarable-via-in-paste` and counted on the same line: Type VII
+belongs on the fab drawing. Report whatever still fires as a fab defect: the
+via needs filled+capped on the fab drawing, or it must move out of the opening.
+Without `--baseline`, every pre-existing one reads as a violation
+(one corpus board carries 136). The same flag grades a graze of footprint graphic copper that a
+part MOVE created (`graphic-board-edge`); `graphic-off-board` (copper past the
+outline) is reported either way.
 
 **Important caveat to include in the report:** `check_drc.py` does not check zone copper, minimum trace width, or netclass compliance. If the board has copper zones/planes, recommend the zone-aware check:
 
@@ -34,6 +65,15 @@ routing/connectivity defects and are excluded by the harness graders
 (`kicad_drc_compare.py`, `kicad_oracle.py`) for exactly this reason. Filter them
 out before counting:
 
+Why `via_dangling` in particular, measured on run 11's final board: KiCad
+reported **66** of them, all severity `warning`, while only **3** vias on the
+board are genuinely supported on one layer. The other ~63 are plane-tap vias on
+the two poured nets whose zone copper KiCad has not filled — the pour is real in
+the file, but a via's second-layer connection is the zone, and an unfilled zone
+connects nothing. Drop the flag from the *count*, and get the true number from
+`check_weird.py`'s `dangling-via`, which credits the zone polygon directly. Do
+NOT chase parity with KiCad's figure here; you would be chasing a fill artifact.
+
 ```bash
 python3 -c "import json;v=json.load(open('/tmp/drc.json'))['violations'];\
 drop={'via_dangling','track_dangling','silk_overlap','silk_over_copper',\
@@ -41,6 +81,13 @@ drop={'via_dangling','track_dangling','silk_overlap','silk_over_copper',\
 c=[x for x in v if x['type'] not in drop];\
 print(f'{len(c)} copper/connectivity violations ({len(v)-len(c)} silk/dangling ignored)')"
 ```
+
+A `shorting_items` between `<no net>` and a net, on a part's own graphic copper
+("Polygon [<no net>] of U2"), is not a short when that net is the part's own
+pad's: a SOT-89 tab its pad's net was routed onto. `check_drc.py` lists each one
+under WARNINGS as `footprint own copper` (#995). Report them as KiCad errors the
+user will see, not as shorts. A `<no net>` item with any OTHER net is a real
+short.
 
 The cross-check is one-directional (#260): kicad-cli can refute a borderline
 check_drc *near-miss* (a sub-clearance gap), but a kicad-cli "0" does NOT clear
@@ -179,6 +226,10 @@ How to read it:
   so once rather than listing every net.
 - **Void on a plain low-speed net is usually noise.** Only escalate for nets that
   are genuinely impedance-controlled or high-speed.
+- **A void inside the antipad of the net's own via (or its P/N partner's) is a
+  layer change, not a slot.** check_impedance counts those as
+  `own_via_antipad_runs`, never as crossings. Whether a GND via sits beside the
+  transition is a separate return-path question.
 - **If `--coplanar-gap` was declared**, the audit's "NO ground beside" and "gap
   off-target" lengths are the real result: that copper was routed at a width
   assuming a ground that is not there. Some off-target length near via antipads
@@ -194,10 +245,33 @@ For each differential pair (from `list_nets.py --diff-pairs`):
 
 ## Step 5: The Sign-Off Report
 
-Present a compact report — one pass/fail line per category, details only for failures, ending with next actions:
+**Lead with the score, so this review and `/plan-pcb-routing` agree on what
+"done" means.** One command produces it, and it is the same number Step 9 of the
+routing skill loops on:
+
+```bash
+python3 -X utf8 py_tools/board_score.py \
+    board.kicad_pcb --intent wk/floorplan.json \
+    --min-track-width <spec> --min-via-diameter <spec> --min-via-drill <spec>
+```
+
+`blocking == 0` is the only state in which this report may say the board is
+ready. Anything else is **not done** — hand it back to `/plan-pcb-routing`
+Step 9 rather than signing off with caveats. Two traps this closes:
+
+- **`ungraded` is not `passed`.** Components with no intent, no impedance nets
+  and no length groups were *unexamined*; list them as such.
+- **The size floors default to the FAB minimum, not the spec.** Pass the spec's
+  numbers, or copper that meets the fab and violates the board's own tighter
+  requirement signs off clean.
+
+Then present a compact report — one pass/fail line per category, details only for failures, ending with next actions:
 
 ```
 ## Board Review: board.kicad_pcb
+
+BLOCKING=0  (unrouted=0 broken=0 drc=0 undersized=0 floorplan=0 assembly=0 net_widths=0)  vias=214 copper_mm=1893.4
+UNGRADED (not scored, not passed): impedance, length
 
 | Check | Result |
 |-------|--------|
@@ -215,7 +289,9 @@ Present a compact report — one pass/fail line per category, details only for f
 
 ### Next actions
 1. Run /diagnose-routing-failures with the routing logs for the 2 disconnected nets
-2. Re-run route_planes.py --add-gnd-vias for the 3 uncovered signal vias
+2. Re-run route_planes.py --add-gnd-vias for the 3 uncovered signal vias, then
+   a closing route.py whose --nets covers the poured nets (the re-pour leaves
+   its welds unverified until route.py's plane finalize runs)
 ```
 
-When connectivity or routing failures are found, recommend `/diagnose-routing-failures` as the follow-up rather than diagnosing inline here.
+When connectivity or routing failures are found, recommend `/diagnose-routing-failures` as the follow-up rather than diagnosing inline here. If they trace to part positions (pad copper off the outline, unreachable pads, `check_assembly` not buildable), recommend `/pcb-free-agent full` instead of a router retry.

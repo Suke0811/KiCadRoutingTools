@@ -47,11 +47,20 @@ def _bare_pad_pair_vias_fit(pcb_data, new_vias, config) -> Tuple[bool, str]:
     very thing we test for here via the new_vias[i+1:] pass). Mirrors
     diff_pair_multipoint._fans_fit, which already guards the multipoint relocation.
 
+    A via and another net's copper are priced at the clearance check_drc
+    grades the pair at (#1136): the stack against a via (the partner's
+    included), the track's layer against a track, the copper the two share
+    against a pad (`pad_pair_clearance_before_override`, with the pad's
+    override applied below as it always was). A board that declares no
+    class and no .kicad_dru rule reads `config.clearance` throughout.
+
     Returns (fit, reason).
     """
     from check_drc import (check_via_via_overlap, check_via_drill_overlap,
                             check_pad_via_overlap, check_pad_drill_via_overlap)
     clearance = config.clearance
+    mp = config.max_pair_clearance()
+    _inert = config.pair_clearance_inert()
     h2h = config.hole_to_hole_clearance
     margin = _DRC_CLEARANCE_MARGIN
     routing_layers = [l for l in config.layers if l.endswith('.Cu')]
@@ -69,7 +78,11 @@ def _bare_pad_pair_vias_fit(pcb_data, new_vias, config) -> Tuple[bool, str]:
     for i, v in enumerate(new_vias):
         # vs the partner net's new pad via (the P/N via-via at the pad pitch).
         for w in new_vias[i + 1:]:
-            if check_via_via_overlap(v, w, clearance, margin)[0]:
+            # (two vias of ONE net keep the flat value: check_drc grades no
+            # clearance between them)
+            vw_clr = (clearance if w.net_id == v.net_id else
+                      config.pair_clearance(v.net_id, w.net_id, kind='stack'))
+            if check_via_via_overlap(v, w, vw_clr, margin)[0]:
                 return False, "P/N pad vias collide (via-via)"
             if check_via_drill_overlap(v, w, h2h, margin)[0]:
                 return False, "P/N pad via drills collide (hole-to-hole)"
@@ -80,7 +93,9 @@ def _bare_pad_pair_vias_fit(pcb_data, new_vias, config) -> Tuple[bool, str]:
         for ev in pcb_data.vias:
             if id(ev) in new_ids:
                 continue
-            if ev.net_id != v.net_id and check_via_via_overlap(v, ev, clearance, margin)[0]:
+            if ev.net_id != v.net_id and check_via_via_overlap(
+                    v, ev, config.pair_clearance(v.net_id, ev.net_id,
+                                                 kind='stack'), margin)[0]:
                 return False, "pad via grazes a foreign via (via-via)"
             if check_via_drill_overlap(v, ev, h2h, margin)[0]:
                 return False, "pad via drill grazes a via drill (hole-to-hole)"
@@ -97,11 +112,17 @@ def _bare_pad_pair_vias_fit(pcb_data, new_vias, config) -> Tuple[bool, str]:
                 # No grading-margin slack when the override governs: the post-route
                 # via-nudge cannot fix a via boxed between two long override pads
                 # (moving off one worsens the other), so a margin-graze ships.
-                pad_clr = max(clearance, getattr(pad, 'local_clearance', 0.0) or 0.0)
-                pad_margin = margin if pad_clr == clearance else 0.0
-                if pad_net != v.net_id and check_pad_via_overlap(
-                        pad, v, pad_clr, routing_layers, pad_margin)[0]:
-                    return False, "pad via grazes a foreign pad (pad-via)"
+                # #1136: the override is weighed against the pair's own value.
+                if pad_net != v.net_id:
+                    pad_base = clearance if _inert else \
+                        config.pad_pair_clearance_before_override(
+                        pad, v.net_id)
+                    pad_clr = max(pad_base,
+                                  getattr(pad, 'local_clearance', 0.0) or 0.0)
+                    pad_margin = margin if pad_clr == pad_base else 0.0
+                    if check_pad_via_overlap(
+                            pad, v, pad_clr, routing_layers, pad_margin)[0]:
+                        return False, "pad via grazes a foreign pad (pad-via)"
                 # drills: net-independent (same-net THT pad drill still conflicts)
                 if check_pad_drill_via_overlap(pad, v, h2h, margin)[0]:
                     return False, "pad via drill grazes a pad drill (hole-to-hole)"
@@ -121,13 +142,17 @@ def _bare_pad_pair_vias_fit(pcb_data, new_vias, config) -> Tuple[bool, str]:
             # only rejected swaps the nudge would have fixed -- and the earlier
             # tightening was misattributed to cynthion MEZZANINE6, which is an
             # UNBLOCK via handled by the #339 refit, not a swap via.
-            need = vr + sg.width / 2.0 + clearance - margin
-            # cheap bbox reject before the exact distance
+            # #1136: the margin is taken off the pair's own value.
+            need = vr + sg.width / 2.0 + mp - margin
+            # cheap bbox reject before the exact distance (at the widest
+            # pair value, so only a track that could graze is priced)
             if (v.x < min(sg.start_x, sg.end_x) - need or
                     v.x > max(sg.start_x, sg.end_x) + need or
                     v.y < min(sg.start_y, sg.end_y) - need or
                     v.y > max(sg.start_y, sg.end_y) + need):
                 continue
+            need = vr + sg.width / 2.0 + config.pair_clearance(
+                v.net_id, sg.net_id, sg.layer) - margin
             if point_to_segment_distance(v.x, v.y, sg.start_x, sg.start_y,
                                          sg.end_x, sg.end_y) < need:
                 return False, "pad via grazes a foreign track (via-segment)"
@@ -140,20 +165,31 @@ def _swap_vias_fit_or_shrink(pcb_data, new_vias, config) -> bool:
     full-size via bodies/drills collide (VIA-VIA / hole-to-hole) or graze a foreign
     via/pad, and nothing on the solo-switch path validated them (only the bare-pad
     TARGET swap did, via #241). The swap itself is fine (the pair genuinely needs
-    that layer), so SHRINK the new vias toward the fab via floor until they fit;
-    only if even the floor via still overlaps does the caller revert the swap.
+    that layer), so SHRINK the new vias toward the deepest escalation rung until
+    they fit; only if even that via still overlaps does the caller revert the swap.
 
     Returns True if the vias fit (possibly after shrinking, mutating size/drill in
     place so the writer emits the shrunk via); False if they can't be made to fit
-    without going below the fab floor (originals restored). #277."""
+    without going below the floor (originals restored). #277."""
     if not new_vias:
         return True
     if _bare_pad_pair_vias_fit(pcb_data, new_vias, config)[0]:
         return True
-    from fab_tiers import fab_floor_for_param
+    from fab_tiers import escalation_rungs, warn_fab_escalation, note_narrowing
     copper = sum(1 for l in config.layers if l.endswith('.Cu'))
-    via_floor = fab_floor_for_param('via_diameter', copper) or 0.25
-    drill_floor = fab_floor_for_param('via_drill', copper) or 0.15
+    # escalation_rungs, never the physical fab floor: empty under --escalation
+    # off (the vias stay as asked and the caller reverts the swap), bounded by
+    # a hard tier, raised to the board's own minimums under board (#857) and to
+    # the stricter of the two nets' rule minimums (#530).
+    net_floors = {}
+    for v in new_vias:
+        for k, f in config.rule_floors(v.net_id).items():
+            net_floors[k] = max(net_floors.get(k, 0.0), f)
+    ladder = escalation_rungs(copper, extra_floors=net_floors)
+    if not ladder:
+        return False
+    via_floor = ladder[-1]['via_diameter']
+    drill_floor = ladder[-1]['via_drill']
     orig = [(v.size, v.drill) for v in new_vias]
     ANNULAR = 0.1  # keep body - drill >= this (2x ring) as we shrink
     size = config.via_size
@@ -165,6 +201,11 @@ def _swap_vias_fit_or_shrink(pcb_data, new_vias, config) -> bool:
         for v in new_vias:
             v.size, v.drill = size, drill
         if _bare_pad_pair_vias_fit(pcb_data, new_vias, config)[0]:
+            if size < ladder[0]['via_diameter'] - 1e-9:
+                warn_fab_escalation("layer-swap pad vias")
+            for v in new_vias:
+                note_narrowing(v.net_id, 'via_diameter', config.via_size, size,
+                               'layer-swap pad via')
             return True
     for v, (s, d) in zip(new_vias, orig):
         v.size, v.drill = s, d
@@ -2034,10 +2075,40 @@ def apply_single_ended_layer_swaps(
         sources, targets, error = get_net_endpoints(pcb_data, net_id, config)
         if error or not sources or not targets:
             continue
+        # "Needs a via" is a question about the terminal SETS, not about their
+        # first elements. get_net_endpoints returns EVERY terminal -- pads, and
+        # (since via terminals) each layer an existing via already reaches -- so
+        # a net whose two ends both reach some common layer needs no via and
+        # wants no upfront swap.
+        #
+        # Comparing sources[0] to targets[0] asked whichever question the list
+        # order happened to encode. Measured on the #534 escape-via board: with
+        # F.Cu/B.Cu appended to config.layers as forbidden obstacles, sources[0]
+        # was the F.Cu PAD while targets[0] was an In1.Cu VIA terminal, so the
+        # net was declared to need a via -- though the two sets were IDENTICAL
+        # ({F.Cu, B.Cu, In1.Cu, In2.Cu}) and both escape vias already reached
+        # every routing layer. The swap then moved the source stub off F.Cu and
+        # minted a via IN the pad, orphaning the designer's own escape via,
+        # which the #622 stub-debris trim then correctly collected as dangling.
+        # The other end was untouched purely because targets[0] sorted to a via
+        # terminal rather than a pad.
+        # ROUTABLE layers only. Full-stack mode appends the board's unrequested
+        # copper layers with FORBIDDEN cost (-1) so their copper blocks vias;
+        # terminals land on those too, and a shared FORBIDDEN layer is not a
+        # place the two ends can meet -- counting it would skip the swap for a
+        # net that genuinely needs one.
+        _costs = getattr(config, 'layer_costs', None) or []
+
+        def _routable(idx):
+            return idx >= len(_costs) or _costs[idx] >= 0
+
+        src_layers = {config.layers[e[2]] for e in sources if _routable(e[2])}
+        tgt_layers = {config.layers[e[2]] for e in targets if _routable(e[2])}
+        if src_layers & tgt_layers:
+            continue
         src_layer = config.layers[sources[0][2]]
         tgt_layer = config.layers[targets[0][2]]
-        if src_layer != tgt_layer:  # Only track nets needing via
-            single_net_layer_info[net_name] = (src_layer, tgt_layer, sources, targets, net_id)
+        single_net_layer_info[net_name] = (src_layer, tgt_layer, sources, targets, net_id)
 
     if not single_net_layer_info and not multipoint_candidates:
         return 0

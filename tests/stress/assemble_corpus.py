@@ -28,24 +28,186 @@ TIER_PKG = {"easy": "2-layer,MCU", "medium": "4-layer,USB,MCU", "hard": "BGA,FPG
 # What a set IS, carried into the generated fetch_setN.py docstring. Without this
 # the generator overwrites any hand-written description every time it re-runs.
 SET_BLURB = {
+    "set28": (
+        "set28 began as the hwidvorakinfo (Daniel Dvorak) batch -- a single-designer\n"
+        "survey of that author's 22 public repos, of which only 3 ship a\n"
+        ".kicad_pcb at all (the rest are firmware-only STM32 Eclipse projects).\n"
+        "BEASTH7_01 was rejected by validate_candidate.py as pre-KiCad-6 format\n"
+        "(20171130, ships a v5 .pro rather than a .kicad_pro), leaving two:\n"
+        "a 2 GHz active scope probe (RF/analog, few nets but tight geometry) and\n"
+        "a 218-footprint smart agricultural switch (mains-side power + MCU).\n"
+        "\n"
+        "mez_rx joined later from a DIFFERENT source: a user-submitted board\n"
+        "attached to issue #614 by ughstudios (Daniel Gleason), who reported the\n"
+        "router could not complete it. It is the first ARCHIVE-sourced entry\n"
+        "(a .zip attachment, not a raw repo URL -- see archive_url/archive_member)\n"
+        "and the corpus's hardest board to date: 8 layers, a 400-ball 0.8mm-pitch\n"
+        "FPGA, a real .kicad_dru DFM ruleset, and 91.1% completion against a\n"
+        "corpus median of 100%. It has NEVER been human-routed, so boards_set28/\n"
+        "mez_rx.kicad_pcb is a DEGENERATE reference (0 segments/0 vias):\n"
+        "compare_to_original and the DRC-delta-vs-original are meaningless for it.\n"
+        "\n"
+        "storm_tracker (solderable/storm-tracker-hardware) joined 2026-08-13 at\n"
+        "Andy's request: a 4-layer 36.5x69mm ESP32-C6-MINI-1U lightning detector\n"
+        "(AS3935 + 1.54\" e-paper over a 24-pin 0.5mm FFC, USB-C, battery charger).\n"
+        "Small but dense -- 342 vias in 2500mm2, a 0.13mm fab floor -- and one of\n"
+        "only two corpus boards with a real .kicad_dru; unlike mez_rx's DFM\n"
+        "ruleset, its single rule is CONDITIONED on a netclass\n"
+        "(A.NetClass == '90R_DP' && B.NetName == 'GND'), and its USB pair is\n"
+        "netclass-assigned by PATTERN (*USB_D* -> 90R_DP). Fully human-routed, so\n"
+        "unlike mez_rx it is a usable compare_to_original reference."
+    ),
     "set3monster": (
         "set3monster is the \"extreme / intractable\" monster batch: boards whose\n"
         "size or stackup puts a single route step near (or past) the RUNBOOK 3h/command\n"
         "cap. lora_cubesat_cm (485 nets / 6 layers) was moved here out of set11 for\n"
         "exactly that reason. The rest are 8-14 copper layer Antmicro boards -- the\n"
         "first >8-layer boards in the corpus, admitted once validate_candidate.py's\n"
-        "upper layer bound was removed in favour of the `monster` tier."
+        "upper layer bound was removed in favour of the `monster` tier.\n"
+        "\n"
+        "smartprint_h7x (BoltzRnD/SmartPrintCoreH7x) joined 2026-09-13 from the\n"
+        "awesome-kicad-projects mining pass. It is monster by PART COUNT, not\n"
+        "stackup -- 567 footprints and 383 routable nets on TWO layers, 170x97mm --\n"
+        "so it lands here for lora_cubesat_cm's reason rather than the Antmicro\n"
+        "boards'. classify() puts any board at fps >= 500 in this tier regardless of\n"
+        "layer count, and with no inner layers every net competes for the same two\n"
+        "planes (the human routing spent 1506 vias)."
+    ),
+    "set29": (
+        "set29 is the awesome-kicad-projects mining batch (2026-09-13): the\n"
+        "way2pramil/awesome-kicad-projects curated list, 71 distinct project repos,\n"
+        "mined end to end. 22 of those repos were ALREADY in the corpus, which is the\n"
+        "useful signal about the source -- it overlaps the existing corpus heavily\n"
+        "and the remainder is what it adds.\n"
+        "\n"
+        "Of the 49 new repos, 4 ship no .kicad_pcb at all and 22 are ENTIRELY\n"
+        "pre-KiCad-6 (a rescue scan of all 51 alternate boards in those repos found\n"
+        "no v6+ revision anywhere in their trees), which validate_candidate.py\n"
+        "rejects for having no sibling .kicad_pro. Of the 15 that survived, one\n"
+        "(phodina/echo-debug-gen3) failed the >=20 routable-nets floor and one\n"
+        "(smartprint_h7x) classified `monster` and went to set3monster -- leaving\n"
+        "these 12.\n"
+        "\n"
+        "A 13th, ButterStick, was dropped as a DUPLICATE that no repo-level check\n"
+        "could catch: the awesome list points at the org repo\n"
+        "butterstick-fpga/butterstick-hardware, while the corpus already holds the\n"
+        "identical board from the author's personal repo gregdavill/butterstick\n"
+        "(set2, same hardware/ButterStick_r1.0/ path, and set2's manifest predates\n"
+        "the short_name field so a name check would not have seen it either).\n"
+        "dedupe_score.py scored it 1.000 against the 443-board pre-addition corpus;\n"
+        "the 13 admitted boards scored 0.008 to 0.137 against the same corpus, all\n"
+        "well under the 0.30 bar, and 0.078 worst pairwise among themselves.\n"
+        "Run dedupe_score BEFORE prepping: once a candidate is in boards_setN/ it\n"
+        "matches its own copy and every score reads 1.000.\n"
+        "\n"
+        "What the set adds beyond board count: THREE boards with a real .kicad_dru\n"
+        "(#498), taking the corpus from two to five, and each in a rule dialect the\n"
+        "existing two do not use -- piunora's netclass-conditioned diff-pair\n"
+        "clearances (90ohm 0.1016mm / 100ohm 0.127mm), amulet_controller's PCBWay DFM\n"
+        "set scoped by `(layer outer)` / `(layer inner)`, which is the ONLY corpus\n"
+        "board exercising the per-layer clearance path, and twonkie's NEGATIVE\n"
+        "edge_clearance (min -1mm) conditioned on `A.insideCourtyard('J1'|'J2')`.\n"
+        "Neither mez_rx nor storm_tracker carries a negative constraint, so twonkie\n"
+        "and amulet_controller are the first two that do.\n"
+        "\n"
+        "One claim deliberately NOT made: amulet_controller and usbarmory carry user\n"
+        "layer nicknames ('L1 (Sig, PWR)', 'TOP'/'SIGNAL_1'/'GND_POWER_1'), which\n"
+        "reads like a novel parser surface and is not one -- they sit ALONGSIDE the\n"
+        "canonical F.Cu/In1.Cu names (the 4th token), 35 corpus boards already carry\n"
+        "them, and zynq7020_som uses the identical 'L1 (Sig)' style. Measured before\n"
+        "writing it down."
+    ),
+    "set30": (
+        "set30 is the dense-parallel-bus batch (2026-09-29): 21 boards whose\n"
+        "difficulty is a wide memory or CPU bus rather than a fine-pitch part count --\n"
+        "six DDR SoC boards (one LPDDR4, four DDR3, one DDR2), an FMC SDRAM+NAND\n"
+        "module, a PCIe x16 backplane, and 14 CPLD/CPU/DRAM boards for retro machines\n"
+        "(Amiga, 68000/68030, Mac, Apple II). 15 are 4-layer and 6 are 2-layer.\n"
+        "\n"
+        "Two-layer DDR does not exist among the open KiCad boards that could be\n"
+        "found (every DDR SoC board is 4+ layers), so the six 2-layer members are\n"
+        "the densest 2-layer bus boards instead: pistormx_1k2 (32-bit data / 24-bit\n"
+        "address through a fine-pitch CPLD), mcd_pcb and computie_68kboard (68000\n"
+        "SBCs), and three DRAM boards (a500_2meg_chip_ram, amigaa500dram,\n"
+        "macclassicramcard).\n"
+        "\n"
+        "Candidates came from GitHub topic/code search and web leads, were gated by\n"
+        "validate_candidate.py (all 21 PASS), and pinned to the commit they were\n"
+        "validated at -- every raw_url here is SHA-pinned so a later push to a\n"
+        "branch cannot change the fetched bytes.\n"
+        "\n"
+        "Dedupe was three-layered. dedupe_score.py against the 456-board corpus\n"
+        "scored the admitted boards at most 0.239 (sam9g25 vs set12's\n"
+        "allwinner_a13_som: same designer, different SoC and board), and at most\n"
+        "0.113 pairwise among the 21, all under the 0.30 bar. A lineage check\n"
+        "compared the schematic-symbol UUIDs and footprint uuid/tstamp values that\n"
+        "footprints carry, which caught a duplicate the name/footprint score missed\n"
+        "(Bogdan8266's copy of the Allwinner H616 devboard, dropped; Kononenko-K's\n"
+        "is the one admitted); no admitted board shares lineage with the corpus\n"
+        "or with another admitted board. The lineage check is blind to a board with\n"
+        "zero symbol UUIDs (pcie_backplane_x16 is one), which is why the score and\n"
+        "repo-slug checks also ran. Only one board per repo is admitted where a\n"
+        "repo ships several near-identical variants.\n"
+        "\n"
+        "Four boards ship a .kicad_dru (h616_lpddr4, imx6ulz_4l, sam9g25, cider):\n"
+        "h616's per-netclass DDR skew limits, imx6ulz_4l's length-window rules,\n"
+        "sam9g25's `(layer outer)` rules conditioned on `A.insideCourtyard`, and\n"
+        "cider's JLCPCB 4-layer rule set.\n"
+        "\n"
+        "c64_250407 joined 2026-10-08 as the public stand-in for issue #1219: a\n"
+        "2-layer all-through-hole pinball MPU (a Bally AS-2518-35 recreation, not\n"
+        "public) whose owner reported the router's output as spaghetti. It is\n"
+        "bwack's Commodore 64 ASSY 250407 replica -- 2 layers, 390x180mm, 227\n"
+        "footprints, a multi-drop A0-A15/D0-D7 bus across eight DRAMs and the\n"
+        "ROMs, and a routed reference that replicates Commodore's hand-taped\n"
+        "artwork (buses horizontal on F.Cu, vertical on B.Cu, 574 vias).\n"
+        "validate_candidate PASS (tier hard); dedupe best 0.044 (set12's abn6502)\n"
+        "against the 463 corpus boards whose raw_url still resolved (13 now 404,\n"
+        "and mez_rx is archive-only), with no shared symbol UUIDs. set30 is now\n"
+        "22 boards, 7 of them 2-layer."
     ),
 }
 
 def fetch_pro(raw_url, dest):
+    """Fetch the board's sibling project files from the repo beside the board.
+
+    Both matter: the `.kicad_pro` carries the DRC floor (#441) and the
+    `.kicad_dru` the per-layer/conditioned clearance rules (#498), which
+    OUTRANK --clearance and which check_drc reads back at grading time. A
+    curl --fail 404 can still leave a zero-byte file, which would read as
+    "rules present, none defined" -- unlink it. Returns whether the .kicad_pro
+    (the one recorded as `has_kicad_pro`) was obtained.
+    """
     if not raw_url or not raw_url.endswith(".kicad_pcb"): return False
-    pro_url = raw_url[:-len(".kicad_pcb")] + ".kicad_pro"
-    r = subprocess.run(["curl", "-sL", "--fail", pro_url, "-o", str(dest)], capture_output=True)
-    if r.returncode == 0 and dest.exists() and dest.stat().st_size > 20:
-        return True
-    if dest.exists(): dest.unlink()
-    return False
+    got_pro = False
+    for ext in (".kicad_pro", ".kicad_dru"):
+        out = dest if ext == ".kicad_pro" else dest.with_suffix(ext)
+        url = raw_url[:-len(".kicad_pcb")] + ext
+        r = subprocess.run(["curl", "-sL", "--fail", url, "-o", str(out)], capture_output=True)
+        if r.returncode == 0 and out.exists() and out.stat().st_size > 20:
+            got_pro = got_pro or ext == ".kicad_pro"
+            continue
+        if out.exists(): out.unlink()
+    return got_pro
+
+
+def copy_local_siblings(src_path, src_dir, slug):
+    """Copy the candidate's OWN sibling project files into the set's source dir.
+
+    For an ARCHIVE-sourced board (a .zip attached to a GitHub issue) there is no
+    raw .kicad_pcb URL to derive a sibling .kicad_pro from, so fetch_pro cannot
+    work -- but the archive already carried the siblings next to the board. Take
+    them from there. `.kicad_dru` matters as much as `.kicad_pro` here (#498:
+    per-layer clearance lives in the dru and OUTRANKS --clearance), and
+    prep_set2.py copies both onward to the routed + stripped outputs.
+    """
+    got = {}
+    for ext in (".kicad_pro", ".kicad_dru"):
+        sib = os.path.splitext(str(src_path))[0] + ext
+        if os.path.exists(sib):
+            shutil.copy(sib, src_dir / f"{slug}{ext}")
+            got[ext] = True
+    return got.get(".kicad_pro", False)
 
 by_set = {}
 for b in cur: by_set.setdefault(str(b["set"]), []).append(b)
@@ -68,11 +230,18 @@ for s in sorted(by_set):
         dst = src_dir / fn
         src_path = b["src"] if os.path.isabs(b["src"]) else str(CAND / b["src"])
         shutil.copy(src_path, dst)
-        got_pro = fetch_pro(b["raw_url"], src_dir / f"{slug}.kicad_pro")
+        if b.get("archive_url"):
+            got_pro = copy_local_siblings(src_path, src_dir, slug)
+        else:
+            got_pro = fetch_pro(b["raw_url"], src_dir / f"{slug}.kicad_pro")
         pros += 1 if got_pro else 0
         manifest.append({
             "set": s, "repo": b["repo"], "path": b["path"], "branch": b.get("branch", "main"),
             "file": fn, "raw_url": b["raw_url"], "github_url": b["github_url"],
+            # Archive-sourced board (e.g. a .zip attached to a GitHub issue):
+            # fetch_setN.py downloads the archive and extracts these members.
+            "archive_url": b.get("archive_url", ""),
+            "archive_member": b.get("archive_member", ""),
             "size_kb": dst.stat().st_size // 1024, "layers_est": b["layers"],
             "footprints": b["footprints"], "routable_nets": b["routable_nets"],
             "max_pads": b.get("max_pads"), "kicad_version": b.get("kicad_version"),
@@ -134,7 +303,8 @@ echo "Done. stripped -> boards_unrouted_{s}/ ; routed reference -> boards_{s}/"
     fetch = f'''#!/usr/bin/env python3
 """Fetch {s} .kicad_pcb sources listed in manifest_{s}.json (raw download).
 {(chr(10) + blurb + chr(10)) if blurb else ""}
-Downloads each board (and its sibling .kicad_pro, which carries the DRC floor)
+Downloads each board and its sibling project files -- the .kicad_pro (DRC floor,
+#441) and the .kicad_dru (per-layer clearance rules, #498) --
 into $STRESS_DIR/sources/github_{s}/. After fetching, run `bash prep_{s}.sh`
 (needs KiCad's bundled python / pcbnew) to produce boards_{s}/ (routed
 reference) + boards_unrouted_{s}/ (stripped).
@@ -146,13 +316,45 @@ Auto-generated by assemble_corpus.py.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 STRESS = Path(os.environ.get("STRESS_DIR", str(Path.home() / "Documents/kicad_stress_test")))
 MANIFEST = HERE / "manifest_{s}.json"
+
+
+def fetch_archive(b, dest):
+    """Board shipped as a .zip (e.g. attached to a GitHub issue) rather than a
+    raw .kicad_pcb URL. Download the archive, extract `archive_member` as the
+    board, and take its siblings from the SAME directory inside the archive --
+    the .kicad_pro (DRC floor, #441) and .kicad_dru (per-layer clearance, #498)
+    travel with it. Returns True on success.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        zp = Path(td) / "src.zip"
+        r = subprocess.run(["curl", "-sL", "--fail", b["archive_url"], "-o", str(zp)],
+                           capture_output=True)
+        if r.returncode != 0 or not zp.exists() or zp.stat().st_size == 0:
+            return False
+        try:
+            with zipfile.ZipFile(zp) as z:
+                z.extractall(Path(td) / "x")
+        except zipfile.BadZipFile:
+            return False
+        member = Path(td) / "x" / b["archive_member"]
+        if not member.exists():
+            return False
+        shutil.copy(member, dest)
+        for ext in (".kicad_pro", ".kicad_dru"):
+            sib = member.with_suffix(ext)
+            if sib.exists():
+                shutil.copy(sib, dest.with_suffix(ext))
+        return True
 
 
 def main():
@@ -162,16 +364,31 @@ def main():
     ok = 0
     for b in boards:
         dest = out_dir / Path(b["file"]).name
+        if b.get("archive_url"):
+            if fetch_archive(b, dest):
+                ok += 1
+                print(f"  OK  {{b['repo']:42}} {{dest.stat().st_size // 1024}}KB  "
+                      f"[{{b.get('tier','?')}}] (archive)")
+            else:
+                print(f"  FAIL {{b['repo']}}  <- {{b['archive_url']}}")
+            continue
         r = subprocess.run(["curl", "-sL", "--fail", b["raw_url"], "-o", str(dest)],
                            capture_output=True)
         if r.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
             print(f"  FAIL {{b['repo']}}  <- {{b['raw_url']}}")
             continue
-        # sibling .kicad_pro: never drop it (see CLAUDE.md #441 -- a board without
-        # its project file resolves its DRC floor from the STOCK netclass).
-        pro_url = b["raw_url"][: -len(".kicad_pcb")] + ".kicad_pro"
-        subprocess.run(["curl", "-sL", "--fail", pro_url, "-o",
-                        str(dest.with_suffix(".kicad_pro"))], capture_output=True)
+        # siblings: never drop them. Without the .kicad_pro a board resolves its
+        # DRC floor from the STOCK netclass (#441); without the .kicad_dru every
+        # routing step and check_drc lose the per-layer/conditioned clearance
+        # rules that OUTRANK --clearance (#498). A 404 under --fail can still
+        # leave a zero-byte file, which reads as "rules present, none" -- drop it.
+        for ext in (".kicad_pro", ".kicad_dru"):
+            sib = dest.with_suffix(ext)
+            subprocess.run(["curl", "-sL", "--fail",
+                            b["raw_url"][: -len(".kicad_pcb")] + ext,
+                            "-o", str(sib)], capture_output=True)
+            if sib.exists() and sib.stat().st_size == 0:
+                sib.unlink()
         ok += 1
         print(f"  OK  {{b['repo']:42}} {{dest.stat().st_size // 1024}}KB  [{{b.get('tier','?')}}]")
     print(f"\\n{{ok}}/{{len(boards)}} {s} sources -> {{out_dir}}")

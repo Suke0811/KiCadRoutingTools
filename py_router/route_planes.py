@@ -15,6 +15,10 @@ Usage:
 """
 from __future__ import annotations
 
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': ['routing', 'combined'], 'kind': 'actor'}
+
 import env_knobs
 import re
 import sys
@@ -35,7 +39,7 @@ exit_on_error_if_main(__name__)
 # These imports are guaranteed to work after startup_checks passes
 import numpy as np
 
-from kicad_parser import parse_kicad_pcb, PCBData, Pad, Via, Segment, KICAD_10_MIN_VERSION, pad_is_plated_through
+from kicad_parser import parse_kicad_pcb, PCBData, Pad, Via, Segment, pcb_uses_name_nets, pad_is_plated_through
 from kicad_writer import (generate_zone_sexpr, generate_gr_line_sexpr,
                           zone_overlap_priorities)
 from routing_config import GridRouteConfig, GridCoord
@@ -55,13 +59,12 @@ from plane_io import (
 from plane_obstacle_builder import (
     identify_target_pads,
     build_via_obstacle_map,
-    build_routing_obstacle_map,
     block_via_position,
     _add_segment_routing_obstacle,
     _add_board_edge_track_obstacles
 )
 from plane_zone_geometry import (
-    compute_zone_boundaries,
+    voronoi_cells,
     sample_route_for_voronoi
 )
 from plane_pad_tap import clamp_tap_via_to_edge
@@ -839,16 +842,19 @@ def build_plane_base_obstacles(
     other_nets_vias: Dict[int, List[Tuple[float, float]]],
     config: GridRouteConfig,
     pcb_data: PCBData,
-    proximity_radius: float = 3.0,
-    proximity_cost: float = 2.0,
     track_via_clearance: float = defaults.PLANE_TRACK_VIA_CLEARANCE,
-    previous_routes: Optional[List[List[Tuple[float, float]]]] = None
+    pad_cells: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    previous_routes: Optional[List[Tuple[int, List[Tuple[float, float]]]]] = None
 ) -> GridObstacleMap:
     """
-    Build base obstacle map for plane routing (reusable across multiple MST edges).
+    Build base obstacle map for routing a net's spines on a plane layer (reusable across its MST edges).
 
-    Includes: other nets' via blocking + proximity, segment blocking, previous route
-    blocking, and board edge blocking. Does NOT include source/target cells.
+    Includes: other nets' via blocking (track_via_clearance from each centre), segment blocking, previous
+    route blocking, and board edge blocking. Does NOT include source/target cells. Every pad_cells cell
+    (_plane_pad_cells: (cells, net of each)) that is not this net's is blocked too -- other nets' pads and
+    vias, and holes: the fill cannot cross them either (None: no pad cells). No proximity cost: a spine IS
+    the plane (the cost keeps tracks from breaking a plane up). `previous_routes` are (net_id, path) pairs,
+    so each is kept at its pair clearance with `net_id` (#1131).
     """
     coord = GridCoord(config.grid_step)
     layer_idx = 0
@@ -882,39 +888,42 @@ def build_plane_base_obstacles(
         all_cells_3 = np.hstack([all_cells, layer_col])
         obstacles.add_blocked_cells_batch(all_cells_3)
 
-    # Add proximity costs around other nets' vias
-    proximity_radius_grid = coord.to_grid_dist(proximity_radius)
-    proximity_cost_grid = config.cell_cost(proximity_cost)
-
-    all_other_vias_grid = []
-    for via_positions in other_nets_vias.values():
-        for vx, vy in via_positions:
-            gx, gy = coord.to_grid(vx, vy)
-            all_other_vias_grid.append((gx, gy))
-
-    if all_other_vias_grid:
-        obstacles.add_stub_proximity_costs_batch(
-            all_other_vias_grid,
-            proximity_radius_grid,
-            proximity_cost_grid
-        )
-
-    # Block existing segments on this layer from other nets
+    # Block existing segments on this layer from other nets. The stamp takes
+    # MILLIMETRES (an exact capsule since #173); it was handed a grid-cell
+    # count, which kept every foreign track 4-8 mm away instead of ~0.4 (#1131).
+    # Each track is priced at its PAIR with this net, as check_drc grades it:
+    # the two classes, then the layer rule. kind='layer', not 'track': these
+    # paths are not copper (they are the spines the layer's split between its
+    # nets grows round), and the zone fill that follows is not a track, so
+    # #735's track-to-track rule does not apply.
     for seg in pcb_data.segments:
         if seg.net_id == net_id:
             continue
         if seg.layer != plane_layer:
             continue
-        seg_expansion_mm = config.track_width / 2 + seg.width / 2 + config.clearance
-        seg_expansion_grid = max(1, coord.to_grid_dist_safe(seg_expansion_mm))
-        _add_segment_routing_obstacle(obstacles, seg, coord, layer_idx, seg_expansion_grid)
+        seg_expansion_mm = (config.track_width / 2 + seg.width / 2
+                            + config.pair_clearance(net_id, seg.net_id,
+                                                    plane_layer))
+        _add_segment_routing_obstacle(obstacles, seg, coord, layer_idx,
+                                      seg_expansion_mm)
 
-    # Block previous routes from other nets
+    # Block previous routes from other nets, each at its pair with this net
+    # (#1131), as above. This stamp does take GRID CELLS: a disc template
+    # around each Bresenham cell of the path.
     if previous_routes:
-        route_expansion_mm = config.track_width + config.clearance
-        route_expansion_grid = max(1, coord.to_grid_dist_safe(route_expansion_mm))
-        for route_path in previous_routes:
+        for route_net_id, route_path in previous_routes:
+            route_expansion_mm = config.track_width + config.pair_clearance(
+                net_id, route_net_id, plane_layer)
+            route_expansion_grid = max(1, coord.to_grid_dist_safe(route_expansion_mm))
             _block_route_as_obstacle(obstacles, route_path, coord, layer_idx, route_expansion_grid)
+
+    # (every pad's, via's and hole's cells, built once per layer call by _plane_pad_cells: this net leaves out its
+    # own copper)
+    if pad_cells is not None:
+        allc, alln = pad_cells
+        sel = allc[(alln != net_id) | (alln == 0)]
+        if len(sel):
+            obstacles.add_blocked_cells_batch(np.hstack([sel, np.zeros((len(sel), 1), dtype=np.int32)]))
 
     # Block board edges
     _add_board_edge_track_obstacles(obstacles, pcb_data, config, layer_idx)
@@ -922,44 +931,49 @@ def build_plane_base_obstacles(
     return obstacles
 
 
+def _plane_pad_cells(geom, extra, coord):
+    """The obstacle-grid cells of the layer model's copper (_layer_geometry: pads and vias, each grown by the zone
+    clearance) and holes (each by its own clearance), every one `extra` farther, with the net each cell belongs to
+    (a hole's: 0, no net's): (cells (N, 2) int32, nets (N,) int). A spine is the middle of a plane neck, so `extra`
+    is half the zone's minimum width"""
+    cells, nets = [], []
+    for n, k, s in geom['copper']:
+        c = _shape_grid_cells(*_grow_shape(k, s, geom['zc'] + extra), coord)
+        cells.append(c)
+        nets.append(np.full(len(c), n))
+    for k, s, clr in geom['holes']:
+        c = _shape_grid_cells(*_grow_shape(k, s, clr + extra), coord)
+        cells.append(c)
+        nets.append(np.zeros(len(c), dtype=np.int64))
+    if not cells:
+        return np.zeros((0, 2), dtype=np.int32), np.zeros(0, dtype=np.int64)
+    return np.vstack(cells).astype(np.int32), np.concatenate(nets)
+
+
 def route_plane_connection(
     via_a: Tuple[float, float],
     via_b: Tuple[float, float],
-    plane_layer: str,
-    net_id: int,
-    other_nets_vias: Dict[int, List[Tuple[float, float]]],
+    base_obstacles: GridObstacleMap,
+    router: GridRouter,
     config: GridRouteConfig,
-    pcb_data: PCBData,
-    proximity_radius: float = 3.0,
-    proximity_cost: float = 2.0,
-    track_via_clearance: float = defaults.PLANE_TRACK_VIA_CLEARANCE,
     max_iterations: int = 200000,
     verbose: bool = False,
-    previous_routes: Optional[List[List[Tuple[float, float]]]] = None,
-    base_obstacles: Optional[GridObstacleMap] = None,
-    router: Optional[GridRouter] = None
+    a_box: Optional[Tuple[float, float, float, float]] = None,
+    b_box: Optional[Tuple[float, float, float, float]] = None
 ) -> Optional[List[Tuple[float, float]]]:
     """
-    Route a trace on the plane layer between two vias, avoiding other nets' vias.
+    Route a spine on the plane layer between two of a net's points (vias, virtual vias, pads).
+    a_box / b_box: the (x0, y0, x1, y1) box of the pad an end sits on, when it is one
+    of this layer's pads -- the route may then start or end anywhere on its edge.
 
     Args:
-        via_a: (x, y) position of first via
-        via_b: (x, y) position of second via
-        plane_layer: Layer to route on (e.g., 'In5.Cu')
-        net_id: Net ID for this connection
-        other_nets_vias: Dict mapping other net_id -> list of (x, y) via positions
+        via_a: (x, y) position of the first point
+        via_b: (x, y) position of the second point
+        base_obstacles: the net's obstacle map (build_plane_base_obstacles), cloned for this route
+        router: the GridRouter to route with
         config: Routing configuration
-        pcb_data: PCB data for obstacle building
-        proximity_radius: Radius around other vias to add proximity cost (mm)
-        proximity_cost: Maximum proximity cost (mm equivalent)
-        track_via_clearance: Clearance from track center to other nets' via centers (mm).
-            This should be large enough to leave room for polygon fill.
         max_iterations: Maximum A* iterations
         verbose: Print debug info
-        previous_routes: List of previously routed paths from other nets to avoid (each is a list of (x,y) points)
-        base_obstacles: Optional pre-built obstacle map (cloned for this route).
-            If None, builds from scratch (backward compatible).
-        router: Optional pre-built GridRouter instance to reuse.
 
     Returns:
         List of (x, y) points along the route, or None if routing fails
@@ -967,14 +981,7 @@ def route_plane_connection(
     coord = GridCoord(config.grid_step)
     layer_idx = 0
 
-    if base_obstacles is not None:
-        obstacles = base_obstacles.clone_fresh()
-    else:
-        # Backward-compatible: build from scratch
-        obstacles = build_plane_base_obstacles(
-            plane_layer, net_id, other_nets_vias, config, pcb_data,
-            proximity_radius, proximity_cost, track_via_clearance, previous_routes
-        )
+    obstacles = base_obstacles.clone_fresh()
 
     # Set up source and target
     via_a_gx, via_a_gy = coord.to_grid(via_a[0], via_a[1])
@@ -986,17 +993,20 @@ def route_plane_connection(
 
     sources = [(via_a_gx, via_a_gy, layer_idx)]
     targets = [(via_b_gx, via_b_gy, layer_idx)]
-
-    # Create or reuse router
-    if router is None:
-        router = GridRouter(
-            via_cost=config.via_cost_units(),
-            h_weight=config.heuristic_weight,
-            turn_cost=config.turn_cost,
-            via_proximity_cost=0,
-            layer_costs=config.get_layer_costs(),
-            proximity_heuristic_cost=config.get_proximity_heuristic_cost()
-        )
+    # (an end on a pad of this layer may leave from anywhere on the pad's own copper, as a fill does -- from its free
+    # end, not through the keep-out of a fine-pitch neighbour beside its centre: the pad's perimeter cells are ends)
+    for pad_box, ends in ((a_box, sources), (b_box, targets)):
+        if not pad_box:
+            continue
+        gx0, gy0 = coord.to_grid(pad_box[0], pad_box[1])
+        gx1, gy1 = coord.to_grid(pad_box[2], pad_box[3])
+        ring = {(gx, gy) for gx in range(gx0, gx1 + 1) for gy in (gy0, gy1)}
+        ring |= {(gx, gy) for gy in range(gy0, gy1 + 1) for gx in (gx0, gx1)}
+        have = set(ends)
+        for gx, gy in sorted(ring):
+            if (gx, gy, layer_idx) not in have:
+                obstacles.add_source_target_cell(gx, gy, layer_idx)
+                ends.append((gx, gy, layer_idx))
 
     path, iterations, _ = router.route_with_frontier(
         obstacles, sources, targets, max_iterations,
@@ -1024,6 +1034,325 @@ def route_plane_connection(
     return route_points
 
 
+SPLIT_INFLATE_MM = 2.0   # a cluster's octagon grown by this (and its corridors 1.5x it wide) ...
+SPLIT_LINK_MM = 5.0      # ... a cluster: a net's anchors within this of one another
+
+
+def _clusters(points, link=SPLIT_LINK_MM):
+    """Single-linkage clusters of 2D points (union-find, O(N^2))."""
+    n = len(points)
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+    l2 = link * link
+    for i in range(n):
+        xi, yi = points[i]
+        for j in range(i + 1, n):
+            dx = points[j][0] - xi
+            dy = points[j][1] - yi
+            if dx * dx + dy * dy <= l2:
+                ra, rb = find(i), find(j)
+                if ra != rb:
+                    parent[ra] = rb
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(points[i])
+    return list(groups.values())
+
+
+def _spine_samples(route_path, other_tree, interval, floor):
+    """A spine's seeds, each a quarter of the distance to another net's nearest seed past the last (at most
+    `interval`, at least `floor`): a point of the spine is then nearer one of its own seeds than any other net's, so
+    its Voronoi cells run unbroken -- a seed each 2 mm across a ball array loses every cell between them to the balls
+    beside it -- and the boundary with a pad beside it runs straight: between seeds s apart it bulges by about
+    s^2 / 8d towards a pad d away, a sawtooth at s = d and flat at d / 4"""
+    if other_tree is None:
+        return sample_route_for_voronoi(route_path, sample_interval=interval)
+    cand = sample_route_for_voronoi(route_path, sample_interval=floor)
+    if not cand:
+        return []
+    d, _ = other_tree.query(cand)
+    out = [cand[0]]
+    run = 0.0
+    for (a, b), di in zip(zip(cand, cand[1:]), d[1:]):
+        run += float(np.hypot(b[0] - a[0], b[1] - a[1]))
+        if run >= min(interval, max(floor, di / 4.0)):
+            out.append(b)
+            run = 0.0
+    return out
+
+
+def _background_net(seeds_by_net, pads_by_net, board_bounds):
+    """The layer's background rail (#662): the net whose pads span the most of the board times how many there are --
+    the rail a human pours as the layer's sheet. Scored on its pads_by_net points, else its seeds_by_net ones"""
+    import math as _m
+    bx0, by0, bx1, by1 = board_bounds
+    bdiag = _m.hypot(bx1 - bx0, by1 - by0) or 1.0
+
+    def score(nid):
+        pts = pads_by_net.get(nid) or seeds_by_net.get(nid) or []
+        if not pts:
+            return (0.0, 0)
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        return (_m.hypot(max(xs) - min(xs), max(ys) - min(ys)) / bdiag * len(pts), len(pts))
+    return max(seeds_by_net, key=score)
+
+
+def _pad_copper_shape(pad):
+    """A pad's copper as the split models it: ('disc', (x, y, r)) for a round pad, else ('box', (x0, y0, x1, y1)) --
+    a pad tilted off the axes by its bounding box. None for an NPTH, which has no copper"""
+    import math as _m
+    if getattr(pad, 'pad_type', '') == 'np_thru_hole':
+        return None
+    hx, hy = pad.size_x / 2.0, pad.size_y / 2.0
+    rot = _m.radians(getattr(pad, 'rect_rotation', 0.0) or 0.0)
+    if rot:
+        c, s = abs(_m.cos(rot)), abs(_m.sin(rot))
+        hx, hy = hx * c + hy * s, hx * s + hy * c
+    if getattr(pad, 'shape', '') == 'circle':
+        return 'disc', (pad.global_x, pad.global_y, hx)
+    return 'box', (pad.global_x - hx, pad.global_y - hy, pad.global_x + hx, pad.global_y + hy)
+
+
+def _grow_shape(kind, shp, d):
+    """A 'box' (x0, y0, x1, y1), 'disc' (x, y, r) or 'capsule' (x1, y1, x2, y2, r) grown by d"""
+    if kind == 'box':
+        return kind, (shp[0] - d, shp[1] - d, shp[2] + d, shp[3] + d)
+    if kind == 'disc':
+        return kind, (shp[0], shp[1], shp[2] + d)
+    return kind, shp[:4] + (shp[4] + d,)
+
+
+def _shape_geom(kind, shp):
+    """The shape as a shapely geometry"""
+    from shapely.geometry import LineString, Point, box
+    if kind == 'box':
+        return box(*shp)
+    if kind == 'disc':
+        return Point(shp[0], shp[1]).buffer(shp[2], 8)
+    x1, y1, x2, y2, r = shp
+    line = Point(x1, y1) if (abs(x2 - x1) + abs(y2 - y1)) < 1e-9 else LineString([(x1, y1), (x2, y2)])
+    return line.buffer(r, 8)
+
+
+def _layer_geometry(pcb_data, layer, zone_clearance, edge_clearance):
+    """ONE model of what a fill on `layer` keeps clear of, shared by the spine router, the background check and the
+    raster finishing (three models once, and the stages could disagree):
+
+      copper -- every pad with copper on the layer and every via, as (net, kind, shape), UNGROWN (_pad_copper_shape);
+      holes  -- every NPTH drill as (kind, shape, clearance): a round one kept the zone clearance, a milled SLOT the
+                board-edge clearance, as KiCad grades a slot and our keepout areas enforce it (#448);
+      board  -- the board's real shape, its outline rings less its Edge.Cuts cutouts (the bounds rectangle when the
+                outline is a plain rectangle): the zone outline is the bounds rectangle, the fill is not"""
+    from shapely.geometry import Polygon as _P, box
+    from shapely.ops import unary_union
+    from kicad_parser import pad_drill_capsule
+    copper, holes = [], []
+    for fp in pcb_data.footprints.values():
+        for pad in fp.pads:
+            if getattr(pad, 'pad_type', '') == 'np_thru_hole':
+                (x1, y1), (x2, y2), r = pad_drill_capsule(pad)
+                if r > 0:
+                    slot = (abs(x2 - x1) + abs(y2 - y1)) > 1e-6
+                    holes.append(('capsule', (x1, y1, x2, y2, r), edge_clearance if slot else zone_clearance))
+                continue
+            if not (pad_is_plated_through(pad) or layer in pad.layers):
+                continue
+            kind, shp = _pad_copper_shape(pad)
+            copper.append((pad.net_id or 0, kind, shp))
+    for v in pcb_data.vias:
+        copper.append((v.net_id or 0, 'disc', (v.x, v.y, v.size / 2.0)))
+    bi = pcb_data.board_info
+    outers = [r for r in (getattr(bi, 'board_outlines', None) or []) if len(r) >= 3]
+    board = unary_union([_P(r).buffer(0) for r in outers]) if outers else box(*bi.board_bounds)
+    for c in (getattr(bi, 'board_cutouts', None) or []):
+        if len(c) >= 3:
+            board = board.difference(_P(c).buffer(0))
+    return {'copper': copper, 'holes': holes, 'board': board, 'zc': zone_clearance, 'edge': edge_clearance}
+
+
+def _blockers_of(geom, net_id, extra=0.0):
+    """What a fill of `net_id` cannot cross on the layer, as one shapely geometry (None when nothing): every other
+    net's pad and via grown by the zone clearance, every hole by its own clearance -- each `extra` more"""
+    from shapely.ops import unary_union
+    shapes = [_shape_geom(*_grow_shape(k, s, geom['zc'] + extra)) for n, k, s in geom['copper']
+              if n != net_id or not n]
+    shapes += [_shape_geom(*_grow_shape(k, s, c + extra)) for k, s, c in geom['holes']]
+    return unary_union(shapes) if shapes else None
+
+
+def _shape_grid_cells(kind, shp, coord):
+    """The obstacle-grid cells (GridCoord: a cell's centre at its index times the step) inside a shape: (N, 2) int"""
+    if kind == 'box':
+        x0, y0, x1, y1 = shp
+    elif kind == 'disc':
+        x0, y0, x1, y1 = shp[0] - shp[2], shp[1] - shp[2], shp[0] + shp[2], shp[1] + shp[2]
+    else:
+        ax, ay, bx, by, r = shp
+        x0, y0, x1, y1 = min(ax, bx) - r, min(ay, by) - r, max(ax, bx) + r, max(ay, by) + r
+    gx0, gy0 = coord.to_grid(x0, y0)
+    gx1, gy1 = coord.to_grid(x1, y1)
+    xs, ys = np.meshgrid(np.arange(gx0, gx1 + 1), np.arange(gy0, gy1 + 1), indexing='ij')
+    xs, ys = xs.ravel(), ys.ravel()
+    if kind == 'box':
+        return np.column_stack([xs, ys])
+    px, py = xs * coord.grid_step, ys * coord.grid_step
+    if kind == 'disc':
+        keep = (px - shp[0]) ** 2 + (py - shp[1]) ** 2 <= shp[2] ** 2
+    else:
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        t = np.clip(((px - ax) * dx + (py - ay) * dy) / L2, 0.0, 1.0) if L2 > 0 else np.zeros_like(px)
+        keep = (px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2 <= r * r
+    return np.column_stack([xs[keep], ys[keep]])
+
+
+def _reach_and_sheet(dom, raw_cells, anchors_by_net, routes, zone_polygon, min_thickness, name_of, geom,
+                     must_hold=True):
+    """The background rail (_background_net: board-wide reach x consumers) becomes the whole layer's sheet; every
+    other net keeps its Voronoi share only within its REACH -- islands round its anchors (vias, virtual vias, pads:
+    clusters SPLIT_LINK_MM apart, each the chamfered octagon round them grown SPLIT_INFLATE_MM) joined by its spines
+    as corridors (1.5x the inflation wide) -- the rest going to the sheet beneath it: nearest-seed Voronoi otherwise
+    hands a reference net a plane. Every piece is held to invariant 3b (#662): the sheet, less the pieces each
+    widened by the fill's clearance band (carve_mm), stays one region -- an island that would sever it shrinks (half
+    its inflation, then none) and else is left to the route step, a corridor that would is refused. The
+    background's own cells inside another net's reach stay its pockets, so its balls there keep their plane (a
+    background out of the split has none). The sheet is judged as the fill will pour it, on the layer model `geom` (_layer_geometry): inside the
+    board's real shape -- its cutouts out -- less the edge clearance, and round what no fill crosses (other nets'
+    pads and vias, holes and slots): a gap only the bare outline leaves is no connection"""
+    from shapely.geometry import LineString, Point as _Pt, Polygon as _P
+    from shapely.ops import unary_union
+    from shapely.prepared import prep
+    zone_clearance, edge_clearance = geom['zc'], max(geom['edge'], 0.0)
+    share = {nid: unary_union([_P(c).buffer(0) for c in cells]) for nid, cells in raw_cells.items() if cells}
+    carve_mm = zone_clearance + min_thickness / 2.0          # the fill's clearance band
+    dom_pts = list(dict.fromkeys(anchors_by_net.get(dom, ())))
+
+    def parts(g):
+        return [h for h in getattr(g, 'geoms', [g]) if h.geom_type == 'Polygon' and not h.is_empty]
+
+    def holds(h, pts):
+        ph, (x0, y0, x1, y1) = prep(h), h.bounds
+        return any(x0 <= x <= x1 and y0 <= y <= y1 and ph.contains(_Pt(x, y)) for x, y in pts)
+    # (the sheet as the LOCUS where a fill of the minimum width can be centred -- inside the board less the edge
+    # clearance and clear of the blockers by half that width more; a piece is widened by the same half width over its
+    # clearance, so what is left of the locus is connected exactly when the fill is)
+    outline = _P(zone_polygon).buffer(0)
+    sheet = outline.intersection(geom['board']).buffer(-(edge_clearance + min_thickness / 2.0))
+    blockers = _blockers_of(geom, dom, extra=min_thickness / 2.0)
+    if blockers is not None and not blockers.is_empty:
+        sheet = sheet.difference(blockers)
+    # (what the pads and holes alone already cut off is not the split's doing: the sheet is what matters of the rest)
+    base = parts(sheet)
+    _tot = sum(h.area for h in base) or 1.0
+    base = [h for h in base if h.area >= 0.25 * _tot or holds(h, dom_pts)] or base
+    sheet = unary_union(base)
+    base_held = len(base)
+    carved = [None]          # the pieces accepted so far, filled (a pocket is local cover, not the sheet) and widened
+
+    def admit(piece):
+        """False when the sheet less `piece` splits into more than one region that matters -- one holding a
+        background anchor, or a quarter of what is left. (A background with a plane on another layer too feeds a
+        cut-off piece through its anchors' own connections there: it never refuses, `must_hold` False.) What it
+        cuts off that nothing feeds is the sweep's, after every piece is down"""
+        widened = unary_union([_P(h.exterior) for h in parts(piece)]).buffer(carve_mm)
+        u = widened if carved[0] is None else carved[0].union(widened)
+        if must_hold:
+            rest = parts(sheet.difference(u))
+            if len(rest) > 1:
+                total = sum(h.area for h in rest)
+                if sum(1 for h in rest if h.area >= 0.25 * total or holds(h, dom_pts)) > max(1, base_held):
+                    return False
+        carved[0] = u
+        return True
+    others = [nid for nid in share if nid != dom]
+    region = {nid: [] for nid in others}
+    shrunk = demoted = refused = 0
+    import plane_split_raster as _psr
+    for nid in others:
+        for cl in _clusters(list(dict.fromkeys(anchors_by_net.get(nid, ()))), link=SPLIT_LINK_MM):
+            for r in (SPLIT_INFLATE_MM, SPLIT_INFLATE_MM / 2.0, 0.0):
+                # (the cluster's octagon -- the chamfered rectangle a human draws round a group of parts; never
+                # thinner than a minimum-width neck either side)
+                isl = _psr.octagon(cl, max(r, min_thickness))
+                piece = share[nid].intersection(isl)
+                if piece.is_empty or admit(piece):
+                    region[nid].append(piece)
+                    shrunk += r != SPLIT_INFLATE_MM
+                    break
+            else:
+                demoted += 1
+    half = 1.5 * SPLIT_INFLATE_MM / 2.0
+    bands = {nid: [] for nid in others}
+    for nid, path in sorted(((n, p) for n, p in routes if n in region and len(p) >= 2),
+                            key=lambda t: LineString(t[1]).length):
+        tube = _psr.mitred_band(path, half)
+        have = unary_union(region[nid]) if region[nid] else None
+        piece = share[nid].intersection(tube)
+        new = piece.difference(have) if have is not None else piece
+        if new.area < 0.05 or admit(piece):
+            region[nid].append(piece)
+            bands[nid].append(piece)
+        else:
+            refused += 1
+    # Parallel corridors of one net less than a corridor's width apart run together, as a human draws one wider
+    # band: the gap between them is filled where it is the net's own share (never another net's, nor the
+    # background's round its own pads) and the background stays one region
+    merged = 0
+    for nid in others:
+        if len(bands[nid]) < 2:
+            continue
+        closed = unary_union(bands[nid]).buffer(half, join_style=2, mitre_limit=2.0) \
+            .buffer(-half, join_style=2, mitre_limit=2.0)
+        gap = closed.difference(unary_union(region[nid])).intersection(share[nid])
+        if gap.area > 0.05 and admit(gap):
+            region[nid].append(gap)
+            merged += 1
+    # The raster finishing (plane_split_raster.finish): the regions on one label grid -- the background everywhere
+    # the others are not, its pockets (its own cells inside their reach) its own -- each net's fill modelled as
+    # KiCad pours it, the pieces nothing feeds given away where they arise, every region drawn back octilinear
+    whole = {nid: unary_union(region[nid]) for nid in others if region[nid]}
+    import math
+    bnds = outline.bounds
+    # (half the minimum width, within 0.05..0.1 mm, coarser only past four million cells)
+    g_mm = min(0.1, max(0.05, min_thickness / 2.0))
+    g_mm = max(g_mm, math.sqrt((bnds[2] - bnds[0]) * (bnds[3] - bnds[1]) / 4.0e6))
+    grid = _psr.RasterGrid(bnds, g_mm)
+    polys, fstats = _psr.finish(
+        whole, dom, outline, grid, anchors_by_net,
+        [(n,) + _grow_shape(k, s, zone_clearance) for n, k, s in geom['copper']],
+        [_grow_shape(k, s, c) for k, s, c in geom['holes']],
+        zone_clearance, min_thickness, edge_clearance, board=geom['board'])
+    def ring(p):
+        return [(round(x, 4), round(y, 4)) for x, y in list(p.exterior.coords)[:-1]]
+    # (the background stays the whole layer at the lowest priority, the others on top of it by their outlines; its
+    # own cells cut off inside them -- its pockets -- poured as zones of their own, the smaller first. A pocket is
+    # there to keep a background pad or ball on its plane: one holding none of its anchors is no pocket -- on a
+    # panel the frame rails and tabs are such pieces -- and would ship as a zone of copper nothing feeds)
+    out = {nid: [ring(p) for p in ps] for nid, ps in polys.items() if nid != dom}
+    out[dom] = [list(zone_polygon)] + [ring(p) for p in sorted(polys.get(dom, []), key=lambda p: -p.area)[1:]
+                                       if holds(p, dom_pts)]
+    kept = sum(p.area for nid, ps in polys.items() if nid != dom for p in ps)
+    cut = sum(share[nid].area for nid in others)
+    print(f"  Spine split: '{name_of.get(dom, dom)}' = background; the other {len(whole)} net(s) keep {kept:.0f} "
+          f"of their {cut:.0f} mm^2 Voronoi share inside their islands and spines"
+          + (f"; to keep the background one region {shrunk} island(s) shrunk" if shrunk else "")
+          + (f", {demoted} left to the route step" if demoted else "")
+          + (f", {refused} corridor(s) refused" if refused else "")
+          + (f"; parallel corridors run together for {merged} net(s)" if merged else "")
+          + f"; finished on a {g_mm:.3f} mm grid: {fstats['dead_pieces']} piece(s) nothing feeds"
+          + (f", {fstats['reassigned_cells'] * g_mm * g_mm:.1f} mm^2 given to a neighbour that can feed it"
+             if fstats['reassigned_cells'] else "")
+          + (f", {fstats['background_cells'] * g_mm * g_mm:.1f} mm^2 no neighbour can feed left to the background "
+             f"sheet (its fill's island removal drops what stays unfed)" if fstats['background_cells'] else ""))
+    return out
+
+
 def _generate_multinet_layer_zones(
     layer: str,
     nets_on_layer: List[str],
@@ -1034,19 +1363,21 @@ def _generate_multinet_layer_zones(
     config: GridRouteConfig,
     zone_clearance: float,
     min_thickness: float,
-    plane_proximity_radius: float,
-    plane_proximity_cost: float,
-    plane_track_via_clearance: float,
     plane_max_iterations: int,
     voronoi_seed_interval: float,
     board_edge_clearance: float,
     debug_lines: bool,
     verbose: bool,
     thermal_relief: bool = False,
-    priority_offset: int = 0
+    priority_offset: int = 0,
+    served_elsewhere: frozenset = frozenset()
 ) -> Tuple[List[str], List[str], List[Dict]]:
     """
-    Generate Voronoi-based zone boundaries for a multi-net layer.
+    Split a plane layer several nets share: the SPINE SPLIT. Every net's vias, virtual vias (the pads
+    whose drop the route step lays) and pads on the layer are joined by spines routed on the layer, the
+    layer is partitioned round them (Voronoi), the background net is the whole sheet and every other net
+    keeps its share within octagons round its groups and corridors along its spines (_reach_and_sheet),
+    finished on a raster (plane_split_raster). See docs/route-plane.md.
 
     Args:
         layer: Layer name (e.g., 'In1.Cu')
@@ -1058,11 +1389,8 @@ def _generate_multinet_layer_zones(
         config: Routing configuration
         zone_clearance: Zone clearance
         min_thickness: Minimum zone thickness
-        plane_proximity_radius: Proximity radius for routing
-        plane_proximity_cost: Proximity cost for routing
-        plane_track_via_clearance: Track-to-via clearance
         plane_max_iterations: Max A* iterations
-        voronoi_seed_interval: Sample interval for Voronoi seeds
+        voronoi_seed_interval: Longest gap between a spine's Voronoi seeds (mm)
         board_edge_clearance: Edge clearance for zones
         debug_lines: Whether to generate debug lines
         verbose: Verbose output
@@ -1119,9 +1447,43 @@ def _generate_multinet_layer_zones(
                 pts.append((pad.global_x, pad.global_y))
         pads_on_layer_by_net[net_id] = pts
 
+    # A pad outside the Edge.Cuts outline can never reach the fill (it is
+    # clipped to the outline) -- point-seeding it plants a Voronoi cell in dead
+    # space (#291 class). Used by the projected-pad seeding just below and by
+    # the spines' points further down.
+    from check_drc import make_off_board_test
+    _off_board_test = make_off_board_test(pcb_data.board_info)
+
+    # #598: pours run BEFORE any routing (#562), so a virgin INNER layer holds
+    # no copper at all -- no vias, and no pads either when every pad is SMD on
+    # an outer layer. Both nets of a requested inner split plane then had zero
+    # seeds and BOTH zones were silently skipped, shipping a board with no
+    # plane where one was explicitly asked for. Fall back to that net's pads
+    # PROJECTED onto this layer (their x/y, whatever layer the copper sits on):
+    # those positions exist regardless of routing state, they are where the
+    # route step's pour-launch vias will come down, and they partition the
+    # layer between the nets the way the components themselves are spread over
+    # the board. Only nets with NO seeds of their own get this, so a board that
+    # already poured correctly is untouched.
+    projected_pads_by_net: Dict[int, List[Tuple[float, float]]] = {}
+    for net_name in nets_on_layer:
+        net_id = net_name_to_id.get(net_name)
+        if net_id is None or vias_by_net.get(net_id) or pads_on_layer_by_net.get(net_id):
+            continue
+        pts = []
+        for pad in pcb_data.pads_by_net.get(net_id, []):
+            if getattr(pad, 'pad_type', '') == 'np_thru_hole':
+                continue  # NPTH has no copper to tie into the plane (#328)
+            px, py = pad.global_x, pad.global_y
+            if _off_board_test is not None and _off_board_test(px, py):
+                continue
+            pts.append((px, py))
+        projected_pads_by_net[net_id] = pts
+
     # A net earns a zone if it has ANY connection point on this layer -- a via
-    # or a pad. nets_with_vias still drives the via-to-via MST routing below;
-    # nets_with_seeds (vias OR pads) drives whether a zone is created at all.
+    # or a pad -- or, with the layer still bare, its projected pads. nets_with_vias
+    # still drives the via-to-via MST routing below; nets_with_seeds (vias, pads,
+    # or projected pads) drives whether a zone is created at all.
     nets_with_vias = []
     nets_with_seeds = []
     for net_name in nets_on_layer:
@@ -1130,15 +1492,20 @@ def _generate_multinet_layer_zones(
             continue
         via_count = len(vias_by_net.get(net_id, []))
         pad_count = len(pads_on_layer_by_net.get(net_id, []))
-        if via_count == 0 and pad_count == 0:
-            print(f"  Warning: Net '{net_name}' has no vias or pads on layer {layer}, skipping zone")
+        proj_count = len(projected_pads_by_net.get(net_id, []))
+        if via_count == 0 and pad_count == 0 and proj_count == 0:
+            print(f"  Warning: Net '{net_name}' has no vias or pads on layer {layer}, "
+                  f"and no on-board pads anywhere to project, skipping zone")
             continue
         nets_with_seeds.append(net_name)
         if via_count > 0:
             nets_with_vias.append(net_name)
             print(f"  Net '{net_name}': {via_count} vias")
-        else:
+        elif pad_count > 0:
             print(f"  Net '{net_name}': no vias, {pad_count} pad(s) on {layer} (pad-seeded zone)")
+        else:
+            print(f"  Net '{net_name}': no copper on {layer} yet, partition seeded "
+                  f"from {proj_count} projected pad(s) (#598)")
 
     if len(nets_with_seeds) < 2:
         # Only one net has connections on this layer: use full board rectangle.
@@ -1154,7 +1521,7 @@ def _generate_multinet_layer_zones(
                 clearance=zone_clearance,
                 min_thickness=min_thickness,
                 direct_connect=not thermal_relief,
-                use_net_name=pcb_data.kicad_version >= KICAD_10_MIN_VERSION
+                use_net_name=pcb_uses_name_nets(pcb_data)
             )
             zone_sexprs.append(zone_sexpr)
             zone_data_list.append({
@@ -1167,6 +1534,47 @@ def _generate_multinet_layer_zones(
                 'min_thickness': min_thickness,
             })
         return zone_sexprs, debug_line_sexprs, zone_data_list
+
+    # ONE model of what a fill keeps clear of, for the spines, the background check and the finishing
+    _geom = _layer_geometry(pcb_data, layer, zone_clearance, board_edge_clearance)
+    _pad_cells = _plane_pad_cells(_geom, min_thickness / 2.0, GridCoord(config.grid_step))
+    _pad_box: Dict[Tuple[float, float], Tuple[float, float, float, float]] = {}   # a spine end on this layer's pad
+    for net_name in nets_with_seeds:
+        for pad in pcb_data.pads_by_net.get(net_name_to_id[net_name], []):
+            if pad_is_plated_through(pad) or layer in pad.layers:
+                kind, shp = _pad_copper_shape(pad)
+                _pad_box[(pad.global_x, pad.global_y)] = (
+                    shp if kind == 'box' else (shp[0] - shp[2], shp[1] - shp[2], shp[0] + shp[2], shp[1] + shp[2]))
+    # the background, chosen once (on each net's pads) for the spines' order and the split
+    _bg = _background_net(
+        {net_name_to_id[n]: list(pads_on_layer_by_net.get(net_name_to_id[n], ())) for n in nets_with_seeds},
+        {net_name_to_id[n]: [(pd.global_x, pd.global_y) for pd in pcb_data.pads_by_net.get(net_name_to_id[n], [])]
+         for n in nets_with_seeds}, board_bounds)
+    # virtual vias -- the pads whose drop the route step lays (create_plane) -- and pads with copper on this layer
+    # join the spine
+    _dv = getattr(pcb_data, '_deferred_pad_seeds', None) or {}
+    for net_name in nets_with_seeds:
+        _nid = net_name_to_id[net_name]
+        _have = vias_by_net_set.setdefault(_nid, set())
+        _add = [p for p in list(_dv.get(_nid, ())) + list(pads_on_layer_by_net.get(_nid, ())) if p not in _have
+                and not (_off_board_test is not None and _off_board_test(*p))]
+        _add = list(dict.fromkeys(_add))
+        if _add:
+            vias_by_net.setdefault(_nid, []).extend(_add)
+            _have.update(_add)
+            if net_name not in nets_with_vias:
+                nets_with_vias.append(net_name)
+            _virt = set(_dv.get(_nid, ()))
+            _nv = sum(1 for p in _add if p in _virt)
+            print(f"  Net '{net_name}': {_nv} virtual via(s) and {len(_add) - _nv} pad(s) on {layer} join its "
+                  f"spines")
+    # a spine is the middle of a plane neck: it passes another net's via at the via's radius, the fill's clearance and
+    # half the fill's minimum width -- no closer (the neck would not fill), no farther (a ball field's every gap would
+    # be shut). No proximity cost: that keeps TRACKS from breaking a plane up; a spine IS the plane, and the keep-out
+    # already leaves its fill room -- priced, it only wanders
+    track_via_clearance = config.via_size / 2.0 + zone_clearance + min_thickness / 2.0
+    print(f"  Spines keep {track_via_clearance:.3f} mm from another net's via (via radius + zone "
+          f"clearance + half the minimum width), no proximity cost")
 
     # Compute MST edges for each net
     net_mst_edges: Dict[int, List[Tuple[Tuple[float, float], Tuple[float, float]]]] = {}
@@ -1183,13 +1591,16 @@ def _generate_multinet_layer_zones(
 
     # Iteratively route all nets, reordering to put failed nets first
     max_mst_iterations = 5
-    net_order = list(net_mst_edges.keys())
+    # (the background is poured as the whole layer and kept one region by its own rule, so its spines matter least --
+    # they route LAST every time, and a try is judged first by the others' failures)
+    net_order = sorted(net_mst_edges.keys(), key=lambda nid: nid == _bg)
     failed_nets: Set[int] = set()
     best_result = None
+    best_rank = None
 
     for mst_iteration in range(max_mst_iterations):
         if mst_iteration > 0:
-            net_order = sorted(net_order, key=lambda nid: (0 if nid in failed_nets else 1))
+            net_order = sorted(net_order, key=lambda nid: (nid == _bg, 0 if nid in failed_nets else 1))
             failed_net_names = [pcb_data.nets[nid].name for nid in failed_nets if nid in pcb_data.nets]
             print(f"  Retry {mst_iteration + 1}: reordering with failed nets first: {', '.join(failed_net_names)}")
 
@@ -1201,12 +1612,15 @@ def _generate_multinet_layer_zones(
         debug_lines_for_layer = []
         failed_nets = set()
         total_failed_edges = 0
+        bg_failed_edges = 0
 
         # Create router once per MST iteration (reused across all nets/edges)
         plane_router = GridRouter(
             via_cost=config.via_cost_units(),
             h_weight=config.heuristic_weight,
-            turn_cost=config.turn_cost,
+            # (a spine is a corridor's middle: a bend costs about the corridor's own width of path, the outline a
+            # bend adds to a band that wide, so corridors run in long straight 0/45/90 stretches as a human's do)
+            turn_cost=int(1.5 * SPLIT_INFLATE_MM * 1000 / config.grid_step),
             via_proximity_cost=0,
             layer_costs=config.get_layer_costs(),
             proximity_heuristic_cost=config.get_proximity_heuristic_cost()
@@ -1222,11 +1636,16 @@ def _generate_multinet_layer_zones(
             for other_net_id, other_vias in augmented_vias_by_net.items():
                 if other_net_id != net_id:
                     other_nets_vias[other_net_id] = other_vias
+            _other_tree = None
+            _opts = [p for v in other_nets_vias.values() for p in v]
+            if _opts:
+                from scipy.spatial import cKDTree
+                _other_tree = cKDTree(_opts)
 
             # Compute other_nets_routes once per net (only contains routes from OTHER nets,
             # so it doesn't change within this net's MST edge loop)
             other_nets_routes = [
-                route for route_net_id, _, route in connection_routes
+                (route_net_id, route) for route_net_id, _, route in connection_routes
                 if route_net_id != net_id
             ]
 
@@ -1238,9 +1657,8 @@ def _generate_multinet_layer_zones(
                 other_nets_vias=other_nets_vias,
                 config=config,
                 pcb_data=pcb_data,
-                proximity_radius=plane_proximity_radius,
-                proximity_cost=plane_proximity_cost,
-                track_via_clearance=plane_track_via_clearance,
+                track_via_clearance=track_via_clearance,
+                pad_cells=_pad_cells,
                 previous_routes=other_nets_routes
             )
 
@@ -1251,19 +1669,13 @@ def _generate_multinet_layer_zones(
                 route_path = route_plane_connection(
                     via_a=via_a,
                     via_b=via_b,
-                    plane_layer=layer,
-                    net_id=net_id,
-                    other_nets_vias=other_nets_vias,
+                    base_obstacles=base_obstacles,
+                    router=plane_router,
                     config=config,
-                    pcb_data=pcb_data,
-                    proximity_radius=plane_proximity_radius,
-                    proximity_cost=plane_proximity_cost,
-                    track_via_clearance=plane_track_via_clearance,
                     max_iterations=plane_max_iterations,
                     verbose=verbose,
-                    previous_routes=other_nets_routes,
-                    base_obstacles=base_obstacles,
-                    router=plane_router
+                    a_box=_pad_box.get(via_a),
+                    b_box=_pad_box.get(via_b)
                 )
 
                 if route_path:
@@ -1278,7 +1690,7 @@ def _generate_multinet_layer_zones(
                                 width=0.1, layer=debug_layer
                             ))
 
-                    samples = sample_route_for_voronoi(route_path, sample_interval=voronoi_seed_interval)
+                    samples = _spine_samples(route_path, _other_tree, voronoi_seed_interval, config.grid_step)
                     if samples:
                         augmented_vias_by_net[net_id].extend(samples)
                 else:
@@ -1289,14 +1701,18 @@ def _generate_multinet_layer_zones(
             if failed_count > 0:
                 failed_nets.add(net_id)
                 total_failed_edges += failed_count
+                if net_id == _bg:
+                    bg_failed_edges += failed_count
                 print(f"    {net_name}: {routed_count}/{len(mst_edges)} MST edges ({failed_count} failed)")
             else:
                 print(f"    {net_name}: all {routed_count} MST edges routed")
 
-        if best_result is None or total_failed_edges < best_result[0]:
+        rank = (total_failed_edges - bg_failed_edges, total_failed_edges)
+        if best_result is None or rank < best_rank:
             best_result = (total_failed_edges, connection_routes, augmented_vias_by_net, debug_lines_for_layer, routed_paths_by_edge)
+            best_rank = rank
 
-        if total_failed_edges == 0:
+        if total_failed_edges == bg_failed_edges:
             break
 
     # Use best result
@@ -1306,167 +1722,38 @@ def _generate_multinet_layer_zones(
         if best_result[0] > 0:
             print(f"  Best result: {best_result[0]} failed edge(s)")
 
-    # #107: connect each net's through-hole pads to its plane region. A TH pad ties
-    # into the plane on every layer, but the Voronoi seeds are only vias + routed-MST
-    # samples, and a Voronoi cell is owned by whichever net has the nearest seed. A TH
-    # pad with no nearby same-net seed therefore lands inside ANOTHER net's cell: the
-    # local plane copper is the wrong net and the pad is silently disconnected as an
-    # island. For each such ORPHANED pad we route a corridor on the plane layer to the
-    # nearest same-net seed (avoiding other nets, exactly like the MST routing) and add
-    # the corridor's samples as seeds, so the pad's region becomes contiguous with the
-    # net's main region. (We deliberately do NOT add TH pads to the via MST: that
-    # reorganizes the via-to-via topology and badly regresses large nets like GND.)
-    if augmented_vias_by_net is not None:
-        # Snapshot all seeds for orphan detection (Voronoi owner == nearest seed). Also
-        # snapshot each net's own anchor points (its main region) as corridor targets.
-        all_seed_pts = []  # (x, y, net_id)
-        net_anchor_pts: Dict[int, List[Tuple[float, float]]] = {}
-        for snid, slist in augmented_vias_by_net.items():
-            net_anchor_pts[snid] = list(slist)
-            for sx, sy in slist:
-                all_seed_pts.append((sx, sy, snid))
+    # #114: a net with nothing on the spines -- no via, virtual via or on-board pad on this layer -- gets no seeds from
+    # the routing above. Seed it from its pads on this layer, else its pads projected onto it (#598), so it still
+    # receives its share. These are partition seeds ONLY: they never enter vias_by_net, so no MST edge or spine is
+    # invented for them.
+    for net_name in nets_with_seeds:
+        net_id = net_name_to_id.get(net_name)
+        if net_id is None or vias_by_net.get(net_id):
+            continue
+        seeds = augmented_vias_by_net.setdefault(net_id, [])
+        seen = {(round(x, 3), round(y, 3)) for x, y in seeds}
+        for px, py in (pads_on_layer_by_net.get(net_id) or
+                       projected_pads_by_net.get(net_id, [])):
+            k = (round(px, 3), round(py, 3))
+            if k not in seen:
+                seeds.append((px, py))
+                seen.add(k)
 
-        def _nearest_seed_net(px: float, py: float) -> Optional[int]:
-            best_net, best_d = None, None
-            for sx, sy, snid in all_seed_pts:
-                d = (sx - px) ** 2 + (sy - py) ** 2
-                if best_d is None or d < best_d:
-                    best_d, best_net = d, snid
-            return best_net
-
-        corridor_router = GridRouter(
-            via_cost=config.via_cost_units(),
-            h_weight=config.heuristic_weight,
-            turn_cost=config.turn_cost,
-            via_proximity_cost=0,
-            layer_costs=config.get_layer_costs(),
-            proximity_heuristic_cost=config.get_proximity_heuristic_cost()
-        )
-
-        th_connected = 0
-        th_fallback = 0
-        th_off_board = 0
-        fallback_pad_refs: List[str] = []
-        # A pad outside the Edge.Cuts outline can never reach the fill (it is
-        # clipped to the outline) -- corridor-routing toward it is wasted and
-        # point-seeding it plants a Voronoi cell in dead space (#291 class).
-        from check_drc import make_off_board_test
-        _off_board_test = make_off_board_test(pcb_data.board_info)
-        for nm_on_layer in nets_on_layer:
-            nid = net_name_to_id.get(nm_on_layer)
-            if nid is None:
-                continue
-            seeds = augmented_vias_by_net.setdefault(nid, [])
-            seen = {(round(x, 3), round(y, 3)) for x, y in seeds}
-            anchors = net_anchor_pts.get(nid, [])
-            for pad in pcb_data.pads_by_net.get(nid, []):
-                if not pad_is_plated_through(pad):
-                    continue
-                px, py = pad.global_x, pad.global_y
-                if _off_board_test is not None and _off_board_test(px, py):
-                    th_off_board += 1
-                    continue
-                # Already inside its own net's cell? Then the plane already covers it.
-                if _nearest_seed_net(px, py) == nid:
-                    continue
-                # Orphaned: route a corridor to the nearest same-net anchor (main region).
-                route_path = None
-                if anchors:
-                    tx, ty = min(anchors, key=lambda t: (t[0] - px) ** 2 + (t[1] - py) ** 2)
-                    other_nets_vias = {
-                        onid: ov for onid, ov in augmented_vias_by_net.items() if onid != nid
-                    }
-                    route_path = route_plane_connection(
-                        via_a=(px, py), via_b=(tx, ty), plane_layer=layer, net_id=nid,
-                        other_nets_vias=other_nets_vias, config=config, pcb_data=pcb_data,
-                        proximity_radius=plane_proximity_radius, proximity_cost=plane_proximity_cost,
-                        track_via_clearance=plane_track_via_clearance,
-                        max_iterations=plane_max_iterations, verbose=verbose,
-                        previous_routes=None, base_obstacles=None, router=corridor_router
-                    )
-                if route_path:
-                    connection_routes.append((nid, layer, route_path))
-                    for sx, sy in sample_route_for_voronoi(route_path, sample_interval=voronoi_seed_interval):
-                        k = (round(sx, 3), round(sy, 3))
-                        if k not in seen:
-                            seeds.append((sx, sy))
-                            seen.add(k)
-                    th_connected += 1
-                else:
-                    # Corridor routing failed: at least point-seed the pad so its own
-                    # immediate cell is its net (better than landing in another net).
-                    k = (round(px, 3), round(py, 3))
-                    if k not in seen:
-                        seeds.append((px, py))
-                        seen.add(k)
-                    th_fallback += 1
-                    fallback_pad_refs.append(f"{pad.component_ref}.{pad.pad_number}")
-        if th_connected or th_fallback or th_off_board:
-            msg = f"  #107: routed corridors for {th_connected} orphaned TH pad(s)"
-            if th_fallback:
-                msg += (f"; {th_fallback} could not be reached on the plane layer "
-                        f"and fell back to point-seed ({', '.join(fallback_pad_refs)})")
-            if th_off_board:
-                msg += (f"; {th_off_board} off-board pad(s) skipped "
-                        f"(outside the outline, no seed)")
-            print(msg)
-
-    # #114: a net with no stitching vias gets no MST and therefore no Voronoi
-    # seeds from the routing above. Seed it directly from its pads on this layer
-    # (through-hole + SMD-on-layer) so it still receives a Voronoi-partitioned
-    # zone. Via-bearing nets are left to the #107 corridor logic above so their
-    # via topology is not perturbed.
-    if augmented_vias_by_net is not None:
-        for net_name in nets_with_seeds:
-            net_id = net_name_to_id.get(net_name)
-            if net_id is None or vias_by_net.get(net_id):
-                continue
-            seeds = augmented_vias_by_net.setdefault(net_id, [])
-            seen = {(round(x, 3), round(y, 3)) for x, y in seeds}
-            for px, py in pads_on_layer_by_net.get(net_id, []):
-                k = (round(px, 3), round(py, 3))
-                if k not in seen:
-                    seeds.append((px, py))
-                    seen.add(k)
-
-    # Deferred under-BGA pads participate as point seeds so each rail's cell
-    # reserves its ball territory before the fanout drops the actual vias
-    # (pours run first, #562). ONLY nets assigned to THIS layer may receive
-    # seeds: setdefault() here used to CREATE Voronoi entries for foreign
-    # nets, carving their cells into a layer whose plane they don't own
-    # (dilemma: 17 +3V3 confetti zones on the GND layer).
-    _dseeds = getattr(pcb_data, '_deferred_bga_seeds', None) \
-        if 'pcb_data' in dir() else None
-    if _dseeds and augmented_vias_by_net:
-        _seeded_nets = 0
-        for _nid, _pts in _dseeds.items():
-            _lst = augmented_vias_by_net.get(_nid)
-            if _lst is None:
-                continue  # net's plane lives on another layer
-            _seen = {(round(x, 3), round(y, 3)) for x, y in _lst}
-            _before = len(_lst)
-            for _x, _y in _pts:
-                _k = (round(_x, 3), round(_y, 3))
-                if _k not in _seen:
-                    _lst.append((_x, _y))
-                    _seen.add(_k)
-            if len(_lst) > _before:
-                _seeded_nets += 1
-        if _seeded_nets:
-            print(f"  Added deferred-BGA point seeds for "
-                  f"{_seeded_nets} net(s) to the Voronoi")
-
-    # Compute final Voronoi zones
     total_seeds = sum(len(vias) for vias in augmented_vias_by_net.values())
     print(f"  Computing final Voronoi zones with {total_seeds} seed points")
 
+    # (a background with a plane on another layer too: its pads here are served through that plane -- they need no
+    # cell of this one, and its seeds would only carve the others' regions into crumbs)
+    _vor_seeds = augmented_vias_by_net
+    _bg_elsewhere = bool(pcb_data.nets.get(_bg)) and pcb_data.nets[_bg].name in served_elsewhere
+    _rest = {nid: s for nid, s in augmented_vias_by_net.items() if nid != _bg and s}
+    if _bg_elsewhere and sum(len(s) for s in _rest.values()) >= 2:
+        _vor_seeds = _rest
+        print(f"  '{pcb_data.nets[_bg].name}' has a plane on another layer too: it is this layer's sheet alone, "
+              f"out of the split")
+
     try:
-        zone_polygons, _, _ = compute_zone_boundaries(
-            augmented_vias_by_net, board_bounds,
-            return_raw_polygons=True,
-            board_edge_clearance=board_edge_clearance,
-            verbose=verbose
-        )
+        _raw_cells = voronoi_cells(_vor_seeds, board_bounds, board_edge_clearance=board_edge_clearance)
     except ValueError as e:
         print(f"  Error computing zone boundaries: {e}")
         print(f"  Falling back to full board rectangle for first net")
@@ -1480,7 +1767,7 @@ def _generate_multinet_layer_zones(
             clearance=zone_clearance,
             min_thickness=min_thickness,
             direct_connect=not thermal_relief,
-            use_net_name=pcb_data.kicad_version >= KICAD_10_MIN_VERSION
+            use_net_name=pcb_uses_name_nets(pcb_data)
         )
         zone_sexprs.append(zone_sexpr)
         zone_data_list.append({
@@ -1493,6 +1780,15 @@ def _generate_multinet_layer_zones(
             'min_thickness': min_thickness,
         })
         return zone_sexprs, debug_line_sexprs, zone_data_list
+
+    zone_polygons = _reach_and_sheet(
+        _bg, _raw_cells,
+        {nid: list(vias_by_net.get(nid, ())) + list(pads_on_layer_by_net.get(nid, ()))
+         + list(projected_pads_by_net.get(nid, ())) for nid in augmented_vias_by_net},
+        [(nid, path) for nid, lyr, path in connection_routes if lyr == layer],
+        zone_polygon, min_thickness,
+        {nid: (pcb_data.nets[nid].name if nid in pcb_data.nets else str(nid)) for nid in augmented_vias_by_net},
+        _geom, must_hold=not _bg_elsewhere)
 
     # Voronoi cells are NOT guaranteed disjoint -- usp_obc_v7's In1.Cu came out
     # with the whole Net-(U5-GND) pour nested inside the GND cell. Overlapping
@@ -1535,7 +1831,7 @@ def _generate_multinet_layer_zones(
                 clearance=zone_clearance,
                 min_thickness=min_thickness,
                 direct_connect=not thermal_relief,
-                use_net_name=pcb_data.kicad_version >= KICAD_10_MIN_VERSION,
+                use_net_name=pcb_uses_name_nets(pcb_data),
                 priority=_prio_of.get((net_id, poly_idx), 0)
             )
             zone_sexprs.append(zone_sexpr)
@@ -1560,13 +1856,23 @@ def _generate_multinet_layer_zones(
     resistance_results = {}
     copper_oz = stackup_copper_oz(pcb_data, layer)
     for net_id, polygons in zone_polygons.items():
+        if not polygons:  # every island demoted (#662 invariant 3b)
+            continue
         net = pcb_data.nets.get(net_id)
         net_name = net.name if net else f"net_{net_id}"
         mst_edges = net_mst_edges.get(net_id, [])
         edge_routes = routed_paths_by_edge.get(net_id, {})
-        largest_polygon = max(polygons, key=lambda p: len(p))
+        # (the region the net's current crosses: its largest by AREA -- by vertex count a jagged sliver could win)
+        largest_polygon = max(polygons, key=lambda p: abs(sum(
+            p[i][0] * p[(i + 1) % len(p)][1] - p[(i + 1) % len(p)][0] * p[i][1] for i in range(len(p)))))
         result = analyze_multi_net_plane(largest_polygon, mst_edges, edge_routes, layer,
                                         copper_oz=copper_oz)
+        if result is None:
+            # no path routed between the net's vias -- the pour runs before any fanout or routing (#562), so a split
+            # net has no vias yet -- the region measured as a single-net plane is (its bounding diagonal)
+            result = analyze_single_net_plane(largest_polygon, layer, copper_oz=copper_oz)
+            if result is not None:
+                result['path_basis'] = 'diagonal'
         resistance_results[net_name] = result
         # #487: main() folds these into JSON_SUMMARY (stdout-only before).
         note_resistance_result(net_name, result)
@@ -1888,7 +2194,7 @@ def _write_plane_output(
     if all_debug_lines:
         print(f"  Adding {len(all_debug_lines)} debug lines on User.4")
 
-    kicad_v10_names = pcb_data.net_id_to_name if pcb_data.kicad_version >= KICAD_10_MIN_VERSION else None
+    kicad_v10_names = pcb_data.net_id_to_name if pcb_uses_name_nets(pcb_data) else None
     if not write_plane_output(input_file, output_file, combined_zone_sexpr, all_new_vias, all_new_segments,
                               exclude_net_ids=all_ripped_net_ids, zones_to_replace=zones_to_replace,
                               add_teardrops=add_teardrops, net_id_to_name=kicad_v10_names,
@@ -1949,12 +2255,27 @@ def _empty_plane_results(return_results: bool):
     return (0, 0, 0)
 
 
+def _signal_copper(pcb_data, plane_net_ids):
+    """Whether the board carries any signal copper: a track or via of a net that
+    is not one of this call's plane nets (net 0 aside). None before a chain's
+    fanout and routing, which run after its planes (#562)."""
+    planes = set(plane_net_ids or ())
+    # (a copper GRAPHIC -- a footprint's tab, an antenna, a net-tagged logo -- is art, not routing)
+    return any(s.net_id and s.net_id not in planes and not getattr(s, 'graphic', False)
+               for s in pcb_data.segments) or \
+        any(v.net_id and v.net_id not in planes for v in pcb_data.vias)
+
+
 def _resolve_zone_clearance(zone_clearance, clearance, min_thickness,
                             pcb_data, via_size, net_names=None):
     """Resolve the pour clearance (see call site). None -> the routed
-    clearance; then, if the densest BGA via lattice the pour must serve is
-    tighter than 2*zc + min_thickness, escalate DOWN to what threads --
-    floored at the fab minimum clearance -- with a warning either way.
+    clearance; then, if a BGA via lattice the pour must serve (a field with a
+    ball on a plane net, or a plane-net via in it) leaves less than
+    min_thickness between its vias, escalate DOWN to what threads --
+    floored at the fab minimum clearance (plane_lattice). A field that no
+    clearance at the floor threads at the run's via is held at the clearance
+    the largest ladder via its fanout will step down to needs; one that no
+    ladder via threads is named and left out.
 
     The resolved value is recorded in the clearance ledger: a KiCad refill
     regrows the pour at max(zone clearance, netclass), so a sub-nominal pour
@@ -1973,65 +2294,81 @@ def _resolve_zone_clearance(zone_clearance, clearance, min_thickness,
 def _resolve_zone_clearance_impl(zone_clearance, clearance, min_thickness,
                                  pcb_data, via_size, net_names=None):
     from kicad_parser import find_components_by_type, detect_bga_pitch
-    from list_nets import fab_floors
+    from list_nets import fab_floors, escalation_rungs
+    import plane_lattice
     explicit = zone_clearance is not None
     zc = zone_clearance if explicit else clearance
     if not explicit:
         print(f"Zone clearance: following routed clearance {zc:g}mm "
               f"(--zone-clearance to override)")
-    # Tightest pour channel across BGA fields: adjacent lattice gap
-    # pitch - via_size (the via size a field carries is dominated by the
-    # routing/fanout vias; use the run's via_size as the estimate).
     plane_ids = {i for i, n in pcb_data.nets.items()
                  if n.name in set(net_names or [])}
-    tightest = None
+    ncu = (len(pcb_data.board_info.copper_layers)
+           if pcb_data.board_info.copper_layers else 2)
+    floor = fab_floors(ncu).get('clearance', 0.09)
+    ladder =sorted({r['via_diameter'] for r in escalation_rungs(ncu)},
+                    reverse=True)
+    # Each field the pour must serve asks its own clearance (plane_lattice):
+    # the one that passes between its vias one pitch apart.
+    need = []            # (clearance, ref, pitch, via) per field that threads
+    unthreaded = []      # (ref, pitch, via, clearance it would need)
     for fp in find_components_by_type(pcb_data, 'BGA'):
         pitch = detect_bga_pitch(fp)
         if not pitch:
             continue
-        # Only fields the pour must actually serve: a BGA with no plane-net
-        # via inside it constrains nothing (U6's 0.5mm pitch false-warned).
         _xs = [p2.global_x for p2 in fp.pads]
         _ys = [p2.global_y for p2 in fp.pads]
-        if not any(v.net_id in plane_ids
-                   and min(_xs) - 0.5 < v.x < max(_xs) + 0.5
-                   and min(_ys) - 0.5 < v.y < max(_ys) + 0.5
-                   for v in pcb_data.vias):
+
+        def _in_field(v):
+            return (min(_xs) - 0.5 < v.x < max(_xs) + 0.5
+                    and min(_ys) - 0.5 < v.y < max(_ys) + 0.5)
+        # A field the pour serves: a ball on one of its nets (that ball's drop
+        # comes later, in the fanout, when the planes are poured first -- as
+        # the chain pours them), or a plane-net via already inside it. A field
+        # with neither constrains nothing.
+        if not (any(getattr(p2, 'net_id', None) in plane_ids for p2 in fp.pads)
+                or any(v.net_id in plane_ids and _in_field(v)
+                       for v in pcb_data.vias)):
             continue
-        # Gap from the vias ACTUALLY in the field (fanout vias, typically
-        # smaller than the run's --via-size); fall back to the run size on
-        # a virgin field.
-        _in = [v.size for v in pcb_data.vias
-               if min(_xs) - 0.5 < v.x < max(_xs) + 0.5
-               and min(_ys) - 0.5 < v.y < max(_ys) + 0.5 and v.size > 0]
+        # The vias ACTUALLY in the field (fanout vias, often smaller than the
+        # run's --via-size); the run's size on a virgin field.
+        _in = [v.size for v in pcb_data.vias if _in_field(v) and v.size > 0]
         field_via = max(_in) if _in else via_size
-        gap = pitch - field_via
-        if tightest is None or gap < tightest:
-            tightest = gap
-    if tightest is None:
+        c = plane_lattice.clearance_to_thread(pitch, field_via, min_thickness)
+        if c < floor and not _in:
+            # A virgin field no pour threads at the run's via: its fanout will
+            # step the via down the ladder (bga_fanout, plane_lattice), so the
+            # pour keeps the clearance the largest such via needs.
+            for d in ladder:
+                if d < field_via and plane_lattice.clearance_to_thread(
+                        pitch, d, min_thickness) >= floor:
+                    field_via = d
+                    c = plane_lattice.clearance_to_thread(pitch, d, min_thickness)
+                    break
+        if c < floor:
+            unthreaded.append((fp.reference, pitch, field_via, c))
+            continue
+        need.append((c, fp.reference, pitch, field_via))
+    for ref, pitch, fv, c in unthreaded:
+        print(f"  NOTE: {ref} ({pitch:g}mm pitch, {fv:g}mm vias): no pour "
+              f"clearance at or above the fab floor {floor:g} passes between "
+              f"its vias (needs {c:.3f}) -- its plane balls under it are "
+              f"islands unless their own copper joins them")
+    if not need:
         return zc
-    needed = (tightest - min_thickness) / 2.0
-    if needed >= zc:
-        return zc
-    ncu = (len(pcb_data.board_info.copper_layers)
-           if pcb_data.board_info.copper_layers else 2)
-    floor = fab_floors(ncu).get('clearance', 0.09)
-    if needed < floor:
-        print(f"  WARNING: pour cannot thread the densest BGA lattice even "
-              f"at the fab floor (needs {needed:.3f}mm < floor {floor:g}); "
-              f"zone clearance stays {zc:g} -- interior plane vias in that "
-              f"field may be unreachable islands")
+    c, ref, pitch, fv = min(need)
+    if c >= zc:
         return zc
     if explicit:
-        print(f"  WARNING: explicit zone clearance {zc:g} cannot thread the "
-              f"densest BGA lattice (gap {tightest:.3f}mm needs <= "
-              f"{needed:.3f}); keeping it -- pass a smaller --zone-clearance "
+        print(f"  WARNING: explicit zone clearance {zc:g} cannot thread "
+              f"{ref}'s via lattice ({pitch:g}mm pitch, {fv:g}mm vias need "
+              f"<= {c:.3f}); keeping it -- pass a smaller --zone-clearance "
               f"or expect isolated plane islands there")
         return zc
-    print(f"  Zone clearance tightened {zc:g} -> {needed:.3f}mm so the pour "
-          f"threads the densest BGA lattice (gap {tightest:.3f}mm, min "
-          f"width {min_thickness:g}; fab floor {floor:g})")
-    return round(needed, 4)
+    print(f"  Zone clearance tightened {zc:g} -> {c:.4g}mm so the pour "
+          f"threads {ref}'s via lattice ({pitch:g}mm pitch, {fv:g}mm vias, "
+          f"min width {min_thickness:g}; fab floor {floor:g})")
+    return c
 
 
 # #487 narrowing (Andy): thermal-via arrays belong on true EP/tab pads of
@@ -2241,7 +2578,14 @@ def _build_exact_stitch_validator(pcb_data, stitch_net_ids, net_display,
         return None
     finally:
         _sh.rmtree(tmpdir, ignore_errors=True)
-    if islands_map is None:
+    # `not`, not `is None` (#713 item 4): an EMPTY map is a refill that ran and
+    # poured nothing, and it validates exactly as little as an unavailable one.
+    # Letting it through built {net: {}} for every net, and the caller then
+    # reported "exact fill has 'GND' main-cluster copper on 0 of its N owned
+    # layer(s) (need 2) -- skipped" -- a message that blames the BOARD for what
+    # was really an absent verdict, instead of the documented "validation
+    # unavailable -- sites gated by the fill model only (#485)" line below.
+    if not islands_map:
         return None
     out = {}
     for net_id in stitch_net_ids:
@@ -2668,6 +3012,23 @@ def _stitch_plane_area_vias(
     return new_via_dicts
 
 
+#: The pad tally from the last create_plane() in this process.
+#: #487 folded plane RESISTANCE into the machine-readable summary for exactly
+#: this reason and stopped one field short: the summary could report the
+#: plane's ampacity but not whether it reached its pads. `complete: true,
+#: status: "ok", EXIT=0` was the entire machine-readable story of a pour that
+#: left 5 pads open -- the number is held three times inside create_plane, and
+#: main() calls it as a bare statement, so none of it survived.
+_LAST_PAD_TALLY: dict = {}
+
+
+def consume_pad_tally() -> dict:
+    """Take (and clear) the last pour's pad tally."""
+    global _LAST_PAD_TALLY
+    out, _LAST_PAD_TALLY = dict(_LAST_PAD_TALLY), {}
+    return out
+
+
 def create_plane(
     input_file: str,
     output_file: str,
@@ -2686,9 +3047,6 @@ def create_plane(
     verbose: bool = False,
     dry_run: bool = False,
     layer_nets: Dict[str, List[str]] = None,
-    plane_proximity_radius: float = 3.0,
-    plane_proximity_cost: float = 2.0,
-    plane_track_via_clearance: float = defaults.PLANE_TRACK_VIA_CLEARANCE,
     board_edge_clearance: float = defaults.PLANE_EDGE_CLEARANCE,
     voronoi_seed_interval: float = 2.0,
     plane_max_iterations: int = defaults.MAX_ITERATIONS,
@@ -2728,14 +3086,10 @@ def create_plane(
     Args:
         net_names: List of net names to process (e.g., ['GND', 'VCC'])
         plane_layers: List of layers for each net (e.g., ['In1.Cu', 'In2.Cu'])
-        plane_proximity_radius: Radius around other nets' vias for proximity cost (mm).
-        plane_proximity_cost: Maximum proximity cost around other nets' vias (mm equivalent).
-        plane_track_via_clearance: Clearance from track center to other nets' via centers (mm).
-            MST routes will avoid regions within this distance of other nets' vias to
-            leave room for polygon fill.
         board_edge_clearance: Clearance from board edge for zone polygons (mm).
-        voronoi_seed_interval: Sample interval for Voronoi seed points along routes (mm).
-        plane_max_iterations: Max A* iterations for routing plane connections.
+        voronoi_seed_interval: Longest gap between a spine's Voronoi seeds on a shared
+            layer (mm); see _spine_samples.
+        plane_max_iterations: Max A* iterations for routing a shared layer's spines.
         same_net_pad_clearance: Edge-to-edge clearance (mm) between stitching vias and
             same-net pads. -1 (default) allows via-in-pad placement. Any value >= 0
             forces vias to be placed outside same-net pads with that much clearance.
@@ -2800,6 +3154,35 @@ def create_plane(
     # copper in different ORDER, and list position leaks into decisions.
     from kicad_parser import canonicalize_pcb_data_order
     canonicalize_pcb_data_order(pcb_data)
+    # #962: the input's vias as values, for the Type VII stamp (only vias this
+    # run ADDS are stamped; see fab_notes.via_protection_stamps)
+    from fab_notes import via_snapshot as _via_snapshot962
+    _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)  # #1171: + sites
+
+    # --plane-layers takes BARE copper layer names positionally matched to
+    # --nets, but the natural thing to type (and what the routing skill's R1
+    # stage used to instruct) is a net:layer pair. The argument is untyped
+    # `str`, so "GND:B.Cu" was accepted AS A LAYER NAME, travelled through
+    # generate_zone_sexpr, and was written verbatim as (layer "GND:B.Cu").
+    # KiCad then refuses the whole file ("Failed to load board") -- while every
+    # in-repo checker read it happily, because check_connected's copper-layer
+    # census only tested `endswith('.Cu')`. Two full routing laps of run 11
+    # were spent on boards nobody could open.
+    #
+    # Engine-side, not in main(): main() never parses the board so it cannot
+    # validate, and this way the CLI, the GUI planes tab and
+    # route_disconnected_planes all inherit the guard (same reasoning as the
+    # copper-to-edge rule below).
+    _copper = list(getattr(pcb_data.board_info, 'copper_layers', None) or ())
+    if _copper:
+        _bad = [l for l in plane_layers if l not in _copper]
+        if _bad:
+            print(f"Error: {', '.join(sorted(set(_bad)))} is not a copper layer "
+                  f"of this board ({', '.join(_copper)}). --plane-layers takes "
+                  f"BARE layer names positionally matched to --nets "
+                  f"(e.g. --nets GND GNDA --plane-layers B.Cu B.Cu), "
+                  f"not net:layer pairs.")
+            return _empty_plane_results(return_results)
 
     # Route trace (#482): plane creation builds its tap tracks/vias as dicts in
     # all_new_segments/all_new_vias (never touching pcb_data.segments), so record
@@ -2817,6 +3200,8 @@ def create_plane(
     zone_clearance = _resolve_zone_clearance(
         zone_clearance, clearance, min_thickness, pcb_data, via_size,
         net_names)
+    # (this call's virtual vias, filled per net below: none carried over from an earlier call on the same pcb_data)
+    pcb_data._deferred_pad_seeds = {}
 
     # Resolve all net IDs upfront
     net_ids = []
@@ -3007,8 +3392,14 @@ def create_plane(
         config.same_net_pad_clearance = same_net_pad_clearance
     # #498: per-layer .kicad_dru clearance rules -- tap tracks/vias, region
     # joins and blocker reroutes must obey them like every other routed copper.
-    from kicad_dru import install_layer_clearances
+    from kicad_dru import install_layer_clearances, install_track_clearances
     install_layer_clearances(config, None, input_file, pcb_data)
+    # #1135: and the track-to-track rules (#735), as batch_route installs
+    # them: a tap track or a blocker reroute is a track, and a board's
+    # `A.Type == 'track' && B.Type == 'track'` rule binds it too. Raise-only
+    # on seg-vs-seg pairs; the effective map over the nets this step pours.
+    install_track_clearances(config, None, input_file, pcb_data,
+                             routed_net_ids=net_ids)
     # Cross-class clearance (#434, mirrors batch_route/repair): auto-read the
     # board's non-Default netclasses from the INPUT's sibling .kicad_pro when
     # no map was passed, so tap tracks/vias and blocker reroutes honor KiCad's
@@ -3117,41 +3508,27 @@ def create_plane(
             print(f"  {len(_therm)} exposed/thermal pad(s) get a via ARRAY "
                   f"(#487)")
         if _skip:
-            # Of the deferred pads, ONLY those under a BGA seed the
-            # split-layer Voronoi: pours run before fanout (#562), so a
-            # rail's cell must reserve the ball territory the fanout will
-            # drop vias into -- there is no other way to guess it. Every
-            # other deferred SMD pad (diode, cap, switch) gets its via from
-            # the route step wherever the plane already is; seeding them
-            # shattered split planes into per-pad confetti (dilemma:
-            # 70 zones from 4 nets on 2 layers).
-            _bga_refs = getattr(pcb_data, '_bga_ref_cache', None)
-            if _bga_refs is None:
-                from kicad_parser import find_components_by_type
-                _bga_refs = pcb_data._bga_ref_cache = {
-                    fp.reference
-                    for fp in find_components_by_type(pcb_data, 'BGA')}
-            _bga_skip = [pd for pd in _skip
-                         if pd['pad'].component_ref in _bga_refs]
-            if _bga_skip:
-                _dseeds = getattr(pcb_data, '_deferred_bga_seeds', None)
-                if _dseeds is None:
-                    _dseeds = pcb_data._deferred_bga_seeds = {}
-                _dseeds.setdefault(net_id, []).extend(
-                    (pd['pad'].global_x, pd['pad'].global_y)
-                    for pd in _bga_skip)
+            # Every deferred pad is a VIRTUAL VIA for the split: a point of
+            # its net's spines and a partition seed where its drop will come
+            # down, never copper. Pours run
+            # before any fanout or routing (#562), so the pads are the only
+            # sign of where each rail is used -- a ball under an array, a
+            # decoupling cap, a regulator's output, an RF section's grounds
+            # alike, none of them special. (Only the balls under a BGA used
+            # to seed: zynq_ad9364's RFGND split was a hull round U5's balls
+            # while ~60 of its pads stood under GND and were tapped one by
+            # one, and its VCC_1V0/1V5/1V8 islands left their regulators'
+            # output caps outside. Seeding every pad once shattered a plain
+            # Voronoi split into per-pad confetti -- dilemma: 70 zones from
+            # 4 nets on 2 layers; the spine split's reach, octagons round
+            # each net's clusters joined by its spines, bounds that.)
+            _dseeds = getattr(pcb_data, '_deferred_pad_seeds', None)
+            if _dseeds is None:
+                _dseeds = pcb_data._deferred_pad_seeds = {}
+            _dseeds.setdefault(net_id, []).extend(
+                (pd['pad'].global_x, pd['pad'].global_y) for pd in _skip)
             print(f"  {len(_skip)} pad(s) on '{net_name}' deferred to the "
-                  f"route step ({len(_bga_skip)} under-BGA position(s) kept "
-                  f"as Voronoi seeds)")
-
-        # (KICAD_PLANE_DEFER_BGA prototype DELETED, review dead-code 9:
-        # the unconditional #562 deferral above already removes every
-        # non-thermal via_needed pad, so this block could only defer
-        # thermal-array pads inside BGA courtyards -- a behavior nobody
-        # designed. _deferred_bga_seeds' reader at the Voronoi seeding
-        # keeps working; nothing fills it now, which is correct: the
-        # #562 deferral keeps the pads in target_pads as classified,
-        # so their positions still seed the partition directly.)
+                  f"route step, each kept as a virtual via for the split")
 
         pads_through_hole = sum(1 for p in target_pads if p['type'] == 'through_hole')
         pads_direct = sum(1 for p in target_pads if p['type'] == 'direct')
@@ -3169,15 +3546,6 @@ def create_plane(
         if pads_off_board:
             print(f"  {RED}Pads OUTSIDE the board outline (unreachable, skipped, #291): "
                   f"{pads_off_board}{RESET}")
-
-        # Step 6: Collect existing vias on target net (for reuse)
-        existing_net_vias: List[Tuple[float, float]] = []
-        for via in pcb_data.vias:
-            if via.net_id == net_id:
-                existing_net_vias.append((via.x, via.y))
-
-        if verbose and existing_net_vias:
-            print(f"  Existing vias on net '{net_name}': {len(existing_net_vias)}")
 
         # Step 7: Build obstacle map for via placement (exclude current net)
         if pads_need_via > 0:
@@ -3202,58 +3570,6 @@ def create_plane(
                                    via_size, config.clearance)
         else:
             obstacles = None
-
-        # Step 8: Build routing obstacle maps (cached per layer, but rebuild for each net)
-        routing_obstacles_cache: Dict[str, GridObstacleMap] = {}
-        if verbose:
-            print(f"  pcb_data has {len(pcb_data.vias)} vias, {len(pcb_data.segments)} segments")
-
-        def get_routing_obstacles(layer: str) -> GridObstacleMap:
-            """Get or create routing obstacle map for a layer."""
-            if layer not in routing_obstacles_cache:
-                if verbose:
-                    print(f"\n  Building routing obstacle map for {layer}...")
-                routing_obstacles_cache[layer] = build_routing_obstacle_map(
-                    pcb_data, config, net_id, layer, skip_pad_blocking=False, verbose=False
-                )
-            return routing_obstacles_cache[layer]
-
-        # Fill-aware via preference: predict this net's zone fill (the exact
-        # polygon create_plane will write, over the copper that exists NOW)
-        # and prefer via sites on its MAIN component. Distance-only placement
-        # happily drops a stitching via in a clearance-carved pocket or on a
-        # fill island -- DRC-clean, self-reports success, and becomes a
-        # region-join the plane REPAIR step must strap later. Single-net
-        # layers only: a Voronoi-shared layer's cells are seeded FROM the
-        # placed vias, so there is no polygon to predict yet (the repair
-        # path's oracle + outline filter covers those, #287). Soft preference,
-        # never a gate -- a mispredicted fill degrades to today's behavior.
-        fill_via_preference = None
-        _is_multi_net_layer = bool(layer_nets
-                                   and len(layer_nets.get(plane_layer, [])) > 1)
-        if should_create_zone and not _is_multi_net_layer:
-            try:
-                from types import SimpleNamespace
-                from plane_fill_model import ZoneFillModel
-                _synth_zone = SimpleNamespace(
-                    net_id=net_id, layer=plane_layer,
-                    clearance=zone_clearance, min_thickness=min_thickness,
-                    polygon=zone_polygon)
-                _pred_model = ZoneFillModel(pcb_data, _synth_zone)
-                if _pred_model.ok:
-                    _pred_main = _pred_model.largest_component()
-                    if _pred_main:
-                        def fill_via_preference(x, y, _m=_pred_model,
-                                                _c=_pred_main,
-                                                _s=via_size / 2):
-                            return _m.query_component(x, y, size=_s) == _c
-                        print(f"  Fill-aware via preference: predicted "
-                              f"{plane_layer} fill modeled (main component "
-                              f"located)")
-            except Exception as _fp_e:
-                fill_via_preference = None
-                if verbose:
-                    print(f"  (fill prediction unavailable: {_fp_e})")
 
         # Step 9: Place vias near each target pad (or reuse existing)
         new_vias = []
@@ -3333,23 +3649,13 @@ def create_plane(
                 print(f"thermal via array: {_placed} via(s) over "
                       f"{pad.size_x:.1f}x{pad.size_y:.1f}mm pad")
             else:
-                # No lattice site fits -- defer like any other plane pad.
-                # NEVER fall back to a single via + trace: that is routing.
-                # Seed the Voronoi only for a BGA's pad (ball-territory
-                # reservation); a QFN/exposed paddle takes its tap from the
-                # route step wherever the plane lands.
-                _bga_refs = getattr(pcb_data, '_bga_ref_cache', None)
-                if _bga_refs is None:
-                    from kicad_parser import find_components_by_type
-                    _bga_refs = pcb_data._bga_ref_cache = {
-                        fp.reference
-                        for fp in find_components_by_type(pcb_data, 'BGA')}
-                if pad.component_ref in _bga_refs:
-                    _ds = getattr(pcb_data, '_deferred_bga_seeds', None)
-                    if _ds is None:
-                        _ds = pcb_data._deferred_bga_seeds = {}
-                    _ds.setdefault(net_id, []).append(
-                        (pad.global_x, pad.global_y))
+                # No lattice site fits -- defer like any other plane pad, and
+                # like any other a virtual via for the split. NEVER fall back
+                # to a single via + trace: that is routing.
+                _ds = getattr(pcb_data, '_deferred_pad_seeds', None)
+                if _ds is None:
+                    _ds = pcb_data._deferred_pad_seeds = {}
+                _ds.setdefault(net_id, []).append((pad.global_x, pad.global_y))
                 print("thermal array did not fit -- deferred to the route step")
 
         # (The fine-pitch retry pass, issue #104, lived here. It is gone with
@@ -3394,7 +3700,7 @@ def create_plane(
                 clearance=zone_clearance,
                 min_thickness=min_thickness,
                 direct_connect=not thermal_relief,
-                use_net_name=pcb_data.kicad_version >= KICAD_10_MIN_VERSION,
+                use_net_name=pcb_uses_name_nets(pcb_data),
                 priority=_prio
             )
             all_zone_sexprs.append(zone_sexpr)
@@ -3509,9 +3815,6 @@ def create_plane(
                     config=config,
                     zone_clearance=zone_clearance,
                     min_thickness=min_thickness,
-                    plane_proximity_radius=plane_proximity_radius,
-                    plane_proximity_cost=plane_proximity_cost,
-                    plane_track_via_clearance=plane_track_via_clearance,
                     plane_max_iterations=plane_max_iterations,
                     voronoi_seed_interval=voronoi_seed_interval,
                     board_edge_clearance=board_edge_clearance,
@@ -3523,7 +3826,13 @@ def create_plane(
                     # tie-break the fill on UUIDs.
                     priority_offset=max(
                         (shared_layer_priority.get(n, 0) for n in nets_on_layer),
-                        default=0)
+                        default=0),
+                    # (a net with a plane on another layer: one this run pours, or one the board already has from
+                    # an earlier step)
+                    served_elsewhere=frozenset(
+                        n for n in nets_on_layer
+                        if any(n in ns for lyr, ns in layer_nets.items() if lyr != layer)
+                        or any(z.net_name == n and z.layer != layer for z in (pcb_data.zones or [])))
                 )
                 all_zone_sexprs.extend(zone_sexprs)
                 all_debug_lines.extend(debug_line_sexprs)
@@ -3532,8 +3841,20 @@ def create_plane(
     # Area via stitching + edge fence (#485): AFTER every pour's geometry and
     # this run's tap copper exist, BEFORE the finalize/write split so the CLI
     # file write and the GUI results path emit identical stitch vias. The
-    # pass appends its vias to pcb_data.vias itself.
-    if (stitch_vias or stitch_edge_fence) and \
+    # pass appends its vias to pcb_data.vias itself. Not on a board with no
+    # signal copper yet: a chain pours its planes before any fanout or routing
+    # (#562), and a stitch via laid then is blind to the escapes and channels
+    # to come -- an array's dog-bone sites first among them.
+    _bare = (stitch_vias or stitch_edge_fence or add_teardrops) and \
+        not _signal_copper(pcb_data, net_ids)
+    if (stitch_vias or stitch_edge_fence) and _bare:
+        print("\nVia stitching: SKIPPED -- the board has no signal copper yet, so a stitch "
+              "via would be placed blind to the fanout and routing still to come; run the "
+              "planes step with the stitching after routing")
+    if add_teardrops and _bare:
+        print("\nTeardrops: the board has no signal copper yet -- they reach only the vias "
+              "on it now; run them after routing for the rest")
+    if (stitch_vias or stitch_edge_fence) and not _bare and \
             not (cancel_check and cancel_check()):
         # Frequency-derived pitch: lambda/20 at the maximum frequency of
         # interest, from the stackup's own dielectric. Overrides
@@ -3579,6 +3900,8 @@ def create_plane(
         print(f"  Nets processed: {len(net_names)}")
         print(f"  Total new vias placed: {total_vias_placed}")
         print(f"  Total traces added: {total_traces_added}")
+        _LAST_PAD_TALLY['failed_pads'] = int(total_failed_pads)
+        _LAST_PAD_TALLY['pads_needing_vias'] = int(total_pads_needing_vias)
         if total_failed_pads > 0:
             print(f"  Total failed pads: {total_failed_pads}")
 
@@ -3588,12 +3911,6 @@ def create_plane(
                 net = pcb_data.nets.get(rid)
                 ripped_names.append(net.name if net else f"net_{rid}")
             print(f"  Nets excluded from output: {', '.join(ripped_names)}")
-
-    # Via-in-pad is a FAB requirement this run may just have created (#489 §8).
-    # Emitted from the shared engine so the GUI planes tab reports it too.
-    from fab_notes import print_via_in_pad_note
-    print_via_in_pad_note(all_new_vias, pcb_data.pads_by_net,
-                          context="plane stitching vias")
 
     # Finalize plane tap copper ONCE, before the write/dry-run split, so the
     # GUI (dry_run=True, return_results) and the CLI (writes the file) emit
@@ -3610,6 +3927,20 @@ def create_plane(
         track_width, grid_step, via_size, via_drill, hole_to_hole_clearance,
         net_clearances=net_clearances, strip_sink=_finalize_strips,
         same_net_pad_clearance=same_net_pad_clearance)  # #581
+
+    # Via-in-pad / via-in-paste is a FAB requirement this run may just have
+    # created (#489 §8, #962). It is DECLARED on the via itself, as
+    # (capping yes) (filling yes), and recorded. It runs AFTER the finalize,
+    # which merges and nudges vias, so it describes the vias that ship. It is
+    # set on the dicts before the write/return split, so the CLI writer
+    # (plane_io) and the GUI planes tab (apply_via_protection) both get it.
+    from fab_notes import (via_protection_stamps as _vps962,
+                           apply_stamps_in_memory as _asim962,
+                           print_via_protection_record as _pvpr962)
+    _stamps962, _via_in_pad962 = _vps962(all_new_vias, _input_vias962, pcb_data)
+    _asim962(_stamps962)
+    _pvpr962(_via_in_pad962, "plane stitching vias")
+    create_plane.last_via_in_pad = _via_in_pad962
 
     # Route trace (#482): emit the finalized plane-tap tracks/vias, grouped by
     # net so each plane's taps land as one animation event, then write
@@ -3662,7 +3993,7 @@ def create_plane(
                         continue  # already present from an earlier plane run
                     all_zone_sexprs.append(generate_keepout_zone_sexpr(
                         _cu, _pts, _kname,
-                        use_net_name=pcb_data.kicad_version >= KICAD_10_MIN_VERSION))
+                        use_net_name=pcb_uses_name_nets(pcb_data)))
                     all_zone_data.append({
                         'thermal_relief': thermal_relief,
                         'keepout': True, 'name': _kname, 'layers': _cu,
@@ -3708,6 +4039,7 @@ def create_plane(
             output_file, net_ids, net_names, plane_layers)
         if geo_results:
             geo_failed = sum(info['failed'] for info in geo_results.values())
+            _LAST_PAD_TALLY['geometric_failed'] = int(geo_failed)
             if geo_failed != total_failed_pads:
                 print(f"\n  {geo_failed} pad(s) are not connected to their "
                       f"plane by the pour alone -- EXPECTED (#562): the plane "
@@ -3825,13 +4157,16 @@ Examples:
     parser.add_argument("--nets", "-n", nargs="+", required=True,
                         help="Net name(s) for the plane(s) (e.g., GND VCC)")
     parser.add_argument("--plane-layers", "-p", nargs="+", required=True,
-                        help="Plane layer(s) for the zone(s), one per net (e.g., In1.Cu In2.Cu)")
+                        help="BARE copper layer name(s) for the zone(s), one per net, "
+                             "positionally matched to --nets (e.g., In1.Cu In2.Cu). "
+                             "NOT net:layer pairs -- 'GND:B.Cu' is not a layer name and "
+                             "is refused against the board's own copper layers.")
 
     # Via and track geometry
-    parser.add_argument("--via-size", type=float, default=None, help="Via outer diameter in mm (default: the board Default net-class via, else 0.5)")
+    parser.add_argument("--via-size", type=float, default=None, help="Via outer diameter in mm (default: the board Default net-class via, else 0.5). NOT a hard floor: a tap into a fine-pitch pad field can escalate to the --fab-tier via and print a per-via warning, because a 0.5mm via does not fit a 0.5mm-pitch TQFP. Pass --fab-overrides to forbid the escalation -- at the cost of the taps that then cannot be made")
     parser.add_argument("--via-drill", type=float, default=None, help="Via drill size in mm (default: the board Default net-class via drill, else 0.3)")
     parser.add_argument("--track-width", type=float, default=None, help="Track width for via-to-pad connections in mm (default: the board Default net-class width, else 0.3)")
-    parser.add_argument("--clearance", type=float, default=None, help="Copper clearance CEILING in mm. When given, every net class (Default included) is capped at min(class, this) and the writeback clamps. When OMITTED, each net routes at its own net-class clearance (base = the board's Default class, else 0.25).")
+    parser.add_argument("--clearance", type=float, default=None, help="Copper clearance of the DEFAULT net class for this run, in mm; other classes are honoured at their own clearance (pairwise max). When OMITTED, the board's Default class, else 0.25. --clearance-ceiling caps every class (the old #439 behaviour) and the writeback clamps.")
 
     # Zone options
     parser.add_argument("--zone-clearance", type=float, default=None, help="Zone (pour) clearance from other copper in mm. Default: follow --clearance, auto-stepping down to the fab floor if the pour cannot thread the densest BGA via lattice")
@@ -3866,20 +4201,12 @@ Examples:
     parser.add_argument("--power-nets-widths", nargs="+", type=float, default=None,
                         help="Track widths in mm for each power-net pattern (must match --power-nets length)")
 
-    # Multi-net layer connection options
-    parser.add_argument("--plane-proximity-radius", type=float, default=3.0,
-                        help="Radius around other nets' vias to add proximity cost when routing plane connections (mm, default: 3.0)")
-    parser.add_argument("--plane-proximity-cost", type=float, default=2.0,
-                        help="Maximum proximity cost around other nets' vias when routing plane connections (mm equivalent, default: 2.0)")
-    # #381 D9: --track-via-clearance is the same constant repair_planes
-    # spells that way; accept both here (dest stays plane_track_via_clearance).
-    parser.add_argument("--plane-track-via-clearance", "--track-via-clearance",
-                        type=float, default=defaults.PLANE_TRACK_VIA_CLEARANCE,
-                        help="Clearance from track center to other nets' via centers when routing MST connections (mm, default: 0.8)")
+    # Shared plane layer (the spine split) options
     parser.add_argument("--voronoi-seed-interval", type=float, default=2.0,
-                        help="Sample interval for Voronoi seed points along plane connection routes (mm, default: 2.0)")
+                        help="Longest gap between a spine's Voronoi seeds on a layer several nets share (mm, "
+                             "default: 2.0)")
     parser.add_argument("--plane-max-iterations", type=int, default=defaults.MAX_ITERATIONS,
-                        help="Max A* iterations for routing plane connections (default: 200000)")
+                        help="Max A* iterations for routing a shared layer's spines (default: 200000)")
 
     # Board edge clearance
     parser.add_argument("--board-edge-clearance", type=float, default=None,
@@ -3893,7 +4220,7 @@ Examples:
                         default=None,
                         help="Edge-to-edge clearance (mm) between placed vias and same-net pads. "
                              "> 0 keeps ALL of this step's vias (stitching, taps, joins) off "
-                             "same-net pads and is recorded in the sibling .kicad_pro so later "
+                             "same-net pads and the net's solder-paste openings (#962) and is recorded in the sibling .kicad_pro so later "
                              "chain steps (route/route_diff/fanout/repair) inherit it (#581); "
                              "0 keeps its legacy stitching-only meaning; -1 explicitly allows "
                              "via-in-pad. Default: the project's recorded value, else -1.")
@@ -3947,13 +4274,13 @@ Examples:
         help="Pin GND return vias to this net (default: auto -- match each "
              "signal's own ground domain, which is plain GND on a board with "
              "one ground)")
-    parser.add_argument("--gnd-via-distance", type=float, default=2.0,
+    parser.add_argument("--gnd-via-distance", type=float, default=defaults.GND_VIA_DISTANCE,
         help="Maximum distance from signal via to place GND via in mm (default: 2.0)")
 
     from fab_tiers import (add_fab_tier_args, fab_tier_from_args, set_default_fab_tier,
                            enforce_fab_floors, count_copper_layers_in_file)
     add_fab_tier_args(parser)
-    args = parser.parse_args()
+    args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
     # #439: identical net-class/clearance model to route.py. --clearance is the
     # clamp switch: GIVEN -> ceiling, every class capped at min(class, ceiling),
     # writeback clamps (_clamp_netclasses True). OMITTED -> each net routes at its
@@ -3963,7 +4290,7 @@ Examples:
     # keep their larger PLANE_EDGE_CLEARANCE fallback when the board declares none.
     # Resolved here, before enforce_fab_floors and every downstream use.
     from list_nets import (board_default_netclass_clearance, board_default_netclass_param,
-                           board_constraint)
+                           resolve_cli_floor)
     for _pname, _nckey, _fallback in (('track_width', 'track_width', defaults.TRACK_WIDTH),
                                       ('via_size', 'via_diameter', defaults.VIA_SIZE),
                                       ('via_drill', 'via_drill', defaults.VIA_DRILL)):
@@ -3973,34 +4300,46 @@ Examples:
             print(f"--{_pname.replace('_', '-')} not given; using "
                   f"{'the board Default net-class' if _v is not None else 'the fallback'} "
                   f"{getattr(args, _pname)}mm.")
-    _ceiling = args.clearance                       # None iff --clearance omitted
+    # #530 (decision 2): --clearance sets the Default class for the run; the
+    # cap-every-class behaviour (#439) is the explicit --clearance-ceiling.
+    if env_knobs.CLEARANCE_LEGACY_CEILING and getattr(args, 'clearance', None) is not None \
+            and getattr(args, 'clearance_ceiling', None) is None:
+        args.clearance_ceiling = args.clearance   # replay knob: pre-#530 reading
+    _ceiling = getattr(args, 'clearance_ceiling', None)   # None iff omitted
     args._clamp_netclasses = _ceiling is not None
     args._clearance_ceiling = _ceiling
-    from fix_kicad_drc_settings import warn_if_missing_project_floor
+    from fix_kicad_drc_settings import (warn_if_missing_project_floor,
+                                        warn_if_class_clearance_relaxed)
     warn_if_missing_project_floor(args.input_file)  # #441: a dropped sibling .kicad_pro strands the DRC floor
+    warn_if_class_clearance_relaxed(args.input_file)  # #1160
     _dflt_clr = board_default_netclass_clearance(args.input_file)
-    if _ceiling is None:
+    if args.clearance is None:
         args.clearance = _dflt_clr if _dflt_clr is not None else defaults.CLEARANCE
         print(f"--clearance not given; honoring net classes with base = "
               f"{'the board Default net-class' if _dflt_clr is not None else 'the fallback'} "
               f"clearance {args.clearance}mm.")
     else:
-        args.clearance = min(_dflt_clr, _ceiling) if _dflt_clr is not None else _ceiling
-    if args.hole_to_hole_clearance is None:
-        _h2h = board_constraint(args.input_file, 'min_hole_to_hole')
-        args.hole_to_hole_clearance = _h2h if _h2h is not None else defaults.HOLE_TO_HOLE_CLEARANCE
-        print(f"--hole-to-hole-clearance not given; using "
-              f"{'the board min_hole_to_hole' if _h2h is not None else 'the fallback'} "
-              f"{args.hole_to_hole_clearance}mm.")
-    if args.board_edge_clearance is None:
-        # Planes keep their larger edge keep-out (PLANE_EDGE_CLEARANCE) only when
-        # the board declares no edge rule of its own.
-        _edge = board_constraint(args.input_file, 'min_copper_edge_clearance')
-        args.board_edge_clearance = _edge if _edge is not None else defaults.PLANE_EDGE_CLEARANCE
-        print(f"--board-edge-clearance not given; using "
-              f"{'the board min_copper_edge_clearance' if _edge is not None else 'the fallback'} "
-              f"{args.board_edge_clearance}mm.")
+        print(f"--clearance {args.clearance}: the Default net class at it this run; other "
+              f"classes honoured (pass --clearance-ceiling to cap every class).")
+    if _ceiling is not None:
+        args.clearance = min(args.clearance, _ceiling)
+        if env_knobs.CLEARANCE_LEGACY_CEILING and _dflt_clr is not None:
+            args.clearance = min(_dflt_clr, _ceiling)   # pre-#530: run = min(Default, ceiling)
+        print(f"--clearance-ceiling {_ceiling}: every net class is capped at it (#439).")
+    # Shared resolver (list_nets.resolve_cli_floor). Planes keep their larger
+    # edge keep-out (PLANE_EDGE_CLEARANCE) only when the board declares no edge
+    # rule of its own -- and a DECLARED 0.0 is exactly that case, KiCad's "not
+    # configured". Read straight it was taken as a rule, dropping the plane
+    # inset from 0.5 to 0.0 while the GUI's plane tab held 0.5 (swig_gui.py
+    # _effective_plane_edge_clearance already had the `> 1e-9` guard).
+    args.hole_to_hole_clearance = resolve_cli_floor(
+        args.input_file, 'hole_to_hole', args.hole_to_hole_clearance,
+        defaults.HOLE_TO_HOLE_CLEARANCE, '--hole-to-hole-clearance')
+    args.board_edge_clearance = resolve_cli_floor(
+        args.input_file, 'board_edge_clearance', args.board_edge_clearance,
+        defaults.PLANE_EDGE_CLEARANCE, '--board-edge-clearance')
     set_default_fab_tier(*fab_tier_from_args(args))
+    __import__('fab_tiers').set_policy_from_args(args, args.input_file)  # #857
     _pinned_floors = enforce_fab_floors(
         count_copper_layers_in_file(args.input_file),
         track_width=getattr(args, 'track_width', None),
@@ -4037,10 +4376,14 @@ Examples:
 
     # Validate net/plane-layer counts match
     if len(args.nets) != len(args.plane_layers):
-        print(f"Error: Number of net arguments ({len(args.nets)}) must match number of plane layers ({len(args.plane_layers)})")
-        print("Each net argument needs a corresponding plane layer")
-        print("Use | to separate multiple nets on the same layer (e.g., --nets GND 'VA19|VA11' --plane-layers In4.Cu In5.Cu)")
-        return
+        # #1108: an argument error exits 2 (it used to print and exit 0, so a
+        # chain carried on with no board).
+        parser.error(
+            f"number of net arguments ({len(args.nets)}) must match number of "
+            f"plane layers ({len(args.plane_layers)}); each net argument needs "
+            f"a corresponding plane layer. Use | to separate multiple nets on "
+            f"the same layer (e.g., --nets GND 'VA19|VA11' --plane-layers "
+            f"In4.Cu In5.Cu)")
 
     # Parse --nets arguments: detect | separator for multi-net layers
     # Build data structures:
@@ -4076,6 +4419,10 @@ Examples:
     _out_before = (os.path.getmtime(args.output_file)
                    if args.output_file and os.path.isfile(args.output_file) else None)
 
+    # The engine's cooperative `cancel_check` / `progress_callback` are the
+    # GUI's (the planes tab's Cancel button); the CLI passes neither. There is
+    # deliberately no wall-clock budget -- no result this tool produces may
+    # depend on timing.
     create_plane(
         input_file=args.input_file,
         output_file=args.output_file,
@@ -4102,9 +4449,6 @@ Examples:
         verbose=args.verbose,
         dry_run=args.dry_run,
         layer_nets=layer_nets,
-        plane_proximity_radius=args.plane_proximity_radius,
-        plane_proximity_cost=args.plane_proximity_cost,
-        plane_track_via_clearance=args.plane_track_via_clearance,
         board_edge_clearance=args.board_edge_clearance,
         voronoi_seed_interval=args.voronoi_seed_interval,
         plane_max_iterations=args.plane_max_iterations,
@@ -4172,11 +4516,26 @@ Examples:
             board_edge_clearance=effective_board_edge_clearance(args.input_file, 0.0),
         )
         from kicad_dru import install_layer_clearances
-        install_layer_clearances(gnd_config, None, None, pcb_data)  # #498
+        # #498: the INPUT's .kicad_dru. pcb_data is the parsed OUTPUT, whose
+        # sibling rules file fix_project_for_output only copies after this
+        # block -- so discovering it via pcb_data.source_path found nothing on
+        # a fresh output path, and return vias ignored every layer rule.
+        install_layer_clearances(gnd_config, None, args.input_file, pcb_data)
         coord = GridCoord(gnd_config.grid_step)
 
+        # Cross-class clearance (#434/#439), resolved exactly as create_plane
+        # does: a return via must clear each foreign net at max(base, its class)
+        # -- without the map an HV net's 0.8mm class was priced at the base 0.2.
+        from list_nets import net_clearance_map_by_id
+        gnd_net_clearances = net_clearance_map_by_id(
+            args.input_file, {nid: n.name for nid, n in pcb_data.nets.items()})
+        if gnd_net_clearances and args._clamp_netclasses:
+            gnd_net_clearances = {nid: min(c, args._clearance_ceiling)
+                                  for nid, c in gnd_net_clearances.items()}
+
         # Build obstacle map
-        obstacles = build_base_obstacle_map(pcb_data, gnd_config, [])
+        obstacles = build_base_obstacle_map(pcb_data, gnd_config, [],
+                                            net_clearances=gnd_net_clearances)
 
         # Add GND vias
         gnd_vias = add_gnd_vias_to_existing_board(
@@ -4199,6 +4558,13 @@ Examples:
                 'layers': v.layers,
                 'free': getattr(v, 'free', False)
             } for v in gnd_vias]
+            # #962: a GND return via this adds in a pad or paste opening
+            # declares Type VII like every other tool-added via (all new here).
+            from fab_notes import (via_protection_stamps, apply_stamps_in_memory,
+                                   print_via_protection_record)
+            _st962, _rec962 = via_protection_stamps(via_dicts, [], pcb_data)
+            apply_stamps_in_memory(_st962)
+            print_via_protection_record(_rec962, "GND return vias")
 
             # Write vias to output file
             add_tracks_and_vias_to_pcb(
@@ -4230,13 +4596,13 @@ Examples:
             print(f"  (skipped castellated-landing retract: {e})")
 
     # NO KiCad-oracle recheck here (#217): the plane this step just poured has NOT
-    # yet been stitched -- tying pads/islands into the pour is route_disconnected_
-    # planes' job, the very next step. At the route_planes stage KiCad reports every
-    # not-yet-stitched pad as a missing link (hackrf: 26 plane links / 42 total),
-    # so an oracle pass here thrashes routing links that don't exist as failures
-    # (18 routed, 77 failed, 3 kicad-cli rounds) -- a 2-8x route_planes regression
-    # for work repair_planes does properly. The oracle runs ONCE, as an
-    # end-of-pipeline fallback at the end of repair_planes, on the
+    # yet been stitched -- tying pads/islands into the pour is the route step's
+    # job (#562: its pour-launch welds and in-run plane finalize). At the
+    # route_planes stage KiCad reports every not-yet-stitched pad as a missing
+    # link (hackrf: 26 plane links / 42 total), so an oracle pass here thrashes
+    # routing links that don't exist as failures (18 routed, 77 failed, 3
+    # kicad-cli rounds) -- a 2-8x route_planes regression for work the route
+    # step does properly. The oracle runs in that step's finalize, on the
     # already-repaired board -- do not re-add it here.
 
     # Make the output project's KiCad DRC constraints consistent with the routed
@@ -4286,10 +4652,44 @@ Examples:
         "min_clearance_used": _cl.effective(args.clearance),
         "plane_nets": sorted(set(args.nets)),
     }
+    # `plane_nets` is a de-duplicated NAME list, and --nets/--plane-layers are
+    # matched POSITIONALLY, so `--nets GND GND --plane-layers In1.Cu In2.Cu`
+    # collapses two poured zones into one entry and the second one vanishes from
+    # the record entirely. Run 14 poured GND on both inner layers and its
+    # summary said `"plane_nets": ["GND"]`. Keep that key as it was -- consumers
+    # read it -- and state the actual zones alongside.
+    try:
+        _layers = list(getattr(args, 'plane_layers', None) or [])
+        _summary["plane_zones"] = [
+            {"net": _n, "layer": (_layers[_i] if _i < len(_layers) else None)}
+            for _i, _n in enumerate(args.nets)]
+    except Exception:                                       # noqa: BLE001
+        pass
     # #487: the plane resistance/ampacity numbers used to live only in stdout
     # ("report-only ... print and discard"). Fold the per-net results the
     # engine noted into the machine-readable summary so chains/graders/skills
     # can gate on them.
+    # The pad tally. Without it `complete: true, status: "ok", EXIT=0` is the
+    # whole machine-readable story of a pour that left pads open -- the text
+    # said "Total failed pads: 5" and the JSON had no channel for it at all.
+    _pt = consume_pad_tally()
+    if _pt:
+        _summary["pads"] = _pt
+        # SAY that this is one tally over every zone. The engine aggregates, so
+        # `failed_pads: 12` on a two-zone pour does not say which zone failed,
+        # and a reader pairing it with a single-entry `plane_nets` would
+        # reasonably assume it was scoped to that one net.
+        _summary["pads_scope"] = ("all zones in this run, summed -- not per "
+                                  "zone; see plane_zones for what was poured")
+        # `geometric_failed` is recorded but does NOT flip the status: under
+        # the pours-first architecture the plane step places no taps, so pads
+        # unreached by the pour alone are EXPECTED here (#562) -- the route
+        # step welds them and its finalize verifies/repairs. Only
+        # `failed_pads` (the engine's own via-placement failures) marks the
+        # pour incomplete.
+        if _pt.get('failed_pads'):
+            _summary["status"] = "incomplete-pads"
+
     try:
         from plane_resistance import consume_resistance_results
         _res = consume_resistance_results()
@@ -4302,14 +4702,42 @@ Examples:
                  "copper_oz": _r.get("copper_oz"),
                  "temp_rise_c": _r.get("temp_rise_c"),
                  "path_length_mm": round(_r.get("path_length", 0.0), 2),
+                 # 'route': the longest routed path between the net's vias; 'diagonal': its region's bounding
+                 # diagonal (a split net with no route yet -- the pour runs before any routing, #562)
+                 "path_basis": _r.get("path_basis", "route"),
                  "avg_width_mm": round(_r.get("avg_width", 0.0), 3)}
                 for _n, _r in sorted(_res.items())]
     except Exception:
         pass
-    print("JSON_SUMMARY: " + _json.dumps(_summary))
+
+    # The run either finished or raised; there is no partial shape to report
+    # (the CLI has no cancel source). `complete`/`status` are kept because
+    # consumers read them -- see route_summary's sticky-incompleteness merge.
+    import json as _json
+    # #1108: the engine refuses (unknown net, not a copper layer, zone
+    # conflict, no outline) by printing an error and writing nothing; that is
+    # a failure for a chained caller, not a success.
+    _no_output = not args.dry_run and not _wrote_output
+    if _no_output:
+        _summary['complete'] = False
+        _summary['status'] = 'no_output'
+    _summary.setdefault('complete', True)
+    _summary.setdefault('status', 'ok')
+    try:                       # #653: env knobs into the machine-readable
+        import env_knobs as _ek653   # summary, so a harness can detect a
+        _summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
+    except Exception:          # without re-reading logs
+        pass
+    print('JSON_SUMMARY: ' + _json.dumps(_summary, sort_keys=True, default=str),
+          flush=True)
+    return 1 if _no_output else 0
 
 
 if __name__ == "__main__":
     from console_encoding import enable_utf8_console
     enable_utf8_console()  # cp1252-safe non-ASCII prints (issue #152)
-    main()
+    # CMD/EXIT self-echo (run-3 B1); see route.py for the external-kill caveat.
+    # CLI-`__main__`-only: the GUI imports create_plane.
+    import cli_banner
+    cli_banner.install()
+    sys.exit(main() or 0)

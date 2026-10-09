@@ -36,7 +36,8 @@ def get_dialog_settings(dialog):
             dialog.ripup_abandon_metric.GetSelection()),
         'ripup_blocker_select': dialog.ripup_blocker_select.GetString(
             dialog.ripup_blocker_select.GetSelection()),
-        'obey_design_rules': dialog.obey_drc_check.GetValue(),
+        # #857: the escalation policy (replaces the retired 'obey_design_rules').
+        'escalation': dialog.escalation.GetString(dialog.escalation.GetSelection()),
 
         # Layer selections
         'layers': [layer for layer, cb in dialog.layer_checks.items() if cb.GetValue()],
@@ -49,7 +50,7 @@ def get_dialog_settings(dialog):
         'move_text_check': dialog.move_text_check.GetValue(),
         'add_teardrops_check': dialog.add_teardrops_check.GetValue(),
         'fix_drc_settings': dialog.fix_drc_check.GetValue(),
-        'keep_thermal': dialog.keep_thermal_check.GetValue(),
+        'relax_drc_severities': dialog.relax_drc_severities_check.GetValue(),
         'power_nets': dialog.power_nets_ctrl.GetValue(),
         'power_widths': dialog.power_widths_ctrl.GetValue(),
         'no_bga_zones': dialog.no_bga_zones_ctrl.GetValue(),
@@ -80,6 +81,9 @@ def get_dialog_settings(dialog):
         'via_proximity_cost': dialog.via_proximity_cost.GetValue(),
         'track_proximity_distance': dialog.track_proximity_distance.GetValue(),
         'track_proximity_cost': dialog.track_proximity_cost.GetValue(),
+        'keep_away': dialog.keep_away.GetValue(),
+        'keep_away_free': dialog.keep_away_free.GetValue(),
+        'keep_away_cost': dialog.keep_away_cost.GetValue(),
         'vertical_attraction_radius': dialog.vertical_attraction_radius.GetValue(),
         'vertical_attraction_cost': dialog.vertical_attraction_cost.GetValue(),
         'ripped_route_avoidance_radius': dialog.ripped_route_avoidance_radius.GetValue(),
@@ -92,6 +96,8 @@ def get_dialog_settings(dialog):
         # use the board's own value). Restored to also enable/disable the spinctrl.
         'track_width_override': dialog.track_width_check.GetValue(),
         'clearance_override': dialog.clearance_check.GetValue(),
+        # #530: the class-ceiling box (the CLI's --clearance-ceiling).
+        'clearance_ceiling_check': dialog.clearance_ceiling_check.GetValue(),
         'via_size_override': dialog.via_size_check.GetValue(),
         'via_drill_override': dialog.via_drill_check.GetValue(),
         'hole_to_hole_clearance_override': dialog.hole_to_hole_clearance_check.GetValue(),
@@ -102,6 +108,7 @@ def get_dialog_settings(dialog):
         'mps_reverse_rounds': dialog.mps_reverse_rounds.GetValue(),
         'mps_layer_swap': dialog.mps_layer_swap.GetValue(),
         'keep_input_copper': dialog.keep_input_copper.GetValue(),
+        'smoothing': dialog.smoothing.GetValue(),
         'force_reroute': dialog.force_reroute.GetValue(),
         'mps_segment_intersection': dialog.mps_segment_intersection.GetValue(),
         'no_crossing_layer_check': dialog.no_crossing_layer_check.GetValue(),
@@ -186,6 +193,9 @@ def get_dialog_settings(dialog):
         'fanout_type': dialog.fanout_tab.fanout_type.GetSelection(),
         'fanout_bga_exit_margin': dialog.fanout_tab.bga_options.exit_margin.GetValue(),
         'fanout_bga_differential': dialog.fanout_tab.bga_options.differential_check.GetValue(),
+        # bga_fanout's --diff-pairs patterns and --diff-pair-gap.
+        'fanout_bga_diff_pair_patterns': dialog.fanout_tab.bga_options.diff_pair_patterns_ctrl.GetValue(),
+        'fanout_bga_diff_pair_gap': dialog.fanout_tab.bga_options.bga_diff_pair_gap.GetValue(),
         'fanout_bga_escape_direction': dialog.fanout_tab.bga_options.escape_direction.GetSelection(),
         'fanout_bga_force_escape': dialog.fanout_tab.bga_options.force_escape.GetValue(),
         'fanout_bga_rebalance': dialog.fanout_tab.bga_options.rebalance_escape.GetValue(),
@@ -201,9 +211,13 @@ def get_dialog_settings(dialog):
         'fanout_bga_cap_max_displacement': dialog.fanout_tab.bga_options.cap_max_displacement.GetValue(),
         'fanout_bga_cap_max_displacement_cap': dialog.fanout_tab.bga_options.cap_max_displacement_cap.GetValue(),
         'fanout_bga_cap_displacement_growth': dialog.fanout_tab.bga_options.cap_displacement_growth.GetValue(),
+        'fanout_bga_cap_board_edge_clearance': dialog.fanout_tab.bga_options.cap_board_edge_clearance.GetValue(),
         'fanout_bga_cap_max_passes': dialog.fanout_tab.bga_options.cap_max_passes.GetValue(),
         'fanout_bga_cap_prefix': dialog.fanout_tab.bga_options.cap_prefix.GetValue(),
+        'fanout_bga_cap_default_via_size': dialog.fanout_tab.bga_options.cap_default_via_size.GetValue(),
+        'fanout_bga_cap_intent_path': dialog.fanout_tab.bga_options.cap_intent_path.GetValue(),  # #1067
         'fanout_bga_cap_allow_rotation': dialog.fanout_tab.bga_options.cap_allow_rotation.GetValue(),
+        'fanout_bga_cap_beneath_only': dialog.fanout_tab.bga_options.cap_beneath_only.GetValue(),
         'fanout_qfn_extension': dialog.fanout_tab.qfn_options.extension.GetValue(),
         # #381 D7: QFN-specific track width / clearance (default 0.1/0.1).
         'fanout_qfn_track_width': dialog.fanout_tab.qfn_options.qfn_track_width.GetValue(),
@@ -242,6 +256,18 @@ def get_dialog_settings(dialog):
         'opencode_model': dialog.ai_tab.get_model_value_for('opencode'),
         'opencode_effort': dialog.ai_tab.get_effort_value_for('opencode'),
         'ai_plan': dialog.ai_tab.get_plan_state(),
+
+        # Placement sub-tab of the AI notebook (issue #481). The labels
+        # options travel as ONE dict so the panel can grow fields without new
+        # persistence keys; the transcript is deliberately NOT persisted (an
+        # hours-long run's stream can be tens of MB).
+        'ai_active_subtab': dialog.ai_notebook.GetSelection() if hasattr(dialog, 'ai_notebook') else 0,
+        'placement_backend': dialog.placement_tab.get_backend_value(),
+        'placement_model': dialog.placement_tab.get_model_value(),
+        'placement_effort': dialog.placement_tab.get_effort_value(),
+        'placement_extra_instructions': dialog.placement_tab.extra_instructions.GetValue(),
+        'placement_last_workdir': getattr(dialog.placement_tab, 'last_workdir', '') or '',
+        'placement_labels_options': dialog.placement_tab.labels_options.get_config(),
 
         # Log content
         'log_content': dialog.log_text.GetValue(),
@@ -303,8 +329,15 @@ def restore_dialog_settings(dialog, settings):
         dialog.ripup_abandon_metric.SetStringSelection(settings['ripup_abandon_metric'])
     if 'ripup_blocker_select' in settings:
         dialog.ripup_blocker_select.SetStringSelection(settings['ripup_blocker_select'])
-    if 'obey_design_rules' in settings:
-        dialog.obey_drc_check.SetValue(settings['obey_design_rules'])
+    # 'obey_design_rules' (legacy key, <= v0.21.5) is intentionally not
+    # restored: the checkbox never reached the engine and is replaced by the
+    # Escalation choice (#857).
+    if 'escalation' in settings:
+        try:
+            if dialog.escalation.FindString(str(settings['escalation'])) != wx.NOT_FOUND:
+                dialog.escalation.SetStringSelection(str(settings['escalation']))
+        except Exception:
+            pass
 
     # Restore layer selections
     if 'layers' in settings:
@@ -321,8 +354,11 @@ def restore_dialog_settings(dialog, settings):
         dialog.add_teardrops_check.SetValue(settings['add_teardrops_check'])
     if 'fix_drc_settings' in settings:
         dialog.fix_drc_check.SetValue(settings['fix_drc_settings'])
-    if 'keep_thermal' in settings:
-        dialog.keep_thermal_check.SetValue(settings['keep_thermal'])
+    # 'keep_thermal' (legacy key, <= v0.21.5) is intentionally not restored:
+    # the control it drove is gone (#856 -- routing steps no longer touch DRC
+    # severities), replaced by the opt-in below.
+    if 'relax_drc_severities' in settings:
+        dialog.relax_drc_severities_check.SetValue(settings['relax_drc_severities'])
     if 'power_nets' in settings:
         dialog.power_nets_ctrl.SetValue(settings['power_nets'])
     if 'power_widths' in settings:
@@ -381,6 +417,12 @@ def restore_dialog_settings(dialog, settings):
         dialog.track_proximity_distance.SetValue(settings['track_proximity_distance'])
     if 'track_proximity_cost' in settings:
         dialog.track_proximity_cost.SetValue(settings['track_proximity_cost'])
+    if 'keep_away' in settings:
+        dialog.keep_away.SetValue(settings['keep_away'])
+    if 'keep_away_free' in settings:
+        dialog.keep_away_free.SetValue(settings['keep_away_free'])
+    if 'keep_away_cost' in settings:
+        dialog.keep_away_cost.SetValue(settings['keep_away_cost'])
     if 'vertical_attraction_radius' in settings:
         dialog.vertical_attraction_radius.SetValue(settings['vertical_attraction_radius'])
     if 'vertical_attraction_cost' in settings:
@@ -406,6 +448,8 @@ def restore_dialog_settings(dialog, settings):
     if 'clearance_override' in settings:
         dialog.clearance_check.SetValue(settings['clearance_override'])
         dialog.clearance.Enable(settings['clearance_override'])
+    if 'clearance_ceiling_check' in settings:
+        dialog.clearance_ceiling_check.SetValue(bool(settings['clearance_ceiling_check']))
     if 'via_size_override' in settings:
         dialog.via_size_check.SetValue(settings['via_size_override'])
         dialog.via_size.Enable(settings['via_size_override'])
@@ -428,6 +472,8 @@ def restore_dialog_settings(dialog, settings):
         dialog.mps_layer_swap.SetValue(settings['mps_layer_swap'])
     if 'keep_input_copper' in settings:
         dialog.keep_input_copper.SetValue(settings['keep_input_copper'])
+    if 'smoothing' in settings:
+        dialog.smoothing.SetValue(settings['smoothing'])
     if 'force_reroute' in settings:
         dialog.force_reroute.SetValue(settings['force_reroute'])
     if 'mps_segment_intersection' in settings:
@@ -610,6 +656,12 @@ def restore_dialog_settings(dialog, settings):
         dialog.fanout_tab.bga_options.exit_margin.SetValue(settings['fanout_bga_exit_margin'])
     if 'fanout_bga_differential' in settings:
         dialog.fanout_tab.bga_options.differential_check.SetValue(settings['fanout_bga_differential'])
+    if 'fanout_bga_diff_pair_patterns' in settings:
+        dialog.fanout_tab.bga_options.diff_pair_patterns_ctrl.SetValue(
+            str(settings['fanout_bga_diff_pair_patterns']))
+    if 'fanout_bga_diff_pair_gap' in settings:
+        dialog.fanout_tab.bga_options.bga_diff_pair_gap.SetValue(
+            float(settings['fanout_bga_diff_pair_gap']))
     if 'fanout_bga_escape_direction' in settings:
         dialog.fanout_tab.bga_options.escape_direction.SetSelection(settings['fanout_bga_escape_direction'])
     if 'fanout_bga_force_escape' in settings:
@@ -636,6 +688,9 @@ def restore_dialog_settings(dialog, settings):
         dialog.fanout_tab.bga_options.optimize_caps.SetValue(settings['fanout_bga_optimize_caps'])
     if 'fanout_bga_cap_capture_radius' in settings:
         dialog.fanout_tab.bga_options.cap_capture_radius.SetValue(settings['fanout_bga_cap_capture_radius'])
+    if 'fanout_bga_cap_board_edge_clearance' in settings:
+        dialog.fanout_tab.bga_options.cap_board_edge_clearance.SetValue(
+            settings['fanout_bga_cap_board_edge_clearance'])
     if 'fanout_bga_cap_near_margin' in settings:
         dialog.fanout_tab.bga_options.cap_near_margin.SetValue(settings['fanout_bga_cap_near_margin'])
     if 'fanout_bga_cap_step' in settings:
@@ -650,8 +705,16 @@ def restore_dialog_settings(dialog, settings):
         dialog.fanout_tab.bga_options.cap_max_passes.SetValue(settings['fanout_bga_cap_max_passes'])
     if 'fanout_bga_cap_prefix' in settings:
         dialog.fanout_tab.bga_options.cap_prefix.SetValue(settings['fanout_bga_cap_prefix'])
+    if 'fanout_bga_cap_intent_path' in settings:   # #1067
+        dialog.fanout_tab.bga_options.cap_intent_path.SetValue(
+            settings['fanout_bga_cap_intent_path'] or '')
+    if 'fanout_bga_cap_default_via_size' in settings:
+        dialog.fanout_tab.bga_options.cap_default_via_size.SetValue(
+            settings['fanout_bga_cap_default_via_size'])
     if 'fanout_bga_cap_allow_rotation' in settings:
         dialog.fanout_tab.bga_options.cap_allow_rotation.SetValue(settings['fanout_bga_cap_allow_rotation'])
+    if 'fanout_bga_cap_beneath_only' in settings:
+        dialog.fanout_tab.bga_options.cap_beneath_only.SetValue(settings['fanout_bga_cap_beneath_only'])
     if 'fanout_qfn_extension' in settings:
         dialog.fanout_tab.qfn_options.extension.SetValue(settings['fanout_qfn_extension'])
     if 'fanout_qfn_track_width' in settings:
@@ -725,6 +788,31 @@ def restore_dialog_settings(dialog, settings):
     plan_state = settings.get('ai_plan', settings.get('claude_plan'))
     if plan_state is not None:
         dialog.ai_tab.restore_plan_state(plan_state)
+
+    # Placement sub-tab (issue #481). Restoring the last workdir re-surfaces
+    # a previous session's movie/report/preview buttons when the artifacts
+    # still exist on disk.
+    if 'ai_active_subtab' in settings and hasattr(dialog, 'ai_notebook'):
+        idx = settings['ai_active_subtab']
+        if isinstance(idx, int) and 0 <= idx < dialog.ai_notebook.GetPageCount():
+            dialog.ai_notebook.SetSelection(idx)
+    if 'placement_backend' in settings:
+        # Unsupported/unknown saved ids revert to Claude Code inside the tab.
+        dialog.placement_tab.set_backend_value(settings['placement_backend'])
+    if 'placement_model' in settings:
+        dialog.placement_tab.set_model_value(settings['placement_model'])
+    if 'placement_effort' in settings:
+        dialog.placement_tab.set_effort_value(settings['placement_effort'])
+    if 'placement_extra_instructions' in settings:
+        dialog.placement_tab.extra_instructions.SetValue(
+            settings['placement_extra_instructions'])
+    if 'placement_labels_options' in settings and isinstance(
+            settings['placement_labels_options'], dict):
+        dialog.placement_tab.labels_options.set_config(
+            settings['placement_labels_options'])
+    if 'placement_last_workdir' in settings and settings['placement_last_workdir']:
+        dialog.placement_tab.restore_last_workdir(
+            settings['placement_last_workdir'])
 
     # Restore net selections LAST - after all filters/checkboxes are set
     # This prevents the selections from being cleared by filter change events

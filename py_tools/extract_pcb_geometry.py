@@ -14,6 +14,11 @@ Examples:
 """
 
 from __future__ import annotations
+
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': [], 'kind': 'instrument'}
+
 import _path  # noqa: F401  (#522: makes ../py_router importable)
 
 import sys
@@ -46,7 +51,7 @@ def extract_geometry(pcb: PCBData, net_patterns: Optional[List[str]] = None) -> 
         """Check if net name matches any of the patterns."""
         if not patterns:
             return True
-        return any(fnmatch.fnmatch(net_name, p) for p in patterns)
+        return any(fnmatch.fnmatchcase(net_name, p) for p in patterns)
 
     # Build net ID to name mapping
     net_names = {net_id: net.name for net_id, net in pcb.nets.items()}

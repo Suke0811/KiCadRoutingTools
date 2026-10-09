@@ -18,13 +18,23 @@ Usage:
 """
 
 from __future__ import annotations
+
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': ['routing'], 'kind': 'instrument'}
+
 import _path  # noqa: F401  (#522: makes ../py_router importable)
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Set, Optional, Tuple
 from enum import Enum
 
-from kicad_parser import parse_kicad_pcb, PCBData, Footprint, Pad
+from kicad_parser import parse_kicad_pcb, PCBData, Footprint, Pad, non_aperture_pads
+# Re-exported, not re-implemented (#705). These used to be a local tuple and a
+# closure inside `get_power_net_recommendations`; they are the repo's only
+# pin-level power predicate and every other caller was locked out of them.
+from net_queries import (  # noqa: F401  (POWER_PIN_KEYWORDS is a public re-export)
+    POWER_PIN_KEYWORDS, is_power_pin)
 
 
 class ComponentRole(Enum):
@@ -86,7 +96,7 @@ def extract_components_for_analysis(pcb_data: PCBData) -> Dict[str, ComponentInf
             ref=ref,
             value=fp.value,
             footprint_name=fp.footprint_name,
-            pad_count=len(fp.pads),
+            pad_count=len(non_aperture_pads(fp)),   # pins, not apertures
             net_connections=net_connections,
             pin_functions=pin_functions,
             pin_types=pin_types
@@ -114,7 +124,10 @@ def _auto_classify_component(ref: str, fp: Footprint, pcb_data: PCBData) -> Comp
 
     # Capacitors - check if decoupling (to GND) or series
     if ref_upper.startswith('C') and len(ref) > 1 and ref[1].isdigit():
-        if len(fp.pads) == 2:
+        # Two-terminal by its pins: a 0201's split paste windows are not
+        # terminals (#1143; orangecrab's 0201 caps read as 4-pad parts).
+        from kicad_parser import non_aperture_pads
+        if len(non_aperture_pads(fp)) == 2:
             net_names = [pcb_data.nets.get(p.net_id, type('', (), {'name': ''})()).name
                         for p in fp.pads if p.net_id]
             # If one side is GND, it's a decoupling cap (shunt)
@@ -391,19 +404,16 @@ def get_power_net_recommendations(pcb_data: PCBData,
 
     # Also add direct power connections (power_in pins on sinks, power_out on sources)
     # These may not appear in traced paths if there's no pass-through component
-    # Also detect mislabeled power pins by their function name
-    power_pin_keywords = ('VCC', 'VDD', 'VSS', 'GND', 'VCCA', 'VSSA', 'VDDA',
-                          'VDDPLL', 'VCCPLL', 'GNDPLL', 'VRH', 'VRL', 'AVDD', 'AVSS')
-
-    def is_power_pin(pinfunction: str, pintype: str) -> bool:
-        """Check if a pin is a power pin by function name or pintype."""
-        if pintype in ('power_in', 'power_out'):
-            return True
-        if pinfunction:
-            fn_upper = pinfunction.upper()
-            # Check for exact matches or prefix matches
-            return any(fn_upper == kw or fn_upper.startswith(kw) for kw in power_pin_keywords)
-        return False
+    # Also detect mislabeled power pins by their function name.
+    #
+    # The table and the predicate MOVED to `net_queries` (#705) and are imported
+    # at module scope. They lived here as a closure and a local tuple, which
+    # made them unreachable to every other caller -- so the placement side had
+    # no pin-level power predicate at all, and issue #705's channel 2 would have
+    # had to copy them. This module's public behaviour is unchanged: the only
+    # semantic difference is that a compound pintype is token-split rather than
+    # compared whole, and the tracked corpus carries no compound spelling except
+    # `X+no_connect`, on which the two forms agree.
 
     for ref, comp in components.items():
         if comp.role == ComponentRole.CURRENT_SINK:
@@ -572,12 +582,19 @@ def analyze_pcb(filepath: str) -> Tuple[Dict[str, ComponentInfo], PCBData]:
 
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 2:
-        print("Usage: python analyze_power_paths.py <pcb_file>")
-        sys.exit(1)
+    import argparse
 
-    components, pcb_data = analyze_pcb(sys.argv[1])
+    # A REAL parser, not a hand-rolled `Usage:` print: `--help` used to be read
+    # as the board FILENAME, so this answered a capability probe with
+    # `FileNotFoundError: '--help'` (#937). See kicad_parser.py's `__main__`
+    # for the same fix and why it matters.
+    _ap = argparse.ArgumentParser(
+        description="Classify components by power role and report the ones "
+                    "that still need analysis.")
+    _ap.add_argument('pcb_file', help='the .kicad_pcb to analyze')
+    _a = _ap.parse_args()
+
+    components, pcb_data = analyze_pcb(_a.pcb_file)
 
     # Show components needing analysis
     unknown = get_components_needing_analysis(components)

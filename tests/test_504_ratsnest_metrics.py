@@ -25,6 +25,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'py_router'))  # #522
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'py_tools'))  # #522
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'py_placer'))  # placement split
+
+# #522 reorg + skill merge: engine -> py_router/, placer -> py_placer/,
+# board_score.py -> py_tools/. Without these roots the
+# imports below raise and the test never runs (it reports as a failure while
+# asserting nothing).
+_R522 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _p522 in ('py_router', 'py_placer',
+              'py_tools'):
+    _d522 = os.path.join(_R522, _p522)
+    if _d522 not in sys.path:
+        sys.path.insert(0, _d522)
+
 
 from kicad_parser import parse_kicad_pcb
 from place_route_loop import _ratsnest_screen, better
@@ -45,7 +58,12 @@ def test_metrics_out_is_populated_and_matches_total_cost():
     m = {}
     quench(parse_kicad_pcb(BOARD), pcb_file=BOARD, max_displacement=2.0,
            step=1.0, max_passes=1, metrics_out=m)
-    assert set(m) == {'before', 'after', 'legality'}, f"keys: {sorted(m)}"
+    # `board_grid` joined this set in #708. The rule the set enforces is that
+    # new NUMBERS go inside `before`/`after`, never alongside them; this key is
+    # PROVENANCE -- which lattice the run resolved and how -- in the same
+    # category as the `intent_gate` key that has always been allowed to sit at
+    # the top level. Extended deliberately, not quietly.
+    assert set(m) == {'before', 'after', 'legality', 'board_grid'},         f"keys: {sorted(m)}"
     for phase in ('before', 'after'):
         for key in ('total', 'length', 'crossings', 'halo', 'edge', 'hpwl'):
             assert key in m[phase], f"{phase} missing {key}"
@@ -157,7 +175,7 @@ def test_place_optimize_emits_a_parseable_json_summary():
     import tempfile
     fd, out = tempfile.mkstemp(suffix='.kicad_pcb')
     os.close(fd)
-    r = subprocess.run([sys.executable, os.path.join(ROOT, 'py_router', 'place_optimize.py'),
+    r = subprocess.run([sys.executable, os.path.join(ROOT, 'py_placer', 'place_optimize.py'),
                         BOARD, out, '--max-displacement', '2', '--step', '1',
                         '--max-passes', '1'],
                        capture_output=True, text=True, cwd=ROOT)

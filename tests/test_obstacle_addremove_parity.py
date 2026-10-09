@@ -120,15 +120,21 @@ def test_base_cache_parity(verbose, config):
         mb = GridObstacleMap(len(LAYERS))
         _add_segment_obstacle(mb, seg, coord, li, expansion_mm, via_block_mm)
 
-        # cache primitive: collect then batch into a fresh map
+        # cache primitive: collect then batch into a fresh map.
+        # #815: _collect_segment_obstacles now yields SPANS -- (K,4)
+        # [gx, lo, hi, layer] and (K,3) [gx, lo, hi] -- which Rust expands.
+        # The assertion below is unchanged and is the whole point: the cache
+        # primitive must still produce the IDENTICAL blocked set as the
+        # build_base primitive, whichever form it ships them in.
         mc = GridObstacleMap(len(LAYERS))
         bc, bv = [], []
         _collect_segment_obstacles(seg, coord, li, expansion_mm, bc, bv, via_block_mm)
         if bc:
-            mc.add_blocked_cells_batch(np.ascontiguousarray(np.vstack(bc).astype(np.int32)))
+            mc.add_blocked_cell_spans_batch(
+                np.ascontiguousarray(np.vstack(bc).astype(np.int32)))
         if bv:
-            vv = np.vstack(bv).astype(np.int32)
-            mc.add_blocked_vias_batch(np.ascontiguousarray(vv))
+            mc.add_blocked_via_spans_batch(
+                np.ascontiguousarray(np.vstack(bv).astype(np.int32)))
 
         x_lo, x_hi = min(seg.start_x, seg.end_x), max(seg.start_x, seg.end_x)
         y_lo, y_hi = min(seg.start_y, seg.end_y), max(seg.start_y, seg.end_y)
@@ -192,8 +198,15 @@ def main():
     # cells to survive grid rounding (verified: it diverges from the cache here),
     # so this case genuinely exercises the per-layer fix.
     impedance.layer_widths = {"F.Cu": 0.1, "In1.Cu": 0.4, "In2.Cu": 0.1, "B.Cu": 0.1}
+    # A track-scoped clearance rule inflates the SEG capsule (net 1 owns
+    # the SEGS fixtures) without touching via geometry -- the add/remove twins
+    # and the base/cache pair must stay symmetric under the raise.
+    tracked = _config()
+    tracked.track_clearances = {1: 0.45}
     fails = []
-    for label, config in [("uniform width", uniform), ("per-layer/impedance widths", impedance)]:
+    for label, config in [("uniform width", uniform),
+                          ("per-layer/impedance widths", impedance),
+                          ("dru track-clearance raise", tracked)]:
         print(f"=== {label} ===")
         print("A: add/remove ref-count symmetry (#198)")
         fails += test_add_remove_empty(args.verbose, config)

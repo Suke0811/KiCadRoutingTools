@@ -42,6 +42,12 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REDO = os.path.join(REPO, "tests", "stress", "redo_stress_test.py")
 CHECK_DRC = os.path.join(REPO, 'py_router', 'check_drc.py')
+# Everything else here shells out to the engine, so nothing had put py_router
+# on sys.path -- a bare `from copy_board import ...` fails at runtime. Insert
+# it before the one engine import this script does.
+if os.path.join(REPO, 'py_router') not in sys.path:
+    sys.path.insert(0, os.path.join(REPO, 'py_router'))
+from copy_board import SIBLING_EXTS  # one list, never a hand-written copy
 DEFAULT_ROOT = os.path.expanduser("~/Documents/kicad_stress_test")
 DEFAULT_OUT = os.path.expanduser("~/Documents/diff2")
 
@@ -78,7 +84,10 @@ def resolve_diff_output(argv):
     p.add_argument("net_patterns", nargs="*")
     p.add_argument("--output")
     p.add_argument("--nets", "-n", nargs="+")
-    p.add_argument("--clearance", default="0.2")
+    p.add_argument("--clearance", default=None)
+    # #530: the recorded manifests carry --clearance-ceiling on the routing
+    # steps (the pre-#530 reading); the step routes at the smaller of the two.
+    p.add_argument("--clearance-ceiling", default=None)
     p.add_argument("--overwrite", action="store_true")
     ns, _ = p.parse_known_args(argv[1:])  # drop the python script path token
     out = ns.output or ns.output_file
@@ -88,7 +97,8 @@ def resolve_diff_output(argv):
         else:
             base, ext = os.path.splitext(ns.input_file)
             out = base + "_routed" + ext
-    return out, str(ns.clearance)
+    given = [float(v) for v in (ns.clearance, ns.clearance_ceiling) if v is not None]
+    return out, str(min(given)) if given else "0.2"
 
 
 ROUTE_DIFF_DEFAULT_CLEARANCE = 0.25  # route_diff.py argparse default
@@ -112,8 +122,10 @@ def board_floor_clearance(all_lines):
             a = shlex.split(ln)
         except ValueError:
             continue
-        if "--clearance" in a:
-            i = a.index("--clearance")
+        for flag in ("--clearance", "--clearance-ceiling"):   # #530: either spelling
+            if flag not in a:
+                continue
+            i = a.index(flag)
             try:
                 cls.append(float(a[i + 1]))
             except (IndexError, ValueError):
@@ -194,8 +206,13 @@ def process_board(set_board, manifest, work_root, out_dir, drc_size_checks):
         print(f"  (seeded unrecorded inputs: {', '.join(seeded)})")
 
     rd_argv = shlex.split(lines[last])
-    # strip leading interpreter tokens so resolve_diff_output sees the route_diff argv
-    while rd_argv and (rd_argv[0].endswith(("python", "python3")) or rd_argv[0] in ("-X", "utf8")):
+    # Strip leading interpreter tokens so resolve_diff_output sees the route_diff
+    # argv. Matched by SHAPE (interpreter, any -flag, and -X's `utf8` value)
+    # rather than by an allow-list of the flags we happen to record today: the
+    # list missed `-u` the moment recordings gained it (#599), leaving `-u -X
+    # utf8 ...` in front of the argv.
+    while rd_argv and (rd_argv[0].endswith(("python", "python3"))
+                       or rd_argv[0].startswith("-") or rd_argv[0] == "utf8"):
         rd_argv.pop(0)
     out_board, _rd_clearance = resolve_diff_output(rd_argv)
     # grade DRC at the floor the board must meet (min --clearance over the whole
@@ -244,7 +261,7 @@ def process_board(set_board, manifest, work_root, out_dir, drc_size_checks):
         dest = os.path.join(out_dir, set_board)
         os.makedirs(dest, exist_ok=True)
         base = os.path.splitext(os.path.basename(out_board))[0]
-        for ext in (".kicad_pcb", ".kicad_pro", ".kicad_prl"):
+        for ext in (".kicad_pcb",) + SIBLING_EXTS:
             p = os.path.join(wdir, base + ext)
             if os.path.isfile(p):
                 shutil.copy(p, os.path.join(dest, board + "_diff" + ext))

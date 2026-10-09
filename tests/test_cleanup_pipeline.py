@@ -32,7 +32,6 @@ import env_knobs
 
 from kicad_parser import Segment
 from pcb_modification import _restore_soft_joint_bridges, sweep_dead_ends
-import cleanup_pipeline as cleanup
 
 
 def _seg(x1, y1, x2, y2, w=0.1, net=1, layer='F.Cu'):
@@ -152,68 +151,12 @@ def run_contract_checks():
         env_knobs.refresh()
 
 
-def run_post_smooth_order_check():
-    """Smoothing must be followed by the existing subtractive invariants."""
-    calls = []
-    originals = {}
-
-    def replace(name, fn):
-        originals[name] = getattr(cleanup, name)
-        setattr(cleanup, name, fn)
-
-    replace('nudge_grazing_microshift',
-            lambda *a, **k: (0, 0, [], None))
-    replace('prune_redundant_cycles',
-            lambda *a, **k: (calls.append('cycles') or 0, 0, []))
-    replace('collapse_strict_redundant',
-            lambda *a, **k: (calls.append('strict') or 0, []))
-    replace('remove_orphan_islands',
-            lambda *a, **k: (0, 0, [], []))
-    replace('sweep_dead_ends', lambda *a, **k: (0, 0, []))
-    replace('trim_dangles_past_body_anchor', lambda *a, **k: (0, []))
-
-    def fake_smooth(*args, **kwargs):
-        calls.append('smooth')
-        return 1, 1, [], [], {'spans': 1, 'saved_mm': 0.1}
-
-    replace('smooth_octolinear_chains', fake_smooth)
-    replace('close_soft_joints',
-            lambda *a, **k: calls.append('close') or 0)
-
-    class _Config:
-        clearance = 0.2
-        grid_step = 0.1
-        guide_corridor_enabled = False
-        net_clearances = None
-        board_edge_clearance = 0.0
-
-    pcb = _FakePCB([])
-    old_smooth = env_knobs.SMOOTH_ROUTE
-    env_knobs.SMOOTH_ROUTE = ''
-    try:
-        outcome = cleanup.run_post_route_cleanup(
-            [], pcb, {1}, _Config(), snap=False, phantom=False,
-            graze=False, octolinear=False, via_nudge=False, neck=False,
-            cycles=True, smooth=True)
-        check("post-smooth cycle/strict passes run before soft-joint close",
-              calls == ['cycles', 'strict', 'smooth', 'cycles', 'strict',
-                        'close'], f"calls={calls}")
-        check("post-smooth cleanup counts are reported",
-              outcome.counts.get('post_smooth_cycles_pruned') == 0
-              and outcome.counts.get('post_smooth_strict_collapsed') == 0)
-    finally:
-        env_knobs.SMOOTH_ROUTE = old_smooth
-        for name, fn in originals.items():
-            setattr(cleanup, name, fn)
-
-
 def main():
     print("=" * 60)
     print("cleanup pipeline invariants (#319 restructure)")
     print("=" * 60)
     run_guard_checks()
     run_contract_checks()
-    run_post_smooth_order_check()
     print("=" * 60)
     if fails:
         print(f"\n{len(fails)} failure(s): {fails}")

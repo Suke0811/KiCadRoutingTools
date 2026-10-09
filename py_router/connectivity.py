@@ -6,6 +6,8 @@ and tracking segment connectivity.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import math
 from typing import List, Optional, Tuple, Dict, Set
 
@@ -182,6 +184,237 @@ def is_edge_stub(pad_x: float, pad_y: float, bga_zones: List) -> bool:
 COINCIDENCE_TOL = 0.02
 
 
+def lands_on_interior(t: float, seg_len_sq: float,
+                      tol: float = COINCIDENCE_TOL) -> bool:
+    """Whether a landing whose projection onto a segment sits at parameter
+    `t` is on the segment's INTERIOR (a T-junction or a mid-body anchor),
+    rather than at one of its ends (which the endpoint-degree counts own).
+
+    The band at each end is a DISTANCE, `tol`, capped at the old 2 % of the
+    length so a short segment keeps the interior it had (#1186). The band used
+    to be 2 % of the length alone: on One-Air-Max's 25.8 mm /SCL track it was
+    0.52 mm at each end, so a solid T 0.2 mm from the end read as a free end in
+    check_weird while every connectivity grade called the net connected, and
+    removing the "dangling" segment disconnected it."""
+    if not (0.0 < t < 1.0) or seg_len_sq <= 0.0:
+        return False
+    length = math.sqrt(seg_len_sq)
+    band = min(tol, 0.02 * length)
+    return t * length > band and (1.0 - t) * length > band
+
+
+def endpoint_reaches_pad(x, y, radius, layers, pad, unflashed_hole_only=False) -> set:
+    """Which of `layers` a disc of copper -- centre (x, y), radius `radius` --
+    both SHARES with `pad`'s copper and physically OVERLAPS. Empty set = no
+    contact.
+
+    THE one predicate for "does this copper reach this pad". A track
+    endpoint's round cap and a via barrel are the SAME question with a
+    different radius; answering them separately is how #695 and #722 shipped
+    four lines apart, in four copies across three modules.
+
+    GEOMETRY mirrors check_connected's endpoint-in-pad rule exactly --
+    ``_m = max(ewidth / 2 - 1e-6, tolerance)`` -- and its via twin,
+    ``_m = max(vsize / 2 - 1e-6, tolerance)``, whose `tolerance` default IS
+    COINCIDENCE_TOL. `margin` inflates the EXACT pad outline (custom-pad
+    polygons, roundrect corners and rect_rotation all hold), so this reads
+    "the copper overlaps the pad copper", not "the centre is inside it".
+    COINCIDENCE_TOL is a FLOOR under the credit, never a replacement for it,
+    exactly as it is there.
+
+    Note the role split this file documents above: COINCIDENCE_TOL grades
+    geometric INTENT. Asking a copper-reaches-copper question with it is a
+    category error -- it made these checkers contradict check_net_connectivity
+    on copper KiCad grades joined, and their exit codes are chain-blocking.
+
+    LAYERS come from `net_queries.expand_pad_layers`, the SAME expansion
+    check_connected uses, rather than a local reading of `pad.layers`:
+
+      * `*.Cu` means every copper layer; `*.Mask` and `*.Paste` mean NO copper
+        layer. A local `any('*' in L)` test reads a mask wildcard as an
+        all-layer copper pad -- and 641 pads in kicad_files/ carry `*.Mask`.
+      * a drilled pad occupies the layers it DECLARES. `drill > 0 -> every
+        layer` over-credits a PTH pad declared ("F.Cu" "B.Cu") on a 4-layer
+        board, which the authority grades as not reaching In1.Cu at all.
+      * an NPTH pad is a hole with no copper whatever its layer list says
+        (#328). `pad_is_plated_through` is the spelling for the neighbouring
+        question ("does this barrel tie copper layers"); here the pad simply
+        has no copper to land on.
+
+    Crediting the cap WITHOUT the layer guard trades one contradiction for
+    another: B.Cu ends near an F.Cu-only pad are genuinely split, and a
+    layer-blind widening silences that -- the direction that ships broken
+    copper.
+
+    `unflashed_hole_only`: on a layer the pad's unconnected-layer mode removes
+    (pad_unflashed_layers), the copper must reach the HOLE, as KiCad grades
+    it. Off by default: the grading callers keep the outline credit, and the
+    #1063 removal model turns it on so it never cuts back to an annulus-only
+    joint.
+    """
+    if getattr(pad, 'pad_type', '') == 'np_thru_hole':
+        return set()                        # a hole, not copper (#328)
+    # Local import: net_queries imports this module, so a module-level import
+    # would cycle -- the same reason check_net_connectivity is imported below.
+    from net_queries import expand_pad_layers
+    want = list(layers)
+    on = set(want) & set(expand_pad_layers(list(getattr(pad, 'layers', None)
+                                                or ()), want))
+    if not on:
+        return set()                        # cheap test first; geometry is the cost
+    margin = max(radius - 1e-6, COINCIDENCE_TOL)
+    hole_only = pad_unflashed_layers(pad, on) if unflashed_hole_only else set()
+    out = set()
+    if hole_only and copper_reaches_pad_hole(x, y, margin, pad):
+        out |= hole_only
+    flashed = on - hole_only
+    if flashed:
+        from check_connected import _point_in_pad
+        if _point_in_pad(x, y, pad, margin=margin):
+            out |= flashed
+    return out
+
+
+def pad_unflashed_layers(pad, layers) -> set:
+    """Which of `layers` KiCad flashes `pad` on only when copper reaches its
+    HOLE -- the layers its unconnected-layer mode removes.
+
+    KiCad's connectivity tests a pad on such a layer by its hole shape, not
+    its outline, so a track ending in the annulus but short of the drill is
+    NOT connected there (and the pad gets no copper on that layer at all).
+    ecp5_mini's edge headers (`remove_unused_layers yes`, `keep_end_layers
+    yes`) are the measured case: #1063's cleanup cut the In1.Cu tail that ran
+    to the pad centre, leaving an end 0.46 mm out on a 0.7 mm drill, and
+    KiCad graded seven nets open that the outline model graded connected.
+
+    'remove_except_start_end' keeps the drill's start and end layers, which
+    for a through-hole pad are F.Cu and B.Cu. Only a plated hole can connect
+    anything; an SMD pad has no hole and no unconnected-layer mode.
+    """
+    mode = getattr(pad, 'unconnected_layer_mode', 'keep_all') or 'keep_all'
+    if mode == 'keep_all':
+        return set()
+    from kicad_parser import pad_is_plated_through
+    if not pad_is_plated_through(pad):
+        return set()
+    layers = set(layers)
+    if mode == 'remove_except_start_end':
+        layers -= {'F.Cu', 'B.Cu'}
+    return layers
+
+
+def copper_reaches_pad_hole(x, y, radius, pad) -> bool:
+    """Does a disc of copper -- centre (x, y), radius `radius` -- overlap
+    `pad`'s drill (a slot is its capsule, pad_drill_capsule)?"""
+    from kicad_parser import pad_drill_capsule
+    (ax, ay), (bx, by), hr = pad_drill_capsule(pad)
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+    return math.hypot(x - (ax + t * dx), y - (ay + t * dy)) <= hr + radius
+
+
+def via_copper_layers(via, copper_layers=None) -> set:
+    """The copper layers `via`'s barrel actually occupies.
+
+    check_connected's rule: a via listing both F.Cu and B.Cu (or listing
+    nothing) spans every copper layer; otherwise it spans what it declares.
+    When `copper_layers` is supplied, a blind/buried via also gets the layers
+    BETWEEN its endpoints -- a buried F.Cu-In2.Cu via touches In1.Cu, and
+    treating the span as the two endpoints alone manufactured phantom
+    unsupported-via findings (check_weird._via_span, same rule).
+    """
+    declared = [L for L in (getattr(via, 'layers', None) or ()) if L.endswith('.Cu')]
+    if not declared or ('F.Cu' in declared and 'B.Cu' in declared):
+        return set(copper_layers or declared or ())
+    if copper_layers:
+        order = list(copper_layers)
+        idx = [order.index(L) for L in declared if L in order]
+        if len(idx) >= 2:
+            return set(order[min(idx):max(idx) + 1])
+    return set(declared)
+
+
+def endpoint_reaches_via(x, y, radius, via, layers, copper_layers=None) -> bool:
+    """Does a disc of copper -- centre (x, y), radius `radius`, living on
+    `layers` -- overlap `via`'s barrel?
+
+    The via twin of `endpoint_reaches_pad`, and the same mirror of the
+    authority: check_connected credits a via against a segment at
+    ``max((psize + seg.width) / 2 - eps, tolerance)`` -- barrel radius PLUS
+    the copper's own radius -- and creates via points ONLY on the via's own
+    copper layers.
+
+    Both halves matter, and only together. The soft-joint anchors used a flat
+    ``vr + 0.01``: barrel-aware but CAP-BLIND, the very defect #722 reports on
+    the pad branch. Widening that to `vr + radius` WITHOUT the layer test just
+    makes a layer-blind credit ~37% wider -- on a 0.6mm via and a 0.25mm track,
+    0.310mm becomes 0.425mm -- so a blind F.Cu/In1.Cu via would anchor B.Cu
+    track ends it carries no copper for, silencing a real open.
+
+    A via with no declared size claims the 0.6 default, matching
+    ``getattr(via, 'size', 0.6)`` in check_connected. A via whose size IS zero
+    keeps zero there, so it keeps zero here.
+    """
+    if not (set(layers) & via_copper_layers(via, copper_layers)):
+        return False
+    vr = (getattr(via, 'size', 0.6) if getattr(via, 'size', None) is not None
+          else 0.6) / 2.0
+    return math.hypot(x - via.x, y - via.y) <= max(vr + radius - 1e-6,
+                                                   COINCIDENCE_TOL)
+
+
+
+def strict_joint_roots(segments, vias=(), pads=(), copper_layers=None) -> Dict[int, object]:
+    """{id(segment): root} for ONE net's segments, joined only where they
+    EXACTLY meet: a shared vertex on one layer (to the micron, as the
+    soft-joint detectors key vertices), or a vertex on the centre of a
+    same-net via spanning that layer or of a pad carrying copper there.
+
+    Cap overlap is deliberately NOT a joint here. A soft joint is a dangling
+    end that reaches the rest of the net ONLY by cap-overlapping another
+    (check_drc's definition); the detectors stated that and never tested it,
+    so two stubs fanning out of ONE vertex whose free ends happen to overlap
+    -- an oracle strap re-tracing a region join from the join's own vertex,
+    sonde_xilinx GND (#984) -- read as a near-open when nothing hangs on the
+    overlap. Two ends whose segments share a root here are already joined.
+
+    Conservative by construction: a segment end merely INSIDE a pad or via,
+    or landing mid-span on another segment, is not joined, so such a pair is
+    still flagged as before."""
+    from collections import defaultdict
+
+    def rk(x, y):
+        return (round(x, 3), round(y, 3))
+
+    uf = UnionFind()
+    vtx = {}
+    for s in segments:
+        node = ('s', id(s))
+        uf.find(node)
+        for x, y in ((s.start_x, s.start_y), (s.end_x, s.end_y)):
+            uf.union(vtx.setdefault((s.layer, rk(x, y)), node), node)
+    via_at = defaultdict(list)
+    for v in vias or ():
+        via_at[rk(v.x, v.y)].append(v)
+    pad_at = defaultdict(list)
+    for p in pads or ():
+        pad_at[rk(p.global_x, p.global_y)].append(p)
+    if via_at or pad_at:
+        for (layer, key), node in vtx.items():
+            for v in via_at.get(key, ()):
+                if layer in via_copper_layers(v, copper_layers):
+                    uf.union(node, ('v', id(v)))
+            for p in pad_at.get(key, ()):
+                if endpoint_reaches_pad(key[0], key[1], 0.0, (layer,), p):
+                    uf.union(node, ('p', id(p)))
+    return {id(s): uf.find(('s', id(s))) for s in segments}
+
+
+_CLUSTER_MEMO: "OrderedDict[tuple, tuple]" = OrderedDict()
+_CLUSTER_MEMO_CAP = 4096
+
+
 def cluster_coincident_points(points, tol: float = COINCIDENCE_TOL):
     """Union-find clustering of (x, y, layer) points by endpoint coincidence.
 
@@ -189,7 +422,17 @@ def cluster_coincident_points(points, tol: float = COINCIDENCE_TOL):
     shared sentinel layer for layer-agnostic clustering). O(n) via spatial
     hashing. Returns a list of cluster root indices, one per input point --
     the ONE shared implementation behind every coincidence consumer (#320).
+
+    Memoized (2026-08-14 profiling: 343k calls / 54s, endpoint derivations
+    re-clustering unchanged nets across rescue/escalation attempts): the
+    function is pure in (points, tol), so an exact-key hit is identical by
+    construction. A fresh list is returned per call (callers may mutate).
     """
+    _key = (tuple(points), tol)
+    _hit = _CLUSTER_MEMO.get(_key)
+    if _hit is not None:
+        _CLUSTER_MEMO.move_to_end(_key)
+        return list(_hit)
     n = len(points)
     parent = list(range(n))
 
@@ -218,7 +461,11 @@ def cluster_coincident_points(points, tol: float = COINCIDENCE_TOL):
                     ox, oy, olayer = points[j]
                     if olayer == layer and abs(x - ox) < tol and abs(y - oy) < tol:
                         union(i, j)
-    return [find(i) for i in range(n)]
+    roots = [find(i) for i in range(n)]
+    _CLUSTER_MEMO[_key] = tuple(roots)
+    while len(_CLUSTER_MEMO) > _CLUSTER_MEMO_CAP:
+        _CLUSTER_MEMO.popitem(last=False)
+    return roots
 
 
 def find_connected_groups(segments: List[Segment], tolerance: float = COINCIDENCE_TOL,
@@ -1569,11 +1816,22 @@ def get_stub_endpoints(pcb_data: PCBData, net_ids: List[int]) -> List[Tuple[floa
     Returns list of (x, y, layer) tuples - includes layer for same-layer filtering.
     """
     stubs = []
+    # One pass over the board's copper, not one per net: a builder asks for
+    # every unrouted net on every prepare.
+    wanted = set(net_ids)
+    segs_by_net: Dict[int, list] = {}
+    vias_by_net: Dict[int, list] = {}
+    for s in pcb_data.segments:
+        if s.net_id in wanted:
+            segs_by_net.setdefault(s.net_id, []).append(s)
+    for v in pcb_data.vias:
+        if v.net_id in wanted:
+            vias_by_net.setdefault(v.net_id, []).append(v)
     for net_id in net_ids:
-        net_segments = [s for s in pcb_data.segments if s.net_id == net_id]
+        net_segments = segs_by_net.get(net_id, [])
         if len(net_segments) < 2:
             continue
-        net_vias = [v for v in pcb_data.vias if v.net_id == net_id]
+        net_vias = vias_by_net.get(net_id, [])
         groups = find_connected_groups(net_segments, vias=net_vias)
         if len(groups) < 2:
             continue

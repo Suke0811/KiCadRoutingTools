@@ -1,0 +1,1406 @@
+"""Apply a MODEL-CHOSEN pose, and let the engine grade it (#892).
+
+The ranking half of "where should this part go" already shipped: `pose_score.
+rank_poses` returns legal (x, y, rot) candidates cheapest-first, `converge.py
+poses` is its CLI, and `grade_pad_legality` / `check_assembly` / `render_
+placement --review-sheet` all grade a pose. What did not exist is the verb that
+APPLIES one: no placement CLI in the tree accepted a pose at all, so a model
+that had decided "U1 belongs here, facing that way" had to write a hand script
+around `placement.writer.write_placed_output` (run 25's `pose_assist.py`;
+run 24 reused `freeze_stamp.py` for the lock half). A hand script is exactly
+what the provenance regime refuses and the cheats watcher flags, so the
+sanctioned tool has to be a registered lever -- see `place_pose.py`.
+
+This module is the ENGINE half, so both fronts get the same behaviour: the CLI
+parses argv into `ops` and calls `apply_poses`; anything in-process (the GUI's
+own apply path, a future control) calls the same function rather than
+re-assembling writer + sibling copy + grade for itself. That ordering is
+CLAUDE.md's CLI/GUI rule applied before a divergence rather than after one.
+
+Two rules worth stating because getting either wrong is silent:
+
+* LEGALITY IS RELATIVE. `QuenchState.candidate_valid` is an absolute gate and
+  on real boards it is already False for a large fraction of parts before
+  anything moves, so "refuse any pose candidate_valid dislikes" would refuse
+  poses no worse than where the part already sits, and refuse to touch a board
+  mid-repair at all. The verdict here is `grade_pad_legality` on the candidate
+  board against the same grade on the INPUT board: a request is refused when it
+  makes a category WORSE, never for damage it inherited.
+* NO RULE IS RE-DERIVED. The pad geometry is `grade_pad_legality`'s, the pad
+  stacks are check_assembly's own `legality.pad_intersection_pairs` (#1064),
+  the face
+  rule is `escape.assign_faces` (#850), the ranking is `pose_score.rank_poses`,
+  the writer is `placement.writer.write_placed_output`, the siblings are
+  `portfolio.copy_siblings` (#441). This module is plumbing and arithmetic on
+  their answers. `part_faces` is the one place that repeats a CALLING PATTERN
+  rather than a rule -- see its docstring for why it does not simply call
+  `board_context.pads_by_face`.
+"""
+from __future__ import annotations
+
+import os
+import math
+import shutil
+import stat
+import tempfile
+from typing import Dict, List, Optional, Sequence
+
+#: The cardinal faces, in the order a POSITIVE rotation walks them.
+#:
+#: Measured from the parser's own transform rather than reasoned about
+#: (`kicad_parser.py:706`): a pad's global offset is `R(-rot) . local`, so
+#: raising a footprint's rotation by 90 degrees sends a pad at local (+1, 0)
+#: to global offset (0, -1) -- east to north, since `escape.face_of` calls the
+#: smaller-y side north on a y-grows-down board.
+#: `tests/test_892_place_pose.py` pins this against a real write + re-parse,
+#: because a cycle written the wrong way round is a plausible-looking rotation
+#: that faces the part backwards.
+FACE_CYCLE = ('east', 'north', 'west', 'south')
+
+#: What a caller may spell a face as. The engine's own vocabulary
+#: (`escape.FACES`) is the canonical form; the single letters exist because
+#: the issue's worked example uses `W` and a compass letter is what a reader
+#: writes. Nothing else is guessed.
+FACE_ALIASES = {'n': 'north', 'north': 'north',
+                's': 'south', 'south': 'south',
+                'e': 'east', 'east': 'east',
+                'w': 'west', 'west': 'west'}
+
+#: The legality categories a request may not WORSEN. Board-level counts from
+#: `grade_pad_legality`. #962 added `oob_graphic_copper_count`, the parts whose
+#: footprint GRAPHIC copper (a drawn SOT-89 tab, an antenna) reaches past the
+#: outline. `place_pose set U2 115.34 93.6 --rot 90` put esp_prog's tab 1.11 mm
+#: off the board with every arm here reading 0.
+LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
+                 'pad_edge_conflicts', 'pad_edge_unmeasured',
+                 'oob_keepout_copper_count',
+                 'oob_graphic_copper_count',
+                 'mating_keepout_count',
+                 'pad_stack_count')
+
+#: The MAGNITUDES, and they are not a nicety: a count arm alone accepts a
+#: request that keeps the tally and deepens the damage. Measured on the
+#: count-plus-shortfall version, on flat_hierarchy: a part already 2.0 mm off
+#: the board was moved to 204.66 mm off it, `oob_pad_count 1 -> 1`, exit 0,
+#: `legal: true`, and no field in the summary said so. (esp_prog reproduces
+#: the same mechanism at 2.008 -> 101.008 mm.) CLAUDE.md calls copper outside
+#: the
+#: outline the top-priority placement defect, so its AMOUNT is an arm too.
+#: The graphic-copper overrun is one for the same reason (#962).
+#: #1100: conflicting PAIRS, compared as sets -- a new pair is refused even
+#: when the counts tie.
+#: #1064: PAD STACKS -- two parts' pad copper overlapping, ANY net, which is
+#: check_assembly's never-waivable pad_intersection. `pad_conflict_pairs`
+#: skips same-net pads before it measures, so esp_prog's C4 on Y1 (one net)
+#: was no pair at all and this verb wrote a board check_assembly calls NOT
+#: BUILDABLE. The pairs are measured by check_assembly's own function.
+PAIR_KEYS = ('pad_conflict_pairs', 'hole_conflict_pairs',
+             'pad_stack_pairs')
+
+MAGNITUDE_KEYS = ('pad_shortfall', 'oob_pad_amount', 'pad_edge_shortfall',
+                  'oob_keepout_copper_amount',
+                  'oob_graphic_copper_amount',
+                  'mating_keepout_amount',
+                  'pad_stack_area')
+
+#: What `legal` does and does NOT cover, published with every summary (#962
+#: follow-up item 4). A partial claim must read as partial.
+LEGAL_SCOPE = ('pad-pad clearance', 'hole-hole clearance', 'pad copper vs the '
+               'outline', 'pad copper vs the edge-clearance floor',
+               'footprint graphic copper vs the outline',
+               'pad copper vs a board rule-area keep-out band (#1031)',
+               "part bodies vs a PCB-edge plug's mating region (#1098)",
+               "two parts' pad copper overlapping on a shared side, ANY net "
+               "-- a pad stack, check_assembly's pad_intersection (#1064)")
+LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
+                    '(disclosed as graphic_edge_shortfall_refs, not gated)',
+                    'footprint copper the parser does not model: pad-less '
+                    'logos, bezier curves, copper text (named per part in '
+                    'oob_graphic_copper_unmeasured)',
+                    'footprint graphic copper on a board with no outline, and '
+                    'on a part that changed side in memory (listed as '
+                    'no-outline / moved-side in oob_graphic_copper_unmeasured)',
+                    'rule areas a footprint owns (listed in '
+                    'keepout_copper_unmeasured)',
+                    'solder paste and mask openings', 'component bodies / '
+                    'courtyards', 'routing', 'zone fill',
+                    "parts sharing an origin whose pads do not intersect "
+                    "(check_assembly's coincident_origins)")
+MAGNITUDE_EPS = 1e-6
+
+
+class PoseRefusal(Exception):
+    """A request refused for a stated reason, with the numbers behind it.
+
+    `code` is the exit code the CLI should use, and the two values mean
+    different things to a caller: 2 is "the request does not name a thing on
+    this board" (an unknown ref, a face with no row) -- a typo the caller
+    fixes by rewriting the command -- and
+    4 is "the request is well-formed and the board says no" (it grades worse,
+    or the part is locked), which is a MEASUREMENT the caller acts on. Folding
+    both into one code would make a typo indistinguishable from a finding.
+    """
+
+    def __init__(self, reason: str, code: int = 4, **extra):
+        super().__init__(reason)
+        self.reason = reason
+        self.code = code
+        self.extra = extra
+
+
+# ---------------------------------------------------------------------------
+# knobs
+# ---------------------------------------------------------------------------
+
+def resolve_knobs(board_path: str, clearance=None, board_edge_clearance=None,
+                  track_width=None):
+    """(clearance, board_edge_clearance, track_width, knobs) from the BOARD.
+
+    Same resolution `place_seed`, `converge poses` and `board_context` use
+    (`list_nets.board_floor_knobs`): explicit value > the board's own Default
+    netclass / constraint > the fixed default. A fixed 0.25/0.55 on a board
+    routed to 0.15/0.3 vetoes poses the router would happily route, which is
+    the run-7 S4 finding this exists to avoid.
+    """
+    import list_nets
+    import routing_defaults as defaults
+    clr, edge, knobs = list_nets.board_floor_knobs(
+        board_path, clearance, board_edge_clearance)
+    if not math.isfinite(edge) or edge < 0:
+        raise PoseRefusal('board-edge-clearance must be finite and nonnegative (mm); '
+                          'got %r' % edge, code=2)
+    tw = track_width
+    if tw is None:
+        tw = (list_nets.board_default_netclass_param(board_path, 'track_width')
+              or defaults.TRACK_WIDTH)
+    return clr, edge, float(tw), knobs
+
+
+# ---------------------------------------------------------------------------
+# faces
+# ---------------------------------------------------------------------------
+
+def normalize_face(token: str) -> str:
+    """A face token in the engine's own spelling, or a refusal naming both."""
+    key = str(token or '').strip().lower()
+    if key not in FACE_ALIASES:
+        raise PoseRefusal(
+            "%r is not a face: use north/south/east/west (or N/S/E/W)"
+            % (token,), code=2)
+    return FACE_ALIASES[key]
+
+
+def rotate_face(face: str, delta_deg: float) -> str:
+    """Where `face` points after the part is turned by `delta_deg`.
+
+    Only multiples of 90 are meaningful here; a non-orthogonal delta is
+    refused rather than rounded, because rounding it would silently answer a
+    different question than the caller asked. That refusal is an INTERNAL
+    guard, not a CLI path: the only production caller passes `face_delta`'s
+    output, which is a multiple of 90 by construction. `rotate R4 45` reaches
+    the writer and is graded like any other pose.
+    """
+    if abs(delta_deg / 90.0 - round(delta_deg / 90.0)) > 1e-6:
+        raise PoseRefusal(
+            "a face can only be carried by an orthogonal rotation; %g degrees "
+            "is not a multiple of 90" % (delta_deg,), code=2)
+    steps = int(round(delta_deg / 90.0)) % 4
+    return FACE_CYCLE[(FACE_CYCLE.index(face) + steps) % 4]
+
+
+def face_delta(from_face: str, to_face: str) -> float:
+    """The smallest non-negative multiple of 90 carrying one face to another."""
+    steps = (FACE_CYCLE.index(to_face) - FACE_CYCLE.index(from_face)) % 4
+    return float(steps * 90)
+
+
+def part_faces(pcb_data, ref: str, *, clearance: float, track_width: float):
+    """`{face: [pad, ...]}` for one part at its CURRENT pose.
+
+    Calls `escape.assign_faces` -- THE face rule (#850) -- with the same
+    pairing `board_context.pads_by_face` uses. The RULE is not repeated; the
+    six lines that feed it are, and deliberately:
+
+    * `pads_by_face` is whole-board and returns `{ref: {face: [pad]}}`, so
+      using it here would build the copper geometry for every part to answer
+      about one;
+    * it lives in `py_tools/board_context.py`, which imports
+      `render_placement`; an engine module under `py_placer/placement/`
+      importing that inverts the layering the rest of this package keeps;
+    * their ERROR behaviour differs on purpose. `pads_by_face` skips a
+      pad-less block and swallows an `assign_faces` exception, because it is
+      building a sheet about every part. This verb was ASKED about one part,
+      so both of those are refusals with a reason.
+
+    If the pairing ever has to change, it changes in `escape.assign_faces`,
+    which is the thing #850 made single.
+    """
+    from placement.escape import assign_faces, board_copper_geometry
+    from placement.escape import _part_rect        # noqa: PLC2701
+    fp = pcb_data.footprints.get(ref)
+    if fp is None:
+        raise PoseRefusal("%s is not a footprint on this board" % (ref,), code=2)
+    from kicad_parser import non_aperture_pads
+    if not non_aperture_pads(fp):       # apertures are not pads (#1143)
+        raise PoseRefusal("%s has no pads, so it has no face to aim" % (ref,),
+                          code=2)
+    try:
+        obstruction = board_copper_geometry(pcb_data, clearance)
+    except Exception:                                        # noqa: BLE001
+        obstruction = {}
+    own = obstruction.get(ref)
+    rect = own.rect if own is not None else _part_rect(fp)
+    asg = assign_faces(fp, own, lane_mm=track_width + clearance,
+                       fallback_rect=rect, clearance=clearance,
+                       track_width=track_width)
+    by: Dict[str, List] = {}
+    for pad, face in asg.faces:
+        by.setdefault(face or 'interior', []).append(pad)
+    return by
+
+
+def part_centre(pcb_data, ref: str):
+    """The part's pad-copper centre, or its origin when it has no pads.
+
+    Pad centre rather than `(at x y)`: a connector's origin can sit well off
+    its body, and "which way is USB1 from here" is a question about copper.
+    """
+    fp = pcb_data.footprints.get(ref)
+    if fp is None:
+        raise PoseRefusal("%s is not a footprint on this board" % (ref,),
+                          code=2)
+    from kicad_parser import non_aperture_pads
+    pads = non_aperture_pads(fp)        # apertures are not copper (#1143)
+    if not pads:
+        return float(fp.x), float(fp.y)
+    xs = [p.global_x for p in pads]
+    ys = [p.global_y for p in pads]
+    return (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+
+
+def bearing_face(from_xy, to_xy) -> str:
+    """The cardinal direction of `to_xy` seen from `from_xy`.
+
+    A tie -- a partner exactly on the diagonal -- resolves to the X axis,
+    deterministically. Stated as it IS rather than as a rule about the
+    dominant axis (there is no dominant axis in a tie) or about `FACE_CYCLE`
+    order (which would answer `north` for the up-left diagonal, where this
+    answers `west`). Deterministic is the property that matters; which way it
+    breaks is arbitrary, and a caller aiming across a diagonal should name the
+    face it wants instead.
+    """
+    dx = to_xy[0] - from_xy[0]
+    dy = to_xy[1] - from_xy[1]
+    if abs(dx) >= abs(dy):
+        return 'east' if dx >= 0 else 'west'
+    return 'south' if dy >= 0 else 'north'      # y grows down (#850's north)
+
+
+# ---------------------------------------------------------------------------
+# op resolution -- every op is resolved against the INPUT board
+# ---------------------------------------------------------------------------
+
+def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
+                track_width: float):
+    """Turn caller ops into writer placements + a per-op note.
+
+    Every op reads the INPUT board, so a call carrying several of them
+    describes ONE arrangement rather than a sequence whose later members see
+    the earlier ones' effects. That is what makes "a whole arrangement is one
+    board state" true rather than merely intended.
+    """
+    placements: List[Dict] = []
+    notes: List[Dict] = []
+    seen = {}
+    for op in ops:
+        kind = op['kind']
+        ref = op['ref']
+        fp = pcb_data.footprints.get(ref)
+        if fp is None:
+            raise PoseRefusal(
+                "%s is not a footprint on this board (the parser names "
+                "duplicate references TP4 / TP4~2, #726)" % (ref,), code=2)
+        if ref in seen:
+            raise PoseRefusal(
+                "%s is named by two ops in one call (%s then %s); one call "
+                "describes one arrangement, so a part gets one pose"
+                % (ref, seen[ref], kind), code=2)
+        seen[ref] = kind
+        # The baseline rotation is normalised to [0, 360) because the FILE's
+        # spelling is not canonical: KiCad writes -90 where this tool writes
+        # 270, and comparing the two raw would report a part as MOVED by a
+        # rotation it already has.
+        x, y = float(fp.x), float(fp.y)
+        rot = float(fp.rotation or 0.0) % 360.0
+        note = {'ref': ref, 'kind': kind,
+                'from': [round(x, 4), round(y, 4), rot]}
+
+        if kind == 'set':
+            if op.get('x') is not None:
+                x = float(op['x'])
+            if op.get('y') is not None:
+                y = float(op['y'])
+            if op.get('rot') is not None:
+                rot = float(op['rot']) % 360.0
+        elif kind == 'rotate':
+            deg = float(op['rot'])
+            rot = ((rot + deg) if op.get('relative') else deg) % 360.0
+        elif kind == 'face':
+            face = normalize_face(op['face'])
+            by = part_faces(pcb_data, ref, clearance=clearance,
+                            track_width=track_width)
+            if not by.get(face):
+                raise PoseRefusal(
+                    # code=2: the docstring and PoseRefusal both file this as
+                    # "the request does not name a thing on this board", and
+                    # it was exiting 4 -- the code that means the board said
+                    # no about a well-formed request.
+                    "%s has no pads on its %s face right now, so there is no "
+                    "row to aim; it has %s" % (
+                        ref, face,
+                        ', '.join('%s: %d' % (f, len(p))
+                                  for f, p in sorted(by.items())) or 'none'),
+                    code=2, faces={f: len(p) for f, p in by.items()})
+            if op['partner'] == ref:
+                raise PoseRefusal(
+                    "%s cannot face itself; name the part its %s row should "
+                    "point at" % (ref, face), code=2)
+            here = part_centre(pcb_data, ref)
+            there = part_centre(pcb_data, op['partner'])
+            if abs(here[0] - there[0]) < 1e-9 and abs(here[1] - there[1]) < 1e-9:
+                # Two parts on one coordinate is a PILE, not a direction. The
+                # bearing would fall out of a tie-break and read as an answer.
+                raise PoseRefusal(
+                    "%s and %s share a centre (%.4f, %.4f), so there is no "
+                    "direction to aim -- place one of them first"
+                    % (ref, op['partner'], here[0], here[1]), code=2)
+            target = bearing_face(here, there)
+            delta = face_delta(face, target)
+            rot = (rot + delta) % 360.0
+            # The row is identified by each pad's INDEX in `fp.pads`, never by
+            # its number. Pad numbers are NOT unique -- a shield, a split
+            # thermal paddle and every unnumbered mechanical pad share one --
+            # and a number-keyed map collapses them to whichever pad the dict
+            # saw last. Measured: esp_prog's USB1 carries SIX pads numbered
+            # `0`, spread across its faces, so the verification below scored a
+            # row that had provably rotated as 0/2 and then called it
+            # SYMMETRIC. Over the 22 tracked boards in `kicad_files/`, 196
+            # parts on 16 boards repeat a pad number at all (57 on 11 boards
+            # if the empty number is excluded, 49 on 8 if `0` is too) -- the
+            # definition matters, so it is written down rather than summarised
+            # as one figure. The index is stable across the write (the
+            # writer reorders nothing), and `row_pads` keeps the numbers for a
+            # human to read.
+            ix = {id(p): i for i, p in enumerate(fp.pads or ())}
+            note.update({'face': face, 'partner': op['partner'],
+                         'target_face': target, 'rotation_delta': delta,
+                         'row_pad_ix': [ix[id(p)] for p in by[face]],
+                         'row_pads': [p.pad_number for p in by[face]]})
+        else:
+            raise PoseRefusal("unknown op %r" % (kind,), code=2)
+
+        note['to'] = [round(x, 4), round(y, 4), rot]
+        note['moved'] = note['to'] != note['from']
+        notes.append(note)
+        placements.append({'reference': ref, 'new_x': x, 'new_y': y,
+                           'new_rotation': rot})
+    return placements, notes
+
+
+# ---------------------------------------------------------------------------
+# legality
+# ---------------------------------------------------------------------------
+
+def grade(pcb_data, board_path: str, clearance: float,
+          board_edge_clearance=None, declared_keepouts=()) -> Dict:
+    """`grade_pad_legality` at this board's own poses -- never a re-derivation.
+
+    `pcb_file` is passed so `PadClearanceModel` can read the netclasses, the
+    `.kicad_dru` layer rules and any pad `local_clearance` override (#697):
+    a board that declares none of the three grades exactly as a flat scalar
+    would, and one that declares them is graded the way check_drc will.
+    `declared_keepouts` is the intent's keep-outs (#1098): a declared
+    `mating:<ref>` replaces the derived plug region, as in the seeder.
+    #1064: plus `pad_stack_census`, check_assembly's own pad_intersection
+    channel, because `grade_pad_legality` skips a same-net pad pair before it
+    measures anything and so never sees two parts' pads stacked on one net.
+    """
+    from placement.legality import grade_pad_legality, pad_stack_census
+    g = grade_pad_legality(pcb_data, clearance, pcb_file=board_path,
+                           edge_margin=board_edge_clearance,
+                           declared_keepouts=declared_keepouts)
+    g.update(pad_stack_census(pcb_data, clearance))
+    return g
+
+
+def worsened(before: Dict, after: Dict) -> List[str]:
+    """Which legality categories the request made worse. [] is the good case."""
+    out = [k for k in LEGALITY_KEYS
+           if (after.get(k) or 0) > (before.get(k) or 0)]
+    # #1098: an unmeasured plug mating region is not a clean one --
+    # check_assembly fails closed on it, and so does this verb.
+    if after.get('mating_keepout_error'):
+        out.append('mating_keepout_error')
+    out += [k for k in MAGNITUDE_KEYS
+            if (after.get(k) or 0.0) > ((before.get(k) or 0.0) + MAGNITUDE_EPS)]
+    # #962: a SWAP can hold the graphic-copper count and summed amount level
+    # while moving the overrun onto a part that was clean. A part newly past
+    # the outline is new damage when the totals merely TIE; a request that
+    # strictly lowers the count or the amount is an improvement and is not
+    # refused for where the remainder landed. A `before` that carries no refs
+    # (an older report) cannot say which parts are new, so the arm is off.
+    if 'oob_graphic_copper_refs' in before:
+        was = {r[0] for r in (before.get('oob_graphic_copper_refs') or ())}
+        new = [r[0] for r in (after.get('oob_graphic_copper_refs') or ())
+               if r[0] not in was]
+        improved = ((after.get('oob_graphic_copper_count') or 0)
+                    < (before.get('oob_graphic_copper_count') or 0)
+                    or (after.get('oob_graphic_copper_amount') or 0.0)
+                    < (before.get('oob_graphic_copper_amount') or 0.0) - MAGNITUDE_EPS)
+        if new and not improved:
+            out.append('oob_graphic_copper_refs')
+    # #1100: the same question for pad and hole conflicts, with NO
+    # improvement exemption. Run 37 seated C18 so that it left a conflict it
+    # had in the off-board pile and made one on the board with D11: the
+    # count tied (2 -> 2) and the board was written with a short. A pair
+    # that did not exist before is new damage whatever else went away; a
+    # report without the pair list (an older one) leaves the arm off.
+    for pair_key in PAIR_KEYS:
+        if pair_key in before:
+            had = {tuple(p[:2]) for p in (before.get(pair_key) or ())}
+            fresh = [p for p in (after.get(pair_key) or ())
+                     if tuple(p[:2]) not in had]
+            if fresh:
+                out.append(pair_key)
+    return out
+
+
+def new_pairs(before: Dict, after: Dict, pair_key: str) -> List[str]:
+    """`["A/B", ...]`: the pairs in `after[pair_key]` that `before` lacks."""
+    had = {tuple(p[:2]) for p in (before.get(pair_key) or ())}
+    return ['%s/%s' % (p[0], p[1]) for p in (after.get(pair_key) or ())
+            if tuple(p[:2]) not in had]
+
+
+def is_clean(report: Dict) -> bool:
+    """Is this board legal in the ABSOLUTE sense, not merely no worse?"""
+    return not (report.get('pad_edge', {}).get('complete') is False
+                or report.get('mating_keepout_error')
+                or any(report.get(k) for k in LEGALITY_KEYS)
+                or any((report.get(k) or 0.0) > MAGNITUDE_EPS
+                       for k in MAGNITUDE_KEYS))
+
+
+def _legality_row(before: Dict, after: Dict) -> Dict:
+    row = {}
+    for key in LEGALITY_KEYS + MAGNITUDE_KEYS:
+        row[key + '_before'] = before.get(key)
+        row[key + '_after'] = after.get(key)
+    row['pad_clearance_required'] = after.get('required')
+    row['worst'] = after.get('worst')
+    row['pad_edge_before'] = before.get('pad_edge')
+    row['pad_edge_after'] = after.get('pad_edge')
+    row['oob_pad_copper_count_before'] = before.get('oob_pad_copper_count')
+    row['oob_pad_copper_count_after'] = after.get('oob_pad_copper_count')
+    row['oob_pad_copper_refs_after'] = after.get('oob_pad_copper_refs')
+    row['oob_pad_basis'] = after.get('oob_pad_basis')
+    # #962: which parts' graphic copper, what is waived and why, what is not
+    # measured, and the edge-floor shortfall that is disclosed but not gated.
+    row['oob_graphic_copper_refs_after'] = after.get('oob_graphic_copper_refs')
+    row['oob_graphic_copper_waived_after'] = after.get('oob_graphic_copper_waived')
+    row['oob_graphic_copper_unmeasured_after'] = after.get('oob_graphic_copper_unmeasured')
+    row['graphic_edge_shortfall_refs_after'] = after.get('graphic_edge_shortfall_refs')
+    # #1031: which pads sit in a rule-area keep-out band, and which are only
+    # reported (through-hole, reachable on an uncovered layer).
+    row['keepout_copper_pads_after'] = after.get('keepout_copper_pads')
+    row['keepout_copper_tht_refs_after'] = after.get('keepout_copper_tht_refs')
+    row['keepout_copper_unmeasured_after'] = after.get('keepout_copper_unmeasured')
+    # #1064: which parts' pads are stacked, and what measured them.
+    row['pad_stack_pairs_after'] = after.get('pad_stack_pairs')
+    row['pad_stack_basis'] = after.get('pad_stack_basis')
+    return row
+
+
+# ---------------------------------------------------------------------------
+# snapping
+# ---------------------------------------------------------------------------
+
+def nearest_legal(board_path: str, ref: str, *, clearance: float,
+                  board_edge_clearance: float, radius: float, step: float,
+                  rotations=None, limit: int = 12, pcb_data=None):
+    """The ranked legal poses for `ref` on the board at `board_path`.
+
+    `pose_score.rank_poses`, unchanged: this only resolves the knobs from the
+    board first and carries the dropped-pose census back, so an empty ranking
+    can say "the knobs veto even staying put" instead of "no legal pose"
+    (run-7 S4).
+    """
+    import pose_score
+    from kicad_parser import parse_kicad_pcb
+    pcb = pcb_data if pcb_data is not None else parse_kicad_pcb(board_path)
+    st = pose_score.make_state(pcb, board_path, clearance=clearance,
+                               board_edge_clearance=board_edge_clearance)
+    diag: Dict = {}
+    kw = {} if rotations is None else {'rotations': tuple(rotations)}
+    poses = pose_score.rank_poses(pcb, board_path, ref, radius=radius,
+                                  step=step, limit=limit, state=st,
+                                  diagnostics=diag, **kw)
+    return poses, diag
+
+
+def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
+                    board_edge_clearance: float, radius: float, step: float,
+                    pcb_data=None):
+    """Poses to TRY for a snap, nearest-first, from TWO rungs. (list, census)
+
+    Rung 1 is `rank_poses` -- cost-ordered, and worth trying first because it
+    knows about wirelength and crossings, which this verb does not.
+
+    Rung 2 is the bare lattice around where the part now sits, and it exists
+    because rung 1 alone leaves `--snap` DEAD on the boards it is aimed at.
+    `rank_poses` filters through `QuenchState.candidate_valid`, an absolute
+    gate, while this verb's verdict is relative: measured on flat_hierarchy,
+    `set C4 --near 128.0 49.53 --radius 3` had rung 1 return ZERO candidates
+    (625 dropped, including the part's own spot) while **236** poses on the
+    same lattice inside the same radius graded no worse by `worsened` -- the
+    nearest 0.354 mm away. Refusing there, with "no legal pose was found
+    nearby", asserts something the tool's own grade contradicts.
+
+    A ladder rather than a replacement (the repo's own rule: prefer, then fall
+    back, so a rung cannot lose a repair). Rung 2 candidates are NOT claimed
+    legal -- every candidate from either rung is re-graded by the caller
+    before it is written.
+    """
+    import pose_score
+    from kicad_parser import parse_kicad_pcb
+    pcb = pcb_data if pcb_data is not None else parse_kicad_pcb(board_path)
+    st = pose_score.make_state(pcb, board_path, clearance=clearance,
+                               board_edge_clearance=board_edge_clearance)
+    diag: Dict = {}
+    try:
+        ranked = pose_score.rank_poses(pcb, board_path, ref, radius=radius,
+                                       step=step, limit=24, state=st,
+                                       rotations=(rot,), diagnostics=diag)
+    except pose_score.PoseUnrankable as exc:
+        # #959 (#999): `place_pose` catches PoseRefusal only, so a pad-less
+        # block reached a traceback here. The code carries over unchanged;
+        # the advice does not -- this caller IS `place_pose set`, so it is
+        # told what to do instead of the snap, not to run itself.
+        raise PoseRefusal(
+            f"{ref} cannot be snapped: {exc.why}. A snap searches the poses "
+            f"the ranking can score, and there are none for this block -- "
+            f"give it an exact pose instead (drop --near / --snap / "
+            f"--strict-legal) and lock it", code=exc.code, ref=ref) from exc
+    # The Euclidean bound, because `_offsets` walks SQUARE rings: a corner of
+    # the r=4 ring sits 5.66 mm out, and a caller who typed `--radius 4` read
+    # it as a distance (measured: a snap moved a part 5.0 mm under 4).
+    out = [dict(p, rung='ranked') for p in ranked
+           if (p.get('dist_mm') or 0.0) <= radius + 1e-9]
+    seen = {(round(p['x'], 4), round(p['y'], 4)) for p in out}
+
+    part = st.parts.get(ref) if hasattr(st, 'parts') else None
+    lattice = []
+    if part is not None:
+        for dx, dy in pose_score._offsets(radius, step):   # noqa: PLC2701
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist > radius + 1e-9 or (dx == 0.0 and dy == 0.0):
+                continue
+            x, y = round(part.x + dx, 4), round(part.y + dy, 4)
+            if (x, y) in seen:
+                continue
+            seen.add((x, y))
+            lattice.append({'x': x, 'y': y, 'rot': rot,
+                            'dist_mm': round(dist, 4), 'rung': 'lattice'})
+        lattice.sort(key=lambda p: (p['dist_mm'], p['x'], p['y']))
+    # Each rung stays in ITS OWN order -- ranked by cost, lattice by distance
+    # -- and `apply_poses` walks them in two phases with a budget each. It
+    # does not concatenate them into one nearest-first list: measured on
+    # esp_prog, the 24 candidates nearest a refused point ALL failed (they sit
+    # beside the thing that refused it) while a cost-ranked pose 4.78 mm away
+    # passed, so a single nearest-first cap turns a snap that worked into a
+    # refusal. The caller's "stay near" is honoured in the second phase, which
+    # only considers lattice poses NEARER than the ranked answer.
+    ordered = out + lattice
+    census = {'ranked': len(out),
+              'ranked_before_radius': len(ranked),
+              'lattice': len(lattice),
+              'radius_mm': radius,
+              'step_mm': step,
+              'rotations': [rot],
+              'dropped_total': diag.get('dropped_total', 0),
+              'dropped_in_place': diag.get('dropped_in_place', []),
+              # #1113: which check vetoed them, and against whom.
+              'dropped_by': diag.get('dropped_by', {}),
+              'stopped_early': bool(diag.get('stopped_early'))}
+    return ordered, census
+
+
+# ---------------------------------------------------------------------------
+# locks
+# ---------------------------------------------------------------------------
+
+def check_lock_refs(pcb_data, lock_refs=(), unlock_refs=()) -> None:
+    """Refuse a lock/unlock request the board cannot honour.
+
+    Two ways it could not, both of which used to exit 0 with a summary that
+    said otherwise:
+
+    * a ref that is not on the board. `set NOSUCHREF` refuses with code 2 and
+      the #726 hint, while `lock NOSUCHREF` wrote the board, exited 0, and
+      listed the ref under `locked` -- telling a consumer a decision had been
+      recorded that had not.
+    * the same ref in BOTH lists. `apply_locks` stamps then strips, so unlock
+      always won whatever the caller wrote: `unlock C4 set C4 ... lock C4` --
+      the re-lock workflow this tool's own refusal message recommends -- moved
+      the part, dropped the lock, and reported `locked: ["C4"]`.
+    """
+    known = set((pcb_data.footprints or {}))
+    missing = sorted((set(lock_refs) | set(unlock_refs)) - known)
+    if missing:
+        raise PoseRefusal(
+            "%s %s not on this board, so there is nothing to lock or unlock "
+            "(the parser names duplicate references TP4 / TP4~2, #726)"
+            % (', '.join(missing), 'is' if len(missing) == 1 else 'are'),
+            code=2, missing=missing)
+    both = sorted(set(lock_refs) & set(unlock_refs))
+    if both:
+        raise PoseRefusal(
+            "%s is named by both lock and unlock in one call; the stamping "
+            "order would decide it silently (unlock wins), and one call "
+            "describes one arrangement. Say which you mean."
+            % ', '.join(both), code=2, conflicting=both)
+
+
+def apply_locks(board_file: str, lock_refs=(), unlock_refs=()) -> Dict:
+    """Stamp / strip `(locked yes)` in place. Returns what actually changed."""
+    from placement.seeder import stamp_locked, stamp_unlocked
+    out = {'locked': [], 'unlocked': [], 'locked_count': 0, 'unlocked_count': 0}
+    if lock_refs:
+        out['locked'] = sorted(lock_refs)
+        out['locked_count'] = stamp_locked(board_file, list(lock_refs))
+    if unlock_refs:
+        out['unlocked'] = sorted(unlock_refs)
+        out['unlocked_count'] = stamp_unlocked(board_file, list(unlock_refs))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# the verb
+# ---------------------------------------------------------------------------
+
+def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
+                *, pcb_data=None, clearance=None, board_edge_clearance=None,
+                track_width=None, lock_refs=(), unlock_refs=(),
+                snap: bool = False, snap_radius: float = 2.0,
+                snap_step: float = 0.25, snap_tries: int = 6,
+                strict: bool = False,
+                force: bool = False, dry_run: bool = False,
+                intent=None, group_sources: Sequence[str] = ()) -> Dict:
+    """Apply `ops` to `board_path`, grade the result, write it to `out_path`.
+
+    `intent` (a loaded floorplan `Intent`, #959): a moved part that ends
+    further outside its block's zone than it started, by an ERROR-severity
+    `zone_containment`, is refused like a legality regression (`force`
+    writes anyway). Without it no zone is read.
+
+    Returns the summary a caller prints as `JSON_SUMMARY`. Raises `PoseRefusal`
+    when the request cannot be honoured -- an unknown ref, a face with no pads,
+    or a pose that makes the board's pad legality worse (unless `force`).
+
+    The candidate is STAGED and graded before anything reaches `out_path`, so a
+    refused request leaves no half-written board behind and `dry_run` grades
+    exactly what a real run would have written.
+
+    `pcb_data` is an OPTIMISATION, not a second input: it must be the parse of
+    `board_path`. Ops and both grades read it, while the writer re-reads the
+    file, so handing over a `PCBData` that differs from what is on disk would
+    describe one board and write another. An in-process caller with a live
+    pcbnew board must write it out first and pass that path.
+    """
+    from kicad_parser import parse_kicad_pcb
+    from placement.portfolio import copy_siblings
+    from placement.writer import write_placed_output
+
+    if not dry_run and not out_path:
+        raise PoseRefusal("a write needs an output path; pass one, or "
+                          "--dry-run to grade without writing", code=2)
+    requested = {'clearance': clearance, 'board_edge_clearance': board_edge_clearance}
+    clearance, board_edge_clearance, track_width, knobs = resolve_knobs(
+        board_path, clearance, board_edge_clearance, track_width)
+    for key, value in requested.items():
+        knobs[key].update(requested=value, units='mm')
+    pcb = pcb_data if pcb_data is not None else parse_kicad_pcb(board_path)
+
+    placements, notes = resolve_ops(pcb, ops, clearance=clearance,
+                                    track_width=track_width)
+    check_lock_refs(pcb, lock_refs, unlock_refs)
+    # #1098: the intent's keep-outs reach every grade below, so a declared
+    # `mating:<ref>` is the region this verb holds a move to.
+    declared_keepouts = tuple(getattr(intent, 'keepouts', None) or ())
+
+    # A KiCad lock is a DECISION someone recorded in the file -- the seeder
+    # stamps the intent's must_lock refs there, and run 25 stamped its rotation
+    # decisions there so no later repair step would lift them. So a direct
+    # order to move a locked part is refused, and the escape hatch is the
+    # deliberate one this tool already has: name the ref in `unlock` in the
+    # SAME call, which is honoured because every op reads the input board.
+    # `--force` deliberately does NOT open this: it is about legality, and a
+    # waiver flag that also silently lifts locks would make every lock in the
+    # chain conditional on a flag nobody re-reads.
+    if placements:
+        # #1098: a PCB-edge plug seated at its edge carries the keep-out that
+        # keeps parts off its tongue; moving it inland would take the region
+        # with it and read as an improvement. Treated as a lock: `unlock`
+        # the ref in the same call if the move is meant. The quench's own
+        # set (`seated_plugs`): a plug named by a declared `mating:` keep-out
+        # counts too, and a plug that is NOT seated (in the pile, hanging
+        # across an edge) is free to move.
+        from placement.floorplan import seated_plugs, with_derived_keepouts
+        try:
+            _plugs = seated_plugs(
+                with_derived_keepouts(declared_keepouts, pcb, board_path),
+                pcb, board_path)
+        except Exception as exc:                             # noqa: BLE001
+            raise PoseRefusal(
+                "cannot tell whether a moved part is a seated PCB-edge plug "
+                "(%s: %s); nothing was written" % (type(exc).__name__, exc))
+        _moved_plugs = sorted({p['reference'] for p in placements}
+                              & (_plugs - set(unlock_refs)))
+        if _moved_plugs:
+            raise PoseRefusal(
+                "%s %s a PCB-edge plug seated at its edge: its tongue's "
+                "keep-out (mating:%s) belongs to that pose, and moving it "
+                "would move the region too or leave it behind. Name it in "
+                "`unlock` in the same call if you mean it."
+                % (', '.join(_moved_plugs),
+                   'is' if len(_moved_plugs) == 1 else 'are',
+                   _moved_plugs[0]),
+                locked=_moved_plugs)
+        from placement.parser import extract_locked_refs
+        locked_now = extract_locked_refs(board_path)
+        blocked = sorted({p['reference'] for p in placements}
+                         & (locked_now - set(unlock_refs)))
+        if blocked:
+            raise PoseRefusal(
+                "%s %s locked in the board (KiCad `(locked yes)`), and a lock "
+                "is a decision, not a preference. Unlock in the same call if "
+                "you mean it: place_pose.py IN OUT unlock %s set %s ..."
+                % (', '.join(blocked), 'is' if len(blocked) == 1 else 'are',
+                   ' '.join(blocked), blocked[0]),
+                locked=blocked)
+    summary: Dict = {
+        'input': board_path,
+        'output': None if dry_run else out_path,
+        'dry_run': bool(dry_run),
+        'ops': notes,
+        'moved': [n for n in notes if n['moved']],
+        'knobs': knobs,
+        'clearance': clearance,
+        'board_edge_clearance': board_edge_clearance,
+        'track_width': track_width,
+        'snapped': None,
+        'nearest_legal': None,
+        'refused': None,
+        'forced': False,
+        # The lock INTENT rides in every summary, refusals included: it used
+        # to be added only on the two paths that reached the stamping, so a
+        # refused dry run had no `locked` key at all and a reader could not
+        # tell "asked for nothing" from "never got that far".
+        'locked': sorted(lock_refs),
+        'unlocked': sorted(unlock_refs),
+        'locked_count': None,
+        'unlocked_count': None,
+        # What a dry run WOULD have written, since the flag's own help says
+        # it reports the path.
+        'would_write': out_path,
+    }
+
+    before = grade(pcb, board_path, clearance, board_edge_clearance,
+                   declared_keepouts)
+    stage = tempfile.TemporaryDirectory(prefix='place_pose_')
+    try:
+        cand = os.path.join(stage.name, 'candidate.kicad_pcb')
+        if placements:
+            write_placed_output(board_path, cand, placements)
+        else:
+            shutil.copyfile(board_path, cand)
+        copy_siblings(board_path, cand)
+        cand_pcb = parse_kicad_pcb(cand)
+        after = grade(cand_pcb, cand, clearance, board_edge_clearance,
+                      declared_keepouts)
+        bad = worsened(before, after)
+
+        if snap and len(placements) != 1:
+            # SAID, not silently dropped: --snap/--near relocates ONE part,
+            # and a call carrying several ops has no single point to sweep
+            # around. A flag that quietly does nothing is how a caller
+            # concludes the engine considered an alternative and found none.
+            summary['snap_census'] = {
+                'skipped': 'snap applies to exactly one pose op; this call '
+                           'carries %d' % len(placements)}
+        if (bad or (strict and not is_clean(after))) and snap and len(placements) == 1:
+            # Rank around the REQUESTED point, not the part's old one: the
+            # sweep in `rank_poses` is centred on where the part sits in the
+            # board it is handed, and on the staged board that is exactly
+            # where the caller aimed. The rotation stays as asked -- a snap
+            # relocates a decision, it does not overrule it.
+            #
+            # Each candidate is RE-GRADED rather than trusted, because the
+            # ranking's own legality (`QuenchState.candidate_valid`, an AABB
+            # gate) and this verb's verdict (`grade_pad_legality`, exact
+            # geometry) are different currencies: the ranker can hand back the
+            # very pose that was refused. Walking the list until one grades
+            # clean is what makes --snap mean "a pose that passes", not "the
+            # cheapest pose the other instrument liked".
+            ref = placements[0]['reference']
+            want_rot = placements[0]['new_rotation']
+            try:
+                poses, census = snap_candidates(
+                    cand, ref, rot=want_rot, clearance=clearance,
+                    board_edge_clearance=board_edge_clearance,
+                    radius=snap_radius, step=snap_step, pcb_data=cand_pcb)
+            except PoseRefusal as exc:
+                # The refusal rides in the SAME summary every other refusal
+                # here carries -- ops, knobs and lock intent included -- so a
+                # snap that cannot rank does not print an empty document. And
+                # like every other refusal, it names no output: nothing was
+                # written.
+                summary['refused'] = exc.reason
+                summary['output'] = None
+                raise PoseRefusal(exc.reason, code=exc.code, ref=ref,
+                                  summary=summary) from exc
+            summary['nearest_legal'] = next(
+                (p for p in poses if p['rung'] == 'ranked'), None)
+            summary['nearest_legal_basis'] = (
+                'pose_score.rank_poses / QuenchState.candidate_valid -- an '
+                'AABB gate, RE-GRADED here before it is written')
+            summary['snap_census'] = census
+
+            def _grade_pose(cp):
+                """Write one candidate onto the staging board and grade it."""
+                trial = [{'reference': ref, 'new_x': cp['x'],
+                          'new_y': cp['y'], 'new_rotation': cp['rot']}]
+                write_placed_output(board_path, cand, trial)
+                copy_siblings(board_path, cand)
+                pcb_c = parse_kicad_pcb(cand)
+                g = grade(pcb_c, cand, clearance, board_edge_clearance,
+                          declared_keepouts)
+                return trial, pcb_c, g, worsened(before, g)
+
+            # TWO PHASES, each with its OWN budget, and the reason is the
+            # measured behaviour of the two rungs rather than tidiness:
+            #
+            # * the RANKED rung is pre-filtered by `candidate_valid`, so its
+            #   candidates usually pass this verb's grade too -- on esp_prog
+            #   the first one did. Cost-ordered, so its first answer can be
+            #   several mm out.
+            # * the LATTICE rung is unfiltered, and its nearest members sit
+            #   right beside a point that was just refused, so they mostly
+            #   fail. Measured: the 24 nearest candidates around C4's pose all
+            #   failed while a ranked pose 4.78 mm away passed.
+            #
+            # So: take the ranked rung's first passing pose, then spend a
+            # SECOND budget on lattice poses that are NEARER than it, and
+            # prefer one of those if it passes. A single shared cap in either
+            # order loses one of the two -- nearest-first starves the ranked
+            # rung, ranked-first starves the lattice (the reviewer's finding).
+            chosen = None
+            tried = 0
+            for cp in [p for p in poses if p['rung'] == 'ranked'][:snap_tries]:
+                tried += 1
+                trial, pcb_c, g, b = _grade_pose(cp)
+                if not b and (not strict or is_clean(g)):
+                    chosen = (cp, trial, pcb_c, g, b)
+                    break
+            limit = chosen[0]['dist_mm'] if chosen else float('inf')
+            for cp in [p for p in poses
+                       if p['rung'] == 'lattice'
+                       and (p['dist_mm'] or 0.0) < limit][:snap_tries]:
+                tried += 1
+                trial, pcb_c, g, b = _grade_pose(cp)
+                if not b and (not strict or is_clean(g)):
+                    chosen = (cp, trial, pcb_c, g, b)   # strictly nearer
+                    break
+            summary['snap_census']['candidates_tried'] = tried
+
+            if chosen is not None:
+                cand_pose, placements, cand_pcb, after, bad = chosen
+                # RE-STAGE the winner. Phase 2 may have graded other poses
+                # after it, so the staging file holds the LAST candidate
+                # tried, not the chosen one -- and the staging file is what
+                # gets promoted. (Caught by the test that compares the written
+                # board against `snapped.to`, which is the whole point of
+                # asserting on the FILE rather than on the summary.)
+                write_placed_output(board_path, cand, placements)
+                copy_siblings(board_path, cand)
+                summary['snapped'] = {
+                    'ref': ref,
+                    'to': [cand_pose['x'], cand_pose['y'], cand_pose['rot']],
+                    'dist_mm': cand_pose.get('dist_mm'),
+                    # WHICH rung answered: 'ranked' means the pose scorer and
+                    # this verb agreed, 'lattice' means only this verb's own
+                    # grade accepted it.
+                    'rung': cand_pose.get('rung'),
+                    'candidates_tried': tried}
+                for n in notes:
+                    if n['ref'] == ref:
+                        n['to'] = [round(cand_pose['x'], 4),
+                                   round(cand_pose['y'], 4), cand_pose['rot']]
+                        n['moved'] = n['to'] != n['from']
+                        n['snapped'] = True
+                summary['moved'] = [n for n in notes if n['moved']]
+            else:
+                # Nothing TRIED graded clean: put the board back to the pose
+                # the caller actually asked for, so the refusal below reports
+                # THEIR request rather than the last thing tried.
+                # `candidates_tried` against `ranked + lattice` is how a reader
+                # tells "there was nothing" from "we stopped looking".
+                write_placed_output(board_path, cand, placements)
+                copy_siblings(board_path, cand)
+                cand_pcb = parse_kicad_pcb(cand)
+                after = grade(cand_pcb, cand, clearance, board_edge_clearance,
+                              declared_keepouts)
+                bad = worsened(before, after)
+
+        # A `face` op's rotation is PREDICTED (FACE_CYCLE) and then MEASURED on
+        # the board that was actually written, because the prediction is a
+        # property of the rigid body and the engine's face rule is not exactly
+        # rotation-invariant: `face_of` takes an argmin against a box that is
+        # not square, so a CORNER pad can change sides under a rotation that
+        # carries the row. Measured on esp_prog U1 -- ONE part, rows of 9 and
+        # 10 pads, all three deltas: every multi-pad row keeps its predicted
+        # face for 8-9 of its members, and the only complete miss is a one-pad
+        # "row" at 180 degrees. That is the evidence for the prediction being
+        # usable; it is NOT evidence about small rows, and a 2-pad row measured
+        # on flat_hierarchy is often 180-degree symmetric, so its face cannot
+        # be changed by any rotation at all. Hence: predict, MEASURE on the
+        # board actually written, and say which happened.
+        findings: List[str] = []
+        face_miss = []
+        for n in [n for n in notes if n['kind'] == 'face']:
+            by = part_faces(cand_pcb, n['ref'], clearance=clearance,
+                            track_width=track_width)
+            # By INDEX, for the reason `resolve_ops` records the indices: a
+            # `{pad_number: face}` map silently answers about a DIFFERENT pad
+            # whenever a footprint repeats a number, which 196 parts across 16
+            # of this repo's 22 tracked boards do.
+            after_pads = (cand_pcb.footprints[n['ref']].pads or ())
+            face_by_ix = {}
+            for f, pads in by.items():
+                for p in pads:
+                    face_by_ix[id(p)] = f
+            counts: Dict[str, int] = {}
+            for i in n['row_pad_ix']:
+                key = ('gone' if i >= len(after_pads)
+                       else face_by_ix.get(id(after_pads[i]), 'gone'))
+                counts[key] = counts.get(key, 0) + 1
+            hit = counts.get(n['target_face'], 0)
+            n['row_landed'] = counts
+            n['row_on_target'] = [hit, len(n['row_pad_ix'])]
+            n['row_predicted_face'] = rotate_face(n['face'],
+                                                  n['rotation_delta'])
+            # A row that did not MOVE under a rotation that should have
+            # carried it is symmetric under that rotation -- common on a
+            # 2-pad passive, where `assign_faces` answers the same at 0 and
+            # 180 degrees. "landed north x2" is true and unhelpful; "this row
+            # cannot be aimed by rotating" is the fact the caller needs.
+            n['row_symmetric'] = (len(counts) == 1
+                                  and n['face'] in counts
+                                  and n['face'] != n['target_face'])
+            if hit * 2 <= len(n['row_pad_ix']):
+                face_miss.append(n)
+
+        summary.update(_legality_row(before, after))
+        for channel in ('pad_edge_before', 'pad_edge_after'):
+            summary[channel]['source'] = knobs['board_edge_clearance']['source']
+            summary[channel]['requested_mm'] = requested['board_edge_clearance']
+        # TWO keys, because one word cannot carry both facts and the wrong one
+        # was being published: `legal` used to mean "no worse than the input",
+        # so a board still carrying a pad conflict reported `legal: true`.
+        # `legal` is now the ABSOLUTE fact a reader takes it for, and
+        # `no_worse` is the relative verdict this verb ACTS on.
+        summary['no_worse'] = not bad
+        summary['legal'] = is_clean(after)
+        summary['legal_basis'] = (
+            'legal = measured pad/hole/outline channels (pad copper AND '
+            'footprint graphic copper) are clean, no two parts\' pads are '
+            'stacked (any net), and edge coverage is complete; no_worse = no '
+            'measured category worsened relative to the input board. '
+            'Neither verifies what legal_unmeasured lists.')
+        summary['legal_scope'] = list(LEGAL_SCOPE)
+        summary['legal_unmeasured'] = list(LEGAL_UNMEASURED)
+
+        if face_miss:
+            reason = '; '.join(
+                ("%s: the %s row cannot be aimed by rotating -- it reads %s "
+                 "at every rotation this measured (a 2-pad row is often "
+                 "180-degree symmetric). Move the part instead."
+                 % (n['ref'], n['face'], n['face'])) if n.get('row_symmetric')
+                else ("%s: the %s row was aimed at %s but landed %s"
+                      % (n['ref'], n['face'], n['target_face'],
+                         ', '.join('%s x%d' % (f, c)
+                                   for f, c in sorted(
+                                       n['row_landed'].items()))))
+                for n in face_miss)
+            # ACCUMULATED, not assigned: the legality block below used to
+            # overwrite this, so a forced run that missed its aim AND made the
+            # board worse shipped with only the legality finding in `refused`
+            # -- the face facts surviving nowhere a reader looks.
+            findings.append(reason)
+            summary['refused'] = '; '.join(findings)
+            if not force:
+                summary['output'] = None      # nothing was written
+                raise PoseRefusal(summary['refused'], summary=summary)
+            summary['forced'] = True
+
+        if intent is not None and not placements:
+            summary['zone_check'] = {
+                'intent': getattr(intent, 'source_path', '') or None,
+                'refs': [], 'rows': [], 'worse': [],
+                'skipped': 'no op in this call moves a part, so no zone '
+                           'can get worse'}
+        if intent is not None and placements:
+            zc = zone_check(intent, pcb, board_path, cand_pcb, cand,
+                            [p_['reference'] for p_ in placements],
+                            group_sources=group_sources, clearance=clearance,
+                            board_edge_clearance=board_edge_clearance)
+            summary['zone_check'] = zc
+            if zc.get('worse'):
+                findings.append(zc['reason'])
+                summary['refused'] = '; '.join(findings)
+                if not force:
+                    summary['output'] = None      # nothing was written
+                    raise PoseRefusal(summary['refused'], summary=summary)
+                summary['forced'] = True
+
+        if bad or (strict and not summary['legal']):
+            if summary['nearest_legal'] is None and len(placements) == 1:
+                # Name the alternative even when the caller did not ask to
+                # snap: a refusal that only says no costs the caller another
+                # round trip to find out what WOULD have worked.
+                try:
+                    poses, _d = nearest_legal(
+                        cand, placements[0]['reference'], clearance=clearance,
+                        board_edge_clearance=board_edge_clearance,
+                        radius=max(snap_radius, 2.0), step=snap_step,
+                        rotations=(placements[0]['new_rotation'],),
+                        pcb_data=cand_pcb)
+                    summary['nearest_legal'] = poses[0] if poses else None
+                    summary['nearest_legal_basis'] = (
+                        'pose_score.rank_poses / QuenchState.candidate_valid '
+                        '-- an AABB gate, NOT re-graded: a suggestion to try, '
+                        'not a pose this verb has verified')
+                    # An empty ranking has two opposite meanings and they are
+                    # reported apart (run-7 S4): "nowhere to go" and "the
+                    # knobs veto even staying put". A swallowed exception is
+                    # a THIRD, so it is named rather than folded into null.
+                    summary['nearest_legal_census'] = {
+                        'ranked': len(poses),
+                        'dropped_total': _d.get('dropped_total', 0),
+                        'dropped_in_place': _d.get('dropped_in_place', []),
+                        'dropped_by': _d.get('dropped_by', {}),   # #1113
+                        'stopped_early': bool(_d.get('stopped_early')),
+                        # The SWEEP's radius, and it is a Chebyshev box half
+                        # width, not the Euclidean bound `--radius` applies to
+                        # a snap: this list is information about what exists,
+                        # so a pose further out than the caller would accept
+                        # is still worth naming.
+                        'sweep_radius_mm': max(snap_radius, 2.0),
+                        'rotations': [placements[0]['new_rotation']]}
+                except Exception as exc:                     # noqa: BLE001
+                    summary['nearest_legal'] = None
+                    # `PoseUnrankable.why` is the bare cause: its full reason
+                    # tells the reader to run `place_pose set`, which is this
+                    # very command (#959).
+                    summary['nearest_legal_census'] = {
+                        'error': '%s: %s' % (type(exc).__name__,
+                                             getattr(exc, 'why', None)
+                                             or exc)}
+            findings.append(_refusal_reason(bad, strict, before, after,
+                                            summary))
+            summary['refused'] = '; '.join(findings)
+            if not force:
+                # A refusal writes nothing, so the summary must not name a
+                # path: the two refusal channels disagreed about this, and a
+                # machine caller cannot key on a field that means "written"
+                # on one path and "would have been" on the other.
+                summary['output'] = None
+                raise PoseRefusal(summary['refused'], summary=summary)
+            summary['forced'] = True
+
+        if dry_run:
+            # The lock keys are already in the summary with `None` counts:
+            # "0 stamped" and "not attempted" must not read alike, and every
+            # summary carries the intent whether or not this path is reached.
+            return summary
+
+        # Locks are stamped on the STAGED board and VERIFIED before anything is
+        # promoted. Two reasons, both measured:
+        #
+        # * the move guard above is lifted by the REQUEST (`locked_now -
+        #   unlock_refs`), so an unlock that silently fails would move a part
+        #   whose lock survives into the output -- exit 0, `unlocked 0`, and a
+        #   locked part at a new pose. Verifying here means a failed unlock
+        #   refuses instead, with nothing written.
+        # * promoting a finished file also removes the in-place special case:
+        #   the candidate always lives in the staging dir, so writing the
+        #   output can never be a file copying onto itself (a case-only path
+        #   difference used to raise `shutil.SameFileError` and exit 1).
+        if lock_refs or unlock_refs:
+            summary.update(apply_locks(cand, lock_refs, unlock_refs))
+            from placement.parser import extract_locked_refs
+            still = sorted(set(unlock_refs) & extract_locked_refs(cand))
+            if still:
+                reason = (
+                    "unlock did not take on %s: the board still carries "
+                    "`(locked yes)` for it after stamping, so a move guarded "
+                    "by that lock would have been written with the lock "
+                    "intact." % ', '.join(still))
+                summary['refused'] = reason
+                summary['output'] = None
+                raise PoseRefusal(reason, summary=summary, unlock_failed=still)
+
+        _promote(cand, out_path, summary, input_file=board_path,
+                 placements=placements)
+        return summary
+    finally:
+        stage.cleanup()
+
+
+def zone_check(intent, pcb, board_path, cand_pcb, cand_path, refs, *,
+               group_sources: Sequence[str] = (), clearance=None,
+               board_edge_clearance=None) -> Dict:
+    """`zone_containment` for the moved refs, on the input and on the
+    candidate (#959, #998). Run 29 wrote `Ref*` out of its own zone plan at
+    lap 10 and learned it only from the next grade.
+
+    WORSE, never "outside": this verb's legality verdict is relative for the
+    reason its module docstring gives, and a part on an unplaced pile starts
+    outside every zone -- an absolute gate would refuse the moves that bring
+    it home. So a row is worse when the candidate has an ERROR-severity
+    finding and it sits further out than the input did (0 when the input was
+    inside tolerance). A WARN row is reported, never refused: an author who
+    demoted `zone_containment` said the zone is advisory. A zone smaller than
+    the courtyard is graded on the part centre on both sides, as the rule
+    grades it; a rotation that changes which way a part is graded compares
+    the two readings as they come."""
+    from placement import floorplan as _fp
+    kw = dict(group_sources=group_sources, clearance=clearance,
+              board_edge_clearance=board_edge_clearance)
+    doc: Dict = {'intent': getattr(intent, 'source_path', '') or None,
+                 'refs': sorted(set(refs)), 'rows': [], 'worse': []}
+    try:
+        was = _fp.zone_containment_of(intent, pcb, board_path, refs, **kw)
+        now = _fp.zone_containment_of(intent, cand_pcb, cand_path, refs, **kw)
+    except _fp.UntrustworthyOutline as exc:
+        doc['unmeasured'] = ('the board outline is not one the grader may '
+                             'rely on (%s), so zone_containment cannot run '
+                             'here either' % exc)
+        return doc
+    for key in sorted(set(was) | set(now)):
+        a, b = now.get(key), was.get(key)
+        v = a or b
+        row = {'ref': key[0], 'block': key[1],
+               'zone': v.expected.get('zone'),
+               'tolerance_mm': v.expected.get('tolerance_mm'),
+               'outside_mm_before': b.measured['outside_mm'] if b else 0.0,
+               'outside_mm_after': a.measured['outside_mm'] if a else 0.0,
+               'axis': a.measured.get('axis') if a else None,
+               'severity': a.severity if a else None}
+        doc['rows'].append(row)
+        if (a is not None and a.severity == _fp.ERROR
+                and row['outside_mm_after'] > row['outside_mm_before'] + 1e-9):
+            doc['worse'].append(row)
+    if doc['worse']:
+        doc['reason'] = '; '.join(
+            "%s would sit %.2fmm past the %s edge of block %r (zone %s, "
+            "tolerance %gmm; it was %s) -- the intent's zone_containment is "
+            "an ERROR. Move it inside the zone, change the plan, or pass "
+            "--force" % (
+                r['ref'], r['outside_mm_after'], r['axis'], r['block'],
+                r['zone'], r['tolerance_mm'],
+                ('%.2fmm past it' % r['outside_mm_before'])
+                if r['outside_mm_before'] else 'inside it')
+            for r in doc['worse'])
+    return doc
+
+
+def _promote(staged: str, out_path: str, summary: Optional[Dict] = None, *,
+             input_file: Optional[str] = None,
+             placements: Sequence[Dict] = ()) -> None:
+    """Move a finished staged board and its siblings onto the output path.
+
+    Stage all files and back up prior destinations before replacing anything.
+    Roll back completed replacements on failure. If restoration itself fails,
+    report the affected paths and retain backups instead of claiming atomicity.
+    Destination-only requirements cannot join a board graded without them.
+
+    PROVENANCE IS RECORDED HERE, against `out_path` (#960). The candidate was
+    written in a temp dir, and `record_write` finds the regime by walking up
+    from the path it is handed -- so the writer's own call, made for the temp
+    path, found no regime, returned None and refused nothing, and this copy
+    then landed the board in an armed work dir with no row. `input_file` is the
+    board `placements` were resolved against: a row's `refs_moved` is the
+    input diffed against the placements, so recording against the staged
+    candidate would claim nothing at all.
+    """
+    if placements and input_file is None:
+        raise TypeError("_promote needs input_file when placements are given: "
+                        "the provenance row diffs the placements against it")
+    from copy_board import SIBLING_EXTS
+    from placement import provenance
+    src_base = os.path.splitext(staged)[0]
+    dst_base = os.path.splitext(out_path)[0]
+    pairs = [(staged, out_path)]
+    extra_requirements = [dst_base + ext for ext in SIBLING_EXTS
+                          if ext != '.kicad_prl' and os.path.exists(dst_base + ext)
+                          and not os.path.isfile(src_base + ext)]
+    if extra_requirements:
+        doc = dict(summary or {})
+        reason = (
+            'output has requirement siblings absent from the graded input: %s. '
+            'Use a fresh output path or reconcile these declarations with the input.'
+            % ', '.join(extra_requirements))
+        doc.update(output=None, refused='; '.join(x for x in (doc.get('refused'), reason) if x))
+        raise PoseRefusal(doc['refused'], code=2, summary=doc)
+    for ext in SIBLING_EXTS:
+        if os.path.isfile(src_base + ext):
+            pairs.append((src_base + ext, dst_base + ext))
+    # BEFORE the first copy, so an armed work dir with no declared lever
+    # refuses with the destination untouched. And before the replace for a
+    # second reason: on an in-place write `input_file` IS `out_path`, and the
+    # diff is only meaningful while that file still holds the incumbent board.
+    provenance.record_write(input_file or staged, out_path, list(placements),
+                            pending=True)
+    staged_tmps = []
+    backups = {}
+    replaced = []
+    recovery_paths = []
+    try:
+        for _src, dst in pairs:
+            if os.path.lexists(dst) and (not os.path.isfile(dst) or os.path.islink(dst)):
+                raise OSError('destination is not a regular file: %s' % dst)
+        for src, dst in pairs:
+            tmp = dst + '.krt-tmp'
+            shutil.copyfile(src, tmp)
+            staged_tmps.append((tmp, dst))
+        for _src, dst in pairs:
+            backups[dst] = None
+            if os.path.exists(dst):
+                fd, backup = tempfile.mkstemp(prefix='.krt-backup-', dir=os.path.dirname(
+                    os.path.abspath(dst)))
+                os.close(fd)
+                backups[dst] = backup
+                shutil.copy2(dst, backup)
+        # NOT `pop()` before the replace: a failing `os.replace` would then
+        # have already removed its own tmp from the cleanup list, and the file
+        # it could not move was left beside the output. Remove only on
+        # success, so `finally` still owns everything that did not land.
+        for entry in list(reversed(staged_tmps)):
+            os.replace(entry[0], entry[1])
+            replaced.append(entry[1])
+            staged_tmps.remove(entry)
+        # Inside the `try`: a ledger that cannot be appended to rolls the board
+        # back with everything else, so no board lands without its row.
+        provenance.commit_write(out_path)
+    except OSError as exc:
+        rollback_errors = []
+        for dst in reversed(replaced):
+            try:
+                backup = backups[dst]
+                if backup is None:
+                    os.remove(dst)
+                else:
+                    os.replace(backup, dst)
+                    backups[dst] = None
+            except OSError as restore_error:
+                rollback_errors.append({'path': dst, 'error': str(restore_error),
+                                        'backup': backups[dst]})
+                if backups[dst]:
+                    recovery_paths.append(backups[dst])
+        reason = 'cannot write %s: %s. ' % (out_path, exc)
+        if rollback_errors:
+            reason += ('Output partially changed; restoration failed for %s. '
+                       'Retained backup paths are listed in rollback_errors.'
+                       % ', '.join(row['path'] for row in rollback_errors))
+        else:
+            reason += 'Nothing was written: previous output files were preserved or restored.'
+        doc = dict(summary or {})
+        # The grade this run already did is kept, and any finding it was
+        # forced past is kept WITH the write error rather than replaced by it:
+        # a summary that reports only the last thing to go wrong is how a
+        # waived finding disappears.
+        doc['refused'] = '; '.join(x for x in (doc.get('refused'), reason) if x)
+        doc['output'] = None
+        doc['output_state'] = 'partial' if rollback_errors else 'unchanged'
+        doc['rollback_errors'] = rollback_errors
+        raise PoseRefusal(reason, code=2, summary=doc)
+    finally:
+        # A no-op after a commit. Otherwise the write did not land, and its row
+        # must not stay pending for some later commit of this path to pick up.
+        provenance.discard_write(out_path)
+        for backup in backups.values():
+            if backup and backup not in recovery_paths:
+                try:
+                    os.chmod(backup, os.stat(backup).st_mode | stat.S_IWUSR)
+                    os.remove(backup)
+                except OSError:
+                    pass
+        for tmp, _dst in staged_tmps:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def _refusal_reason(bad, strict, before, after, summary) -> str:
+    if bad:
+        # A pair list is named by its NEW pairs, not dumped (a pile has
+        # dozens of inherited ones).
+        parts = ', '.join(
+            ('%s new: %s' % (k, ', '.join(new_pairs(before, after, k)))
+             if k in PAIR_KEYS else
+             '%s %s -> %s' % (k, before.get(k), after.get(k)))
+            for k in bad)
+        # NO verdict verb in the sentence. It used to end "Refused rather
+        # than written", and `--force` reprints this text on a run that WROTE
+        # -- so the finding contradicted the outcome in its own last clause.
+        # What happened is the caller's line to print; this is the finding.
+        reason = ("this pose makes the board's placement legality WORSE (%s); "
+                  "the board's inherited violations are not counted against you."
+                  % parts)
+        if any(k.startswith('pad_stack_') for k in bad):
+            reason += (" A pad stack is two parts' pad copper overlapping on "
+                       "a shared side, whatever the nets (check_assembly's "
+                       "pad_intersection, never waivable); check_assembly "
+                       "grades a board with one NOT BUILDABLE.")
+    else:
+        reason = ("--strict-legal was asked for and the board is not clean at "
+                  "this pose (%s)" % ', '.join(
+                      '%s %s' % (k, after.get(k)) for k in LEGALITY_KEYS
+                      if after.get(k)))
+    nl = summary.get('nearest_legal')
+    if nl and not bad:
+        # --strict-legal is a WHOLE-BOARD condition, and this candidate is
+        # about ONE part: moving there can leave every other conflict in
+        # place, so it is offered as a next step and not as a fix.
+        reason += (" The pose ranker's nearest candidate for this part is "
+                   "x=%g y=%g rot=%g (%.3f mm away), but --strict-legal is a "
+                   "condition on the WHOLE board, so that pose need not "
+                   "satisfy it."
+                   % (nl['x'], nl['y'], nl['rot'], nl.get('dist_mm') or 0.0))
+    elif nl:
+        reason += (" The pose ranker's nearest candidate is x=%g y=%g "
+                   "rot=%g (%.3f mm away) -- try it with --snap, which "
+                   "re-grades before writing."
+                   % (nl['x'], nl['y'], nl['rot'], nl.get('dist_mm') or 0.0))
+    elif summary.get('snap_census', {}).get('dropped_in_place'):
+        import pose_score
+        reason += (" No legal pose was found nearby, and the census shows the "
+                   "knobs veto the part's own spot too -- check the resolved "
+                   "clearance against the board's floor before reading this "
+                   "as 'the part is stuck'. Vetoed by "
+                   + pose_score.veto_phrase(
+                       summary['snap_census'].get('dropped_by') or {})
+                   + ".")
+    return reason

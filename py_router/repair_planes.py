@@ -25,11 +25,16 @@ Usage:
 """
 from __future__ import annotations
 
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': ['routing', 'combined'], 'kind': 'actor'}
+
 import env_knobs
 import sys
 import os
 import math
 import argparse
+import json
 from dataclasses import replace
 from typing import List, Tuple, Dict, Optional, Set
 
@@ -42,11 +47,14 @@ from startup_checks import exit_on_error_if_main
 # (#457 item 3).
 exit_on_error_if_main(__name__)
 
-from kicad_parser import parse_kicad_pcb, PCBData, Segment, Via, KICAD_10_MIN_VERSION, pad_is_plated_through
-from kicad_writer import generate_segment_sexpr, generate_gr_line_sexpr, generate_via_sexpr
+from kicad_parser import parse_kicad_pcb, PCBData, Segment, Via, pcb_uses_name_nets, pad_is_plated_through
+from kicad_writer import (generate_segment_sexpr, generate_gr_line_sexpr,
+                          generate_via_sexpr, via_net_name)
 from routing_config import GridRouteConfig
 from plane_io import extract_zones
-from plane_region_connector import route_disconnected_regions, build_base_obstacles
+from plane_region_connector import (route_disconnected_regions,
+                                    find_disconnected_zone_regions,
+                                    build_base_obstacles)
 import plane_pad_tap
 from plane_pad_tap import (find_unconnected_plane_pads, tap_pad_with_escalation,
                            SharedViaMaps)
@@ -54,11 +62,27 @@ from plane_component_oracle import PlaneComponentOracle
 from plane_blocker_detection import find_route_blocker_from_frontier, find_via_position_blocker
 from terminal_colors import GREEN, RED, YELLOW, RESET
 import routing_defaults as defaults
+from pcb_modification import bump_copper_epoch
 import re
 
 # Outcome of the end-of-run self-reconnect of rip-blocker-nets casualties
 # (#347); read by main() for the JSON_SUMMARY. None = no reconnect ran.
 LAST_RIPPED_RECONNECT: Optional[Dict] = None
+
+# Casualty nets that ship STILL OPEN -- ripped to clear a corridor, not
+# reconnected, and not restorable. Run-7 finding A10: this state reached a red
+# log line and nothing else. The JSON_SUMMARY carried counts without names, and
+# main() returned None so the process exited 0 -- a chain step that silently
+# consumed two nets was caught only because a later board_score happened to be
+# read by a human. Names here, and an exit code from main().
+LAST_RIPPED_STILL_OPEN: List[str] = []
+LAST_RIPPED_CUSTODY: Optional[Dict] = None
+
+# The class map the last repair_planes() run resolved (after its
+# --clearance-ceiling clamp), keyed by net NAME (#1137), for main()'s oracle
+# leg: the oracle re-parses its board, so an id-keyed map could land on other
+# nets. {} = no class map (the flat clearance).
+LAST_NET_CLEARANCES_BY_NAME: Dict[str, float] = {}
 
 
 def plane_tap_launch_layers(pad, zone_layers, routing_layers) -> List[str]:
@@ -341,6 +365,23 @@ except ValueError:
     _RECONNECT_GHOST_RADIUS = 1.0
 
 
+def _sub_run_kwargs(route_knobs, no_bga_zone, max_iterations, ghost_kwargs):
+    """batch_route kwargs a nested reroute sub-run takes from its parent.
+
+    The route step's own knobs (search, soft costs, keepouts, BGA zones, rip-up
+    policy, keep-away), so a casualty the finalize reconnects is routed by the
+    rules the step it belongs to routed by -- the sub-runs used to fall back to
+    batch_route's defaults, a different via cost, net order and BGA policy.
+    Without a parent (the standalone CLI) the engine's own BGA and iteration
+    settings stand in. The ghost kwargs win: they carry their own avoidance
+    cost for the pending casualties' corridors."""
+    kw = dict(route_knobs or {})
+    kw.setdefault('disable_bga_zones', [] if no_bga_zone else None)
+    kw.setdefault('max_iterations', max_iterations)
+    kw.update(ghost_kwargs)
+    return kw
+
+
 def _ghost_kwargs(corridor_ghosts, batch_net_ids):
     """Extra batch_route kwargs pricing pending casualties' corridors
     (#540 item 2), or {} when the arm is off / nothing is pending. The
@@ -386,6 +427,12 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
     non-colliding copper is still given back, so #329's zero-copper nets do
     not come back either.
     Returns a successful TapResult, or None."""
+    # #658 power discipline: taps for power nets honor the per-net layer
+    # economics (KICAD_POWER_LAYER_COSTS); no-op when the knob is off or
+    # the net is not a power net.
+    from global_plan import power_layer_config
+    tap_config = power_layer_config(tap_config, tap_config, net_id)
+
     failure = first_failure
     ripped_local = []  # (net_id, segments, vias) in rip order
     ripped_ids_local = set()
@@ -454,7 +501,8 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
             corridor_ghosts=corridor_ghosts,
             # This tap's own rips freed this corridor FOR the tap: their
             # ghosts must not repel it.
-            ghost_exclude_ids=frozenset(ripped_ids_local))
+            ghost_exclude_ids=frozenset(ripped_ids_local),
+            plane_tap=True)  # #1179
         if result.success:
             # Collision-checked restore on SUCCESS too (#329): give back every
             # ripped net whose copper does not conflict with the NEW tap
@@ -474,14 +522,18 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
                           'end': (s.end_x, s.end_y),
                           'width': s.width, 'layer': s.layer}
                     if _restored_piece_collides(sd, None, new_vias, new_segs,
-                                                via_size, clr):
+                                                via_size, clr, config=tap_config,
+                                                piece_net=blocker,
+                                                plane_net=net_id):
                         dropped += 1
                     else:
                         keep_segs.append(s)
                 for v in rvias:
                     vd = {'x': v.x, 'y': v.y, 'size': v.size}
                     if _restored_piece_collides(None, vd, new_vias, new_segs,
-                                                via_size, clr):
+                                                via_size, clr, config=tap_config,
+                                                piece_net=blocker,
+                                                plane_net=net_id):
                         dropped += 1
                     else:
                         keep_vias.append(v)
@@ -547,11 +599,11 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
             keep_segs = [s for s in rsegs
                          if not _saved_route_collides(
                              {'new_segments': [s], 'new_vias': []},
-                             pcb_data, _own, clr)]
+                             pcb_data, _own, clr, config=tap_config)]
             keep_vias = [v for v in rvias
                          if not _saved_route_collides(
                              {'new_segments': [], 'new_vias': [v]},
-                             pcb_data, _own, clr)]
+                             pcb_data, _own, clr, config=tap_config)]
             dropped = (len(rsegs) - len(keep_segs)) + (len(rvias) - len(keep_vias))
             dropped += drop_orphan_restore_pieces(
                 keep_segs, keep_vias, blocker, pcb_data)
@@ -698,6 +750,8 @@ def auto_detect_zones(
     return zone_pairs
 
 
+
+
 def repair_planes(
     input_file: str,
     output_file: str,
@@ -730,6 +784,7 @@ def repair_planes(
     reroute_ripped_nets: bool = False,
     power_nets: Optional[List[str]] = None,
     power_nets_widths: Optional[List[float]] = None,
+    layer_costs: Optional[List[float]] = None,
     no_bga_zone: bool = False,
     progress_callback=None,
     cancel_check=None,
@@ -742,6 +797,17 @@ def repair_planes(
     # clearance. None (default) auto-reads the persisted .kicad_pro record;
     # explicit values win (the #562 finalize forwards its resolved value).
     same_net_pad_clearance: Optional[float] = None,
+    # #1135: the .kicad_dru track-to-track rules ({obstacle_net_id: mm}).
+    # None (default) auto-reads the board's own; an explicit map wins -- the
+    # #562 finalize forwards its run's, as it does layer_clearances, because
+    # the output's .kicad_dru sibling does not exist yet mid-run.
+    track_clearances: Optional[dict] = None,
+    # The route step's own search / soft-cost / keepout / keep-away knobs
+    # ({batch_route kwarg: value}), forwarded into the nested batch_route
+    # sub-runs that reconnect rip casualties and join regions, under each
+    # sub-run's own explicit settings. The #562 finalize passes its run's;
+    # None (the standalone CLI) = batch_route's defaults.
+    route_knobs: Optional[dict] = None,
 ) -> Tuple[int, int]:
     """
     Route between disconnected regions in power plane zones.
@@ -793,6 +859,8 @@ def repair_planes(
     # the CLI passes a real default (never None), so this is a no-op there.
     if zone_clearance is None:
         zone_clearance = clearance if clearance is not None else defaults.PLANE_ZONE_CLEARANCE
+    global LAST_NET_CLEARANCES_BY_NAME
+    LAST_NET_CLEARANCES_BY_NAME = {}   # #1137: this run's, set below
     from route import _dump_engine_config
     _dump_engine_config('repair_planes', dict(locals()))
     # Board-setup copper-to-edge rule (#338): engine-side so the GUI planes
@@ -840,6 +908,11 @@ def repair_planes(
     # (nano_eeprom_prog: CLI +0 segments, GUI +30, both grading clean).
     _orig_segments = list(pcb_data.segments or [])
     _orig_vias = list(pcb_data.vias or [])
+    # #980: the restore test's input copper. Inside route.py's finalize the
+    # board is the route step's own and already carries the step's mark.
+    if getattr(pcb_data, '_input_copper', None) is None:
+        from rip_up_reroute import mark_input_copper
+        mark_input_copper(pcb_data)
 
     # Route trace (#482): plane repair adds join tracks/vias and rips blockers
     # OUTSIDE the copper choke points, so record it by snapshot-diffing pcb_data
@@ -878,6 +951,15 @@ def repair_planes(
         max_y - board_edge_clearance
     )
 
+    # Auto-detect routing layers if not specified. Resolved BEFORE the config,
+    # which carries them (#1185): get_layer_costs() iterates config.layers, so
+    # the 2-layer default turned a 4-layer chain's --layer-costs into two
+    # entries and In2's -1 never reached the region joins.
+    if routing_layers is None:
+        routing_layers = pcb_data.board_info.copper_layers
+        if not routing_layers:
+            routing_layers = ['F.Cu', 'B.Cu']  # Fallback
+
     # Build routing config
     config = GridRouteConfig(
         track_width=track_width,
@@ -885,9 +967,24 @@ def repair_planes(
         via_size=via_size,
         via_drill=via_drill,
         grid_step=grid_step,
+        layers=list(routing_layers),
         board_edge_clearance=board_edge_clearance,
         ripup_blocker_select=ripup_blocker_select
     )
+    # #658: the finalize/repair legs previously routed with UNIFORM layer
+    # costs -- the chain's --layer-costs never reached this engine, so
+    # welds/taps freely traveled layers the whole run priced up (measured:
+    # 100+mm of rail copper on the GND plane layer at an effective 36x
+    # main-pass price). Forward the chain's costs; power nets additionally
+    # get the KICAD_POWER_LAYER_COSTS per-net override at the tap sites.
+    if layer_costs:
+        config.layer_costs = list(layer_costs)
+    if power_nets and power_nets_widths:
+        _name2id = {n.name: n.net_id for n in pcb_data.nets.values()} \
+            if pcb_data is not None else {}
+        config.power_net_widths = {
+            _name2id[nm]: w for nm, w in zip(power_nets, power_nets_widths)
+            if nm in _name2id}
     # #581: keep repair vias (pad taps, region joins, reconnects) off same-net
     # pads when the constraint is active. Explicit kwarg wins (route.py's #562
     # finalize forwards its resolved value -- the output's .kicad_pro sibling
@@ -912,8 +1009,15 @@ def repair_planes(
     # it after batch_route returns, so an auto-read here would find NOTHING
     # and tap/join copper would route blind to the board's layer rules. Same
     # reasoning as the reconciliation sub-run's forwarded map.
-    from kicad_dru import install_layer_clearances
+    from kicad_dru import install_layer_clearances, install_track_clearances
     install_layer_clearances(config, layer_clearances, input_file, pcb_data)
+    # #1135: and the track-to-track rules, as route.py installs them -- a
+    # region join or a pad tap is a track like any other, and a board's
+    # `A.Type == 'track' && B.Type == 'track'` rule binds it too (raise-only
+    # on seg-vs-seg pairs; the effective map over the plane nets this run
+    # repairs). Same precedence as the layer map above.
+    install_track_clearances(config, track_clearances, input_file, pcb_data,
+                             routed_net_ids=net_ids)
 
     # Cross-class clearance (#434): the repair step's own copper (region joins,
     # pad taps) and its ripped-blocker reconnects were priced at the uniform
@@ -946,6 +1050,7 @@ def repair_planes(
                           for nid, c in net_clearances.items()}
     if net_clearances:
         config.net_clearances = dict(net_clearances)
+    LAST_NET_CLEARANCES_BY_NAME = config.net_clearances_by_name(pcb_data.nets)
     # Publish the SAME map to the fill model (#483 item 5): KiCad refills a
     # zone at max(zone clearance, pairwise netclass), so on honor-classes
     # chains a looser foreign class carves copper the model would otherwise
@@ -955,11 +1060,6 @@ def repair_planes(
     from plane_fill_model import set_board_net_clearances
     set_board_net_clearances(pcb_data, net_clearances)
 
-    # Auto-detect routing layers if not specified
-    if routing_layers is None:
-        routing_layers = pcb_data.board_info.copper_layers
-        if not routing_layers:
-            routing_layers = ['F.Cu', 'B.Cu']  # Fallback
     # NOTE: unlike batch_route, routing_layers here directly selects layers
     # region joins may PLACE copper on (not cost-driven), so no full-stack
     # append -- the default above is already the whole board, and the
@@ -1073,6 +1173,27 @@ def repair_planes(
             unique_nets[net_id] = (net_name, set())
         unique_nets[net_id][1].add(plane_layer)
 
+    # Run-6 A5, warn-only here (MOVED: this ran BEFORE unique_nets existed,
+    # so it raised NameError into the bare `except` below on every call and
+    # the warning never once fired) (the repair legitimately runs mid-loop on
+    # boards with known opens): every tap via this step adds shrinks a bare
+    # pad's escape channel further, and tap fields are not rippable copper.
+    try:
+        from check_connected import bare_pad_nets
+        _bare = bare_pad_nets(pcb_data, exclude_net_ids=set(unique_nets))
+        if _bare:
+            _bn = sorted(pcb_data.nets[i].name for i in _bare
+                         if i in pcb_data.nets)
+            print(f"  WARNING: {len(_bare)} net(s) still have >=2 pads and "
+                  f"ZERO copper ({', '.join(_bn[:6])}"
+                  f"{', ...' if len(_bn) > 6 else ''}) -- this step's tap "
+                  f"vias will crowd their escape channels; route them first "
+                  f"if their pads must connect (the pour is a one-way door "
+                  f"for bare pads).")
+    except Exception:
+        pass
+
+
     # --reroute-ripped-nets is deprecated (issue #141 reverted). This step used to
     # rip signal blockers, route plane/pad repairs into the freed space, then
     # re-route the ripped nets -- but a ripped net that FAILED to re-route had its
@@ -1165,8 +1286,8 @@ def repair_planes(
         their vacated corridors (the window-shrink half of the #480 knob).
         Successes leave ripped_net_ids -- their new copper enters the write
         list here; failures stay queued for the end-of-run reconnect and its
-        custody. Mirrors the end-of-run batch (same batch_route call, same
-        #513 width preservation, same #338/#441 edge floor)."""
+        custody. Mirrors the end-of-run batch: same batch_route call, same
+        #513 width preservation, and same #338/#441 edge floor."""
         _names = [pcb_data.nets[_n].name for _n in _rip_ids
                   if _n in pcb_data.nets]
         if not _names:
@@ -1194,16 +1315,19 @@ def repair_planes(
                         continue
                     _pn.append(_cn)
                     _pw.append(_cw)
+            # The repair edited pcb_data's copper in place: invalidate what was
+            # cached against it before the sub-run looks anything up (#1146 audit).
+            bump_copper_epoch(pcb_data)
             _ok, _fail, _t, _rdata = batch_route(
                 input_file, "", _names,
                 layers=routing_layers,
                 track_width=track_width, clearance=clearance,
                 via_size=via_size, via_drill=via_drill,
-                grid_step=grid_step, max_iterations=max_iterations,
+                grid_step=grid_step,
                 power_nets=_pn or None, power_nets_widths=_pw or None,
                 board_edge_clearance=_edge,
-                disable_bga_zones=([] if no_bga_zone else None),
                 net_clearances=net_clearances,
+                layer_costs=(list(layer_costs) if layer_costs else None),  # #658 finalize sub-runs honor chain layer economics
                 hole_to_hole_clearance=hole_to_hole_clearance,
                 return_results=True, pcb_data=pcb_data,
                 # #540 item 2: price the OTHER pending casualties' corridors
@@ -1214,7 +1338,9 @@ def repair_planes(
                 # 57 levels on schoko, ~7 GB before the cap killed it). This
                 # sub-run is a repair DETAIL, not a chain step -- never finalize.
                 final_reconcile=False,
-                **_ghost_kwargs(corridor_ghosts, _rip_ids))
+                **_sub_run_kwargs(route_knobs, no_bga_zone, max_iterations,
+                                  _ghost_kwargs(corridor_ghosts, _rip_ids)))
+
             for _r in _rdata.get('results', []):
                 for _s in (_r.get('new_segments') or []):
                     all_new_segments.append(
@@ -1298,6 +1424,24 @@ def repair_planes(
 
         # Pick first zone layer as "primary" (for plane_layer_idx in routing)
         primary_layer = sorted(net_zone_layers)[0]
+        # #612 gap 7: fill-model discovery is gated on the PRIMARY layer's
+        # model, so an unmodelable first layer dropped the whole net to the
+        # raster fallback even when the other poured layers modeled fine.
+        # Prefer a layer whose model built (get_fill_models is cached, so
+        # this costs no extra model builds).
+        try:
+            from plane_fill_model import get_fill_models as _gfm612
+            _mbl612 = _gfm612(pcb_data, net_id)
+            if _mbl612 and not _mbl612.get(primary_layer):
+                _modeled = [l for l in sorted(net_zone_layers)
+                            if _mbl612.get(l)]
+                if _modeled:
+                    print(f"  (#612: {primary_layer} has no usable fill "
+                          f"model; using {_modeled[0]} as the primary "
+                          f"analysis layer)")
+                    primary_layer = _modeled[0]
+        except Exception:
+            pass
 
         layers_str = ", ".join(sorted(net_zone_layers))
         clearances_str = ", ".join(f"{l}={zone_clearances.get(l, zone_clearance)}mm" for l in sorted(net_zone_layers))
@@ -1382,8 +1526,8 @@ def repair_planes(
                         distant_trace_radius=distant_radius,
                         shared_via_maps=shared_maps,
                         plane_oracle=plane_oracle,
-                        corridor_ghosts=corridor_ghosts
-                    )
+                        corridor_ghosts=corridor_ghosts,
+                        plane_tap=True)  # #1179
                     _rips_before = len(ripped_net_ids)
                     if not result.success and rip_blocker_nets:
                         if not _allow_rip:
@@ -1538,7 +1682,13 @@ def repair_planes(
             cancel_check=cancel_check
         )
 
-        if routes_added > 0:
+        def _absorb_join(region_segments, region_vias, routes_added,
+                         route_paths):
+            """Book a route_disconnected_regions result: write-lists, totals,
+            debug lines, and pcb_data (so subsequent nets/joins see the new
+            copper as obstacles). Shared by the primary join call and the
+            #611 per-layer follow-ups."""
+            nonlocal total_routes, total_regions, total_vias
             all_new_segments.extend(region_segments)
             all_new_vias.extend(region_vias)
             total_routes += routes_added
@@ -1552,7 +1702,6 @@ def repair_planes(
                         p1, p2 = route_path[i], route_path[i + 1]
                         all_debug_lines.append(generate_gr_line_sexpr(p1, p2, 0.1, "User.4"))
 
-            # Add segments to pcb_data so subsequent nets see them as obstacles
             for s in region_segments:
                 start = s['start']
                 end = s['end']
@@ -1564,7 +1713,6 @@ def repair_planes(
                 _prov_seg(s['net_id'], s['layer'], start[0], start[1],
                           end[0], end[1], 'region-join')
 
-            # Add vias to pcb_data so subsequent nets see them as obstacles
             for v in region_vias:
                 pcb_data.vias.append(Via(
                     x=v['x'], y=v['y'],
@@ -1575,6 +1723,49 @@ def repair_planes(
                 _prov_via(v['net_id'], v['x'], v['y'], 'region-join')
             from route_trace import plane_capture as _plane_capture
             _plane_capture(pcb_data, 'plane-join', net_id, net_name)  # individual region-join frame
+
+        if routes_added > 0:
+            _absorb_join(region_segments, region_vias, routes_added,
+                         route_paths)
+
+        # #611: kept islands on NON-primary poured layers cannot be joined
+        # from the primary call -- its join seeds and fill-material checks
+        # are plane_layer-scoped -- so re-run discovery+join once per
+        # flagged layer with THAT layer primary. This is the cheap, exact
+        # fix; the post-write kicad-cli oracle stays the last resort. The
+        # kept island becomes an ordinary primary-layer orphan region in the
+        # follow-up (join-eligible at any size >= the 1 mm^2 kept floor).
+        _kept611 = getattr(find_disconnected_zone_regions,
+                           '_last_kept_unjoined', (0, 0.0, (), ()))
+        for _flayer in [l for l in _kept611[2] if l != primary_layer]:
+            if cancel_check and cancel_check():
+                break
+            print(f"  #611 follow-up join with {_flayer} primary "
+                  f"(kept island(s) reported there):")
+            _fsegs, _fvias, _fadd, _fpaths, _ = route_disconnected_regions(
+                net_id=net_id,
+                net_name=net_name,
+                plane_layer=_flayer,
+                zone_bounds=zone_bounds,
+                pcb_data=pcb_data,
+                config=config,
+                base_obstacles=base_obstacles,
+                layer_map=layer_map,
+                zone_clearance=max_zone_clearance,
+                max_track_width=max_track_width,
+                min_track_width=min_track_width,
+                track_via_clearance=track_via_clearance,
+                hole_to_hole_clearance=hole_to_hole_clearance,
+                analysis_grid_step=analysis_grid_step,
+                max_iterations=max_iterations,
+                verbose=verbose,
+                zone_layers=net_zone_layers,
+                zone_clearances=zone_clearances,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                split_report=False)
+            if _fadd > 0:
+                _absorb_join(_fsegs, _fvias, _fadd, _fpaths)
 
     # Partial restores: emit kept pieces as new copper and strip the nets'
     # input copper (replacement semantics -- same as route_planes b2557cd).
@@ -1667,7 +1858,7 @@ def repair_planes(
                 if not _osegs4 and not _ovias4:
                     continue
                 if _src517({'new_segments': _osegs4, 'new_vias': _ovias4},
-                           pcb_data, [_cid], clearance):
+                           pcb_data, [_cid], clearance, config=config):
                     _rf['blocked'] += 1
                     continue
                 pcb_data.segments.extend(_osegs4)
@@ -1734,19 +1925,22 @@ def repair_planes(
                         print(f"  Preserving routed width {_cw}mm for ripped "
                               f"net {_cn} across the reconnect (this run's "
                               f"default is {track_width}mm)")
+                # The repair edited pcb_data's copper in place: invalidate what was
+                # cached against it before the sub-run looks anything up (#1146 audit).
+                bump_copper_epoch(pcb_data)
                 _ok, _fail, _t, _rdata = batch_route(
                     input_file, "", _cnames,
                     layers=routing_layers,
                     track_width=track_width, clearance=clearance,
                     via_size=via_size, via_drill=via_drill,
-                    grid_step=grid_step, max_iterations=max_iterations,
+                    grid_step=grid_step,
                     power_nets=_pn or None, power_nets_widths=_pw or None,
                     board_edge_clearance=_edge,
-                    disable_bga_zones=([] if no_bga_zone else None),
                     # #434: forward the map resolved from the ORIGINAL input's
                     # project (batch_route's own auto-read would find no
                     # netclasses next to a not-yet-written output).
                     net_clearances=net_clearances,
+                    layer_costs=(list(layer_costs) if layer_costs else None),  # #658 finalize sub-runs honor chain layer economics
                     hole_to_hole_clearance=hole_to_hole_clearance,
                     # #527: forward progress/cancel -- a multi-net reconnect
                     # used to run minutes behind one static message.
@@ -1765,7 +1959,8 @@ def repair_planes(
                     # 57 levels on schoko, ~7 GB before the cap killed it). This
                     # sub-run is a repair DETAIL, not a chain step -- never finalize.
                     final_reconcile=False,
-                    **_ghost_kwargs(corridor_ghosts, _casualties))
+                    **_sub_run_kwargs(route_knobs, no_bga_zone, max_iterations,
+                                      _ghost_kwargs(corridor_ghosts, _casualties)))
 
                 def _sd(_s):
                     return {'start': (_s.start_x, _s.start_y),
@@ -1886,7 +2081,7 @@ def repair_planes(
                       from rip_up_reroute import _saved_route_colliders
                       _culprits = _saved_route_colliders(
                           {'new_segments': _osegs, 'new_vias': _ovias},
-                          pcb_data, [_cid], clearance)
+                          pcb_data, [_cid], clearance, config=config)
                       if _culprits:
                           print(f"  {YELLOW}REFUSED restore of {_nm}: copper "
                                 f"routed meanwhile occupies its corridor; "
@@ -1911,6 +2106,53 @@ def repair_planes(
                           print(f"  {YELLOW}  occupied by: "
                                 f"{'; '.join(_parts)}{RESET}")
                           _cust['refused'] += 1
+                          # #1156 (#468, #655): refused WHOLE, but the escape
+                          # stub that still clears comes back, so the net does
+                          # not ship with less copper than it started with.
+                          # glasgow's /IO_Banks/U5 was ripped whole for one
+                          # +3V3 tap, its reconnect failed, this refusal fired,
+                          # and it shipped with its BGA via-in-pad escape gone.
+                          # Each stub item is tested on its own against the
+                          # board as it is now; the net stays in the exclude
+                          # lists, so the kept stub is written from the write
+                          # lists, its via keeping its protection spec.
+                          from rip_restore import _stub_subset, _copper_conflicts
+                          _ss, _sv = _stub_subset(pcb_data, _cid, _osegs, _ovias)
+                          _have_s = {id(_x) for _x in pcb_data.segments}
+                          _have_v = {id(_x) for _x in pcb_data.vias}
+                          _ks = [_x for _x in _ss if id(_x) not in _have_s
+                                 and not _copper_conflicts(
+                                     pcb_data, config, {_cid}, [_x], [])]
+                          _kv = [_x for _x in _sv if id(_x) not in _have_v
+                                 and not _copper_conflicts(
+                                     pcb_data, config, {_cid}, [], [_x])]
+                          if _ks or _kv:
+                              pcb_data.segments.extend(_ks)
+                              pcb_data.vias.extend(_kv)
+                              for _x in _ks:
+                                  all_new_segments.append(
+                                      {'start': (_x.start_x, _x.start_y),
+                                       'end': (_x.end_x, _x.end_y),
+                                       'width': _x.width, 'layer': _x.layer,
+                                       'net_id': _x.net_id})
+                                  _prov_seg(_x.net_id, _x.layer, _x.start_x,
+                                            _x.start_y, _x.end_x, _x.end_y,
+                                            'custody-stub')
+                              for _x in _kv:
+                                  all_new_vias.append(
+                                      {'x': _x.x, 'y': _x.y, 'size': _x.size,
+                                       'drill': _x.drill, 'layers': _x.layers,
+                                       'net_id': _x.net_id,
+                                       'tenting_attrs': dict(
+                                           getattr(_x, 'tenting_attrs', None)
+                                           or {})})
+                                  _prov_via(_x.net_id, _x.x, _x.y,
+                                            'custody-stub')
+                              _cust['stub'] = _cust.get('stub', 0) + 1
+                              print(f"  {YELLOW}  kept its escape stub "
+                                    f"({len(_ks)} seg(s), {len(_kv)} via(s)) so "
+                                    f"its pads keep their landing sites (#468)"
+                                    f"{RESET}")
                           continue
                       # Corridor still clear: drop the failed reroute and
                       # reinstate the original (in-memory + write-list).
@@ -1959,9 +2201,21 @@ def repair_planes(
                 # like "nothing to do" (#509 part 3).
                 print(f"  custody: {_cust['restored']} restored, "
                       f"{_cust['refused']} refused, {_cust['errored']} errored "
-                      f"of {len(_casualties)} casualty net(s)")
+                      f"of {len(_casualties)} casualty net(s)"
+                      + (f"; {_cust['stub']} refused net(s) kept their escape "
+                         f"stub" if _cust.get('stub') else ""))
+                global LAST_RIPPED_CUSTODY
+                LAST_RIPPED_CUSTODY = dict(_cust,
+                                           casualties=len(_casualties))
             if _still_open:
                 _report_unrouted_ripped_nets(pcb_data, _still_open)
+            # A10: the still-open set is the run's real damage. Publish the
+            # NAMES so the summary, the exit code and the ledger can all carry
+            # it -- a count in a log line is not a verdict channel.
+            global LAST_RIPPED_STILL_OPEN
+            LAST_RIPPED_STILL_OPEN = [
+                (pcb_data.nets[_cid].name if _cid in pcb_data.nets
+                 else f"net_{_cid}") for _cid in _still_open]
             if corridor_ghosts is not None:
                 # #517 arm 2: custody-defined lifetime -- a casualty that is
                 # connected again (reconnected, or custody-restored) has real
@@ -2169,16 +2423,36 @@ def repair_planes(
         # [None]=not yet queried, [False]=queried and unavailable, else the
         # link list. One query serves every gate net; a gate repair that
         # adds copper resets it.
+        # [None] = NOT YET QUERIED. A cancelled query returns None too, which
+        # made every later gate net re-query and re-print the SKIPPED line
+        # (audit finding). _GATE_CANCELLED is a distinct sentinel so the
+        # cancel is remembered once. Cosmetic-only (cancel short-circuits
+        # before the expensive call), but the two states are not the same.
+        _GATE_CANCELLED = object()
         _gate_oracle_links: list = [None]
 
         def _gate_oracle_query():
             import tempfile
+            # A cancelled run does not get to spend another 300s here. Both
+            # branches below shell out -- exact_unconnected via pcbnew's
+            # ZONE_FILLER (EXACT_FILL_TIMEOUT 300s) and the kicad-cli fallback
+            # via ORACLE_DRC_TIMEOUT (240s) -- and neither honours cancel_check,
+            # because neither existed as a cancellation point. Measured: a
+            # repair that cancelled cleanly at 45s then sat in a KiCad
+            # exact_fill child until the EXTERNAL timeout killed it at 200s,
+            # which handed back exactly the race the budget just won. The gate
+            # is a verification pass, not a correctness one; skipping it leaves
+            # the partial board written and gated by everything upstream.
+            if cancel_check is not None and cancel_check():
+                print("  guaranteed-join gate: SKIPPED (cancelled; the gate "
+                      "oracle shells out and would overrun the budget)")
+                return None
             try:
                 _tmp = tempfile.NamedTemporaryFile(
                     suffix='.kicad_pcb', delete=False)
                 _tmp.close()
                 _nm10 = (pcb_data.net_id_to_name
-                         if pcb_data.kicad_version >= KICAD_10_MIN_VERSION
+                         if pcb_uses_name_nets(pcb_data)
                          else None)
                 _reconcile_write_list_vs_board('pre-oracle')
                 _write_output(input_file, _tmp.name, all_new_segments,
@@ -2249,8 +2523,11 @@ def repair_planes(
             # repair adds copper). KICAD_NO_GATE_ORACLE=1 disables for A/B.
             if not env_knobs.NO_GATE_ORACLE:
                 if _gate_oracle_links[0] is None:
-                    _gate_oracle_links[0] = _gate_oracle_query()
-                _gl = _gate_oracle_links[0]
+                    _q = _gate_oracle_query()
+                    _gate_oracle_links[0] = (_GATE_CANCELLED if _q is None
+                                             else _q)
+                _gl = (None if _gate_oracle_links[0] is _GATE_CANCELLED
+                       else _gate_oracle_links[0])
                 if _gl is not False and _gl is not None:
                     _net_links = [lk for lk in _gl if lk[0] == _nname]
                     print(f"  [{_nname}] gate oracle: KiCad reports "
@@ -2314,15 +2591,26 @@ def repair_planes(
                 progress_callback(0, 0, f"{_nname}: joining remaining gaps...")
             try:
                 from route import batch_route
+                try:
+                    from fix_kicad_drc_settings import effective_board_edge_clearance
+                    _edge3 = effective_board_edge_clearance(input_file, 0.0)
+                except Exception:
+                    _edge3 = 0.0
+                # The repair edited pcb_data's copper in place: invalidate what was
+                # cached against it before the sub-run looks anything up (#1146 audit).
+                bump_copper_epoch(pcb_data)
                 _ok3, _fail3, _t3, _rdata3 = batch_route(
                     input_file, "", [_nname],
                     layers=routing_layers,
                     track_width=track_width, clearance=clearance,
                     via_size=via_size, via_drill=via_drill,
-                    grid_step=grid_step, max_iterations=max_iterations,
+                    grid_step=grid_step,
                     power_nets=power_nets, power_nets_widths=power_nets_widths,
-                    disable_bga_zones=([] if no_bga_zone else None),
+                    # The board's copper-to-edge floor, as the two reconnect
+                    # sub-runs above pass it (this one used to route at 0).
+                    board_edge_clearance=_edge3,
                     net_clearances=net_clearances,
+                    layer_costs=(list(layer_costs) if layer_costs else None),  # #658 finalize sub-runs honor chain layer economics
                     # #539: without this the gate's plane-net vias were placed
                     # at batch_route's 0.2 default on a 0.25-h2h board (muzy_
                     # zynq2's residual drill grazes -- same forwarding-gap
@@ -2344,7 +2632,8 @@ def repair_planes(
                     # 57 levels on schoko, ~7 GB before the cap killed it). This
                     # sub-run is a repair DETAIL, not a chain step -- never finalize.
                     final_reconcile=False,
-                    **_ghost_kwargs(corridor_ghosts, {_nid}))
+                    **_sub_run_kwargs(route_knobs, no_bga_zone, max_iterations,
+                                      _ghost_kwargs(corridor_ghosts, {_nid})))
                 for _r in _rdata3.get('results', []):
                     all_new_segments.extend(
                         {'start': (_s.start_x, _s.start_y),
@@ -2416,10 +2705,12 @@ def repair_planes(
         # 0.25/0.15 via 'standard' escalates to, #237). A fine-pitch pad flanked by
         # other-net copper often cannot take the nominal via but fits a smaller
         # fab-legal one; we never go below the deepest fab floor.
-        from list_nets import fab_floor_ladder, warn_fab_escalation
+        from list_nets import escalation_rungs, warn_fab_escalation, note_narrowing
         _ncu = len([l for l in (pcb_data.board_info.copper_layers or routing_layers)
                     if l.endswith('.Cu')]) or 2
-        _ladder = fab_floor_ladder(_ncu)
+        # escalation_rungs: empty under --escalation off, raised to the
+        # board's own minimums under board (#857).
+        _ladder = escalation_rungs(_ncu)
         _cands = [(via_size, via_drill, False)]
         _cands += [(f['via_diameter'], f['via_drill'], _i > 0)
                    for _i, f in enumerate(_ladder)]
@@ -2546,12 +2837,15 @@ def repair_planes(
                             distant_trace_radius=0.0, disable_reuse=True,
                             shared_via_maps=shared_maps,
                             plane_oracle=sweep_oracle,
-                            corridor_ghosts=corridor_ghosts)
+                            corridor_ghosts=corridor_ghosts,
+                            plane_tap=True)  # #1179
                         if result.success and result.via is not None:
                             if (vtry, dtry) in _escalated_pairs:
                                 warn_fab_escalation(
                                     f"last-resort plane via for net "
                                     f"{net_id} ({vtry}/{dtry}mm)")
+                            note_narrowing(net_id, 'via_diameter', via_size, vtry,
+                                           'last-resort plane via')
                             break
                     if result is not None and result.success \
                             and result.via is not None:
@@ -2634,7 +2928,8 @@ def repair_planes(
                             verbose=verbose, fine_for_all=True, pour_trace_only=True,
                             distant_trace_radius=max_search_radius, disable_reuse=True,
                             plane_oracle=sweep_oracle,
-                            corridor_ghosts=corridor_ghosts)
+                            corridor_ghosts=corridor_ghosts,
+                            plane_tap=True)  # #1179
                         if not (track_res.success and track_res.segments):
                             continue
                         new_seg_objs = []
@@ -2749,7 +3044,52 @@ def repair_planes(
     if repair_pads:
         print(f"  Pad repair: {total_pads_repaired}/{total_pads_unconnected} unconnected pad(s) reconnected")
         if failed_repair_pads:
-            print(f"  Pads still unconnected: {', '.join(failed_repair_pads)}")
+            # Run-6 fix: failed_repair_pads is a historical accumulator graded
+            # by the KRT fill model, which under-credits narrow real fill
+            # corridors (~0.05mm raster floor) -- it claimed pads unconnected
+            # that KiCad's refilled pour connects (C16.2 class). Re-grade the
+            # list against the exact/kicad oracle before printing; entries the
+            # oracle proves connected are reported separately, not as opens.
+            _confirmed, _cleared = list(failed_repair_pads), []
+            try:
+                if _gate_oracle_links[0] is None:
+                    _q = _gate_oracle_query()
+                    _gate_oracle_links[0] = (_GATE_CANCELLED if _q is None
+                                             else _q)
+                _olinks = (None if _gate_oracle_links[0] is _GATE_CANCELLED
+                           else _gate_oracle_links[0])
+                if _olinks is not False and _olinks is not None:
+                    def _pad_open_per_oracle(entry):
+                        # entry format: "REF.PAD (NET)"
+                        try:
+                            _refpad = entry.split(' ')[0]
+                            _ref, _pn = _refpad.rsplit('.', 1)
+                            _fp = pcb_data.footprints.get(_ref)
+                            _pad = next(p for p in (_fp.pads if _fp else [])
+                                        if p.pad_number == _pn)
+                        except Exception:
+                            return True     # unparseable: keep as open
+                        for _net, _a, _b in _olinks:
+                            for _e in (_a, _b):
+                                if (abs(_e[0] - _pad.global_x) < 0.1
+                                        and abs(_e[1] - _pad.global_y) < 0.1):
+                                    return True
+                        return False
+                    _confirmed = [e for e in failed_repair_pads
+                                  if _pad_open_per_oracle(e)]
+                    _cleared = [e for e in failed_repair_pads
+                                if e not in _confirmed]
+            except Exception:
+                pass    # incl. NameError when the gate closure never built
+            if _cleared:
+                print(f"  {len(_cleared)} reported-unconnected pad(s) are "
+                      f"CONNECTED per KiCad's exact fill (model quantization): "
+                      f"{', '.join(_cleared)}")
+            if _confirmed:
+                print(f"  Pads still unconnected: {', '.join(_confirmed)}")
+            else:
+                print("  Pads still unconnected: none (all model-only; "
+                      "confirmed connected by the oracle)")
     if debug_lines and all_debug_lines:
         print(f"  Debug lines on User.4: {len(all_debug_lines)}")
 
@@ -2771,7 +3111,7 @@ def repair_planes(
     except Exception as _e:
         print(f"  (soft-joint close skipped: {_e})")
 
-    kv10_names = pcb_data.net_id_to_name if pcb_data.kicad_version >= KICAD_10_MIN_VERSION else None
+    kv10_names = pcb_data.net_id_to_name if pcb_uses_name_nets(pcb_data) else None
 
     # GUI (return_results): hand the plane/repair copper + the ripped net ids
     # back; the partial-restore kept pieces were emitted (and the in-memory
@@ -2828,7 +3168,10 @@ def repair_planes(
                 _res_wrap, pcb_data, _scope,
                 SimpleNamespace(clearance=clearance, grid_step=grid_step),
                 label='Plane ', phantom=False, via_nudge=False, neck=False,
-                microshift_max_shift=grid_step)
+                microshift_max_shift=grid_step,
+                # 13 passes that reported nothing: the status bar sat on the
+                # previous phase's label for the whole cleanup.
+                progress_callback=progress_callback)
             for _r in _res_wrap:
                 for _s in (_r.get('new_segments') or []):
                     all_new_segments.append(
@@ -2992,12 +3335,10 @@ def _write_output(input_file: str, output_file: str, segments: List[Dict], vias:
     # Generate via S-expressions
     via_sexprs = []
     if vias:
-        # Repair vias follow the board's own via protection convention instead
-        # of a hardcoded front+back tenting (#489 §8).
-        from kicad_writer import prevailing_via_protection_in_text
-        _default_via_attrs = prevailing_via_protection_in_text(content)
+        # A repair via emits no protection token and inherits the board's
+        # `(setup ...)` policy, as a via placed in KiCad does (see
+        # add_tracks_and_vias_to_pcb).
         for via in vias:
-            via_net_name = net_id_to_name.get(via['net_id']) if net_id_to_name else None
             sexpr = generate_via_sexpr(
                 x=via['x'],
                 y=via['y'],
@@ -3005,8 +3346,11 @@ def _write_output(input_file: str, output_file: str, segments: List[Dict], vias:
                 drill=via['drill'],
                 layers=['F.Cu', 'B.Cu'],  # Through-hole vias
                 net_id=via['net_id'],
-                net_name=via_net_name,
-                tenting_attrs=via.get('tenting_attrs') or _default_via_attrs
+                # #749 D: the ONE resolver -- net 0 is absent from every map,
+                # and a numeric ref emitted alongside a spec used to be a via
+                # the parser could not read back at all (#748).
+                net_name=via_net_name(via['net_id'], net_id_to_name),
+                tenting_attrs=via.get('tenting_attrs')
             )
             via_sexprs.append(sexpr)
 
@@ -3086,6 +3430,15 @@ Examples:
                         help="Net name(s) to process. If omitted, all nets with zones are processed.")
     parser.add_argument("--plane-layers", "-p", nargs="+",
                         help="Plane layer(s) to process. If omitted, all layers with zones are processed.")
+    parser.add_argument("--layer-costs", nargs="+", type=float, default=[],
+                        help="Per-layer cost multipliers, order matching "
+                             "--layers (same semantics as route.py's flag; a "
+                             "negative value = FORBIDDEN, obstacle-only). The "
+                             "ENGINE has honoured layer_costs since #658 and "
+                             "route.py forwards the chain's costs, but this "
+                             "standalone CLI had no way to express them, so a "
+                             "direct repair_planes run -- and its oracle leg "
+                             "-- routed at UNIFORM layer economics.")
     parser.add_argument("--layers", "-l", nargs="+",
                         help="Layer(s) available for routing (e.g., F.Cu B.Cu). If omitted, all copper layers are used.")
 
@@ -3099,12 +3452,10 @@ Examples:
 
     # Clearance options
     parser.add_argument("--clearance", type=float, default=None,
-                        help="Trace-to-trace clearance CEILING in mm. When given, every net class (Default included) is capped at min(class, this) and the writeback clamps. When OMITTED, each net routes at its own net-class clearance (base = the board's Default class, else 0.25).")
+                        help="Trace-to-trace clearance of the DEFAULT net class for this run, in mm; other classes are honoured (pairwise max). When OMITTED, the board's Default class, else 0.25. --clearance-ceiling caps every class (the old #439 behaviour) and the writeback clamps.")
     parser.add_argument("--zone-clearance", type=float, default=defaults.PLANE_ZONE_CLEARANCE,
                         help="Zone fill clearance around obstacles in mm (default: 0.2)")
-    # #381 D9: accept route_planes.py's --plane-track-via-clearance spelling too
-    # (same constant; dest stays track_via_clearance).
-    parser.add_argument("--track-via-clearance", "--plane-track-via-clearance",
+    parser.add_argument("--track-via-clearance",
                         type=float, default=defaults.PLANE_TRACK_VIA_CLEARANCE,
                         help="Clearance from tracks to other nets' vias in mm (default: 0.8)")
     parser.add_argument("--board-edge-clearance", type=float, default=None,
@@ -3114,7 +3465,7 @@ Examples:
     parser.add_argument("--same-net-pad-clearance", type=float, default=None,
                         help="Edge-to-edge clearance (mm) between repair vias (taps, joins, "
                              "reconnects) and same-net pads (#581). > 0 keeps vias off "
-                             "same-net pads; -1 explicitly allows via-in-pad. Default: the "
+                             "same-net pads and the net's solder-paste openings (#962); -1 explicitly allows via-in-pad. Default: the "
                              "project's recorded value, else -1.")
 
     # Via options (for config)
@@ -3193,7 +3544,7 @@ Examples:
     from fab_tiers import (add_fab_tier_args, fab_tier_from_args, set_default_fab_tier,
                            enforce_fab_floors, count_copper_layers_in_file)
     add_fab_tier_args(parser)
-    args = parser.parse_args()
+    args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
     # #439: identical net-class/clearance model to route.py. --clearance is the
     # clamp switch: GIVEN -> ceiling, every class capped at min(class, ceiling),
     # writeback clamps (_clamp_netclasses True). OMITTED -> each net routes at its
@@ -3203,7 +3554,7 @@ Examples:
     # keep their larger PLANE_EDGE_CLEARANCE fallback when the board declares none.
     # Resolved here, before enforce_fab_floors and every downstream use.
     from list_nets import (board_default_netclass_clearance, board_default_netclass_param,
-                           board_constraint)
+                           resolve_cli_floor)
     for _pname, _nckey, _fallback in (('track_width', 'track_width', defaults.TRACK_WIDTH),
                                       ('via_size', 'via_diameter', defaults.VIA_SIZE),
                                       ('via_drill', 'via_drill', defaults.VIA_DRILL)):
@@ -3213,34 +3564,44 @@ Examples:
             print(f"--{_pname.replace('_', '-')} not given; using "
                   f"{'the board Default net-class' if _v is not None else 'the fallback'} "
                   f"{getattr(args, _pname)}mm.")
-    _ceiling = args.clearance                       # None iff --clearance omitted
+    # #530 (decision 2): --clearance sets the Default class for the run; the
+    # cap-every-class behaviour (#439) is the explicit --clearance-ceiling.
+    if env_knobs.CLEARANCE_LEGACY_CEILING and getattr(args, 'clearance', None) is not None \
+            and getattr(args, 'clearance_ceiling', None) is None:
+        args.clearance_ceiling = args.clearance   # replay knob: pre-#530 reading
+    _ceiling = getattr(args, 'clearance_ceiling', None)   # None iff omitted
     args._clamp_netclasses = _ceiling is not None
     args._clearance_ceiling = _ceiling
-    from fix_kicad_drc_settings import warn_if_missing_project_floor
+    from fix_kicad_drc_settings import (warn_if_missing_project_floor,
+                                        warn_if_class_clearance_relaxed)
     warn_if_missing_project_floor(args.input_file)  # #441: a dropped sibling .kicad_pro strands the DRC floor
+    warn_if_class_clearance_relaxed(args.input_file)  # #1160
     _dflt_clr = board_default_netclass_clearance(args.input_file)
-    if _ceiling is None:
+    if args.clearance is None:
         args.clearance = _dflt_clr if _dflt_clr is not None else defaults.CLEARANCE
         print(f"--clearance not given; honoring net classes with base = "
               f"{'the board Default net-class' if _dflt_clr is not None else 'the fallback'} "
               f"clearance {args.clearance}mm.")
     else:
-        args.clearance = min(_dflt_clr, _ceiling) if _dflt_clr is not None else _ceiling
-    if args.hole_to_hole_clearance is None:
-        _h2h = board_constraint(args.input_file, 'min_hole_to_hole')
-        args.hole_to_hole_clearance = _h2h if _h2h is not None else defaults.HOLE_TO_HOLE_CLEARANCE
-        print(f"--hole-to-hole-clearance not given; using "
-              f"{'the board min_hole_to_hole' if _h2h is not None else 'the fallback'} "
-              f"{args.hole_to_hole_clearance}mm.")
-    if args.board_edge_clearance is None:
-        # Planes keep their larger edge keep-out (PLANE_EDGE_CLEARANCE) only when
-        # the board declares no edge rule of its own.
-        _edge = board_constraint(args.input_file, 'min_copper_edge_clearance')
-        args.board_edge_clearance = _edge if _edge is not None else defaults.PLANE_EDGE_CLEARANCE
-        print(f"--board-edge-clearance not given; using "
-              f"{'the board min_copper_edge_clearance' if _edge is not None else 'the fallback'} "
-              f"{args.board_edge_clearance}mm.")
+        print(f"--clearance {args.clearance}: the Default net class at it this run; other "
+              f"classes honoured (pass --clearance-ceiling to cap every class).")
+    if _ceiling is not None:
+        args.clearance = min(args.clearance, _ceiling)
+        if env_knobs.CLEARANCE_LEGACY_CEILING and _dflt_clr is not None:
+            args.clearance = min(_dflt_clr, _ceiling)   # pre-#530: run = min(Default, ceiling)
+        print(f"--clearance-ceiling {_ceiling}: every net class is capped at it (#439).")
+    # Shared resolver (list_nets.resolve_cli_floor); see route_planes.py -- a
+    # DECLARED 0.0 is "no edge rule of its own", not a rule of zero, so the
+    # plane inset stays PLANE_EDGE_CLEARANCE as the GUI's plane tab already had
+    # it.
+    args.hole_to_hole_clearance = resolve_cli_floor(
+        args.input_file, 'hole_to_hole', args.hole_to_hole_clearance,
+        defaults.HOLE_TO_HOLE_CLEARANCE, '--hole-to-hole-clearance')
+    args.board_edge_clearance = resolve_cli_floor(
+        args.input_file, 'board_edge_clearance', args.board_edge_clearance,
+        defaults.PLANE_EDGE_CLEARANCE, '--board-edge-clearance')
     set_default_fab_tier(*fab_tier_from_args(args))
+    __import__('fab_tiers').set_policy_from_args(args, args.input_file)  # #857
     _pinned_floors = enforce_fab_floors(
         count_copper_layers_in_file(args.input_file),
         track_width=getattr(args, 'track_width', None),
@@ -3302,9 +3663,15 @@ Examples:
         for net, layer in zone_pairs:
             print(f"  {net} on {layer}")
 
+    # The engine's cooperative `cancel_check` / `progress_callback` are the
+    # GUI's (the planes tab's Cancel button); the CLI passes neither. There is
+    # deliberately no wall-clock budget -- no result this tool produces may
+    # depend on timing.
     _rdp_result = repair_planes(
         input_file=args.input_file,
         output_file=args.output_file,
+        layer_costs=(list(args.layer_costs) if args.layer_costs else None),
+
         net_names=net_names,
         plane_layers=plane_layers,
         track_width=args.track_width,
@@ -3363,7 +3730,7 @@ Examples:
     # KiCad's REAL fill produces can survive every model-based pass (castor
     # +3.3VA bare island, lumenpnp U5 pocket). Ask kicad-cli for the exact
     # missing links on the processed nets and route precisely those.
-    if not args.dry_run and not args.no_kicad_recheck and args.output_file:
+    if (not args.dry_run and not args.no_kicad_recheck and args.output_file):
         from kicad_oracle import oracle_reconnect
         from routing_config import GridRouteConfig
         # #338: the oracle pass runs on OUTPUT_FILE, whose sibling .kicad_pro
@@ -3380,18 +3747,46 @@ Examples:
             _oracle_edge = effective_board_edge_clearance(args.input_file, 0.0)
         except Exception:
             _oracle_edge = 0.0
+        # LAYERS matter here even though the oracle routes on the board's own
+        # copper_layers (audit finding): install_layer_clearances is called
+        # with pcb_data=None just below, so kicad_dru falls back to
+        # `list(config.layers)` -- the DEFAULT 2-layer stack. On any 4+ layer
+        # board that silently (a) reads the #498 .kicad_dru map for F.Cu/B.Cu
+        # ONLY, so an `(layer inner)` clearance rule is never installed and
+        # this leg's welds can violate the board's own rules on inner layers,
+        # and (b) computes the fab floor as fab_floors(2)=0.127 instead of
+        # fab_floors(4)=0.1, refusing welds the fab can actually make.
+        # With --layers omitted the engine routed every copper layer, and the
+        # --layer-costs are aligned to that list (#1185): the 2-layer default
+        # here would pair a 4-layer cost list with F.Cu/B.Cu only.
+        _olayers = list(args.layers) if getattr(args, 'layers', None) else None
+        if not _olayers:
+            try:
+                from kicad_parser import extract_layers, read_board_text
+                _olayers = list(extract_layers(read_board_text(
+                    args.input_file, quiet=True)).copper_layers or [])
+            except Exception:                                   # noqa: BLE001
+                _olayers = None
         _ocfg = GridRouteConfig(
             clearance=args.clearance, track_width=args.track_width,
             via_size=args.via_size, via_drill=args.via_drill,
             grid_step=args.grid_step,
+            layers=_olayers or ['F.Cu', 'B.Cu'],
+            # #658: without these the weld router here ran at UNIFORM layer
+            # economics while the rest of the run priced them, and the
+            # forbidden-layer guards inside oracle_reconnect were inert.
+            layer_costs=(list(args.layer_costs)
+                         if getattr(args, 'layer_costs', None) else []),
             board_edge_clearance=_oracle_edge)
         from kicad_dru import install_layer_clearances
         install_layer_clearances(_ocfg, None, args.input_file, None)  # #498
+        # #1137: the class map the engine run resolved, by NAME.
         _orc = oracle_reconnect(args.output_file, net_names, _ocfg,
                                 track_via_clearance=args.track_via_clearance,
                                 hole_to_hole_clearance=args.hole_to_hole_clearance,
                                 verbose=args.verbose,
-                                project_from=args.input_file)
+                                project_from=args.input_file,
+                                net_clearances_by_name=LAST_NET_CLEARANCES_BY_NAME)
         try:
             import json as _json
             print('JSON_ORACLE: ' + _json.dumps(
@@ -3400,9 +3795,32 @@ Examples:
         except Exception:
             pass
         if not _orc.get('available'):
-            print('NOTE: kicad-cli not found -- the oracle reconnect pass '
-                  'did not run; output may differ from machines that have '
-                  'KiCad installed (replay-determinism caveat).')
+            # Was hardcoded to "kicad-cli not found", which was the cause for
+            # only one of the ways to get here (#713 item 3). The oracle now
+            # says which, so print what it said.
+            print(f"NOTE: {_orc.get('why', 'the oracle could not run')} -- "
+                  f"the oracle reconnect pass did not run; output may differ "
+                  f"from machines where it can (replay-determinism caveat).")
+
+    # #962: declare Type VII on every via this run put in a pad or a paste
+    # opening -- AFTER the oracle reconnect above, which lays vias of its own,
+    # so the record describes the board that ships. GUI twin: the planes tab's
+    # engine call stamps its dicts inside repair (route_planes/plane_io), and
+    # gui_utils.run_kicad_oracle_on_live_board stamps the oracle's vias with
+    # the same fab_notes.via_protection_stamps.
+    if not args.dry_run and args.output_file and os.path.isfile(args.output_file):
+        try:
+            from kicad_parser import parse_kicad_pcb as _parse962
+            from fab_notes import via_snapshot, ship_via_protection_file
+            _in962 = _parse962(args.input_file)
+            _rec962 = ship_via_protection_file(
+                args.output_file, via_snapshot(_in962.vias, _in962),  # #1171
+                'repair_planes')
+            if _rec962 and _rec962.get('count'):
+                import json as _json962
+                print('VIA_IN_PAD_JSON: ' + _json962.dumps(_rec962))
+        except Exception as _e962:                              # noqa: BLE001
+            print(f"  (via protection stamp skipped: {type(_e962).__name__}: {_e962})")
 
     # Make the output project's DRC design rules consistent with the floors we
     # just routed to (issue #160), mirroring route_planes.py, so a manual DRC in
@@ -3446,17 +3864,56 @@ Examples:
     }
     if LAST_RIPPED_RECONNECT is not None:
         _summary["ripped_reconnect"] = LAST_RIPPED_RECONNECT
-    print("JSON_SUMMARY: " + _json.dumps(_summary))
+    if LAST_RIPPED_CUSTODY is not None:
+        _summary["ripped_custody"] = LAST_RIPPED_CUSTODY
+    # A10: nets this step ripped and could neither reconnect nor restore. They
+    # ship OPEN, so they belong in the summary by name and in the exit code.
+    _summary["ripped_still_open"] = list(LAST_RIPPED_STILL_OPEN)
+    # `complete`/`status` are kept because consumers read them -- see
+    # route_summary's sticky-incompleteness merge. The CLI has no cancel
+    # source, so the run either finished or raised.
+    _summary.setdefault("complete", True)
+    _summary.setdefault("status", "ok")
+    try:                       # #653: env knobs into the machine-readable
+        import env_knobs as _ek653   # summary, so a harness can detect a
+        _summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
+    except Exception:          # without re-reading logs
+        pass
+    print('JSON_SUMMARY: ' + json.dumps(_summary, sort_keys=True, default=str),
+          flush=True)
 
-
-if __name__ == "__main__":
-    from console_encoding import enable_utf8_console
-    enable_utf8_console()  # cp1252-safe non-ASCII prints (issue #152)
-    main()
+    if LAST_RIPPED_STILL_OPEN:
+        print(f"{RED}RIP CASUALTIES SHIP OPEN ({len(LAST_RIPPED_STILL_OPEN)}): "
+              f"{', '.join(LAST_RIPPED_STILL_OPEN)}{RESET}")
+        print("  These nets were ripped to clear a plane corridor and are not "
+              "connected on the written board. Reconnect them (the chain's "
+              "reconnect step) or re-run without --rip-blocker-nets; do not "
+              "read this run as clean.")
+        return 4
+    return 0
 
 
 # Naming (#562): this module's engine used to be called route_planes,
 # colliding with route_planes.py (the pours-CREATION script) -- the GUI
 # already imported it 'as repair_planes'. The old name stays as an alias
-# for external callers; new code should import repair_planes.
+# for external callers; new code should import repair_planes. Defined BEFORE
+# the __main__ block: run-8 made that block sys.exit(), which would otherwise
+# never reach a trailing assignment.
 route_planes = repair_planes
+
+
+if __name__ == "__main__":
+    from console_encoding import enable_utf8_console
+    enable_utf8_console()  # cp1252-safe non-ASCII prints (issue #152)
+    # CMD/EXIT self-echo (run-3 B1). Caveat, same as route.py's: an EXTERNAL
+    # kill skips `atexit`, so the promised EXIT= line never arrives. This tool
+    # has no self-budget to fall back on -- deliberately, since no result it
+    # produces may depend on a wall clock -- so a harness that kills it owns
+    # that gap. It is also the script whose exit code was hardest to tell from
+    # the shell's, which is why the banner is here at all.
+    import cli_banner
+    cli_banner.install()
+    # run-8: propagate main()'s verdict -- it returns 4 when plane repair
+    # leaves rip casualties unconnected, which used to be one red line and
+    # exit 0.
+    sys.exit(main())

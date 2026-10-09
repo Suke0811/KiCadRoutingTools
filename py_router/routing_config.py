@@ -98,11 +98,18 @@ class GridRouteConfig:
     via_size: float = 0.3  # mm via outer diameter
     via_drill: float = 0.2  # mm via drill
     grid_step: float = 0.1  # mm grid resolution
-    via_cost: int = 50  # grid steps equivalent penalty for via
+    via_cost: int = 75  # grid steps equivalent penalty for via (#586: 50 -> 75)
     layers: List[str] = field(default_factory=lambda: ['F.Cu', 'B.Cu'])
     max_iterations: int = 200000
     max_probe_iterations: int = 5000  # Quick probe per direction to detect stuck routes
-    heuristic_weight: float = 1.9
+    heuristic_weight: float = 2.3  # (#586: 1.9 -> 2.3, corpus dose-response peak)
+    # #589 rough-pass probe marker: the result is a HINT (predicted path),
+    # never shipped copper, so ship-safety rejects (the #157 terminal-bridge
+    # short gate) must not veto it -- on a fanned board the probe map
+    # excludes every to-route net's stubs (relaxed legality), so probe
+    # terminals legitimately overlap future nets' copper. Set only on the
+    # global plan's replace() clone; never on a config that emits copper.
+    plan_probe: bool = False
     turn_cost: int = 1000  # Penalty for direction changes (encourages straighter paths)
     # BGA exclusion zones (auto-detected from PCB) - vias blocked inside these areas
     bga_exclusion_zones: List[Tuple[float, float, float, float]] = field(default_factory=list)
@@ -129,6 +136,10 @@ class GridRouteConfig:
     diff_pair_setback_no_ladder: bool = False  # when True, _setback_ladder yields ONLY
     # the configured setback (no 0.75/0.5/floor/1.5/2x expansion) -- used by the pinch
     # retry in _maybe_swap_to_hybrid so each attempt routes at the EXACT setback asked.
+    diff_pair_setback_floor: float = None  # mm - the least setback from a terminal (None =
+    # track_width/2 + clearance, clear of the pad edge it launched from). A caller whose
+    # terminals are already coupled copper in open space -- a whole-route plan's end
+    # connectors (awx) -- sets 0 to take over at the terminals themselves.
     # In a multi-point pair, a "terminal" whose P and N pads are farther apart
     # than diff_pair_uncouple_factor * (track_width + diff_pair_gap) is not a
     # coupled differential connection (e.g. spread-out test points). If the full
@@ -157,9 +168,16 @@ class GridRouteConfig:
     track_proximity_distance: float = 2.0  # mm - radius around routed tracks to penalize (same layer)
     stub_layer_swap: bool = True  # Enable stub layer switching optimization
     track_proximity_cost: float = 0.0  # mm equivalent cost (0 = disabled)
+    # #1146 pairwise keep-away (keep_away.py): canonical 'AGG:VICTIM:GAP'
+    # rules. While a net of one side routes, cells within GAP (edge to edge,
+    # same layer) of the other side's copper cost keep_away_cost per cell,
+    # except within keep_away_free mm of the routed net's own pads.
+    keep_away: Tuple[str, ...] = ()
+    keep_away_free: float = 1.5  # mm (routing_defaults.KEEP_AWAY_FREE)
+    keep_away_cost: float = 0.5  # mm equivalent per cell (0 = report only)
     target_swap_crossing_penalty: float = 1000.0  # Penalty for crossing assignments in target swap
     crossing_layer_check: bool = True  # Only count crossings when routes share a layer
-    routing_clearance_margin: float = 1.0  # Multiplier on track-via clearance (1.0 = minimum DRC)
+    routing_clearance_margin: float = 1.0  # Diff pairs only: track-to-via distance multiplier for the P/N via offset (1.0 = minimum DRC)
     hole_to_hole_clearance: float = 0.20  # mm - edge-to-edge via drill spacing; JLC "Via
                                            # Hole-to-Hole Spacing" (keep in sync with
                                            # routing_defaults.HOLE_TO_HOLE_CLEARANCE)
@@ -167,13 +185,24 @@ class GridRouteConfig:
     # #581: edge-to-edge clearance between ANY placed via and SAME-NET pads.
     # > 0 forbids via-in-pad globally: routing/tap/rescue via placement blocks
     # same-net SMD pads at this clearance, and pad-centre swap vias are
-    # declined. -1 (default) AND 0 preserve the pre-#581 behavior exactly
-    # (0 keeps only its legacy meaning where route_planes passes it explicitly
-    # into its stitching via maps). Set from route_planes
-    # --same-net-pad-clearance or the persisted .kicad_pro record
-    # (kicad_routing_tools.same_net_pad_clearance); there is deliberately no
-    # route.py/route_diff.py CLI flag.
+    # declined. #962: > 0 also keeps vias out of the net's solder-paste
+    # OPENINGS at the same clearance (graphic and paste-only openings, and pad
+    # openings larger than their pad), since a declared pad rectangle can be
+    # smaller than the paste printed around it (esp_prog U2's F.Paste tab).
+    # -1 (default) AND 0 preserve the pre-#581 behavior exactly (0 keeps only
+    # its legacy meaning where route_planes passes it explicitly into its
+    # stitching via maps). Set from --same-net-pad-clearance (route.py,
+    # route_diff.py, route_planes.py, repair_planes.py, the fanouts) or the
+    # persisted .kicad_pro record (kicad_routing_tools.same_net_pad_clearance).
     same_net_pad_clearance: float = -1.0
+    # mm - copper-to-HOLE floor (KiCad's `min_hole_clearance`). 0 = not set by
+    # the caller, so the obstacle builder reads the board's own constraint and
+    # falls back to routing_defaults.NPTH_TO_TRACK_CLEARANCE. It is NOT the same
+    # rule as hole_to_hole_clearance (drill-to-drill): this one keeps TRACKS off
+    # an NPTH wall. The router used to hardcode the 0.20 fab floor here while
+    # check_drc already read min_hole_clearance, so on a board declaring 0.25 the
+    # router would happily route into a band its own checker then flagged.
+    hole_clearance: float = 0.0
     max_turn_angle: float = 180.0  # Max cumulative turn angle (degrees) before reset, to prevent U-turns
     # Power-tap neck-down (issue #72): when a wide power-net tap edge fails,
     # retry it at the layer's default track width. The narrow neck extends
@@ -267,9 +296,21 @@ class GridRouteConfig:
     # Debug options
     collect_stats: bool = False  # Collect A* search statistics for debugging
     # Heuristic tuning
-    proximity_heuristic_factor: float = 0.02  # Factor for proximity heuristic (higher = tighter heuristic, faster but may overestimate)
+    proximity_heuristic_factor: float = 0.0  # proximity add-on to the A* heuristic. The CLIs and batch_route pass routing_defaults.PROXIMITY_HEURISTIC_FACTOR (0.02, restored in e9523f23 after 0 regressed 5 boards); this dataclass default is only what a direct GridRouteConfig() gets
     # Layer direction preference - alternates H/V starting with horizontal on top
-    direction_preference_cost: int = 250  # Cost penalty for non-preferred direction (0 = disabled); see routing_defaults
+    # Matches routing_defaults.DIRECTION_PREFERENCE_COST, which is back at 250
+    # after the #663 revert. route.py/route_diff.py always pass the caller's
+    # value, so this default is reached only by configs built field-by-field
+    # that never pass the parameter -- the oracle-weld and plane sub-configs
+    # (route.py, route_planes.py, repair_planes.py).
+    #
+    # Those legs stayed at 250 through #663's 5-era, which made a MIXED state
+    # (signal 5, these legs 250). That was screened directly -- an arm making
+    # these follow the constant -- and measured INERT (94/59 vs 95/58 on
+    # sets1-5), so the divergence never mattered. There is none now. If this is
+    # ever moved off routing_defaults' value again, re-measure rather than
+    # assuming either that coherence is free or that it is harmless.
+    direction_preference_cost: int = 250  # Cost penalty for non-preferred direction (0 = disabled)
     # Bus routing - auto-detection and parallel routing of grouped nets
     bus_enabled: bool = False  # Enable bus detection and routing
     bus_detection_radius: float = 5.0  # mm - max endpoint distance to form bus
@@ -309,6 +350,104 @@ class GridRouteConfig:
     # the rules file is the one source of truth, and the graders (check_drc,
     # staged kicad-cli) read the same file.
     layer_clearances: Dict[str, float] = field(default_factory=dict)
+    # The BOARD's copper layer list the layer map above was expanded over:
+    # `pad_pair_clearance` resolves a `*.Cu` pad's shared layers over it, as
+    # check_drc does. Set by kicad_dru.install_layer_clearances; `layers`
+    # stands in when empty.
+    board_copper_layers: List[str] = field(default_factory=list)
+    # Track-to-track clearance from the board's .kicad_dru (#735),
+    # {obstacle_net_id: mm} -- the EFFECTIVE per-obstacle map for this call's
+    # routed set (kicad_dru.effective_track_clearances). RAISE-ONLY, applied
+    # by track-vs-track stamp sites over the already-resolved value (so it
+    # composes AFTER the #498 layer replacement); via/pad geometry never
+    # consults it (KiCad's Type=='track' binds tracks only). An empty map is
+    # a strict no-op. Like the layer map: no CLI flag, no GUI control.
+    track_clearances: Dict[int, float] = field(default_factory=dict)
+    # #530: the board's design rules resolved in KiCad's order
+    # (design_rules.DesignRules), installed engine-side by
+    # kicad_dru.install_layer_clearances for both fronts. None until then.
+    # The legacy per-channel maps above are being migrated onto it; consumers
+    # that resolve through it must treat None as "no rules declared".
+    rules: Optional[object] = None
+    # #530 decision 4: per-net VIA geometry {net_id: (diameter, drill)} for
+    # nets whose resolved draw size differs from via_size/via_drill (their
+    # net class or a .kicad_dru via_diameter/hole_size rule). Filled by
+    # batch_route when --via-size was omitted (via_from_class); empty when
+    # the operator gave an explicit via, which applies to every net. The
+    # search prices each such net at its own via through the obstacle map's
+    # via-legality RUNGS (obstacle_cache.via_rungs) and emits vias at it.
+    net_via_sizes: Dict[int, Tuple[float, float]] = field(default_factory=dict)
+
+    def net_via(self, net_id: int) -> Tuple[float, float]:
+        """(diameter, drill) this net's vias are drawn at."""
+        v = self.net_via_sizes.get(net_id) if self.net_via_sizes else None
+        return (float(v[0]), float(v[1])) if v else (self.via_size, self.via_drill)
+
+    def rule_floors(self, net_id: int, layer: Optional[str] = None) -> Dict[str, float]:
+        """The .kicad_dru / Board Setup size minimums that bind ``net_id`` (on
+        ``layer`` when given), in fab_tiers FLOOR_KEYS vocabulary, for the
+        descent sites: a rescue may narrow a track or shrink a via only down
+        to these under ``--escalation board``. Empty when the board declares
+        none, or under ``--escalation fab`` (which may go below them)."""
+        out = {}
+        # #530 (corpus A/B, core1106_cam): a net in a NON-Default class is graded
+        # by KiCad at that class's clearance whatever this run narrowed to --
+        # the writeback lowers only the Default class (decision 2) -- so no
+        # automatic clearance descent for the net may go below its own class.
+        # Applies under EVERY policy: this is a grading floor, not a fab one.
+        cc = self.net_clearances.get(net_id) if self.net_clearances else None
+        if cc:
+            out['clearance'] = float(cc)
+        rules = self.rules
+        if rules is None or not (getattr(rules, 'rules', None) or getattr(rules, 'board_min', None)):
+            return out
+        try:
+            from fab_tiers import get_escalation_policy
+            if get_escalation_policy()[0] == 'fab':
+                return out
+        except Exception:                                      # noqa: BLE001
+            return out
+        try:
+            tw = rules.floor('track_width', net_id, layer)
+            if tw:
+                out['track_width'] = tw
+            vd = rules.floor('via_diameter', net_id, layer, type='via')
+            if vd:
+                out['via_diameter'] = vd
+            hs = rules.floor('hole_size', net_id, layer, type='via')
+            if hs:
+                out['via_drill'] = hs
+        except Exception:                                      # noqa: BLE001
+            return out
+        return out
+
+    def track_floor(self, net_id: int, layer: Optional[str], fab_value: float) -> float:
+        """The narrowest track a descent may deliver on ``net_id``: the fab
+        floor raised to the net's own rule / board minimum (see rule_floors)."""
+        rf = self.rule_floors(net_id, layer).get('track_width')
+        return max(fab_value, rf) if rf else fab_value
+
+    def pad_override_clearance(self, base: float, pad, other_pad=None) -> float:
+        """The pair clearance against ``pad`` (and ``other_pad``) once a pad /
+        footprint clearance OVERRIDE is applied: KiCad's max(overrides) floored
+        at rules.min_clearance, REPLACING ``base`` (design_rules.override_clearance).
+        ``base`` is returned unchanged when neither pad carries one, so a board
+        without overrides is byte-identical to before."""
+        from design_rules import override_clearance
+        rules = self.rules
+        bm = (rules.board_min.get('min_clearance', 0.0) if rules is not None
+              and getattr(rules, 'board_min', None) else 0.0)
+        return override_clearance(base, bm, pad, other_pad)
+
+    def track_obstacle_clearance(self, net_id: int, resolved: float) -> float:
+        """Track-rule seg-vs-seg clearance against obstacle net ``net_id``:
+        max(resolved, the track-rule value) -- raise-only, one dict lookup per
+        SEGMENT. ``resolved`` is the caller's fully-resolved value (class
+        pairwise max, #498 layer replacement already applied)."""
+        if not self.track_clearances:
+            return resolved
+        v = self.track_clearances.get(net_id)
+        return resolved if v is None or v <= resolved else v
 
     def layer_clearance(self, layer: str, fallback: float) -> float:
         """#498 pair clearance on `layer`: the .kicad_dru rule value when the
@@ -360,6 +499,135 @@ class GridRouteConfig:
             self.net_clearance_floor = max([self.clearance] + routed)
         else:
             self.net_clearance_floor = self.clearance
+
+    # ---- KiCad's pairwise clearance, for admit/refuse verdicts (#1136) -----
+    #
+    # `obstacle_clearance` is the value a foreign obstacle is STAMPED at. It is
+    # floored at `net_clearance_floor`, the widest class routed in this call,
+    # so the ADD and REMOVE stamps stay ref-count symmetric (#208/#309). A
+    # verdict about two SPECIFIC nets (may this stub sit here, may this via go
+    # there) is graded by check_drc at the pair's own value instead:
+    # `max(clearance, classA, classB)`, then the .kicad_dru layer rule. Pricing
+    # a verdict at the stamp value would refuse legal copper whenever a wider
+    # class is routed anywhere in the call.
+
+    def pair_clearance(self, net_a: int, net_b: int,
+                       layer: Optional[str] = None, *, kind: str = 'layer',
+                       base: Optional[float] = None) -> float:
+        """check_drc's clearance between copper of `net_a` and `net_b`.
+
+        `base` is the floor the pair starts from (`self.clearance` when None;
+        a site that was handed a clearance passes it). Then the two nets'
+        classes (`max`), then by `kind`:
+
+        * 'layer' -- the two items meet on one layer (track vs track, track
+          vs via): the #498 rule for `layer` REPLACES the value, as
+          check_drc's `_pair_cl(a, b, layer)` does. A pad is
+          `pad_pair_clearance`, which also applies the pad's override;
+        * 'track' -- track vs track: 'layer', then the #735 track rule raises
+          it (check_drc's `_track_pair_cl`). The router side reads the
+          per-obstacle-net map, an over-approximation of check_drc's
+          pair-exact rule. Net-0 copper is in no class and missing from that
+          map, so it is priced at the widest track rule;
+        * 'stack' -- via vs via, which meet on every layer: the max over the
+          stack (check_drc's `_stack_cl`). `layer` is ignored.
+
+        With no class map, no layer rule and no track rule it returns `base`
+        unchanged, so a site that swaps its flat term for this call is
+        byte-identical on such a board."""
+        clr = self.clearance if base is None else base
+        nc = self.net_clearances
+        if nc:
+            a = nc.get(net_a)
+            if a is not None and a > clr:
+                clr = a
+            b = nc.get(net_b)
+            if b is not None and b > clr:
+                clr = b
+        if kind == 'stack':
+            return self.stack_clearance(clr)
+        if kind != 'layer' and kind != 'track':
+            raise ValueError(f"pair_clearance kind {kind!r}: expected "
+                             f"'layer', 'track' or 'stack'")
+        if layer is not None:
+            clr = self.layer_clearance(layer, clr)
+        if kind == 'track' and self.track_clearances:
+            if not net_a or not net_b:
+                widest = max(self.track_clearances.values())
+                if widest > clr:
+                    clr = widest
+            clr = max(self.track_obstacle_clearance(net_a, clr),
+                      self.track_obstacle_clearance(net_b, clr))
+        return clr
+
+    def pad_pair_clearance(self, pad, other_net: int,
+                           layer: Optional[str] = None, *, other_pad=None,
+                           base: Optional[float] = None) -> float:
+        """check_drc's clearance between `pad` and copper of `other_net`
+        (`_pad_pair_cl`): `pad_pair_clearance_before_override`, then a pad /
+        footprint clearance OVERRIDE, which replaces the value."""
+        return self.pad_override_clearance(
+            self.pad_pair_clearance_before_override(
+                pad, other_net, layer, other_pad=other_pad, base=base),
+            pad, other_pad)
+
+    def max_pair_clearance(self, base: Optional[float] = None) -> float:
+        """An upper bound of `pair_clearance` over every pair and kind: the
+        radius a prefilter must reach. Pad overrides are not included; a pad
+        site resolves its pads one by one."""
+        v = self.clearance if base is None else base
+        for m in (self.net_clearances, self.layer_clearances,
+                  self.track_clearances):
+            if m:
+                mv = max(m.values())
+                if mv > v:
+                    v = mv
+        return v
+
+    def pair_clearance_inert(self) -> bool:
+        """True when no channel can move a pair off the floor it is given: no
+        class map, no .kicad_dru layer rule, no track rule. A hot loop may
+        then keep its flat term instead of pricing every item."""
+        return not (self.net_clearances or self.layer_clearances
+                    or self.track_clearances)
+
+    def pad_pair_clearance_before_override(self, pad, other_net: int,
+                                           layer: Optional[str] = None, *,
+                                           other_pad=None,
+                                           base: Optional[float] = None
+                                           ) -> float:
+        """`pad_pair_clearance` short of its last step, the pad / footprint
+        override: the pair's classes, then the .kicad_dru rule on `layer` (a
+        track) or over the copper the two share (a via, or `other_pad`).
+
+        For a site that keeps its own override handling (#1136 converts the
+        class and rule term only, so a board that declares neither is
+        unchanged whatever its pads carry). `pad_pair_clearance` is
+        `pad_override_clearance(<this>, pad, other_pad)`."""
+        eff = self.pair_clearance(getattr(pad, 'net_id', 0) or 0, other_net,
+                                  base=base)
+        if layer is not None:
+            return self.layer_clearance(layer, eff)
+        if self.layer_clearances:
+            from check_drc import pads_shared_layer_clearance, pad_copper_layers
+            cu = list(self.board_copper_layers or self.layers)
+            eff = pads_shared_layer_clearance(
+                eff, self.layer_clearances, pad_copper_layers(pad, cu),
+                pad_copper_layers(other_pad, cu) if other_pad is not None
+                else None)
+        return eff
+
+    def net_clearances_by_name(self, nets) -> Dict[str, float]:
+        """The class map keyed by NET NAME, for a consumer that re-parses a
+        board whose net ids may differ from this run's (the KiCad oracle reads
+        a staged copy; on the GUI path that is a pcbnew save, which numbers
+        its nets afresh, #1133). `nets` is `pcb_data.nets`."""
+        out: Dict[str, float] = {}
+        for nid, c in (self.net_clearances or {}).items():
+            name = getattr(nets.get(nid), 'name', None)
+            if name and c:
+                out[name] = float(c)
+        return out
 
     def get_track_width(self, layer: str) -> float:
         """Get track width for a specific layer (impedance-aware).
@@ -551,6 +819,17 @@ class GridRouteConfig:
                 costs.append(1000)  # Default 1.0x
         return costs
 
+    def layer_costs_for(self, layers) -> List[int]:
+        """:meth:`get_layer_costs` aligned to `layers` BY NAME (#1185), for a
+        router whose obstacle map indexes some other list than
+        ``self.layers``. Each layer gets its own cost (a forbidden -1 stays
+        forbidden); a layer ``self.layers`` does not list is 1.0x. Indexing
+        the costs positionally against another list is how the plane repair's
+        region joins read ``[1.0, 1.5, 3.0, 1.0]`` as ``[1000, 1500]`` on a
+        4-layer board and laid +3V3 straps on a forbidden GND layer."""
+        by_name = dict(zip(self.layers, self.get_layer_costs()))
+        return [by_name.get(layer, 1000) for layer in layers]
+
     def get_layer_direction_preferences(self) -> List[int]:
         """Get layer direction preferences for the Rust router.
 
@@ -593,9 +872,9 @@ class GridRouteConfig:
     def via_cost_units(self) -> int:
         """Per-via penalty in cost units.
 
-        The via_cost knob is in grid steps at REFERENCE_GRID_STEP (default 50
-        = 5mm of path); the value scales with 1/grid_step so a via costs the
-        same mm-equivalent detour at any --grid-step.
+        The via_cost knob is in grid steps at REFERENCE_GRID_STEP (default 75
+        = 7.5mm of path, #586); the value scales with 1/grid_step so a via
+        costs the same mm-equivalent detour at any --grid-step.
         """
         return int(self.via_cost * 1000 * (REFERENCE_GRID_STEP / self.grid_step))
 

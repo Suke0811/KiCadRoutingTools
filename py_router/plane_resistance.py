@@ -18,6 +18,7 @@ from typing import List, Dict, Tuple, Optional
 from shapely.geometry import Polygon as ShapelyPolygon, LineString, Point
 from shapely.validation import make_valid
 
+from console_encoding import ascii_safe
 from routing_constants import (
     IPC_2221_EXPONENT_DT,
     IPC_2221_EXPONENT_AREA,
@@ -618,7 +619,11 @@ def print_single_net_resistance(result: Dict, net_name: str):
     print(f"    Path length: {result['path_length']:.1f} mm (diagonal)")
     print(f"    Avg width:   {result['avg_width']:.1f} mm")
     r_str = f"{result['resistance']*1000:.3f} mΩ" if result['resistance'] < float('inf') else "N/A"
-    print(f"    Resistance:  {r_str}")
+    # ascii_safe, not a bare print: create_plane is a SHARED ENGINE function and
+    # is called in-process (tests, scripts, the GUI) where route_planes.py's
+    # __main__ enable_utf8_console() never ran. On a cp1252 console that made
+    # this one line abort the whole pour.
+    print(ascii_safe(f"    Resistance:  {r_str}"))
     # An out-of-range area is NOT a rating: say so instead of printing a bare
     # number the reader will take as one (#489 §6).
     if result.get('max_current', 0) <= 0:
@@ -648,10 +653,10 @@ def print_multi_net_resistance(results: Dict[str, Dict]):
     label = _conditions_label(first) if first else "(1 oz copper, 10°C rise)"
     print(f"\n  Plane Resistance Analysis {label}:")
     print(f"  {'-'*74}")
-    print(f"  {'Net':<25} {'Path(mm)':<10} {'AvgW(mm)':<10} {'R(mΩ)':<10} {'Imax(A)':<12}")
+    print(ascii_safe(f"  {'Net':<25} {'Path(mm)':<10} {'AvgW(mm)':<10} {'R(mΩ)':<10} {'Imax(A)':<12}"))
     print(f"  {'-'*74}")
 
-    any_extrapolated = False
+    any_extrapolated = any_diag = False
     for net_name, result in results.items():
         if result:
             r_str = f"{result['resistance']*1000:.3f}" if result['resistance'] < float('inf') else "N/A"
@@ -662,12 +667,18 @@ def print_multi_net_resistance(results: Dict[str, Dict]):
             else:
                 i_str = f"{result['max_current']:.2f}*"
                 any_extrapolated = True
-            print(f"  {net_name:<25} {result['path_length']:<10.1f} {result['avg_width']:<10.1f} {r_str:<10} {i_str:<12}")
+            diag = result.get('path_basis') == 'diagonal'
+            any_diag = any_diag or diag
+            print(f"  {net_name + (' +' if diag else ''):<25} {result['path_length']:<10.1f} {result['avg_width']:<10.1f} "
+                  f"{r_str:<10} {i_str:<12}")
         else:
             print(f"  {net_name:<25} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<12}")
 
     print(f"  {'-'*74}")
     print(f"  Path = longest MST route, AvgW = avg polygon width along path")
+    if any_diag:
+        print(f"  + no route between the net's vias (none yet: the pour runs before any routing) -- "
+              f"Path is its region's bounding diagonal")
     print(f"  Imax = IPC-2221 chart fit; inner layers carry 2221's 2x derating, "
           f"which IPC-2152 overturned")
     if any_extrapolated:

@@ -20,6 +20,7 @@ from diff_pair_routing import (route_diff_pair_with_obstacles, get_diff_pair_end
                                _route_direct_coupled_middle, _seg_to_seglist_min_edge)
 from blocking_analysis import analyze_frontier_blocking, print_blocking_analysis, filter_rippable_blockers, invalidate_obstacle_cache
 from rip_up_reroute import rip_up_net, restore_net
+from obstacle_cache import refresh_net_obstacles  # #806
 from polarity_swap import apply_polarity_swap, get_canonical_net_id
 from layer_swap_fallback import try_fallback_layer_swap, add_own_stubs_as_obstacles_for_diff_pair
 from diff_pair_multipoint import (
@@ -41,11 +42,21 @@ from terminal_colors import RED, GREEN, RESET
 def _count_pn_overlaps(p_segs, n_segs, config) -> int:
     """Number of this pair's own P segments that sit below clearance to one of its
     N segments (intra-pair P/N overlap, the #215 class). A cheap self-DRC used to
-    decide whether the standard coupled route pinches its own pair."""
+    decide whether the standard coupled route pinches its own pair.
+
+    P and N are two nets, so KiCad grades them at the pair's own value
+    (#1134): max(clearance, class P, class N), then the layer rule.
+    route_diff raises the coupling gap to the class (#530) and to any
+    .kicad_dru rule binding the pair (#1145), so on a ruled layer this
+    counts where the connectors diverge, not the coupled run itself."""
+    if not n_segs:
+        return 0
+    n_net = n_segs[0].net_id
     cnt = 0
     for s in p_segs:
         if _seg_to_seglist_min_edge(s.start_x, s.start_y, s.end_x, s.end_y,
-                                    s.width, s.layer, n_segs) < config.clearance - 1e-6:
+                                    s.width, s.layer, n_segs) \
+                < config.pair_clearance(s.net_id, n_net, s.layer) - 1e-6:
             cnt += 1
     return cnt
 
@@ -221,7 +232,6 @@ def route_diff_pairs(
         print(f"\n[{route_index}/{total_routes}{failed_str}] Routing diff pair {pair_name}")
         print(f"  P: {pair.p_net_name} (id={pair.p_net_id})")
         print(f"  N: {pair.n_net_name} (id={pair.n_net_id})")
-        print("-" * 40)
 
         # Update progress
         if state.progress_callback is not None:
@@ -257,7 +267,26 @@ def route_diff_pairs(
             continue
 
         if len(terminals) > 2:
-            leg_results, merged, peeled = route_multipoint_diff_pair(state, pair, pair_name, terminals)
+            # #530: the multipoint router reads state.config /
+            # state.diff_pair_extra_clearance / state.diff_pair_base_obstacles,
+            # not the per-pair values resolved above, so a pair whose gap was
+            # raised to its class clearance (or set by its class, #435) was
+            # chained at the GLOBAL gap: ghoul's D+/D- (class 0.2, --diff-pair-gap
+            # 0.13) announced 0.2 and shipped 0.13 -> 222 KiCad clearance items.
+            # Hand it the pair's geometry for the duration of the call.
+            _swap = config is not state.config
+            if _swap:
+                _saved = (state.config, state.diff_pair_extra_clearance,
+                          state.diff_pair_base_obstacles)
+                state.config = config
+                state.diff_pair_extra_clearance = diff_pair_extra_clearance
+                state.diff_pair_base_obstacles = diff_pair_base_obstacles
+            try:
+                leg_results, merged, peeled = route_multipoint_diff_pair(state, pair, pair_name, terminals)
+            finally:
+                if _swap:
+                    (state.config, state.diff_pair_extra_clearance,
+                     state.diff_pair_base_obstacles) = _saved
             elapsed = time.time() - start_time
             total_time += elapsed
             if leg_results is None:
@@ -298,6 +327,10 @@ def route_diff_pairs(
                 diff_pair_by_net_id[pair.n_net_id] = (pair_name, pair)
                 invalidate_obstacle_cache(obstacle_cache, pair.p_net_id)
                 invalidate_obstacle_cache(obstacle_cache, pair.n_net_id)
+                # #806: the legs are on the board (committed per leg inside the
+                # multipoint router); the working map must see them too.
+                refresh_net_obstacles(state.working_obstacles, state.net_obstacles_cache,
+                                      pcb_data, config, (pair.p_net_id, pair.n_net_id))
             else:
                 # No leg was coupled - every leg was electrically short and
                 # deferred (peeled set above). Not a failure: the single-ended
@@ -608,6 +641,12 @@ def route_diff_pairs(
             apply_polarity_swap(pcb_data, result, pad_swaps, pair_name, polarity_swapped_pairs)
 
             add_route_to_pcb_data(pcb_data, result, debug_lines=config.debug_lines)
+            # #806: keep the persistent working map in step with the commit
+            # (the single-ended loop's contract), or every later search on
+            # that map -- a ripped victim's reroute, a terminal restore --
+            # runs blind to this pair's copper.
+            refresh_net_obstacles(state.working_obstacles, state.net_obstacles_cache,
+                                  pcb_data, config, (pair.p_net_id, pair.n_net_id))
 
             if pair.p_net_id in remaining_net_ids:
                 remaining_net_ids.remove(pair.p_net_id)
@@ -651,7 +690,17 @@ def route_diff_pairs(
 
             # Try rip-up and reroute with progressive N+1
             ripped_up = False
-            if not polarity_skip and routed_net_paths and result:
+            # #764: a pair whose terminal needs a coupled fanout cannot be helped
+            # by ripping neighbours -- no amount of freed copper makes the pair fit
+            # a corridor its own geometry forbids. Skip the rip ladder and let the
+            # needs-fanout diagnosis stand.
+            if result and result.get('needs_fanout'):
+                _adv = (result.get('fanout_diag') or {}).get('advice')
+                if _adv:
+                    print(_adv)
+                print(f"  Skipping rip-up: no amount of freed copper makes this pair "
+                      f"fit a corridor its own geometry forbids (#764)")
+            elif not polarity_skip and routed_net_paths and result:
                 # Find the direction that failed faster
                 fwd_iters = result.get('iterations_forward', 0)
                 bwd_iters = result.get('iterations_backward', 0)
@@ -691,7 +740,8 @@ def route_diff_pairs(
                     print_blocking_analysis(blockers)
 
                     rippable_blockers, seen_canonical_ids = filter_rippable_blockers(
-                        blockers, routed_results, diff_pair_by_net_id, get_canonical_net_id
+                        blockers, routed_results, diff_pair_by_net_id, get_canonical_net_id,
+                        pcb_data=pcb_data, context="diff-pair rip ladder"
                     )
                     if rippable_blockers:
                         # Committed copper blocks the path: congestion, not a
@@ -894,6 +944,8 @@ def route_diff_pairs(
                             apply_polarity_swap(pcb_data, retry_result, pad_swaps, pair_name, polarity_swapped_pairs)
 
                             add_route_to_pcb_data(pcb_data, retry_result, debug_lines=config.debug_lines)
+                            refresh_net_obstacles(state.working_obstacles, state.net_obstacles_cache,  # #806
+                                                  pcb_data, config, (pair.p_net_id, pair.n_net_id))
                             if pair.p_net_id in remaining_net_ids:
                                 remaining_net_ids.remove(pair.p_net_id)
                             if pair.n_net_id in remaining_net_ids:
@@ -983,7 +1035,11 @@ def route_diff_pairs(
                         all_swap_vias, all_segment_modifications,
                         None, None,
                         routed_net_paths, routed_results, diff_pair_by_net_id, layer_map,
-                        target_swaps, results=results, obstacle_cache=obstacle_cache)
+                        target_swaps, results=results, obstacle_cache=obstacle_cache,
+                        working_obstacles=state.working_obstacles,          # #806
+                        net_obstacles_cache=state.net_obstacles_cache,
+                        ripped_route_layer_costs=state.ripped_route_layer_costs,
+                        ripped_route_via_positions=state.ripped_route_via_positions)
 
                     if swap_success and swap_result:
                         # Calculate actual routed length from segments (includes connectors and via barrels)
@@ -1034,6 +1090,8 @@ def route_diff_pairs(
 
                         apply_polarity_swap(pcb_data, swap_result, pad_swaps, pair_name, polarity_swapped_pairs)
                         add_route_to_pcb_data(pcb_data, swap_result, debug_lines=config.debug_lines)
+                        refresh_net_obstacles(state.working_obstacles, state.net_obstacles_cache,  # #806
+                                              pcb_data, config, (pair.p_net_id, pair.n_net_id))
                         if pair.p_net_id in remaining_net_ids:
                             remaining_net_ids.remove(pair.p_net_id)
                         if pair.n_net_id in remaining_net_ids:
@@ -1078,6 +1136,8 @@ def route_diff_pairs(
                         print(f"  HYBRID ESCAPE: direct coupled middle + point-to-point "
                               f"terminal legs")
                         add_route_to_pcb_data(pcb_data, hyb, debug_lines=config.debug_lines)
+                        refresh_net_obstacles(state.working_obstacles, state.net_obstacles_cache,  # #806
+                                              pcb_data, config, (pair.p_net_id, pair.n_net_id))
                         results.append(hyb)
                         successful += 1
                         total_iterations += hyb.get('iterations', 0)
@@ -1102,6 +1162,29 @@ def route_diff_pairs(
                         continue
                 if not polarity_skip:
                     print(f"  {RED}ROUTE FAILED - no rippable blockers found{RESET}")
+                    # #652: the FOURTH site that prints this line, and the one
+                    # a first pass over the code misses. It differs from the
+                    # other three in that the pair is not abandoned here --
+                    # #289 defers it to the single-ended follow-up, where the
+                    # hint would fire again -- but the misleading line is
+                    # printed HERE, and a reader acting on it retries the pair.
+                    try:
+                        from routing_diagnostics import (
+                            fanout_dropped_ball_hint, condense_hint as _ch652)
+                        from routing_state import (
+                            record_net_event as _rne652)
+                        for _nid, _nm in ((pair.p_net_id, pair.p_net_name),
+                                          (pair.n_net_id, pair.n_net_name)):
+                            _h652, _v652 = fanout_dropped_ball_hint(
+                                pcb_data, config, _nid, _nm,
+                                return_verdict=True)
+                            if _h652:
+                                _c652 = _ch652(_h652)
+                                if _c652:
+                                    print(f"  {_c652}")
+                                _rne652(state, _nid, "fanout_dropped", _v652)
+                    except Exception:
+                        pass
                 # #289: a 2-terminal pair that exhausted every coupled path
                 # (rip-up, fallback layer swap, hybrid escape) gets the same
                 # single-ended defer the electrically-short gate uses, instead

@@ -1,6 +1,6 @@
 # Claude Code Skills
 
-The repository ships nine [Claude Code](https://claude.ai/claude-code) skills in `.claude/skills/`. They combine the project's deterministic Python tooling (`kicad_parser`, `list_nets.py`, `analyze_power_paths.py`, the checkers) with AI judgment where it's actually needed — reading datasheets, classifying components, planning workflows, and diagnosing failures. Outputs are formatted as ready-to-use CLI arguments so they feed straight back into the routing tools.
+The repository ships ten [Claude Code](https://claude.ai/claude-code) skills in `.claude/skills/`. They combine the project's deterministic Python tooling (`kicad_parser`, `list_nets.py`, `analyze_power_paths.py`, the checkers) with AI judgment where it's actually needed — reading datasheets, classifying components, planning workflows, and diagnosing failures. Outputs are formatted as ready-to-use CLI arguments so they feed straight back into the routing tools.
 
 ## Using the Skills
 
@@ -24,7 +24,13 @@ opencode run --agent pcb-analysis -m anthropic/claude-sonnet-4-5 \
     "Load the 'plan-pcb-routing' skill with your skill tool and follow it for: /absolute/path/to/my_board.kicad_pcb"
 ```
 
-The `pcb-analysis` agent (defined in the repo's `opencode.json`) denies file edits - the opencode equivalent of the read-only tool allowlist the Claude Code runs use. The skills' RESULT/plan output contracts are tuned on Claude models; smaller models may follow them less reliably.
+The `pcb-analysis` agent (defined in the repo's `opencode.json`) denies file edits - the opencode equivalent of the read-only tool allowlist the Claude Code runs use (`CLAUDE_ALLOWED_TOOLS` in `kicad_routing_plugin/ai_backend.py`; the list is deliberately not restated in either place, because it was, and it went stale). Neither list grants a dedicated write tool. **Neither is a sandbox, though**: both grant `Bash`, and `--allowedTools` auto-approves the tools it names rather than removing the others (measured on Claude Code 2.1.251: the run's `init` event reports `permissionMode: auto`, taken from the user's own settings, and lists `Write`/`Edit` regardless). Read the allowlist as a statement of intent.
+
+They are also not identical: the Claude list grants the subagent-dispatch tool, so an analysis skill run through Claude Code can dispatch an independent verifier at close-out (#552), and opencode has no per-run allowlist flag to match that. Because the pinned agent *is* opencode's allowlist, `OpencodeBackend.build_cmd` **refuses** a caller naming `Write`/`Edit` rather than dropping the request - a run that believes it can write and cannot fails deep inside the skill instead of at launch. That check matches tool *names*, so it is a guard against handing over a write-capable allowlist wholesale, not a proof of read-only-ness.
+
+The behavioural half of the contract - *analysis and planning only, and any subagent you dispatch is given this sentence verbatim and answers with `VERDICT=`, never `RESULT=`* - is prompt text, not an enforced flag, and lives once in `ai_backend.ANALYSIS_CONSTRAINT`. Every GUI analysis prompt is built from it; `tests/test_552_analysis_constraint.py` is what keeps that true. The enforceable form exists and is owed rather than done: `claude --agents <json>` can define a subagent and its tools outright, which is what #552 item 2 ultimately wants.
+
+The skills' RESULT/plan output contracts are tuned on Claude models; smaller models may follow them less reliably.
 
 ## Plugin GUI Integration
 
@@ -43,8 +49,9 @@ controls):
 | AI tab | **Plan Routing** | `/plan-pcb-routing` | Fills parameters across the tabs and loads a checkable step list; **Run Selected Steps** executes them in-process |
 | AI tab | **Review Routed Board** | `/review-routed-board` | QA report in the transcript with a PASS/FAIL verdict |
 | AI tab | **Diagnose Routing Failures** | `/diagnose-routing-failures` | Root-cause report from the board + the Log tab content |
-| Basic tab (Layers) | **Check Stackup (Claude)** | `/recommend-stackup` | Stackup report; recommended layer count logged |
-| Basic tab (Options) | **Ask AI** (Power Nets) | `/analyze-power-nets` | Fills the Power Nets / Power Widths fields |
+| AI tab (Placement) | **Place (AI)** / **Place + Route (AI)** | `/pcb-free-agent place` / `full` | A headless run into a `krt_placement/` folder beside the board: final board, film, REPORT.md; progress from the milestone ledger |
+| Route tab (Layers) | **Check Stackup (Claude)** | `/recommend-stackup` | Stackup report; recommended layer count logged |
+| Route tab (Options) | **Ask AI** (Power Nets) | `/analyze-power-nets` | Fills the Power Nets / Power Widths fields |
 | Differential tab | **Ask AI** | `/identify-diff-pairs` | Checks confirmed pairs, unchecks name-matching false positives; unconventional pairs reported in the log |
 | Planes tab | **Ask AI** (assignments) | `/recommend-plane-mappings` | Fills the net → layer assignment list (replace/merge prompt) |
 | Planes tab | **Ask AI** (GND vias) | `/find-high-speed-nets` | Fills the GND via Max Distance field |
@@ -55,7 +62,7 @@ backend; opencode models are `provider/model` strings, its effort maps to
 `--variant`). Claude Code runs show a startup header (version, model, discovered
 skills) so you can confirm what actually ran.
 
-**Recording a plan run.** Tick **Make routing movie** in the Advanced tab's *Debug*
+**Recording a plan run.** Tick **Make routing movie** in the Advanced options tab's *Debug*
 section (default off) and a plan run writes one movie covering every step it ran,
 next to the board, with the path logged in green. A routing step run on its own tab
 gets its own movie the same way. See
@@ -118,6 +125,7 @@ what runs here is what the buttons run.
 
 | Skill | Purpose | Main output |
 |-------|---------|-------------|
+| [`/pcb-free-agent`](#pcb-free-agent) | Place and/or route a board end to end, the agent choosing its steps (modes `full` / `place` / `route`) | The best board it reached, a film, and REPORT.md, checked by one independent verifier |
 | [`/plan-pcb-routing`](#plan-pcb-routing) | Full board analysis and step-by-step routing plan | Ordered routing commands, executed on approval |
 | [`/analyze-power-nets`](#analyze-power-nets) | Identify power nets and track widths via datasheets | `--power-nets` / `--power-nets-widths` arguments |
 | [`/find-high-speed-nets`](#find-high-speed-nets) | Classify nets by speed tier via datasheets | `--gnd-via-distance` recommendation |
@@ -127,6 +135,10 @@ what runs here is what the buttons run.
 | [`/diagnose-routing-failures`](#diagnose-routing-failures) | Root-cause failed routes from logs + board | Targeted retry command for the failed nets |
 | [`/review-routed-board`](#review-routed-board) | Post-route QA and sign-off | Pass/fail report with next actions |
 | [`/stress-test-router`](#stress-test-router) | Batch-test the router on real-world open-source boards | Completion/DRC summary table + GitHub issues for findings |
+
+### /pcb-free-agent
+
+The placement-and-routing entry point. It gives the agent a goal per mode, the repo's CLIs as a toolbox, stop rules and the traps real runs hit, and asks for one independent verifier at the end instead of prescribing stages. It hands back the board, a light 4:3 film from its milestone ledger, and a REPORT.md with a timeline. `scripts/grade.py` and `scripts/measure.py` grade the board and split the wall clock independently of the agent's own claims, and `scripts/make_unplaced.py` builds an all-off-the-board input for from-scratch runs. Measured basis: esp_prog was DONE in 12 min (6 vias), against 3h54m (39 vias) for the staged loop it replaced; glasgow_revC reached blocking 15 in 7h56m, against 35 in ~32 h.
 
 ### /plan-pcb-routing
 
@@ -164,11 +176,16 @@ Post-route QA on any routed board (from this tool, by hand, or another router). 
 
 ### /stress-test-router
 
-A development/QA skill rather than a board-design skill: batch-tests the router against real-world open-source KiCad boards of varying complexity (simple keyboards up to 6-layer SoC carriers). Drives the `tests/stress/` harness — downloads the corpus from upstream GitHub projects (boards are never checked into the repo), normalizes via a `pcbnew` round-trip, strips all routing, then routes each board end-to-end with the `/plan-pcb-routing` workflow under strict resource limits (~4 GB per job, 4 boards concurrent via the `run_queue.sh` manager). Aggregates per-board completion rates, DRC deltas vs the unrouted baseline, connectivity verdicts, and crash/hang findings into a summary table, deduplicates findings against existing GitHub issues, and files new issues after user approval. See `tests/README.md` and `tests/stress/README.md` for the harness internals.
+A development/QA skill rather than a board-design skill: batch-tests the router against real-world open-source KiCad boards of varying complexity (simple keyboards up to 6-layer SoC carriers). Drives the `tests/stress/` harness — downloads the corpus from upstream GitHub projects (boards are never checked into the repo), normalizes via a `pcbnew` round-trip, strips all routing, then routes each board end-to-end with the `/plan-pcb-routing` workflow under strict resource limits (a ~12 GB per-step memory watchdog, boards admitted by load via the `run_queue.sh` manager). Aggregates per-board completion rates, DRC deltas vs the unrouted baseline, connectivity verdicts, and crash/hang findings into a summary table, deduplicates findings against existing GitHub issues, and files new issues after user approval. See `tests/README.md` and `tests/stress/README.md` for the harness internals.
 
 ## How They Fit Together
 
 ```
+Placement (or the whole job):
+  /pcb-free-agent place         - then continue below
+  /pcb-free-agent full|route    - routes itself --> /review-routed-board
+        |
+        v
 Before routing:
   /recommend-stackup        - fix the stackup before impedance work
   /identify-diff-pairs      - confirm pairs, get gap/impedance
@@ -182,6 +199,7 @@ Before routing:
   routing runs (route.py, route_diff.py, route_planes.py)
         |
         +-- failures? --> /diagnose-routing-failures --> targeted retry
+        |                   (placement-shaped? --> /pcb-free-agent full)
         |
         v
   /review-routed-board      - final sign-off

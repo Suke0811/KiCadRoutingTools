@@ -77,9 +77,10 @@ from connectivity import (
     get_stub_endpoints, get_net_endpoints, calculate_stub_length, get_multipoint_net_pads
 )
 from net_queries import get_chip_pad_positions, calculate_route_length
-from pcb_modification import add_route_to_pcb_data
+from pcb_modification import add_route_to_pcb_data, remove_route_from_pcb_data
 from single_ended_routing import (route_net_with_obstacles,
-                                  route_multipoint_main, route_oracle_links)
+                                  route_multipoint_main, route_oracle_links,
+                                  deferred_diagnostics, flush_diagnostics)
 from blocking_analysis import analyze_frontier_blocking, print_blocking_analysis, filter_rippable_blockers, invalidate_obstacle_cache, record_frontier_blocking
 from rip_up_reroute import rip_up_net, restore_net
 from leg_rip import LEG_RIP_ENABLED, select_blocking_branch  # #510
@@ -124,6 +125,31 @@ def _swap_blocking_net_ids(pcb_data, stub, dest_layer, config, moved_segs):
     return hits
 
 
+def _route_on_prepared_map(pcb_data, net_id, config, state, routed_net_ids,
+                           track_proximity_cache, layer_map):
+    """Route one net on the working map prepared for it, as the main pass
+    routes it, and restore the map afterwards.
+
+    The rescue rungs used to route on the map as the previous net's restore
+    left it: every soft cost cleared (stub, BGA, fragility, history, ghosts,
+    keep-away), no same-net hole-to-hole rings (a stub swap's new pad via
+    included), no own-pad lift, no free vias -- and the net's OWN cached copper
+    back on the map as an obstacle, which blocked rescues that should succeed
+    (#1146 audit: 6 of 10 two-pad nets on a fanned board against 10 of 10 on
+    a prepared map)."""
+    _stubs, via_cells = prepare_obstacles_inplace(
+        state.working_obstacles, pcb_data, config, net_id,
+        state.all_unrouted_net_ids, routed_net_ids, track_proximity_cache,
+        layer_map, state.net_obstacles_cache,
+        state.ripped_route_layer_costs, state.ripped_route_via_positions)
+    try:
+        return route_net_with_obstacles(pcb_data, net_id, config,
+                                        state.working_obstacles)
+    finally:
+        restore_obstacles_inplace(state.working_obstacles, net_id,
+                                  state.net_obstacles_cache, via_cells)
+
+
 def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
                            routed_net_ids, remaining_net_ids, routed_results,
                            routed_net_paths, track_proximity_cache, layer_map,
@@ -157,10 +183,26 @@ def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
                              state.net_obstacles_cache, via)
         if token is None:
             continue
-        result = route_net_with_obstacles(pcb_data, net_id, config,
-                                          state.working_obstacles)
+        result = _route_on_prepared_map(pcb_data, net_id, config, state,
+                                        routed_net_ids, track_proximity_cache,
+                                        layer_map)
         if result and not result.get('failed'):
             from tap_relocation import retap_pad
+            # Commit the route BEFORE re-tapping, so the replacement tap via
+            # is placed against the copper it just made room for (it used to
+            # be placed blind to it). #803: remove the net's old cache entry
+            # from the map before adding the recomputed one, or it is counted
+            # twice.
+            old_entry = state.net_obstacles_cache.get(net_id)
+            if old_entry is not None:
+                remove_net_obstacles_from_cache(state.working_obstacles,
+                                                old_entry)
+            add_route_to_pcb_data(pcb_data, result,
+                                  debug_lines=config.debug_lines)
+            update_net_obstacles_after_routing(
+                pcb_data, net_id, result, config, state.net_obstacles_cache)
+            add_net_obstacles_from_cache(
+                state.working_obstacles, state.net_obstacles_cache[net_id])
             _retap = retap_pad(pcb_data, config, state.working_obstacles,
                                state.net_obstacles_cache, token)
             if not _retap:
@@ -168,6 +210,15 @@ def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
                 # allowed to stand; drop the route and put the tap back.
                 print(f"  TAP RELOCATION: re-tap declined -> reverting "
                       f"(route discarded)")
+                remove_net_obstacles_from_cache(
+                    state.working_obstacles, state.net_obstacles_cache[net_id])
+                remove_route_from_pcb_data(pcb_data, result)
+                if old_entry is not None:
+                    state.net_obstacles_cache[net_id] = old_entry
+                    add_net_obstacles_from_cache(state.working_obstacles,
+                                                 old_entry)
+                else:
+                    state.net_obstacles_cache.pop(net_id, None)
                 restore_tap(pcb_data, state.working_obstacles,
                             state.net_obstacles_cache, token)
                 continue
@@ -190,8 +241,6 @@ def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
             result['route_length'] = calculate_route_length(
                 result['new_segments'], result.get('new_vias', []), pcb_data)
             results.append(result)
-            add_route_to_pcb_data(pcb_data, result,
-                                  debug_lines=config.debug_lines)
             from plane_fragility import fragility_on_copper_change  # #466
             fragility_on_copper_change(config, pcb_data,
                                        result.get('new_segments'),
@@ -204,15 +253,28 @@ def _tap_relocation_rescue(pcb_data, net_id, config, state, results,
                 routed_net_paths[net_id] = result['path']
             track_proximity_cache[net_id] = compute_track_proximity_for_net(
                 pcb_data, net_id, config, layer_map)
-            update_net_obstacles_after_routing(
-                pcb_data, net_id, result, config, state.net_obstacles_cache)
-            add_net_obstacles_from_cache(
-                state.working_obstacles, state.net_obstacles_cache[net_id])
             invalidate_obstacle_cache(obstacle_cache, net_id)
             return result
         restore_tap(pcb_data, state.working_obstacles,
                     state.net_obstacles_cache, token)
     return None
+
+
+def _swap_footprint(seg_mods):
+    """The copper a stub layer switch moved, on BOTH layers, as segment-like
+    records (start/end/layer) for the plane-fragility refresh: the old layer
+    gets its pour back, the new layer is carved."""
+    from types import SimpleNamespace
+    out = []
+    for m in seg_mods:
+        if 'added_seg' in m:
+            out.append(m['added_seg'])
+            continue
+        (x1, y1), (x2, y2) = m['start'], m['end']
+        for layer in (m['old_layer'], m['new_layer']):
+            out.append(SimpleNamespace(start_x=x1, start_y=y1, end_x=x2,
+                                       end_y=y2, layer=layer))
+    return out
 
 
 def _stub_swap_rescue(pcb_data, net_id, config, state, results,
@@ -241,7 +303,6 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
     from stub_layer_switching import (get_stub_info, validate_single_swap,
                                       apply_stub_layer_switch,
                                       revert_stub_layer_switch)
-    from single_ended_routing import route_net_with_obstacles
 
     ends = get_stub_endpoints(pcb_data, [net_id])
     if not ends:
@@ -327,8 +388,9 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                 continue
             new_vias, seg_mods = apply_stub_layer_switch(
                 pcb_data, stub, dest, config, debug=False)
-            result = route_net_with_obstacles(pcb_data, net_id, config,
-                                              state.working_obstacles)
+            result = _route_on_prepared_map(pcb_data, net_id, config, state,
+                                            routed_net_ids,
+                                            track_proximity_cache, layer_map)
             if result and not result.get('failed'):
                 net = pcb_data.nets.get(net_id)
                 nname = net.name if net else str(net_id)
@@ -351,6 +413,10 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                 fragility_on_copper_change(config, pcb_data,
                                            result.get('new_segments'),
                                            result.get('new_vias'))
+                # ...and the swap itself: the stub left one layer for another
+                # and may have drilled a pad via.
+                fragility_on_copper_change(
+                    config, pcb_data, _swap_footprint(seg_mods), new_vias)
                 if net_id in remaining_net_ids:
                     remaining_net_ids.remove(net_id)
                 routed_net_ids.append(net_id)
@@ -361,6 +427,23 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                     pcb_data, net_id, config, layer_map)
                 if state.working_obstacles is not None and \
                         state.net_obstacles_cache is not None:
+                    # #803: REMOVE the old entry from the working map before
+                    # replacing it. update_net_obstacles_after_routing only
+                    # swaps the cache dict entry -- it never touches the map --
+                    # so without this the previous object's cells are stranded
+                    # there for the rest of the run while the recomputed
+                    # object's are added on top: the net is counted TWICE.
+                    # Every other commit path does this remove/recompute/add
+                    # cycle (rip_up_reroute x3, sync_pcb_data_segments, the
+                    # phase-3 pair); this one skipped the remove.
+                    # Measured on glasgow_revC: +3V3 stranded 30510 cells here
+                    # and added 30983, which is exactly the
+                    # "blocked_cells: +30510 unaccounted" the #309 audit
+                    # reported for the whole run.
+                    if net_id in state.net_obstacles_cache:
+                        remove_net_obstacles_from_cache(
+                            state.working_obstacles,
+                            state.net_obstacles_cache[net_id])
                     update_net_obstacles_after_routing(
                         pcb_data, net_id, result, config,
                         state.net_obstacles_cache)
@@ -423,6 +506,12 @@ def route_single_ended_nets(
     base_obstacles = state.base_obstacles
     gnd_net_id = state.gnd_net_id
     all_unrouted_net_ids = state.all_unrouted_net_ids
+    # The builders keep pending multipoint nets' tap pads as stub-proximity
+    # sources (routing_context._stub_proximity_source_ids); they read the
+    # run's live pending dict (less the nets whose taps are done) through the
+    # config they are handed.
+    config._pending_multipoint = state.pending_multipoint_nets
+    config._multipoint_taps_done = state.multipoint_taps_done
     total_routes = state.total_routes
 
     # Counters (kept as locals)
@@ -600,7 +689,11 @@ def route_single_ended_nets(
 
         route_index += 1
         failed_str = f" ({failed} failed)" if failed > 0 else ""
-        print(f"\n[{route_index}/{total_routes}{failed_str}] Routing {net_name} (id={net_id})")
+        # #1202: nets ripped this pass wait in the reroute queue; without
+        # this the main pass reads "[110/110]" while 34 sit ripped.
+        _ripped = len(reroute_queue) if reroute_queue else 0
+        ripped_str = f" ({_ripped} ripped)" if _ripped else ""
+        print(f"\n[{route_index}/{total_routes}{failed_str}{ripped_str}] Routing {net_name} (id={net_id})")
 
         # Report progress
         if progress_callback is not None:
@@ -608,7 +701,6 @@ def route_single_ended_nets(
             if failed > 0:
                 msg += f" ({failed} failed)"
             progress_callback(route_index, total_routes, msg)
-        print("-" * 40)
 
         # Periodic memory reporting (every 10 nets)
         if config.debug_memory and (route_index % 10 == 1 or route_index == total_routes):
@@ -665,10 +757,38 @@ def route_single_ended_nets(
         # main-edge selection + attraction too (they used to route blind).
         attraction_path, reverse_direction = bus_attraction_context(
             net_id, bus_net_to_group, bus_corridors, bus_routed_paths)
+        # #589 v2 owner attraction (KICAD_GLOBAL_PLAN_ATTRACT=1): a net
+        # with a planned rough corridor and NO bus corridor is attracted
+        # to its own plan -- the global->detailed handoff the repulsion-
+        # only reservations lack. Densified like a bus corridor; the
+        # attraction bonus/radius knobs are shared with bus routing.
+        if attraction_path is None:
+            _gp = getattr(config, '_global_plan', None)
+            if (_gp is not None and net_id in _gp.rough_paths
+                    and env_knobs.GLOBAL_PLAN.get('attract')):
+                # #658 river: predecessor's realized copper outranks the
+                # net's own probe corridor (follow-the-leader packing).
+                _riv = None
+                if env_knobs.GLOBAL_PLAN.get('river'):
+                    from global_plan import river_attraction_path
+                    _riv = river_attraction_path(config, net_id, pcb_data)
+                attraction_path = (_sample_path(_riv) if _riv is not None
+                                   else _sample_path(_gp.rough_paths[net_id]))
+                reverse_direction = False
         # Off-lane surcharge (the stick): members with a corridor pay
         # scaled step costs everywhere EXCEPT near the lane, where the
         # attraction discount compensates -- defection costs real money.
         cfg_route = bus_stick_config(config, attraction_path)
+        # #589 option 2 (KICAD_GLOBAL_PLAN_LAYER=pref): soft discount on the
+        # net's plan-assigned layer so corridor cliques pack N layers deep
+        # instead of all fighting for the probes' shared favorite layer.
+        # Unchanged cfg_route when the plan/knob is off or the net has no
+        # assignment.
+        from global_plan import plan_layer_config, power_layer_config
+        cfg_route = plan_layer_config(cfg_route, config, net_id)
+        # #658 power discipline: power nets get their own layer economics
+        # (off the highways, dive-fast) -- see power_layer_config.
+        cfg_route = power_layer_config(cfg_route, config, net_id)
         # #572: oracle forced links outrank endpoint derivation -- the
         # model's zone credit merges the exact-fill clusters, so both the
         # multipoint and plain derivations "see" no gap and succeed with
@@ -680,23 +800,28 @@ def route_single_ended_nets(
         _olinks = (getattr(state, 'oracle_links_by_net', None) or {}).get(net_id)
         # Check for multi-point net (3+ pads, no existing segments)
         multipoint_pads = get_multipoint_net_pads(pcb_data, net_id, config)
-        if _olinks:
-            print(f"  Routing {len(_olinks)} exact-fill oracle link(s) "
-                  f"(#572 forced edges)")
-            result = route_oracle_links(pcb_data, net_id, cfg_route, obstacles,
-                                        _olinks,
-                                        attraction_path=attraction_path)
-        elif multipoint_pads:
-            print(f"  Detected multi-point net with {len(multipoint_pads)} pads (Phase 1: main route only)")
-            result = route_multipoint_main(pcb_data, net_id, cfg_route, obstacles, multipoint_pads,
-                                           attraction_path=attraction_path, state=state)
-            # Track for Phase 3 completion after length matching
-            if result and not result.get('failed') and result.get('is_multipoint'):
-                state.pending_multipoint_nets[net_id] = result
-        else:
-            result = route_net_with_obstacles(pcb_data, net_id, cfg_route, obstacles,
-                                              attraction_path=attraction_path,
-                                              reverse_direction=reverse_direction)
+        # Hold the A* search diagnostics until we know whether this net failed;
+        # a stall that the router recovers from needs no explanation (--verbose
+        # streams them live).
+        with deferred_diagnostics(config) as diag_buf:
+            if _olinks:
+                print(f"  Routing {len(_olinks)} exact-fill oracle link(s) "
+                      f"(#572 forced edges)")
+                result = route_oracle_links(pcb_data, net_id, cfg_route, obstacles,
+                                            _olinks,
+                                            attraction_path=attraction_path)
+            elif multipoint_pads:
+                print(f"  Detected multi-point net with {len(multipoint_pads)} pads (Phase 1: main route only)")
+                result = route_multipoint_main(pcb_data, net_id, cfg_route, obstacles, multipoint_pads,
+                                               attraction_path=attraction_path, state=state)
+                # Track for Phase 3 completion after length matching
+                if result and not result.get('failed') and result.get('is_multipoint'):
+                    state.pending_multipoint_nets[net_id] = result
+                    state.multipoint_taps_done.discard(net_id)
+            else:
+                result = route_net_with_obstacles(pcb_data, net_id, cfg_route, obstacles,
+                                                  attraction_path=attraction_path,
+                                                  reverse_direction=reverse_direction)
 
         elapsed = time.time() - start_time
         total_time += elapsed
@@ -712,6 +837,21 @@ def route_single_ended_nets(
             total_iterations += result['iterations']
             # Record success (inline version to avoid circular import)
             add_route_to_pcb_data(pcb_data, result, debug_lines=config.debug_lines)
+            # In-loop stub-debris trim (KICAD_STUB_DEBRIS_TRIM=0 reverts):
+            # prune the stub branches this route left unused and any via
+            # they leave dangling NOW -- before the obstacle-cache
+            # recompute below -- so the freed cells are routable by the
+            # very next net instead of blocking until sweep_dead_ends at
+            # cleanup. Multipoint mains keep everything: their stubs are
+            # Phase-3 landing sites.
+            if env_knobs.STUB_DEBRIS_TRIM and not result.get('is_multipoint'):
+                from pcb_modification import trim_net_stub_debris
+                _td_s, _td_v = trim_net_stub_debris(
+                    pcb_data, net_id, result, config,
+                    swap_vias=getattr(state, 'all_swap_vias', None))
+                if _td_s or _td_v:
+                    print(f"    stub-debris trim: {_td_s} unused stub "
+                          f"segment(s), {_td_v} dangling via(s) freed")
             from plane_fragility import fragility_on_copper_change  # #466
             fragility_on_copper_change(config, pcb_data,
                                        result.get('new_segments'),
@@ -752,6 +892,9 @@ def route_single_ended_nets(
             invalidate_obstacle_cache(obstacle_cache, net_id)
         else:
             iterations = result['iterations'] if result else 0
+            # This net failed, so the buffered search diagnostics are now the
+            # explanation the reader wants -- print them ahead of the verdict.
+            flush_diagnostics(diag_buf)
             print(f"  FAILED: Could not find route ({elapsed:.2f}s)")
             total_iterations += iterations
 
@@ -820,7 +963,8 @@ def route_single_ended_nets(
                     # Filter to only rippable blockers (those in routed_results)
                     # and deduplicate by diff pair (P and N count as one)
                     rippable_blockers, seen_canonical_ids = filter_rippable_blockers(
-                        blockers, routed_results, diff_pair_by_net_id, get_canonical_net_id
+                        blockers, routed_results, diff_pair_by_net_id, get_canonical_net_id,
+                        pcb_data=pcb_data, context="SE rip ladder"
                     )
                     # Blocker-selection algorithm (#424 audit; --ripup-blocker-select).
                     _bsel = getattr(config, 'ripup_blocker_select', 'count')
@@ -1132,6 +1276,12 @@ def route_single_ended_nets(
                         # Bus attraction for the retry, multipoint included
                         retry_attraction_path, retry_reverse_direction = bus_attraction_context(
                             net_id, bus_net_to_group, bus_corridors, bus_routed_paths)
+                        if retry_attraction_path is None:
+                            # #656: keep the plan lane through rip retries
+                            from global_plan import plan_attraction_path
+                            retry_attraction_path = plan_attraction_path(
+                                config, net_id, pcb_data)
+                            retry_reverse_direction = False
                         retry_cfg = bus_stick_config(config, retry_attraction_path)
                         # #572: a forced-link net retries its EXACT links
                         # against the post-rip board (same reason as the
@@ -1166,6 +1316,19 @@ def route_single_ended_nets(
                             successful += 1
                             total_iterations += retry_result['iterations']
                             add_route_to_pcb_data(pcb_data, retry_result, debug_lines=config.debug_lines)
+                            # In-loop stub-debris trim -- same rationale as
+                            # the first-pass site above.
+                            if (env_knobs.STUB_DEBRIS_TRIM
+                                    and not retry_result.get('is_multipoint')):
+                                from pcb_modification import trim_net_stub_debris
+                                _td_s, _td_v = trim_net_stub_debris(
+                                    pcb_data, net_id, retry_result, config,
+                                    swap_vias=getattr(state, 'all_swap_vias',
+                                                      None))
+                                if _td_s or _td_v:
+                                    print(f"    stub-debris trim: {_td_s} unused "
+                                          f"stub segment(s), {_td_v} dangling "
+                                          f"via(s) freed")
                             from plane_fragility import fragility_on_copper_change  # #466
                             fragility_on_copper_change(config, pcb_data,
                                                        retry_result.get('new_segments'),
@@ -1380,7 +1543,37 @@ def route_single_ended_nets(
                             if retry_result:
                                 retry_fwd_cells = retry_result.pop('blocked_cells_forward', [])
                                 retry_bwd_cells = retry_result.pop('blocked_cells_backward', [])
-                                last_retry_blocked_cells = list(set(retry_fwd_cells + retry_bwd_cells))
+                                # #622 POCKET RIP (KICAD_POCKET_RIP=1, opt-in):
+                                # when one A* direction dies in a tiny enclosed
+                                # pocket, its blocked cells name the pocket's
+                                # wall -- but the UNION with the other,
+                                # wide-open direction lets that side's cell
+                                # counts swamp them, so the rip ladder never
+                                # rips the wall. Measured on the branch (SDQ11):
+                                # backward frozen at 44 iterations across 6
+                                # rips, its two wallers named at attempt 0 and
+                                # never ripped. Re-analyze the stuck direction's
+                                # cells ALONE so the ladder rips what actually
+                                # encloses it.
+                                _fi = retry_result.get('iterations_forward', 0)
+                                _bi = retry_result.get('iterations_backward', 0)
+                                _stuck = None
+                                if env_knobs.POCKET_RIP and _fi > 0 and _bi > 0:
+                                    if _fi <= _bi * 0.2 and retry_fwd_cells:
+                                        _stuck = ('forward', _fi, _bi,
+                                                  retry_fwd_cells)
+                                    elif _bi <= _fi * 0.2 and retry_bwd_cells:
+                                        _stuck = ('backward', _bi, _fi,
+                                                  retry_bwd_cells)
+                                if _stuck is not None:
+                                    last_retry_blocked_cells = list(set(_stuck[3]))
+                                    print(f"    Retry {_stuck[0]} pocket-stuck at "
+                                          f"{_stuck[1]} iters (other side "
+                                          f"{_stuck[2]}): re-analyzing its "
+                                          f"{len(last_retry_blocked_cells)} "
+                                          f"blocked cells only")
+                                else:
+                                    last_retry_blocked_cells = list(set(retry_fwd_cells + retry_bwd_cells))
                                 del retry_fwd_cells, retry_bwd_cells  # Free memory immediately
                                 if last_retry_blocked_cells:
                                     print(f"    Retry had {len(last_retry_blocked_cells)} blocked cells")
@@ -1412,10 +1605,21 @@ def route_single_ended_nets(
                     "reason": "no rippable blockers found"
                 })
                 print(f"  {RED}ROUTE FAILED - no rippable blockers found{RESET}")
-                from routing_diagnostics import static_boxin_hint, preexisting_blocker_hint
-                hint = static_boxin_hint(result, config, pcb_data)
+                from routing_diagnostics import (static_boxin_hint,
+                                                 preexisting_blocker_hint,
+                                                 condense_hint)
+                hint, _boxin = static_boxin_hint(result, config, pcb_data,
+                                                 return_verdict=True)
                 if hint:
-                    print(f"  {hint}")
+                    hint = condense_hint(hint)
+                    if hint:
+                        print(f"  {hint}")
+                if _boxin:
+                    # The verdict, not just the sentence. `preexisting_blockers`
+                    # below has been recorded and serialized since #301; this
+                    # one -- the static-vs-congestion decision the whole retry
+                    # ladder turns on -- was print-only.
+                    record_net_event(state, net_id, "boxed_in_static", _boxin)
                 # #301: the blockers may be PRE-EXISTING copper (earlier run/
                 # step) the rip-up attribution cannot see -- name them and the
                 # --rip-existing-nets retry. Cells were popped into
@@ -1427,11 +1631,51 @@ def route_single_ended_nets(
                                  (result.get('blocked_cells_backward') or []))
                 if not _cells301:
                     _cells301 = list(locals().get('blocked_cells') or [])
+                # #907: say WHY nothing is rippable when the answer is "a
+                # FLAG THIS RUN SET closed the last via site". Ahead of the
+                # #652 and #301 hints (the static-boxin verdict above is
+                # printed by the `no rippable blockers` line itself) because
+                # it is the only cause whose remedy is a command-line change
+                # the caller already controls -- and because nothing else in
+                # the report names the flag at all.
+                try:
+                    from routing_diagnostics import same_net_pad_seal_hint
+                    _h907, _v907 = same_net_pad_seal_hint(
+                        pcb_data, config, net_id, net_name,
+                        obstacles=state.working_obstacles,
+                        return_verdict=True)
+                    if _h907:
+                        _c907 = condense_hint(_h907)
+                        if _c907:
+                            print(f"  {_c907}")
+                        record_net_event(state, net_id, "sealed_by_snpc",
+                                         _v907)
+                except Exception:
+                    pass
+                # #652: say WHY nothing is rippable when the answer is
+                # "this ball never got an escape". Placed before the #301 hint
+                # because it is the actionable one -- #301 names copper to rip,
+                # and there is none to rip here.
+                try:
+                    from routing_diagnostics import fanout_dropped_ball_hint
+                    _h652, _v652 = fanout_dropped_ball_hint(
+                        pcb_data, config, net_id, net_name,
+                        return_verdict=True)
+                    if _h652:
+                        _c652 = condense_hint(_h652)
+                        if _c652:
+                            print(f"  {_c652}")
+                        record_net_event(state, net_id, "fanout_dropped",
+                                         _v652)
+                except Exception:
+                    pass
                 hint301, blockers301 = preexisting_blocker_hint(
                     _cells301, config, pcb_data, net_id,
                     routed_net_ids=state.routed_net_ids, return_names=True)
                 if hint301:
-                    print(f"  {hint301}")
+                    _c301 = condense_hint(hint301)
+                    if _c301:
+                        print(f"  {_c301}")
                     record_net_event(state, net_id, "preexisting_blockers", {
                         "hint": hint301, "blockers": blockers301})
                 # Tap-relocation rung (#424 planes-first, env-gated): a

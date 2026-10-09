@@ -41,12 +41,14 @@ def _seg_points(s, step_mm: float = 0.2):
                s.start_y + (s.end_y - s.start_y) * t)
 
 
-def _copper_conflicts(pcb_data: PCBData, config: GridRouteConfig,
-                      own_ids: set, segments, vias) -> bool:
-    """True if any candidate segment/via violates clearance against any
-    foreign segment/via currently on the board. Pads are not re-checked:
-    the saved copper was DRC-clean against them before the rip and pads do
-    not move; only copper routed SINCE the rip can conflict."""
+def _conflict_sweep(pcb_data: PCBData, config: GridRouteConfig,
+                    own_ids: set, segments, vias, collect: bool = False):
+    """Owners (net_ids) of board copper violating clearance against the
+    candidate segments/vias. collect=False returns at the FIRST hit (the
+    boolean-speed path `_copper_conflicts` wraps); collect=True sweeps the
+    whole board and returns every conflicting owner. Pads are not
+    re-checked: the saved copper was DRC-clean against them before the rip
+    and pads do not move; only copper routed SINCE the rip can conflict."""
     from geometry_utils import point_to_segment_distance
     clr_of = (config.obstacle_clearance
               if hasattr(config, 'obstacle_clearance') else lambda n: config.clearance)
@@ -62,37 +64,90 @@ def _copper_conflicts(pcb_data: PCBData, config: GridRouteConfig,
             return config.stack_clearance(v)
         return v
 
+    def _track_pair_clr(a_net, b_net, layer):
+        # A track-scoped DRU rule raises the SEG-SEG requirement only (#735).
+        #
+        # NOT `kicad_dru.track_pair_clearance`, and do not unify them (#735).
+        # That one is PAIR-EXACT and needs both nets' class memberships; this
+        # one reads `config.track_clearances`, the ROUTER's per-obstacle-net
+        # OVER-approximation, because that is the map the copper being
+        # restored was routed against. Substituting the exact resolver here
+        # would price a restore BELOW what the router stamped for it.
+        v = _pair_clr(a_net, b_net, layer)
+        if hasattr(config, 'track_obstacle_clearance'):
+            v = max(config.track_obstacle_clearance(a_net, v),
+                    config.track_obstacle_clearance(b_net, v))
+        return v
+
+    # The board as the router sees it: pcb_data plus every in-flight window
+    # (push_inflight_copper) -- copper stamped in the working map but not yet
+    # committed, like a phase-3 tap whose victims are being re-routed. A
+    # restore graded on pcb_data alone put keks's /SRAM0_D9 back on its
+    # pre-rip copper straight across /SRAM_A4's in-flight tap (#1156's victim
+    # restore; 33 shorts on one step).
+    board_segs = list(pcb_data.segments)
+    board_vias = list(pcb_data.vias)
+    for _isegs, _ivias in getattr(pcb_data, '_inflight_copper', None) or ():
+        board_segs.extend(_isegs)
+        board_vias.extend(_ivias)
+
+    owners: set = set()
     for cand in segments:
         c_clr_half = cand.width / 2
-        for s in pcb_data.segments:
-            if s.net_id in own_ids or s.layer != cand.layer:
+        for s in board_segs:
+            if s.net_id in own_ids or s.layer != cand.layer \
+                    or s.net_id in owners:
                 continue
-            need = c_clr_half + s.width / 2 + _pair_clr(cand.net_id, s.net_id, cand.layer)
+            need = c_clr_half + s.width / 2 + _track_pair_clr(cand.net_id, s.net_id, cand.layer)
             if any(point_to_segment_distance(px, py, s.start_x, s.start_y,
                                              s.end_x, s.end_y) < need
                    for px, py in _seg_points(cand)):
-                return True
-        for v in pcb_data.vias:
-            if v.net_id in own_ids:
+                owners.add(s.net_id)
+                if not collect:
+                    return owners
+        for v in board_vias:
+            if v.net_id in own_ids or v.net_id in owners:
                 continue
             need = c_clr_half + v.size / 2 + _pair_clr(cand.net_id, v.net_id, cand.layer)
             if any(math.hypot(px - v.x, py - v.y) < need for px, py in _seg_points(cand)):
-                return True
+                owners.add(v.net_id)
+                if not collect:
+                    return owners
     for cv in vias:
-        for v in pcb_data.vias:
-            if v.net_id in own_ids:
+        for v in board_vias:
+            if v.net_id in own_ids or v.net_id in owners:
                 continue
             need = cv.size / 2 + v.size / 2 + _pair_clr(cv.net_id, v.net_id)
             if math.hypot(cv.x - v.x, cv.y - v.y) < need:
-                return True
-        for s in pcb_data.segments:
-            if s.net_id in own_ids:
+                owners.add(v.net_id)
+                if not collect:
+                    return owners
+        for s in board_segs:
+            if s.net_id in own_ids or s.net_id in owners:
                 continue
             need = cv.size / 2 + s.width / 2 + _pair_clr(cv.net_id, s.net_id, s.layer)
             if point_to_segment_distance(cv.x, cv.y, s.start_x, s.start_y,
                                          s.end_x, s.end_y) < need:
-                return True
-    return False
+                owners.add(s.net_id)
+                if not collect:
+                    return owners
+    return owners
+
+
+def _copper_conflicts(pcb_data: PCBData, config: GridRouteConfig,
+                      own_ids: set, segments, vias) -> bool:
+    """True if any candidate segment/via violates clearance against any
+    foreign segment/via currently on the board."""
+    return bool(_conflict_sweep(pcb_data, config, own_ids, segments, vias,
+                                collect=False))
+
+
+def conflict_owner_ids(pcb_data: PCBData, config: GridRouteConfig,
+                       own_ids: set, segments, vias) -> set:
+    """Every net owning board copper that blocks a full restore of the
+    candidate copper (#622 victim-priority restore)."""
+    return _conflict_sweep(pcb_data, config, own_ids, segments, vias,
+                           collect=True)
 
 
 def _stub_subset(pcb_data: PCBData, net_id: int, segments, vias,
@@ -191,7 +246,17 @@ def try_terminal_restore(pcb_data: PCBData, config: GridRouteConfig,
             return 'full_open'
         return 'full'
 
-    stub_segs, stub_vias = _stub_subset(pcb_data, net_id, segments, vias)
+    # #806: a pair payload carries BOTH members' copper under two ids
+    # (ripped_ids); walking only `net_id`'s pads kept the P stub and dropped
+    # the N stub. Collect the escape subset per member id.
+    stub_segs, stub_vias = [], []
+    _seen_s, _seen_v = set(), set()
+    for _nid in sorted(own):
+        _ss, _sv = _stub_subset(pcb_data, _nid, segments, vias)
+        stub_segs += [s for s in _ss if id(s) not in _seen_s]
+        _seen_s.update(id(s) for s in _ss)
+        stub_vias += [v for v in _sv if id(v) not in _seen_v]
+        _seen_v.update(id(v) for v in _sv)
     kept_s = [s for s in stub_segs
               if not _copper_conflicts(pcb_data, config, own, [s], [])]
     kept_v = [v for v in stub_vias
@@ -220,22 +285,15 @@ def try_terminal_restore(pcb_data: PCBData, config: GridRouteConfig,
     # obstacles for every later net this run, the cache entry keeps
     # mirroring the board, and every map op is a complete-entry add/remove
     # -- #309 ref-counts balanced by construction.
-    if working_obstacles is not None and net_obstacles_cache is not None \
-            and net_id in net_obstacles_cache:
-        from obstacle_cache import (add_net_obstacles_from_cache,
-                                    precompute_net_obstacles,
-                                    remove_net_obstacles_from_cache)
-        remove_net_obstacles_from_cache(working_obstacles,
-                                        net_obstacles_cache[net_id])
-        pcb_data.segments.extend(kept_s)
-        pcb_data.vias.extend(kept_v)
-        net_obstacles_cache[net_id] = precompute_net_obstacles(
-            pcb_data, net_id, config)
-        add_net_obstacles_from_cache(working_obstacles,
-                                     net_obstacles_cache[net_id])
-    else:
-        pcb_data.segments.extend(kept_s)
-        pcb_data.vias.extend(kept_v)
+    # #806: EVERY member id of the payload (P and N of a pair), and a net
+    # with no entry yet gets one -- rip_up_net recomputes unconditionally, so
+    # any net with a payload has an entry; this mirrors that rather than
+    # extending pcb_data with copper the map never sees.
+    pcb_data.segments.extend(kept_s)
+    pcb_data.vias.extend(kept_v)
+    from obstacle_cache import refresh_net_obstacles
+    refresh_net_obstacles(working_obstacles, net_obstacles_cache, pcb_data,
+                          config, sorted(own))
     name = pcb_data.nets[net_id].name if net_id in pcb_data.nets else str(net_id)
     print(f"  RIP-RESTORE (#468): {name} remains UNROUTED -- kept only its "
           f"escape stub ({len(kept_s)} seg(s), {len(kept_v)} via(s)) so the "

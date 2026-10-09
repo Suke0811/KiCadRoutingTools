@@ -13,6 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'py_router'))  # #522
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'py_placer'))  # placement split
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'py_tools'))  # #522
 
 from kicad_parser import parse_kicad_pcb
@@ -295,6 +296,5 @@ if __name__ == '__main__':
     test_via_clear_fallback_respects_hard_clearances()
     test_seed_track_graze_is_resolved()
     test_seg_to_rect_dist_exact()
-    test_mover_pad_short_is_hard_blocked()
     test_mover_pad_short_is_hard_blocked()
     print("ALL PASS")

@@ -40,10 +40,24 @@ PLUGIN = REPO / "kicad_routing_plugin"
 # post-passes (run_drc graze audit, fix_project_for_output) were a blind spot.
 # Point at the package __init__ where main() actually lives.
 # #522 layout: the CLI mains live under py_router/.
+# #725: place_fanout_clearance.py was absent, so this gate never scanned the
+# decoupling-cap repair CLI even though its main() runs two tracked post-passes
+# (warn_if_missing_project_floor, fix_project_for_output). That matters
+# specifically because the cap-repair engine now reads the sibling .kicad_pro
+# and .kicad_dru for its own arithmetic: dropping the project on the way out
+# does not just cost the next step its DRC floor, it silently changes what the
+# NEXT cap-repair run prices at.
 CLI_MAINS = ["py_router/route.py", "py_router/route_diff.py",
              "py_router/route_planes.py", "py_router/repair_planes.py",
              "py_router/bga_fanout/__init__.py",
-             "py_router/qfn_fanout/__init__.py"]
+             "py_router/qfn_fanout/__init__.py",
+             "py_placer/place_fanout_clearance.py",
+             # #892: the pose setter WRITES boards, so a finalization pass
+             # added to its main() would be the same CLI-only drift. It has
+             # none today by construction -- the sibling carry and the legality
+             # grade live in `placement/pose_ops.py`, which both fronts call --
+             # and scanning it is what keeps that true.
+             "py_placer/place_pose.py"]
 
 # Known post-engine passes -> GUI counterpart symbol(s). A pass is "covered" if
 # ANY listed symbol appears anywhere under kicad_routing_plugin/. Keep the RHS
@@ -71,12 +85,35 @@ REGISTRY = {
     'persist_protected_nets': ['_write_drc_floors', 'update_live_drc_floors'],
     # #521 companion: per-net impedance declarations recorded the same way.
     'persist_impedance_specs': ['_write_drc_floors', 'update_live_drc_floors'],
+    # #678 companion: the balls a BGA fanout promised to serve by fill contact,
+    # recorded in the sibling .kicad_pro so a later route step's plane finalize
+    # can audit the promise. Same shape and same two GUI writeback sites as its
+    # two siblings above -- bga_fanout.main() persists on the CLI, the plan end
+    # (ai_plan._write_drc_floors) and each manual step
+    # (gui_utils.update_live_drc_floors) persist in the GUI.
+    'persist_pour_served_pads': ['_write_drc_floors', 'update_live_drc_floors'],
     # GND return vias near signal vias
     'add_gnd_vias_to_existing_board': ['add_gnd_vias_to_existing_board'],
     # run-6 fix 1.7: castellated-landing retract (route.py + both plane
     # mains); GUI twin applies the shared compute core to the live board.
     'retract_castellated_landings': ['apply_castellated_landing_retract',
                                      'compute_castellated_landing_retract'],
+    # #962: the ship-time Type VII stamp on a WRITTEN board (repair_planes'
+    # main, after its oracle reconnect). The GUI decides with the same core,
+    # fab_notes.via_protection_stamps, on the vias it creates
+    # (gui_utils.run_kicad_oracle_on_live_board), and applies them through
+    # apply_via_protection.
+    'ship_via_protection_file': ['via_protection_stamps'],
+    # #962: route_planes' main stamps its --add-gnd-vias dicts with the core
+    # itself; the GUI runs the core wherever it creates vias.
+    'via_protection_stamps': ['via_protection_stamps'],
+    'apply_stamps_in_memory': ['via_protection_stamps'],
+    'print_via_protection_record': ['via_protection_stamps'],
+    'via_snapshot': ['via_protection_stamps'],
+    # #1195: which floors a fanout step may lower (none for a QFN run with no
+    # copper, no via floors without a via). qfn_fanout's main and the fanout
+    # tab's apply both decide with it before their writeback.
+    'fanout_written_floors': ['_apply_fanout_results'],
 }
 # NOTE (deliberately NOT registered): move_copper_graphics_to_silkscreen runs
 # inside the shared plane WRITER (plane_io), not a main() -- so this gate, which
@@ -85,6 +122,12 @@ REGISTRY = {
 # text writers, so parity there comes from a HAND-WRITTEN twin,
 # gui_utils.move_copper_graphics_to_silkscreen_board. Any new writer-level pass
 # needs the same treatment.
+#
+# #908 made that twin pair carry a DECISION as well as a walk (a footprint with
+# pads owns functional copper and is exempt from the move). Both fronts read the
+# one predicate kicad_parser.footprint_copper_is_functional rather than each
+# counting pads its own way, and tests/test_908_writer_owner_gate.py measures
+# the two fronts against each other on real boards.
 #
 # OPEN GAP (2026-07-28): kicad_writer.strip_zero_length_edge_cuts sits in exactly
 # that position -- wired into output_writer / plane_io / kicad_writer beside the
@@ -106,7 +149,10 @@ REGISTRY = {
 # never-before-seen symbol from these, called in a CLI main, must be reviewed.
 # #381 D8: added 'check_drc' -- the fanout mains run a post-engine DRC graze
 # audit (check_drc.run_drc) that the lint's module list couldn't see.
-POSTPASS_MODULES = ['kicad_oracle', 'fix_kicad_drc_settings', 'check_drc']
+POSTPASS_MODULES = ['kicad_oracle', 'fix_kicad_drc_settings', 'check_drc',
+                    # #962: fab_notes now changes the board (the Type VII
+                    # stamp), so a CLI main calling it is a post-pass too.
+                    'fab_notes']
 
 # Symbols intentionally exempt from discovery (helpers/args, not passes).
 # read_project_edge_clearance (#338): a pure READER (project edge rule ->
@@ -125,6 +171,11 @@ DISCOVERY_EXEMPT = {'add_drc_fix_args', 'drc_fix_kwargs', 'find_kicad_cli',
                     # routing, no board mutation; the GUI operates on the live board and
                     # never cp's, so no GUI counterpart is needed.
                     'warn_if_missing_project_floor',
+                    # #1160: its sibling. Pre-engine and report-only: SAYS when the
+                    # input project's Default class carries a clearance an earlier
+                    # step's descent lowered (the writeback's class_clearance_relaxed
+                    # record). No board mutation; the GUI writes no project record.
+                    'warn_if_class_clearance_relaxed',
                     # #441: pure RESOLVER (max(cli, project edge rule, fab floor) ->
                     # float) feeding the engine's board_edge_clearance; same VALUE-level
                     # parity story as read_project_edge_clearance above -- the GUI
@@ -140,6 +191,14 @@ DISCOVERY_EXEMPT = {'add_drc_fix_args', 'drc_fix_kwargs', 'find_kicad_cli',
 KNOWN_CLI_ONLY = {
     'run_drc': 'bga/qfn fanout post-engine DRC graze audit -> JSON_SUMMARY '
                'drc_grazes (report-only, no board mutation)',
+    # #910. OPT-IN (--write-fill) and CLI-only ON PURPOSE: it writes
+    # `filled_polygon` blocks into the DELIVERED FILE, and the GUI has no
+    # delivered file -- it applies copper to the user's open board, where
+    # KiCad fills live and pressing B is the same operation. A GUI twin would
+    # be a button that does what the application already does.
+    'write_filled_board': 'route.py --write-fill: fills the WRITTEN board for '
+                          'delivery; the GUI mutates a live board KiCad fills '
+                          'itself, so there is no file to fill',
 }
 
 
@@ -207,6 +266,50 @@ def _plugin_symbols():
 
 
 _TERMINAL = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+
+
+# Passes whose GUI twin is the SAME function called inside a bigger writeback
+# (ai_plan._write_drc_floors / gui_utils.update_live_drc_floors), NOT a
+# reimplementation. For these, check B is worthless on its own: it is satisfied
+# by the CONTAINER's name, which exists whether or not the container still
+# calls the pass. Measured 2026-09-05 -- deleting the
+# `persist_pour_served_pads(...)` line from BOTH GUI writebacks left this gate
+# reporting "0 failures", because `update_live_drc_floors` was still a defined
+# function. Check E below asks the question B cannot: is the call still THERE?
+#
+# Only same-symbol twins belong here. Entries like clean_plane_copper (GUI twin
+# is `_run_plane_copper_cleanup`, a different implementation) or repair_planes
+# (evidenced by a results_data KEY) would fail a containment test correctly-but-
+# wrongly, which is why this is an explicit set rather than a blanket rule.
+SAME_SYMBOL_TWINS = {
+    'persist_protected_nets',
+    'persist_impedance_specs',
+    'persist_pour_served_pads',
+    'fanout_written_floors',
+}
+
+
+def _plugin_func_bodies():
+    """{function name: set of symbols called/named inside it} for every
+    function defined under kicad_routing_plugin/."""
+    bodies = {}
+    for f in sorted(glob.glob(str(PLUGIN / "*.py"))):
+        try:
+            tree = ast.parse(Path(f).read_text())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            names = set()
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call):
+                    fn = sub.func
+                    n = getattr(fn, 'id', None) or getattr(fn, 'attr', None)
+                    if n:
+                        names.add(n)
+            bodies.setdefault(node.name, set()).update(names)
+    return bodies
 
 
 def _unreachable_calls():
@@ -312,6 +415,32 @@ def main():
                 f"skips a CLI post-pass.")
         else:
             warnings.append(f"unreachable call to '{sym}' at {fname}:{lineno}")
+
+    # E. A SAME-SYMBOL twin must still be CALLED inside its registered GUI
+    # writeback. B is a presence test on the container's name and cannot see
+    # the call being deleted out of it; this can.
+    func_bodies = _plugin_func_bodies()
+    for sym in sorted(SAME_SYMBOL_TWINS):
+        if sym not in REGISTRY:
+            failures.append(
+                f"SAME_SYMBOL_TWINS names '{sym}', which is not in REGISTRY -- "
+                f"the two lists have drifted apart.")
+            continue
+        if not used.get(sym):
+            continue                      # B already warns about a stale entry
+        hosts = [g for g in REGISTRY[sym] if g in func_bodies]
+        if not hosts:
+            failures.append(
+                f"registered GUI counterpart(s) {REGISTRY[sym]} for '{sym}' name "
+                f"no function DEFINED under kicad_routing_plugin/, so check E "
+                f"cannot verify the call. Register the containing function.")
+            continue
+        if not any(sym in func_bodies[h] for h in hosts):
+            failures.append(
+                f"CLI post-pass '{sym}' (in {used[sym]}) is NOT CALLED by any of "
+                f"its registered GUI writebacks {hosts}: the GUI silently skips "
+                f"it while the container's name keeps check B green (Class-2 "
+                f"drift).")
 
     print(f"CLI post-pass coverage: {len(REGISTRY)} registered, "
           f"{len(used)} in active CLI use, {len(acknowledged)} CLI-only "

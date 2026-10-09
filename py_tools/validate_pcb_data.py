@@ -17,19 +17,27 @@ default install paths); pass boards as arguments:
 
 Exit status: 0 = all boards match, 1 = differences found, 2 = error.
 """
+
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': [], 'kind': 'instrument'}
+
 import _path  # noqa: F401  (#522: makes ../py_router importable)
 
+import argparse
 import os
+import subprocess
 import sys
 
 # Non-fatal pcbnew asserts (PCB_VIA::GetWidth layer arg, wxApp traits) spam
 # stderr on some KiCad builds; they do not affect the extracted data.
 
-KICAD_PYTHONS = [
-    "/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3",
-    "/usr/bin/python3",  # Linux distro KiCad installs pcbnew for system python
-    os.path.expandvars(r"C:\Program Files\KiCad\bin\python.exe"),
-]
+# Shared with kicad_exact_fill so the install layouts -- notably Windows'
+# VERSIONED directory, which the bare C:\Program Files\KiCad\bin path missed
+# for every KiCad >= 6 (#647) -- are described in exactly one place.
+from kicad_exact_fill import kicad_python_candidates  # noqa: E402
+
+KICAD_PYTHONS = kicad_python_candidates()
 
 
 def _reexec_with_kicad_python():
@@ -37,16 +45,34 @@ def _reexec_with_kicad_python():
         if cand == sys.executable:
             continue
         if os.path.isfile(cand):
-            os.execv(cand, [cand, os.path.abspath(__file__)] + sys.argv[1:])
+            argv = [cand, os.path.abspath(__file__)] + sys.argv[1:]
+            if os.name == 'nt':
+                # os.execv re-splits argv on spaces on Windows: the
+                # `Program Files` interpreter tore in two, and the exec'd
+                # process died while this one exited 0.
+                sys.exit(subprocess.run(argv).returncode)
+            os.execv(cand, argv)
     print("ERROR: pcbnew module not available and no KiCad python found. "
           "Run with KiCad's bundled python3.")
     sys.exit(2)
 
 
 def main() -> int:
-    boards = [a for a in sys.argv[1:] if not a.startswith('-')]
+    # A REAL parser. This printed its docstring and exited 2 on `--help`, so a
+    # capability probe could not tell it from a tool that had crashed (#937) --
+    # and it is the parser-parity gate, the one tool whose absence from a
+    # catalogue would be least noticed. Parsed BEFORE the pcbnew re-exec, so
+    # `--help` answers under a plain python3 as well as KiCad's.
+    ap = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='Exit status: 0 = all boards match, 1 = differences found, '
+               '2 = error.')
+    ap.add_argument('boards', nargs='*',
+                    help='the .kicad_pcb file(s) to compare, both ways')
+    boards = ap.parse_args().boards
     if not boards:
-        print(__doc__)
+        ap.print_help()
         return 2
 
     try:

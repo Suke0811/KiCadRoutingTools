@@ -18,9 +18,11 @@ boards). For a full-board outline the fallback prices only a board-edge
 band -- near-useless; the exact fill is the real lever.
 
 Delivery reuses the congestion-field transport (#424 Phase D): the field is
-computed once at batch start into (N, 4) [layer, gx, gy, cost] rows under a
-reserved track_proximity_cache key; merge_track_proximity_costs re-applies
-it on every per-net prepare in every path. Vias in fragile cells pay
+computed once at batch start into (N, 4) [layer, gx, gy, cost] rows, one
+track_proximity_cache entry per pour NET (`fragility_cache_key`);
+merge_track_proximity_costs re-applies them on every per-net prepare in every
+path, leaving out the routed net's own pours (`without_own_fragility`): a
+same-net track joins its plane, it cannot cut it. Vias in fragile cells pay
 via_proximity_cost x the cell cost through the Rust via branch (the C6
 coupling), which is exactly right: a via is a permanent hole in the plane.
 
@@ -67,8 +69,70 @@ import numpy as np
 from kicad_parser import PCBData
 from routing_config import GridCoord, GridRouteConfig
 
-# Reserved track_proximity_cache key (B1 uses -1, congestion -2).
-PLANE_FRAGILITY_CACHE_KEY = -3
+def fragility_cache_key(net_id) -> tuple:
+    """track_proximity_cache key of one pour net's fragility rows.
+
+    One key per pour NET rather than one for every pour, so a builder can
+    leave the routed net's OWN pours out: a plane net routed in the step (the
+    #562 route step takes them, and the finalize's joins and reconnects do
+    too) used to pay fragility on its own pour's necks, where it belongs, and
+    its vias 10x that."""
+    return ('frag', net_id)
+
+
+def without_own_fragility(cache, net_ids):
+    """`cache` without the fragility rows of `net_ids`' own pours -- the
+    same dict when there are none, so the merge memo keeps its key."""
+    own = {k for k in (fragility_cache_key(n) for n in net_ids)
+           if cache.get(k) is not None and len(cache[k]) > 0}
+    if not own:
+        return cache
+    return {k: v for k, v in cache.items() if k not in own}
+
+
+def _dedup_max(out: np.ndarray) -> np.ndarray:
+    """Rows of `out` reduced to one per (layer, gx, gy) cell, keeping the
+    largest cost: overlapping same-layer pours of one net emit the shared
+    cells once per zone, and a consumer that sums rows would double-charge
+    them."""
+    # Sort order is (layer, gx, gy, cost, original index). Packing the four
+    # columns into one offset int64 key lets a single stable (radix) argsort
+    # produce the identical permutation a 4-key lexsort does, at a fraction
+    # of the cost; the lexsort fallback covers a grid so large the packing
+    # would overflow.
+    o64 = out.astype(np.int64)
+    mins = o64.min(axis=0)
+    spans = o64.max(axis=0) - mins + 1
+    if int(spans[0]) * int(spans[1]) * int(spans[2]) * int(spans[3]) < (1 << 62):
+        cell_key = ((o64[:, 0] - mins[0]) * spans[1]
+                    + (o64[:, 1] - mins[1])) * spans[2] + (o64[:, 2] - mins[2])
+        order = np.argsort(cell_key * spans[3] + (o64[:, 3] - mins[3]),
+                           kind='stable')
+        out = out[order]
+        same = np.diff(cell_key[order]) == 0
+    else:
+        order = np.lexsort((out[:, 3], out[:, 2], out[:, 1], out[:, 0]))
+        out = out[order]
+        same = ((np.diff(out[:, 0]) == 0) & (np.diff(out[:, 1]) == 0)
+                & (np.diff(out[:, 2]) == 0))
+    keep = np.ones(len(out), dtype=bool)
+    keep[:-1][same] = False   # the sort put the max cost last per cell
+    return out[keep]
+
+
+def _publish_by_net(cache, rows_by_net, published=()):
+    """Write each pour net's deduped rows under its own key, and drop the
+    keys in `published` that this publish no longer carries. Returns the
+    keys written."""
+    keys = set()
+    for net_id, rows in rows_by_net.items():
+        if rows:
+            key = fragility_cache_key(net_id)
+            cache[key] = _dedup_max(np.vstack(rows))
+            keys.add(key)
+    for key in set(published) - keys:
+        cache.pop(key, None)
+    return keys
 
 
 def fragility_cost_mm() -> float:
@@ -76,6 +140,36 @@ def fragility_cost_mm() -> float:
         return float(os.environ.get('KICAD_PLANE_FRAGILITY_COST', '2.0') or 0)
     except ValueError:
         return 2.0
+
+
+_LAYER_SCALE_CACHE = None
+
+
+def fragility_layer_scale(layer: str, net_name: str = None) -> float:
+    """Per-zone-per-layer fragility multiplier (#658 pour-from-birth):
+    KICAD_PLANE_FRAGILITY_LAYERS='GND@F.Cu=0,B.Cu=0.3' -- entries are
+    either 'NET@LAYER=v' (that net's pours on that layer) or 'LAYER=v'
+    (every pour on the layer); most specific wins, unlisted = 1.0.
+    Scale 0 = a pour signals may carve FREELY (fill reflows around
+    routes, crossing costs nothing); sacred planes keep full price.
+    Parsed once per process."""
+    global _LAYER_SCALE_CACHE
+    if _LAYER_SCALE_CACHE is None:
+        m = {}
+        raw = os.environ.get('KICAD_PLANE_FRAGILITY_LAYERS', '')
+        for part in raw.split(','):
+            if '=' in part:
+                k, _, v = part.partition('=')
+                try:
+                    m[k.strip()] = max(0.0, float(v))
+                except ValueError:
+                    pass
+        _LAYER_SCALE_CACHE = m
+    if net_name is not None:
+        hit = _LAYER_SCALE_CACHE.get(f"{net_name}@{layer}")
+        if hit is not None:
+            return hit
+    return _LAYER_SCALE_CACHE.get(layer, 1.0)
 
 
 def _rasterize_polygon(poly, coord, gx0, gy0, W, H) -> np.ndarray:
@@ -131,11 +225,13 @@ def _erode_depth(mask: np.ndarray, depth: int) -> np.ndarray:
 
 class _PourState:
     """Live raster of one filled pour island (dynamic mode)."""
-    __slots__ = ('li', 'layer', 'net_id', 'gx0', 'gy0', 'W', 'H',
+    __slots__ = ('li', 'layer', 'net_id', 'net_name', 'gx0', 'gy0', 'W', 'H',
                  'orig', 'mask', 'dist', 'rows')
 
-    def __init__(self, li, layer, net_id, gx0, gy0, mask, dist, rows):
+    def __init__(self, li, layer, net_id, gx0, gy0, mask, dist, rows,
+                 net_name=None):
         self.li, self.layer, self.net_id = li, layer, net_id
+        self.net_name = net_name
         self.gx0, self.gy0 = gx0, gy0
         self.H, self.W = mask.shape
         self.orig = mask            # fill as of batch start (never mutated)
@@ -160,6 +256,7 @@ class FragilityField:
         self.cache = cache
         self.refreshes = 0
         self.refresh_s = 0.0
+        self._published = {fragility_cache_key(st.net_id) for st in states}
 
     @classmethod
     def _disc(cls, r: int) -> np.ndarray:
@@ -224,7 +321,9 @@ class FragilityField:
             return
         jj, ii = np.nonzero(emitted)
         frag = 1.0 - (st.dist[jj, ii].astype(np.float64) - 1) / self.depth
-        costs = np.maximum(1, (frag * self.cell_cost).astype(np.int32))
+        costs = np.maximum(1, (frag * self.cell_cost
+                                * fragility_layer_scale(
+                                    st.layer, st.net_name)).astype(np.int32))
         st.rows = np.column_stack([
             np.full(len(jj), st.li, dtype=np.int32),
             (ii + st.gx0).astype(np.int32),
@@ -290,40 +389,24 @@ class FragilityField:
         self.refresh_s += _time.perf_counter() - t0
 
     def publish(self):
-        rows = [st.rows for st in self.states if st.rows is not None]
-        if rows:
-            out = np.vstack(rows)
-            # Same max-cost dedup the STATIC field applies (review DRC-7):
-            # overlapping same-layer pours emit the shared cells once per
-            # zone, and the initial registration lexsorts to per-cell max --
-            # a refresh that just vstacks re-introduces the duplicates, so a
-            # cost consumer that sums rows double-charges overlap cells
-            # relative to the static field.
-            # Sort order is (layer, gx, gy, cost, original index). Packing the
-            # four columns into one offset int64 key lets a single stable
-            # (radix) argsort produce the identical permutation the 4-key
-            # lexsort did, at a fraction of the cost; the lexsort fallback
-            # covers a grid so large the packing would overflow.
-            o64 = out.astype(np.int64)
-            mins = o64.min(axis=0)
-            spans = o64.max(axis=0) - mins + 1
-            if int(spans[0]) * int(spans[1]) * int(spans[2]) * int(spans[3]) < (1 << 62):
-                cell_key = ((o64[:, 0] - mins[0]) * spans[1]
-                            + (o64[:, 1] - mins[1])) * spans[2] + (o64[:, 2] - mins[2])
-                order = np.argsort(cell_key * spans[3] + (o64[:, 3] - mins[3]),
-                                   kind='stable')
-                out = out[order]
-                same = np.diff(cell_key[order]) == 0
-            else:
-                order = np.lexsort((out[:, 3], out[:, 2], out[:, 1], out[:, 0]))
-                out = out[order]
-                same = ((np.diff(out[:, 0]) == 0) & (np.diff(out[:, 1]) == 0)
-                        & (np.diff(out[:, 2]) == 0))
-            keep = np.ones(len(out), dtype=bool)
-            keep[:-1][same] = False   # sort put max cost last per cell
-            self.cache[PLANE_FRAGILITY_CACHE_KEY] = out[keep]
-        else:
-            self.cache.pop(PLANE_FRAGILITY_CACHE_KEY, None)
+        by_net: Dict[int, list] = {}
+        for st in self.states:
+            if st.rows is not None:
+                by_net.setdefault(st.net_id, []).append(st.rows)
+        self._published = _publish_by_net(self.cache, by_net, self._published)
+
+
+def carve_in_memory_copper(config, pcb_data) -> None:
+    """Carve ALL of pcb_data's copper out of a just-registered dynamic field.
+
+    The field is rasterized from a fill of the board FILE (or the live board
+    as filled when the GUI started routing), so a batch handed an in-memory
+    PCBData -- a reconcile lap or plane-finalize sub-run (GUI and CLI), the
+    GUI's own runs -- would price pour necks as they were before this run's
+    copper landed. One full refresh brings it to the copper as it is;
+    idempotent for copper the fill already has."""
+    fragility_on_copper_change(config, pcb_data, pcb_data.segments,
+                               pcb_data.vias)
 
 
 def fragility_on_copper_change(config, pcb_data, segments, vias) -> None:
@@ -340,21 +423,62 @@ def fragility_on_copper_change(config, pcb_data, segments, vias) -> None:
         config._fragility_field = None
 
 
+#: The geometry sources `compute_plane_fragility_cells_ex` can report, in
+#: fidelity order. Exactly one of them -- `zone_outlines` -- is the one the
+#: module docstring calls "near-useless" for a full-board pour, and the record
+#: says WHY it was reached, because the why decides whether the answer is a
+#: fact about the board (no pcbnew, the refill failed, the pour is empty) or
+#: about THIS MACHINE (the refill timed out).
+GEOMETRY_SOURCES = ('live_board', 'live_board_in_process', 'kicad_refill',
+                    'zone_outlines', 'none')
+
+
+def _geometry(source: str, islands: int = 0, refill_status=None,
+              why: str = '', machine_dependent: bool = False) -> dict:
+    """The record `register_plane_fragility` publishes (#831): which copper
+    the field was rasterized from, and why.
+
+    `machine_dependent` is True when a FASTER machine would have produced a
+    different `source` -- the exact-fill timeout is the one such cause on the
+    CLI path, and the GUI's UI-thread save timeout is its twin. Every other
+    fallback reason is a property of the board or the install and would
+    repeat on any machine. A downstream grader reading the JSON summary can
+    then tell "this board was priced on outlines because it HAS no fill" from
+    "because pcbnew did not finish in 300 s here", which the printed notice
+    alone could not carry past the log.
+    """
+    assert source in GEOMETRY_SOURCES, source
+    return {'source': source, 'islands': int(islands),
+            'refill_status': refill_status, 'why': why,
+            'machine_dependent': bool(machine_dependent)}
+
+
 def compute_plane_fragility_cells(pcb_data: PCBData,
                                   config: GridRouteConfig) -> np.ndarray:
     """(N, 4) [layer, gx, gy, cost] rows for every filled-zone cell within
     the fragility half-width of its zone's boundary. Empty when disabled or
     the board has no filled zones on routing layers."""
-    cells, _states = _compute_cells_and_states(pcb_data, config,
-                                               want_states=False)
-    return cells
+    return compute_plane_fragility_cells_ex(pcb_data, config)[0]
+
+
+def compute_plane_fragility_cells_ex(pcb_data: PCBData,
+                                     config: GridRouteConfig):
+    """(cells, geometry): the rows of `compute_plane_fragility_cells` plus the
+    `_geometry` record saying which copper they were rasterized from."""
+    cells, _states, geometry, _by_net = _compute_cells_and_states(
+        pcb_data, config, want_states=False)
+    return cells, geometry
 
 
 def _compute_cells_and_states(pcb_data: PCBData, config: GridRouteConfig,
                               want_states: bool):
     cost_mm = fragility_cost_mm()
-    if cost_mm <= 0 or not pcb_data.zones:
-        return np.empty((0, 4), dtype=np.int32), []
+    if cost_mm <= 0:
+        return (np.empty((0, 4), dtype=np.int32), [],
+                _geometry('none', why='KICAD_PLANE_FRAGILITY_COST=0'), {})
+    if not pcb_data.zones:
+        return (np.empty((0, 4), dtype=np.int32), [],
+                _geometry('none', why='the board has no zones'), {})
     try:
         width_mm = float(os.environ.get('KICAD_PLANE_FRAGILITY_WIDTH', '2.0') or 2.0)
     except ValueError:
@@ -371,6 +495,7 @@ def _compute_cells_and_states(pcb_data: PCBData, config: GridRouteConfig,
     # the drawn zone outlines as the last resort. Each entry: (layer, poly).
     name_to_id = {n.name: n.net_id for n in pcb_data.nets.values()}
     polys = []
+    geometry = None
     provider = getattr(pcb_data, 'exact_fill_provider', None)
     if provider is not None:
         try:
@@ -378,8 +503,21 @@ def _compute_cells_and_states(pcb_data: PCBData, config: GridRouteConfig,
             polys = [(name_to_id.get(_net, -1), layer, poly)
                      for (_net, layer), pp in fills.items() for poly in pp]
             if polys:
+                # #831: the GUI provider (`kicad_parser._live_fill`) returns
+                # an IN-PROCESS fill -- live copper, clearances as of board
+                # load -- when its staged refill did not yield one, and said
+                # so only on the console. Read its own account of which fill
+                # this was; a provider that keeps no account is reported as
+                # the live board with no claim about how it was filled.
+                _ls = getattr(provider, 'last_status', None) or {}
+                geometry = _geometry(
+                    _ls.get('source', 'live_board'), len(polys),
+                    refill_status=_ls.get('refill_status'),
+                    why=_ls.get('why', ''),
+                    machine_dependent=_ls.get('machine_dependent', False))
                 print(f"Plane fragility: exact-fill geometry "
-                      f"({len(polys)} filled island(s) from the LIVE board)")
+                      f"({len(polys)} filled island(s) from the LIVE board"
+                      f"{'; ' + geometry['why'] if geometry['why'] else ''})")
         except Exception as e:
             print(f"Plane fragility: live-board fill unavailable ({e}); "
                   f"trying the source file")
@@ -387,19 +525,65 @@ def _compute_cells_and_states(pcb_data: PCBData, config: GridRouteConfig,
     src = getattr(pcb_data, 'source_path', None)
     if not polys and src and os.path.isfile(src):
         try:
-            from kicad_exact_fill import refill_islands
-            fills = refill_islands(src)
+            from kicad_exact_fill import refill_islands_ex
+            fills, _st = refill_islands_ex(src)
+            geometry = _geometry('zone_outlines', refill_status=_st.reason,
+                                 why=_st.why(),
+                                 machine_dependent=_st.is_timeout)
+            if fills is None:
+                # None is refill_islands' DOCUMENTED "unavailable" return, not
+                # an error. Calling .items() on it raised an AttributeError
+                # that this except reported as a mystery "'NoneType' object
+                # has no attribute 'items'" (#647) -- which read like a quirk
+                # of one board while it was really a whole-platform capability
+                # gap (no Windows install was ever found), on every invocation.
+                #
+                # #713 item 4: the reason now comes from the refill itself
+                # rather than being re-derived here. The old form re-probed
+                # for a pcbnew interpreter and, on every other cause, printed
+                # a bare refill-failed line -- so a 300 s TIMEOUT, the
+                # one arm that depends on how fast this machine is, was
+                # reported as a fact about the board. That sends the reader to
+                # the wrong repair, and it is the whole of the item.
+                print(f"Plane fragility: exact fill unavailable ({_st.why()}); "
+                      f"using zone outlines")
+                fills = {}
+            elif not fills:
+                # The refill RAN and poured nothing. Distinct from every
+                # unavailability above -- it is an answer about the board --
+                # and it was previously the one path that printed nothing at
+                # all before silently substituting outlines below.
+                print(f"Plane fragility: {_st.why()}; using zone outlines")
             polys = [(name_to_id.get(_net, -1), layer, poly)
                      for (_net, layer), pp in fills.items() for poly in pp]
             if polys:
+                geometry = _geometry('kicad_refill', len(polys),
+                                     refill_status=_st.reason, why=_st.why())
                 print(f"Plane fragility: exact-fill geometry "
                       f"({len(polys)} filled island(s) from KiCad refill)")
         except Exception as e:
             print(f"Plane fragility: exact refill unavailable ({e}); "
                   f"using zone outlines")
             polys = []
+            geometry = _geometry('zone_outlines', refill_status='error',
+                                 why=f'{type(e).__name__}: {e}')
     if not polys:
         polys = [(z.net_id, z.layer, z.polygon) for z in pcb_data.zones]
+        if geometry is None or geometry['source'] != 'zone_outlines':
+            # No file to refill (a live GUI board whose provider gave nothing,
+            # or an in-memory PCBData): a fact about the input, not the clock.
+            geometry = _geometry(
+                'zone_outlines',
+                why=('no board file to refill'
+                     if not (src and os.path.isfile(src))
+                     else 'the exact fill produced no islands'))
+        if geometry['machine_dependent']:
+            # LOUD, and in the summary too (see register_plane_fragility):
+            # a faster machine would have priced this board on its real fill.
+            print(f"WARNING: plane fragility is priced on the drawn zone "
+                  f"OUTLINES because {geometry['why']} -- this depends on "
+                  f"machine speed, not on the board; a faster machine "
+                  f"routes against the exact fill here (#831).")
 
     if os.environ.get('KICAD_FRAGILITY_DEBUG') == '1':
         # The field is a raster of the exact fill, so a GUI/CLI cell-count
@@ -425,6 +609,7 @@ def _compute_cells_and_states(pcb_data: PCBData, config: GridRouteConfig,
                   f"({max(xs):.4f},{max(ys):.4f})")
 
     states = []
+    rows_by_net: Dict[int, list] = {}
     for znet, zlayer, zpoly in polys:
         li = layer_index.get(zlayer)
         if li is None or len(zpoly) < 3:
@@ -447,7 +632,11 @@ def _compute_cells_and_states(pcb_data: PCBData, config: GridRouteConfig,
             continue
         jj, ii = np.nonzero(emitted)
         frag = 1.0 - (dist[jj, ii].astype(np.float64) - 1) / depth  # 1 at edge -> ~0 deep
-        cell_cost = config.cell_cost(cost_mm)
+        _zname = getattr(pcb_data.nets.get(znet), 'name', None)
+        _lscale = fragility_layer_scale(zlayer, _zname)
+        if _lscale <= 0:
+            continue  # freely-carvable pour: no fragility rows, no state
+        cell_cost = config.cell_cost(cost_mm) * _lscale
         costs = np.maximum(1, (frag * cell_cost).astype(np.int32))
         zone_rows = np.column_stack([
             np.full(len(jj), li, dtype=np.int32),
@@ -456,34 +645,43 @@ def _compute_cells_and_states(pcb_data: PCBData, config: GridRouteConfig,
             costs,
         ])
         rows.append(zone_rows)
+        rows_by_net.setdefault(znet, []).append(zone_rows)
         if want_states:
             states.append(_PourState(li, zlayer, znet, gx0, gy0,
-                                     mask, dist, zone_rows))
+                                     mask, dist, zone_rows,
+                                     net_name=_zname))
 
     if not rows:
-        return np.empty((0, 4), dtype=np.int32), []
-    out = np.vstack(rows)
+        return np.empty((0, 4), dtype=np.int32), [], geometry, {}
     # overlapping zones on one layer: keep the max cost per cell
-    order = np.lexsort((out[:, 3], out[:, 2], out[:, 1], out[:, 0]))
-    out = out[order]
-    keep = np.ones(len(out), dtype=bool)
-    same = (np.diff(out[:, 0]) == 0) & (np.diff(out[:, 1]) == 0) & (np.diff(out[:, 2]) == 0)
-    keep[:-1][same] = False  # lexsort put max cost last within a cell group
-    return out[keep], states
+    return _dedup_max(np.vstack(rows)), states, geometry, rows_by_net
 
 
 def register_plane_fragility(pcb_data: PCBData, config: GridRouteConfig,
-                             track_proximity_cache: Dict) -> None:
+                             track_proximity_cache: Dict,
+                             dynamic: bool = None) -> None:
     """Compute and register the field under the reserved cache key (no-op
     when disabled or no zones). With KICAD_PLANE_FRAGILITY_DYNAMIC on (the
     default), also arm the #466 incremental field on `config` so the
-    commit/rip/restore hooks keep it current as in-run copper lands."""
-    dynamic = os.environ.get('KICAD_PLANE_FRAGILITY_DYNAMIC', '1') != '0'
-    cells, states = _compute_cells_and_states(pcb_data, config,
-                                              want_states=dynamic)
+    commit/rip/restore hooks keep it current as in-run copper lands.
+
+    Always leaves `config._plane_fragility_geometry` set (#831) -- the
+    `_geometry` record of which copper the field came from -- so
+    `batch_route`'s JSON summary can disclose an outline fallback, and
+    above all a MACHINE-DEPENDENT one, to whatever grades the run. Set even
+    when the field is empty, so a summary never has to guess between "no
+    zones" and "nobody recorded it".
+
+    `dynamic` False registers the static field whatever the environment says,
+    for an engine with no commit hooks to keep a dynamic one current."""
+    if dynamic is None:
+        dynamic = os.environ.get('KICAD_PLANE_FRAGILITY_DYNAMIC', '1') != '0'
+    cells, states, geometry, rows_by_net = _compute_cells_and_states(
+        pcb_data, config, want_states=dynamic)
+    config._plane_fragility_geometry = geometry
     if not len(cells):
         return
-    track_proximity_cache[PLANE_FRAGILITY_CACHE_KEY] = cells
+    _publish_by_net(track_proximity_cache, rows_by_net)
     n_zones = len({(z.layer, z.net_id) for z in pcb_data.zones})
     mode = 'static'
     if dynamic and states:

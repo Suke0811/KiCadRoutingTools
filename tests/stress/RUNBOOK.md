@@ -9,7 +9,7 @@ non-interactively and record everything.
 The whole set-1 + set-2 corpus is driven by ONE queue manager:
 
 ```bash
-bash tests/stress/run_queue.sh [concurrency=10] [model=sonnet]
+bash tests/stress/run_queue.sh [max_concurrency=8] [model=sonnet]
 ```
 
 It keeps N headless `claude -p` board workers in flight until every board has a
@@ -80,7 +80,7 @@ within a board. `<SET>` below is `_set<N>` (e.g. `_set1` for set 1, `_set2` for 
 
 
 **`<TOOLS_REPO>` below means the tools-repo directory whose ABSOLUTE path your
-prompt already gives you** (the same path in "Run tools as: `python3 -X utf8
+prompt already gives you** (the same path in "Run tools as: `python3 -u -X utf8
 <TOOLS_REPO>/<tool>.py`" and in `--add-dir`). Substitute that absolute path
 yourself wherever you see `<TOOLS_REPO>`; never type the literal string
 `<TOOLS_REPO>` into a shell, and do not expect it to be set as an environment
@@ -194,19 +194,28 @@ harmless.
 
 ## Rules
 
-1. Invoke all tools as `python3 -X utf8 <TOOLS_REPO>/<tool>.py ...`
+1. Invoke all tools as `python3 -u -X utf8 <TOOLS_REPO>/<tool>.py ...`
    from your working dir. Tee every command's output to a log file in your run dir.
+   **`-u` is mandatory, not cosmetic (#599):** without it stdout is fully
+   buffered, so a step killed part-way — by a command timeout, the memory
+   watchdog, or a crash — leaves an EMPTY log and the one artifact that would
+   explain the kill dies with it (`usmu_smu`, sets-21-27 wave).
    MEMORY CAP (mandatory): prefix EVERY routing/fanout/plane/check command with
    the watchdog wrapper, e.g.
-   `bash <TOOLS_REPO>/tests/stress/run_limited.sh python3 -X utf8 .../route.py ... 2>&1 | tee step.log`
-   It kills the job at ~4 GB RSS (exit 137, `MEMORY_LIMIT_EXCEEDED` on stderr).
+   `bash <TOOLS_REPO>/tests/stress/run_limited.sh python3 -u -X utf8 .../route.py ... 2>&1 | tee step.log`
+   It kills the job at ~12 GB RSS, process plus direct children (exit 137,
+   `MEMORY_LIMIT_EXCEEDED` on stderr; `LIMIT_KB` overrides). The cap was 4 GB
+   until #422, which raised it because a legitimate fine-grid run on a big
+   sparse board can peak several GB.
    Separately, the board-mutating tools self-record their invocations to
    `<run-dir>/redo_commands.sh` (run_board.sh sets `REDO_MANIFEST`) so the whole
    run can later be replayed deterministically with no LLM via `redo_stress_test.py`
    (issue #132; see `tests/stress/README.md`). Nothing extra to do for recording.
-   Up to 4 boards run concurrently — in practice most jobs sit well under the
-   4 GB cap most of the time, so 4-in-flight is fine on an 8 GB machine; the
-   per-job watchdog still backstops any board that spikes. Keep an eye on RAM.
+   The queue admits boards by load, not memory (`run_queue.sh`: a hard ceiling,
+   default 8, under `QUEUE_LOAD_MAX`, default ncore-2), and the watchdog is per
+   step, so it does not protect a small machine from several large steps at
+   once. Size the machine from 12 GB per concurrently heavy step, not 4. Keep an
+   eye on RAM.
    If a step is killed by the cap, that is an important finding: record it in
    `issues` (with the step and board), then try ONE cheaper variant (e.g.
    a coarser `--grid-step`, no retry round, or fewer nets); if that also
@@ -315,7 +324,7 @@ harmless.
    failure is a poured net MISSING from the route step, which strands every
    one of its pads because nothing welds them to the pour. Secondary grounds (AGND/GNDA/
    DGND tied to GND through one 0Ω/ferrite — find the tie in the power listing)
-   get their OWN pour region (Voronoi-share an inner layer is fine), NOT merged
+   get their OWN pour region (sharing an inner layer is fine), NOT merged
    into GND and NOT left out. COVERAGE GATE at the end: `check_connected.py`'s
    "Unrouted net with N pads" list must be empty except for justified single-pad/
    NC nets — any multi-pad net there is a coverage defect to fix, not a stat to report.
@@ -333,8 +342,15 @@ harmless.
    only. On 4+ layer boards you MUST pass the board's inner copper layers too,
    e.g. `--layers F.Cu In1.Cu In2.Cu B.Cu`, or deep balls can't escape and are
    silently dropped (only the ~2 outer layers' worth of nets fan out — this
-   capped ottercast_audio at ~23%). qfn_fanout.py is perimeter-only and
-   doesn't need this.
+   capped ottercast_audio at ~23%). When an inner layer carries a solid plane,
+   keep the escapes off it with `--layer-costs` (a NEGATIVE value forbids the
+   layer, #288) rather than by shortening `--layers`. Either forbids it -- a
+   negative entry filters the layer out of the engine's list exactly as
+   omitting it would -- but the cost vector is the one `route.py` also takes,
+   so the plane map is derived once, and a positive weight can price a layer
+   instead of deleting it. `--layers[0]` cannot be forbidden at all (the top
+   escape layer is where edge escapes are placed). qfn_fanout.py is
+   perimeter-only and doesn't need this.
    ESCAPE COMPLETENESS (issue #122): bga_fanout.py ends with
    `JSON_SUMMARY: {"requested","escaped","failed","unescaped_nets",...}`.
    ALWAYS parse it. If `failed > 0`, balls were DROPPED (removed from output;
@@ -350,16 +366,25 @@ harmless.
    UNDER the pad field on inner layers and escapes what channel can't (-> 0). It
    routes diff pairs single-ended and skips power/plane nets (plane them first).
    Do not start signal routing while balls are dropped.
-   DECOUPLING-CAP OPTIMIZE (issue #130): after EACH BGA/PGA fanout completes
-   (escaped == requested) and BEFORE signal routing, run
-   `python3 py_router/place_fanout_clearance.py <fanned>.kicad_pcb <out>.kicad_pcb
+   DECOUPLING-CAP OPTIMIZE (issue #130): ONCE after ALL BGA/PGA fanouts have
+   completed (escaped == requested) and BEFORE signal routing -- not after each
+   one: the pass is board-global, and per-BGA runs compound cap displacement
+   (each run re-seeds at the moved position) and change what later fanouts
+   route around (cap pads are escape obstacles). Run
+   `python3 py_placer/place_fanout_clearance.py <fanned>.kicad_pcb <out>.kicad_pcb
    --clearance <floor>` (same clearance as the fanout). A foreign-net fanout via
    landing under a decoupling cap is a real PAD-VIA at the floor; this nudges
    those caps clear and pulls each pad toward its nearest same-net ball (so a
    later power/GND via shares the via). It reads each via's real size from the
    board, only moves 2-pad caps near a BGA, never overlaps caps, and is a no-op
-   when nothing collides. It prints `resolved R/M ... K unresolved`; unresolved
-   caps need a manual nudge. Feed `<out>` into the next step; verify with
+   when nothing collides. It prints `resolved R/V initial violations; K
+   unresolved`, with `(F freed by via-nudge)` when the #313 last resort moved
+   a via to free a boxed cap; `resolved` is graded at the END of the pass and
+   credits both mechanisms (#746). Unresolved caps are still grazing foreign
+   copper (via, track or pad) and need a manual nudge; a `Re-grazed by this
+   pass's own connector copper:` line names the ones that were clean before
+   the nudge, i.e. copper this step drew rather than copper the board arrived
+   with. Feed `<out>` into the next step; verify with
    `check_drc.py <out> -c <floor>` (PAD-VIA drops).
 6. Diff pairs: if `--diff-pairs` reports pairs, route them with route_diff.py
    AFTER fanout and BEFORE signal routing (gap from --design-rules; use
@@ -416,7 +441,12 @@ harmless.
    Record the kicad count and any KICAD-ONLY items in the results JSON
    (`drc.kicad_violations`, `drc.kicad_only`); KICAD-ONLY shorting_items are a
    red-alert finding (check_drc false negative -- the #324 offset-pad class
-   shipped real shorts on boards check_drc graded clean). Two caveats: a
+   shipped real shorts on boards check_drc graded clean). The one exception is
+   KiCad's `<no net>` item on a part's own graphic copper against the net of
+   that part's own pad (a SOT-89 tab its pad's net routes onto, #995): not a
+   short, listed by check_drc under WARNINGS as `footprint own copper`, and
+   reported by the cross-check on its own `#995` channel. A `<no net>` item on
+   any other net stays KICAD-ONLY and is real. Two caveats: a
    kicad-cli "0" does NOT clear an *overlap/short* finding (KiCad 10
    net-unifies touching copper on load -- verified minimal repro, #260/#264;
    check_drc stays authoritative for touching-copper overlaps), and
@@ -434,7 +464,7 @@ harmless.
    `connection_width_min`; ab_replay_grade compares the count per board (connw
    column) and gates the A/B verdict on its delta.
 8. OOM REGRESSION CHECK (issue #81, fixed): the obstacle-map polygon pass is
-   now chunked; DEFAULT grids should stay well under the 4 GB cap on every
+   now chunked; DEFAULT grids should stay well under the 12 GB cap on every
    board. Use the default --grid-step unless component pitch demands finer.
    A MEMORY_LIMIT_EXCEEDED kill at the DEFAULT grid is a REGRESSION — record
    the command and RSS prominently. EXCEPTION: a board-global route at a fine
@@ -453,9 +483,18 @@ harmless.
    a progressing search to a 1e7 ceiling, so a fixed budget only caps it.
    `--max-ripup` above 5 is measured WORSE (each extra rip level risks a
    victim whose corridor is taken while it is out).
-10. One retry round allowed: if routing fails some nets, re-run the failed nets
-   per the skill's "Diagnose and Retry" table (use the same output->input
-   chaining). Record both attempts. If the failures are CONGESTION (rippable
+10. One retry round allowed: if routing fails some nets, re-run per the skill's
+   "Diagnose and Retry" table (use the same output->input chaining) with
+   **`--nets '*'`, NOT a hand-listed set of the failed net names**. route.py
+   skips nets that are already fully connected, so a wildcard retry attempts
+   exactly the nets still broken -- same work, same result, and it stays correct
+   for any router. A hand-listed retry freezes THIS run's failure identity into
+   the manifest: every future replay hands the baseline a rescue fitted to its
+   own failures while any engine change, failing a different net, gets its
+   failure shipped and healthy nets retried (RUNBOOK rule 5 -- 25% of the corpus
+   is already contaminated this way). Name nets only when the naming IS the
+   experiment (the skill's failed-first split), and expect that board to be
+   unusable for A/B. Record both attempts. If the failures are CONGESTION (rippable
    churn, many fails clustered in one channel, or "boxed in by static obstacles"
    at fine pitch), route signals at the FAB FLOOR (skill: "Route signals at the
    FAB floor by default"). KEY POINTS: (a) thinner is monotonically better on
@@ -471,6 +510,25 @@ harmless.
    blockers are the already-routed wider tracks), keep power/impedance nets wide,
    add a finer --grid-step for fine-pitch escapes; if still congested step the
    width down further toward 0.0889.
+10a. RIP AUTHORITY IS A LAST RESORT, NOT A RETRY DEFAULT (#600). `--rip-existing-nets`
+   and `--force-reroute` are permission to DESTROY already-routed copper, and a rip
+   whose restore is refused leaves that net broken. In the sets-21-27 wave this was
+   the single largest source of lost connectivity — larger than routing failure
+   itself (7 of 99 boards; `bms_sensor` turned a 3-pad problem into a 20-pad one,
+   `spartan6_4layer` lost 20 nets all of their copper). **Scoping `--nets` does NOT
+   protect you** — `ftdi_debug_toolkit` regressed from a retry naming three nets. It
+   is the rip PERMISSION, not the route scope. Order of preference: (1) re-run the
+   whole signal step THINNER per rule 10 — destroys nothing; (2) a PLAIN retry of the
+   failed nets — the in-run #103 escalation already grants itself targeted authority
+   over the exact blockers the log named, so you usually need no flag at all;
+   (3) `--rip-existing-nets <the named blockers>`; (4) `'*'` only as a last resort,
+   and never with `--force-reroute` over a large net list — that combination is the
+   `spartan6_4layer` shape. The engine now backstops this: a run that ends net-worse
+   prints `IMPROVEMENT GATE … REVERTED` and restores the input board. **If you see
+   that, the step did not fail to run — it ran and was REJECTED.** Do not re-run it
+   with more authority; change the approach or accept the open nets and report them.
+   Assert on the `JSON_IMPROVEMENT_GATE:` line (`lost`/`gained`/`verdict`) rather
+   than reading prose, and record a REVERTED step in `issues`.
 11. Verification (always, on the final board):
     - `check_drc.py <final> --clearance <floor> --hole-to-hole-clearance <floor> 2>&1 | tee drc.log`
       (manufacturing floor from `--design-rules`, per step 7; note the flags used)
@@ -496,7 +554,19 @@ harmless.
     cycles 1M-iteration A* exhaustions with no net newly connected (issue #211:
     ulx3s) is wedged, not slow. NEVER end your turn while
     a routing command is still running — you will be terminated and the run
-    orphaned. Run commands in the FOREGROUND (timeout up to 600000 ms). If a
+    orphaned. Run commands in the FOREGROUND, and **pass an EXPLICIT timeout on
+    every routing/fanout/plane command: `timeout: 600000` (10 min, the maximum).
+    This is required, not an upper bound you may ignore (#599).** The Bash
+    tool's DEFAULT timeout is 120000 ms — two minutes — while a route step
+    routinely takes 3-20x that (`faderbank_16nx` 316 s, `wisweep_driver` 264 s,
+    `crazyflie_fpga_deck` 189 s). Omitting the timeout killed at least one
+    attempt on 21 of the 99 boards in the sets-21-27 wave; the kill takes the
+    launching shell with it, so `run_limited.sh` reports it as
+    `BACKGROUNDED_STEP_ORPHANED` and it reads like a hang or a rule-12
+    violation when it was neither. The wrapper now prints the elapsed time and
+    a "the caller's timeout is too short" hint when it dies far short of the
+    3-hour cap — believe it, and re-run with the timeout rather than retrying
+    the same way or blaming the router. If a
     command exceeds the 10-min foreground cap, keep waiting in foreground:
     repeatedly run `until ! pgrep -f "<unique-cmd-fragment>" >/dev/null; do
     sleep 10; done` (each up to 10 min) until the process exits, then read its
@@ -643,6 +713,314 @@ Rule of thumb: full-chain regressions → `ab_replay_grade.py`; diff-pair
 regressions → `redo_diff_stage.py`; plane/reconnect/grading-only changes →
 `partial_replay_from_planes.py` (reuses a prior wave's upstream boards).
 
+## Corpus-scale A/B and bisect on the cloud (no LLM, ~$1/arm)
+
+`ab_replay_grade.py` and `ab_wave_driver.py` run locally and grade what YOUR
+machine can chew through. These two run the same replays on rented cores, keep
+the routed boards, and are what you want for "did this change help across 150
+boards" and "which commit broke connectivity".
+
+- **`cloud_replay_sets.py`** — replay whole sets on Modal, KEEP the finished
+  `.kicad_pcb` (with its `.kicad_pro`/`.kicad_dru` siblings), and A/B against a
+  baseline. Six stages, pick with `--only`: `plan` (prices it, spends nothing) /
+  `upload` / `run` / `harvest` / `baseline` / `compare`.
+
+  **The image carries KiCad by default (since 2026-08-23).** `--with-kicad` is
+  the default and builds on `kicad/kicad:10.0.0`, so the **oracle legs actually
+  run**. `--no-kicad` builds `debian_slim` instead, and there every oracle leg
+  is **DEAD, not degraded** -- `oracle_reconnect` returns `available=False` the
+  moment `find_kicad_cli()` is None -- so a change acting through the finalize
+  audit, the plane/oracle recheck or #589 measures as exactly zero on such a
+  wave. Prefer the default unless you are deliberately reproducing an old one.
+
+  A KiCad wave suffixes its label `-kc`, because the results volume RESUMES by
+  arm name and arm = label + sha: two waves at the same commit differing only by
+  the image would otherwise share rows, which is precisely the
+  "the baseline was not the baseline" failure `arm_name()` exists to prevent.
+
+  Note the crate is built IN the image. When `rust_router/Cargo.toml` is ahead
+  of the latest release tag (i.e. a crate bump whose binaries are not published
+  yet) `build_router.py` skips the prebuilt and compiles from source -- rustup
+  is installed for exactly this, at the cost of a ~10 min cold build that Modal
+  then caches.
+
+  ```bash
+  # where does HEAD stand vs the recorded runs, sets 10-19?
+  python3 tests/stress/cloud_replay_sets.py --sets set10-set19
+  # one arm with a knob changed (rides the ARM SPEC -- containers do NOT
+  # inherit your shell's env)
+  python3 tests/stress/cloud_replay_sets.py --sets set10-set19 --label smoothoff \
+      --env KICAD_SMOOTH_ROUTE=0
+  # or a routing_defaults constant, patched in the container's own repo copy
+  ... --label hw19 --defaults HEURISTIC_WEIGHT=1.9
+  ```
+
+- **`corpus_bisect.sh`** — score ONE engine commit across the corpus, for
+  bisecting a regression: `bash tests/stress/corpus_bisect.sh <sha> <tag>`.
+  5-6 points bracket a 38-commit range for under $10.
+
+- **`cloud_arms_to_sweep.py`** — score a knob screened as SEPARATE
+  `cloud_replay_sets.py` arms. Each arm lands in its own wave dir, and the
+  wave-dir readers (`ab_wave_report.py`, `--compare`) do a two-wave roll-up
+  with no chain pairing, no rescue-clean cell and no `--hard` split — i.e.
+  without rules 3, 5 and the congestion dilution below. Merge the arms into
+  one sweep json and score them with the tool that applies all of it:
+
+  ```bash
+  # one control arm + one knob arm, launched separately, at the SAME commit
+  python3 tests/stress/cloud_replay_sets.py --sets set1-set5 --label dirs250
+  python3 tests/stress/cloud_replay_sets.py --sets set1-set5 --label dirs5 \
+      --defaults DIRECTION_PREFERENCE_COST=5 --no-baseline
+  python3 tests/stress/cloud_arms_to_sweep.py \
+      ~/Documents/kicad_stress_test/cloud_dirs250_<sha> \
+      ~/Documents/kicad_stress_test/cloud_dirs5_<sha> --out sweep_dirs.json
+  python3 tests/stress/modal_sweep/rank_arms.py sweep_dirs.json --drop-rescue-clean
+  ```
+
+  It merges each wave's REGRADED grading with the `_raw` provenance the local
+  regrade drops (`arm`, `steps`, `rescue_steps`, `patched_defaults`) — feed
+  rank_arms the regraded rows alone and you silently disable its arm
+  identification, its chain-identity guard and its rescue cell at once. Rows
+  the regrade could not re-score are dropped rather than paired against
+  locally-graded rows, per rule 2 (waves banked before 2026-08-23, or launched
+  `--no-kicad`, carry no `drc_real` at all).
+
+  **Launch the arms at ONE commit and do not commit in between.** The image is
+  `git archive HEAD`, so a commit landing between two launches makes the arms
+  differ by more than the knob — the arm name records the sha it was launched
+  at, so check that both wave dirs carry the same one.
+
+  **The upload stage now checks two things before anything is spent
+  (2026-09-19).** A set already on the volume was never re-uploaded, so a
+  board repaired locally after its set went up replayed the OLD manifest in
+  every later arm, silently (butterstick: a 3-command manifest that dies on a
+  file no command produces, while the local 11-command chain verified fine).
+  The stage lists each present set's run dir on the volume once and compares
+  every manifest's SIZE with the local one -- a stale or absent board is
+  named and re-uploaded (`upload_corpus.py --sets S --boards ...`; `--dry-run`
+  only reports; `--no-verify-corpus` skips). Size is a proxy: an edit that
+  keeps the byte count exactly is invisible to it. A re-upload changes the
+  chain those boards replay, so every EARLIER arm is chain-mismatched on
+  them from then on -- re-run the baseline arm as well. The first live run
+  of the check (2026-09-19) found the volume's sets 6-10 still carried the
+  manifests from before the 09-03 `--clearance` -> `--clearance-ceiling`
+  rewrite: every cloud arm since, the v0.22.1 validation included, replayed
+  those sets under the old bare-clearance semantics (both arms of each A/B
+  alike, so the deltas stand; the absolute numbers do not match a local
+  replay). And a local manifest with
+  no `# cwd=<stress>/runs_<set>/<board>` line is REFUSED by name: the cloud
+  placer stages the corpus at that path, so such a board raises inside its
+  container after the arm is launched and paid for -- a manifest re-recorded
+  from somewhere else (a scratchpad) carries that directory as its cwd, and
+  the fix is to rewrite the line(s) to the board's own run dir.
+
+  **Manifests recorded before #530 read `--clearance` as a ceiling.** Since
+  decision 2 an explicit `--clearance` IS the Default class for the run;
+  before, it capped every class at `min(class, value)`, so a late chain step
+  saying `--clearance 0.2` after an earlier step had lowered the project's
+  Default class to 0.1 routed at 0.1. Replaying such a manifest on a post-#530
+  engine measures that semantics change on top of the engine (rp2040_dev: 3
+  nets that fit at 0.1 do not at 0.2). For an engine-only A/B ride the replay
+  knob in the arm spec:
+
+  ```bash
+  python3 tests/stress/cloud_replay_sets.py --sets set1-set5 --label legacy \
+      --env KICAD_CLEARANCE_LEGACY_CEILING=1
+  ```
+
+  The knob is for replay arms only; a real run wanting that reading passes
+  `--clearance-ceiling`.
+
+  **The recorded manifests were rewritten on 2026-09-03** (`runs_set*/*/
+  redo_commands.sh`, 1509 lines in 400 manifests): on `route.py`,
+  `route_diff.py`, `route_planes.py` and `repair_planes.py` every
+  `--clearance X` became `--clearance-ceiling X`, which is exactly the reading
+  those runs were recorded under. Fanout, placement and grading commands keep
+  `--clearance`. So a plain replay of a recorded manifest routes like the
+  record without the knob; the knob remains for manifests recorded elsewhere.
+  Graders that read the routed floor off a manifest accept either spelling
+  (`ab_replay_grade.route_clearance`).
+
+  **After editing recorded manifests, re-upload the sets by hand** --
+  `cloud_replay_sets`' upload stage skips a set the corpus volume already
+  has (presence, not content), so a cloud arm launched after an in-place
+  rewrite replays the OLD manifests from the volume and measures nothing
+  new (the first `final2` arm did exactly that). Run
+  `python3 tests/stress/modal_sweep/upload_corpus.py --sets set1,...`
+  (extraction overwrites whole files) and confirm with
+  `modal volume get kicad-corpus /runs_setN/<board>/redo_commands.sh`
+  before launching.
+
+  Likewise for the escalation ladder: `KICAD_FAB_TIER_DEFAULT` and
+  `KICAD_ESCALATION_DEFAULT` set the default of the two flags a manifest
+  omits. The shipped defaults are now `auto` / `fab` (the pre-#857 ladder,
+  disclosed), so the knobs matter when a future default moves again or an
+  arm wants the hard tier (`standard` / `board`) on manifests that pass
+  neither flag. The clearance knob plus these two replayed the pre-#530
+  manifests under the old policy on the new engine -- the engine-only arm of
+  the 2026-09-03 four-way A/B (old engine / new engine old policy / new
+  engine new policy), which read -3 real DRC / -11 incomplete nets.
+
+### Rules that make these trustworthy
+
+1. **The baseline is the RECORDED RUNS, re-graded — not an archived `ab_*` wave.**
+   The corpus gets re-recorded: after the #562 pours-first reshape every one of
+   sets 10-19's 150 boards produces a different final output than the 2026-07-28
+   wave did, so diffing against it mixes a different PLAN in with the engine
+   delta. `--baseline recorded` (the default) compares like with like; preflight
+   refuses a wave whose chains disagree.
+2. **Grade both sides on the same terms.** Comparing a row graded one way
+   against a baseline graded another measures the GRADER, not the engine: it
+   once reported "DRC +40 worse" when the truth was "-37 better". Harvest
+   re-grades the kept boards locally by default (`--no-local-regrade` opts out).
+
+   **On a KiCad image you can grade in the cloud and skip the regrade.** Since
+   2026-08-23 `--with-kicad` is the default (`kicad/kicad:10.0.0`), so the
+   containers run the SAME `kicad-cli` grader your machine does, and the two
+   have been checked to agree (drandyhaas, 2026-08-31). `--no-local-regrade` is
+   therefore the faster path on such a wave, and it does not violate this rule:
+   the rule is same-TERMS, and same terms is exactly what a shared grader gives.
+
+   **The baseline arm can be re-graded in the cloud too.** `--regrade-baseline`
+   re-grades on this machine; `modal_sweep/regrade_arm.py` runs the same
+   `ab_replay_grade.py --regrade` per kept board on Modal, in the image built
+   from a checkout's HEAD (`KICAD_REGRADE_REPO` picks the checkout, i.e. the
+   grader), and writes a new arm on the results volume that `pair_arms.py`
+   pairs like any other. Use it when the change under test touches a grader
+   (`check_drc`, the connectivity checker) and the baseline arm was graded by
+   an older one.
+
+   What the rule still forbids is mixing GRADERS, and that is what the "+40
+   worse / -37 better" incident actually was -- a wave whose `drc_real` had
+   fallen back to raw DRC, paired against a kicad-cli baseline. So the regrade
+   remains mandatory for a wave banked before 2026-08-23 or launched
+   `--no-kicad`: those rows carry no `drc_real` at all, and nothing about a
+   shared grader applies to them.
+3. **Compare arms only on boards that replayed an IDENTICAL chain** — same step
+   count and same final board. A short chain grades artificially WELL, because
+   nets its missing steps never attempted are not counted as incomplete.
+
+   **Do NOT pair on `nets_total` as reported.** It is not a property of the
+   board: check_connected's "Checking N routed nets" counts only nets that ended
+   up with COPPER, so a net an arm fails entirely drops out of that arm's total
+   and reappears under "Unrouted nets". The same board therefore reports a
+   different total per arm (butterstick: 310/314/316/316 on an identical 16-step
+   chain — all 317 once the unrouted are added back), and pairing on it discards
+   exactly the boards WITH unrouted nets, i.e. the congested ones. On the #590
+   sets 1-10 wave that dropped 40 of 103 boards carrying ~85% of all the
+   incompleteness and turned a -48 result into -8. `ab_replay_grade._completion`
+   now reports the corrected census; `rank_arms.gradeable_nets` reconstructs it
+   for rows banked earlier. Known residual: a one-pad net that picks up plane
+   copper counts as routed but never appears among the unrouted (which grades
+   >=2-pad nets), leaving a rare +-1 that only a census emitted by
+   check_connected itself can fix.
+4. **Score connectivity on `nets_incomplete` ALONE.** It already counts unrouted
+   PLUS connectivity-issue nets. `nets_incomplete + conn` (which the sweep's
+   screened-stage gate used to score) counts every connectivity-issue net twice,
+   pricing "failed to connect a net" at double "lost the net's copper entirely".
+   Grading on `conn` alone is wrong from the other side: a net that loses its
+   copper LEAVES the conn bucket for the unrouted one, so conn can fall while the
+   board got worse. `rank_arms.py <sweep.json>` applies all of this — paired
+   verdict per arm, W/L, DRC reported beside it rather than folded in.
+5. **A recorded RESCUE step biases the board against any change — 25% of the
+   corpus has one.** Chains often end with `route.py ... --nets '/CM4
+   GPIO/GPIO22' '/CM4 GPIO/SD_CMD'`: the nets that failed *in the run being
+   recorded*, retried at a tighter clearance or width. The baseline replays that
+   run deterministically, so the rescue lands exactly on its failures and the
+   board finishes clean; an arm that routes differently fails a DIFFERENT net,
+   which the frozen list never retries, so its failure ships while healthy nets
+   get retried. None of that measures routing — in production the retry is
+   authored AFTER seeing what failed; only in replay is it pinned to one arm's
+   failure set.
+
+   The bias bites hardest where the rescue leaves the baseline nearly clean:
+   no headroom to win, every displaced net a loss. Measured on both #590 waves,
+   that cell punished EVERY arm — sets 11-20: +2..+8 per arm over 22 boards
+   holding 2 baseline failures; sets 1-10: +3..+6 over 16 boards holding 4.
+   Congested rescue boards still discriminate (they keep showing arm-ordered
+   differences), so only the clean ones are unmeasurable. Removing that cell
+   alone moved the sets 11-20 winner from -2.5% (p=0.15) to -5.2% (p=0.046).
+
+   `ab_replay_grade` records `rescue_steps` per board; `rank_arms.py` reports
+   the cell and drops it with `--drop-rescue-clean`. Report it either way —
+   silently dropping boards is how a knob talks itself into a default.
+6. **A two-board result is not a default change.** Per-board run-to-run spread is
+   +-2..3 nets (the same config measured 7 and 5 on consecutive runs), so single
+   boards cannot resolve anything smaller. Two defaults were shipped and reverted
+   on this exact mistake.
+7. **Arm names carry the source commit**, so resuming re-uses banked rows only
+   within one commit; the launch-time name is recorded in `<out>/arm.txt` because
+   HEAD moves between stages when another session commits.
+8. **A manifest records COMMANDS, not the recording shell's environment.** A
+   `KICAD_*` export the driving agent set as a workaround replays as unset --
+   the recorded timing/outcome can then be unreproducible at ANY commit.
+   core64_logic (#625) "replayed in 4 min historically": the original run only
+   terminated because its agent exported `KICAD_DYNAMIC_ITERATIONS=0` mid-run;
+   every replay ran the shipped default and burned the 3 h cap. Before trusting
+   a recorded run as a baseline, grep its `transcript.jsonl` for `KICAD_`
+   exports (the timing sidecar cannot tell you).
+
+## Exact-fill timing census (#831)
+
+`kicad_exact_fill.refill_islands_ex` runs pcbnew's ZONE_FILLER under
+`EXACT_FILL_TIMEOUT` (300 s); on expiry `plane_fragility` (and the GUI's
+`kicad_parser._live_fill`) fall back to the drawn zone OUTLINES, so which
+geometry the router priced depends on whether pcbnew finished on THIS machine.
+#831 asked whether a deterministic pre-flight predicate over
+`kicad_oracle._fill_cost_key` -- `('fill', zones, pads, footprints, bbox)` --
+could separate "will finish" from "will not". The answer had to be measured,
+and the tool that measures it is general:
+
+```bash
+python3 tests/stress/fill_timing_census.py --out fills.jsonl --timeout 1800 \
+    --workers 2 ~/Documents/kicad_stress_test/runs_set*/*/*planes*.kicad_pcb
+python3 tests/stress/fill_timing_census.py --report fills.jsonl   # table + separation
+```
+
+One JSONL row per board: the signature, extra features (segments, vias,
+copper layers, summed zone-outline area, file size), the fill's wall and
+child-CPU seconds, and the `RefillStatus` reason. The corpus is read in place
+(the refill stages every board into its own temp dir). `--report` prints the
+sorted table and, for each candidate predicate, the largest threshold that
+still refuses every over-budget board, the under-budget boards it would
+wrongly refuse, and the margin between the two populations.
+
+**The recorded census (`tests/831_fill_timing_census.json`, 2026-09-04, Apple
+M3 8-core, KiCad 10.0.0, timeout 1800 s, 2 workers).** Population: every
+route-step INPUT carrying zones in the recorded corpus runs -- 383 pour-step
+outputs, 398 last-step routed boards, 18 in-repo `kicad_files/` boards; 790
+distinct files, 100% `ok`, 0 parse failures (no `('path', ...)` signatures).
+
+| | fill wall s | child CPU s |
+|---|---|---|
+| median | 2.0 | -- |
+| p99 | 13.8 | 9.9 |
+| max (duodyne_z80_proc step4, 1 zone, 1289 pads, 18847 segs + 3280 vias) | 116.7 | 55.8 |
+| boards >= 150 s (half the budget) | **0** | 0 |
+| boards >= 300 s | **0** | 0 |
+
+Wall times were measured under contention (other sessions ran ~4 CPU-bound
+processes on the same 8 cores; the slowest board's wall is 2.1x its CPU), so
+they are an OVERestimate of an idle machine.
+
+**Verdict: does not separate, and nothing to separate.** No board reached the
+budget, so the "will not finish" class is empty on this machine and a
+threshold could only be an extrapolation. And the signature does not rank
+fill time: Spearman with fill seconds is 0.07 (zones), 0.18 (pads), 0.25
+(bbox area), 0.27 (zones x area) -- while the slowest board has **20
+signature twins** (every component within 2x of its own) that fill in a
+median **4.0 s** (max 14.1 s). What separates it from them is the copper the
+fill must clear -- 22127 segments+vias against the twins' median of 155 -- which
+`_fill_cost_key` does not carry; even the best feature measured (zone area x
+segments+vias) reaches only 0.43. A predicate over the signature therefore
+has no threshold with provenance, and none was implemented: the machine-
+dependent fallback is DISCLOSED instead (`JSON_SUMMARY.plane_fragility`,
+`docs/api-routing-config.md`). `tests/test_831_fill_preflight_census.py` pins
+these numbers as a change detector; re-record with the tool above (and
+`--report`) if the corpus or the fill engine changes, and re-ask the question
+if the census then shows a board near the budget or a signature component
+above ~0.5.
+
 ## Multi-set waves & release sign-off
 
 `ab_replay_grade.py` grades **one set**. A release decision (should this become a
@@ -708,6 +1086,13 @@ they interoperate with `--compare` and `--regrade`.
   are listed separately and are a release blocker — they can never show up as a
   DRC delta, because a broken chain has no final board to grade.
 
+  `diff_pairs_coupled` measures COUPLED TRUNKS, not member-pad connectivity
+  (#602): a pair whose terminals were peeled to the single-ended follow-up is
+  counted as coupled by design. To assert that a diff-pair stage left no open
+  member pads, gate on **`diff_pairs_member_incomplete`** (route_diff's own
+  member audit, `member_incomplete_pairs` in `JSON_SUMMARY`) — not on the
+  coupled count, and not by grepping the `MEMBER AUDIT` lines out of the log.
+
 ### Running a wave that lasts hours
 
 - **Detach it**: `nohup … &`, and verify it reparented to init
@@ -733,3 +1118,404 @@ they interoperate with `--compare` and `--regrade`.
 - **Wave dirs are write-once** (`ab_<what>_MMDD` + same-day `a`/`b`/`c`): re-running
   into an existing dir reads back the sibling `.kicad_pro` DRC floor and silently
   changes the routing — it looks like non-determinism but isn't.
+
+## Choosing a subject BEFORE you stage it (read this first)
+
+Four perturbed-corpus runs have posted a recovery near zero, and only one of
+them (run 8, the corner-only slot model) was the placer's fault. Run 7 was a
+wrong basin, run 9 was three tools failing to terminate, run 14 was a dose
+clipped to 0.100 mm. **Three of the four were the measurement rig, and each one
+cost an hour of chain time to discover.** Most of that is avoidable, because the
+questions are cheap to ask up front and nobody was asking them.
+
+### 0. You need UNROUTED candidates, and the corpus is nearly empty
+
+`boards_unrouted_set1/` currently holds exactly one board. Qualify against
+unrouted twins, not against `boards_set1/`: a routed board is refused by the
+placement CLIs (`place_optimize`, `place_portfolio`, `place_route_loop` and
+`check_floorplan` without `--allow-routed`), and its copper encodes the original
+poses (run 14 measured 301 of 569 pads sitting within 5 um of their own track
+endpoint, which `fence_audit` cannot see because it compares poses and never
+opens copper).
+
+```bash
+python3 -X utf8 tests/stress/strip_copper_only.py \
+    $STRESS/boards_set1/<name>.kicad_pcb $STRESS/boards_unrouted_set1/<name>.kicad_pcb
+```
+
+**Do NOT use `strip_routing.py` or `prep_set2.py` for this.** They are corpus
+normalizers and they rewrite `Edge.Cuts`, so the subject would no longer share an
+outline with the human reference it is graded against. `strip_copper_only.py`
+drops exactly four form types (top-level `segment`, `arc`, `via`, and
+`filled_polygon` inside zones) and leaves poses, pads, zones, stackup and outline
+untouched; verified on castor_pollux, 14241 segments and 358 vias to zero with an
+identical pose digest and identical bounds.
+
+### 1. Qualify the board (seconds, not an hour)
+
+```bash
+python3 -X utf8 tests/stress/qualify_subject.py \
+    $STRESS/boards_unrouted_set1/*.kicad_pcb --draws 8
+```
+
+It perturbs to a temp dir, grades copper-free, and prints aggregates only (rates
+and medians, never the kind, block, seed or direction), so it is safe to run on a
+board you then intend to stage blind. Three verdicts:
+
+| verdict | meaning |
+|---|---|
+| `REJECT` | the rig cannot damage this board. Draws clip to nothing, so `recovery` and `home /N` will read near-perfect whatever the run does. |
+| `WEAK` | usable, but a coin flip decides whether the run gets a subject. Redraw and never assume the dose landed. |
+| `GOOD` | the dose lands nearly every time AND the copper-free gates fire. Only this is a subject. |
+
+Run 14's board scores **WEAK** on this test (6 of 8 draws land; applied dose
+ranges 0.100 to 57.2 mm, and the 0.100 is the draw the run actually got). Had
+anyone run it, run 14 would have picked a different board or expected the
+redraw. `stage_blind` now redraws by itself, but that only rescues an unlucky
+draw; it cannot rescue an unsuitable board.
+
+### 1b. Choose damage kinds the fence can adjudicate
+
+A qualified board can still stage an **undecidable** run: on a grid-homed
+board, `swap` and `translate` recovery is byte-identical to the truth board
+BY CONSTRUCTION — every displaced part's home pose is a grid point any honest
+search also lands on, so a perfect result and a truth-file LEAK produce the
+same bytes and the fence cannot tell them apart (run 18's undecidable LEAK
+verdict). Before staging, pick from `KINDS` (`placement/perturb.py:56` —
+`translate`, `wrong_side`, `swap`, `scatter`, `pile`) with the fence in mind:
+on grid-homed boards prefer `pile`/`scatter`, whose recovered poses carry no
+byte-identity shortcut, or pre-declare the secondary tell (which independent
+measurement will separate an honest recovery from a leak) BEFORE the damage
+is drawn. A tell declared after the result is an accusation, not a fence.
+
+### 2. Run a positive control first
+
+The series has no control arm, so every null is ambiguous between "the placer
+failed" and "the rig failed". **tigard is the known positive**: run 3 delivered
+recovery +0.133 with 26 of 51 parts home. Re-run it whenever the rig changes.
+If it reproduces, a null elsewhere means something. If it does not, you have
+found the next rig bug for the price of a board you already understand.
+
+### 3. Confirm the damage actually threatens ROUTABILITY
+
+`qualify_subject.py` stops at the copper-free gates because routing is the
+expensive half. The question it cannot answer is the one that decides whether a
+placement run can succeed at all:
+
+```bash
+# the original must route ...
+python3 -X utf8 py_router/route.py <control>.kicad_pcb /tmp/ctl.kicad_pcb --nets "*"
+python3 -X utf8 py_router/check_connected.py /tmp/ctl.kicad_pcb
+# ... and the damaged one must NOT
+python3 -X utf8 py_router/route.py <staged>.kicad_pcb  /tmp/dmg.kicad_pcb --nets "*"
+python3 -X utf8 py_router/check_connected.py /tmp/dmg.kicad_pcb
+```
+
+**A placement-focused subject is one where a material dose makes the board
+unroutable and recovery makes it routable again.** That is falsifiable, it is
+what the tool is actually for, and it is the doctrine's own metric: lead on
+`blocking`, keep `recovery` as a diagnostic. On run 14 the damaged board routed
+to `blocking 0` unaided, which means the placement half had nothing to prove
+even before the dose was found to be 0.1 mm.
+
+### 4. Do not pay for a full route per trial
+
+Placement science needs many trials; a full chain costs about an hour and most
+of that is routing that tells you nothing new. Grade trials with the copper-free
+battery plus `tests/test_placement_probe.py`, which scopes the route CAUSALLY
+(the nets `net_affinity` flagged plus the declared corridor nets, fixed from the
+OFF board) rather than by which parts moved. Scoping by moved parts is circular:
+a term that moves nothing scores a perfect null. Run the full chain once, at the
+end, on the arm you intend to keep.
+
+### 5. Report shape
+
+Lead with `blocking`. Report `recovery` and `home /N` as diagnostics, and state
+the applied dose next to them every time, because a recovery number without the
+dose that produced it is uninterpretable. `collateral_pad_rms` is the one
+recovery figure that signals a real defect: it means parts nothing had damaged
+were moved (run 9: 0.000 to 1.171 mm; run 10: 0.000 to 3.670 mm).
+
+## Staging a perturbed subject (#411 recovery rig)
+
+A recovery experiment measures how close a repaired placement lands to the
+original, and that number means nothing if the tools could have read the
+original. So the staging has exactly one rule:
+
+**Ground truth never enters the work dir. Stage it into a SIBLING `_truth/`
+from the start, and audit by CONTENT before the run.**
+
+```
+wk/<run>/<subject>/         <- THE WORK DIR. every tool runs here.
+    board.kicad_pcb         <- the damaged board, the only input
+wk/<run>/_truth/<subject>/  <- fenced, OUTSIDE the work dir. nothing reads it.
+    control.kicad_pcb       <- the human placement, pose for pose
+    board.perturb.json      <- the record: it embeds `original_poses`
+```
+
+`placement.perturb.perturb(..., control_out=...)` puts both there in one call —
+the record follows the control — and prints where each landed:
+
+```python
+P.perturb(src, 'wk/run12/tigard/board.kicad_pcb',
+          kind=kind, dose_mm=dose, seed=seed,
+          control_out='wk/run12/_truth/tigard/control.kicad_pcb')
+```
+
+**Omitting `control_out` is the unsafe default and is kept only for
+compatibility.** It writes `<out>.control.kicad_pcb` beside the damaged board —
+the human placement, inside the directory the run then works in, where any glob
+or `--before` can reach it. `perturb()` prints a WARNING when it does this;
+`tests/stress/perturb_batch.py` shows the fenced form (`_truth/` a sibling of
+the dose cells).
+
+Audit before the run and again after, by content, never by name:
+
+```bash
+python3 -X utf8 tests/stress/fence_audit.py \
+    --control wk/run12/_truth/tigard/control.kicad_pcb \
+    --workdir wk/run12/tigard --mode create        # exit 4 == a leak
+# ... the run ...
+python3 -X utf8 tests/stress/fence_audit.py \
+    --control wk/run12/_truth/tigard/control.kicad_pcb \
+    --workdir wk/run12/tigard --mode audit
+```
+
+`--mode create` writes `.fence-manifest.json`, which is what later tells a
+*recovered* board (produced by the run, reaching truth — the experiment
+succeeding) apart from a *leaked* one (present at creation). There is no
+name-based exemption for `*.control.kicad_pcb`: a control inside the work dir is
+a leak whatever it is called, because the next carrier will have a different
+name.
+
+**And none for `*.perturb.json` either — `DEFAULT_ALLOW` is empty.** The audit
+now opens `.json` files and reads `original_poses` out of them, so a
+perturbation record is caught by content like anything else. That exemption
+existed while the scan walked only `.kicad_pcb`, i.e. while it exempted a file
+the tool could not open; making the scan live turned it into a working blind
+spot. This is the *default* path, not a corner case — `perturb()` without
+`control_out` writes the record beside the damaged board, inside the fence, and
+that record embeds the human placement pose-for-pose. Stage with `control_out=`
+pointing at a **sibling** `_truth/` (never a child of the work dir — the audit
+recurses into it) and neither file ever enters. The record test reads bytes, so
+re-saving it as UTF-16 does not evade it.
+
+### Staging blind, in one call
+
+`tests/stress/stage_blind.py` does the whole staging above and draws the
+perturbation itself, so the operator never learns the kind, dose, block or
+seed:
+
+```bash
+python3 -X utf8 tests/stress/stage_blind.py \
+    kicad_files/tigard.kicad_pcb wk/run12/tigard wk/run12/_truth/tigard
+```
+
+It also SANITISES the project it carries into the work dir. The project must
+travel or the board grades at the stock netclass (#441), but KiCad writes
+`meta.filename` into it and `pcbnew.last_paths` holds the author's own
+directories, so a verbatim copy puts the source board's NAME inside the fence.
+The declaration of what it withheld is written to `_truth/draw.json` under
+`staged_project`, not into the work dir, because naming the withheld strings
+inside the fence would be the leak itself.
+
+### Staging unaided, in one call
+
+`tests/stress/stage_unaided.py` puts every non-exempt footprint at the board
+centre at ROTATION 0 -- the placement is gone, angle included, which is the
+place-from-scratch task rather than a damaged-placement one:
+
+```bash
+python3 -X utf8 tests/stress/stage_unaided.py     kicad_files/esp_prog.kicad_pcb wk/run25/esp_prog wk/run25/_truth/esp_prog
+python3 -X utf8 tests/stress/fence_audit.py     --control wk/run25/_truth/esp_prog/control.kicad_pcb     --workdir wk/run25/esp_prog --mode create
+```
+
+Mechanical parts keep their true pose and are DECLARED, per ref with a reason,
+in `<workdir>/mechanical.json` -- an input the run may read, and legitimate
+precisely because it is written down. Truth goes to a SIBLING directory, never
+a child. The source is recorded by HASH, not by path.
+
+It also ARMS the unaided regime as its last act (see below), so run it BEFORE
+`fence_audit --mode create`, as above.
+
+### Auditing that every pose came from the engine
+
+`fence_audit` answers "did the answer key get in". It cannot answer "did a
+human place this by hand", because a hand-placed board is not the control's
+placement either. That is a separate question with a separate instrument:
+
+```bash
+python3 -X utf8 tests/stress/provenance_audit.py --workdir wk/run12/tigard
+# 0 CLEAN   every moved pose traces to a registered lever, and the board is
+#           an arrangement the ledger's lineage produced (or matches the
+#           nearest one it did, pose for pose)
+# 4 VIOLATION a moved pose has no lever, or is not where the recorded writes
+#           put it
+# 5 UNPROVEN  nothing can be concluded (the causes are listed below)
+```
+
+BOTH STAGERS ARM IT. `stage_unaided.py` and `stage_blind.py` write
+`.unaided-manifest.json` into the work dir as their last act. (The library
+call they make is `placement.provenance.start_regime`; while NOTHING in
+production called it, this audit printed UNPROVEN on every real run, the
+ledger was never written, and the gate that refuses an undeclared pose writer
+was installed and never armed -- #903.) The CLIs in `LEVER_REGISTRY` then
+record every pose they write to `.pose-provenance.jsonl`, and an undeclared
+write RAISES instead of landing, before the file exists.
+
+A staging row in that ledger is REDACTED to "a staging happened": the ledger
+lives inside the fence, and an unredacted row named the source board and the
+truth dir in its argv and carried the control's own poses.
+
+THE LEDGER IS A LINEAGE, LINKED BY ARRANGEMENT (#972). Every engine row
+records the pose digest of the board it read (`parent_pose_sha256`) and of the
+board it wrote (`board_pose_sha256`): a hash of every footprint's position,
+rotation and side, and nothing else. The audit replays the rows forward from
+the staged board, so the delivered board must be an arrangement the recorded
+writes actually produced, with every pose where they put it. It links by
+arrangement rather than by file bytes or path, because lock stamps, routed
+copper, label moves, fills, copies and renames all rewrite a board without
+moving a part. Before this, pose claims came only from rows naming the
+delivered file, and a declared write of a hand-edited board to a NEW path
+graded CLEAN. A board no recorded write produced is compared with the NEAREST
+one the ledger did (the fewest parts differing), and the parts that differ are
+named, and a part the lineage expects that is gone (deleted, or renamed) makes
+the board UNPROVEN, while a renamed part that turns up somewhere no lever put
+it is a violation. The doc's `lineage` key says which case applied: `verified`,
+`broken` (a recorded write read a board nothing recorded), `unrecorded`,
+`legacy` (some claiming row predates the digests: the old per-file reading,
+plus a check that a pose with no claim to compare is at least one some row
+MOVED that part to) or `unlinkable` (a digest is missing or of another
+scheme). `place_seed --repair/--reseat`, its polish and re-seat fix, and
+`place_route_loop` record their copy or rename delivery against the output
+itself (#973), so the audit picks the output rather than an intermediate.
+`place_reconstruct`'s staged promote and `place_fanout_clearance`'s no-move
+copy do not: the lineage still links their boards by arrangement, but the
+audit's own pick can land on an earlier board, so pass `--delivered` for
+them. `place_pose` records its promote only once #970 is in; without it a
+`place_pose` step is an unrecorded change, and the audit of every later write
+is at least UNPROVEN -- a VIOLATION naming the parts it moved, unless that
+later write moved them again. What a digest does NOT see: two footprints that share a reference
+swapping places together with their block order, and a footprint whose own
+`(at ...)` carries an exponent-form angle, which the parser reads from the
+first child `(at ...)` instead (a pre-existing parser limit). And a board
+built from a SUPERSEDED staging is compared with the current one, not with the
+staging it came from. The digests make a forger append rows claiming the hand
+pose -- an affirmative act -- but they are no defence against one: a row
+with no digests at all is read the legacy way.
+
+`5 UNPROVEN` has these live causes, and the `cheats` watcher names them: the
+dir was staged by neither stager; it was MOVED after staging (the manifest
+holds an absolute path); a manifest whose `staged_sha256` no longer matches
+the board it names, which means the baseline every verdict is measured
+against is stale; no delivered board sits beside the staged one at the top
+level -- pass `--delivered`; no ledger AND no pose differs from the staged
+board; a part the lineage expects is missing; a recorded write that read a
+board no recorded write produced and re-moved every part that differs, so the
+change cannot be named; pose digests that cannot link while some claims have
+no pose to compare; or the audit itself raised, which the CLI reports as 5
+with the exception on stderr and no VERDICT line.
+
+### Watching a long run
+
+`tests/stress/run_watch.py` has two modes, both of which emit one stdout line
+per event so they can be armed once and left alone:
+
+```bash
+python3 -X utf8 tests/stress/run_watch.py bugs   --workdir wk/run12/tigard
+python3 -X utf8 tests/stress/run_watch.py cheats --workdir wk/run12/tigard \
+    --truthdir wk/run12/_truth/tigard --done wk/run12/tigard/DONE \
+    --report-done wk/run12/tigard/REPORT_DONE --report-wait 5400
+```
+
+`bugs` reports new problems as they appear and runs until you stop it.
+`cheats` reports the ways the run could report success without earning it (a
+scope narrowed to the failing nets, a grader floor overridden, a waiver spent).
+At `DONE` it runs `fence_audit` and `provenance_audit` — the audits that read
+the BOARD — and then KEEPS GOING to `REPORT_DONE`, where it audits `REPORT.md`
+itself and re-runs those two if `DONE` changed in between. `--report-done ''`
+restores the old exit-at-DONE contract, which is what you want when replaying
+over a finished run. Neither watcher grades on a clock; `--report-wait` bounds
+how long the last marker is waited for and changes only what is printed.
+
+`RESTAGE` counts invocations of EITHER stager, from two sources: a teed `CMD:`
+line, and a pose-provenance row. The second is the one that works -- neither
+stager installs `cli_banner`, and the first staging creates the work dir, so
+there is nowhere to tee it to yet. A `PROVENANCE VERDICT: UNPROVEN` on a dir a
+stager armed is itself a finding and `cheats` says so; it still exits 0,
+because "I cannot prove it" and "I proved it false" are different numbers.
+
+`cheats` reads a tool's argv from its `CMD:` banner line. The two skill
+drivers install no banner, so wrap timed invocations in
+`tests/stress/tee_cmd.py`, which tees the output and appends one
+`cmd_timing.jsonl` row per invocation carrying the argv, the exit code and the
+elapsed time:
+
+```bash
+python3 -X utf8 tests/stress/tee_cmd.py --workdir wk/run12/tigard \
+    route4 -- python3 -X utf8 py_router/route.py in.kicad_pcb out.kicad_pcb
+```
+
+Wait on `logs/<label>.done`, which appears exactly when the child exits and
+holds its exit code. Nothing else is a completion signal.
+
+**Reading it back is a script, not a watch subagent.** The end-of-run timing
+audit — the step table, the stage subtotals, tool time vs total run time with
+the difference reported as "time outside the tools", and the three longest steps
+— is deterministic, so run it:
+
+```bash
+python3 -X utf8 py_router/cmd_timing.py wk/run12/tigard          # markdown
+python3 -X utf8 py_router/cmd_timing.py wk/run12/tigard --json   # the same, as data
+```
+
+It reproduces run 24's hand-written audit to the digit and cannot get the sums
+wrong, which a subagent doing arithmetic over 153 JSONL rows at the end of a run
+demonstrably can: that audit's "16 of its 81 steps are the Pclose placement
+close-out" is 21. The same reader drives the movie's run-clock overlay, so the
+number in the report and the number in the frame come from one place.
+
+Labels bucket by PREFIX (`staging`, `fence`/`close` → close-out, then `P`/`L`/
+`R`/`V`), case-sensitively. A run that labels its steps by another convention
+lands in `other` and the report says so at the top rather than leaving an
+unexplained zero.
+
+### Agent watchers: prompts at the start, one agent at the end
+
+`run_watch.py` is a shell and costs nothing to leave running. An AGENT watcher
+is not: each spawn pays a fixed preamble — system prompt, CLAUDE.md, memory
+index, skill listing — before it does anything. One measured run spawned three
+watchers twice over, the first time only to arm a file monitor the background
+shell above already provides, and the six spawns plus their reports came to
+about 1.3 M tokens.
+
+Split what arming actually PROTECTS from what it costs:
+
+1. **At the start, write each watcher's prompt to `<workdir>/watch/`** —
+   `<name>_prompt.md`, one per lens. That file's mtime IS the arming evidence,
+   and it is what pre-registration protects: a brief written after the outcome
+   is a brief tailored to it. The boundary verification's contemporaneity check
+   reads exactly this kind of timestamp, so the prompts are checkable by an
+   instrument that already exists.
+2. **Spawn at the end, once, as ONE agent with one section per brief** — into
+   ONE file, never over a `watch/<name>.md` that already exists. Three agents
+   re-reading the same logs derive the same numbers three times and bind to
+   nothing; one agent with three headed sections produces three verdicts from
+   one preamble and one read. "At the end" means at the SECOND marker,
+   `REPORT_DONE`, not at `DONE`: `DONE` means the copper is frozen and
+   `REPORT.md` is written after it, carrying verdicts that do not exist until
+   then. Measured (run 29): dispatched from a run prompt that specified the
+   mechanism differently, four watchers ran twice, `cheats.md` was written
+   twice with the second overwriting the first, and `tool_usage.md` never
+   landed. The skill is the single specification; a run prompt names the briefs
+   and defers to it.
+3. **Override the model.** Reading a report and a JSONL and reporting
+   discrepancies is not the task the largest model exists for; set the Agent
+   tool's `model` field to a smaller one for that spawn. It is one field.
+4. **Feed it the DERIVED files first and the raw logs on demand**: `REPORT.md`,
+   `cmd_timing.jsonl` and `ledger.jsonl` are the run in three files. Hand it the
+   hundreds of `logs/*.log` only when a section names one. A watcher that starts
+   from raw logs re-derives what the ledger already states.
+
+A watcher that finds nothing is a result. A watcher that ran out of window
+before it reported is not.

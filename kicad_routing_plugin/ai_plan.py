@@ -50,21 +50,29 @@ PLAN_RESULT_SCHEMA = (
     '(e.g. max_iterations, max_ripup, ripup_abandon_metric, grid_step, board_edge_clearance, '
     'hole_to_hole_clearance, via_cost, heuristic_weight, turn_cost, '
     'ordering_strategy) - unknown names are ignored with a note. '
-    'List steps in execution order (#562 pours-first chain): fanout first '
-    '(exclude the plane nets there - the exclusion marks them for plane-drop '
-    'vias), then route_planes (the bare pour - no routing happens in it), '
-    'then route_diff, then ONE route step with nets ["*"] INCLUDING the '
-    'plane nets: pour-launch welds their pads into the pours and the run '
-    'finishes with the in-run plane finalize (taps + region joins + cleanup '
-    '+ KiCad-oracle verify). There is NO repair step - plane repair is a '
-    'default part of every route step. Put the plane nets in the route '
-    'step\'s power_nets with widths so finalize copper is sized right. '
-    'A route_planes step placed AFTER routing (GND return vias / stitching '
-    'via add_gnd_vias or stitch_vias) replaces the same-net zone in place '
-    'and its vias adapt around the finished signals. '
+    'List the steps in execution order - the executor runs the array in that '
+    'order. Take the routing order and step composition from the skill you '
+    'just ran; do not re-derive them here. '
     'Use only these actions; omit any parameter you have no recommendation for; '
     'all params are optional.'
 )
+
+# NOTE: this string is the GUI's MACHINE CONTRACT only -- the RESULT= line, the
+# action/param schema, and the tab-control passthrough rule. It must NOT restate
+# routing doctrine. It used to, and the copy drifted: it said "fanout first ...
+# then route_planes" while calling itself "the #562 pours-first chain", and
+# because it is appended AFTER the skill's own text it WON. The plans the GUI
+# produced therefore fanned out before pouring -- the opposite of what the skill
+# says in four places ("Pour the planes FIRST - before fanout, before any
+# routing") -- so the GUI and the CLI generated different chains from the same
+# skill. On an 8-layer board (mez_rx) that cost every GND ball its pour-direct
+# skip (#424 prints "N pour-covered (no via needed)"; measured 104 of 127 balls
+# on a 285-ball BGA), left the plane-drop vias with no pour to land on, and
+# handed the pour a fanout-shredded board to flood around.
+#
+# Anything about ORDER, step composition, or which nets go where belongs in
+# .claude/skills/plan-pcb-routing/SKILL.md, which both fronts read. Only add
+# text here when the GUI executor genuinely cannot act without it.
 
 
 def _join_nets(values):
@@ -116,8 +124,15 @@ def _insert_cap_optimization(steps):
     """Insert one decoupling-cap optimization step right after the last BGA
     fanout (issue #130), unless the plan already has one. The cap engine is
     board-global, so running it once after every BGA's vias are placed clears
-    all cap/fanout-via collisions; placing it after the LAST bga fanout (the
-    plan lists fanouts first) is exactly that timing. QFN fanouts don't need it.
+    all cap/fanout-via collisions; placing it after the LAST bga fanout is
+    exactly that timing (found by scan, so it does not care where the fanouts
+    sit relative to the pour). QFN fanouts don't need it.
+
+    Once-after-all is the skill's DEFAULT cadence (Step 1c), not a choice
+    between two: per-BGA runs compound cap displacement (each run re-seeds at
+    the already-moved position) and change what later fanouts route around
+    (cap pads are escape obstacles). A plan that already carries its own
+    optimize_caps step(s) is left exactly as the skill produced it.
     """
     if any(s["action"] == "optimize_caps" for s in steps):
         return
@@ -126,7 +141,20 @@ def _insert_cap_optimization(steps):
         if s["action"] == "fanout" and (s.get("kind") or "bga").lower() == "bga":
             last_bga = i
     if last_bga is not None:
-        steps.insert(last_bga + 1, {"action": "optimize_caps", "cap_prefix": "C,R,FB"})
+        # NO params, deliberately: this step INHERITS the preceding fanout's
+        # live control state, which is what the plan executor's reset exception
+        # exists to preserve.
+        #
+        # #772: it used to carry a TOP-LEVEL "cap_prefix": "C,R,FB" -- outside
+        # `params`, which apply_step_params never reads -- so it was inert while
+        # reading, in the plan JSON and in review, as though the prefix were
+        # being set. Nothing anywhere reads a top-level step key of that name
+        # (checked). Moving it INTO params would be WORSE than dropping it:
+        # since #772 a cap step that names a cap knob gets the SCOPED cap reset,
+        # so the auto-inserted step would stop inheriting the operator's
+        # interactive cap tweaks -- the one behaviour it is documented to have.
+        # The panel's own default is 'C,R,FB' regardless, so nothing changes.
+        steps.insert(last_bga + 1, {"action": "optimize_caps"})
 
 
 def _append_final_plane_verify(steps):
@@ -212,6 +240,9 @@ def step_label(index, step):
         shown = " ".join(nets[:4]) + (" ..." if len(nets) > 4 else "")
         power = (step.get("params") or {}).get("power_nets")
         suffix = f" (power: {' '.join(power)})" if power else ""
+        refs = _step_component_refs(step)
+        if refs:
+            shown = (f"{shown} of " if shown else "") + " ".join(refs)
         return f"{index}. Route nets: {shown}{suffix}"
     if action == "route_planes":
         parts = []
@@ -257,17 +288,58 @@ _PARAM_CONTROL_ALIASES = {
     # Review parity finding 5: bga_fanout's future-pour declaration
     # (NET:LAYER[,...] specs). List param -> space-joined into the text ctrl.
     'plane_net_layers': 'plane_net_layers_ctrl',
+    # #237: plans converted BEFORE manifest_to_plan mapped --fab-overrides
+    # carry it under the fallthrough name `fab_overrides`; the control is
+    # fab_overrides_path. New conversions emit fab_overrides_path directly.
+    'fab_overrides': 'fab_overrides_path',
+    # #856: the opt-in severity relaxation checkbox (Options tab).
+    'relax_drc_severities': 'relax_drc_severities_check',
+    # route.py --bus: plans converted BEFORE manifest_to_plan mapped it carry
+    # the fallthrough name `bus`; the control is the Advanced-options checkbox
+    # bus_enabled. New conversions emit bus_enabled directly (same shape as
+    # #237's fab_overrides above).
+    'bus': 'bus_enabled',
+    # The same shape for more route.py flags, found by the parity gate's
+    # route.py flag enumeration: the flag's name is not its control's name.
+    'can_swap_to_top_layer': 'can_swap_to_top',
+    'skip_routing': 'skip_routing_check',
+    'guide_corridor_layer': 'guide_corridor_layer_ctrl',
+    'guide_corridor_spacing': 'guide_corridor_spacing_ctrl',
+    'keepout_layer': 'keepout_layer_ctrl',
+    # route.py --length-match-group: older conversions carried only the LAST
+    # occurrence's patterns under the fallthrough name; the text control takes
+    # them as one group. New conversions emit length_match_groups (special).
+    'length_match_group': 'length_match_groups_ctrl',
+    # route_diff.py / bga_fanout.py flags whose control has another name,
+    # under the fallthrough names older conversions carry.
+    'diff_pair_intra_match': 'intra_match_check',
+    'ac_couple_match': 'ac_couple_check',
+    'diff_chamfer_extra': 'chamfer_extra',
+    'check_for_previous': 'check_previous',
+    'no_inner_top_layer': 'no_inner_top',
+    'force_escape_direction': 'force_escape',
+    # bga_fanout --diff-pairs, under the fallthrough name. (Its
+    # --diff-pair-gap cannot be aliased: see the fanout block's note.)
+    'diff_pairs': 'diff_pair_patterns_ctrl',
+    # --layer-costs on a fanout or plane step: both tabs read the shared
+    # Basic-tab control (#288, #381 D6). Route and diff steps never get here
+    # -- their action blocks format it (see _GENERIC_SKIP).
+    'layer_costs': 'layer_costs_ctrl',
 }
 # _PARAM_SPECIAL: params handled by _apply_special() (composite / inverted /
 # panel-backed controls that a plain SetValue can't fill).
 _PARAM_SPECIAL = {'layers', 'no_bga_zone', 'no_bga_zones', 'power_nets',
+                  # #530: --clearance-ceiling -> Min Clearance + the ceiling box
+                  'clearance_ceiling',
                   'power_nets_widths', 'escape_method', 'no_gnd_vias',
                   # #381 D5:
                   'impedance', 'length_match_groups', 'swappable_nets',
                   # #486:
-                  'coplanar_nets',
-                  # review parity finding 5:
-                  'plane_net_layers'}
+                  'coplanar_nets'}
+# (plane_net_layers left _PARAM_SPECIAL: its handler looked for the control on
+# the DIALOG, which never had one -- it is on fanout_tab.bga_options -- so it
+# was logged "ignored" on every step. The alias above reaches it through the
+# fanout owners #772 widened to the option panels.)
 
 # #439: geometry-floor param -> its Basic-tab override checkbox attribute. A plan
 # step that names one of these is the GUI equivalent of the CLI passing that flag,
@@ -302,6 +374,52 @@ def _enable_geometry_override(dialog, name):
     ctrl = getattr(dialog, name, None)
     if ctrl is not None and hasattr(ctrl, 'Enable'):
         ctrl.Enable(True)
+
+
+# #772: action -> (tab attribute, sub-panel attributes searched BEFORE the tab).
+# The generic loop resolves a param by walking these owners IN ORDER and taking
+# the first one carrying a same-named control, so this table decides which
+# controls a plan step can reach AT ALL.
+#
+# `optimize_caps` had no entry and fell through to [dialog], while every one of
+# the eleven "Cap Placement (advanced)" controls lives on fanout_tab.bga_options.
+# Measured on the real headless dialog before this landed: TEN of the eleven
+# params a converted manifest carries were logged "no control, ignored" and the
+# engine ran at its signature defaults (capture_radius 2.0 for a plan's 5.0,
+# max_passes 30 for 7, cap_prefix 'C,R,FB' for 'C', allow_rotations True for
+# False). Only `clearance` arrived -- correctly, see _GENERIC_SKIP below.
+#
+# A MODULE-LEVEL TABLE rather than the if/elif chain it replaces, for two
+# reasons. ONE: the wx-free parity gate can AST-extract it, exactly as it does
+# _PARAM_CONTROL_ALIASES, and assert OWNER-SCOPED reachability. That check did
+# not exist, which is why #772 shipped -- check_param_resolution only asks "does
+# a control with this name exist ANYWHERE across the four GUI files", and every
+# cap_* control has always existed, throughout the entire period not one of them
+# was reachable. TWO: swig_gui.reset_params_to_defaults already descends into
+# these same sub-panels, and its own comment names this bug class. Apply and
+# reset must agree about what a step can touch; two hand-written lists in two
+# files did not, and that disagreement IS #772.
+_ACTION_OWNERS = {
+    'route_diff': ('differential_tab', ()),
+    # #772: the fanout action reaches its option PANELS too, which is what
+    # swig_gui.reset_params_to_defaults has always done (its `_fctl` holder
+    # search, whose comment names this exact bug class). Apply and reset now
+    # agree about what a fanout step can touch; before, the per-action block
+    # reached bga_options by hand for three params and the generic loop
+    # could reach neither panel.
+    #
+    # Measured on the real headless dialog before widening: the live
+    # control-name sets of RoutingDialog (96), FanoutTab (1),
+    # BGAOptionsPanel (20) and QFNOptionsPanel (5) are pairwise DISJOINT
+    # except `progress_bar`, a wx.Gauge on both the dialog and the tab that
+    # no plan param is named after and that the fanout action could already
+    # reach. So the panels shadow nothing.
+    'fanout': ('fanout_tab', ('bga_options', 'qfn_options')),
+    'optimize_caps': ('fanout_tab', ('bga_options',)),
+    'route_planes': ('planes_tab', ('create_options',)),
+    'repair_planes': ('planes_tab', ('create_options',)),
+    # `route` is deliberately absent: its controls are all on the dialog.
+}
 
 
 def apply_step_params(step, dialog):
@@ -340,29 +458,63 @@ def apply_step_params(step, dialog):
         # the QFN panel's own controls; skip them in the generic loop (which has
         # no same-named control on the fanout owners) to avoid a spurious
         # "no control, ignored" note.
-        "fanout": {"qfn_track_width", "qfn_clearance"},
+        "fanout": {"qfn_track_width", "qfn_clearance",
+                   # a BGA step's legacy diff_pair_gap: the block below
+                   # re-homes it onto the panel's own coupled-pair gap.
+                   "diff_pair_gap"},
+        # #772: on a CAP step, `board_edge_clearance` is
+        # place_fanout_clearance.py's flag, whose GUI home is the BGA
+        # panel's cap_board_edge_clearance -- NOT the Basic tab's
+        # same-named SIGNAL copper-to-edge keep-out, a different quantity
+        # that merely shares the flag SPELLING across two independent
+        # tools (the #733 follow-up split them apart on purpose). Left to
+        # the generic loop it landed on the signal control AND ticked
+        # edge_clearance_check -- measured: `edge_clearance_check = True,
+        # board_edge_clearance = 0.85` after the step, which then leaks
+        # into the NEXT step's routing -- while the cap engine still
+        # received None. The optimize_caps block below re-homes it.
+        #
+        # NOT `clearance`, which is CORRECT through the generic loop:
+        # setting the Basic tab's Min Clearance and ticking its override
+        # is exactly the GUI's spelling of "--clearance was GIVEN"
+        # (#768). Measured on the real dialog, a cap step's
+        # `clearance: 0.1` arrives as both clearance=0.1 AND
+        # netclass_ceiling=0.1. Skipping it would break that branch.
+        #
+        # #742 adds `via_size` for the same shape of reason. On a cap step the
+        # CLI flag is `--default-via-size`, whose GUI home is now the panel's
+        # cap_default_via_size -- NOT the Basic tab's via GEOMETRY, which sets
+        # the diameter of the vias fanout PLACES. Left to the generic loop a
+        # plan naming `via_size` on an optimize_caps step lands on that
+        # control, ticks via_size_check through _GEOMETRY_OVERRIDE_CHECKS, and
+        # is harvested by _write_drc_floors into the project. Before #742 that
+        # at least reached the cap engine (run_cap_optimization forwarded it);
+        # now it reaches nothing, so it would be a pure leak. Same fix as
+        # --board-edge-clearance got, on the same reasoning.
+        "optimize_caps": {"board_edge_clearance", "via_size"},
     }
 
     def _owners():
+        # Owner search order for this action (see _ACTION_OWNERS). An
+        # action with no entry -- `route` -- resolves on the dialog only.
+        #
+        # Behaviour-identical to the if/elif chain this replaced for the
+        # four actions that had one: route_diff -> [differential_tab, d]
+        # or [d]; fanout -> [fanout_tab, d] or [d]; route_planes and
+        # repair_planes -> [create_options?, planes_tab, d] or [d];
+        # anything unlisted -> [d]. Only optimize_caps changes.
         d = dialog
-        if action == "route_diff":
-            t = getattr(d, "differential_tab", None)
-            return [t, d] if t is not None else [d]
-        if action == "fanout":
-            t = getattr(d, "fanout_tab", None)
-            return [t, d] if t is not None else [d]
-        if action in ("route_planes", "repair_planes"):
-            t = getattr(d, "planes_tab", None)
-            subs = []
-            if t is not None:
-                for sub in ("create_options",):
-                    s = getattr(t, sub, None)
-                    if s is not None:
-                        subs.append(s)
-                subs.append(t)
-            subs.append(d)
-            return subs
-        return [d]
+        tab_attr, subs = _ACTION_OWNERS.get(action, (None, ()))
+        if not tab_attr:
+            return [d]
+        t = getattr(d, tab_attr, None)
+        if t is None:
+            return [d]
+        out = [p for p in (getattr(t, name, None) for name in subs)
+               if p is not None]
+        out.append(t)
+        out.append(d)
+        return out
 
     def _set_control(owner, name, value):
         ctrl = getattr(owner, name, None)
@@ -416,7 +568,14 @@ def apply_step_params(step, dialog):
             ctl = getattr(dialog, 'no_bga_zones_ctrl', None)
             if ctl is None:
                 return False
-            ctl.SetValue('ALL' if value else '')
+            if isinstance(value, (list, tuple)):
+                # `--no-bga-zones U1 U3`: only those components' zones, the
+                # refs the control's parse hands batch_route as
+                # disable_bga_zones, exactly the CLI's list. An empty list is
+                # the CLI's bare flag: every zone.
+                ctl.SetValue(' '.join(str(v) for v in value) or 'ALL')
+            else:
+                ctl.SetValue('ALL' if value else '')
             return True
         if name == 'power_nets' and isinstance(value, (list, tuple)):
             ctl = getattr(dialog, 'power_nets_ctrl', None)
@@ -430,15 +589,6 @@ def apply_step_params(step, dialog):
             if ctl is None:
                 return False
             ctl.SetValue(_join_nets(value) if isinstance(value, (list, tuple))
-                         else str(value or ''))
-            return True
-        if name == 'plane_net_layers':
-            # Review parity finding 5: NET:LAYER[,...] spec list -> the
-            # space-separated fanout text control (specs contain no spaces).
-            ctl = getattr(dialog, 'plane_net_layers_ctrl', None)
-            if ctl is None:
-                return False
-            ctl.SetValue(' '.join(value) if isinstance(value, (list, tuple))
                          else str(value or ''))
             return True
         if name == 'power_nets_widths' and isinstance(value, (list, tuple)):
@@ -470,16 +620,41 @@ def apply_step_params(step, dialog):
             chk.SetValue(not bool(value))
             return True
         if name == 'escape_method':
-            # Fanout escape dropdown lives on the BGA options panel and shows
-            # DISPLAY strings ("Auto (channel, under-pad retry)"), while the
-            # plan/CLI value is the engine token ('auto'/'channel'/'underpad').
-            # Map value -> index via the panel's ESCAPE_METHODS tuple.
-            opts = getattr(getattr(dialog, 'fanout_tab', None), 'bga_options', None)
+            # THE TWO FANOUT PANELS MODEL THE ESCAPE DIFFERENTLY, so this cannot
+            # resolve to one control (#860 follow-up). BGA has a 4-way dropdown
+            # showing DISPLAY strings ("Auto (channel, under-pad retry)") while
+            # the plan/CLI value is the engine token, mapped via ESCAPE_METHODS.
+            # QFN has no dropdown at all: it has a BOOLEAN `underpad_escape`
+            # checkbox, and QFNOptionsPanel's config emits 'underpad' when it is
+            # set and 'stub' when it is not.
+            #
+            # This used to reach `bga_options` unconditionally and RETURN TRUE,
+            # so a QFN step set the BGA panel's dropdown, reported "set
+            # escape_method=underpad", and left the QFN panel untouched -- the
+            # under-pad escape stayed off, which in turn made `allow_via_in_pad`
+            # inert, since it is under-pad-only. A plan carrying
+            # `--escape-method underpad --allow-via-in-pad` therefore replayed a
+            # STUB fanout while claiming both params had been applied.
+            #
+            # Dispatch on `step['kind']`, the same key the fanout action block
+            # below uses and which manifest_to_plan sets from the tool name.
+            tab = getattr(dialog, 'fanout_tab', None)
+            v = str(value).strip().lower()
+            if (step.get('kind') or 'bga').lower() == 'qfn':
+                chk = getattr(getattr(tab, 'qfn_options', None),
+                              'underpad_escape', None)
+                if chk is None:
+                    return False
+                # Only 'underpad' turns the checkbox ON; 'stub' (and anything
+                # else this panel cannot express) turns it off, which is what
+                # the panel's own config->token mapping means in reverse.
+                chk.SetValue(v == 'underpad')
+                return True
+            opts = getattr(tab, 'bga_options', None)
             choice = getattr(opts, 'escape_method_choice', None)
             if choice is None:
                 return False
             methods = getattr(type(opts), 'ESCAPE_METHODS', ('auto', 'channel', 'underpad'))
-            v = str(value).lower()
             if v in methods:
                 choice.SetSelection(methods.index(v))
                 return True
@@ -494,6 +669,22 @@ def apply_step_params(step, dialog):
                 return False
             chk.SetValue(str(value).strip().lower() not in ('off', '0', 'false', 'no'))
             return True
+        if name == 'clearance_ceiling':
+            # #530: --clearance-ceiling X == Min Clearance X with the class-
+            # ceiling box checked (both fronts cap every class at X).
+            spin = getattr(dialog, 'clearance', None)
+            chk = getattr(dialog, 'clearance_check', None)
+            ceil = getattr(dialog, 'clearance_ceiling_check', None)
+            if spin is None or chk is None or ceil is None:
+                return False
+            try:
+                spin.SetValue(float(value))
+                spin.Enable(True)
+                chk.SetValue(True)
+                ceil.SetValue(True)
+                return True
+            except (TypeError, ValueError):
+                return False
         if name == 'impedance':
             # #381 D5: route.py's --impedance drives a checkbox+value pair on the
             # Basic tab (impedance_check enables impedance-based width). A plain
@@ -687,6 +878,18 @@ def apply_step_params(step, dialog):
                     opts.exit_margin.SetValue(float(params["exit_margin"]))
                 except (TypeError, ValueError):
                     notes.append(f"ignored non-numeric exit_margin={params['exit_margin']!r}")
+            # Plans converted before manifest_to_plan scoped bga_fanout's
+            # --diff-pair-gap to this panel carry it as `diff_pair_gap`. On a
+            # BGA fanout step that can only mean the panel's own coupled-pair
+            # gap. It is handled HERE rather than by an alias because an alias
+            # would re-point a route_diff step's diff_pair_gap too, which is
+            # the diff tab's (owner scoping, #772); _GENERIC_SKIP['fanout']
+            # keeps the generic loop from logging it as ignored.
+            if "diff_pair_gap" in params:
+                try:
+                    opts.bga_diff_pair_gap.SetValue(float(params["diff_pair_gap"]))
+                except (TypeError, ValueError):
+                    notes.append(f"ignored non-numeric diff_pair_gap={params['diff_pair_gap']!r}")
         else:
             opts = dialog.fanout_tab.qfn_options
             if "extension" in params:
@@ -704,6 +907,30 @@ def apply_step_params(step, dialog):
                         getattr(opts, _ctl).SetValue(float(params[_pname]))
                     except (TypeError, ValueError):
                         notes.append(f"ignored non-numeric {_pname}={params[_pname]!r}")
+    elif action == "optimize_caps":
+        # Every cap_* param resolves through the generic loop now that
+        # bga_options is one of this action's owners (#772). Only the
+        # LEGACY spelling needs a block: plans converted before #772 carry
+        # place_fanout_clearance's --board-edge-clearance as
+        # `board_edge_clearance`, on the (false) claim that
+        # _GEOMETRY_OVERRIDE_CHECKS would carry it to the engine. Re-home
+        # it onto the cap knob, and do NOT touch edge_clearance_check --
+        # ticking that is what leaked a PLACEMENT margin into the next
+        # step's routing keep-out.
+        _opts = getattr(getattr(dialog, "fanout_tab", None),
+                        "bga_options", None)
+        _ctl = getattr(_opts, "cap_board_edge_clearance", None)
+        if "board_edge_clearance" in params and _ctl is not None:
+            try:
+                _ctl.SetValue(float(params["board_edge_clearance"]))
+                notes.append(
+                    f"board_edge_clearance={params['board_edge_clearance']}"
+                    f" -> cap_board_edge_clearance (#772: on a cap step"
+                    f" this is the PLACEMENT margin, not the Basic tab's"
+                    f" signal copper-to-edge keep-out)")
+            except (TypeError, ValueError):
+                notes.append("ignored non-numeric board_edge_clearance="
+                             f"{params['board_edge_clearance']!r}")
     return notes
 
 
@@ -777,9 +1004,19 @@ def apply_step_selection(step, dialog, all_steps=None):
     # silently grant protection-override to nets this step never named.
     dialog._plan_net_globs = None
     if action == "route":
-        globs = step.get("nets") or ["*"]
+        # route.py --component (one or more refs, #537): its nets, composed
+        # with the step's patterns exactly as route.py composes them. The
+        # scope defaults to "*" only when the step names no patterns AND no
+        # component, so a component-only step carries `nets: []`, and its
+        # raw patterns (net_name_patterns) are then [] like the CLI's.
+        refs = _step_component_refs(step)
+        explicit = [str(g) for g in (step.get("nets") or [])]
+        globs = explicit or ([] if refs else ["*"])
         dialog._plan_net_globs = list(globs)
-        names = _match_net_names(dialog.pcb_data, globs)
+        names = _match_net_names(dialog.pcb_data, globs) if globs else []
+        if refs:
+            names = _route_component_net_names(dialog.pcb_data, refs, names,
+                                               bool(explicit), notes)
         # Drop wildcard-selected plane nets only from route steps that run
         # BEFORE the first plane step (routing a whole rail as tracks there
         # fights the later pour). A route step AFTER the planes keeps them:
@@ -787,6 +1024,11 @@ def apply_step_selection(step, dialog, all_steps=None):
         # the plane steps left disconnected (#479).
         if _precedes_first_plane_step(step, all_steps):
             names = _drop_plane_nets(names, globs, plane_nets, notes, "route")
+        # #459: a recorded `--group BLOCK` scopes the step to one placement
+        # block. Without this the block is lost and `globs` falls back to ["*"],
+        # so the GUI routes the WHOLE BOARD where the CLI routed one block.
+        if step.get("group"):
+            names = _group_net_names(dialog.pcb_data, step, names, notes)
         if not names:
             notes.append(f"route: no nets match {globs}")
         dialog.net_panel.set_selected_nets(names)
@@ -803,7 +1045,7 @@ def apply_step_selection(step, dialog, all_steps=None):
         matched_display = set()
         for display_name, base_name, p_id, n_id in tab.pair_panel.all_pairs:
             cands = [base_name, nets_by_id.get(p_id, ""), nets_by_id.get(n_id, "")]
-            if any(fnmatch.fnmatch(c, w) or c == w
+            if any(fnmatch.fnmatchcase(c, w) or c == w
                    for w in wanted for c in cands if c):
                 matched_display.add(display_name)
         if not matched_display:
@@ -889,6 +1131,77 @@ def _match_net_names(pcb_data, globs):
     return names
 
 
+def _group_net_names(pcb_data, step, names, notes):
+    """Narrow an already-glob-matched net list to one placement block (#459).
+
+    Mirrors route.py's composition rule exactly: the block's nets INTERSECTED
+    with whatever the step's patterns selected. The CLI's default scope is
+    'touching' and its default source set is 'auto', so the same defaults apply
+    here -- a plan that omitted them means the CLI used them too.
+
+    On any failure this returns the unnarrowed list and NOTES it rather than
+    raising: a plan step that silently widened to the whole board is exactly the
+    divergence this function exists to prevent, so it must be visible.
+    """
+    block = step.get("group")
+    try:
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.dirname(_os.path.dirname(
+            _os.path.abspath(__file__))))
+        from group_routing import block_net_names, block_refs
+        from placement.groups import parse_sources
+        refs = block_refs(pcb_data, block,
+                          parse_sources(step.get("group_by") or "auto"))
+        scope = step.get("group_scope") or "touching"
+        in_block = set(block_net_names(pcb_data, refs, scope))
+    except Exception as e:
+        notes.append(f"route: could not resolve --group {block!r} ({e}); "
+                     f"this step is NOT scoped to the block")
+        return names
+    narrowed = [n for n in names if n in in_block]
+    if not narrowed:
+        notes.append(f"route: --group {block!r} ({scope}) selected no nets")
+    return narrowed
+
+
+def _step_component_refs(step):
+    """The component references a route step names: manifest_to_plan writes
+    one as step['component'] and several as step['components']."""
+    refs = step.get("components") or step.get("component") or []
+    if isinstance(refs, str):
+        refs = [refs]
+    return [str(r) for r in refs if str(r).strip()]
+
+
+def _route_component_net_names(pcb_data, refs, pattern_names, explicit, notes):
+    """route.py's --component composition, verbatim.
+
+    With patterns (--nets or positional) the components' nets are INTERSECTED
+    with what the patterns matched, power included: the operator named what
+    they want. Without patterns the components' nets ARE the scope, less
+    POWER_NET_EXCLUSION_PATTERNS. A reference that matches no footprint is an
+    error on the CLI (argparse exit 2), so the step selects nothing rather
+    than routing the remaining subset.
+    """
+    from net_queries import nets_for_components
+    from routing_constants import POWER_NET_EXCLUSION_PATTERNS
+    sel = nets_for_components(
+        pcb_data, refs,
+        exclude_patterns=None if explicit else POWER_NET_EXCLUSION_PATTERNS)
+    if sel.unmatched_patterns:
+        notes.append(f"route: --component matched no footprint for "
+                     f"{sel.unmatched_patterns}; the CLI refuses this step, "
+                     f"so it selects nothing")
+        return []
+    if explicit:
+        in_components = set(sel.net_names)
+        return [n for n in pattern_names if n in in_components]
+    if sel.excluded_names:
+        notes.append(f"route: --component dropped {len(sel.excluded_names)} "
+                     f"power/ground net(s), as the CLI does without --nets")
+    return list(sel.net_names)
+
+
 def _component_net_names(pcb_data, ref, globs):
     """The component's nets that the step's globs select.
 
@@ -901,15 +1214,12 @@ def _component_net_names(pcb_data, ref, globs):
     include/exclude semantics (matches_net_filter) so a replayed plan selects the
     same nets the recorded CLI command did.
     """
-    footprint = pcb_data.footprints.get(ref)
-    if footprint is None:
-        return []
-    from net_queries import matches_net_filter
-    names = set()
-    for pad in footprint.pads:
-        if pad.net_id and pad.net_name and matches_net_filter(pad.net_name, globs):
-            names.add(pad.net_name)
-    return sorted(names)
+    from net_queries import matches_net_filter, nets_for_components
+    # #537: resolve the reference through the shared helper so a replayed plan
+    # selects the same nets the recorded CLI command did. 'glob' keeps this
+    # path's exact-reference matching (a plan names one real footprint).
+    sel = nets_for_components(pcb_data, [ref], match='glob')
+    return sorted(n for n in sel.net_names if matches_net_filter(n, globs))
 
 
 def _select_component(net_panel, ref):
@@ -925,6 +1235,34 @@ def _select_component(net_panel, ref):
 
 
 # ----------------------------------------------------------------- executor
+
+# "Fix DRC settings after routing" (fix_drc_check) is two things at once: a
+# per-step plan parameter (a step replaying --no-fix-drc-settings unticks it)
+# and the user's own saved preference (#693: unticked, NOTHING may rewrite the
+# board's DRC floors). A plan run must not trade one for the other, so the
+# user's value is read BEFORE anything the plan does touches the box, acts as
+# a VETO on every step (unticked stays unticked), and is put back when the plan
+# is done -- so the preference settings_persistence saves on close is the
+# user's, not the last step's.
+def user_fix_drc_preference(dialog):
+    """The box as the user left it, or None when the dialog has no box."""
+    chk = getattr(dialog, 'fix_drc_check', None)
+    try:
+        return bool(chk.GetValue()) if chk is not None else None
+    except Exception:
+        return None
+
+
+def restore_fix_drc_preference(dialog, preference):
+    """Put the user's value back (a no-op when there was none to read)."""
+    chk = getattr(dialog, 'fix_drc_check', None)
+    if preference is None or chk is None:
+        return
+    try:
+        chk.SetValue(bool(preference))
+    except Exception:
+        pass
+
 
 class PlanExecutor:
     """Runs checked plan steps sequentially through the tabs' own machinery.
@@ -964,6 +1302,9 @@ class PlanExecutor:
         self._stop_requested = False
         self._step_started = None
         self._current_action = None  # action of the step running right now
+        # The user's "Fix DRC settings after routing" value, read at start()
+        # (see user_fix_drc_preference). None until the plan starts.
+        self._fix_drc_pref = None
 
     def start(self):
         # The plan sequences its own route_planes steps, so the route step's
@@ -971,16 +1312,25 @@ class PlanExecutor:
         # aborts routing) must not fire during an automated run.
         self.dialog._suppress_plane_offer = True
         self.dialog._suppress_completion_popups = self.quiet
+        # Read before the first per-step reset re-ticks the box. (Loading the
+        # plan resets the tabs too; the AI tab puts the user's value back
+        # after that, so this reads the user's own choice.)
+        self._fix_drc_pref = user_fix_drc_preference(self.dialog)
+        if self._fix_drc_pref is False:
+            self.log("AI plan: 'Fix DRC settings after routing' is unticked "
+                     "-- no step and no end-of-plan writeback will write DRC "
+                     "floors (your setting outranks the plan's steps)")
         self._queue = list(self.indices)
         self._next_step()
 
     def stop(self):
         """Stop before the next step starts AND cancel the step running right
         now: the owning tab's _cancel_requested flag feeds the engines'
-        cancel_check (plane create/repair, batch_route, route_diff), so the
-        running operation aborts at its next safe boundary instead of being
-        waited out (#364 follow-up). Tabs without a cancel flag (fanout) just
-        run their step to completion as before."""
+        cancel_check (plane create/repair, batch_route, route_diff, and since
+        #621 both fanout engines), so the running operation aborts at its next
+        safe boundary instead of being waited out (#364 follow-up).
+
+        Every tab this executor drives now carries the flag."""
         self._stop_requested = True
         owner = self._action_owner(self._current_action) \
             if self._current_action else None
@@ -1062,7 +1412,8 @@ class PlanExecutor:
         import threading
         me = threading.current_thread()
         owners = [self.dialog]
-        for attr in ('differential_tab', 'planes_tab', 'fanout_tab'):
+        for attr in ('differential_tab', 'planes_tab', 'fanout_tab',
+                     'placement_tab'):
             owner = getattr(self.dialog, attr, None)
             if owner is not None:
                 owners.append(owner)
@@ -1082,7 +1433,24 @@ class PlanExecutor:
                 self.log(f"AI plan: worker-thread join skipped ({e})")
 
     def _finish(self, aborted_reason):
+        # Every way a plan ends comes through here -- completion, Stop, a step
+        # that raised -- so this is where the user's "Fix DRC settings" value
+        # goes back, whatever the steps and the prep below did to the box.
+        try:
+            self._finish_run(aborted_reason)
+        finally:
+            restore_fix_drc_preference(self.dialog, self._fix_drc_pref)
+        self.on_finished(self._completed, aborted_reason)
+
+    def _finish_run(self, aborted_reason):
         self._current_action = None
+        # Unhook the ui_thread_status push-mirror: after the plan ends,
+        # tab-local status must stay tab-local.
+        try:
+            from .gui_utils import set_ui_status_mirror
+            set_ui_status_mirror(None)
+        except Exception:
+            pass
         self.dialog._suppress_plane_offer = False
         self.dialog._suppress_completion_popups = False
         # Before any heavy Python work below (see _join_worker_threads).
@@ -1110,7 +1478,6 @@ class PlanExecutor:
                          f"({self.steps[nxt]['action']})")
             except Exception as e:
                 self.log(f"AI plan: end-of-run prep skipped: {e}")
-        self.on_finished(self._completed, aborted_reason)
 
     def _write_drc_floors(self):
         """CLI parity (gap #2): every CLI step records its routed floors in
@@ -1134,11 +1501,30 @@ class PlanExecutor:
                     return
                 if key not in floors or (smallest and v < floors[key]):
                     floors[key] = v
+            _FLOOR_KEYS = ('clearance', 'track_width', 'via_size',
+                           'via_drill', 'hole_to_hole_clearance',
+                           'board_edge_clearance', 'diff_pair_width',
+                           'diff_pair_gap')
             for step in self.steps:
                 p = step.get('params') or {}
-                for k in ('clearance', 'track_width', 'via_size', 'via_drill',
-                          'hole_to_hole_clearance', 'board_edge_clearance',
-                          'diff_pair_width', 'diff_pair_gap'):
+                _keys = _FLOOR_KEYS
+                if step.get('action') == 'optimize_caps':
+                    # #772: place_fanout_clearance's --board-edge-clearance
+                    # is a PLACEMENT margin, not a routing-enforced floor.
+                    # Its own writeback says exactly that and passes no
+                    # edge_clearance ("must not tighten the rule",
+                    # py_placer/place_fanout_clearance.py). Harvesting it
+                    # here wrote a cap margin into the project as the
+                    # routing copper-to-edge RULE -- the same wrong-quantity
+                    # confusion #772 fixes at the control, one layer down.
+                    # Converted plans now spell it
+                    # cap_board_edge_clearance, which is not a floor key at
+                    # all; this covers plans converted before that.
+                    # `clearance` is deliberately STILL harvested from a cap
+                    # step -- that IS what the CLI writes (#768/#769).
+                    _keys = tuple(k for k in _FLOOR_KEYS
+                                  if k != 'board_edge_clearance')
+                for k in _keys:
                     if p.get(k) is not None:
                         _take(k, p[k])
             clearance = floors.get('clearance')
@@ -1146,6 +1532,24 @@ class PlanExecutor:
             if clearance is None:
                 return
             eff = clearance_ledger.effective(clearance)
+            # #693: the shared "Fix DRC settings after routing" box gates EVERY
+            # floor this writes -- the live Board Setup floors, the Default
+            # class's diff-pair floors and the project file -- as the CLI
+            # skips its twin (fix_project_for_output) on --no-fix-drc-settings.
+            # Read the live control (this path owns the real dialog); default
+            # True if it is somehow absent, matching the unchecked-means-
+            # unchanged contract everywhere else. When the user unticked it,
+            # the executor held it unticked through every step, so this is
+            # the user's own "no".
+            _fixdrc693 = True
+            try:
+                _fixdrc693 = bool(self.dialog.fix_drc_check.GetValue())
+            except Exception:
+                pass
+            if not _fixdrc693:
+                self.log("AI plan: 'Fix DRC settings after routing' is "
+                         "unticked -- the board's DRC floors and the project "
+                         "file's are left as they were")
             # LIVE settings first: KiCad holds project settings in memory,
             # so editing the .kicad_pro on disk is invisible to a DRC run
             # right after the plan (and liable to be clobbered when KiCad
@@ -1162,87 +1566,104 @@ class PlanExecutor:
                     # 0.089-0.1 tracks and 0.25/0.15 fine vias) -- 109
                     # floor-class violations in Andy's DRC3.rpt, all
                     # manufactured at plan end.
+                    # #693: gated on the box read above (the plan executor
+                    # once had no notion of it and rewrote the floors at plan
+                    # end regardless).
                     from .gui_utils import update_live_drc_floors
-                    update_live_drc_floors(
-                        board,
-                        clearance=eff,
-                        track_width=track_width,
-                        via_size=floors.get('via_size'),
-                        via_drill=floors.get('via_drill'),
-                        hole_to_hole=floors.get('hole_to_hole_clearance'),
-                        edge_clearance=floors.get('board_edge_clearance'))
-                    try:
-                        # board.GetNetClasses() is EMPTY on KiCad 10 -- this
-                        # loop ran zero times, so the diff-pair floors were
-                        # never written. See gui_utils.default_netclass.
-                        from .gui_utils import default_netclass
-                        _nc = default_netclass(board)
-                        if _nc is not None:
-                            for _get, _set, _mm in (
-                                    (_nc.GetDiffPairWidth,
-                                     _nc.SetDiffPairWidth,
-                                     floors.get('diff_pair_width')),
-                                    (_nc.GetDiffPairGap,
-                                     _nc.SetDiffPairGap,
-                                     floors.get('diff_pair_gap'))):
-                                # mm_to_iu, not FromMM: FromMM truncates (#493)
-                                from kicad_parser import mm_to_iu as _m2i
-                                if _mm and _get() > _m2i(_mm):
-                                    _set(_m2i(_mm))
-                    except Exception:
-                        pass
-                    self.log(f"AI plan: live DRC settings updated "
-                             f"(min clearance {eff:.4g}mm, clamped to "
-                             f"board minima)")
+                    if _fixdrc693:
+                        update_live_drc_floors(
+                            board,
+                            clearance=eff,
+                            track_width=track_width,
+                            via_size=floors.get('via_size'),
+                            via_drill=floors.get('via_drill'),
+                            hole_to_hole=floors.get('hole_to_hole_clearance'),
+                            edge_clearance=floors.get('board_edge_clearance'))
+                    if _fixdrc693:
+                        try:
+                            # board.GetNetClasses() is EMPTY on KiCad 10 --
+                            # this loop ran zero times, so the diff-pair
+                            # floors were never written. See
+                            # gui_utils.default_netclass.
+                            from .gui_utils import default_netclass
+                            _nc = default_netclass(board)
+                            if _nc is not None:
+                                for _get, _set, _mm in (
+                                        (_nc.GetDiffPairWidth,
+                                         _nc.SetDiffPairWidth,
+                                         floors.get('diff_pair_width')),
+                                        (_nc.GetDiffPairGap,
+                                         _nc.SetDiffPairGap,
+                                         floors.get('diff_pair_gap'))):
+                                    # mm_to_iu, not FromMM: FromMM truncates
+                                    # (#493)
+                                    from kicad_parser import mm_to_iu as _m2i
+                                    if _mm and _get() > _m2i(_mm):
+                                        _set(_m2i(_mm))
+                        except Exception:
+                            pass
+                        self.log(f"AI plan: live DRC settings updated "
+                                 f"(min clearance {eff:.4g}mm, clamped to "
+                                 f"board minima)")
             except Exception as e:
                 self.log(f"AI plan: live DRC settings skipped: {e}")
             # Best-effort persistence for a later close/reopen; note KiCad
             # may overwrite this if it saves its in-memory project state.
             if board_file and os.path.isfile(board_file):
-                # #439: clamp non-Default classes in the written .kicad_pro only when
-                # this plan routed with a --clearance ceiling (the Min-Clearance
-                # override the executor checks when a step sets clearance), matching
-                # the interactive route tab -- not unconditionally (the function default).
-                _cc = getattr(self.dialog, 'clearance_check', None)
-                _clamp = bool(_cc.GetValue()) if _cc is not None else False
-                # Board minima from the LIVE board, so fix_project_for_output
-                # does NOT re-parse the file. That parse allocates thousands of
-                # GC-tracked objects, and this runs inside a wx timer dispatch
-                # where the resulting mid-dispatch collection segfaults (3-7 of
-                # 10 runs). Same five values, read from the board the GUI
-                # already holds -- see gui_utils.board_minima_from_live.
-                from .gui_utils import board_minima_from_live
-                _minima = board_minima_from_live(board) if board is not None else {}
-                from fix_kicad_drc_settings import fix_project_for_output
-                fix_project_for_output(
-                    board_file, input_pcb=board_file,
-                    clearance=eff,
-                    track_width=track_width,
-                    via_diameter=floors.get('via_size'),
-                    via_drill=floors.get('via_drill'),
-                    hole_to_hole=floors.get('hole_to_hole_clearance'),
-                    edge_clearance=floors.get('board_edge_clearance'),
-                    diff_pair_width=floors.get('diff_pair_width'),
-                    diff_pair_gap=floors.get('diff_pair_gap'),
-                    clamp_nondefault_netclasses=_clamp,
-                    minima=_minima)
+                if _fixdrc693:
+                    # #439: clamp non-Default classes in the written
+                    # .kicad_pro only when this plan routed with a
+                    # --clearance ceiling (the Min-Clearance override the
+                    # executor checks when a step sets clearance), matching
+                    # the interactive route tab -- not unconditionally (the
+                    # function default).
+                    _cc = getattr(self.dialog, 'clearance_check', None)
+                    _clamp = bool(_cc.GetValue()) if _cc is not None else False
+                    # Board minima from the LIVE board, so
+                    # fix_project_for_output does NOT re-parse the file. That
+                    # parse allocates thousands of GC-tracked objects, and this
+                    # runs inside a wx timer dispatch where the resulting
+                    # mid-dispatch collection segfaults (3-7 of 10 runs). Same
+                    # five values, read from the board the GUI already holds
+                    # -- see gui_utils.board_minima_from_live.
+                    from .gui_utils import board_minima_from_live
+                    _minima = (board_minima_from_live(board)
+                               if board is not None else {})
+                    from fix_kicad_drc_settings import fix_project_for_output
+                    fix_project_for_output(
+                        board_file, input_pcb=board_file,
+                        clearance=eff,
+                        track_width=track_width,
+                        via_diameter=floors.get('via_size'),
+                        via_drill=floors.get('via_drill'),
+                        hole_to_hole=floors.get('hole_to_hole_clearance'),
+                        edge_clearance=floors.get('board_edge_clearance'),
+                        diff_pair_width=floors.get('diff_pair_width'),
+                        diff_pair_gap=floors.get('diff_pair_gap'),
+                        clamp_nondefault_netclasses=_clamp,
+                        minima=_minima)
                 # #521: persist the plan's protection-worthy nets (matched
                 # groups, routed diff pairs -- noted engine-side during the
                 # steps) so later steps/chains refuse to rip them.
                 try:
                     from protected_nets import (consume_protection_candidates,
                                                 consume_impedance_specs,
+                                                consume_pour_served_pads,
                                                 persist_protected_nets,
                                                 persist_impedance_specs,
+                                                persist_pour_served_pads,
                                                 pro_path_for_board)
                     _pro = pro_path_for_board(board_file)
                     persist_protected_nets(_pro, consume_protection_candidates())
                     persist_impedance_specs(_pro, consume_impedance_specs())
+                    # #678: the plan's fanout steps' pour-served balls.
+                    persist_pour_served_pads(_pro, consume_pour_served_pads())
                 except Exception as _pe:
                     self.log(f"AI plan: protected-nets record skipped: {_pe}")
-                self.log(f"AI plan: recorded DRC floors in the project "
-                         f"file (clearance {eff:.4g}; live session already "
-                         f"updated via the API)")
+                if _fixdrc693:
+                    self.log(f"AI plan: recorded DRC floors in the project "
+                             f"file (clearance {eff:.4g}; live session "
+                             f"already updated via the API)")
         except Exception as e:
             self.log(f"AI plan: DRC floor write skipped: {e}")
 
@@ -1276,6 +1697,105 @@ class PlanExecutor:
             # runs it at the wrong clearance and it stops moving the caps. So
             # skip the per-step reset for optimize_caps and let it keep the
             # fanout step's live control state.
+            # #768: inheriting the VALUE is right, inheriting the SEMANTIC
+            # BIT is not. Since #768 the PRESENCE of --clearance decides whether
+            # the cap step caps the net classes and clamps the project, so a
+            # step that carries no `clearance` param must run the OMITTED
+            # branch -- and with the Min-Clearance override left ticked by the
+            # preceding fanout step, it would run the GIVEN one. Unticking it
+            # also lands the right flat value: `_effective_clearance()` then
+            # returns the board's own Default class, which is exactly what
+            # `resolve_pair_clearance(pcb_file, None)` gives the CLI.
+            #
+            # A step that DOES carry `clearance` is unaffected: apply_step_params
+            # ticks the override for it two lines below. That case exists now
+            # because manifest_to_plan carries the flag into the step (#768);
+            # before it did not, which is why this exception was blanket.
+            #
+            # #780: and a FANOUT step that switches the inline cap pass on
+            # runs the same pass, so it needs the same rule. Until #780 it
+            # did not matter -- the inline path dropped the ceiling on the
+            # floor, so the semantic bit could not reach the engine that
+            # way. Now it can, and `reset_params_to_defaults` does NOT
+            # reset `clearance_check` (it resets edge_ and zone_), so a
+            # fanout step following one that set `clearance` inherits a
+            # ticked override. `manifest_to_plan` never emits that shape --
+            # it converts the cap step separately -- but a Claude-authored
+            # plan may, and this is the executor's rule, not the
+            # converter's.
+            _p = step.get("params") or {}
+            _runs_caps = (step["action"] == "optimize_caps"
+                          or (step["action"] == "fanout"
+                              and _p.get("optimize_caps")))
+            if _runs_caps and not _p.get("clearance"):
+                _cc = getattr(self.dialog, 'clearance_check', None)
+                if _cc is not None and _cc.GetValue():
+                    _cc.SetValue(False)
+                    self.log("AI plan: %s has no --clearance; "
+                             "cleared the Min-Clearance override so the cap "
+                             "pass runs at the board's own class, as the CLI "
+                             "does" % step["action"])
+            # #772: the per-step reset below is skipped for optimize_caps, so a
+            # cap knob an earlier cap step set carries into the next one --
+            # there is no fanout step in between to reset it. A BLANKET reset
+            # here would undo the inheritance that exception exists for, so it
+            # is scoped two ways: only the CAP PANEL's controls, and only when
+            # the step actually NAMES one of them.
+            #
+            # The rule is CLI parity, and it is exact rather than approximate:
+            # the panel's creation defaults ARE place_fanout_clearance.py's
+            # argparse defaults, value for value (2.0 / 1.0 / 0.2 / 2.0 / 3.0 /
+            # 1.5 / 30 / 'C,R,FB' / 0.3 / rotate on / edge unset -- checked
+            # against repair_fanout_clearance's signature, 11 of 11). So "reset
+            # the cap panel, then apply this step's params" IS "run the CLI with
+            # exactly the flags this step carries", which is what a replayed
+            # manifest is supposed to mean. A recorded `--near-margin 1.5` gives
+            # the other ten flags their argparse defaults; inheriting ten
+            # leftovers instead is not that run.
+            #
+            # A step with NO params is the auto-inserted one
+            # (_insert_cap_optimization), which is left alone. WHAT IT THEN
+            # INHERITS IS NARROWER THAN THIS COMMENT USED TO CLAIM, and the
+            # same review measured that too: since the cap knobs joined
+            # reset_params_to_defaults, a PRECEDING fanout step's own
+            # per-step reset already returns them to the CLI defaults. So an
+            # operator's interactive cap tweak survives into a bare cap step
+            # only when nothing precedes it -- which in a real plan is
+            # rarely the case. That is the right answer for a REPLAY (the
+            # recorded run had no operator) and a real change to the
+            # interactive path, so it is disclosed rather than implied.
+            #
+            # SHARED knobs (clearance / grid_step / via_size) are NOT touched:
+            # they come from the Basic tab, and the #768 inheritance rationale
+            # above is about those.
+            # THE DISCRIMINATOR IS "DID THE PLAN SPECIFY THIS STEP", not
+            # "did it name a cap knob". An adversarial review measured the
+            # difference and it is a real leak, not a nicety: a manifest
+            # step converted from `place_fanout_clearance.py --clearance
+            # 0.1 --grid-step 0.05` carries params but names no CAP knob,
+            # so the name-based test skipped the reset and step B ran at
+            # step A's near_margin / cap_prefix / max_passes instead of the
+            # CLI defaults. The --grid-step row this branch adds makes that
+            # shape MORE reachable, not less.
+            #
+            # `params` is the exact signal, and it is exact because of the
+            # commit two along: _insert_cap_optimization emits
+            # {"action": "optimize_caps"} with NO params key at all, so
+            # "has params" distinguishes a plan-authored step from the
+            # auto-inserted one with no proxy in between.
+            if step["action"] == "optimize_caps":
+                _given = sorted(step.get("params") or {})
+                if _given and hasattr(self.dialog,
+                                      'reset_cap_params_to_defaults'):
+                    try:
+                        self.dialog.reset_cap_params_to_defaults()
+                        self.log("AI plan: optimize_caps specifies "
+                                 + ", ".join(_given)
+                                 + " -- cap knobs reset to the CLI defaults "
+                                   "first, so the ones it omits are defaults "
+                                   "rather than the previous step's values")
+                    except Exception as _e:
+                        self.log(f"AI plan: cap-panel reset skipped: {_e}")
             if (step["action"] != "optimize_caps"
                     and hasattr(self.dialog, 'reset_params_to_defaults')):
                 try:
@@ -1292,9 +1812,29 @@ class PlanExecutor:
             notes += apply_step_selection(step, self.dialog, all_steps=self.steps)
             for note in notes:
                 self.log(f"AI plan: {note}")
+            # The VETO: the reset above re-ticked "Fix DRC settings" and a step
+            # replaying --no-fix-drc-settings unticked it -- route.py's per-step
+            # semantics. A user who unticked it gets it unticked for EVERY
+            # step, so no tab's writer (apply_targets_to_board /
+            # update_live_drc_floors) rewrites the board's DRC floors (#693).
+            if self._fix_drc_pref is False:
+                restore_fix_drc_preference(self.dialog, False)
             invoke, busy = self._action_parts(step["action"])
             import time as _time
             self._step_started = _time.time()
+            # Push-mirror for UI-thread steps (fanout, cap optimize, the
+            # apply phases): this tab's poll (_poll_until_idle, wx.CallLater)
+            # cannot fire while a step BLOCKS the main loop, so without this
+            # the AI tab froze exactly when the working tab was busiest.
+            # ui_thread_status forwards every forced-repaint message here.
+            from .gui_utils import set_ui_status_mirror
+
+            def _mirror(msg, _idx=index, _step=step):
+                if self.on_progress is not None:
+                    _el = _time.time() - (self._step_started or _time.time())
+                    self.on_progress(_idx, _step, msg, 0, 0, _el, True,
+                                     force_repaint=True)
+            set_ui_status_mirror(_mirror)
             invoke()
         except Exception as e:
             self.on_status(index, "failed")

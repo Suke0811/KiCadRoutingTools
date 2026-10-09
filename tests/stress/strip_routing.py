@@ -6,11 +6,18 @@ Also sets all copper layer types to 'signal' so kicad_parser sees them
 
 Run with KiCad's bundled Python.
 """
+import shutil
 import sys
 from pathlib import Path
 import os
 STRESS = Path(os.environ.get("STRESS_DIR", str(Path.home() / "Documents/kicad_stress_test")))
 import pcbnew
+
+# #795: KiCad's own __iter__ for GetTracks()/GetDrawings() calls the py2
+# `SwigPyIterator.next()`, which a current SWIG no longer supplies.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'py_router'))
+from swig_compat import patch_swig_iterators  # noqa: E402
+patch_swig_iterators()
 
 
 def rdp(points, eps):
@@ -161,6 +168,12 @@ for f in files:
         board.SetLayerType(lid, pcbnew.LT_SIGNAL)
 
     out = DST / f.name
-    pcbnew.SaveBoard(str(out), board)
+    # aSkipSettings + sibling copy: the implicit settings save SIGABRTs on
+    # KiCad-9-saved projects (PR #613); see normalize_boards.py.
+    pcbnew.SaveBoard(str(out), board, aSkipSettings=True)
+    for ext in ('.kicad_pro', '.kicad_dru'):
+        sib = f.with_suffix(ext)
+        if sib.exists():
+            shutil.copy(sib, out.with_suffix(ext))
     print(f"{f.stem:18s} removed {len(tracks):5d} tracks, {removed_zones:2d} zones "
           f"(kept {kept_zones} rule areas)")

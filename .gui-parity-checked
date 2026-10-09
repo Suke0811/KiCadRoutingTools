@@ -1,491 +1,1412 @@
-eb8f633 2026-08-09 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
-Audit 6064707..eb8f633 (pre-v0.20.2 release gate): NO GAPS. 14 engine/GUI files
-changed, 570 insertions -- #584 KICAD_PROXIMITY_SUM=softcap, #585 screening wave
-(width-aware track proximity, package_proximity_zones, congestion2), the
-worktree-py-speedups merge (bit-identical parser/UnionFind/publish/ripped-ghost
-vectorization), and the corpus/Modal-sweep tooling.
+4e10db45 2026-10-08 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of a999f6a1..e42c25f0 (95 commits, 91 non-merge: 69 of them awx-only
+research from the bus622-take5 merge, 21 touching py_router/, py_placer/,
+py_tools/, kicad_routing_plugin/ or manifest_to_plan -- the spine split
+e9f3752a/43fb2df4/aa96369c, the joint fanout and under-pad rescues
+989ca7b8..1ec00e85 and ac5bb418, grid_router 0.23.0 a8de4737, #1187, #1198,
+#1218, 446f4a2b's speedups, and the KiCad 4/5/6 parser commits
+e514c3cb/4f2f5773/e42c25f0). ONE GAP FOUND AND FIXED; it is older than the
+range and a gate blind spot hid it, both fixed. The two OPEN items of the
+108cac8b entry are unchanged.
 
-Why no GUI work was needed: the range adds NO new CLI flag to route.py or
-route_diff.py -- the Class-2 drift risk -- and its new knobs are env-gated
-(KICAD_*), which are deliberately not GUI controls. The changes are internal
-engine functions, so both fronts pick them up through the shared engine.
+METHOD. As before: every argparse flag added/removed/re-defaulted in range
+(AST over the 156 changed .py files), the signatures of batch_route,
+batch_route_diff_pairs, create_plane, generate_bga/qfn_fanout,
+add_gnd_vias_to_existing_board, build_base_obstacle_map, both parse entry
+points and GridRouteConfig, and every changed line of the routing and
+placement mains attributed to its enclosing function. Parser:
+validate_pcb_data on 8 in-repo boards plus 9 RAW KiCad 6-era corpus sources
+(formats 20201116..20211014), since three commits in range change how those
+parse.
 
-All four gates green at eb8f633:
-  manifest->plan parity ....... 7540 flag-checks / 341 manifests, 0 parity gaps
-  CLI post-pass coverage ...... 8 registered, 0 unreachable, 0 failures
-  settings round-trip ......... save/restore/legacy/re-save, 180 keys
-  GUI/CLI engine parity ....... VERDICT: PARITY, copper sets IDENTICAL
-                                (segments 1262/1262, vias 171/171, 0 either-only)
+FLAGS AND SIGNATURES.
+  * route_planes lost --plane-proximity-cost / --plane-proximity-radius and
+    --plane-track-via-clearance (alias --track-via-clearance), and
+    create_plane the three params (the spine split replaced the routed
+    multi-net connections they priced). planes_gui stopped passing them in
+    the same commit; no control, FLAG_PARAMS or reset entry names them;
+    ee5ec665 took them out of PLANES_KNOWN_GAPS. repair_planes dropped only
+    its --plane-track-via-clearance alias. 0 of the 402 recorded manifests
+    under kicad_stress_test/runs_set* pass any of them, so no replay breaks.
+  * place_fanout_clearance --beneath-only: control, settings save/restore,
+    engine call and CAP_BOOL_FLAGS all in-commit.
+  * generate_bga_fanout(bus=None): passed only by awx/joint_escape.py; the
+    bga_fanout main does not pass it either.
+  * GridRouteConfig.diff_pair_setback_floor (None = the old floor): set only
+    by awx callers.
+  * awx/route_bus.py (the bus step) is a new board-writing actor. It records
+    nothing into a redo manifest and no skill or recorded chain calls it, so
+    it joins the previous entry's list of unmapped awx actors.
+  Mains: route.py, route_diff.py and qfn_fanout unchanged; route_planes main
+  is the flag removal plus a path_basis key in its resistance JSON (CLI file
+  output; the GUI shows no resistance table); bga_fanout's changes are all
+  in the engine.
 
-Pre-existing, NOT from this range (do not chase it as a regression here):
-manifest->plan reports 1 mismatch, uncutgem_nv -- a corpus manifest with an
-unbalanced quote that shlex cannot split. manifest_to_plan.py last changed at
-dc396c2, before the previously audited SHA. Worth a separate fix.
+GAP, FIXED (older than the range):
+  4e10db45 -- #581 on the fanout tab. #621 (c39a8e99, 2026-08-16) moved both
+  fanout engine calls into a worker-thread kwargs dict and dropped
+  same_net_pad_clearance from both. The shared params kept carrying the
+  Basic tab's via-in-pad policy, so with "Allow via-in-pad" unticked
+  bga_fanout --same-net-pad-clearance X ran dog-bone and the GUI laid vias
+  in pads (unless the .kicad_pro already carried a persisted value, which
+  the engine's None reads). New gate
+  tests/gui_parity/test_581_fanout_via_in_pad_gui.py (real dialog, glasgow
+  U30 + U1, engines spied) fails 4 of 8 checks pre-fix.
+  WHY NOTHING CAUGHT IT: test_engine_kwarg_parity read only a call's own
+  keywords, so generate_*_fanout(footprint, self.pcb_data, **kwargs) gave
+  no GUI call site: Class 1 printed SKIP for both fanout pairs under an "OK"
+  verdict and Class 2 printed "OK (0 config-read kwargs)". Every audit
+  since 08-16 recorded the gate as passing. It now follows **kwargs into the
+  dict(...) GUI_KWARGS_DICTS names (engine_kw in _run_bga_fanout /
+  _run_qfn_fanout), and a pair it cannot read -- call site not found, an
+  unmapped **kwargs call, no config read -- FAILs. Against HEAD's
+  fanout_gui it reports the kwarg missing on both pairs; with the mapping
+  removed it reports the unreadable calls.
 
-Note on running gate 4 here: it took 715s for step 1 (normally ~9s) while a
-99-board stress wave held the machine, and was mistaken for a hang. It is not
-the macOS restore alert (that shows state SN at ~0 CPU); it was swapped out in
-state U. Run it on a quiet machine.
+NO GAP (checked on both fronts): the parser commits are themselves parity
+fixes, each bringing the text parser to what pcbnew (so the GUI) already
+read. The 8 in-repo boards PASS. Of the 9 raw KiCad 6-era sources 7 PASS;
+numpad and zynq7020_ad9364 differ only by (a) an NPTH pad's (layers
+F&B.Cu) kept literally where pcbnew lists F.Cu B.Cu -- every F&B.Cu pad in
+the corpus is NPTH, check_drc / net_queries / paste_apertures /
+pcb_modification expand the token, and 4f2f5773 classed it as spelling --
+and (b) on the 20201116 file only, all 76 zone outlines repeat their first
+vertex at the end, which pcbnew drops on load and the text parser keeps: a
+zero-length closing edge, same geometry. KiCad 4/5 files: the CLI now
+refuses them (UnsupportedBoardFormat, naming the plugin as the way in)
+where the GUI loads them through pcbnew -- deliberate and loud. #1187
+carries its GUI half and gate in-commit; #1218 and #1198 are engine- and
+grader-side; 446f4a2b, the spine split, the joint fanout and the under-pad
+rescues are inside the shared engines; placement/writer.py's bare-list
+flip: test_714 mirror gate PASS. The #581 .kicad_pro persist stays
+CLI-only on every routing CLI (the documented project carryover; the
+dialog seeds its control from the persisted value at open).
 
-6064707 2026-08-09 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
-check_release_version.check_gui_parity reads `marker.read_text().split()[0]`
-and diffs it against HEAD. Every entry until now opened with the word "HEAD"
-(or "ADDENDUM"), which git resolves happily -- so `git diff HEAD..HEAD` was
-empty and the release parity gate passed UNCONDITIONALLY, for every release
-that has ever run it. Keep a real SHA first or the gate is decorative.
+GATES RUN (macOS, KiCad 10.0.6) on 4e10db45's tree: all 47 tests in
+tests/gui_parity pass (test_966, test_967 and test_engine_kwarg_parity under
+KiCad's python, so Class 2 runs), every log read for a self-skip, none;
+test_gui_engine_parity PARITY, copper sets IDENTICAL, kicad unconnected 0/0,
+drc 0/0; test_gui_livechain_rp2350 PASS; test_engine_kwarg_parity reads the
+fanout pairs (BGA 22 kwargs / 12 config reads, QFN 14 / 3); tests/
+test_581_same_net_pad_via_clearance and test_fanout_via_in_pad_clamp PASS;
+validate_pcb_data as above.
 
-2026-08-09 parity audit 46e4cd6..6064707 (7 commits: the soft-cost wave --
-vpc=0 semantics + graded pose via penalty + Rust 0.20.1, build_router
-self-heal, sum/zoned composition, the chip-pad pseudo-stub gate, skill
-text). Outcome: NO gaps at HEAD -- the entire wave is engine-side or
-tooling by construction.
+a999f6a1 2026-10-08 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of 108cac8b..a999f6a1 (79 commits, 49 touching py_router/, py_placer/,
+py_tools/, kicad_routing_plugin/ or manifest_to_plan before the fixes: PR
+#1154 (#1142/#1143/#1127), the #980/#984/#1114/#1138/#1157 batch, the
+#1159-#1173 batch, and the #1148-#1181, #1185-#1198 and #1200-#1217
+batches). THREE GAPS FOUND AND FIXED. The two OPEN items of the previous
+entry are unchanged.
 
-  Audit surface:
-  * c36a826 (vpc semantics + graded pose via, Rust 0.20.1): all inside
-    shared modules (obstacle_costs, routing_config, diff_pair_routing's
-    pose kwargs, obstacle_map.py radius gating) + Rust. NO new flag, NO
-    new engine kwarg, NO dialog control -- via_proximity_cost already
-    existed end-to-end; only its 0-value MEANING changed, which both
-    fronts read through the same config method. The GUI tooltip and CLI
-    help text were updated in the same commit.
-  * d440c67 + 6afcae9 (sum / zoned composition): env-knob-only surface BY
-    DESIGN (KICAD_PROXIMITY_SUM via env_knobs -- the #529 precedent: no
-    flag, no control); composition lives in obstacle_costs/
-    routing_context/layer_swap_fallback, shared by both fronts. The
-    merge_track_proximity_costs config kwarg is engine-internal.
-  * f785a7e (chip-pad pseudo-stub gate): net_queries.get_chip_pad_positions,
-    shared. Docs: api-routing-config soft-cost section is now the single
-    detailed soft-cost reference.
-  * 8f5c480 (build_router), 6064707 (skill text): no engine surface.
+METHOD. Mechanical diffs first: every argparse flag added/removed/
+re-defaulted in range (AST over the 170 changed .py files) and the signatures
+of batch_route, batch_route_diff_pairs, create_plane, generate_bga/qfn_fanout,
+add_gnd_vias_to_existing_board, build_base_obstacle_map, both parse entry
+points and GridRouteConfig. Then every changed line of the routing mains
+attributed to its enclosing function by line number (route.py, route_diff,
+route_planes, repair_planes, bga_fanout, qfn_fanout), and each CLI-main-only
+change traced to its GUI counterpart. Parser: validate_pcb_data on 8 in-repo
+boards.
 
-  Gates at 6064707 (all four, fresh):
-  * test_gui_engine_parity: PARITY, copper sets IDENTICAL (segments
-    1233/1233 -- shifted from 1182 at the last audit because the soft-cost
-    wave changes routing on BOTH fronts equally; vias 137/137, drc 0/0,
-    kicad_unconnected 0/0).
-  * test_settings_roundtrip: clean (save, restore, LEGACY, re-save -- no
-    dialog controls changed this wave).
-  * test_manifest_plan_parity: 12 params checked, 0 unresolved (no new
-    flags; corpus manifests carry ZERO soft-cost flags, separately
-    verified -- see memory soft-costs-validated-0808).
-  * test_cli_postpass_coverage: 8 registered, 15 in CLI use, 0 failures
-    (run_drc stays the acknowledged report-only CLI-only pass).
-  Also green this range: probe_soft_costs (scratchpad; stamp semantics,
-  falloff, composition modes, double-merge idempotency on real boards),
-  pose unit tests, retargeted test_bga_proximity_interior, doc-examples
-  gate 30/0, and a 6-board redo_diff_stage old-vs-new replay (identical
-  results -- recorded diff stages are unaffected by the graded via change).
+FLAGS AND SIGNATURES. No routing-CLI flag and no engine signature changed in
+range. New flags are agent-only: rank_rotations --jobs, make_film --title,
+add_rule_area.py (new tool), and the measure_1127/1142/1143 scripts. In
+route.py every changed line is in batch_route or helpers it calls
+(_late_dangling_via_sweep1166, _late_soft_joint_bridge984, _final_regrade,
+_write_summary_min_file), except help text and #1160's startup
+warn_if_class_clearance_relaxed, which sits beside #441's
+warn_if_missing_project_floor: both read an input FILE's sibling project, and
+the GUI routes the live board under its own Board Setup -- the same pattern,
+not a gap.
 
-  Known gate blind spot unchanged: the engine-parity plan is signal+plane
-  only (no diff-pair / impedance params) -- relevant this wave since the
-  pose router's via pricing changed; covered instead by the pose unit
-  tests and the 6-board diff-stage replay above.
+GAPS, FIXED:
+  1. 933615cc -- #1195's GUI half. qfn_fanout's main stopped writing the via
+     and hole floors on a run with no via (stub mode) and any floor on a run
+     with no copper; the fanout tab's _apply_fanout_results kept writing the
+     step's via size and drill on every QFN run, so after a stub fanout the
+     live Board Setup carried a via floor the CLI's project did not. Both
+     fronts now decide with fix_kicad_drc_settings.fanout_written_floors
+     (BGA unchanged). Registered as a same-symbol twin in
+     test_cli_postpass_coverage. New gate
+     tests/gui_parity/test_1195_qfn_floors_gui.py (real
+     _apply_fanout_results, real board): fails 3 checks pre-fix.
+  2. 020fab1e -- add_rule_area.py (#1200) writes a keep-out every later route
+     step obeys; manifest_to_plan treated it as an unknown tool, which only
+     bumps the skipped counter, so a converted plan looked complete and
+     replayed through copper the CLI chain kept out of. Now in REFUSED_TOOLS
+     (#431) and test_manifest_plan_parity's membership list.
+  3. a999f6a1 -- a gate blind spot: compare_pcb_data (validate_pcb_data,
+     test_726_parse_path_parity) compared a filled graphic's kind and fill
+     but not #1181's graphic_ring, which the obstacle map stamps and check_drc
+     grades. Now compared; the 8 boards still match (esp_prog 8 ring
+     segments, watchy 48), and a ring vertex moved 0.05 mm is reported.
 
-2026-08-08 parity audit 4b0479a..46e4cd6 (4 commits: run_all parallel jobs,
-#536 octolinear smoothing + DEFAULT ON for the route step, the exact-fill
-LoadBoard-None segfault guard). Outcome: NO gaps at HEAD -- the whole wave
-is engine-side by construction, and the default flip is proven copper-
-identical across fronts by the engine-parity gate.
+NO GAP (checked on both fronts): repair_planes main's #1185 oracle-config
+layers and #1171 via snapshot -- the GUI skips repair_planes steps since
+#562 (its work is route.py's in-run finalize), the engine-side #1171
+snapshots are in batch_route / batch_route_diff_pairs / create_plane;
+#1166 dangling-via sweep, #984 soft-joint bridge, #1215 failed count and
+casualties, #1210 relaxation note -- all inside batch_route; #1173 --json-out
+verdict is CLI file output (the GUI has none); #1160 and #980/#1138 carry
+their swig_gui halves in-commit; #1216 relabels a control (settings
+round-trip clean); #1148's fanout-tab pad counts mirrored in-commit; #1208
+covers ai_plan; #1207 GND vias, #1189 under-pad exit, #1179 tap vias, #1217
+dropped-ball lines and straight straps, #1169/#1168/#1170 oracle legs are
+engine-side; #1149/#1158/#1181/#1148 parser changes: both paths agree on 8
+boards (above), test_726/829/962/967 pass; placement/writer.py (#1149):
+test_714 mirror gate passes.
 
-  Audit surface:
-  * #536 smoothing (2e7811a + 46e4cd6): a NEW cleanup pass
-    (smooth_octolinear_chains) inside the SHARED run_post_route_cleanup --
-    Class-1, both fronts inherit; no CLI flag, no dialog control, no
-    manifest work BY DESIGN (env-knob-only surface, the #529 precedent).
-    KICAD_SMOOTH_ROUTE is tri-state ('' = front default, '1'/'0' force);
-    the front default rides the ``smooth`` kwarg set at batch_route's
-    internal cleanup call (route step ON) -- engine-side, so the GUI
-    signal tab gets the default automatically and the diff/planes tabs
-    stay OFF exactly like their CLI twins. Guide-corridor steps keep the
-    default OFF via config.guide_corridor_enabled, read in the shared
-    pipeline. Keepout/rule-area guard + pour-blind doctrine live inside
-    the pass. Skip set peeks protected_nets._notes WITHOUT consuming, so
-    the fronts' differing consume sites are untouched.
-  * c891f61: kicad_exact_fill._REFILL_SCRIPT subprocess guard -- shared
-    module; the GUI's in-process live_fill_islands path takes a live
-    board object (never LoadBoard) and is unaffected.
-  * d43a07a: tests/run_all.py only -- no engine surface.
+RECORDED, not gaps in range: tools registered as KRT_TOOL actors that
+manifest_to_plan neither maps nor refuses -- copy_board (a file copy, the
+chain link survives), braid / pack_board / pack_river / synth_bus /
+make_bench / make_unplaced (bench and synthesis generators), fill_for_delivery
+(end of chain), converge / compare_seeds / run_plan (drivers). None sits
+mid-chain in a recorded routing manifest today; a new board-writing tool
+should be mapped or refused when it lands, as add_rule_area now is.
 
-  Gates at 46e4cd6 (all four, fresh):
-  * test_gui_engine_parity: PARITY, copper sets IDENTICAL (segments
-    1182/1182 -- DOWN from 1335 at the last audit because BOTH fronts now
-    smooth; vias 140/140, drc 0/0, kicad_unconnected 0/0). This is the
-    direct check that the default flip forked nothing.
-  * test_settings_roundtrip: clean (save, restore, LEGACY, re-save; 180
-    keys -- no dialog controls changed this wave).
-  * test_manifest_plan_parity: 12 params checked, 0 unresolved (no new
-    flags).
-  * test_cli_postpass_coverage: 8 registered, 15 in CLI use, 0 failures
-    (run_drc stays the acknowledged report-only CLI-only pass).
-  Also green this range: run_all 251/0 (three default-on burn-in sweeps;
-  the first two caught and fixed the rule-area and guide-corridor intent
-  gaps INSIDE the shared engine, so both fronts got the fixes for free).
+GATES RUN (macOS, KiCad 10.0.6) on a999f6a1's tree: all 45 tests in
+tests/gui_parity pass (test_966 and test_967 under KiCad's python, which they
+do not re-exec into); test_gui_engine_parity PARITY, copper sets IDENTICAL,
+kicad unconnected 0/0, drc 0/0; test_gui_livechain_rp2350 PASS;
+test_cli_postpass_coverage 0 failures; validate_pcb_data 8/8 boards PASS.
 
-  Known gate blind spot unchanged: the engine-parity plan is signal+plane
-  only (no diff-pair / impedance params) -- acceptable here since the
-  diff front deliberately defaults smoothing OFF.
+108cac8b 2026-10-05 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of 48eb5d62..108cac8b (494 commits, 330 touching py_router/, py_placer/,
+py_tools/, kicad_routing_plugin/ or manifest_to_plan: #1033 widths, #1038,
+#1054, #1056, #1057, #1063, #1067, #1071-#1075, #1094-#1098, #1108, #1111,
+#1113, #1122, #1131-#1137, #1145, #1146 keep-away, the 09-29 "GUI parity:"
+series, the bus622/awx/film work). TWO GAPS FOUND AND FIXED, two decisions
+left OPEN for Andy, three older items recorded.
 
-2026-08-07 parity audit 6113245..4b0479a (13 commits: the v0.20.0 release,
-stress-harness robustness, #582 install fix, the live-board zone-deletion
-authority pair, #583 graphics-never-stubs, #581 board-wide
-same-net-pad-clearance, and the run_all test fixes). Outcome: NO gaps at
-HEAD -- the one commit with a large new engine surface (#581) carried its
-own two-front wiring, built against the parity rules from the start.
+METHOD. Mechanical diffs first: every argparse flag added/removed/re-defaulted
+in range (AST, all tracked .py), and the parameter lists of batch_route,
+batch_route_diff_pairs, create_plane, generate_bga/qfn_fanout,
+add_gnd_vias_to_existing_board, build_base_obstacle_map, both parse entry
+points and GridRouteConfig. Then a read-only review in five slices (route/
+route_diff mains; planes/fanout/cap mains; text parser vs
+build_pcb_data_from_board; the placement front; plan plumbing, persistence
+and defaults), each candidate traced on both fronts and, for a fix, gated by
+a test that fails on the pre-fix tree.
 
-  Audit surface:
-  * #583 (0cc04da): shared engine modules only (connectivity,
-    stub_layer_switching, layer_swap_optimization, diff_pair_multipoint) --
-    both fronts call them through the shared functions; no new flags,
-    params, or post-passes. build_pcb_data_from_board already tags
-    graphics at parity with the text parser (verified, lines 4112-4157).
-  * #581 (dc396c2): NEW engine param same_net_pad_clearance on batch_route,
-    batch_route_diff_pairs, create_plane, repair_planes,
-    generate_bga_fanout, generate_qfn_fanout, nudge_grazing_vias,
-    cleanup_plane_taps_grazing + NEW CLI flag on 6 scripts. Threaded to
-    EVERY GUI call site in the same commit: the controls moved from the
-    planes tab to the Basic tab (via_in_pad_check +
-    same_net_pad_clearance, dialog-level so the plan executor resolves
-    the param name), all three get_shared_params closures +
-    _build_routing_config supply it, route/diff/planes/fanout engine
-    calls pass it, settings_persistence saves/restores it (legacy dicts
-    default to via-in-pad allowed), reset_params_to_defaults resets it,
-    manifest_to_plan FLAG_PARAMS maps the flag, and the dialog seeds
-    from the persisted .kicad_pro record at open.
-  * 95bc8a7 + 79ee514 are themselves a CLI/GUI pair (live-board zone
-    authority + planes-GUI ZONES reporting).
-  * Everything else in the range is stress harness (py_tools/tests),
-    install_plugin, docs, or test files -- no engine surface.
+FLAGS AND SIGNATURES. The only routing-CLI flag change is #1146's
+--keep-away / --keep-away-cost / --keep-away-free (route.py, route_diff.py):
+Advanced-tab controls named after the params, in reset_params_to_defaults,
+FLAG_PARAMS, settings save+restore, and the Differential tab inherits them
+through _build_routing_config (#511). batch_route / batch_route_diff_pairs'
+via_cost and ordering_strategy defaults moved from literals (50, inside_out)
+to defaults.VIA_COST (75) / 'mps': both GUI tabs always pass both
+explicitly; the old literals reached only nested finalize sub-runs, on both
+fronts alike, which now receive the step's route_knobs (c3c9369d).
+generate_bga_fanout gained hole_to_hole_clearance=None: no front passes it
+(both resolve the board's min_hole_to_hole); the in-run rescue passes the
+run's value inside batch_route. Placement CLI flags (place_seed
+--decap-claim-after-ics / --diagonal-rotations / --repair-decaps, converge
+--parent, rank_rotations.py, check_assembly / check_floorplan additions) are
+agent/grader-only: the GUI never calls the seeder, and manifest_to_plan
+refuses place_seed and rank_rotations by name. --decap-claim-after-ics
+omitted = False, the old behaviour.
 
-  Gates at 4b0479a (all four, fresh):
-  * test_gui_engine_parity: PARITY, copper sets IDENTICAL (segments
-    1335/1335, vias 140/140, drc 0/0, kicad_unconnected 0/0).
-  * test_settings_roundtrip: clean (save, restore, LEGACY, re-save;
-    180 keys incl. the two new Basic-tab #581 controls).
-  * test_manifest_plan_parity: 23361 flag-checks, 0 mismatches
-    (incl. --same-net-pad-clearance).
-  * test_cli_postpass_coverage: 0 failures.
-  Also green this range: run_all 250/0 (first fully green board -- the 5
-  chronic failures were 4x #522 subprocess path debris + 1 stale
-  expectation, fixed in 4b0479a), doc-examples gate 0 failed.
+GAPS, FIXED:
+  1. 2a7487ac -- run-scoped ledgers on pcb_data (_preexisting_rips,
+     _rip_saved, _refused_saved_134, _pending_cap_moves, _rip_override_names,
+     _via_unblock_blame, _unblock_via_sizes) were never cleared. The CLI
+     parses a fresh board per step; the GUI keeps ONE PCBData, so a later GUI
+     run read an earlier run's rip victims as its own -- and since d8d94c86
+     _escalation_scope really matches them (narrowed copper on a net outside
+     the run's scope), the stale-strip sweep and 184d31a1's strict collapse
+     took them in scope, 8013c817 priced them as stub-proximity sources, and
+     a registered cell emitted a shrunk via where a full one fits. Now
+     cleared at the outermost batch_route (nested sub-runs keep sharing) and
+     at batch_route_diff_pairs. test_run_ledgers_reset fails 2/3 pre-fix.
+  2. 108cac8b -- the Placement tab's Apply (Place + Route) laid the result
+     board's copper GRAPHICS (#337 gr_*, #908 fp_*) as PCB_TRACKs: net-0
+     tracks over their own footprint's pads, next to the graphic the live
+     board still draws. Older than the range (b07450ee + #337/#908). New gate
+     tests/gui_parity/test_placement_apply_graphics.py (real method, pcbnew
+     board): fails 3 checks pre-fix.
+  Also, not parity but found while looking: cf5fc14e un-clipped the Route
+  tab's Parameters column (the row is now "Clearance ceiling: [ ] Cap every
+  net class", named after --clearance-ceiling) and moved the AI Drive tabs'
+  "CLI found: <path>" line into the transcript.
 
-  Known gate blind spot unchanged: the engine-parity plan is signal+plane
-  only (no diff-pair / impedance params).
+OPEN, for Andy (not fixed: each is a behaviour choice):
+  A. #666 scoped cap move is CLI-only. net_rescue's permissive bare-ball
+     retry (KICAD_RESCUE_CAP_MOVE, default on) ships an escape via that
+     conflicts with a movable cap and queues the move on
+     pcb_data._pending_cap_moves; only route.py's file-mode block
+     (`if wrote and output_file`) applies it and re-welds. The GUI ships the
+     via and leaves the cap: a cap-to-via conflict the CLI resolves. Fix
+     either way: refuse the permissive retry when the run cannot apply the
+     move, or apply it on the GUI (footprint move + the post-apply oracle).
+     Older than the range; fea74335/1220c29a touched it.
+  B. Placement Apply does not carry footprint LOCKS (_apply_pose sets pose
+     and side only). Since #1054 (24f27aa8) the seeder stamps (locked yes) on
+     seated fixed_poses; the result file has them, the live board does not.
+     Arguably deliberate (the agent also locks parts temporarily to scope a
+     search).
 
-2026-08-06 parity audit 89914ce..4c8b79d (27 commits: #570 false-weld
-rejection, fc5ee0e finalize-with-rip-authority, #572 forced links + lap
-authority, the bounded reconcile progress-loop, terminal geometry
-escalation, rip candidacy for pre-existing nets, and the #577/#578 ports).
-Outcome: ONE carried gap DECIDED AND CLOSED (net_name_patterns), TWO
-BROKEN GATES repaired (both #522 path debris that had been hiding their own
-findings), and -- found BY the repaired gate -- one real product bug: every
-headless board-item removal corrupted pcbnew's SWIG type registry, so any
-run that ripped copper applied HALF its changes and reported success.
+RECORDED, not gaps in range:
+  * obstacle_map._HOLE_CLR_CACHE is per board PATH for the process: a KiCad
+    session that saves a new min_hole_clearance mid-session keeps the first
+    value, and the GUI never sees the live board's in-memory rules. The
+    chain difference (CLI step 2 reads step 1's written floor, which since
+    #1038 turns on the via-NPTH keep-out) is the documented .kicad_pro floor
+    carryover divergence.
+  * qfn_fanout --layer never reaches a plan step (0 of 1018 recorded
+    qfn_fanout calls use it; the GUI routes on the component's layer, the
+    CLI default). The gate's existing known gaps (diff centerline-setback
+    reset, BGA --primary-escape, the no-control plane knobs) are unchanged.
+  * A refused optimize_caps step lets the GUI plan continue where a CLI
+    chain stops on the missing output (no copper).
 
-  Audit surface for the range -- unusually narrow, and worth stating because
-  it is WHY one gap accounts for the whole wave:
-  * The CLI mains did not change at all: 0 new argparse flags, 0 entry-point
-    signature changes (batch_route / batch_route_diff_pairs / create_plane /
-    generate_*_fanout), 0 new post-passes. Everything landed INSIDE
-    batch_route and the shared engine modules, which both fronts call.
-  * The only plugin-side diffs in the range ARE parity work already:
-    the castellated-landing retract twin (gui_utils), the GND-via
-    board_edge_clearance fix (planes_gui), and the impedance SpinCtrl reset
-    (swig_gui -- a float into an int control raised TypeError, which the plan
-    executor CATCHES, so every reset BELOW that line was silently abandoned
-    and each step inherited the previous step's controls).
-  * New env knobs KICAD_FINALIZE_RIP, KICAD_RIP_PREEXISTING and
-    KICAD_TERMINAL_ESCALATION are read inside batch_route / env_knobs /
-    net_rescue = shared, both fronts inherit (the #529 precedent: env-knob
-    surface only, no flag, no control). KICAD_CKPT_PREFINALIZE and
-    KICAD_FINALIZE_ONLY are debug re-entry knobs gated on
-    `not return_results` BY CONSTRUCTION -- Class-2: no GUI counterpart.
+NO GAP (checked on both fronts, engine-side or already mirrored): #1146
+keep-away and its shipped-board re-measure (outermost run, both fronts);
+#1033/#1133/#1137 oracle width and class maps by name; #1135 track rules;
+#1063 strict collapse and its GUI write-model branch; #1067/#1122 cap intent
+and declared rotations (GUI loads, validates and refuses exactly as the
+CLI); bf8e2a4b / ef9847f8 / 6d28d25b / 7595437b / 0a9b652b replay fixes;
+#1056 canonical layer names; #1057/#1071/#1075 GUI-only bookkeeping; #1108
+exit status. Parser: Pad.unconnected_layer_mode, Footprint.attrs,
+has_model and #1074's outline chainer (one shared function) are identical on
+both paths -- measured on 8 in-repo boards plus 3 corpus boards carrying 100
+remove_except_start_end pads, compare_pcb_data 0 diffs on all 11. Defaults:
+reset_params_to_defaults vs CLI defaults, 209 rows, 0 real mismatches.
+env_knobs changes in range are movie/render only.
 
-  Gap CLOSED: net_name_patterns (batch_route), carried "still open" here for
-  three audits and annotated on the placement branch as by-design.
-  * That annotation was WRONG, and its own rationale is the reason: the GUI
-    "has no raw globs because ai_plan resolves a plan's globs to exact names
-    BEFORE the call." The engine uses net_name_patterns ONLY as the #521
-    protection-override list and falls back to the expanded net_names when it
-    is None. For an INTERACTIVE selection that fallback is right (checking a
-    net IS naming it exactly). For a PLAN step it is the bug: a step recorded
-    as --nets '*' handed the engine "every net, exactly named" = protection
-    override for every protected net -- exactly the glob-override hole #521
-    closed on the CLI in 81d1dda. A plan replay could rip a matched group its
-    CLI leg would have protected.
-  * Wired (f4dd84b): _build_routing_config supplies
-    config['net_name_patterns'] from dialog._plan_net_globs, the batch_route
-    call site passes it, apply_step_selection sets it per route step and
-    CLEARS it on every other step, reset_params_to_defaults clears it too.
-  * Verified LIVE, not assumed (the standing "a wiring fix can be INERT"
-    lesson): real headless dialog + real plan executor + a NON-DEFAULT value
-    -- interactive None, plan globs ['GND*','!GND_EARTH'] reach the config
-    verbatim, cleared by the next non-route step and by the params reset
-    (4/4). Cherry-picked onto placement as ba9b2e2, where the stale
-    CLI_ONLY_OK exemption was removed with the reversal recorded in place.
+GATES RUN (Windows, KiCad 10.0.3) on 108cac8b: test_gui_engine_parity
+PARITY, copper sets IDENTICAL, kicad unconnected 0/0, drc 0/0;
+test_manifest_plan_parity, test_cli_postpass_coverage,
+test_cli_defaults_parity, test_engine_kwarg_parity, test_settings_roundtrip,
+test_placement_fake_run, test_placement_apply_graphics all PASS;
+test_run_ledgers_reset and the ledger-touching suites (806, builder cost
+sources, escalation scope, protect-nets, rip-restore verdict, terminal
+restore, via-unblock blame) PASS.
 
-  TWO GATES WERE BROKEN, each concealing its own result. Both are #522
-  fallout, and the #522 addendum below re-ran only three gates at the merge:
-  * test_engine_kwarg_parity pointed its fanout PAIRS at pre-#522 paths
-    (bga_fanout/__init__.py), so it died with FileNotFoundError BEFORE
-    printing its failure list. That is precisely why net_name_patterns kept
-    being "carried" rather than decided -- the gate that names it never got
-    that far. Repointed at py_router/; stage_board_fn added to GUI_ONLY_OK.
-  * test_gui_livechain_rp2350's CLI leg shelled route_planes.py / route.py
-    from the repo root: rc=2, no output, every stage graded -1, and the gate
-    blamed "the CLI file chain introduced DRC" for a chain that never ran
-    (42c8e4d).
+48eb5d62 2026-09-24 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of 5f881142..48eb5d62: the three findings the previous entry left open, all
+FIXED, each with a test that fails on the code before it. No other engine/GUI
+change in range (af9e1e73 is a test-only cleanup).
 
-  Gates at HEAD:
-  * test_gui_engine_parity: PARITY, copper sets IDENTICAL (segments
-    1335/1335, vias 140/140, drc 0/0, kicad_unconnected 0/0). Re-run AFTER
-    the wiring change, which makes the gate's own plan pass ['*','!GND']
-    where it passed None -- behavior-neutral here (splitflap has no
-    protected nets), which is the point of re-running it.
-  * test_engine_kwarg_parity: OK. Class 1 clean on all five pairs; Class 2
-    live under KiCad python (no dead controls).
-  * test_settings_roundtrip: 178 keys, save / restore / legacy / re-save.
-  * test_manifest_plan_parity: 20173 flag-checks, 603 manifests, 0
-    mismatches; param->control 12 checked, 0 unresolved.
-  * test_cli_postpass_coverage: 8 registered, 15 in active CLI use, 0
-    failures (run_drc stays the acknowledged report-only CLI-only pass).
-  * test_geometry_floor_leak: 0 problems.
-  * test_gui_livechain_rp2350: PASS -- GUI and CLI both 0 DRC at both
-    stages (create, route). First green since #522, and it took a SECOND
-    fix beyond the CLI-leg path: a real product bug, not a harness one.
-    Its GUI leg had been dying inside the apply and grading the resulting
-    EMPTY board as 0 DRC, which is how a broken leg looked healthy.
-    - Root cause (4c8b79d): pcbnew's BOARD.Remove() is RemoveNative() plus
-      `if not IsActionRunning(): item.thisown = 1`, and PCB_TRACK/PCB_VIA
-      have no SWIG destructor. Freeing that newly-"owned" proxy corrupts
-      the pcbnew type registry PROCESS-WIDE -- BOARD.Tracks() then returns a
-      bare SwigPyObject, and even a fresh LoadBoard() in the same process
-      comes back broken. INSIDE KiCad IsActionRunning() is true and
-      Remove() == RemoveNative(), so it is invisible there; headless it is
-      fatal, and headless includes the SHIPPED py_router/run_plan.py, not
-      just the gates.
-    - The damage was partial and silent: _apply_results_to_board strips
-      flagged segments in one loop, then calls GetTracks() again for the
-      vias -- so the segments came off, the second call raised inside a wx
-      CallAfter, and the board kept HALF the change while the step still
-      reported "done". Any GUI/headless run that RIPS copper was exposed.
-    - Six sites in the plugin already used RemoveNative; five did not
-      (swig_gui x3, differential_gui x2, fanout_gui x1). All uniform now.
-      In-KiCad behavior is unchanged by construction.
-    - Method note worth reusing: the gate costs ~15 min per cycle, so this
-      was reduced to a 2-second repro -- same board and driver, three
-      PRE-ROUTED nets with force_reroute so the rip path runs. The crash
-      needs segments_to_remove AND vias_to_remove to be non-empty, which is
-      why a plain route step never showed it.
-    - Correction to this entry as first written: it claimed the driver
-      "does not patch pcbnew.GetBoard". It does (headless_plan.py:148).
-      That diagnosis was wrong and the real one is above.
+  * 606682a8 -- a GUI placement run now stages mechanical.json. It is a
+    DIRECTORY file (<board dir>/mechanical.json, read by
+    reconcile.discover_mechanical beside the run's board), and
+    placement_run.stage_inputs copied only stem siblings, so every declared
+    mechanical fact was invisible to a run launched from the Placement tab.
+    test_placement_run: staged, and found by discover_mechanical from the
+    staged board.
+  * 48eb5d62 -- the GUI's live writers (apply_targets_to_board, then
+    update_live_drc_floors) now seed kicad_routing_tools.fab_floor_origin
+    before lowering, as the file writers do (ad7f24de), and print FAB FLOOR
+    RELAXED against it with a live-copper census. Engine-side helpers
+    (seed_live_fab_floor_origin, live_fab_floor_disclosure) back both fronts.
+    New gate tests/gui_parity/test_live_fab_floor_origin.py (real board):
+    9/9 PASS; fails 6 on the previous code.
+  * b2b23e9e -- build_film honours $KICAD_MOVIE_LAYOUT/ASPECT through
+    frame_layout.resolve_layout_aspect, the resolver make_movie now shares.
+    CLI/agent only (the GUI never calls build_film); test_film_composition
+    pins env -> film, explicit args win, defaults.
 
-  Carried gaps: NONE outstanding. net_name_patterns is closed above, and
-  plane_net_layers (generate_bga_fanout) now reports 19/19 kwargs, so both
-  entries carried since 2026-08-04 are cleared -- and rp2350, carried as
-  caveated or unrun since 2026-08-04, is green. Known blind spot unchanged:
-  the engine-parity plan is signal+plane only, so it exercises no diff-pair
-  or impedance parameters (cover those with a diff-pair board and
-  check_impedance.py).
+GATES RUN (Windows, KiCad 10.0.3): test_live_fab_floor_origin,
+test_900_live_class_clearance, test_782_fanout_netclass_clamp,
+test_768_cap_ceiling_real_dialog, test_772_cap_params_reach_engine,
+test_gnd_vias_gui, test_movie_recorder, test_cli_postpass_coverage all PASS;
+test_gui_engine_parity PARITY, copper sets IDENTICAL, kicad unconnected 0/0.
+Suites: fab-floor/DRC-settings families 41 passed; movie/film/layout 20 passed;
+placement_run + sibling lists pass.
 
-ADDENDUM 2026-08-04 (post review-fix wave 3829d36): all five review
-agents' confirmed findings fixed (geometry-key oracle removal merge with
-pcb_data mirroring, scoped-route pour warning + plan-guard net coverage,
-finalize edge-floor forwarding, _live_fill bytes-memo + loud fallback, GUI
-zone thermal_gap/spoke 0.2 parity, plane_net_layers Claude-settable, ~430
-lines dead code removed incl. the GUI-side reconnect mirror). Gates re-run
-at 3829d36: engine parity copper sets IDENTICAL (1335/1335, 140/140, drc
-0/0), settings roundtrip 178 keys (the new fanout plane_net_layers_ctrl),
-manifest parity 457 manifests / 0 mismatches, postpass coverage clean.
+5f881142 2026-09-24 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of 5363397f..5f881142 (126 commits: #1026, the #1027-#1030 PR merges and
+their follow-ups, bus622-take5, #946/#959/#962/#963 tails, awx, and this
+session's test-infrastructure work). FOUR GAPS FOUND AND FIXED, all in one
+block -- the Planes tab's GND return vias -- plus the net-dialect half #1028
+left open, and 20 gates that could not run on Windows made to run.
 
-HEAD 2026-08-04 (3rd) parity audit through c126987 (the #562 cleanup +
-copper-parity wave: in-run GUI finalize oracle, rename to repair_planes,
-dead reroute deletion, rp2350 reshape, no-.kicad_pro banner). Outcome:
-the LAST design divergence CLOSED -- copper sets are IDENTICAL again.
+METHOD. A read-only review of every commit in range against CLAUDE.md's five
+parity edges (argparse flags/defaults, engine signatures, CLI-main post-passes,
+text-parser vs build_pcb_data_from_board, kicad_routing_plugin/ changes), then
+each candidate verified in code and, where a gap was claimed, by a gate that
+fails on the pre-fix tree.
 
-  Gates at HEAD (post-rename, post-deletion):
-  * test_gui_engine_parity: PARITY, copper sets IDENTICAL (segments
-    1335/1335, vias 140/140, drc 0/0, kicad_unconnected 0/0). The previous
-    entry's "DIFFER slightly by design" is GONE -- three root causes found
-    and fixed (21f60f1): the planes tab ignored the board's declared
-    copper-to-edge rule for the pour inset; build_pcb_data_from_board's
-    bounds carried float residue off KiCad's nm grid; and the live-board
-    fill provider saw live COPPER but not live CLEARANCES (pcbnew resolves
-    zone clearance from load-time project state; only save+reload updates
-    it -- _live_fill now stages a temp save). Plus 8bfa901: the finalize's
-    ORACLE leg now runs IN-RUN under return_results via batch_route's new
-    stage_board_fn callback (the GUI hands back a SaveBoard of the live
-    board; the engine writes pending copper onto it = the CLI's output_file
-    at that point), so oracle links feed custody on both fronts; the
-    post-apply hook remains as fallback. NOTE the gate stages its fixture
-    WITH a pcbnew-authored .kicad_pro now: a project-less board makes the
-    fronts diverge legitimately (CLI seeds fab-floor project, live board
-    keeps stock defaults) -- that was measuring the fixture, not the engines.
-  * test_gui_livechain_rp2350: reshaped to the #562 chain (pour -> ONE
-    route with the plane nets in --nets) and PASSES, stage-aligned
-    (021c63e). The previous entry's carried caveat is RESOLVED.
-  * test_settings_roundtrip: save/restore/legacy/re-save clean, 177 keys.
-  * test_cli_postpass_coverage: 7 registered, 14 in CLI use, 0 failures.
-  * test_manifest_plan_parity: 17274 flag-checks, 457 manifests, 0
-    mismatches -- including the six removed plane flags (1080c97, corpus
-    migrated by tests/stress/migrate_manifests.py, no shim) and the
-    repair_planes rename (abe8f6a: manifest_to_plan maps BOTH spellings).
+NO routing CLI flag was added, removed or renamed in range (the only argparse
+change is --same-net-pad-clearance help text, #962, matched by the
+swig_gui.py:1252 tooltip). manifest_to_plan.py, ai_plan.py and
+settings_persistence.py are untouched; batch_route, batch_route_diff_pairs,
+create_plane, the fanouts, add_gnd_vias_to_existing_board and
+build_base_obstacle_map signatures are unchanged. #1027 (escalation rungs),
+#1029 (exact-copper neck) and 9927d324 (flip_hints legs) are engine-internal:
+NO GAP. #1028 is text-path only: NO GAP for the GUI.
 
-  Class-2 assessments this range (no counterpart needed):
-  * warn_if_missing_project_floor banner (e92606c) is a CLI-side pre-pass
-    on FILE inputs; the GUI resolves floors from the live board itself.
-  * route_planes' unreachable ripped-net reroute deletion (c126987) removed
-    a CLI-only dead path; tuple contracts untouched.
-  * stage_board_fn is an ENGINE callback the GUI supplies internally -- not
-    a dialog parameter, deliberately not Claude-settable, no control needed.
+GAPS, FIXED in 3e82dba1 (GUI GND-via block vs route_planes main):
+  1. .kicad_dru layer rules (#498): the GUI never installed them. And the
+     CLI's call was INERT: it discovered the rules via pcb_data.source_path,
+     the OUTPUT board, whose .kicad_dru fix_project_for_output copies only
+     after the GND-via block -- so on a fresh output path neither front's
+     return vias saw a layer rule. CLI now reads args.input_file's, GUI the
+     live board's (as create_plane does).
+  2. Layers: the GUI passed `all_layers` (the plane step's outer + pour set),
+     so a through via could land on an inner signal track; the CLI has used
+     every copper layer since 5c4a9f8d. Measured pre-fix: a GUI via ON the
+     In1.Cu track (-0.4 mm).
+  3. Edge: the GUI used the live raw copper-to-edge rule; the CLI pins it up
+     to the fab floor (effective_board_edge_clearance, #441). A board
+     declaring 0 got 0.0 vs 0.2.
+  4. #1030's GUI half shipped compile-checked only, and NO gate executed the
+     GUI GND-via block (test_cli_postpass_coverage matches it by name only).
+     NEW GATE tests/gui_parity/test_gnd_vias_gui.py: real PlanesTab + real
+     create_plane vs route_planes.py --add-gnd-vias on the same files, arms
+     class / dru / layers, GUI config read back, identical positions required,
+     in-process negative controls. Fails 9 checks on the pre-fix tree.
+  Also 82918349: the writers' net dialect. #1028 fixed the parser; eleven text
+  writers (route_planes x6, repair_planes x2, kicad_oracle, pcb_modification
+  x2) and board_uses_name_nets still asked the version stamp. One rule now,
+  recorded at parse time (PCBData.uses_name_nets / pcb_uses_name_nets). The
+  pcbnew path leaves it None and falls back to the stamp -- it writes through
+  pcbnew, not tokens -- so build_pcb_data_from_board needs no mirror.
 
-  Carried, still open: GUI kwarg gaps net_name_patterns (batch_route;
-  None = "literal selection" is the GUI's documented semantic, so possibly
-  by-design -- decide and either wire or annotate) and plane_net_layers
-  (generate_bga_fanout). The engine-parity plan still covers no diff-pair/
-  impedance params (known gate blind spot).
+GATES THAT COULD NOT RUN ON WINDOWS, now running (dbd4f473, 2653e962,
+d9f66157, 5f881142). EARLIER LEDGER ENTRIES WRITTEN ON A KiCad 9 + 10 BOX MAY
+HAVE RUN UNDER 9.0.6: every "newest first" candidate list string-sorted
+KiCad\9.0 above KiCad\10.0.
+  * discovery: 28 KICAD_PYTHONS lists sorted as strings, hard-coded one
+    version, or listed only the unversioned path no KiCad >= 6 uses;
+  * re-exec: 7 gates (and py_tools/validate_pcb_data.py, which then EXITED 0
+    having validated nothing) used os.execv, which tears "Program Files";
+  * waiting: the fanout gates pumped wx.YieldIfNeeded, which never fires the
+    wx.CallLater that collects a worker's result on MSW -- worker done in
+    0.5 s, gate waiting 16-35 min, then grading nothing. wx_pump.run_until
+    runs a real MainLoop (CLAUDE.md now says so);
+  * kicad-cli: test_gui_engine_parity derived it from the macOS python path
+    (kicad_unconnected=-1 on both fronts elsewhere), and the stress grader
+    kicad_drc_compare.py looked on PATH, where Windows KiCad never puts it.
+  tests/test_kicad_cli_newest_version.py pins discovery, delegation, the
+  candidate lists and the Windows re-exec.
 
-HEAD 2026-08-04 (2nd) parity audit a1cf6da..HEAD (planes-tab retirement,
-settings crash fix, #569 visualizer removal, the review-fix wave, the #562
-finalize recursion fix). Outcome: gaps FOUND AND CLOSED in-wave, listed
-below; gates re-run at HEAD and green.
+GATES RUN on this machine (Windows, KiCad 10.0.3, wx 4.2.2 msw phoenix /
+wxWidgets 3.3.2, KiCad python 3.11.5), all PASS:
+  test_gui_engine_parity      PARITY; copper sets IDENTICAL (1076 seg, 128 via);
+                              drc 0/0; kicad unconnected 0/0
+  test_gui_livechain_rp2350   GUI and CLI chains grade clean at every stage
+  test_gnd_vias_gui (new)     class / dru / layers, GUI == CLI
+  test_plane_all_layers_parity, test_settings_roundtrip, test_movie_recorder,
+  test_fanout_rotated_gui (10/10), test_fanout_backside_gui (11/11),
+  test_fanout_threaded_gui, test_ref_label_pcbnew_parity,
+  test_726_parse_path_parity, test_726_gui_sync, test_962_paste_parity,
+  test_962_native_graphic_overrun, test_751_via_protection_readback,
+  test_group_scope_parity, test_714_mirror_pcbnew_parity, test_733 x2,
+  test_746_cap_summary_gui, test_768_cap_ceiling_real_dialog,
+  test_772_cap_params_reach_engine, test_782_fanout_netclass_clamp,
+  test_829_edge_cuts_owner_parity, test_860 (14/14), test_900,
+  test_footprint_position_sync, test_placement_fake_run,
+  test_manifest_plan_parity, test_cli_postpass_coverage.
+  py_tools/validate_pcb_data.py splitflap_driver: pcbnew data matches file parse.
+  Full suite (run_all.py -j 6): 696 passed, 0 failed, 0 timed out
+                              (+2 wk/ self-skips); 0 items left in TEMP
 
-  Gates at HEAD:
-  * test_cli_postpass_coverage: 7 registered, 14 in CLI use, 0 failures.
-  * test_manifest_plan_parity: param->control 12 checked, 0 unresolved.
-  * test_settings_roundtrip (NEW this wave): save / restore / restore-from-
-    LEGACY-dict / re-save key parity all clean, 178 keys.
-  * test_gui_engine_parity (headless RoutingDialog, KiCad python): PARITY --
-    conn_full True both fronts, drc 0/0, kicad_unconnected 0/0. Copper sets
-    now DIFFER slightly (segments 1338 vs 1334, vias 140 vs 140, 12/8
-    one-cell tap-approach segments): the finalize's ORACLE leg is
-    CLI-file-only by design (kicad-cli needs a real file; the GUI defers it
-    to a post-apply staged save), so the legs are no longer byte-identical.
-    Grades are what this gate asserts; read the printed diff, not equality.
+FOUND, NOT FIXED -- recorded for a decision, none a routing parity gap:
+  * PLAUSIBLE: a `mechanical.json` beside the user's board is invisible to a
+    placement run launched from the GUI -- placement_run.stage_inputs stages
+    copy_board.SIBLING_EXTS only, and mechanical.json is not a stem sibling.
+    The skill run in place does see it.
+  * gui_utils.update_live_drc_floors never records fab_floor_origin, so a
+    manual GUI run gets no FAB FLOOR RELAXED disclosure (ad7f24de seeded it
+    for the file writers; a GUI plan run ends in fix_project_for_output and is
+    covered).
+  * build_film ignores the KICAD_MOVIE_LAYOUT/ASPECT env knobs make_movie
+    reads (CLI/agent-only; the GUI never calls build_film).
 
-  Class-2 gaps found and closed in this range:
-  * The #562 plane finalize was CLI-file-only -> now runs under
-    return_results too (board-delta merge + post-apply staged-save oracle
-    through the new shared core gui_utils.run_kicad_oracle_on_live_board).
-  * The planes-tab retirement deleted controls whose persistence entries
-    survived -> get_dialog_settings raised on CLOSE, losing the session's
-    settings; restore called a deleted _on_mode_changed. Both fixed and now
-    guarded by test_settings_roundtrip.
-  * The plan executor's final-verify guard still counted repair_planes as a
-    plane step, so a legacy pour->repair plan performed no verify at all.
 
-  Known-deliberate divergences unchanged: the CLI mains' kicad-oracle
-  recheck, end-of-run reconciliation nuances, .kicad_pro floor carryover,
-  the plan-parameter whitelist, and now the finalize's CLI-only oracle leg.
+5363397f 2026-09-21 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of the #946 render-design-system branch (25 commits, ab8d0c364..5363397f).
+NO GAP FOUND in the engine/GUI boundary. One gate FIXED (see below), and it is
+the gate CLAUDE.md names for movie work.
 
-  Carried, still open: GUI kwarg gaps net_name_patterns (batch_route) and
-  plane_net_layers (generate_bga_fanout); test_gui_livechain_rp2350's plan
-  still encodes the pre-#562 chain (its repair steps are now skipped no-ops
-  while its CLI leg still shells route_disconnected_planes, so its
-  per-stage comparison is not stage-aligned -- reshape before trusting it).
+THE BRANCH'S SURFACE is 14 files under py_router/, 2 under py_tools/, 1 under
+awx/, and **ZERO files under kicad_routing_plugin/** -- checked with
+`git diff --stat ab8d0c364..HEAD -- kicad_routing_plugin/`, which is empty.
+Nothing for the engine to have drifted from on the plugin side.
 
-HEAD 2026-08-04 parity audit 646401b..a1cf6da (merge of se-rip-arbitration,
-41 commits + 10 main-side). Outcome: one Class-2 gap FOUND AND CLOSED in the
-same wave -- route.py's #562 plane finalize (repair engine -> cleanup ->
-oracle trio in batch_route) was CLI-file-only; it now runs on BOTH fronts
-(GUI: board-delta merge into results_data + post-apply staged-save oracle
-via the NEW shared core gui_utils.run_kicad_oracle_on_live_board, which
-planes_gui's _run_kicad_oracle_after_apply now delegates to; registered in
-test_cli_postpass_coverage as repair_planes -> plane_finalize_oracle).
+FIVE NEW CLI FLAGS, all on the MOVIE front ends:
 
-  Gates run at the merge (defaults ON: POUR_LAUNCH, VIA_RUNG=2,
-  PLANE_FINALIZE+LIVE, dynamic iterations):
-  * test_manifest_plan_parity: 17327 flag-checks, 457 manifests, 0 mismatches;
-    param->control 12 checked, 0 unresolved.
-  * test_cli_postpass_coverage: 7 registered, 14 in CLI use, 0 failures
-    (run_drc stays the acknowledged report-only CLI-only pass).
-  * test_gui_engine_parity (headless RoutingDialog, KiCad python): PARITY,
-    copper sets IDENTICAL (segments 1307/1307, vias 144/144, drc 0/0).
-    NOTE its old-chain plan leaves the new finalize INERT by construction
-    (its repair step pre-fixes everything); a pours-first plan variant
-    (planes -> route '*', real headless dialog) was run additionally:
-    grades identical 0/0/0/0 both fronts, GUI finalize fired end-to-end
-    (pre-gate, fill-aware hands-off, post-apply oracle, re-refill). The
-    ~114-segment +12V copper divergence on arch-shaped plans is
-    PRE-EXISTING (identical with KICAD_PLANE_FINALIZE=0 on both legs;
-    live-board fill vs file fill class), not a finalize gap.
+  make_movie.py   --theme  --layout  --aspect  --no-attempts  --iso-allow-bare
+  make_film.py    --theme  --no-attempts
 
-  Known-deliberate divergences unchanged: CLI mains' kicad-oracle recheck,
-  end-of-run reconciliation nuances, .kicad_pro floor carryover, the
-  plan-parameter whitelist. Custody (stubborn-oracle-link nets joining the
-  final reconciliation) is CLI-only by design -- no oracle verdict exists
-  mid-run under return_results; measured custody net-level gains were 0 on
-  all 3 A/B boards, and the GUI's post-apply oracle is the completion earner.
+None of them gets a dialog control, and that is CLAUDE.md's parity rule taking
+its SECOND arm explicitly rather than by omission: the GUI's movie button
+passes no movie parameters at all (`movie_recorder.py:160` is
+`make_movie(boards, out=out, quiet=True)` -- verified, that line still says
+exactly that), so the reach is through env knobs, which is how
+KICAD_MOVIE_CAMERA and KICAD_MOVIE_PANELS already reach it. Three added beside
+them in `env_knobs.refresh()`: KICAD_RENDER_THEME, KICAD_MOVIE_LAYOUT,
+KICAD_MOVIE_ASPECT.
 
-  Pre-existing GUI kwarg gaps flagged by KICAD_DUMP_BATCH_KWARGS and NOT
-  yet closed (carried): net_name_patterns (batch_route), plane_net_layers
-  (generate_bga_fanout).
+  * `test_settings_roundtrip.py` is NOT implicated -- no dialog control was
+    added, renamed or removed. CONFIRMED by diff rather than assumed.
+  * `manifest_to_plan.FLAG_PARAMS` is not implicated either: these flags are on
+    `make_movie`/`make_film`, which are not routing STEPS in a recorded
+    manifest. `test_manifest_plan_parity.py` run and green.
+  * `test_cli_postpass_coverage.py` run and green. The two new whole-frame-list
+    passes (`movie_attempts.attach`, the attempts band; and the #1022 motion)
+    live INSIDE `make_movie()` and `build_film()`, which is the shared engine
+    function the GUI recorder calls -- not in a CLI `main()`. That is the
+    Class-2 drift this gate exists to block, and it is avoided by construction.
 
-HEAD 2026-08-01 parity audit d73b1d6..646401b (22 commits). Outcome: no gaps.
+GATES RUN ON THIS MACHINE (KiCad 10.0.0, wx 4.2.2a1 msw phoenix,
+wxWidgets 3.3.2, Windows):
 
-  Gates run at HEAD (dynamic iterations DEFAULT ON, a7f2b6d):
-  * test_manifest_plan_parity: 12 params checked, 0 unresolved.
-  * test_cli_postpass_coverage: 6 registered, 13 in CLI use, 0 failures
-    (run_drc stays the acknowledged report-only CLI-only pass).
-  * test_gui_engine_parity (headless RoutingDialog, KiCad python): PARITY,
-    copper sets IDENTICAL (segments 1307/1307, vias 144/144, drc 0/0,
-    kicad_unconnected 0/0) -- both fronts ran WITH #529 self-budgeting.
+  tests/gui_parity/test_movie_recorder.py        PASS   <- see below
+  tests/gui_parity/test_manifest_plan_parity.py  PASS
+  tests/gui_parity/test_cli_postpass_coverage.py PASS
 
-  Audit notes for the range:
-  * #529 dynamic iterations (a4f4768, e792652, a7f2b6d): env-knob surface
-    ONLY by design (KICAD_DYNAMIC_ITERATIONS/_CLAMP/_QUANTUM_*/_GRACE) --
-    no CLI flag, no GUI control; gate lives in shared single_ended_routing,
-    both fronts inherit via env_knobs. Copper-identical parity above is the
-    direct check that the default flip forked nothing.
-  * #465 hot-loop knob migration (be91c47): read-site moves only.
-  * #556 (cca2f78): build_base_obstacle_map(progress_callback=...) is an
-    ENGINE-internal kwarg fed by the callback the GUI already passes into
-    batch_route -- no dialog wiring needed; byte-equivalence pinned by
-    tests/test_556_obstacle_build.py.
-  * #424 wave (278b122, b1e8b7c, a8055a8, aef616f, c86e70a + concurrent
-    session): --plane-drop and plane-fragility carry their own GUI/plan
-    wiring in those commits; covered by the gates above at HEAD.
+THE GATE WAS FIXED, and it is the one this branch most needed. CLAUDE.md names
+`test_movie_recorder.py` as the gate to run when touching movie code. It
+printed `SKIP: no python with pcbnew + wx found` and exited 0 -- on a machine
+with KiCad and wx installed and working. THREE defects in the gate itself,
+stacked behind one another, each of which reports every claim it guards as
+checked:
 
-HEAD 2026-07-30 parity audit 191abc4..d73b1d6 (3 commits). Outcome: no gaps.
+  1. the interpreter list carried #647's defect, never propagated out of the
+     engine: no KiCad >= 6 installs at the unversioned
+     `C:\Program Files\KiCad\bin\python.exe` (it is `...\KiCad\10.0\bin\...`).
+     It CALLS `kicad_exact_fill.kicad_python_candidates()` now, which handles
+     the versioned layout and VERIFIES a candidate can import pcbnew;
+  2. `os.execv` on Windows re-splits argv on spaces, so once the versioned path
+     was found the re-exec ran `C:\Program` with `Files\KiCad\...` as an
+     argument and died before the gate started. Subprocess-and-exit on nt;
+  3. the fixture board `kicad_files/fanout_output.kicad_pcb` does not exist,
+     and `fanout_output1` -- the obvious substitute -- is GENERATED and
+     gitignored, so naming either by path is the same self-skip one step
+     later. It builds the board through `fixture_boards.ensure()` now.
 
-  * bc8d77d (PR#534 1/2): kicad_parser text-pattern fix (uuid optional in all
-    six copper patterns). Text-parse path only BY NATURE: pcbnew objects
-    always carry uuids, so build_pcb_data_from_board needs no counterpart --
-    the parser-parity concern class is one-sided here.
-  * 93f3f2f (PR#534 2/2) + d73b1d6 (#545 fix wave): engine-side changes in
-    shared modules only (connectivity.py, single_ended_routing.py,
-    net_queries.py, net_rescue.py, diff_pair_multipoint.py) -- both fronts
-    call these through the shared engine functions; no new CLI flags, no new
-    engine kwargs surfaced to either front, no new post-passes, no
-    argparse/GUI-control/persistence/manifest work needed. GUI/CLI
-    order-independence handled INSIDE the fixes (position-sorted via
-    terminals in Case 1/Case 3/F4/F9's vias_by_component, copper-ranked stub
-    groups in net_queries F12) because net_vias/board order differs between
-    the text parser and pcbnew -- the 6515b1c divergence class.
-  * Gates at d73b1d6 (2026-07-30): test_gui_engine_parity VERDICT: PARITY --
-    segments CLI=GUI=1307, vias 144=144, DRC 0/0, kicad_unconnected 0/0,
-    copper sets IDENTICAL (run in the f-wave worktree with the full wave
-    applied). test_manifest_plan_parity and test_cli_postpass_coverage
-    unaffected (no flag/post-pass changes). Functional: tests/
-    test_uuidless_and_via_terminals.py + tests/test_terminal_anchor_fixes.py
-    pass; set1 three-wave replay graded (see #545 closing comment; residual
-    connection_width churn tracked as #547).
+DISCLOSED, and NOT fixed here: at least twelve other files carry the same stale
+interpreter list (including `tests/gui_parity/test_714_mirror_pcbnew_parity.py`,
+which is a KILLER gate for `tests/mutate_714.py` -- the worst place for it, since
+a killer gate that exits 0 reports every row it guards as SURVIVED). Untouched
+because each needs RUNNING to be worth claiming, over gates this branch does not
+implicate. That is a change to make on its own.
 
-2026-08-05 addendum -- #522 reorg landed (89914ce, main):
-  * 104 engine modules + bga_fanout/qfn_fanout/placement -> py_router/;
-    11 leaf tools + _path.py -> py_tools/; kicad_routing_plugin adds
-    _ENGINE_DIR (isdir-guarded, flat-install safe). No engine logic
-    changed; the audit surface is the layout itself.
-  * Parity evidence at the merge: test_gui_engine_parity on landed main
-    VERDICT: PARITY, copper sets IDENTICAL (segments 1335=1335, vias
-    140=140, DRC 0/0); test_manifest_plan_parity 12 params 0 unresolved;
-    test_cli_postpass_coverage 7/14/0 with the run_drc acknowledgment.
-  * Behavioral inertness proven beyond the gates: ulx3s 0801-manifest
-    replay old-layout vs new-layout COPPER-IDENTICAL (15506 segs, 1292
-    vias, same geometry hash); graduation-chain trio rerun (ulx3s 4/16,
-    butterstick 4/6, cynthion 32/5) IDENTICAL counts across both layouts.
-  * Three bugs caught BY the A/B, all fixed on the branch pre-land:
-    check_pads.py py_tools misclassification (bga/qfn lazy import -- no
-    gate runs a fanout step; ea992d9), its stale _path bootstrap
-    (3c4fc48), and the #562 rename breaking every recorded manifest's
-    repair step (relocate_moved_scripts rename table, 89914ce).
+NOT RUN: `test_gui_engine_parity.py` and `test_gui_livechain_rp2350.py` -- they
+route a chain and this branch changes no routing engine code, only rendering.
+`test_fanout_rotated_gui.py`, `test_ref_label_pcbnew_parity.py`,
+`test_settings_roundtrip.py` -- not implicated by a render-only change, per the
+diff above.
+
+b345eed9 2026-09-21 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of the MERGE of main (ab8d0c36, carrying the bus622-take5 py_router
+delta) into fix/962-paste-aperture. NO GAP FOUND. Eight gates re-run green on
+this machine under KiCad 10.0.0-103 / wx 4.2.2a1.
+
+WHY THIS AUDIT EXISTS. The branch's own audit (82522c1e, below) was taken
+against ad243b74, BEFORE main merged take5 (5bad89f4). take5 changed
+py_router/bga_fanout/{__init__,underpad,escape,rotate_frame,flip_frame}.py,
+single_ended_routing.py and routing_utils.py; #962 ALSO touches both fanouts.
+Git AUTO-merged bga_fanout/__init__.py and underpad.py with no conflict, which
+is not the same as being correct, so the fanout gates were re-run on the merged
+tree specifically to check that auto-merge.
+
+GATES RE-RUN AT b345eed9, all green:
+  test_cli_postpass_coverage  -- #962 adds a CLI post-pass
+                                 (route.py _ship_via_protection962); the gate
+                                 that blocks Class-2 CLI-only drift accepts it.
+  test_962_paste_parity       -- both parse paths agree on the paste model,
+                                 against pcbnew's own GetSolderPasteMargin.
+  test_962_native_graphic_overrun
+  test_fanout_rotated_gui     -- the take5 x #962 fanout intersection.
+  test_fanout_backside_gui    -- likewise, through take5's flip_frame.
+  test_settings_roundtrip     -- gui_utils / fanout_gui / planes_gui changed.
+  test_manifest_plan_parity
+  test_gui_engine_parity      -- VERDICT PARITY, copper sets IDENTICAL,
+                                 1078 segments / 128 vias, drc 0 both fronts.
+
+ALSO MEASURED AT b345eed9 (not GUI parity, recorded here as the merge's
+evidence): full suite 662 passed / 0 failed / 2 self-skipped (the two that
+want gitignored wk/ artifacts); tests/mutate_962.py 42 rows, 42 killed;
+mutation_anchors 55 batteries / 1508 anchors / 0 unresolved; and the
+default-flag routed copper is BYTE-IDENTICAL to main on esp_prog, sonde_u and
+splitflap_driver -- the latter two being boards take5 itself had moved.
+
+NOT RUN in this pass (unchanged since 82522c1e and not touched by the merge):
+test_726_parse_path_parity, test_751_via_protection_readback, the 733/746/768/
+772 cap gates, test_plane_all_layers_parity, test_gui_livechain_rp2350.
+
+STILL OWED BEFORE SHIP, and NOT a GUI-parity item: the corpus A/B under
+--same-net-pad-clearance > 0 on BGA-fanout boards. The branch's A/B was run
+against ad243b74 and does not describe this tree.
+
+d2c9934c 2026-09-20 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit 96912901..cd866f47 on bus622-take5 (main's 66 commits since the last
+audit plus the branch's 168, rebased onto main ad243b74 on 2026-09-19).
+NO GAP FOUND. One gate ADDED (test_fanout_backside_gui). Seven gates green,
+run live on this machine under KiCad 10.0.0-103 / wx 4.2.2a1.
+
+MAIN'S SIDE OF THE RANGE touches the plugin in exactly two files,
+kicad_routing_plugin/deps_check.py and swig_gui.py (the numpy floor of the
+deps gate, 32dc9276), and no engine code: nothing for the engine to have
+drifted from.
+
+THE BRANCH'S ROUTING SURFACE is 13 files under py_router/, ZERO files under
+kicad_routing_plugin/, and ZERO CLI flags (the add_argument diff over every
+routing main is empty). Checked item by item:
+
+  * CLI mains: untouched, except check_drc.run_drc and
+    check_connected.run_connectivity_check gaining an ADDITIVE pcb_data=
+    kwarg (a caller with the board parsed hands it over; the default parses
+    as ever). No front changes behaviour.
+  * NEW ENGINE KWARG at the front-end boundary: generate_bga_fanout(...,
+    escape_dir_hints=None), a per-ball planned move for programmatic callers
+    (the awx chain). NEITHER front passes it -- bga_fanout.py has no flag and
+    fanout_gui.py no control -- so the two fronts agree by construction. It
+    is NOT Claude-settable through the GUI plan executor; if a control is
+    ever wanted it needs the full CLAUDE.md wiring (control named after the
+    param, reset_params_to_defaults, FLAG_PARAMS, settings_persistence).
+  * NEW ENV KNOBS: KICAD_SEG_DIST_EXACT, KICAD_FANOUT_FRAME_QUARTER,
+    KICAD_FANOUT_SKIP_UNDER -- all default OFF, read the way their siblings
+    are (env_knobs / os.environ at import) on both fronts. Env-only like
+    KICAD_FANOUT_DIRECT before them; no GUI control, deliberately.
+  * DEFAULT-ON changes live INSIDE the shared engine functions, so both
+    fronts get them for free: the back-side mirror frame (flip_frame), the
+    rotation frame turning the whole board, nanometre tie-breaks in the
+    fanout's edge/channel/gap/victim choices, the reroute hit epsilon, the
+    router's rounded pad keep-out offset, the plane drop's rounded argmin.
+    Every board field the two frames read is a declared PCBData/BoardInfo/
+    Pad dataclass field (zones, guide_paths, keepout_zones, board_bounds,
+    board_outline, board_cutouts, hole_x/hole_y ...), so the pcbnew-built
+    board cannot lack one. THE ONE THAT DEPENDS ON A GUI-COMPUTED FIELD is
+    the mirror frame (it re-derives pad locals), and that is what the new
+    gate pins: identical copper, frame taken on both fronts.
+  * POST-PASSES: test_cli_postpass_coverage green -- 9 registered, 17 in
+    CLI use, 2 CLI-only acknowledged (write_filled_board; the fanout mains'
+    run_drc graze audit), 0 unreachable. The branch adds none.
+
+GATES, run live 2026-09-19/20:
+  tests/gui_parity/test_manifest_plan_parity.py      OK
+  tests/gui_parity/test_cli_postpass_coverage.py     OK (0 failures, 0 warnings)
+  tests/gui_parity/test_settings_roundtrip.py        exit 0
+  tests/gui_parity/test_fanout_rotated_gui.py        10/10
+  tests/gui_parity/test_gui_engine_parity.py         copper sets identical: True
+  tests/gui_parity/test_fanout_backside_gui.py       11/11  (NEW)
+  tests/test_fanout_flip_frame.py (wx-free twin)     via run_all
+NOT RUN: test_714_mirror_pcbnew_parity (the branch touches no file under
+py_placer/, so the placement writer's flip path is as audited at 96912901);
+test_gui_livechain_rp2350 (the engine-parity gate covers the plan path; the
+#562 chain shape is unchanged by this range).
+
+WHAT THIS AUDIT CANNOT SEE: the corpus A/B (awx/README TODO 7) says the
+branch's default-on changes move copper on cparti_fpga, scalenode_cm4,
+ulx5m_gatemate and smartknob_base; both fronts move identically, which is
+parity, not a verdict on the change.
+
+ADDENDUM d2c9934c (2026-09-20): flip_frame.is_back_side now calls
+placement.legality.footprint_side (test_878's one-home rule) instead of a
+copy of it -- the same answer on every layer name, and the back-side gate
+re-run on this commit: 11/11, copper identical. The 14 awx tools' KRT_TOOL
+declarations and the two --help guards touch no engine code.
+
+82522c1e 2026-09-19 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit 96912901..82522c1e: upstream's 66 commits since the last audit plus the
+#962 branch (fix/962-paste-aperture). THREE GAPS FOUND AND FIXED on the branch;
+the gates below run green at 82522c1e.
+
+UPSTREAM'S SHARE is one GUI change: 32dc92769 makes the routing dialog's
+dependency probe CALL startup_checks.dependency_problems instead of a
+hand-mirrored list -- a parity closer, not a gap. No CLI routing front
+(route.py, route_diff.py, route_planes.py, repair_planes.py, the fanouts)
+changed in that range; the rest is placement (#985/#986/#990) and tests.
+
+#962'S SHARE adds ship-time IPC-4761 Type VII stamping and a paste-opening
+keep-out, both inside shared engines except where a CLI main writes the file.
+Every CLI stamp site was checked for a GUI twin; the verifiers found three
+that had none, all fixed and now covered:
+  - planes_gui's GND return vias were not stamped where
+    `route_planes --add-gnd-vias` stamps them (a CALL check in
+    test_962_type_vii_stamp, and a battery row, guard it);
+  - place_fanout_clearance.main stamps a via its cap moves put under a pad
+    (`site_created`); the GUI twin is fanout_gui._optimize_decoupling_caps;
+  - the GUI fallback oracle (gui_utils.run_kicad_oracle_on_live_board)
+    stamps orc['new_vias'] before building its PCB_VIAs.
+The keep-out lives in obstacle_map / plane_obstacle_builder /
+pcb_modification / routing_diagnostics, which both fronts call. The format
+gate (no per-via capping/filling on a pre-KiCad-10 file) reads the parsed
+file version on the CLI and asks the running pcbnew for the setters on a live
+board. apply_via_protection falls back to the bool setters because the
+shipping 10.0.0 SWIG exports no *_MODE_* constants (#751).
+
+GATES RUN AT 82522c1e (KiCad 10.0.0 python): test_settings_roundtrip,
+test_726_parse_path_parity, test_751_via_protection_readback,
+test_962_paste_parity (corpus + synthetic witnesses, both paths agree on the
+paste model, graphic_filled and the unmeasured list), test_962_native_graphic_
+overrun, test_manifest_plan_parity, test_cli_postpass_coverage,
+test_engine_kwarg_parity, test_cli_defaults_parity, test_733 / 746 / 768 /
+772 cap gates, test_plane_all_layers_parity, test_gui_engine_parity (copper
+sets IDENTICAL, 1078 segments / 128 vias) -- all green.
+test_gui_livechain_rp2350: green (create 0/0, route 0/0) ONLY with its grader
+subprocess given an environment without PYTHON* variables. Run under KiCad's
+python on this machine, KiCad exports PYTHONUSERBASE, so `_grade`'s bare
+`python3` child cannot import numpy and every stage reads -1 on BOTH fronts.
+The cause is independent of the branch (the base's `_grade` spawns the same
+bare `python3`); the base run itself was not repeated.
+NOT green here, and failing identically on 32dc92769 (the branch's original
+base, run as the control): test_fanout_rotated_gui (the GUI leg captures 0
+tracks) and test_fanout_threaded_gui (5 pump checks), when run directly under
+KiCad's python; their own interpreter probes skip on this box.
+
+96912901 2026-09-17 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit a633f898..96912901 on main (16 commits: PR #981's #974 work, and the fanout
+clearance-ceiling fix). NO GAP FOUND. Eight gates green, run live on this
+machine.
+
+THE RANGE IS ONE ROUTING CHANGE PLUS PLACEMENT. Fifteen of the sixteen commits
+are #974 (place_seed reporting its declared connector requirements) and the
+previous ledger commit; they touch py_placer, tests and docs only. The whole
+routing surface is the sixteenth:
+
+    py_router/fab_tiers.py          new apply_clearance_ceiling
+    py_router/bga_fanout/__init__.py   calls it
+    py_router/qfn_fanout/__init__.py   calls it
+
+and ZERO files under kicad_routing_plugin/.
+
+THE ONE THING THAT NEEDED THINKING, because it is precisely the shape this
+file exists to catch: that change is a CLI main() edit -- the layer the GUI
+RE-IMPLEMENTS rather than shares. It makes the two fanout mains HONOUR
+--clearance-ceiling, which add_fab_tier_args had always registered for them
+and which only the routing mains read.
+
+It is a parity CLOSER, not a gap, and the reason is structural rather than a
+judgement call. On the GUI there is ONE number: swig_gui.py:1895 derives
+'placement_clearance_ceiling' from the Min Clearance control when its override
+box is ticked, and the SAME control's value is what fanout_gui.py passes as
+'clearance' to generate_bga_fanout / generate_qfn_fanout. So the GUI cannot
+express "clearance 0.2, ceiling 0.09" at all, has never had the CLI's bug, and
+needs no wiring. The CLI has moved TOWARD it.
+
+(The GUI's own 'clearance_ceiling' key is consumed by _optimize_decoupling_caps
+-- the #768 cap-placement path -- not by escape generation. Checked, so that it
+is not mistaken later for the thing this commit changed.)
+
+THE SURFACE, checked mechanically:
+
+  * NEW CLI FLAGS: ZERO. The add_argument diff over route.py, route_diff.py,
+    route_planes.py, bga_fanout/, qfn_fanout/ and place_fanout_clearance.py is
+    EMPTY -- this commit adds no flag, it makes an EXISTING one work.
+  * ENGINE KWARGS at the front-end boundary: unchanged. generate_bga_fanout and
+    generate_qfn_fanout are untouched; the resolution happens in main() BEFORE
+    the engine call, on args.clearance, which both fronts already pass.
+  * CLASS-2 DRIFT: none. No post-engine pass was added to any CLI main().
+  * ORDERING, which the gate pins: on bga_fanout the cap runs BEFORE
+    enforce_fab_floors, which reads args.clearance. Capping after it would pin
+    the UNCAPPED value up to a tier floor and then cap a number nothing routed
+    to.
+
+EIGHT GATES, all run live on this machine at 96912901:
+
+  test_manifest_plan_parity              PASS  (no wx)
+  test_cli_postpass_coverage             PASS  (no wx)
+  test_settings_roundtrip                PASS  (KiCad python)
+  test_ref_label_pcbnew_parity           PASS
+  test_714_mirror_pcbnew_parity          PASS
+  test_fanout_rotated_gui                PASS  -- the only gate that runs a
+      FANOUT, which is exactly what this range changed
+  test_gui_livechain_rp2350              PASS  GUI and CLI clean at every stage
+  test_gui_engine_parity                 PARITY -- copper sets IDENTICAL
+
+Prerequisites CHECKED, not assumed: pcbnew 10.0.0-103-gacbf1898e0,
+wx 4.2.2a1 osx-cocoa, ApplePersistenceIgnoreState = 1.
+
+a633f898 2026-09-17 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit f4fb38ed..a633f898 on main (58 commits: the rest of the v0.22.0 -> HEAD
+routing-regression campaign, the parser/grader work, and PRs #978/#979/#970/
+#971/#976). NO GAP FOUND. Eight gates green, run live on this machine.
+
+READ THE RANGE IN TWO HALVES, because only the first half can move parity.
+
+HALF 1, f4fb38ed..dfa7ddbe (28 commits) -- routing engine, parser and grader.
+This is where a gap could hide, and the eight gates below ran at dfa7ddbe.
+HALF 2, dfa7ddbe..a633f898 (3 merges: #970, #971, #976) -- PLACEMENT ONLY. Checked
+mechanically, not assumed: the diff over those merges touches py_placer (11
+files), tests (12), docs (1) and .claude (1), and ZERO files under py_router/
+or kicad_routing_plugin/. Nothing in half 2 is on the parity surface, so the
+gates were not re-run for it.
+
+THE SURFACE, checked mechanically:
+
+  * NEW CLI FLAGS on the routing/placement CLIs: ZERO. The add_argument diff
+    over route.py, route_diff.py, route_planes.py, bga_fanout.py,
+    qfn_fanout.py and place_fanout_clearance.py across the whole range is
+    EMPTY. So FLAG_PARAMS needs no entry and the plan-parity gate is unmoved.
+  * ENGINE KWARGS at the front-end boundary: ZERO drift, compared by AST on
+    the parameter lists themselves (posonly + args + kwonly), old vs new:
+        batch_route                101 params   SAME
+        batch_route_diff_pairs      89 params   SAME
+        create_plane                46 params   SAME
+        generate_qfn_fanout         16 params   SAME
+  * CLASS-2 DRIFT (a post-pass added to a CLI main() only): NONE. route.py
+    gained 185 lines in this range and every changed hunk lands in
+    batch_route or its helper _late_orphan_sweep659 -- main() is untouched,
+    mapped by walking the diff hunks to their enclosing def.
+
+THE ONE THING THAT NEEDED THINKING: kicad_parser.py, +281 lines (PR #979).
+Parser fixes reach both fronts EXCEPT file-text-parsing ones, because the GUI
+builds PCBData from pcbnew instead. Every changed function here is in the TEXT
+parser (footprint_pose, extract_footprints_and_pads, extract_segments/vias/
+zones/nets, _parse_ref_label, detect_bga_pitch, _resolve_pad_rect, ...), and
+build_pcb_data_from_board is NOT among them. That is the right side of the
+line, and the change NARROWS the gap rather than widening it: #979's whole
+point is that the text parser now reads a footprint's own (at ...) the way
+pcbnew does (splitflap re-saved by pcbnew: 11 diffs against pcbnew's own
+PCBData -> 0). test_ref_label_pcbnew_parity confirms it directly on two boards.
+
+Also verified independently before merging #979: ZERO of the 30 tracked and
+ZERO of the 456 unrouted stress boards carry an exponent-form number in any
+(at ...), so the widened numbers cannot fire on anything we route; a full
+structured parse of all 30 tracked boards is IDENTICAL main vs branch, and the
+same dump over 40 stress boards is byte-identical.
+
+EIGHT GATES, all run live on this machine at dfa7ddbe:
+
+  test_manifest_plan_parity              PASS  (no wx)
+  test_cli_postpass_coverage             PASS  (no wx)
+  test_settings_roundtrip                PASS  (KiCad python)
+  test_ref_label_pcbnew_parity           PASS  65 + 272 labels field-identical
+  test_714_mirror_pcbnew_parity          PASS  matches pcbnew's flip node for node
+  test_fanout_rotated_gui                PASS  10/10; 104 escapes outward both fronts
+  test_gui_livechain_rp2350              PASS  GUI and CLI clean at every stage
+  test_gui_engine_parity                 PARITY -- copper sets IDENTICAL:
+      segments CLI=1078 GUI=1078 common=1078 cli-only=0 gui-only=0
+      vias     CLI=128  GUI=128  common=128  cli-only=0 gui-only=0
+
+Prerequisites were CHECKED, not assumed (this file has carried "pending a
+KiCad-python session" while pcbnew worked): pcbnew 10.0.0-103-gacbf1898e0,
+wx 4.2.2a1 osx-cocoa, and ApplePersistenceIgnoreState = 1.
+
+One diagnostic worth keeping: test_gui_livechain_rp2350 ran ~25 minutes with
+no stdout, which looks exactly like the macOS restore-alert hang this file's
+siblings warn about. It was not -- 65.7% CPU, state R, and
+    sample <pid> 2 -mayDie | grep -cE "NSAlert|PersistentUI"
+returned 0. The alert hang sits at ~0 CPU in state SN, accruing a fraction of
+a second over many minutes. Check CPU state and that grep before concluding a
+wx gate is stuck; this one was routing a real rp2350 chain for ~25 minutes.
+
+f4fb38ed 2026-09-16 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit c44f623f..f4fb38ed on main (71 commits: the v0.22.0 -> HEAD routing
+regression campaign, plus the upstream #966/#967 clearance work). NO GAP FOUND.
+Eight gates green, run live on this machine.
+
+READ THIS RANGE RIGHT: it is almost entirely ROUTING-ENGINE repair, and that is
+WHY every parity number below is unchanged. Seven engine fixes landed --
+`18d5f162` (#874 via sync dropping shipped layer-swap vias), `bd930fd0` (NPTH
+slot is board edge to the copper-movers), `0b9acf90` (#441 ring-uncovered plated
+drills are holes to the movers), `ba9a25fa` (#521/#906 half a pair is not a
+protected pair), `4e6f8580` (#958 no equal-length rearrangement in a fine-pitch
+field), plus `cda2e933` reverting an earlier cut of that last one and two
+test/baseline re-records. EVERY ONE of them lands inside batch_route /
+batch_route_diff_pairs or in a SHARED module both fronts call:
+
+    routing_common.sync_pcb_data_segments   (both callers ARE the two engine
+                                             functions, so the #874 keep-alive
+                                             is passed on both fronts)
+    pcb_modification.smooth_octolinear_chains + the two grazing nudges
+    single_ended_routing._foreign_hole_capsules
+    check_drc.npth_slot_capsules / segment_to_npth_slots_distance
+    route_diff.protection_candidates
+
+Not one is a CLI main() post-pass, which is the Class-2 drift this file exists
+to catch. That is the shape both fronts inherit for free -- and the numbers
+below say so mechanically rather than on the auditor's say-so.
+
+THE SURFACE, checked mechanically, not assumed:
+
+  * NEW CLI FLAGS on the routing CLIs: ZERO. (add_argument diff over route.py,
+    route_diff.py, route_planes.py, repair_planes.py, bga_fanout, qfn_fanout is
+    EMPTY.) So FLAG_PARAMS needs no entry and the plan-parity gate is unmoved.
+  * ENGINE KWARGS at the front-end boundary: ZERO drift, compared by AST on
+    BOTH revisions with the non-vacuity assert -- batch_route 101 -> 101,
+    batch_route_diff_pairs 89 -> 89, create_plane 46 -> 46,
+    generate_bga_fanout 27 -> 27, generate_qfn_fanout 16 -> 16, and the
+    parameter NAMES are identical on all five.
+    THE NON-VACUITY ASSERT EARNED ITS KEEP AGAIN, differently this time: the
+    probe first read generate_qfn_fanout as MISSING on BOTH revisions, because
+    the function lives in `qfn_fanout/__init__.py` and the probe looked in
+    `qfn_fanout.py`. MISSING on both sides subtracts to "no change" and would
+    have been recorded as parity. Only the per-function count, printed and
+    compared against this file's previous entry (16), caught it.
+  * DEFAULT DRIFT: ZERO. routing_defaults.py diff over the range is EMPTY.
+  * NEW DIALOG CONTROL: none. settings_persistence.py diff over the range is
+    EMPTY. Round-trip gate: 191 keys, the same count as the previous entry.
+  * NEW results_data KEYS on a routing engine: none.
+  * GUI-SIDE CHANGES IN RANGE: two commits, `a29856f0` and `e5681428`, both the
+    #966/#967 unset-clearance resolution -- and both are parity FIXES, made on
+    the GUI front to match the CLIs' rule (a declared 0 is UNSET; an absent
+    class value uses the same constant the CLIs use). They close drift rather
+    than create it.
+
+GATES, all run live here (KiCad python CHECKED first, not assumed --
+pcbnew 10.0.0-103-gacbf1898e0, wx 4.2.2a1 osx-cocoa / wxWidgets 3.2.8):
+
+    test_manifest_plan_parity          PASS   (no wx)
+    test_cli_postpass_coverage         PASS   (no wx) -- no new CLI-only pass
+    test_settings_roundtrip            PASS   191 keys, save/restore/legacy/re-save
+    test_714_mirror_pcbnew_parity      PASS   every fixture matches pcbnew's flip
+    test_fanout_rotated_gui            PASS   10/10; CLI and GUI both 104/104
+                                              matched escapes outward, 0 inward
+    test_gui_livechain_rp2350          PASS   both chains clean at every stage
+    test_gui_engine_parity             PARITY copper sets IDENTICAL --
+                                              segments CLI 1078 = GUI 1078,
+                                              vias CLI 128 = GUI 128, 0 on
+                                              either side only; conn 0 issues
+                                              and drc 0 on both
+    run_all.py --fast                  428 passed / 0 failed / 196 skipped
+
+A NOTE ON SHAs IN THIS FILE. Every one above was rewritten once already: the
+entry was written, then `main` was pulled and the 19 unpushed commits REBASED
+onto an upstream metrics commit, and later main's history was REWRITTEN again to
+drop eight `metrics: weekly reach snapshot` bot commits -- each pass gave every
+commit a new hash. The file cited commits that existed only as orphans -- `git cat-file`
+still resolves those, so a spot check says "commit" and passes. The test that
+actually catches it is ANCESTRY:
+
+    git merge-base --is-ancestor <sha> HEAD
+
+Run that over every sha in this entry before trusting it, and note that the A/B
+ARM NAME (head2-kc_0ae450de) is deliberately NOT a branch sha -- it names a
+directory on the Modal results volume, fixed at launch time, and must not be
+"corrected" to match.
+
+WHAT THIS AUDIT DOES NOT COVER, said plainly: the engine changes above are
+justified on one or two boards each and the CORPUS A/B that judges them was
+still running when this was written (arm head2-kc_0ae450de, sets 1-5 -- that
+arm name carries the PRE-REBASE sha of the same tree, because the run was
+launched before `main` was pulled; f4fb38ed is where that content now sits).
+Parity
+means the two fronts do the SAME thing; it is not a claim that the thing is
+right. Two boards in this range are attributed and deliberately NOT fixed
+(picodvi, core1106_cam -> issue #677), and one regression is documented and
+unfixed (smartknob_base, a GND soft joint from the #908 chain).
+
+c44f623f 2026-09-12 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit a65194fb..c44f623f on main (272 commits, PRs #884/#885/#886/#888/#889/
+#911/#912/#913/#914/#915/#917/#927/#931/#932/#934/#935/#938/#939/#940/#943/
+#945 and today's #947..#953). NO GAP FOUND. Eleven gates green, run live.
+
+READ THIS RANGE RIGHT: it is overwhelmingly PLACEMENT and INSTRUMENT work --
+the #711/#902/#895 floorplan grading, the #892 place_pose verb, the #894/#918
+placement terms, the #893/#916 rotation search, the skill drivers, the movie
+recorder, the Modal suite runner. Routing's shared engine moved barely at all,
+and that is WHY every parity number below is unchanged. The one routing-side
+family worth an audit is #907/#908/#909/#910 (footprint copper), and it is the
+family that touched BOTH fronts.
+
+THE SURFACE, checked mechanically, not assumed:
+
+  * NEW CLI FLAGS: THREE, and only one is on a routing CLI.
+      --write-fill (route.py) -- a CLI-ONLY post-pass, see below.
+      --facing-weight (placement/cli_gates.py) and --rotate-by-facing
+      (place_seed.py) -- PLACEMENT tools, which manifest_to_plan refuses BY
+      NAME, so FLAG_PARAMS needs no entry (the plan-parity gate asserts the
+      refusal is loud and the chain survives it).
+  * ENGINE KWARGS at the front-end boundary: ZERO drift, compared by AST with
+    a non-vacuity assert on BOTH revisions (the assert that earned its keep in
+    the previous entry): batch_route 101 -> 101, batch_route_diff_pairs
+    89 -> 89, create_plane 46 -> 46, generate_bga_fanout 27 -> 27,
+    generate_qfn_fanout 16 -> 16. Not one parameter added, removed or renamed.
+  * DEFAULT DRIFT: ZERO. routing_defaults.py diff over the range is EMPTY.
+  * NEW DIALOG CONTROL: none. settings_persistence.py diff over the range is
+    EMPTY; no wx control added, renamed or removed. Round-trip gate: 191 keys,
+    the same count as the previous entry.
+  * NEW results_data KEYS: none, on any routing engine.
+  * NEW ENV KNOBS: seven (ESCAPE_STUB_RADIUS, TAP_CROSS_SCAN,
+    NO_GRADE_RECONCILE, ROUTE_TRACE, UNBLOCK_DEBUG, MOVIE_PANELS,
+    MOVIE_CAMERA). Every one is read in SHARED code -- env_knobs.py,
+    single_ended_routing.py, phase3_routing.py, check_connected.py,
+    make_movie.py -- and ROUTE_TRACE's two route.py reads are at lines 2137
+    and 5900, INSIDE batch_route (the CLI block starts at 6020). Class-free,
+    nothing to mirror. None is read anywhere under kicad_routing_plugin/.
+  * NEW CLI-ONLY POST-PASS: ONE, and it is REGISTERED rather than hidden.
+    route.py --write-fill calls kicad_exact_fill.write_filled_board on the
+    WRITTEN file after the engine. It has no GUI counterpart and should not:
+    the GUI mutates a LIVE board that KiCad fills itself, so there is no file
+    to fill. test_cli_postpass_coverage now reads 9 registered / 17 active /
+    2 CLI-only acknowledged / 0 unreachable / 0 failures -- the acknowledged
+    count moved 1 -> 2 for exactly this pass, which is the gate seeing it.
+
+  * THE FAMILY THAT TOUCHED BOTH FRONTS (#908, PR 934): a footprint's own
+    copper is copper. The GUI half is real and was verified by READING it, not
+    by trusting the PR: gui_utils.move_copper_graphics_to_silkscreen_board
+    imports the SHARED predicate kicad_parser.footprint_copper_is_functional
+    -- the same one the text writer reads -- so the two fronts cannot answer
+    "land pattern or logo" differently. Its NPTH exclusion is spelled out in
+    the loop (pcbnew PAD_ATTRIB_NPTH), matching the text writer and both parse
+    paths; a logo footprint carrying a mounting hole would otherwise be kept
+    on copper by one front and modelled by neither.
+
+  * #947 (today) IS PARITY-RELEVANT AND CLOSES A CLI-ONLY DIVERGENCE, which is
+    the opposite of the usual finding and so is recorded explicitly. It skips
+    #908 graphic segments in three places, all CLI: check_drc's track-width
+    loop, fix_kicad_drc_settings.scan_board_minima, and that module's
+    _fab_floor_disclosure census. The GUI twin of the middle one,
+    gui_utils.board_minima_from_live, NEVER HAD THE BUG -- it walks
+    board.GetTracks(), which is PCB_TRACK/PCB_VIA only and cannot see an
+    fp_poly inside a FOOTPRINT -- and the GUI calls neither check_drc.run_drc
+    nor _fab_floor_disclosure at all (grepped: zero references under
+    kicad_routing_plugin/). So the CLI was the front that disagreed, and it no
+    longer does. Nothing to mirror; a GUI-side "fix" here would be a
+    regression.
+
+  * THE REST OF THE GUI DIFF (397 changed lines across 6 files) carries NO
+    routing parameter: ai_backend.py / ai_gui.py / placement_run.py are the AI
+    skill runner (opencode backend, stage labels, artifact stages);
+    deps_check.py is #943/#944 making Pillow optional; swig_gui.py's +10 lines
+    are a COMMENT explaining why Pillow is deliberately not probed in the
+    dialog's hand-rolled dependency block (#887 -- the raster gate belongs at
+    the render entry points, and blocking the routing dialog on it refused
+    boards this GUI can route).
+
+GATES, on a clean tree, KiCad python 10.0.0-103 + wx 4.2.2a1 PROBED LIVE FIRST
+(the standing instruction; it passed, so "no wx in this session" would again
+have been false), ApplePersistenceIgnoreState confirmed set to 1:
+
+  test_manifest_plan_parity      OK -- 7400 flag-checks across 403 manifests,
+                                 0 mismatches; 13 params resolved, 0
+                                 unresolved; placement tools refused loudly
+  test_cli_postpass_coverage     9 registered / 17 active / 2 acknowledged /
+                                 0 unreachable / 0 failures (was 9/16/1 --
+                                 the count moved for --write-fill alone)
+  test_settings_roundtrip        clean (save, restore, legacy, re-save), 191
+                                 keys -- unchanged, as the empty diff predicts
+  test_fanout_rotated_gui        10/10, the only GUI gate that runs a fanout
+  test_768_cap_ceiling_real_dialog  ALL PASS
+  test_gui_engine_parity         PARITY; copper sets IDENTICAL (1259 seg /
+                                 128 via both arms, 0 cli-only, 0 gui-only) --
+                                 THE SAME COUNTS as a65194fb, so this range
+                                 moved neither front on that board, which is
+                                 what a zero-kwarg-drift range should do
+  test_gui_livechain_rp2350      PASS, both chains clean at every stage
+                                 (create 0/0, route 0/0, DRC @ 0.09)
+  test_cli_defaults_parity       no CLI default disagrees with its shared
+                                 constant
+  test_engine_kwarg_parity       OK (no CLI-only kwargs, no dead controls)
+  test_714_mirror_pcbnew_parity  PASS, 75 fixtures / 3055 pads / 4170 non-pad
+                                 nodes; EXIT 0, not 2, so pcbnew was really
+                                 there. NEWLY IN SCOPE AND NEWLY WIDER: #948
+                                 added ROTATION-ONLY rows (90 and 270, no
+                                 flip) against SetOrientationDegrees +
+                                 SaveBoard, because the writer's rotation path
+                                 composed pad angles and left every text at
+                                 the pre-rotation angle. 6 arc-mid nanometre
+                                 waivers, the standing ones.
+  test_rotated_footprint_frame   28/28
+
+FULL SUITE at this HEAD: 607 passed, 0 failed, 0 timed out, 50/50 shards
+reporting, on Modal over the working tree (source c44f623f+dirty), 1026s.
+4 self-skipped -- the cloud image has no KiCad, so those asserted NOTHING and
+are not passes; the two that matter here (test_714_mirror_pcbnew_parity, the
+settings round-trip) were run LOCALLY under KiCad python, above.
+
+CARRIED FORWARD UNCHANGED (nothing in this range addresses these, and the
+previous entry's reasons still hold): test_gui_engine_parity is still vacuous
+for #549/#498 (no sibling .kicad_dru on its board) and still blind to
+diff-pair / impedance params (its plan is signal + plane).
+kicad_writer.strip_zero_length_edge_cuts still has no GUI twin. A copper-level
+fanout-clearance parity gate still does not exist. py_router/ui_thread.py's
+save_board_on_ui_thread still returns a bare False on expiry, registered with
+that weakness named in tests/test_713_wallclock_census.py.
+
+----------------------------------------------------------------------------
+a65194fb 2026-09-05 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit aa9e25d6..a65194fb on main (97 commits: PRs #866/#863/#860/#867/#868/#870/
+#871/#872/#873/#880/#881/#883 -- the fanout reach work #846/#854/#652/#862,
+#678 pour promises, #806 diff-pair obstacle sync, #831/#828 fill+save status,
+#672, #837/#836/#714 assembly sides + the placement flip, #874/#876/#882).
+ONE GAP FOUND AND FIXED (a65194fb) -- in the GATE, not in the product. Ten
+gates green, run live.
+
+THE SURFACE, checked mechanically, not assumed:
+
+  * NEW CLI FLAGS on any routing CLI: NONE. Every add_argument added in the
+    range lands in test harnesses or on py_tools/check_capacity.py
+    (--assembly-sides, --intent), a placement ANALYSIS tool with no GUI
+    counterpart and no copper. manifest_to_plan needs no entry.
+  * ENGINE KWARGS at the front-end boundary: ZERO drift. batch_route,
+    batch_route_diff_pairs, create_plane, generate_bga_fanout and
+    generate_qfn_fanout all have parameter lists IDENTICAL to aa9e25d6,
+    compared by AST with a non-vacuity assert. THE ASSERT EARNED ITS KEEP: the
+    first pass looked for batch_route in routing_common.py, where it does not
+    live, and printed "IDENTICAL" for two empty results. batch_route is in
+    route.py.
+  * WHERE THE ENGINE CHANGES LANDED: route.py +185 changed lines, ALL inside
+    batch_route (max line 5959; the CLI __main__ block starts at 6020) --
+    so the #678 audit/weld, the plane finalize and the oracle work reach both
+    fronts through the shared engine. route_diff.py likewise (17 lines, none
+    in its CLI block). route_planes.py and repair_planes.py: zero changed
+    lines.
+  * DEFAULT DRIFT: ZERO. routing_defaults.py diff over the range is empty.
+  * NEW DIALOG CONTROL: none. settings_persistence.py diff over the range is
+    empty; no new wx control of any kind. Round-trip gate: 191 keys.
+  * NEW results_data KEYS: two, 'fanout_dropped' (#652) and 'pour_served'
+    (#678). Both DIAGNOSTIC. They join a family the GUI has never consumed --
+    measured, the GUI references boxed_in / blockers / pad_pairs_open /
+    fanout_dropped / pour_served ZERO times and vias_to_remove (the only
+    copper-applying key) four times. Consistent, not new drift; the engine
+    prints these itself on both fronts.
+  * NEW ENV KNOBS: five (ORACLE_SUMMARY, POUR_PROMISE_WELD, QFN_ONPAD_REACH,
+    QFN_UNDERPAD_ERASED_GATE, SLIVER_TRIM). All read in SHARED code --
+    route.py inside batch_route, qfn_fanout, cleanup_pipeline -- so they are
+    class-free with nothing to mirror. Note the #678 WELD is inside
+    batch_route too (lines 5111-5719): both fronts can weld, and the knob,
+    not the front, is what gates it.
+  * NEW POST-PASS: ONE, #678's persist_pour_served_pads in bga_fanout.main().
+    It HAS its GUI counterparts and they are real, verified by reading the
+    function bodies: ai_plan._write_drc_floors (plan path) and
+    gui_utils.update_live_drc_floors (manual path), the latter reached from
+    fanout_gui.py:2036. Same shape as its two #521 siblings.
+  * A PARITY FIX ALREADY IN-RANGE (bc0ca9bc, #860 follow-up): ai_plan's
+    escape_method resolution reached bga_options unconditionally and returned
+    True, so a QFN step set the BGA dropdown, reported success, and left the
+    QFN panel's under-pad checkbox off -- which in turn made allow_via_in_pad
+    inert, since it is under-pad-only. Now dispatched on step['kind'].
+  * TOOLTIP DRIFT: none outstanding. --allow-via-in-pad's MEANING changed
+    (#846 added the inward search along the escape axis and four stagger
+    configurations); the CLI help and the QFN panel tooltip were both updated
+    in-range, at the same wording.
+  * PARSER: all build_pcb_data_from_board changes (#828/#831) are the GUI's
+    exact_fill_provider -- the fill account, and not retrying a SaveBoard that
+    already threw. The text parser has no live-fill provider, so there is no
+    twin to keep at parity. flip_layer_token is new and PLACEMENT-side; its
+    acceptance gate is run below.
+
+THE GAP (fixed in a65194fb, committed BEFORE this entry):
+
+  test_cli_postpass_coverage registered persist_protected_nets and
+  persist_impedance_specs but NOT their third sibling
+  persist_pour_served_pads. It reported 8/15/1/0/0/0 -- the previous audit's
+  counts exactly -- without ever looking at the one new CLI post-pass in the
+  range.
+
+  Registering it was INERT, which only the negative control revealed. Check B
+  asks whether the GUI counterpart SYMBOL exists anywhere under
+  kicad_routing_plugin/, and for this family the registered symbols are the
+  CONTAINERS (_write_drc_floors, update_live_drc_floors), which exist whether
+  or not they still call the pass. Deleting the persist_pour_served_pads line
+  from BOTH GUI writebacks left the gate green. Check D covers a call stranded
+  after a return; it does not cover a call deleted outright.
+
+  Check E now requires, for the three SAME_SYMBOL twins, that the pass still
+  appear as a CALL inside one of its registered GUI functions. Scoped to an
+  explicit set, not a blanket rule: clean_plane_copper's twin is a different
+  implementation and repair_planes is evidenced by a results_data key, so a
+  blanket containment test would fail them correctly in form and wrongly in
+  substance. Retroactive -- it now guards the two #521 siblings too.
+  Both negative controls fail with the reason named; clean tree 9/16/1/0/0/0.
+
+GATES, on a clean tree, KiCad python 10.0.0-103 + wx 4.2.2a1 PROBED LIVE
+FIRST (the standing instruction; it passed, so "no wx in this session" would
+again have been false), ApplePersistenceIgnoreState confirmed set:
+
+  test_manifest_plan_parity      OK -- 7400 flag-checks across 403 manifests,
+                                 0 mismatches; 13 params resolved, 0 unresolved
+  test_cli_postpass_coverage     9 registered / 16 active / 1 acknowledged /
+                                 0 unreachable / 0 failures (was 8/15/1 --
+                                 the count moved because the gap was closed)
+  test_settings_roundtrip        clean (save, restore, legacy, re-save), 191 keys
+  test_fanout_rotated_gui        10/10, and NON-VACUOUS: 104 tracks emitted on
+                                 both fronts, identical track sets, all escapes
+                                 outward. The only GUI gate that runs a fanout,
+                                 and this range is mostly fanout.
+  test_gui_engine_parity         PARITY; copper sets IDENTICAL (1259 seg /
+                                 128 via both arms) -- the same counts as
+                                 aa9e25d6, so this range moved neither front
+                                 on that board
+  test_gui_livechain_rp2350      PASS, both chains clean at every stage
+  test_768_cap_ceiling_real_dialog  ALL PASS
+  test_714_mirror_pcbnew_parity  PASS, 45 fixtures / 1833 pads / 2502 non-pad
+                                 nodes; EXIT 0, not 2, so pcbnew was really
+                                 there. Newly IN SCOPE: this range introduced
+                                 kicad_parser.flip_layer_token and the
+                                 writer's flip path.
+  test_cli_defaults_parity       100 defaults across 6 CLIs, 0 disagreements
+  test_engine_kwarg_parity       OK (no CLI-only kwargs, no dead controls)
+  test_rotated_footprint_frame   28/28
+
+ENGINE KWARG CAPTURE (the finer instrument -- copper identity on ONE board
+does not prove every param matches, since a param this board never exercises
+cannot show up in the copper). Both legs captured with
+KICAD_DUMP_BATCH_KWARGS=<path> KICAD_DUMP_BATCH_KWARGS_CONTINUE=1 -- NOTE the
+var is a FILE PATH, and without _CONTINUE=1 the run dumps and stops, which
+looks exactly like a gate failure. 6 records (3 CLI, 3 GUI). Three
+divergences, all benign and all traced to the source rather than assumed:
+  - same_net_pad_clearance None vs -1.0 -- the previously recorded one;
+    batch_route resolves them identically.
+  - stage_board_fn None vs ABSENT -- the GUI omits it; the default is None.
+  - net_clearances None vs {} on the plane step -- worth the trace, because
+    route_planes.py:3433 gates its auto-read on `is None`, so {} SKIPS it.
+    Benign here for two independent reasons: planes_gui BUILDS the map
+    deliberately (mirroring net_clearance_map_by_id, Default-only nets
+    omitted per #530 decision 2), and it is legitimately empty on this
+    all-Default board; and set_board_net_clearances normalises through
+    `(net_clearances or {})`, so None and {} are the same value. On a
+    multi-class board the GUI passes its own equivalent map.
+
+CARRIED FORWARD UNCHANGED (nothing in this range addresses these):
+test_gui_engine_parity is still vacuous for #549/#498 (no sibling .kicad_dru
+on its board) and still blind to diff-pair / impedance params (its plan is
+signal + plane) -- which matters more than usual this range, since #806
+changed the diff-pair engine's working obstacle map and no GUI gate routes a
+diff pair. kicad_writer.strip_zero_length_edge_cuts still has no GUI twin.
+A copper-level fanout-clearance parity gate still does not exist.
+
+----------------------------------------------------------------------------
+aa9e25d6 2026-09-03 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit e239e067..aa9e25d6 on branch worktree-constraints-dru (10 commits, the
+#530/#842/#857/#856/#770 design-rules rework; docs/design-rules-proposal.md).
+TWO GAPS FOUND AND FIXED IN-RANGE (fc36e578; 52c83e63: the GUI QFN path fed
+the escalation policy the Basic tab's width, the CLI fed it nothing -- both
+now feed the QFN width, test_fanout_rotated_gui re-run 10/10 without the
+clamp line, wx-free twin test_530_qfn_width_stale_minimum). Seven gates
+green, run live. Later in-range (dbe07fa0..1fb9b57e): corpus-A/B fixes, all
+ENGINE-side and shared by both fronts (route_diff pair-gap floor + the
+multipoint hand-off, rule_floors class clearance, rescue/tap ladders), plus
+the KICAD_CLEARANCE_LEGACY_CEILING replay knob (CLI mains only BY DESIGN:
+replay arms, never a real run). test_gui_engine_parity re-run at 1fb9b57e:
+copper IDENTICAL 1259/128. c61dd168 moved the tier/escalation DEFAULTS to
+auto/fab on BOTH fronts from ONE place (routing_defaults.FAB_TIER /
+ESCALATION; the GUI controls select those constants at creation and in both
+reset paths), refreshed the tooltips of every control whose meaning the
+branch changed, and re-ran the engine parity gate: copper IDENTICAL 1259/128;
+settings round-trip, manifest plan parity and the 768 dialog gate green.
+c61dd168..aa9e25d6: ONE engine commit (a9607575, #864: the under-pad occupancy
+grid floor + disk memo in bga_fanout/underpad.py -- shared by both fronts, no
+parameter, no results key, no default); the rest is manifests / graders / docs
+/ skills / metadata. Gates re-run at aa9e25d6: test_fanout_rotated_gui 10/10
+(the only GUI gate that runs a fanout), test_768_cap_ceiling_real_dialog ALL
+PASS, settings round-trip clean; full suite 532/0; corpus arm final3 (rewritten
+manifests, shipped defaults) -3 real DRC / -7 open nets vs 0.21.4.
+
+THE SURFACE, checked mechanically, not assumed:
+
+  * NEW CLI FLAGS (route / route_diff / route_planes / repair_planes / bga and
+    qfn fanout, via fab_tiers.add_fab_tier_args): --escalation {off,board,fab}
+    (default board), --clearance-ceiling (the old cap-every-class meaning of
+    --clearance), --strict-sizes (exit 3 when anything narrowed), --fab-tier
+    gains 'auto' (the old escalating ladder; standard/advanced are now hard).
+    route.py: --relax-drc-severities. fix_kicad_drc_settings standalone:
+    --relax-severities. Every one reaches the dialog: 'escalation' wx.Choice
+    replaces the Obey-DRC box, 'clearance_ceiling_check' (Class ceiling) next
+    to Min Clearance, 'relax_drc_severities_check', fab_tier choice carries
+    'auto'. manifest_to_plan FLAG_PARAMS carries all of them (plan parity gate
+    below); settings_persistence saves/restores all of them (roundtrip gate).
+  * ENGINE KWARGS at the front-end boundary: batch_route gains
+    clearance_ceiling and via_from_class; GridRouteConfig gains rules,
+    net_via_sizes. swig_gui passes both; planes_gui threads clearance_ceiling;
+    fanout_gui keeps the PLACEMENT CLI's ceiling semantics through the
+    placement_clearance_ceiling / placement_clamp_netclasses shared keys
+    (test_768_cap_ceiling_real_dialog pins that).
+  * SHARED CONFIG KEYS (get_shared_params): escalation, board_floors,
+    clearance_ceiling, clamp_netclasses (now == the Class ceiling box),
+    placement_clearance_ceiling, placement_clamp_netclasses.
+  * DEFAULT DRIFT: routing_defaults.py unchanged. The MEANING of --clearance
+    changed on both fronts together (Default class only; #530 decision 2).
+  * SEMANTIC GAP FOUND: the three GUI net_clearances builders (route, planes,
+    diff tabs) put Default-only nets into the map at the class's STORED
+    clearance; the CLI's net_clearance_map_by_id omits them. The old always-on
+    cap hid it; with the cap behind the Class-ceiling box the GUI arm routed a
+    different board (1237 vs 1259 segments). Fixed in fc36e578; copper sets
+    IDENTICAL after.
+  * NEW POST-PASS: none. The design-rules line / JSON_SUMMARY design_rules
+    block / PROJECT_WRITES_JSON are report-only; the writeback changes
+    (netclass sizes never lowered, min_clearance capped at the smallest pad
+    override, severities gated) are inside fix_kicad_drc_settings, shared by
+    both fronts (gui_utils.board_minima_from_live feeds the override cap).
+  * RUST: grid_router 0.22.0 rung API; python selects the path by capability
+    (hasattr add_blocked_vias_rung_batch), both fronts alike.
+
+GATES, on a clean tree, KiCad python 10.0.0 + wx probed live first:
+
+  test_manifest_plan_parity      OK (placement tools refused loudly)
+  test_cli_postpass_coverage     exit 0, no new CLI-only pass
+  test_settings_roundtrip        clean (save, restore, legacy, re-save)
+  test_gui_engine_parity         PARITY; copper sets IDENTICAL (1259 seg /
+                                 128 via both arms); kwargs diff: only
+                                 same_net_pad_clearance None vs -1.0, which
+                                 batch_route resolves identically
+  test_gui_livechain_rp2350      PASS (both chains clean at every stage)
+  test_fanout_rotated_gui        10/10
+  test_768_cap_ceiling_real_dialog  ALL PASS
+
+NOT covered by these gates: diff-pair / impedance params (the engine gate's
+plan is signal + plane). differential_gui's builder got the same Default-only
+fix as swig_gui by inspection + the shared kwargs path, not a routed A/B.
+
+----------------------------------------------------------------------------
+166255d0 2026-09-01 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit 31004f43..166255d0 on main (129 commits, the whole v0.21.4..v0.21.5
+range). NO GAP FOUND. Six gates green, run live -- not carried.
+
+THE SURFACE, checked mechanically, not assumed:
+
+  * NEW CLI FLAGS: none on any routing CLI. Every add_argument in the range
+    lands in test harnesses (mutation batteries, #788/#789 study tools) or
+    placement analysis (check_floorplan --require-brief / --brief / --no-brief,
+    board_brief). The #711 design brief reaches the placement CLIs through the
+    --intent they already take, BY DESIGN (it compiles into the intent rather
+    than adding a flag), so there is nothing to mirror in placement_gui.
+  * ENGINE KWARG at a front-end boundary: NONE. No routing entry-point
+    signature changed (batch_route / batch_route_diff_pairs / create_plane /
+    generate_bga_fanout / generate_qfn_fanout).
+  * DEFAULT DRIFT: ZERO. routing_defaults.py diff is empty over the range.
+  * NEW results_data KEY: none.
+  * NEW DIALOG CONTROL: one -- fanout_bga_cap_default_via_size (#742,
+    --default-via-size gets its own key instead of riding via_size). Present in
+    BOTH settings_persistence paths (save + restore); settings roundtrip gate
+    re-run green at 190 keys.
+  * NEW POST-PASS: #811 merge_collinear_segments. Placed INSIDE the shared
+    run_post_route_cleanup (pass 11, after joint close, moves no copper), so
+    both fronts get it; test_cli_postpass_coverage re-run green, counts
+    unchanged (8 registered / 15 active / 1 acknowledged CLI-only / 0 / 0).
+  * NEW ENV KNOB: one, KICAD_MERGE_COLLINEAR (default ON), read in the shared
+    cleanup pipeline, not a CLI main(). Class-free, nothing to mirror.
+  * WRITER: #817's per-block strip-matcher dialect fix is inside kicad_writer,
+    shared by both fronts.
+  * ROUTING BEHAVIOUR CHANGES (#815/#816/#818 position-independent keep-out
+    boundaries, capsule-span perf, #811): all inside shared engine/Rust code.
+    Per the standing rule "shared code is NOT a parity argument", the engine
+    parity gate was RUN, not reasoned about (below).
+
+GATES, on a clean tree, KiCad python 10.0.0-103 + wx 4.2.2a1 probed live first
+(the standing instruction; it passed, so "no wx in this session" would again
+have been false):
+
+  test_manifest_plan_parity      flags survive into plan steps; placement-block
+                                 flags OK, placement tools refused loudly
+  test_cli_postpass_coverage     8 / 15 / 1 / 0 unreachable / 0 failures
+  test_settings_roundtrip        save / restore / legacy / re-save clean, 190
+                                 keys (covers the #742 control)
+  test_fanout_rotated_gui        10/10 rotated-QFN parity checks
+  test_rotated_footprint_frame   28/28 invariants
+  test_gui_engine_parity         PARITY; copper sets IDENTICAL (1257/1257 segs,
+                                 128/128 vias). NOTE the count moved from the
+                                 last audit's 1267/128 -- expected, this range
+                                 changes routing (#815/#816/#818 tie epsilon,
+                                 #811 collinear merge shrinks the segment
+                                 count); what the gate asserts is that BOTH
+                                 fronts moved together, and they did.
+
+CORPUS: sets 1-5 replay at 6eb2a450 (75 boards, 74/75 chains complete, mean
+completion 98.71%, 31 real DRC, 1 failed) graded fine against the recorded
+baselines. The 85 commits after 6eb2a450 are the placement PRs #819..#824,
+whose py_router/ touches were verified behaviour-identical (fab_tiers kernel
+extraction with the same arithmetic, sibling-list addition) -- so the sweep
+screens this HEAD's routing.
+
+CARRIED FORWARD UNCHANGED: test_gui_engine_parity is still vacuous for
+#549/#498 (no sibling .kicad_dru on its board) and still blind to
+diff-pair/impedance params (signal+plane plan). A copper-level fanout-clearance
+parity gate still does not exist. Nothing in this range addresses them.
+
+ADDENDUM (#713, branch fix/713-wallclock-decision-sites, base f3484551):
+THE FIRST TOKEN IS DELIBERATELY NOT MOVED. This branch audited its OWN diff, not
+the range 31004f43..f3484551, and advancing the SHA would claim an audit nobody
+ran. The ledger stays where the last full audit left it.
+
+WHY AN ENTRY AT ALL: #713 items 3 and 4 both reach GUI-only code, and the issue
+says they do not. It greps kicad_routing_plugin/ for "deadline", which is the
+wrong word. The two real surfaces:
+
+  * kicad_routing_plugin/gui_utils.py -- run_kicad_oracle_on_live_board never
+    inspected `available`, so an oracle that COULD NOT RUN was byte-identical
+    here to one that ran and found everything connected: both an empty results
+    dict, both silent. It now says the clean result is UNBACKED. This is a
+    changed line in kicad_routing_plugin/, which the previous entry could
+    record as "ZERO changed lines".
+  * py_router/kicad_parser.py _live_fill -- the GUI's exact_fill_provider. Its
+    LOUD stale-clearance warning fired only from `except`, so a refill that
+    RETURNED nothing (a 300 s timeout above all) fell through to the in-process
+    fill in silence, on the routing WORKER thread. Both arrivals now share one
+    warning function.
+
+Also GUI-relevant: py_router/kicad_oracle.py's timeout memo was a MODULE-GLOBAL
+keyed on a fill-cost signature. pcbnew is a long-lived process and the GUI
+stages each board to a fresh temp path, so that key is exactly what would have
+made one slow board poison every board opened afterwards in a session. It is
+call-scoped now.
+
+NO NEW CLI FLAG, NO NEW ENGINE KWARG, NO NEW DIALOG CONTROL, NO NEW
+results_data KEY. Two flags REMOVED (--plane-score-budget, --route-timeout),
+both on placement mains that manifest_to_plan already refuses by name, so
+FLAG_PARAMS needs no entry. No new CLI-only post-pass.
+
+GATES RUN (KiCad python 10.0.0 + wx 4.2.2 probed live first -- it passed, so
+"no wx in this session" would again have been false):
+
+  test_gui_engine_parity      PARITY; copper sets IDENTICAL
+                              (1257/1257 segs, 128/128 vias, 0 cli-only,
+                              0 gui-only)
+  test_settings_roundtrip     clean (save, restore, legacy, re-save)
+  test_ui_thread_save         PASS under KiCad python. NOTE: it SELF-SKIPS
+                              under the CLI interpreter ("no python with
+                              pcbnew + wx found"), so running it the ordinary
+                              way asserts nothing -- run it with KiCad's
+                              python explicitly.
+  test_manifest_plan_parity   OK
+  test_cli_postpass_coverage  8 / 15 / 1 / 0 / 0 / 0 -- identical to the
+                              previous entry
+  test_cli_defaults_parity    100 defaults across 6 CLIs, 0 disagreements
+  test_engine_kwarg_parity    OK (no CLI-only kwargs, no dead controls)
+
+KNOWN GAP THIS BRANCH ADDS AND DOES NOT CLOSE: py_router/ui_thread.py's
+save_board_on_ui_thread is a 120 s hang detector whose expiry returns a bare
+False a caller cannot distinguish from a wx save exception -- the shape #713
+spends five items forbidding. It is now REGISTERED in
+tests/test_713_wallclock_census.py with that weakness named, rather than left
+invisible: the census could not even see it before, because its timeout is
+passed positionally. Changing the GUI save path is its own change.
+
+NOTE 2026-09-30 (stage3d-only film layout; not an audit, so the first token
+above is unchanged). The film layouts other than stage3d are retired:
+--layout (make_movie, make_film), --panels and every --iso-* flag and
+--kicad-cli (make_movie), --panels / --iso-allow-bare (make_film), and the
+KICAD_MOVIE_LAYOUT / KICAD_MOVIE_PANELS knobs. The entries above that name
+them describe the code as it was. No GUI surface changes: the GUI's movie
+button calls make_movie(boards, out=out, quiet=True), which already
+rendered stage3d; there was never a dialog control or settings key for a
+layout or the iso panel, and settings_persistence is untouched. A retired
+knob still set in the environment is now said once on stderr
+(frame_layout.warn_retired_knobs) instead of choosing a layout.
+
+NOTE 2026-10-04 (#1105 pile basis, #1125, #1126, #1127, #1128, #1129, #1141;
+not an audit, so the first token above is unchanged).
+
+No GUI surface changes. Nothing in kicad_routing_plugin/ calls the code this
+branch changes: seeder stage 1 / stage 3.5 (place_seed is a REFUSED tool in
+manifest_to_plan), portfolio.free_refs / generate, render_placement's caption
+and describe_pair, or legality.occupancy_shape / pad_copper_overrun_mm; the
+placement GUI drives those CLIs through the agent. legality.STACK_EXACT_CONFIRM
+is a module toggle, off, with no flag or control. The one shared low-level
+change is check_drc's _pad_perimeter_array / _polys_edge_arrays caches, which
+now hold their keyed object: same answers, except an id reused by a new
+object is recomputed instead of served stale.
+
+GATES RUN: test_cli_postpass_coverage: 14 registered, 22 in active use, 2
+CLI-only, 0 failures.
+
+NOTE 2026-10-05 (#1143, #1142, and #1127 measured; not an audit, so the first
+token above is unchanged).
+
+No new flag, dialog control or settings key. Every change sits inside shared
+engine functions, so both fronts get it. Unlike the previous note, the GUI
+DOES reach the changed code:
+- ai_plan.py's group step calls groups.derive_groups, whose _centroid /
+  _chip_list now skip aperture-only pads (#1143). measure_1143 shows block
+  membership moves on no corpus board or demo.
+- The GUI fanout tab calls fanout_clearance in-process: its has-pads gate
+  skips aperture-only parts (#1143), and its decap grade reads the new
+  per-cap decap_ungraded ERROR under a --decaps-from intent (#1142).
+- classify_part, which the QFN fanout auto-pick reads, moves on no corpus
+  board.
+The routing-side readers of the same pads (kicad_parser.detect_package_type,
+detect_bga_pitch, the QFN auto-pick's raw pad count) are deliberately left
+unchanged; changing them would be a routing change.
+
+GATES RUN: test_cli_postpass_coverage: 14 registered, 22 in active use,
+2 CLI-only, 0 failures. test_manifest_plan_parity: OK.
+test_gui_engine_parity was not run: its trigger (routing group membership or
+the QFN pick moving) did not fire on any board.

@@ -9,8 +9,15 @@ doesn't.
 
 This gate chains the rp2350 PLANE sub-chain on ONE live pcbnew board --
 exactly as the Claude-tab plan executor does, in-memory across steps --
-starting from the recorded CLI pre-plane board, and asserts every stage
-grades 0 DRC like the CLI file chain.
+starting from the recorded CLI pre-plane board, and asserts that no stage, on
+either front, INTRODUCES DRC. Each stage is graded against its own project,
+and the INPUT is graded under that same project: what the input already had
+is counted apart and printed, never blamed on the chain (rp2350's own
+Net-(D2-K) and SWDIO tracks sit ~0.06 mm from J2's NPTH hole, under both the
+input's stock 0.25 mm and the chain's 0.1 mm min_hole_clearance). On this
+front headless_plan saves the per-step GUI snapshots WITHOUT a project
+(aSkipSettings -- the live floors sit in the board's in-memory settings until
+the plan ends), so the GUI leg, and its input re-grade, get no project rule.
 
 RESHAPED for #562 (pours-first). The chain used to be create -> repair ->
 reconnect route -> repair2, and this test still carried that shape after the
@@ -67,8 +74,9 @@ Run: python3 tests/gui_parity/test_gui_livechain_rp2350.py
 # A sandboxed HOME does NOT help -- cfprefsd serves that pref per-user
 # regardless of HOME. With the default set, test_gui_engine_parity.py runs ~90s.
 # ---------------------------------------------------------------------------
+import glob
+import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -81,10 +89,17 @@ sys.path.insert(0, os.path.join(REPO, 'py_tools'))  # #522
 sys.path.insert(0, os.path.join(REPO, 'tests', 'gui_parity'))
 START_BOARD = os.path.join(REPO, 'kicad_files', 'rp2350_fpga_eensy_prePlane.kicad_pcb')
 
+# Every versioned install, newest first by NUMERIC version (a string sort
+# puts KiCad\9.0 above KiCad\10.0).
+sys.path.insert(0, os.path.join(REPO, 'py_router'))
+from kicad_locate import path_version_key  # noqa: E402
+del sys.path[0]    # this file orders its own sys.path further down
 KICAD_PYTHONS = [
     "/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3",
     "/usr/bin/python3",
     os.path.expandvars(r"C:\\Program Files\\KiCad\\bin\\python.exe"),
+    *sorted(glob.glob(r"C:\Program Files\KiCad\*\bin\python.exe"),
+           key=path_version_key, reverse=True),
 ]
 
 
@@ -93,17 +108,131 @@ def _reexec_into_kicad():
         if cand != sys.executable and os.path.exists(cand):
             if subprocess.run([cand, '-c', 'import pcbnew'],
                               capture_output=True).returncode == 0:
-                os.execv(cand, [cand, os.path.abspath(__file__)] + sys.argv[1:])
+                argv = [cand, os.path.abspath(__file__)] + sys.argv[1:]
+                if os.name == 'nt':
+                    # os.execv re-splits argv on spaces on Windows, and the
+                    # interpreter lives under "Program Files".
+                    sys.exit(subprocess.run(argv).returncode)
+                os.execv(cand, argv)
     print("SKIP: no python with pcbnew found")
     sys.exit(0)
 
 
+#: path -> the violation RECORDS the chain introduced at that stage, so a
+#: non-zero stage can say WHAT it found. The gate used to report a bare count
+#: and then delete the workdir, which left "GUI 9 / CLI 0" as a number with no
+#: way to act on it short of re-running the whole 6-minute chain.
+_INTRODUCED = {}
+#: path -> how many of its violations the INPUT already had (see _grade).
+_INHERITED = {}
+
+
+def _drc_items(pcb, clr, baseline=True):
+    """check_drc's violation records for `pcb` (its `--json` `items`), graded
+    against the board's own sibling project. None when the grade did not run.
+
+    --baseline the start board (#962): rp2350 ships 27 of its own vias in
+    paste openings, unprotected; they are the input's, not the chain's.
+    """
+    js = pcb + '.drc_items.json'
+    cmd = ['python3', os.path.join(REPO, 'py_router', 'check_drc.py'), pcb,
+           '--clearance', str(clr), '--hole-to-hole-clearance', '0.2',
+           '--clearance-margin', '0.1', '--json', js]
+    if baseline:
+        cmd += ['--baseline', START_BOARD]
+    subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        with open(js, encoding='utf-8') as fh:
+            items = json.load(fh)['items']
+    except Exception:                                           # noqa: BLE001
+        return None
+    # `items` also lists what --baseline ACCEPTED (the record carries an
+    # `accepted` reason); those are not violations, and counting them was the
+    # first cut's bug (27 "introduced" via-in-paste the input already had).
+    return [i for i in items if not i.get('accepted')]
+
+
+def _item_key(item):
+    """A violation record's identity: every field, floats to 0.1 um. The same
+    copper graded under the same rules gives the same key; a violation that
+    MOVED -- a rerouted track, a shifted via -- gives a new one."""
+    def norm(v):
+        if isinstance(v, float):
+            return round(v, 4)
+        if isinstance(v, (list, tuple)):
+            return [norm(x) for x in v]
+        return v
+    return json.dumps({k: norm(v) for k, v in item.items()}, sort_keys=True)
+
+
+def _inherited_keys(stage_pcb, clr):
+    """The violations the INPUT already had, graded under `stage_pcb`'s OWN
+    project (`.kicad_pro` / `.kicad_dru`).
+
+    Under the rules the chain wrote, copper the chain never touched can
+    violate: rp2350's Net-(D2-K) and SWDIO tracks sit ~0.06 mm from J2's NPTH
+    hole, under the plane step's 0.1 mm min_hole_clearance AND under the
+    input's own stock 0.25. That is the fixture, not either front, and the
+    gate's question is what the CHAIN did. The input is re-graded per stage
+    because each stage's project can differ.
+    """
+    src = _STAGED['board']
+    d = os.path.join(os.path.dirname(stage_pcb), 'inherited')
+    os.makedirs(d, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(stage_pcb))[0]
+    dst = os.path.join(d, stem + '_input.kicad_pcb')
+    shutil.copy(src, dst)
+    for ext in ('.kicad_pro', '.kicad_dru'):
+        s = os.path.splitext(stage_pcb)[0] + ext
+        if os.path.isfile(s):
+            shutil.copy(s, os.path.splitext(dst)[0] + ext)
+    items = _drc_items(dst, clr, baseline=False)
+    return None if items is None else {_item_key(i) for i in items}
+
+
 def _grade(pcb, clr=0.09):
-    r = subprocess.run(['python3', os.path.join(REPO, 'py_router', 'check_drc.py'), pcb,
-                        '--clearance', str(clr), '--hole-to-hole-clearance', '0.2',
-                        '--clearance-margin', '0.1'], capture_output=True, text=True)
-    m = re.search(r'FOUND (\d+) DRC', r.stdout)
-    return 0 if 'NO DRC' in r.stdout else (int(m.group(1)) if m else -1)
+    """How many violations the chain INTRODUCED at this stage (-1: the grade
+    did not run). What the input already had under the same rules is counted
+    apart, in _INHERITED, and disclosed rather than blamed on the chain."""
+    items = _drc_items(pcb, clr)
+    inherited = _inherited_keys(pcb, clr)
+    if items is None or inherited is None:
+        return -1
+    new = [i for i in items if _item_key(i) not in inherited]
+    _INTRODUCED[pcb] = new
+    _INHERITED[pcb] = len(items) - len(new)
+    return len(new)
+
+
+def _self_test():
+    """The subtraction, in milliseconds, before the 6-minute chain: an
+    inherited record is excused, and the SAME violation anywhere else --
+    the negative control -- is not."""
+    a = {'type': 'track-hole', 'net2': 'Net-(D2-K)', 'hole_loc': [151.04, 96.0],
+         'seg_loc': [150.3, 95.75, 150.35, 95.7], 'overlap_mm': 0.0379038}
+    moved = dict(a, seg_loc=[150.31, 95.75, 150.36, 95.7])
+    noisy = dict(a, overlap_mm=0.0379038 + 1e-9)
+    inherited = {_item_key(a)}
+    ok = (_item_key(noisy) in inherited
+          and _item_key(moved) not in inherited
+          and len([i for i in (a, moved) if _item_key(i) not in inherited]) == 1)
+    if not ok:
+        print("FAIL: the inherited-violation subtraction is broken "
+              "(self-test); the stage grades below could not be trusted.")
+    return ok
+
+
+def _print_violations(tag, pcb, limit=20):
+    """The violations a failing stage INTRODUCED, before the workdir goes."""
+    new = _INTRODUCED.get(pcb) or []
+    print(f"  --- {tag}: {len(new)} violation(s) introduced in "
+          f"{os.path.basename(pcb)} ---")
+    for it in new[:limit]:
+        where = {k: v for k, v in it.items() if k.endswith('_loc') or k == 'layer'}
+        print(f"    {it.get('type')}: {it.get('net1', '')} <-> "
+              f"{it.get('net2', '')} {where}")
+    if len(new) > limit:
+        print(f'    ... {len(new) - limit} more')
 
 
 def _cli_chain(work):
@@ -165,6 +294,7 @@ def _cli_chain(work):
             grades[tag] = -1
             break
         grades[tag] = _grade(out)
+        _CLI_OUTS[tag] = out
     return grades
 
 
@@ -198,18 +328,30 @@ PLAN = [
 # main(); _cli_chain reads it so both legs start from the SAME bytes.
 _STAGED = {}
 
+#: stage tag -> the board each leg graded, for _print_violations.
+_GUI_SNAPS = {}
+_CLI_OUTS = {}
+
 
 def main():
     start_board = START_BOARD
     if not os.path.exists(start_board):
         print(f"SKIP: checked-in board not found at {start_board}")
         return 0
+    if not _self_test():
+        return 1
 
     # The REAL headless dialog + REAL PlanExecutor. replay() touches `info` only
     # for input_board, so the corpus driver works unchanged on a repo board.
     import replay_plan_vs_run as R
 
     work = tempfile.mkdtemp(prefix='rp2350_livechain_')
+    # KICAD_LIVECHAIN_KEEP=1: leave the workdir behind. Both legs'
+    # boards at every stage are the only way to answer WHY a stage
+    # diverged, and re-running to get them back costs ~6 minutes.
+    keep = bool(os.environ.get('KICAD_LIVECHAIN_KEEP'))
+    _rm = ((lambda *a, **k: print(f'  (kept: {work})')) if keep
+           else shutil.rmtree)
 
     # Stage the input WITH a sibling .kicad_pro (the checked-in fixture has
     # none). A project-less board makes the two fronts legitimately diverge:
@@ -235,11 +377,11 @@ def main():
     res = R.replay({'input_board': staged}, PLAN, work, snapshots=True)
     if res.get('aborted'):
         print(f"FAIL: GUI plan aborted: {res['aborted']}")
-        shutil.rmtree(work, ignore_errors=True)
+        _rm(work, ignore_errors=True)
         return 1
     if res.get('completed', 0) != len(PLAN):
         print(f"FAIL: GUI plan ran {res.get('completed')} of {len(PLAN)} steps.")
-        shutil.rmtree(work, ignore_errors=True)
+        _rm(work, ignore_errors=True)
         return 1
 
     # replay() snapshots each completed step as gui_stepNN.kicad_pcb.
@@ -248,26 +390,38 @@ def main():
         snap = os.path.join(work, f'gui_step{i:02d}.kicad_pcb')
         if not os.path.exists(snap):
             print(f"FAIL: no GUI snapshot for stage {tag}")
-            shutil.rmtree(work, ignore_errors=True)
+            _rm(work, ignore_errors=True)
             return 1
         stages[tag] = _grade(snap)
+        _GUI_SNAPS[tag] = snap
 
     # #495: actually RUN the CLI chain instead of asserting it is clean.
     print("\nrunning the equivalent CLI file chain for comparison...", flush=True)
     cli = _cli_chain(work)
 
-    print("\nrp2350 live-chain grade parity (DRC @ 0.09):")
-    print(f"  {'stage':<12} {'GUI':>6} {'CLI':>6}")
+    print("\nrp2350 live-chain grade parity (DRC @ 0.09), violations the chain "
+          "INTRODUCED (+ the input's own, under the same stage's rules):")
+    print(f"  {'stage':<12} {'GUI':>10} {'CLI':>10}")
     gui_bad, cli_bad = [], []
     for tag, n in stages.items():
         c = cli.get(tag, -1)
-        print(f"  {tag:<12} {n:>6} {c:>6}   "
+        gi = _INHERITED.get(_GUI_SNAPS.get(tag, ''), 0)
+        ci = _INHERITED.get(_CLI_OUTS.get(tag, ''), 0)
+        print(f"  {tag:<12} {n:>4} (+{gi:<3}) {c:>4} (+{ci:<3})  "
               f"[{'OK' if n == 0 else 'FAIL'}/{'OK' if c == 0 else 'FAIL'}]")
         if n != 0:
             gui_bad.append(tag)
         if c != 0:
             cli_bad.append(tag)
-    shutil.rmtree(work, ignore_errors=True)
+    # Say WHAT each failing stage found, on both legs, while the boards still
+    # exist. A divergence is a question about violation CLASSES -- the same
+    # count from different causes is a different bug -- and the answer was
+    # being deleted three lines later.
+    for tag in gui_bad:
+        _print_violations('GUI ' + tag, _GUI_SNAPS.get(tag, ''))
+    for tag in cli_bad:
+        _print_violations('CLI ' + tag, _CLI_OUTS.get(tag, ''))
+    _rm(work, ignore_errors=True)
 
     rc = 0
     if cli_bad:
@@ -283,7 +437,9 @@ def main():
         rc = 1
     if rc:
         return rc
-    print("\nPASS: GUI and CLI chains both grade clean at every stage.")
+    print("\nPASS: neither the GUI nor the CLI chain introduces DRC at any "
+          "stage (the input's own violations, graded under each stage's "
+          "rules, are counted apart above).")
     return 0
 
 

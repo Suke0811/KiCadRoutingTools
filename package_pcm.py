@@ -34,6 +34,10 @@ containing sha256/download_size/install_size for metadata.json patching.
 """
 from __future__ import annotations
 
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': [], 'kind': 'utility'}
+
 import argparse
 import copy
 import hashlib
@@ -71,8 +75,11 @@ ROOT_EXCLUDE = {
     "artifacts",  # CI downloads release binaries here before packaging
 }
 
-# CLAUDE.md and .claude/ (the routing skills) ship intentionally so they can be
-# used from the installed plugin later.
+# CLAUDE.md and .claude/skills/ (the routing skills) ship intentionally so they
+# can be used from the installed plugin later. Nothing else in .claude/ ships: a
+# dev checkout also holds Claude Code's worktrees/ (whole repo copies) and the
+# user's settings.local.json. install_plugin.py ships the same subset.
+CLAUDE_KEEP = {"skills"}
 
 # Names skipped anywhere in the tree (VCS, caches, build artifacts). The Rust
 # crate's build dir and the per-platform binaries are stripped here; the right
@@ -81,10 +88,22 @@ IGNORE_PATTERNS = shutil.ignore_patterns(
     ".git", ".github", ".gitignore", ".DS_Store",
     "__pycache__", "*.pyc", "dist",
     ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv",
+    "venv",  # a local virtualenv (python -m venv venv) is not the plugin's
+    "tmp",   # scratch and caches (awx/tmp: run records, the harness caches) -- git-ignored, so a CI zip never has them,
+             # but a zip built from a working tree would
     "target",  # rust_router/target/ is the cargo build dir
     "grid_router.so", "grid_router.pyd", "grid_router.abi3.so",
     "Cargo.lock",
 )
+
+
+def ignore_names(directory, names):
+    """IGNORE_PATTERNS, plus everything in .claude/ except CLAUDE_KEEP."""
+    ignored = set(IGNORE_PATTERNS(directory, names))
+    if os.path.basename(directory) == ".claude":
+        ignored.update(n for n in names if n not in CLAUDE_KEEP)
+    return ignored
+
 
 # All binaries bundled in every PCM zip. The startup resolver in the root
 # __init__.py picks the right one based on sys.platform + machine.
@@ -101,7 +120,7 @@ def read_version():
 
 
 def stage_plugins(stage_root: Path, binary_dir: Path | None = None):
-    """Copy the repo working tree (minus ROOT_EXCLUDE / IGNORE_PATTERNS) into
+    """Copy the repo working tree (minus ROOT_EXCLUDE / ignore_names) into
     <stage_root>/plugins/.
 
     binary_dir, when it lives inside the repo (CI downloads release binaries to
@@ -125,7 +144,7 @@ def stage_plugins(stage_root: Path, binary_dir: Path | None = None):
             continue
         dst = plugins_dir / entry.name
         if entry.is_dir():
-            shutil.copytree(entry, dst, ignore=IGNORE_PATTERNS)
+            shutil.copytree(entry, dst, ignore=ignore_names)
         else:
             shutil.copy2(entry, dst)
 

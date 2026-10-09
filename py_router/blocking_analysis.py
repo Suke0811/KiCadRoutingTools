@@ -296,6 +296,14 @@ def analyze_frontier_blocking(
     blocked_arr = np.asarray(list(blocked_cells), dtype=np.int64)
     blocked_keys = np.unique(_pack_cells(blocked_arr[:, :2], blocked_arr[:, 2]))
 
+    # #590: the frontier of a search that FAILED is a conflict event too --
+    # weaker than a rip (it includes static copper no rip can clear), so it
+    # carries a fractional weight. Hooked here so every caller (single-ended
+    # ladder, reroute loop, phase 3, diff-pair loop, layer-swap fallback)
+    # feeds it. No-op unless KICAD_HISTORY_COST > 0.
+    from history_congestion import record_blocked_frontier
+    record_blocked_frontier(config, blocked_arr)
+
     # Compute source/target grid coords and proximity threshold
     coord = GridCoord(config.grid_step)
     target_gx, target_gy = None, None
@@ -389,6 +397,17 @@ def analyze_frontier_blocking(
         cells, counts = np.unique(all_blocking, return_counts=True)
         solo_cells = cells[counts == 1]
         n_attributed = int(cells.size)
+        # #590 v2 CONTEST event: these cells -- routed copper the failed
+        # search stalled against -- are the negotiated-congestion field's
+        # primary signal (frontier∩blocker, the PathFinder overused-node
+        # analog). Charged at full weight, BEFORE any rip, so a ripped
+        # blocker's reroute sees its contested ground priced. No-op unless
+        # KICAD_HISTORY_COST > 0.
+        from history_congestion import history_enabled, record_contested
+        if history_enabled():
+            cgx, cgy = _unpack_xy(cells)
+            record_contested(config, np.stack(
+                (cgx, cgy, cells & 0xFF), axis=1))
     else:
         solo_cells = np.empty(0, dtype=np.int64)
         n_attributed = 0
@@ -696,6 +715,21 @@ def analyze_static_blockers(
         'zone_cells': 0,
     }
 
+    # Sweep item 4 (#625 follow-up): the scalar version iterated ALL pads x
+    # ALL blocked cells and ALL segments x ALL blocked cells in pure Python
+    # (~10M iterations, 3-5 s) -- and this runs after EVERY failed search
+    # whose frontier had no routed-net blockers. Cells go into arrays once;
+    # each pad/segment then tests them with numpy masks (same comparisons),
+    # confirming pad shape via the vectorized twin of point_to_pad_distance.
+    from obstacle_map import _pad_dist_le_batch
+    if blocked_set:
+        _cells = np.array(sorted(blocked_set), dtype=np.int64)
+        _cgx, _cgy, _clay = _cells[:, 0], _cells[:, 1], _cells[:, 2]
+        _cxf = _cgx * coord.grid_step  # == coord.to_float per cell
+        _cyf = _cgy * coord.grid_step
+    else:
+        _cgx = _cgy = _clay = _cxf = _cyf = np.empty(0)
+
     # Track which nets' pads are blocking
     pad_blockers = {}  # net_name -> set of pad refs
 
@@ -706,6 +740,8 @@ def analyze_static_blockers(
         net = pcb_data.nets.get(net_id)
         net_name = net.name if net else f"Net {net_id}"
         for pad in pads:
+            if not len(_cgx):
+                break
             # Get pad grid area
             pad_gx, pad_gy = coord.to_grid(pad.global_x, pad.global_y)
 
@@ -717,23 +753,27 @@ def analyze_static_blockers(
             expand_x = max(1, coord.to_grid_dist(pad_half_w + margin))
             expand_y = max(1, coord.to_grid_dist(pad_half_h + margin))
 
-            # Check if any blocked cells fall within this pad's area. The bbox
-            # (expand_x/y) is a fast PREFILTER; confirm with the pad's TRUE copper
-            # shape so a round pad's bbox corner doesn't over-attribute a blocked
-            # cell it doesn't actually cover (matches the shape-aware obstacle map).
-            for cell in blocked_set:
-                gx, gy, layer_idx = cell
-                layer_name = config.layers[layer_idx] if layer_idx < len(config.layers) else None
-                if layer_name and layer_name not in pad.layers:
-                    continue
-                if abs(gx - pad_gx) <= expand_x and abs(gy - pad_gy) <= expand_y:
-                    cx, cy = coord.to_float(gx, gy)
-                    if point_to_pad_distance(cx, cy, pad) > margin:
-                        continue  # inside the bbox but outside the real pad shape
-                    if net_name not in pad_blockers:
-                        pad_blockers[net_name] = set()
-                    pad_blockers[net_name].add(pad.component_ref)
-                    break  # Found blocking, move to next pad
+            # Blocked cells within this pad's area: bbox as a fast PREFILTER,
+            # then confirm with the pad's TRUE copper shape so a round pad's
+            # bbox corner doesn't over-attribute a blocked cell it doesn't
+            # actually cover (matches the shape-aware obstacle map). A cell on
+            # a layer the pad doesn't touch never counts; a cell whose layer
+            # index is out of range keeps the scalar version's semantics
+            # (layer_name None -> not filtered out).
+            _lay_ok = np.zeros(_clay.shape, dtype=bool)
+            for li in range(len(config.layers)):
+                if config.layers[li] in pad.layers:
+                    _lay_ok |= _clay == li
+            _lay_ok |= _clay >= len(config.layers)
+            cand = (_lay_ok
+                    & (np.abs(_cgx - pad_gx) <= expand_x)
+                    & (np.abs(_cgy - pad_gy) <= expand_y))
+            if not cand.any():
+                continue
+            if _pad_dist_le_batch(_cxf[cand], _cyf[cand], pad, margin).any():
+                if net_name not in pad_blockers:
+                    pad_blockers[net_name] = set()
+                pad_blockers[net_name].add(pad.component_ref)
 
     # Format pad blockers
     for net_name, refs in sorted(pad_blockers.items(), key=lambda x: -len(x[1])):
@@ -750,27 +790,24 @@ def analyze_static_blockers(
         layer_idx = layer_map.get(seg.layer)
         if layer_idx is None:
             continue
+        net = pcb_data.nets.get(seg.net_id)
+        net_name = net.name if net else f"Net {seg.net_id}"
+        if net_name in track_blockers or not len(_cgx):
+            continue  # already attributed; membership is all that's reported
 
         # Get segment grid area
         gx1, gy1 = coord.to_grid(seg.start_x, seg.start_y)
         gx2, gy2 = coord.to_grid(seg.end_x, seg.end_y)
         expansion_grid = max(1, coord.to_grid_dist(seg.width / 2 + config.clearance))
 
-        # Check if any blocked cells fall near this segment
-        for cell in blocked_set:
-            gx, gy, cell_layer = cell
-            if cell_layer != layer_idx:
-                continue
-            # Simple bounding box check
-            min_gx = min(gx1, gx2) - expansion_grid
-            max_gx = max(gx1, gx2) + expansion_grid
-            min_gy = min(gy1, gy2) - expansion_grid
-            max_gy = max(gy1, gy2) + expansion_grid
-            if min_gx <= gx <= max_gx and min_gy <= gy <= max_gy:
-                net = pcb_data.nets.get(seg.net_id)
-                net_name = net.name if net else f"Net {seg.net_id}"
-                track_blockers.add(net_name)
-                break
+        # Any blocked cell on this layer inside the segment bbox?
+        hit = ((_clay == layer_idx)
+               & (_cgx >= min(gx1, gx2) - expansion_grid)
+               & (_cgx <= max(gx1, gx2) + expansion_grid)
+               & (_cgy >= min(gy1, gy2) - expansion_grid)
+               & (_cgy <= max(gy1, gy2) + expansion_grid))
+        if hit.any():
+            track_blockers.add(net_name)
 
     result['tracks'] = sorted(track_blockers)
 
@@ -780,10 +817,9 @@ def analyze_static_blockers(
         min_x, min_y, max_x, max_y = zone[:4]
         gmin_x, gmin_y = coord.to_grid(min_x, min_y)
         gmax_x, gmax_y = coord.to_grid(max_x, max_y)
-        for cell in blocked_set:
-            gx, gy, _ = cell
-            if gmin_x <= gx <= gmax_x and gmin_y <= gy <= gmax_y:
-                zone_cells += 1
+        if len(_cgx):
+            zone_cells += int(((_cgx >= gmin_x) & (_cgx <= gmax_x)
+                               & (_cgy >= gmin_y) & (_cgy <= gmax_y)).sum())
     result['zone_cells'] = zone_cells
 
     return result
@@ -872,25 +908,60 @@ def filter_rippable_blockers(
     blockers: List[BlockingInfo],
     routed_results: Dict,
     diff_pair_by_net_id: Dict,
-    get_canonical_net_id_func
+    get_canonical_net_id_func,
+    pcb_data=None,
+    context: str = "in-run rip ladder",
 ) -> Tuple[List[BlockingInfo], Set[int]]:
     """
     Filter blockers to only those that can be ripped (in routed_results),
     deduplicating by diff pair (P and N count as one).
+
+    With `pcb_data`, PROTECTED nets are also dropped (run-6 fix): this is the
+    one choke point all six in-run rip ladders flow through, and none of them
+    consulted protection_map -- so a .kicad_pro protected net, KiCad-locked
+    copper, or a protected net could be ripped mid-run by the phase-3
+    cascade even though every PRE-run rip channel refused it (test-board run
+    5, journal [10]: the #444 seam re-ask and the tap ladder churned a
+    committed net's copper repeatedly). Refusals are recorded in
+    PROTECTED_SKIPPED under `context` so they surface in JSON_SUMMARY.
+    The operator's exact-name overrides DO reach here (run-6 z2 fix): a net
+    named exactly (no glob) in --rip-existing-nets / --nets is stashed by the
+    pre-run filters (protected_nets.stash_rip_overrides) and lifts 'user'
+    protection in-run as well -- 'locked' never lifts. Before the stash, the
+    tap cascade refused nets the operator had explicitly named, and the
+    printed "name it exactly to override" advice was a lie for in-run stages.
 
     Args:
         blockers: List of BlockingInfo from analyze_frontier_blocking
         routed_results: Dict of net_id -> result for routed nets
         diff_pair_by_net_id: Dict mapping net_id -> (pair_name, pair)
         get_canonical_net_id_func: Function to get canonical net ID
+        pcb_data: enables the protection filter (optional, keyword)
+        context: PROTECTED_SKIPPED bucket for refusals
 
     Returns:
         Tuple of (rippable_blockers, seen_canonical_ids)
     """
+    protected = {}
+    overrides = set()
+    if pcb_data is not None:
+        from protected_nets import cached_protection_map, rip_override_names
+        protected = cached_protection_map(pcb_data)
+        overrides = rip_override_names(pcb_data)
     rippable_blockers = []
     seen_canonical_ids = set()
     for b in blockers:
         if b.net_id in routed_results:
+            if protected:
+                _net = pcb_data.nets.get(b.net_id)
+                _name = _net.name if _net else None
+                if _name and _name in protected and (
+                        protected[_name] == 'locked'
+                        or _name not in overrides):
+                    from protected_nets import PROTECTED_SKIPPED
+                    PROTECTED_SKIPPED.setdefault(context, {})[_name] = \
+                        protected[_name]
+                    continue
             canonical = get_canonical_net_id_func(b.net_id, diff_pair_by_net_id)
             if canonical not in seen_canonical_ids:
                 seen_canonical_ids.add(canonical)

@@ -18,10 +18,18 @@ if ROOT_DIR not in sys.path:
 _ENGINE_DIR = os.path.join(ROOT_DIR, 'py_router')
 if os.path.isdir(_ENGINE_DIR) and _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
+# py_placer/ holds the placement package (placement.groups / .fanout_clearance
+# are imported from here) and py_tools/ the instruments. Same exists() guard so
+# a FLAT installed layout (PCM zip) keeps working.
+for _sib in ('py_placer', 'py_tools'):
+    _d = os.path.join(ROOT_DIR, _sib)
+    if os.path.isdir(_d) and _d not in sys.path:
+        sys.path.append(_d)
 
 import routing_defaults as defaults
 from kicad_parser import mm_to_iu
-from .gui_utils import StdoutRedirector
+from keep_away import split_keep_away_specs
+from .gui_utils import StdoutRedirector, board_minima_from_live
 
 
 def parse_diff_pairs_result(value):
@@ -714,6 +722,7 @@ class DifferentialTab(wx.Panel):
         """Run identify-diff-pairs headless and update the pair selection
         from its findings (issue #40)."""
         from .ai_gui import run_skill_dialog, board_path_for_analysis
+        from .ai_backend import ANALYSIS_CONSTRAINT
 
         board = board_path_for_analysis(self.board_filename)
         if board is None:
@@ -721,7 +730,7 @@ class DifferentialTab(wx.Panel):
         value = run_skill_dialog(
             self, "AI: identify differential pairs",
             "identify-diff-pairs", os.path.abspath(board),
-            "analysis only, do not modify any files. After the report, end "
+            ANALYSIS_CONSTRAINT + " After the report, end "
             "your reply with exactly one line of the form "
             "RESULT=confirm:<pair base names verified as "
             "differential by pin function, comma-separated, P/N suffix stripped>"
@@ -832,6 +841,14 @@ class DifferentialTab(wx.Panel):
         # Merge configs
         config = {**routing_config, **diff_config}
 
+        # #1146: refuse a malformed keep-away rule before routing starts.
+        try:
+            from keep_away import parse_keep_away_rules
+            parse_keep_away_rules(config.get('keep_away'))
+        except ValueError as e:
+            wx.MessageBox(str(e), "Invalid Keep-away Rule", wx.OK | wx.ICON_WARNING)
+            return
+
         # Remember the routed floors so _apply_results_to_board can make the live
         # board's DRC constraints consistent with them (issue #160).
         self._diff_drc_config = dict(config)
@@ -914,7 +931,11 @@ class DifferentialTab(wx.Panel):
             # unchecked) actually reaches the router. Checking Min Clearance
             # (== the CLI passing --clearance) caps each class at
             # min(class, clearance); unchecked routes each class in full.
-            _diff_clearance = config.get('clearance', 0.1)
+            # #755: the fallback is routing_defaults.CLEARANCE, not a bare
+            # literal -- this seeds EVERY net's priced clearance and the
+            # Min-Clearance cap below, so a 0.1 here under-prices the whole
+            # board's obstacles when the key is absent.
+            _diff_clearance = config.get('clearance', defaults.CLEARANCE)
             net_clearances = {}
             try:
                 from .fanout_gui import _get_net_classes_from_board
@@ -927,8 +948,12 @@ class DifferentialTab(wx.Panel):
                         class_clearance_cache[cname] = params.get('clearance', _diff_clearance)
                     else:
                         class_clearance_cache[cname] = _diff_clearance
+                # #530 decision 2 (mirrors list_nets.net_clearance_map_by_id):
+                # a Default-only net takes the run's clearance and gets NO entry.
                 for net in self.pcb_data.nets.values():
                     cname = all_net_to_class.get(net.name, 'Default')
+                    if cname == 'Default':
+                        continue
                     net_clearances[net.net_id] = class_clearance_cache.get(
                         cname, _diff_clearance)
                 if config.get('clamp_netclasses', False):
@@ -958,20 +983,30 @@ class DifferentialTab(wx.Panel):
                 # routing only and diff-pair rip-up silently stayed on 'count'.
                 ripup_blocker_select=config.get('ripup_blocker_select',
                                                 defaults.RIPUP_BLOCKER_SELECT),
-                clearance=config.get('clearance', 0.1),
-                via_size=config.get('via_size', 0.3),
-                via_drill=config.get('via_drill', 0.2),
+                # #755: geometry fallbacks come from routing_defaults, like the
+                # hole-to-hole line below and like planes_gui -- NOT bare
+                # literals that disagree with it (0.1/0.3/0.2 vs 0.25/0.5/0.3;
+                # via_size was the largest divergence, a 0.2mm barrel). A diff
+                # pair carries the SIGNAL via defaults (VIA_SIZE/VIA_DRILL, what
+                # the route tab and route_diff.py resolve to), not the fanout
+                # tab's BGA_* escape-via knobs. The shipping GUI path always
+                # populates all three (_build_routing_config), so this is the
+                # latent-trap arm: a partially-built config must not silently
+                # route to a different geometry than the CLI would.
+                clearance=config.get('clearance', defaults.CLEARANCE),
+                via_size=config.get('via_size', defaults.VIA_SIZE),
+                via_drill=config.get('via_drill', defaults.VIA_DRILL),
                 hole_to_hole_clearance=config.get('hole_to_hole_clearance',
                                                   defaults.HOLE_TO_HOLE_CLEARANCE),
                 board_edge_clearance=config.get('board_edge_clearance',
                                                 defaults.BOARD_EDGE_CLEARANCE),
-                grid_step=config.get('grid_step', 0.1),
-                via_cost=config.get('via_cost', 50),
-                max_iterations=config.get('max_iterations', 200000),
-                proximity_heuristic_factor=config.get('proximity_heuristic_factor', 0.02),
+                grid_step=config.get('grid_step', defaults.GRID_STEP),
+                via_cost=config.get('via_cost', defaults.VIA_COST),
+                max_iterations=config.get('max_iterations', defaults.MAX_ITERATIONS),
+                proximity_heuristic_factor=config.get('proximity_heuristic_factor', defaults.PROXIMITY_HEURISTIC_FACTOR),
                 keepout_enabled=config.get('keepout_enabled', False),
                 keepout_layer=config.get('keepout_layer', defaults.KEEPOUT_LAYER),
-                diff_pair_gap=config.get('diff_pair_gap', 0.101),
+                diff_pair_gap=config.get('diff_pair_gap', defaults.DIFF_PAIR_GAP),
                 diff_pair_width_from_class=config.get('diff_pair_width_from_class', False),
                 diff_pair_gap_from_class=config.get('diff_pair_gap_from_class', False),
                 min_turning_radius=config.get('min_turning_radius', 0.2),
@@ -996,7 +1031,7 @@ class DifferentialTab(wx.Panel):
                 direction_order=config.get('direction'),
                 disable_bga_zones=config.get('no_bga_zones'),
                 max_probe_iterations=config.get('max_probe_iterations', 5000),
-                heuristic_weight=config.get('heuristic_weight', 1.9),
+                heuristic_weight=config.get('heuristic_weight', defaults.HEURISTIC_WEIGHT),
                 turn_cost=config.get('turn_cost', 1000),
                 direction_preference_cost=config.get(
                     'direction_preference_cost', defaults.DIRECTION_PREFERENCE_COST),
@@ -1017,6 +1052,11 @@ class DifferentialTab(wx.Panel):
                 track_proximity_distance=config.get('track_proximity_distance', 2.0),
                 track_proximity_cost=config.get('track_proximity_cost',
                                                 defaults.TRACK_PROXIMITY_COST),
+                # #1146: the Advanced tab's keep-away rules (shared with the
+                # route tab), as route_diff.py --keep-away.
+                keep_away=split_keep_away_specs(config.get('keep_away')) or None,
+                keep_away_free=config.get('keep_away_free', defaults.KEEP_AWAY_FREE),
+                keep_away_cost=config.get('keep_away_cost', defaults.KEEP_AWAY_COST),
                 crossing_layer_check=not config.get('no_crossing_layer_check', False),
                 can_swap_to_top_layer=config.get('can_swap_to_top_layer', False),
                 swappable_net_patterns=config.get('swappable_nets'),
@@ -1092,7 +1132,11 @@ class DifferentialTab(wx.Panel):
         # front let the executor start the NEXT step mid-apply (Andy's
         # 'tracks don't all appear, rerun fixes it').
         try:
-            self._on_routing_complete_body()
+            # Tee the apply phase's prints into the log tab: the worker's
+            # redirect was restored before this main-thread handler runs.
+            from .gui_utils import redirect_prints_to_log
+            with redirect_prints_to_log(self.append_log):
+                self._on_routing_complete_body()
         finally:
             self.route_btn.Enable()
             self.cancel_btn.SetLabel("Close")
@@ -1176,6 +1220,20 @@ class DifferentialTab(wx.Panel):
         # Refresh the pair list to show updated connectivity
         self.pair_panel.refresh()
 
+    def _apply_status(self, message):
+        """Status update for the apply phase, which runs ON the UI thread.
+
+        _update_progress is marshalled from the engine thread via CallAfter, so
+        the main loop paints it; the apply BLOCKS that loop, so a bare SetLabel
+        would leave the last routing message frozen on screen for the whole
+        apply. Same pattern as the route/planes/fanout tabs; see
+        gui_utils.ui_thread_status for why the repaint is deliberately narrow
+        (no Gauge.Pulse) inside an action plugin.
+        """
+        from .gui_utils import ui_thread_status
+        ui_thread_status(getattr(self, 'status_text', None),
+                         getattr(self, 'progress_bar', None), message)
+
     def _apply_results_to_board(self, results_data):
         """Apply routing results directly to the open pcbnew board."""
         import pcbnew
@@ -1188,6 +1246,8 @@ class DifferentialTab(wx.Panel):
             wx.MessageBox("Board is no longer open", "Error", wx.OK | wx.ICON_ERROR)
             return 0, 0, 0
 
+        self._apply_status("Applying diff-pair copper to the board...")
+
         # Apply pad/stub net swaps (polarity fixes, target swaps) and stub layer
         # modifications BEFORE adding new tracks - the routes were created
         # assuming these swaps, so skipping them leaves shorts at swapped pads
@@ -1198,7 +1258,7 @@ class DifferentialTab(wx.Panel):
         tracks_removed = 0
 
         # Get layer mappings
-        name_to_id, _ = _build_layer_mappings()
+        name_to_id, id_to_name = _build_layer_mappings()
 
         def get_layer_id(layer_name):
             return name_to_id.get(layer_name, pcbnew.F_Cu)
@@ -1221,7 +1281,9 @@ class DifferentialTab(wx.Panel):
                      round(pcbnew.ToMM(track.GetStart().y), POSITION_DECIMALS))
                 b = (round(pcbnew.ToMM(track.GetEnd().x), POSITION_DECIMALS),
                      round(pcbnew.ToMM(track.GetEnd().y), POSITION_DECIMALS))
-                key = (frozenset((a, b)), board.GetLayerName(track.GetLayer()),
+                # Canonical layer name, as s.layer is: a renamed layer's
+                # display name matched no key and left ripped copper (#1056).
+                key = (frozenset((a, b)), id_to_name.get(track.GetLayer()),
                        track.GetNetCode())
                 if key in remove_keys:
                     board.RemoveNative(track)
@@ -1288,8 +1350,12 @@ class DifferentialTab(wx.Panel):
             board.Add(track)
             tracks_added += 1
 
-        # Build connectivity to register new items properly
-        board.BuildConnectivity()
+        # Refill zones, THEN rebuild connectivity (refill_all_zones does both,
+        # in that order): a bare BuildConnectivity over stale pours flips new
+        # vias' netcodes to the zones' nets -- see refill_all_zones's docstring.
+        self._apply_status("Refilling zones and rebuilding connectivity...")
+        from .gui_utils import refill_all_zones
+        refill_all_zones(board)
 
         # Make the live board's DRC constraints consistent with what we just
         # routed to (issue #160), the GUI counterpart of the CLI route_diff's
@@ -1314,7 +1380,9 @@ class DifferentialTab(wx.Panel):
                     track_width=cfg.get('track_width'),
                     via_diameter=cfg.get('via_size'),
                     via_drill=cfg.get('via_drill'),
-                    fab_edge=fab_edge_floor())
+                    fab_edge=fab_edge_floor(),
+                    # #530: caps min_clearance at the smallest pad override
+                    minima=board_minima_from_live(board))
                 # #441: record the coupling gap at >= clearance, matching the gap
                 # the engine actually routed to (batch_route_diff_pairs floors gap
                 # up to clearance because KiCad grades P<->N coupling under the plain
@@ -1323,8 +1391,13 @@ class DifferentialTab(wx.Panel):
                 _dp_gap = cfg.get('diff_pair_gap')
                 if _dp_gap is not None and cfg.get('clearance'):
                     _dp_gap = max(_dp_gap, cfg.get('clearance'))
+                # #856: severities only on explicit request; {} = untouched.
+                # The diff-pair gap/width class values are draw defaults and are
+                # no longer written (the #842 ratchet); kwargs kept for the
+                # shared signature.
+                _sev = severity_plan() if cfg.get('relax_drc_severities') else {}
                 if apply_targets_to_board(
-                        board, targets, severity_plan(keep_thermal=cfg.get('keep_thermal', False)),
+                        board, targets, _sev,
                         diff_pair_gap=_dp_gap,
                         diff_pair_width=cfg.get('track_width'),
                         clamp_nondefault_netclasses=cfg.get('clamp_netclasses', False)):
@@ -1334,6 +1407,7 @@ class DifferentialTab(wx.Panel):
                 print(f"(skipped DRC-settings write-back: {e})")
 
         # Refresh the view
+        self._apply_status("Refreshing the board view...")
         pcbnew.Refresh()
 
         # Sync pcb_data from pcbnew board
@@ -1348,16 +1422,23 @@ class DifferentialTab(wx.Panel):
         # had tightened to 0.0889 / 0.25-0.15 by step 10. Every later step
         # resolves its geometry from that class, so the two fronts routed with
         # DIFFERENT parameters from step 11 on (GUI 3581 segments vs CLI 3428).
-        from .gui_utils import update_live_drc_floors
+        # #693: gated on the shared "Fix DRC settings after routing"
+        # checkbox, like the netclass/severity writeback above -- it used to
+        # run unconditionally, so an unchecked box still moved the board's
+        # Board Setup floors. The CLI gates its twin on
+        # --no-fix-drc-settings.
         _cfg = getattr(self, '_diff_drc_config', {}) or {}
-        update_live_drc_floors(
-            board,
-            clearance=_cfg.get('clearance'),
-            track_width=_cfg.get('diff_pair_width') or _cfg.get('track_width'),
-            via_size=_cfg.get('via_size'),
-            via_drill=_cfg.get('via_drill'),
-            hole_to_hole=_cfg.get('hole_to_hole_clearance'),
-            edge_clearance=_cfg.get('board_edge_clearance'))
+        if _cfg.get('fix_drc_settings', True):
+            from .gui_utils import update_live_drc_floors
+            update_live_drc_floors(
+                board,
+                clearance=_cfg.get('clearance'),
+                track_width=(_cfg.get('diff_pair_width')
+                             or _cfg.get('track_width')),
+                via_size=_cfg.get('via_size'),
+                via_drill=_cfg.get('via_drill'),
+                hole_to_hole=_cfg.get('hole_to_hole_clearance'),
+                edge_clearance=_cfg.get('board_edge_clearance'))
 
         return tracks_added, vias_added, tracks_removed
 
