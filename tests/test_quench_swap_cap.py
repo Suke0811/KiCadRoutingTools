@@ -205,7 +205,47 @@ def test_no_stranding_after_full_run():
             f"{ref} stranded {dist:.3f}mm from seed (cap {max_disp}mm)"
 
 
+def test_strict_group_refs_prevent_individual_swap():
+    pcb, path = _swap_board(3)
+    try:
+        result = quench(pcb, path, max_displacement=5.0,
+                        strict_group_refs={'C1'}, **SWAP_ONLY)
+        assert result == []
+    finally:
+        os.unlink(path)
+
+
+def test_strict_group_refs_prevent_individual_nudges():
+    pcb, path = _swap_board(3)
+    try:
+        result = quench(pcb, path, max_displacement=5.0, step=1.0,
+                        groups={'caps': ['C1', 'C2']},
+                        strict_group_refs={'C1', 'C2'}, max_passes=2)
+        # The anchors pull the caps in opposite directions. A rigid translation
+        # cannot improve their combined length, while individual moves can.
+        assert result == []
+    finally:
+        os.unlink(path)
+
+
+def test_strict_group_refs_reject_unknown_or_locked_refs():
+    for ref in ('missing', 'J1'):
+        pcb, path = _swap_board(3)
+        try:
+            try:
+                quench(pcb, path, strict_group_refs={ref}, **SWAP_ONLY)
+            except ValueError as error:
+                assert 'movable footprint references' in str(error)
+            else:
+                raise AssertionError('invalid strict group reference accepted')
+        finally:
+            os.unlink(path)
+
+
 if __name__ == '__main__':
+    test_strict_group_refs_prevent_individual_swap()
+    test_strict_group_refs_prevent_individual_nudges()
+    test_strict_group_refs_reject_unknown_or_locked_refs()
     test_swap_beyond_cap_rejected()
     test_swap_within_cap_accepted_and_reported()
     test_swap_cap_flag_tightens()

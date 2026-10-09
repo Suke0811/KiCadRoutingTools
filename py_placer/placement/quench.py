@@ -4080,7 +4080,8 @@ def quench(pcb_data: PCBData, pcb_file: str,
            # gated on tests/test_placement_ab.py, not a tidy-up.
            body_model: bool = False,
            # #893: the pin-order facing term. Appended, 0.0 by default.
-           facing_weight: float = 0.0) -> List[Dict]:
+           facing_weight: float = 0.0,
+           strict_group_refs: Optional[Set[str]] = None) -> List[Dict]:
     """Greedy quench: iterate over parts, accept only cost-reducing moves.
 
     align_weight / align_radius / align_span, orient_weight: the #548 tidiness
@@ -4119,6 +4120,10 @@ def quench(pcb_data: PCBData, pcb_file: str,
     count by contract; hpwl is pure pad geometry), so they are comparable
     across calls. `length` and `total` are scaled by net_weights, so they are
     only comparable between the before/after of the SAME call.
+
+    strict_group_refs: optional movable references excluded from individual
+    nudges, rotations, and swaps; group translations remain available.
+    Unknown or locked references raise ValueError. Defaults to no exclusions.
 
     groups: optional {block name: [reference]} from placement.groups. Each block
     gains a RIGID TRANSLATE move -- the whole body shifts by one offset, capped
@@ -4225,6 +4230,14 @@ def quench(pcb_data: PCBData, pcb_file: str,
 
     movable = [r for r, p in state.parts.items() if not p.locked]
     movable.sort(key=lambda r: state.parts[r].pin_count, reverse=True)
+    strict_group_refs = set(strict_group_refs or ())
+    unknown_strict_group_refs = strict_group_refs - set(movable)
+    if unknown_strict_group_refs:
+        raise ValueError(
+            "strict_group_refs must be movable footprint references: "
+            f"{sorted(unknown_strict_group_refs)}")
+    individually_movable = [ref for ref in movable
+                            if ref not in strict_group_refs]
 
     # --- placement blocks (#459) ---
     # A block moves as one rigid body, which is the move the per-part nudge
@@ -4394,7 +4407,7 @@ def quench(pcb_data: PCBData, pcb_file: str,
                           f"gain={base_cost - best[0]:.1f}")
 
         # --- single-part moves (nudge + rotate) ---
-        for _mi, ref in enumerate(movable):
+        for _mi, ref in enumerate(individually_movable):
             # Per PART, not per candidate pose: one monotonic read per
             # violator is the right granularity, and a part
             # costs O(candidates x rotations x parts) so it is a real unit.
@@ -4464,7 +4477,7 @@ def quench(pcb_data: PCBData, pcb_file: str,
         # --- same-footprint swap moves ---
         if allow_swaps:
             by_fp: Dict[str, List[str]] = {}
-            for ref in movable:
+            for ref in individually_movable:
                 by_fp.setdefault(state.parts[ref].footprint_name, []).append(ref)
             for fp_name, refs in by_fp.items():
                 if len(refs) < 2:
